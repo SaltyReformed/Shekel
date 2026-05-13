@@ -234,7 +234,10 @@ class UserSettings(TimestampMixin, db.Model):
     default_inflation_rate = db.Column(db.Numeric(5, 4), default=0.0300)
     grid_default_periods = db.Column(db.Integer, default=6)
     low_balance_threshold = db.Column(db.Integer, default=500)
-    safe_withdrawal_rate = db.Column(db.Numeric(5, 4), default=0.0400)
+    safe_withdrawal_rate = db.Column(
+        db.Numeric(5, 4), default=0.0400,
+        server_default=db.text("0.0400"),
+    )
     planned_retirement_date = db.Column(db.Date, nullable=True)
     estimated_retirement_tax_rate = db.Column(db.Numeric(5, 4), nullable=True)
     large_transaction_threshold = db.Column(

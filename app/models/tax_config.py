@@ -36,16 +36,33 @@ class TaxBracketSet(CreatedAtMixin, db.Model):
         db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name on the
+    # filing-status ref-table FK.  See app/extensions.py for the
+    # full SHEKEL_NAMING_CONVENTION rationale.
     filing_status_id = db.Column(
-        db.Integer, db.ForeignKey("ref.filing_statuses.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.filing_statuses.id",
+            name="fk_tax_bracket_sets_filing_status_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     tax_year = db.Column(db.Integer, nullable=False)
     standard_deduction = db.Column(db.Numeric(12, 2), nullable=False)
+    # server_default uses the bare string "0" (not db.text("0")) so
+    # pg_dump renders the default as 'DEFAULT '0'::numeric' -- matching
+    # the form materialised by migration b4c7d8e9f012's
+    # ``server_default='0'``.  db.text("0") would render as
+    # ``DEFAULT 0`` (literal), functionally identical but a pg_dump
+    # diff against the migration-built schema.
     child_credit_amount = db.Column(
-        db.Numeric(12, 2), nullable=False, default=0
+        db.Numeric(12, 2), nullable=False, default=0,
+        server_default="0",
     )  # Per qualifying child under 17
     other_dependent_credit_amount = db.Column(
-        db.Numeric(12, 2), nullable=False, default=0
+        db.Numeric(12, 2), nullable=False, default=0,
+        server_default="0",
     )  # Per other dependent
     description = db.Column(db.String(200))
 
@@ -72,6 +89,18 @@ class TaxBracket(db.Model):
             name="ck_tax_brackets_income_order",
         ),
         db.CheckConstraint("rate >= 0 AND rate <= 1", name="ck_tax_brackets_valid_rate"),
+        # F-071 / F-079 / C-42: child-FK index restored after the
+        # 22b3dd9d9ed3 migration dropped it without restoration.  The
+        # tax calculator queries
+        # ``WHERE bracket_set_id = ? ORDER BY sort_order`` to
+        # materialise the bracket ladder for a year + filing status;
+        # without this composite index the ORDER BY requires a sort
+        # step over a sequential scan and the cost grows with the
+        # total bracket-row count across all bracket sets.
+        db.Index(
+            "idx_tax_brackets_bracket_set",
+            "bracket_set_id", "sort_order",
+        ),
         {"schema": "salary"},
     )
 
@@ -129,8 +158,17 @@ class StateTaxConfig(CreatedAtMixin, db.Model):
         db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name on the
+    # tax-type ref-table FK.  See app/extensions.py for the full
+    # SHEKEL_NAMING_CONVENTION rationale.
     tax_type_id = db.Column(
-        db.Integer, db.ForeignKey("ref.tax_types.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.tax_types.id",
+            name="fk_state_tax_configs_tax_type_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     state_code = db.Column(db.String(2), nullable=False)
     tax_year = db.Column(db.Integer, nullable=False)

@@ -52,10 +52,23 @@ class SalaryProfile(TimestampMixin, db.Model):
         db.Integer,
         db.ForeignKey("budget.transaction_templates.id", ondelete="SET NULL"),
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name.  Closes
+    # the audit gap on the nine ref-table FKs that defaulted to
+    # PostgreSQL's implicit NO ACTION; see app/extensions.py for the
+    # full SHEKEL_NAMING_CONVENTION rationale.
     filing_status_id = db.Column(
-        db.Integer, db.ForeignKey("ref.filing_statuses.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.filing_statuses.id",
+            name="fk_salary_profiles_filing_status_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
-    name = db.Column(db.String(200), nullable=False)
+    name = db.Column(
+        db.String(200), nullable=False,
+        server_default=db.text("'Primary'"),
+    )
     annual_salary = db.Column(db.Numeric(12, 2), nullable=False)
     state_code = db.Column(
         db.String(2), nullable=False, default="NC",

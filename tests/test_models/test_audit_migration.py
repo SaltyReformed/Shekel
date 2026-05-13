@@ -37,6 +37,26 @@ from app.models.account import Account
 from app.models.ref import AccountType
 
 
+# Module-level xdist_group marker pins every test in this module to
+# a single pytest-xdist worker (under ``--dist=loadgroup``, set in
+# ``pytest.ini``).  Pinning is required because the cluster-scoped
+# ``shekel_app`` PostgreSQL role created by the
+# :func:`shekel_app_role` fixture cannot be safely concurrent with
+# tests in OTHER classes of this same file -- specifically
+# ``TestApplyIdempotent`` and ``TestRoundTrip`` invoke
+# :func:`apply_audit_infrastructure`, whose ``_GRANT_APP_ROLE_SQL``
+# block conditionally ``GRANT``s privileges to ``shekel_app`` WHEN
+# the role exists.  If those tests ran on a different worker while
+# ``TestLeastPrivilegeRole`` had the role alive, the GRANTs would
+# leak into the OTHER worker's per-session database; the
+# ``shekel_app_role`` fixture's teardown ``DROP OWNED BY`` only
+# affects its own database, so the cross-database grants would
+# block ``DROP ROLE`` with ``DependentObjectsStillExist`` errors.
+# Pinning the entire module sidesteps that race; other test files
+# continue to fan out across workers normally.
+pytestmark = pytest.mark.xdist_group("shekel_app_role")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -395,6 +415,12 @@ class TestLeastPrivilegeRole:
     runtime posture exactly.  ``SET ROLE`` switches the current
     transaction's privilege check to the named role -- requires the
     test runner to be either a superuser or a member of the role.
+
+    Cluster-level serialisation is handled at module scope via
+    ``pytestmark`` so this class and the sibling classes that call
+    :func:`apply_audit_infrastructure` are all pinned to the same
+    pytest-xdist worker.  See the module-level comment above
+    ``pytestmark`` for the full reasoning.
     """
 
     def test_app_role_can_select_audit_log(

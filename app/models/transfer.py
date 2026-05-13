@@ -8,10 +8,10 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import SoftDeleteOverridableMixin, TimestampMixin
 
 
-class Transfer(TimestampMixin, db.Model):
+class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     """A transfer between two accounts within a pay period.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -101,8 +101,28 @@ class Transfer(TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # F-136 / C-43: ondelete=CASCADE replaces the historical RESTRICT
+    # so the FK matches the sibling tables (``budget.transactions``
+    # and ``budget.account_anchor_history`` both CASCADE on
+    # ``pay_period_id``).  The asymmetry was an unintentional drift:
+    # PostgreSQL evaluates every referential action for a single
+    # DELETE in one pass, so a user-cascade that fans out into
+    # ``pay_periods`` and ``transfers`` simultaneously would
+    # previously have raised a RESTRICT error even though every
+    # row was destined for deletion.  CASCADE also keeps the
+    # transfer invariant intact: the transfer + its two shadow
+    # transactions + their pay period all disappear together
+    # rather than leaving the parent transfer orphaned after the
+    # shadows cascade away through ``transactions.pay_period_id``.
+    # Name follows the SHEKEL_NAMING_CONVENTION (see
+    # app/extensions.py).
     pay_period_id = db.Column(
-        db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="RESTRICT"),
+        db.Integer,
+        db.ForeignKey(
+            "budget.pay_periods.id",
+            name="fk_transfers_pay_period_id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
     )
     scenario_id = db.Column(
@@ -120,14 +140,7 @@ class Transfer(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200))
     amount = db.Column(db.Numeric(12, 2), nullable=False)
-    is_override = db.Column(
-        db.Boolean, nullable=False, default=False,
-        server_default=db.text("false"),
-    )
-    is_deleted = db.Column(
-        db.Boolean, nullable=False, default=False,
-        server_default=db.text("false"),
-    )
+    # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )

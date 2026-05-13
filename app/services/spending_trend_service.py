@@ -18,12 +18,12 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.account import Account
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.services.account_resolver import resolve_analytics_account
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +117,11 @@ def compute_trends(
     Returns:
         A TrendReport with item-level and group-level trends.
     """
-    account = _resolve_account(user_id, account_id)
+    account = resolve_analytics_account(user_id, account_id)
     if account is None:
         return _empty_report(threshold)
 
-    scenario = _get_baseline_scenario(user_id)
+    scenario = get_baseline_scenario(user_id)
     if scenario is None:
         return _empty_report(threshold)
 
@@ -516,43 +516,6 @@ def _compute_avg_days_before_due(txns: list[Transaction]) -> Decimal | None:
 def _get_settled_status_ids() -> list[int]:
     """Return status IDs for settled statuses (Done, Received, Settled)."""
     return [ref_cache.status_id(s) for s in _SETTLED_STATUSES]
-
-
-def _resolve_account(
-    user_id: int,
-    account_id: int | None,
-) -> Account | None:
-    """Return the account to scope queries to.
-
-    If account_id is given, verifies ownership and returns it.
-    Otherwise falls back to the user's first active checking account.
-    """
-    if account_id is not None:
-        acct = db.session.get(Account, account_id)
-        if acct and acct.user_id == user_id and acct.is_active:
-            return acct
-        return None
-
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    return (
-        db.session.query(Account)
-        .filter_by(
-            user_id=user_id,
-            is_active=True,
-            account_type_id=checking_type_id,
-        )
-        .order_by(Account.sort_order, Account.id)
-        .first()
-    )
-
-
-def _get_baseline_scenario(user_id: int) -> Scenario | None:
-    """Load the user's baseline scenario."""
-    return (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
 
 
 def _empty_report(

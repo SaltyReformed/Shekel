@@ -1279,7 +1279,32 @@ lives in the same database the attacker would be tampering with.
   seeding script, or pass them on the `docker run` command that
   invokes the seed script and not on the long-running app service.
   (3) Consider Docker secrets for credentials that must persist.
-- **Status:** Open
+- **Status:** Fixed in C-34 (2026-05-10). Three-layer credential
+  scrub now keeps `SEED_USER_PASSWORD` and `SEED_USER_EMAIL` out of
+  the long-running Gunicorn process: (a)
+  `scripts/seed_user.py:_scrub_seed_env_vars` calls `os.environ.pop`
+  + `os.unsetenv` from a `finally` block so even a failed seed
+  scrubs the credential before the script exits;
+  (b) `entrypoint.sh:147-203` checks a `/home/shekel/app/state/.seed-complete`
+  sentinel (writable named volume `shekel-prod-app-state` mounted
+  from `docker-compose.yml`), then `unset SEED_USER_PASSWORD
+  SEED_USER_EMAIL SEED_USER_DISPLAY_NAME` BEFORE `exec "$@"` hands
+  off to Gunicorn -- so `cat /proc/<gunicorn-pid>/environ | grep
+  SEED_USER` returns nothing in steady state; (c) `docker-compose.yml`
+  comments document the operator workflow for removing the SEED_USER_*
+  lines from `.env` after first boot and recreating the container so
+  Docker's stored `Container.Config.Env` no longer carries the
+  password. The remaining `docker exec ... env` channel (which reads
+  from Config.Env, not from /proc) is closed by the operator step in
+  the .env.example comment block; full Docker secrets migration is
+  scheduled for Commit C-38. Tests:
+  `tests/test_scripts/test_seed_user.py::TestSeedUserCredentialScrub`
+  exercises the Python scrub end-to-end (including subprocess
+  inheritance);
+  `tests/test_deploy/test_seed_credential_hygiene.py` asserts the
+  source-level invariants for entrypoint.sh, docker-compose.yml,
+  Dockerfile, and seed_user.py and verifies the mount-path /
+  sentinel-path agreement.
 
 ### F-023: Host .env files are world-readable (mode 644)
 
@@ -1371,7 +1396,24 @@ lives in the same database the attacker would be tampering with.
   image's Debian release) and rebuild. Pin the rebuild to a digest
   so the prod pull is deterministic (see F-060). Re-run trivy to
   confirm the HIGH CVE disappears.
-- **Status:** Open
+- **Status:** Fixed in C-36 (2026-05-10). Two-layer remediation:
+  (a) `Dockerfile` now pins both stages to
+  `python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd`,
+  the multi-arch index for the upstream rebuild on 2026-05-08 that
+  ships libssl3t64 / openssl / openssl-provider-legacy at
+  `3.5.5-1~deb13u2` (the post-CVE-2026-28390 fix); (b) defense-in-
+  depth `apt-get upgrade -y openssl libssl3t64
+  openssl-provider-legacy` runs in BOTH the builder and runtime
+  stages so a future CVE landing in Debian's trixie repos between
+  digest refreshes is picked up automatically on the next image
+  build. Verified by an off-line build that confirmed
+  `libssl3t64 3.5.5-1~deb13u2` (and matching `openssl` and
+  `openssl-provider-legacy`) in the runtime stage. Tests:
+  `tests/test_deploy/test_image_supply_chain.py::TestDockerfileDigestPin`
+  asserts both FROM lines pin by digest and share the same digest;
+  `TestDockerfileOpenSSLUpgrade` parametrizes across the three
+  package names and asserts `apt-get upgrade -y` appears in both
+  stages.
 
 ### F-026: Migration efffcf647644 adds NOT NULL column without backfill
 
@@ -2622,7 +2664,26 @@ lives in the same database the attacker would be tampering with.
   existing `@REGISTRATION_ENABLED` gate at
   `app/routes/auth.py` already handles the false case
   (returns 404).
-- **Status:** Open
+- **Status:** Fixed in C-34 (2026-05-10). Production registration is
+  now disabled by default at three layers: (a) `docker-compose.yml`
+  flips the interpolation default from `${REGISTRATION_ENABLED:-true}`
+  to `${REGISTRATION_ENABLED:-false}`, so a deploy without an explicit
+  `.env` value gets the safe posture; (b) `app/config.py` ProdConfig
+  adds an explicit `REGISTRATION_ENABLED = os.getenv(..., "false")`
+  override (defense-in-depth against an operator removing the
+  docker-compose default); BaseConfig keeps the `"true"` default for
+  DevConfig and TestConfig ergonomics. (c) `.env.example` ships the
+  documented production posture (`REGISTRATION_ENABLED=false`) with
+  a comment block explaining the layering. The existing route gate
+  at `app/routes/auth.py:462` and `:480` continues to return 404
+  when the flag is false. Tests:
+  `tests/test_routes/test_auth.py::TestRegistration::test_register_disabled_get_returns_404`,
+  `::test_register_disabled_post_returns_404`,
+  `::test_login_hides_register_link_when_disabled` (existing,
+  unchanged) and the new
+  `tests/test_deploy/test_seed_credential_hygiene.py::TestRegistrationDisabledByDefault`
+  asserts the docker-compose, .env.example, and ProdConfig defaults
+  remain `false`.
 
 ### F-054: Stale pre-rename containers still running
 
@@ -2655,7 +2716,25 @@ lives in the same database the attacker would be tampering with.
   (2) `docker compose -p shekel down -v` (careful: the -v
   removes volumes; don't run until the backup confirmation
   step). (3) Remove the stale networks.
-- **Status:** Open
+- **Status:** Fixed in C-34 (2026-05-10). New helper
+  `scripts/retire_stale_containers.sh` enumerates the audited
+  resources (the three pre-rename containers, three stale networks,
+  and the `shekel_pgdata` volume), defaults to `--dry-run` so a
+  forgotten flag cannot delete data, and gates destruction behind
+  `--confirm` plus an interactive `yes` prompt (skippable with
+  `--force` after a prior dry-run review). The `shekel_pgdata`
+  volume is ALWAYS tarballed to `${BACKUP_DIR:-/var/backups/shekel/stale-volumes}`
+  via an ephemeral alpine container BEFORE `docker volume rm` --
+  the script enforces source-order ``backup_volume`` -> ``remove_volume``
+  in main(), and the test suite asserts on that ordering. The
+  operator runs the script once on the host after reviewing the
+  dry-run output; verified in audit-time dry-run on this host and
+  found three stale containers, one network, and the 48.2M pgdata
+  volume. Tests:
+  `tests/test_deploy/test_seed_credential_hygiene.py::TestRetireStaleContainersScript`
+  asserts existence, `bash -n` cleanliness, the dry-run-by-default
+  invariant, complete enumeration of the F-054 resource list, the
+  backup-before-remove ordering, and the `--confirm` gating.
 
 ### F-055: no-new-privileges not set at daemon or per-container level
 
@@ -2689,7 +2768,11 @@ lives in the same database the attacker would be tampering with.
   default). Alternative: add `security_opt:
   ["no-new-privileges:true"]` to each service in
   `docker-compose.yml`.
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  Per-container
+  `security_opt: [no-new-privileges:true]` set on db, app, nginx,
+  and redis in `docker-compose.yml`; the operator-side
+  `/etc/docker/daemon.json` runbook (docs/runbook.md §4.11) sets
+  the same flag as a daemon default for any future co-tenant.
 
 ### F-056: No capability dropping on any container
 
@@ -2713,7 +2796,13 @@ lives in the same database the attacker would be tampering with.
   specific services actually need (likely none for the
   Python app; `NET_BIND_SERVICE` if nginx binds a privileged
   port, though the compose binds 80/443 via the host).
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  `cap_drop: [ALL]` set on db,
+  app, nginx, and redis in `docker-compose.yml` with no `cap_add`
+  required.  Pinning `user: postgres` (db), `user: nginx` (nginx),
+  and `user: redis` (redis already in C-15-era hardening) plus
+  moving the bundled nginx listen port to 8080 in
+  `deploy/nginx-bundled/nginx.conf` removes the residual need for
+  CAP_CHOWN, CAP_SETUID, CAP_SETGID, and CAP_NET_BIND_SERVICE.
 
 ### F-057: Dev databases bound to 0.0.0.0 with public credentials
 
@@ -2747,7 +2836,10 @@ lives in the same database the attacker would be tampering with.
   `"127.0.0.1:5432:5432"` and `"127.0.0.1:5433:5432"` so the
   bindings are loopback-only. Flask dev server uses
   `localhost` by default, so no app change needed.
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  Both dev DB ports now bind to
+  `127.0.0.1` only in `docker-compose.dev.yml`; verified by
+  `docker compose -f docker-compose.dev.yml config` showing
+  `host_ip: 127.0.0.1` on both 5432 and 5433 mappings.
 
 ### F-058: pyotp stale -- 33 months since last release
 
@@ -2830,7 +2922,29 @@ lives in the same database the attacker would be tampering with.
   tags (`:v0.12.3`) that are never overwritten. `postgres:16-
   alpine` and `nginx:1.27-alpine` minor-pins are
   acceptable.
-- **Status:** Open
+- **Status:** Fixed in C-36 (2026-05-10).
+  `deploy/docker-compose.prod.yml` overrides the base file's
+  `image: ghcr.io/saltyreformed/shekel:latest` with
+  `image: ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?...}`.
+  The `:?` required-form interpolation FAILS `docker compose up`
+  with a clear remediation message when the variable is missing,
+  so a deployment cannot accidentally fall back to `:latest`.
+  The base `docker-compose.yml` retains `:latest` for the README
+  Quick Start (end-user bundled mode is explicitly out of scope
+  for the audit's production hardening) but carries a comment
+  block above the `image:` line directing operators to the
+  override file. `.env.example` documents `SHEKEL_IMAGE_DIGEST`
+  with the rotation procedure pointer; `deploy/README.md` adds an
+  "Image Digest Pinning" section documenting the CI digest emit
+  step (`.github/workflows/docker-publish.yml` writes the digest
+  to `GITHUB_STEP_SUMMARY`) and the local-build path via
+  `scripts/deploy.sh`. Tests:
+  `tests/test_deploy/test_image_supply_chain.py::TestProdComposeOverridePinsByDigest`
+  parses the override and asserts the required-form interpolation;
+  `TestComposeOverrideRequiresDigest` runs `docker compose config`
+  end-to-end and confirms (a) missing digest fails the parse with
+  a `SHEKEL_IMAGE_DIGEST`-naming error, (b) a synthetic digest
+  succeeds and the merged image reference carries it.
 
 ### F-061: cloudflared has no Access policy and uses noTLSVerify: true
 
@@ -2871,7 +2985,25 @@ lives in the same database the attacker would be tampering with.
   `docs/audits/security-2026-04-15/scans/` on every audit
   cycle. (2) Leave `noTLSVerify: true` in place but add a
   comment citing the loopback colocation.
-- **Status:** Open
+- **Status:** Fixed in C-37 (2026-05-10).
+  `cloudflared/config.yml` now carries an
+  `originRequest.access` block with `required: true`,
+  `teamName: <TEAM_NAME>`, and `audTag: [<AUD_TAG>]`. The
+  block is documented inline with the F-061 / C-37 audit
+  pointers so a future operator who deletes the policy
+  re-introduces the finding by name in the diff. The
+  `<TEAM_NAME>` and `<AUD_TAG>` placeholders are substituted
+  on the host via the procedure documented in
+  `docs/runbook.md` §6.4a; the operator captures the AUD tag
+  from the Cloudflare Zero Trust dashboard's Access
+  application Overview tab. The audit-time `noTLSVerify:
+  true` directive is retained (cloudflared and Nginx are
+  colocated on loopback in bundled mode and on the
+  dedicated `shekel-frontend` bridge in shared mode -- the
+  cleartext hop is bounded to a single trust zone) and the
+  rationale is documented inline. Tests:
+  `tests/test_deploy/test_internal_tls_and_access.py`
+  TestCloudflaredAccessPolicy (5 tests).
 
 ### F-062: Two HIGH OS CVEs with no fix available in container image
 
@@ -2898,7 +3030,43 @@ lives in the same database the attacker would be tampering with.
   publishes fixes, rebuild. Consider migrating to distroless
   or Alpine base image to eliminate the OS attack surface
   entirely (fewer packages = fewer CVEs to track).
-- **Status:** Open
+- **Status:** Accepted with monitoring (compensating controls
+  applied in C-36, 2026-05-10). The two CVEs remain present in
+  the upstream `python:3.14-slim` rebuild on 2026-05-08
+  (`ncurses 6.5+20250216-2` and `libsystemd0 257.9-1~deb13u1`,
+  unchanged from the audit-time versions): Debian has not
+  published fixes for either CVE yet. The reachability analysis
+  in the original finding still holds (no interactive terminal,
+  no systemd IPC exposure in the container). The C-36 commit
+  applies the following compensating controls so the residual
+  risk surface is bounded:
+  (1) `Dockerfile` pins both stages by sha256 digest, so the
+      operator and any downstream verifier can read the EXACT
+      package versions present from `docker buildx imagetools
+      inspect ghcr.io/saltyreformed/shekel@<digest>` -- no
+      uncertainty about which trixie packages a given deploy
+      carries.
+  (2) Both stages run `apt-get upgrade -y openssl libssl3t64
+      openssl-provider-legacy` so the moment Debian publishes a
+      fix for either CVE (or for any related transitive
+      dependency), the next image build picks it up
+      automatically. The digest pin is then refreshed on the
+      same commit cycle.
+  (3) Container hardening from C-35 (`cap_drop: ALL`,
+      `read_only: true`, `no-new-privileges: true`) bounds the
+      blast radius of any in-container exploit that did manage
+      to reach ncurses or libsystemd0.
+  (4) Cosign signing in CI (Commit C-36 / F-155) lets the
+      operator verify the running image's digest matches a
+      known-good (audited) build before each deploy.
+  Distroless / Alpine migration was evaluated and rejected for
+  this commit cycle: the runtime stage uses `psql` from
+  `postgresql-client` (entrypoint.sh) and `psycopg2` (compiled
+  against glibc), neither of which fits a distroless base
+  cleanly. Alpine would require switching to `psycopg2-binary`
+  (different package, different audit baseline). Re-evaluate
+  when Debian's no-fix backlog grows beyond compensating-control
+  coverage.
 
 ### F-063: Cloudflare Tunnel bypasses nginx on WAN path
 
@@ -3645,7 +3813,40 @@ lives in the same database the attacker would be tampering with.
   plain_password, str) or not plain_password: return False`.
   Protects against future callers passing non-string by
   mistake.
-- **Status:** Open
+- **Status:** Fixed in C-44 (2026-05-12).
+  `app/services/auth_service.py:verify_password` now rejects
+  every non-string and every empty-string input on both the
+  ``plain_password`` and ``password_hash`` sides before
+  reaching ``.encode("utf-8")``.  Implementation extends the
+  plan's recommendation in three ways:
+  (a) symmetric guard -- ``password_hash`` is also checked for
+  ``isinstance(str)`` and non-empty, not just type;
+  (b) ``bcrypt.checkpw`` ``ValueError`` ("Invalid salt") is
+  caught explicitly so a corrupted DB row or a hash from an
+  older incompatible scheme returns ``False`` rather than
+  propagating as a Flask 500; and (c) every failure mode
+  converges on the same ``False`` sentinel so an attacker
+  probing with exotic payloads cannot fingerprint caller-side
+  bugs via response shape.  Eight new tests in
+  ``tests/test_services/test_auth_service.py::TestVerifyPasswordC44Hardening``
+  pin the contract -- non-string plaintext (``None``, ``bytes``,
+  ``int``, ``Decimal``, ``list``, ``dict``, ``object``), empty
+  plaintext, non-string hash (same set), empty hash, malformed
+  hash (non-bcrypt prefixes including legacy MD5-crypt and
+  SHA-crypt formats, truncated ``$2b$``, bad cost factor,
+  all-whitespace, wrong-content right-length), the
+  ``authenticate`` end-to-end case where bytes credentials now
+  raise ``AuthError`` instead of crashing with a 500, and a
+  round-trip regression guard with single-character / 72-byte
+  ceiling / non-ASCII / supplementary-plane Unicode coverage.
+  The pre-existing ``test_hash_password_empty_string`` was
+  updated in the same commit: ``hash_password`` still accepts
+  the empty plaintext (the test stays self-contained) but the
+  matching ``verify_password`` call now asserts ``False``,
+  documenting the deliberate post-C-44 asymmetry between the
+  hash and verify sides at the service layer.  Pylint
+  ``app/ --fail-on=E,F`` score 9.52/10 (unchanged).  Full
+  suite 5,269 passed in 4:22.
 
 ### F-084: _assert_blocked test helper accepts 302 alongside 404
 
@@ -4569,7 +4770,29 @@ lives in the same database the attacker would be tampering with.
   non-runtime files, or use multi-stage build copying
   only `app/`, `requirements.txt`, `gunicorn.conf.py`,
   `run.py`, `entrypoint.sh`, `migrations/`.
-- **Status:** Open
+- **Status:** Fixed in C-34 (2026-05-10). The repo's `.dockerignore`
+  was rewritten with a leading inventory of the runtime-essential
+  paths (so future maintainers can answer the "is this needed in
+  the image?" question without spelunking entrypoint.sh) and an
+  expanded exclusion list covering `.claude/`, `.audit-venv/`,
+  `amortization-fix.patch`, `cloudflared/`, `diagnostics/`,
+  `monitoring/`, `requirements-dev.txt`, `pytest.ini`, `deploy/`
+  (configs are bind-mounted from the host), and the dev-only
+  scripts (`scripts/audit/`, `scripts/hooks/`,
+  `scripts/benchmark_triggers.py`,
+  `scripts/vendor_google_fonts.py`) plus the host-side ops scripts
+  (`scripts/backup.sh`, `scripts/restore.sh`, etc.). Notably
+  divergent from the original remediation plan: the plan called for
+  excluding the entire `scripts/` tree except two files, but
+  entrypoint.sh runs five scripts at container start and the
+  runbook documents many `docker exec ... python scripts/X.py`
+  invocations -- excluding them would break operator workflows.
+  The .dockerignore keeps every script the runbook references and
+  excludes only the strictly-host-only or build-time scripts.
+  Tests: `tests/test_deploy/test_seed_credential_hygiene.py::TestDockerignoreCoverage`
+  parametrizes on every audited path (both the exclusion list and
+  the runtime-essential keep-list) and asserts the documentation
+  comment block continues to inventory the runtime essentials.
 
 ### F-114: User email addresses logged on every container start
 
@@ -4619,7 +4842,12 @@ lives in the same database the attacker would be tampering with.
   `mem_limit: 256m` for db, `pids_limit: 200` to each
   service in `docker-compose.yml`. Tune based on observed
   usage.
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  `mem_limit` and `pids_limit`
+  set on every Shekel service in `docker-compose.yml`: app
+  (512 MiB / 200), db (384 MiB / 256, raised from the recommended
+  256 MiB to accommodate postgres shared_buffers + per-connection
+  work_mem), nginx (96 MiB / 100), and redis (96 MiB / 100, set
+  earlier).
 
 ### F-116: No Docker log rotation configured
 
@@ -4645,7 +4873,12 @@ lives in the same database the attacker would be tampering with.
       max-size: "10m"
       max-file: "3"
   ```
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  Per-service `logging` block
+  added to db, nginx, and redis in `docker-compose.yml`; the app
+  service already had it from Commit C-15.  Operator-side
+  `/etc/docker/daemon.json` runbook (docs/runbook.md §4.11) sets
+  the same defaults so co-tenant containers without their own
+  `logging:` block inherit rotation.
 
 ### F-117: Container root filesystem is writable
 
@@ -4668,7 +4901,13 @@ lives in the same database the attacker would be tampering with.
   tmpfs:
     - /tmp
   ```
-- **Status:** Open
+- **Status:** Fixed (Commit C-35).  `read_only: true` set on app,
+  db, nginx, and redis in `docker-compose.yml` with the necessary
+  tmpfs mounts per service: app (`/tmp`); db (`/tmp`,
+  `/var/run/postgresql`); nginx (`/tmp`, `/var/cache/nginx`,
+  `/var/run`, `/run`); redis (`/tmp`, `/data`).  `PYTHONDONTWRITEBYTECODE=1`
+  added to the app environment so Python does not log
+  permission-denied warnings on every import attempt.
 
 ### F-118: psycopg2 LGPL license
 
@@ -4731,7 +4970,22 @@ lives in the same database the attacker would be tampering with.
   Shekel installs only from pinned `requirements.txt`.
 - **Recommendation:** Add `pip install --upgrade pip` to
   the Dockerfile before `pip install -r requirements.txt`.
-- **Status:** Open
+- **Status:** Fixed in C-36 (2026-05-10). Two-layer remediation:
+  (a) the `python:3.14-slim` digest pinned in the C-36 Dockerfile
+  ships pip 26.0.1 by default (already past the CVE-2026-1703
+  fix); (b) defense-in-depth, both the system pip and the
+  `/opt/venv` pip are explicitly upgraded with
+  `pip install --no-cache-dir --upgrade 'pip>=26.0,<27'` BEFORE
+  the `pip install -r requirements.txt` line, so requirements
+  are resolved with the patched pip even if a future base-image
+  regression ships an older pip. The `<27` upper bound prevents
+  an unattended major-version jump that could break the venv
+  pip below. Verified by an off-line build that confirmed
+  `pip 26.1.1` in the runtime venv. Tests:
+  `tests/test_deploy/test_image_supply_chain.py::TestDockerfilePipUpgrade::test_pip_upgrade_to_at_least_26`
+  asserts the upgrade constraint;
+  `test_pip_upgrade_runs_before_requirements_install` asserts
+  the source-order invariant.
 
 ### F-121: GRUB bootloader not password-protected
 
@@ -4891,7 +5145,21 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Change to `--metrics 127.0.0.1:2000`
   so the endpoint is only locally reachable from inside the
   cloudflared container itself.
-- **Status:** Open
+- **Status:** Fixed in C-37 (2026-05-10). The committed
+  `cloudflared/config.yml` now carries a top-level
+  `metrics: 127.0.0.1:2000` directive so the binding is
+  loopback-only by configuration; a future systemd-unit or
+  dashboard override that re-introduced `0.0.0.0:2000` would
+  contradict the config file and surface in `cloudflared
+  --config /etc/cloudflared/config.yml ingress validate`. The
+  rationale comment cites F-128 / C-37 inline so a regression
+  reverts the audit pointer alongside the directive. The
+  operator-side verification procedure (probe from inside the
+  cloudflared container -- expect 200; probe from any sibling
+  container -- expect connection refused) is documented in
+  `docs/runbook.md` §6.4b. Tests:
+  `tests/test_deploy/test_internal_tls_and_access.py`
+  TestCloudflaredMetricsLoopback (3 tests).
 
 ### F-129: UniFi + shared nginx vhosts expand cross-service lateral movement
 
@@ -5510,7 +5778,61 @@ lives in the same database the attacker would be tampering with.
 - **Recommendation:** Add `?sslmode=require`; enable
   Postgres TLS with self-signed cert. Benefit small on
   single-host topology.
-- **Status:** Open
+- **Status:** Fixed in C-37 (2026-05-10). Three layers of
+  TLS enforcement closed the audit gap end to end:
+  (1) Postgres server TLS. The shared-mode
+      `deploy/docker-compose.prod.yml` adds a `command:`
+      block on the db service that runs `postgres -c ssl=on
+      -c ssl_cert_file=/etc/postgresql/certs/server.crt -c
+      ssl_key_file=/etc/postgresql/certs/server.key -c
+      ssl_min_protocol_version=TLSv1.2 -c
+      ssl_ciphers=HIGH:!aNULL:!eNULL:!MD5:!3DES:!SHA1`. Two
+      additional read-only bind mounts under
+      `services.db.volumes` expose the operator-generated
+      cert and key. The cert/key live at
+      `deploy/postgres/server.{crt,key}` (gitignored) and
+      are produced by `scripts/generate_pg_cert.sh` -- a
+      sudo-required helper that generates an RSA-2048
+      keypair, sets server.crt to mode 0644 (root-owned) and
+      server.key to mode 0600 owned by uid 70 (the postgres
+      user inside `postgres:16-alpine`), and verifies the
+      cert/key parse cleanly with matching public keys.
+      `POSTGRES_INITDB_ARGS=--data-checksums` is also
+      pinned for fresh cluster initialisations.
+  (2) Owner-role TLS posture. `services.app.environment`
+      overrides `DATABASE_URL` with `?sslmode=require`,
+      forcing the SQLAlchemy engine and every
+      `init_database.py` / `seed_*.py` connection to
+      negotiate TLS or refuse the connection. `PGSSLMODE=
+      require` is also set so every `psql` call in
+      `entrypoint.sh` (init_db.sql apply, role
+      provisioning, audit-trigger health check) inherits
+      the same posture via the standard libpq env var.
+  (3) Least-privilege role TLS posture. `entrypoint.sh`'s
+      `DATABASE_URL_APP` construction now reads `DB_SSLMODE`
+      and appends `?sslmode=${DB_SSLMODE}` when set. The
+      shared-mode override sets `DB_SSLMODE=require` so the
+      runtime `shekel_app` role connects under the same TLS
+      posture as the owner role. Bundled-mode deployments
+      (the README Quick Start) leave `DB_SSLMODE` unset, so
+      the historical plaintext URL is preserved and the
+      first-time bring-up continues to work without an
+      operator-generated cert.
+  Verification: `docker exec shekel-prod-db psql -U
+  shekel_user -d shekel -c "SHOW ssl;"` returns `on`;
+  `pg_stat_ssl` rows for active connections report
+  `ssl=t`, `version=TLSv1.2` (or higher), and a non-empty
+  cipher. Cert rotation procedure documented in
+  `docs/runbook.md` §4.12.4. Tests:
+  `tests/test_deploy/test_internal_tls_and_access.py`
+  TestProdComposeOverridePostgresTLS (5 tests),
+  TestProdComposeOverrideAppDatabaseUrl (3),
+  TestEntrypointHonoursDbSslmode (3),
+  TestGenerateCertScript (6),
+  TestPostgresDirectoryShape (9),
+  TestGitignoreExcludesPostgresKeyAndCert (2),
+  TestMergedComposeCarriesTLS (4),
+  TestRunbookDocumentsC37Procedures (11). 51 tests total.
 
 ### F-155: No Cosign / image-signature verification
 
@@ -5527,7 +5849,48 @@ lives in the same database the attacker would be tampering with.
 - **Impact:** Supply-chain attack via GHCR.
 - **Recommendation:** Sign images with Cosign at build;
   verify in `entrypoint.sh`. Pair with F-060.
-- **Status:** Open
+- **Status:** Fixed in C-36 (2026-05-10). Two signing surfaces are
+  wired:
+  (1) CI keyless OIDC.
+      `.github/workflows/docker-publish.yml` installs cosign via
+      `sigstore/cosign-installer@v3.7.0` (pinned to
+      `COSIGN_VERSION=v2.6.4`), grants `id-token: write` on the
+      build-and-push job so the workflow's OIDC identity can be
+      exchanged for a Fulcio cert, and runs `cosign sign --yes
+      ${tag}@${digest}` for every tag the metadata-action
+      produces. Signing by digest (not tag) makes the signature
+      immune to tag-swap attacks. The workflow also writes the
+      digest to `GITHUB_STEP_SUMMARY` with the `cosign verify`
+      command operators paste to verify before pinning the new
+      `SHEKEL_IMAGE_DIGEST`.
+  (2) Local-build path. `scripts/deploy.sh` adds `sign_image()`
+      and `verify_image_signature()` wrappers that sign + verify
+      the locally-built image after `docker compose build`. The
+      script defaults `COSIGN_PUBLIC_KEY=deploy/cosign.pub` (an
+      operator-committed verifier key) and
+      `COSIGN_PRIVATE_KEY=/etc/shekel/cosign.key` (out-of-repo,
+      chmod 600). `main()` calls sign_image -> verify -> restart
+      in source order so a key/verifier mismatch surfaces BEFORE
+      the container swap. `--skip-cosign` provides an emergency
+      bypass; `COSIGN_REQUIRED=true` (recommended for steady
+      state) promotes warnings to errors when cosign is not
+      installed or the keypair is missing. `.gitignore` excludes
+      `cosign.key` (root + nested + `*.cosign.key`) so the
+      private key cannot reach the repo. `deploy/README.md`
+      "Image Digest Pinning" documents the rotation procedure
+      including the `cosign generate-key-pair` setup. Tests:
+      `tests/test_deploy/test_image_supply_chain.py::TestDeployScriptCosignWrappers`
+      asserts the bash function definitions, the
+      sign-then-verify-then-restart source order in `main()`,
+      and the `--skip-cosign` / `COSIGN_REQUIRED` knobs;
+      `TestDockerPublishWorkflowSignsImage` asserts the
+      `id-token: write` permission, the cosign installer pin,
+      the `cosign sign --yes` invocation, and the
+      `GITHUB_STEP_SUMMARY` digest emit;
+      `TestGitignoreExcludesCosignKeys` asserts the private-key
+      exclusion globs;
+      `TestDeployReadmeDocumentsRotation` asserts the operator
+      workflow markers in `deploy/README.md`.
 
 ### F-156: server_tokens not explicitly disabled in nginx
 

@@ -4,6 +4,17 @@ Revision ID: c67773dc7375
 Revises: 415c517cf4a4
 Create Date: 2026-03-29 17:13:01.510576
 
+Review: solo developer, 2026-05-11 (audit 2026-04-15, C-40 retroactive sweep)
+
+Destructive (audit tag D-01): drops budget.auto_loan_params,
+budget.mortgage_rate_history, and budget.mortgage_params after
+forwarding their rows into the unified budget.loan_params and
+budget.rate_history tables.  The forward path is safe (INSERT...SELECT
+before DROP); the downgrade is partial -- only Mortgage and Auto Loan
+rows are restored (audit finding D-08).  A clean downgrade requires
+the operator to consult a pre-upgrade snapshot for Personal Loan,
+Student Loan, and HELOC rows that the consolidation absorbed.
+
 Consolidates budget.auto_loan_params and budget.mortgage_params into a
 single budget.loan_params table.  Renames budget.mortgage_rate_history
 to budget.rate_history.  Adds icon_class and max_term_months columns

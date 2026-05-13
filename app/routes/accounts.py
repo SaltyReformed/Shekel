@@ -28,7 +28,6 @@ from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.schemas.validation import (
     AccountCreateSchema,
@@ -44,6 +43,7 @@ from app.services import (
     pay_period_service,
     transfer_service,
 )
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -1259,11 +1259,7 @@ def interest_detail(account_id):
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(user_id)
 
     period_ids = [p.id for p in all_periods]
 
@@ -1401,11 +1397,7 @@ def checking_detail(account_id):
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(user_id)
 
     period_ids = [p.id for p in all_periods]
 

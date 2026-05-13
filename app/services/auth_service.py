@@ -522,19 +522,72 @@ def hash_password(plain_password, rounds=None):
 def verify_password(plain_password, password_hash):
     """Verify a plaintext password against a bcrypt hash.
 
+    Defensive hardening (commit C-44 / audit finding F-083): the
+    previous guard only short-circuited on ``plain_password is None``,
+    so any other falsy-but-not-None value (empty string, ``bytes``,
+    ``int``, ``Decimal``, ``list``, ...) reached ``.encode("utf-8")``
+    and raised ``AttributeError`` which propagated as a 500.  This
+    function now fails closed on every non-string input.
+
+    Specifically:
+
+    * ``plain_password`` must be a non-empty ``str``.  Non-string
+      types (``None``, ``bytes``, ``int``, ``Decimal``, sequences,
+      mappings) and the empty string both return ``False`` without
+      reaching bcrypt.  Every authentication route gates on a
+      Marshmallow schema with ``min=1`` length (``LoginSchema``,
+      ``ReauthSchema``, ``MfaDisableSchema``, ``ChangePasswordSchema``),
+      so an empty plaintext only reaches this function when the
+      caller is broken; treating it as a non-match is safer than
+      round-tripping bcrypt's empty-string hash.
+    * ``password_hash`` must be a non-empty ``str``.  Same rejection
+      set as ``plain_password`` -- a non-string or empty hash cannot
+      be a valid bcrypt digest, so the lookup never had to reach
+      bcrypt anyway.
+    * A ``password_hash`` that is a non-empty ``str`` but does not
+      parse as a bcrypt hash (corrupted DB row, hash from an older
+      incompatible scheme, manual operator typo) raises
+      ``ValueError`` ("Invalid salt") inside ``bcrypt.checkpw``.
+      The catch below converts it to ``False`` so a corrupted row
+      cannot crash the login flow.  Operators observe the corruption
+      via the lockout-counter increment in :func:`authenticate` and
+      the structured ``account_locked`` log event once the threshold
+      trips.
+
+    All failure modes return the same ``False`` value -- "wrong
+    type", "empty string", "corrupted hash", and "wrong password"
+    are indistinguishable at the call site so an attacker probing
+    with exotic payloads cannot use response shape to fingerprint
+    caller-side bugs.
+
     Args:
-        plain_password: The plaintext password to check.
-        password_hash:  The stored bcrypt hash.
+        plain_password: The plaintext password to check.  Expected
+            to be a non-empty ``str``.
+        password_hash:  The stored bcrypt hash.  Expected to be a
+            non-empty ``str`` containing a parseable bcrypt digest.
 
     Returns:
-        True if the password matches, False otherwise.
+        True if the inputs are well-formed and ``bcrypt.checkpw``
+        confirms the plaintext matches the hash; False otherwise.
     """
-    if plain_password is None:
+    if not isinstance(plain_password, str) or not plain_password:
         return False
-    return bcrypt.checkpw(
-        plain_password.encode("utf-8"),
-        password_hash.encode("utf-8"),
-    )
+    if not isinstance(password_hash, str) or not password_hash:
+        return False
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            password_hash.encode("utf-8"),
+        )
+    except ValueError:
+        # bcrypt.checkpw raises ValueError ("Invalid salt") when
+        # password_hash is a valid str but not a parseable bcrypt
+        # digest.  Fail closed so a corrupted row or a hash from an
+        # older incompatible scheme cannot crash the login flow with
+        # a 500.  See module docstring above for the audit-trail
+        # consequences (lockout counter still increments, surfacing
+        # the corruption through the existing forensic path).
+        return False
 
 
 def authenticate(email, password):

@@ -24,7 +24,6 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.user import UserSettings
@@ -41,6 +40,7 @@ from app.services import (
     transfer_recurrence,
 )
 from app.services.investment_projection import build_contribution_timeline, calculate_investment_inputs
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +88,7 @@ def dashboard(account_id):
         current_period.id if current_period else None
     )
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
 
     period_ids = [p.id for p in all_periods]
     acct_transactions = (
@@ -411,11 +407,7 @@ def growth_chart(account_id):
 
     real_periods = pay_period_service.get_all_periods(current_user.id)
     cur_period = pay_period_service.get_current_period(current_user.id)
-    chart_scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    chart_scenario = get_baseline_scenario(current_user.id)
 
     current_balance = anchor_bal
     if chart_scenario and real_periods and anchor_pid:
@@ -715,11 +707,7 @@ def create_contribution_transfer(account_id):
         )
 
     # Generate transfers for existing pay periods.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if scenario:
         periods = pay_period_service.get_all_periods(current_user.id)
         transfer_recurrence.generate_for_template(
@@ -806,6 +794,11 @@ def _convert_percentage_inputs(form):
         if field in data and data[field]:
             try:
                 data[field] = str(Decimal(data[field]) / Decimal("100"))
-            except Exception:
+            except InvalidOperation:
+                # Narrow catch (C-46 / F-145): a non-numeric string
+                # (e.g. "abc") raises ``decimal.InvalidOperation``.
+                # Leave the raw value in place so the Marshmallow
+                # schema rejects it with a field-level "Not a valid
+                # number." message rather than a silent normalisation.
                 pass
     return data

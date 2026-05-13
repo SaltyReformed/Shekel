@@ -29,6 +29,7 @@ from app.utils.archive_helpers import (
     template_has_paid_history,
     transfer_template_has_paid_history,
 )
+from tests._test_helpers import select_option_values
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1444,7 +1445,16 @@ class TestCategoryArchiveDelete:
     def test_archived_categories_hidden_from_grid_dropdown(
         self, app, auth_client, seed_user, seed_periods_today, db,
     ):
-        """C-5A.5-34: Archived categories do not appear in grid Add Transaction dropdown."""
+        """C-5A.5-34: Archived categories do not appear in grid Add Transaction dropdown.
+
+        Scopes the assertion to the ``category_id`` select in the
+        grid's add-transaction modal.  See
+        ``test_archived_categories_hidden_from_template_dropdown``
+        for the rationale -- the page renders ``value="N"`` for
+        many other dropdowns (transaction types, pay periods, etc.)
+        and a whole-HTML substring check fails deterministically
+        when ``rent.id`` collides with any of them.
+        """
         with app.app_context():
             # Archive one category.
             rent = db.session.get(Category, seed_user["categories"]["Rent"].id)
@@ -1455,12 +1465,22 @@ class TestCategoryArchiveDelete:
             assert resp.status_code == 200
             html = resp.data.decode()
 
+            category_options = select_option_values(html, "category_id")
+
             # Active categories in the dropdown.
             salary = seed_user["categories"]["Salary"]
-            assert f'value="{salary.id}"' in html
+            assert str(salary.id) in category_options, (
+                f"Active category {salary.id} ({salary.item_name}) "
+                f"is missing from /grid category dropdown; got "
+                f"options {category_options!r}"
+            )
 
             # Archived category NOT in the dropdown.
-            assert f'value="{rent.id}"' not in html
+            assert str(rent.id) not in category_options, (
+                f"Archived category {rent.id} ({rent.item_name}) is "
+                f"still present in /grid category dropdown; got "
+                f"options {category_options!r}"
+            )
 
     def test_archived_category_transactions_still_render(
         self, app, auth_client, seed_user, seed_periods_today, db,
@@ -1594,7 +1614,17 @@ class TestCategoryArchiveDelete:
     def test_archived_categories_hidden_from_template_dropdown(
         self, app, auth_client, seed_user, seed_periods_today, db,
     ):
-        """Template creation form only shows active categories in dropdown."""
+        """Template creation form only shows active categories in dropdown.
+
+        Scopes the assertion to the ``category_id`` select.  A naive
+        ``f'value="{rent.id}" not in html`` check would falsely
+        match the ``value="N"`` attributes of unrelated dropdowns on
+        the same page -- transaction_type_id (1-2), start_period_id
+        (per-test pay-period IDs), month_of_year (1-12), and
+        recurrence_pattern (1-8) all share the namespace.  When
+        rent.id collides with any of those values the original check
+        failed despite the category dropdown being correctly filtered.
+        """
         with app.app_context():
             rent = db.session.get(Category, seed_user["categories"]["Rent"].id)
             rent.is_active = False
@@ -1604,9 +1634,19 @@ class TestCategoryArchiveDelete:
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Active category present.
-            salary = seed_user["categories"]["Salary"]
-            assert f'value="{salary.id}"' in html
+            category_options = select_option_values(html, "category_id")
 
-            # Archived category absent.
-            assert f'value="{rent.id}"' not in html
+            # Active category present in the category dropdown.
+            salary = seed_user["categories"]["Salary"]
+            assert str(salary.id) in category_options, (
+                f"Active category {salary.id} ({salary.item_name}) is "
+                f"missing from /templates/new category dropdown; got "
+                f"options {category_options!r}"
+            )
+
+            # Archived category absent from the category dropdown.
+            assert str(rent.id) not in category_options, (
+                f"Archived category {rent.id} ({rent.item_name}) is "
+                f"still present in /templates/new category dropdown; "
+                f"got options {category_options!r}"
+            )

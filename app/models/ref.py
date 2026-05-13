@@ -114,16 +114,43 @@ class AccountType(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(30), nullable=False)
+    # F-073 / C-43: ondelete=RESTRICT closes the audit gap where the
+    # nine ref-table FKs default to PostgreSQL's implicit NO ACTION.
+    # RESTRICT raises immediately on the offending statement (vs. NO
+    # ACTION which defers to commit), giving a clean error message at
+    # the point of the violating DELETE; the name follows the
+    # SHEKEL_NAMING_CONVENTION ("fk": "fk_<table>_<column_0_name>")
+    # so the model rendering and the live-DB rendering converge on
+    # the same string.
     category_id = db.Column(
         db.Integer,
-        db.ForeignKey("ref.account_type_categories.id"),
+        db.ForeignKey(
+            "ref.account_type_categories.id",
+            name="fk_account_types_category_id",
+            ondelete="RESTRICT",
+        ),
         nullable=False,
     )
-    has_parameters = db.Column(db.Boolean, nullable=False, default=False)
-    has_amortization = db.Column(db.Boolean, nullable=False, default=False)
-    has_interest = db.Column(db.Boolean, nullable=False, default=False)
-    is_pretax = db.Column(db.Boolean, nullable=False, default=False)
-    is_liquid = db.Column(db.Boolean, nullable=False, default=False)
+    has_parameters = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    has_amortization = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    has_interest = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_pretax = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_liquid = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     icon_class = db.Column(db.String(30), nullable=True)
     max_term_months = db.Column(db.Integer, nullable=True)
     # NULL -> seeded built-in row, read-only to every owner.  Non-NULL
@@ -180,9 +207,18 @@ class Status(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(15), unique=True, nullable=False)
-    is_settled = db.Column(db.Boolean, nullable=False, default=False)
-    is_immutable = db.Column(db.Boolean, nullable=False, default=False)
-    excludes_from_balance = db.Column(db.Boolean, nullable=False, default=False)
+    is_settled = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    is_immutable = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    excludes_from_balance = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
 
     def __repr__(self):
         return f"<Status {self.name}>"

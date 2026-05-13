@@ -3,6 +3,21 @@
 Revision ID: 22b3dd9d9ed3
 Revises: 44460d8fe471
 Create Date: 2026-02-24 06:42:08.549170
+
+Review: solo developer, 2026-05-11 (audit 2026-04-15, C-40 retroactive sweep)
+
+Destructive (audit tags D-05 + D-06): drops four indexes
+(idx_anchor_history_account, idx_deductions_profile,
+idx_salary_raises_profile, idx_tax_brackets_set) and runs eleven
+``alter_column`` ops -- NULL -> NOT NULL on fica_configs, VARCHAR(100)
+-> VARCHAR(200) on salary_profiles/paycheck_deductions.name,
+VARCHAR(200) -> TEXT on salary_raises.notes, INTEGER nullable on
+tax_brackets.sort_order, and JSONB -> JSON on mfa_configs.backup_codes.
+The forward path is safe against the live data (widens are no-op for
+existing values; NOT NULL tightenings pass because every existing row
+already satisfies them).  Downgrade is partial -- three of the four
+dropped indexes are not restored, and the NOT NULL tightenings on
+fica_configs are not reversed (audit finding F-S6-C1-04).
 """
 from alembic import op
 import sqlalchemy as sa

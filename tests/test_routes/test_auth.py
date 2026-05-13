@@ -153,7 +153,16 @@ class TestLogin:
             assert b"Invalid email or password" in response.data
 
     def test_rate_limiting_after_5_attempts(self, app, seed_user):
-        """POST /login is rate-limited to 5 attempts per 15 minutes."""
+        """POST /login is rate-limited to 5 attempts per 15 minutes.
+
+        ``try``/``finally`` cleanup: the limiter is reset and disabled
+        even when the assertion below fails.  Without this guard a
+        failed assertion would leave ``limiter.enabled = True`` and a
+        populated rate-limit bucket on the Limiter singleton, which
+        every subsequent test on the same xdist worker would
+        inherit -- see ``phase1-flake-investigation.md`` failure
+        shape #1 for the full failure mode.
+        """
         with app.app_context():
             # Create a fresh app with rate limiting enabled (TestConfig disables it).
             rate_app = create_app("testing")
@@ -164,29 +173,39 @@ class TestLogin:
             limiter.enabled = True
             limiter.init_app(rate_app)
 
-            rate_client = rate_app.test_client()
+            try:
+                rate_client = rate_app.test_client()
 
-            with rate_app.app_context():
-                # Make 5 failed login attempts (within the limit).
-                for _ in range(5):
-                    rate_client.post("/login", data={
+                with rate_app.app_context():
+                    # Make 5 failed login attempts (within the limit).
+                    for _ in range(5):
+                        rate_client.post("/login", data={
+                            "email": "test@shekel.local",
+                            "password": "wrongpassword",
+                        })
+
+                    # 6th attempt should be rate-limited.
+                    response = rate_client.post("/login", data={
                         "email": "test@shekel.local",
                         "password": "wrongpassword",
                     })
-
-                # 6th attempt should be rate-limited.
-                response = rate_client.post("/login", data={
-                    "email": "test@shekel.local",
-                    "password": "wrongpassword",
-                })
-                assert response.status_code == 429
-
-            # Clean up: dispose the secondary app's engine to release
-            # connections, and reset limiter for other tests.
-            with rate_app.app_context():
-                from app.extensions import db as _db
-                _db.engine.dispose()
-            limiter.enabled = False
+                    assert response.status_code == 429
+            finally:
+                # Clean up: dispose the secondary app's engine to
+                # release connections, clear the rate-limit storage's
+                # counters (so a future test that flips
+                # ``limiter.enabled = True`` without calling
+                # ``init_app`` cannot inherit non-zero counts from
+                # this test -- see c-38-followups.md Issue 2a), and
+                # reset limiter for other tests.  The ``finally``
+                # guarantees this runs even if an assertion above
+                # raised.
+                with rate_app.app_context():
+                    from app.extensions import db as _db
+                    _db.engine.dispose()
+                if limiter._storage is not None:  # pylint: disable=protected-access
+                    limiter.reset()
+                limiter.enabled = False
 
     def test_login_nonexistent_email(self, app, client):
         """POST /login with nonexistent email shows the same generic error.
@@ -2025,6 +2044,14 @@ class TestRegistration:
         Uses the same pattern as test_rate_limiting_after_5_attempts:
         create a fresh app with RATELIMIT_ENABLED=True, then verify
         the 4th POST triggers a 429.
+
+        ``try``/``finally`` cleanup: the limiter is reset and disabled
+        even when the assertion below fails.  Without this guard a
+        failed assertion would leave ``limiter.enabled = True`` and a
+        populated rate-limit bucket on the Limiter singleton, which
+        every subsequent test on the same xdist worker would
+        inherit -- see ``phase1-flake-investigation.md`` failure
+        shape #1 for the full failure mode.
         """
         with app.app_context():
             rate_app = create_app("testing")
@@ -2034,32 +2061,43 @@ class TestRegistration:
             limiter.enabled = True
             limiter.init_app(rate_app)
 
-            rate_client = rate_app.test_client()
+            try:
+                rate_client = rate_app.test_client()
 
-            with rate_app.app_context():
-                # Make 3 registration attempts (within the limit).
-                for i in range(3):
-                    rate_client.post("/register", data={
-                        "email": f"bot{i}@example.com",
-                        "display_name": f"Bot {i}",
+                with rate_app.app_context():
+                    # Make 3 registration attempts (within the limit).
+                    for i in range(3):
+                        rate_client.post("/register", data={
+                            "email": f"bot{i}@example.com",
+                            "display_name": f"Bot {i}",
+                            "password": "securepass123",
+                            "confirm_password": "securepass123",
+                        })
+
+                    # 4th attempt should be rate-limited.
+                    response = rate_client.post("/register", data={
+                        "email": "bot3@example.com",
+                        "display_name": "Bot 3",
                         "password": "securepass123",
                         "confirm_password": "securepass123",
                     })
-
-                # 4th attempt should be rate-limited.
-                response = rate_client.post("/register", data={
-                    "email": "bot3@example.com",
-                    "display_name": "Bot 3",
-                    "password": "securepass123",
-                    "confirm_password": "securepass123",
-                })
-                assert response.status_code == 429
-
-            # Clean up.
-            with rate_app.app_context():
-                from app.extensions import db as _db
-                _db.engine.dispose()
-            limiter.enabled = False
+                    assert response.status_code == 429
+            finally:
+                # Clean up: dispose the secondary app's engine to
+                # release connections, clear the rate-limit storage's
+                # counters (so a future test that flips
+                # ``limiter.enabled = True`` without calling
+                # ``init_app`` cannot inherit non-zero counts from
+                # this test -- see c-38-followups.md Issue 2a), and
+                # reset limiter for other tests.  The ``finally``
+                # guarantees this runs even if an assertion above
+                # raised.
+                with rate_app.app_context():
+                    from app.extensions import db as _db
+                    _db.engine.dispose()
+                if limiter._storage is not None:  # pylint: disable=protected-access
+                    limiter.reset()
+                limiter.enabled = False
 
 
 class TestMfaVerifySecurity:
@@ -2095,6 +2133,15 @@ class TestMfaVerifySecurity:
         Without rate limiting, a 6-digit TOTP code (1,000,000 possibilities)
         could be brute-forced in hours. This test verifies the limiter blocks
         the 6th failed attempt with a 429 status.
+
+        ``try``/``finally`` cleanup: the limiter is reset and disabled
+        even when any of the per-step assertions below fail.  Without
+        this guard a failed assertion would leave ``limiter.enabled =
+        True`` and a populated rate-limit bucket on the Limiter
+        singleton, which every subsequent test on the same xdist
+        worker would inherit -- see
+        ``phase1-flake-investigation.md`` failure shape #1 for the
+        full failure mode.
         """
         with app.app_context():
             # Create a fresh app with rate limiting enabled (TestConfig disables it).
@@ -2106,42 +2153,52 @@ class TestMfaVerifySecurity:
             limiter.enabled = True
             limiter.init_app(rate_app)
 
-            rate_client = rate_app.test_client()
+            try:
+                rate_client = rate_app.test_client()
 
-            with rate_app.app_context():
-                # Enable MFA for the seed user.
-                self._enable_mfa(seed_user["user"].id)
+                with rate_app.app_context():
+                    # Enable MFA for the seed user.
+                    self._enable_mfa(seed_user["user"].id)
 
-                # Login to reach MFA pending state.
-                login_resp = rate_client.post("/login", data={
-                    "email": "test@shekel.local",
-                    "password": "testpass",
-                }, follow_redirects=False)
-                assert login_resp.status_code == 302
-                assert "mfa/verify" in login_resp.headers.get("Location", "")
+                    # Login to reach MFA pending state.
+                    login_resp = rate_client.post("/login", data={
+                        "email": "test@shekel.local",
+                        "password": "testpass",
+                    }, follow_redirects=False)
+                    assert login_resp.status_code == 302
+                    assert "mfa/verify" in login_resp.headers.get("Location", "")
 
-                # Submit 5 wrong TOTP codes (within the limit).
-                for i in range(5):
-                    resp = rate_client.post("/mfa/verify", data={
+                    # Submit 5 wrong TOTP codes (within the limit).
+                    for i in range(5):
+                        resp = rate_client.post("/mfa/verify", data={
+                            "totp_code": "000000",
+                        })
+                        # Each attempt should succeed at the HTTP level (invalid code, not rate-limited).
+                        assert resp.status_code == 200, \
+                            f"Attempt {i + 1} should return 200, got {resp.status_code}"
+                        assert b"Invalid verification code." in resp.data
+
+                    # 6th attempt should be rate-limited.
+                    response = rate_client.post("/mfa/verify", data={
                         "totp_code": "000000",
                     })
-                    # Each attempt should succeed at the HTTP level (invalid code, not rate-limited).
-                    assert resp.status_code == 200, \
-                        f"Attempt {i + 1} should return 200, got {resp.status_code}"
-                    assert b"Invalid verification code." in resp.data
-
-                # 6th attempt should be rate-limited.
-                response = rate_client.post("/mfa/verify", data={
-                    "totp_code": "000000",
-                })
-                assert response.status_code == 429
-
-            # Clean up: dispose the secondary app's engine to release
-            # connections, and reset limiter for other tests.
-            with rate_app.app_context():
-                from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
-                _db.engine.dispose()
-            limiter.enabled = False
+                    assert response.status_code == 429
+            finally:
+                # Clean up: dispose the secondary app's engine to
+                # release connections, clear the rate-limit storage's
+                # counters (so a future test that flips
+                # ``limiter.enabled = True`` without calling
+                # ``init_app`` cannot inherit non-zero counts from
+                # this test -- see c-38-followups.md Issue 2a), and
+                # reset limiter for other tests.  The ``finally``
+                # guarantees this runs even if an assertion above
+                # raised.
+                with rate_app.app_context():
+                    from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
+                    _db.engine.dispose()
+                if limiter._storage is not None:  # pylint: disable=protected-access
+                    limiter.reset()
+                limiter.enabled = False
 
     def test_mfa_verify_idor_other_users_pending_session(self, app, client, seed_user):
         """Session isolation: a second client cannot access another session's MFA state.

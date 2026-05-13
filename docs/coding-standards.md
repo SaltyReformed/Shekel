@@ -116,10 +116,33 @@ or a real quality problem in this project.
 - **Always use Alembic.** Never modify schema by hand. Never use `db.create_all()` outside
   tests. Every change must have a migration with a descriptive message.
 - **Destructive migrations require explicit approval.** Drops, renames, type changes, and
-  constraint removals must be discussed with the developer first.
+  constraint removals (including drop-and-recreate as a wider/narrower form) must be
+  discussed with the developer first.
+- **Destructive migrations must record a review.** Every migration whose `upgrade()` or
+  `downgrade()` includes a drop, rename, type change, or constraint removal must carry a
+  `Review: <name>, <date> (<scope>)` line in the module-level docstring at the time of
+  authoring. The line documents who reviewed the change and when, and it survives long
+  after a code-review thread or PR description has scrolled out of memory. Example:
+  `Review: solo developer, 2026-05-11 (audit 2026-04-15, C-40 retroactive sweep)`.
 - **Every migration must have a working downgrade.** Do not write `pass`. If downgrade is
-  impossible, raise `NotImplementedError` with a comment explaining why.
-- **Consider existing data.** Adding NOT NULL to a populated table requires `server_default`.
+  impossible (data-correction migrations, constraint replacements that allow new data
+  patterns, lossy type narrowings), raise `NotImplementedError(<message>)` whose message
+  includes (a) why the downgrade is unsafe, and (b) the literal SQL the operator must
+  run to revert by hand. A bare `pass` is a FAIL because it lets `flask db downgrade`
+  chain past the migration while leaving the schema half-reverted; the
+  `NotImplementedError` halts the chain at the unsafe step.
+- **Add NOT NULL columns to populated tables in three steps.** (1) `add_column` as
+  nullable so the `ALTER TABLE` succeeds. (2) Run an `UPDATE` to backfill every existing
+  row with a deterministic, documented derivation. (3) `alter_column` to NOT NULL once
+  the count of NULL rows is verified to be zero (raise a `RuntimeError` with the
+  diagnostic SELECT embedded in the message if any survived). A single
+  `add_column(nullable=False)` against a populated table fails immediately with the
+  cryptic `IntegrityError: null value in column ... violates not-null constraint`,
+  breaks disaster-recovery replay from a pre-migration snapshot, and breaks staging
+  rebuilds. The three-step form is the only reproducible path. `server_default` is an
+  acceptable substitute only when a static default makes sense for every existing row;
+  if the correct value depends on other columns (FK resolution, computed defaults), use
+  the `UPDATE` form.
 - **Review auto-generated migrations.** Verify intended changes, no phantom diffs, named
   constraints, and correct downgrade.
 

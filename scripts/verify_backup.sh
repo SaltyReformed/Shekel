@@ -81,6 +81,39 @@ cleanup() {
         "DROP DATABASE IF EXISTS ${VERIFY_DB};" 2>/dev/null || true
 }
 
+get_db_password() {
+    # Resolve POSTGRES_PASSWORD from the running DB container.
+    #
+    # Refuses to fall back to the historical public default
+    # ``shekel_pass`` -- audit finding F-109 / Commit C-38 follow-up
+    # Issue 3.  An empty or unreadable POSTGRES_PASSWORD is a
+    # misconfiguration that must surface as a hard failure here
+    # rather than silently constructing a leaked-credential URL for
+    # the integrity-check subprocess.
+    #
+    # check_prerequisites() has already verified that the DB
+    # container is running, so the only realistic failure modes for
+    # this function are: (a) the container was started without
+    # POSTGRES_PASSWORD in its env, (b) the env channel was scrubbed
+    # mid-run, or (c) the container died between the prerequisite
+    # check and this call.  All three are operator-actionable and
+    # are reported with the same diagnostic.
+    #
+    # Logs go to stderr so the function's stdout (which the caller
+    # captures via command substitution) carries the password and
+    # only the password.
+    local password
+    password=$(docker exec "${DB_CONTAINER}" printenv POSTGRES_PASSWORD 2>/dev/null) \
+        || password=""
+    if [[ -z "${password}" ]]; then
+        log "ERROR" "POSTGRES_PASSWORD is not discoverable from container '${DB_CONTAINER}'." >&2
+        log "ERROR" "Ensure the container is running and the env channel populates POSTGRES_PASSWORD." >&2
+        log "ERROR" "Refusing to fall back to the historical public default (audit F-109 / Commit C-38)." >&2
+        return 1
+    fi
+    printf '%s' "${password}"
+}
+
 check_prerequisites() {
     if ! command -v docker &>/dev/null; then
         log "ERROR" "docker command not found"
@@ -228,19 +261,26 @@ run_integrity_checks() {
 
     local exit_code=0
 
+    # Resolve POSTGRES_PASSWORD once, up front.  get_db_password()
+    # ``return 1``s when the container env channel does not expose a
+    # value, and ``set -e`` propagates that failure through the
+    # command substitution -- the script exits before either branch
+    # below runs.  This is the load-bearing replacement for the
+    # previous ``|| echo "shekel_pass"`` fallback (audit F-109).
+    local db_password
+    db_password=$(get_db_password)
+
     # Determine how to run the integrity check script.
     # If the app container exists, run inside it. Otherwise, run locally.
     if docker inspect "${APP_CONTAINER}" &>/dev/null; then
         # Production: run inside the app container with overridden DATABASE_URL.
-        local db_password
-        db_password=$(docker exec "${DB_CONTAINER}" printenv POSTGRES_PASSWORD 2>/dev/null || echo "shekel_pass")
         docker exec \
             -e "DATABASE_URL=postgresql://${PGUSER}:${db_password}@db:5432/${VERIFY_DB}" \
             "${APP_CONTAINER}" python scripts/integrity_check.py --verbose || exit_code=$?
     else
         # Development: run locally with the verify database URL.
         # The DB is exposed on localhost via docker-compose.dev.yml port mapping.
-        local verify_url="postgresql://${PGUSER}:shekel_pass@localhost:5432/${VERIFY_DB}"
+        local verify_url="postgresql://${PGUSER}:${db_password}@localhost:5432/${VERIFY_DB}"
         DATABASE_URL="${verify_url}" python scripts/integrity_check.py --verbose || exit_code=$?
     fi
 

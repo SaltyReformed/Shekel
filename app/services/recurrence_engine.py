@@ -35,9 +35,12 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
 from app.exceptions import RecurrenceConflict, ValidationError
 from app.models.salary_profile import SalaryProfile
+from app.services._recurrence_common import (
+    log_resource_access_denied,
+    log_template_cross_user_blocked,
+)
 from app.utils.log_events import (
     BUSINESS,
-    EVT_CROSS_USER_BLOCKED,
     EVT_RECURRENCE_CONFLICTS_RESOLVED,
     EVT_RECURRENCE_GENERATED,
     EVT_RECURRENCE_REGENERATED,
@@ -71,11 +74,13 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     # silently create transactions in another user's scenario (IDOR).
     scenario = db.session.get(Scenario, scenario_id)
     if scenario is None or scenario.user_id != template.user_id:
-        log_event(logger, logging.WARNING, EVT_CROSS_USER_BLOCKED, BUSINESS,
-                  "Blocked cross-user recurrence generation",
-                  template_id=template.id,
-                  template_user_id=template.user_id,
-                  scenario_id=scenario_id)
+        log_template_cross_user_blocked(
+            logger,
+            message="Blocked cross-user recurrence generation",
+            template_id=template.id,
+            template_user_id=template.user_id,
+            scenario_id=scenario_id,
+        )
         return []
 
     rule = template.recurrence_rule
@@ -271,11 +276,13 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     # Defense-in-depth: verify ownership before deleting and regenerating.
     scenario = db.session.get(Scenario, scenario_id)
     if scenario is None or scenario.user_id != template.user_id:
-        log_event(logger, logging.WARNING, EVT_CROSS_USER_BLOCKED, BUSINESS,
-                  "Blocked cross-user recurrence regeneration",
-                  template_id=template.id,
-                  template_user_id=template.user_id,
-                  scenario_id=scenario_id)
+        log_template_cross_user_blocked(
+            logger,
+            message="Blocked cross-user recurrence regeneration",
+            template_id=template.id,
+            template_user_id=template.user_id,
+            scenario_id=scenario_id,
+        )
         return []
 
     if effective_from is None and periods:
@@ -382,17 +389,9 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
                 # Cross-user request: emit the IDOR-detection event so
                 # SOC tooling sees the probe.  ACCESS-category is the
                 # right home for this -- the requester does not own
-                # the row even though we silently skip it.  Imported
-                # locally to avoid widening the module-top imports for
-                # a single defense-in-depth branch.
-                from app.utils.log_events import (  # pylint: disable=import-outside-toplevel
-                    ACCESS,
-                    EVT_ACCESS_DENIED_CROSS_USER,
-                )
-                log_event(
-                    logger, logging.WARNING,
-                    EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
-                    "Cross-user resource access blocked",
+                # the row even though we silently skip it.
+                log_resource_access_denied(
+                    logger,
                     user_id=user_id,
                     model="Transaction",
                     pk=txn_id,

@@ -29,7 +29,6 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, Status
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
@@ -49,6 +48,7 @@ from app.services.loan_payment_service import (
     get_payment_history,
     load_loan_context,
 )
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +82,7 @@ def compute_dashboard_data(user_id):
         .all()
     )
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(user_id)
 
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)

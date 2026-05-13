@@ -5,9 +5,60 @@ Underscore-prefixed module name keeps pytest from collecting it as a
 test file.  Import functions from here in test modules that need them.
 """
 
+import re
 import sys
 
 from datetime import date as _real_date, datetime as _real_datetime
+
+
+def select_option_values(html: str, select_key: str) -> list[str]:
+    """Return the ``value`` attributes of every ``<option>`` inside a named ``<select>``.
+
+    Locates the ``<select>`` element identified by ``select_key``
+    (matched against either its ``id`` or its ``name`` attribute --
+    Shekel's templates are inconsistent: some forms set only
+    ``name=`` while others set both ``id=`` and ``name=``) and
+    returns the ``value="..."`` of each ``<option>`` child it
+    contains, in document order.  Returns an empty list when no
+    matching select is present or it carries no option children with
+    value attributes.
+
+    Use this helper to assert dropdown contents without falsely
+    matching ``value="N"`` attributes from unrelated elements
+    elsewhere in the page (transaction-type IDs, pay-period IDs,
+    hardcoded month numbers, recurrence-pattern IDs, etc.).  A naive
+    ``f'value="{model.id}" not in html`` check fails when ``model.id``
+    happens to collide with any of those siblings -- a deterministic
+    bug masquerading as a flake until the colliding sequence values
+    align.
+
+    Args:
+        html: The full HTML response body to search.
+        select_key: The ``id`` or ``name`` attribute of the
+            ``<select>`` element to scope the search to.
+            Case-sensitive, matched against the literal attribute
+            value.
+
+    Returns:
+        Ordered list of ``value`` strings from the named select's
+        ``<option>`` children.  Empty list when the select is not
+        present in ``html``.  Returned values are the raw attribute
+        strings (e.g. ``"2"`` not ``2``) so callers compare against
+        ``str(model.id)`` rather than the int.
+    """
+    select_block = re.search(
+        r'<select[^>]*\b(?:id|name)="'
+        + re.escape(select_key)
+        + r'"[^>]*>(.*?)</select>',
+        html,
+        re.DOTALL,
+    )
+    if select_block is None:
+        return []
+    return re.findall(
+        r'<option\b[^>]*\bvalue="([^"]*)"',
+        select_block.group(1),
+    )
 
 
 def freeze_today(monkeypatch, target_date, modules=None):

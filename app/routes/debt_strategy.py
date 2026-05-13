@@ -26,7 +26,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
-from app.models.scenario import Scenario
 from app.schemas.validation import DebtStrategyCalculateSchema
 from app.services import amortization_engine
 from app.services.debt_strategy_service import (
@@ -37,6 +36,7 @@ from app.services.debt_strategy_service import (
     calculate_strategy,
 )
 from app.services.loan_payment_service import get_payment_history
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +91,7 @@ def _load_debt_accounts(user_id):
         .all()
     )
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(user_id)
 
     debt_accounts = []
     has_arm = False

@@ -25,7 +25,7 @@ name: shekel-dev
 
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: shekel-dev-db
     restart: unless-stopped
     environment:
@@ -33,9 +33,31 @@ services:
       POSTGRES_PASSWORD: shekel_pass
       POSTGRES_DB: shekel
     ports:
-      - "5432:5432"
+      # Loopback-only bind (audit finding F-057 / Commit C-35).  The
+      # dev databases use the public credentials shekel_user / shekel_pass
+      # that are committed into this compose file and therefore
+      # readable by anyone with repo access.  Binding 0.0.0.0:5432 (the
+      # implicit Docker default) made the DB reachable from any LAN
+      # device that could route to the developer's host: a phone, a
+      # compromised IoT device, an unrelated container on a shared
+      # network.  Pinning to 127.0.0.1 keeps the DB reachable from
+      # ``flask run`` on the host (which connects via localhost) but
+      # not from anywhere off-host.
+      - "127.0.0.1:5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Mount target is the PARENT directory ``/var/lib/postgresql``,
+      # not the legacy ``/var/lib/postgresql/data`` path used under
+      # PG 16.  PG 18+ docker-library images (docker-library/postgres
+      # PR #1259) switched to the pg_ctlcluster layout: PGDATA
+      # defaults to ``/var/lib/postgresql/$PG_MAJOR/docker`` and the
+      # entrypoint refuses to start when a legacy mount exists at
+      # ``/var/lib/postgresql/data``.  Mounting at the parent lets
+      # the per-major-version subdirectory live inside the named
+      # volume and stays correct across future major-version bumps
+      # (PG 19, PG 20...) without another mount-path edit.  Mirrors
+      # the same migration applied to the ``test-db`` tmpfs in
+      # Phase 2a (see the test-db service comment block below).
+      - pgdata:/var/lib/postgresql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel"]
@@ -44,7 +66,7 @@ services:
       retries: 5
 
   test-db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: shekel-dev-test-db
     restart: unless-stopped
     environment:
@@ -52,12 +74,90 @@ services:
       POSTGRES_PASSWORD: shekel_pass
       POSTGRES_DB: shekel_test
     ports:
-      - "5433:5432"
+      # Loopback-only bind (audit finding F-057 / Commit C-35).  See
+      # the db service above for the full rationale; the test DB has
+      # the same exposure profile and the same fix.
+      - "127.0.0.1:5433:5432"
+    # btrfs-backed PGDATA: the test cluster's data directory lives
+    # on a host btrfs subvolume bind-mounted into the container so
+    # PostgreSQL 18's ``CREATE DATABASE ... TEMPLATE ... STRATEGY
+    # FILE_COPY`` can use the kernel's ``FICLONE`` reflink ioctl to
+    # clone the template's data files as a constant-time metadata
+    # copy.  Pairs with the ``file_copy_method=clone`` GUC at the
+    # bottom of the command: list below; both must be in place for
+    # the reflink path to engage.  Replaces the Phase 1a tmpfs mount
+    # (Phase 3a of
+    # docs/audits/test_improvements/test-performance-implementation-plan.md);
+    # see boringSQL's instant-clone benchmark for the order-of-
+    # magnitude effect (6 GB clones in ~212 ms on a reflink
+    # filesystem vs ~67 s on PG 17 without the path):
+    # https://boringsql.com/posts/instant-database-clones/.
+    #
+    # The subvolume MUST be a btrfs subvolume (not a Docker named
+    # volume or a tmpfs).  Docker's overlay2 storage driver does
+    # NOT preserve ``FICLONE`` through its copy-on-write layer, so
+    # a named volume would silently fall back to byte-by-byte copy
+    # (seconds per clone, not milliseconds).  Verify the subvolume
+    # is on btrfs with ``stat -f /var/lib/shekel-test-pgdata``
+    # reporting ``Type: btrfs``.
+    #
+    # Operator setup (one-time, requires sudo on the host):
+    #
+    #   sudo btrfs subvolume create /var/lib/shekel-test-pgdata
+    #   sudo chown 70:70 /var/lib/shekel-test-pgdata
+    #
+    # ``uid=70``/``gid=70`` matches the ``postgres`` user inside the
+    # alpine image (verified via
+    # ``docker run --rm postgres:18-alpine id postgres``); postgres
+    # refuses to start when PGDATA is owned by anyone else.
+    #
+    # Trade-offs vs the Phase 1a tmpfs mount this replaces:
+    #
+    #   * Data persists across container restarts (and host reboots).
+    #     A developer can inspect ``pg_data`` after a crash without
+    #     losing it; removing the cluster's state requires
+    #     ``sudo btrfs subvolume delete /var/lib/shekel-test-pgdata``.
+    #   * Reads and writes go to disk rather than RAM, but the
+    #     reflink-backed ``CREATE DATABASE`` path is strictly faster
+    #     than the TRUNCATE+reseed cycle it supersedes (constant-
+    #     time clone vs O(catalog rewrite per table)).
+    #   * ``fsync=off`` / ``synchronous_commit=off`` /
+    #     ``full_page_writes=off`` remain correct -- the cluster is
+    #     still throwaway; a crash that loses the last committed
+    #     transactions is recovered by re-running the test, not by
+    #     replaying WAL.  DO NOT copy any of these settings to the
+    #     ``db`` service above; that cluster holds development data
+    #     that must survive a host reboot.
+    #
+    # Mount target is the PARENT directory ``/var/lib/postgresql``,
+    # not the legacy ``/var/lib/postgresql/data`` path used under
+    # PG 16.  PG 18+ docker-library images (docker-library/postgres
+    # PR #1259) switched to the pg_ctlcluster layout: PGDATA
+    # defaults to ``/var/lib/postgresql/$PG_MAJOR/docker`` (verified
+    # via ``docker run --rm postgres:18-alpine env | grep PGDATA``
+    # which prints ``/var/lib/postgresql/18/docker``) and the
+    # entrypoint actively refuses to start when a legacy mount
+    # exists at ``/var/lib/postgresql/data``.  Mounting the parent
+    # path lets the per-major-version subdirectory live inside the
+    # subvolume without the legacy-layout guard rail firing, and
+    # stays correct across future major-version bumps (PG 19, PG
+    # 20...) without another mount-path edit.
     volumes:
+      - /var/lib/shekel-test-pgdata:/var/lib/postgresql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-    # Kill zombie transactions from crashed test runs after 30s,
-    # prevent infinite lock/statement waits, and keep TCP connections
-    # alive so the OS detects dead clients.
+    # First triplet: kill zombie transactions from crashed test runs
+    # after 30s, prevent infinite lock/statement waits, and keep TCP
+    # connections alive so the OS detects dead clients.  Middle
+    # triplet (``fsync`` / ``synchronous_commit`` / ``full_page_writes``)
+    # are the non-durable knobs documented in the volumes comment
+    # above.  Trailing ``file_copy_method=clone`` (Phase 3a) makes
+    # PG 18's ``CREATE DATABASE ... STRATEGY FILE_COPY`` use the
+    # kernel ``FICLONE`` reflink ioctl on btrfs-backed PGDATA; the
+    # conftest's per-test drop+reclone helper (Phase 3b) issues
+    # ``STRATEGY FILE_COPY`` explicitly so the GUC is consumed.
+    # GUC is per-cluster -- adding it to the ``db`` service above
+    # would be inert (that cluster never invokes
+    # ``CREATE DATABASE TEMPLATE``) and is intentionally omitted.
     command:
       - postgres
       - -c
@@ -72,6 +172,14 @@ services:
       - tcp_keepalives_interval=10
       - -c
       - tcp_keepalives_count=3
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - file_copy_method=clone
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel_test"]
       interval: 10s

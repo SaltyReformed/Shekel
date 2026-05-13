@@ -10,7 +10,7 @@ from datetime import date
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import (
@@ -38,7 +38,6 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
-from app.models.scenario import Scenario
 from app.models.ref import (
     CalcMethod,
     DeductionTiming,
@@ -66,6 +65,7 @@ from app.schemas.validation import (
 from app.exceptions import RecurrenceConflict, ValidationError
 from app.services import paycheck_calculator, pay_period_service, recurrence_engine
 from app.services.calibration_service import derive_effective_rates
+from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.utils.db_errors import is_unique_violation
 
@@ -159,11 +159,7 @@ def create_profile():
     data = _create_schema.load(request.form)
 
     # Get baseline scenario
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if not scenario:
         flash(Markup(
             "No baseline scenario found. Please "
@@ -268,7 +264,13 @@ def create_profile():
             template.default_amount = init_breakdown.net_pay
 
         db.session.commit()
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): DB-tier failures (FK, CHECK,
+        # NUMERIC range, OperationalError, etc.) produce the user-
+        # facing flash + redirect.  Non-SQLAlchemy exceptions
+        # (TypeError, AttributeError, decimal arithmetic) propagate
+        # to the Flask 500 handler so they surface as bugs rather
+        # than being silently swallowed.
         db.session.rollback()
         logger.exception("user_id=%d failed to create salary profile", current_user.id)
         flash("Failed to create salary profile. Please try again.", "danger")
@@ -378,7 +380,11 @@ def update_profile(profile_id):
             "warning",
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): see ``create_profile`` for the
+        # rationale.  ``StaleDataError`` is a SQLAlchemy subclass too,
+        # so the earlier ``except StaleDataError`` branch still wins
+        # for optimistic-locking conflicts.
         db.session.rollback()
         logger.exception("user_id=%d failed to update salary profile %d", current_user.id, profile_id)
         flash("Failed to update salary profile. Please try again.", "danger")
@@ -489,7 +495,13 @@ def add_raise(profile_id):
         if request.headers.get("HX-Request"):
             return _render_raises_partial(profile)
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): the IntegrityError branch
+        # above covers unique-constraint and other constraint
+        # violations.  Remaining DB-tier errors (DataError on
+        # numeric range, OperationalError on connection loss,
+        # etc.) land here.  Non-SQLAlchemy exceptions propagate
+        # to the 500 handler.
         db.session.rollback()
         logger.exception("user_id=%d failed to add raise to profile %d", current_user.id, profile_id)
         flash("Failed to add raise. Please try again.", "danger")
@@ -537,7 +549,12 @@ def delete_raise(raise_id):
             "warning",
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): the StaleDataError branch
+        # above handles optimistic-locking races.  Remaining DB-
+        # tier errors (FK constraint blocks delete, regenerate
+        # flush failure, etc.) land here.  Non-SQLAlchemy
+        # exceptions propagate to the 500 handler.
         db.session.rollback()
         logger.exception("user_id=%d failed to delete raise %d from profile %d", current_user.id, raise_id, profile.id)
         flash("Failed to remove raise. Please try again.", "danger")
@@ -651,7 +668,12 @@ def update_raise(raise_id):
             "warning",
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): the StaleDataError and
+        # IntegrityError branches above handle optimistic-locking
+        # and unique-constraint races.  Remaining DB-tier errors
+        # (DataError, regenerate flush failure, etc.) land here.
+        # Non-SQLAlchemy exceptions propagate to the 500 handler.
         db.session.rollback()
         logger.exception(
             "user_id=%d failed to update raise %d on profile %d",
@@ -735,7 +757,13 @@ def add_deduction(profile_id):
         if request.headers.get("HX-Request"):
             return _render_deductions_partial(profile)
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): the IntegrityError branch
+        # above covers unique-constraint and other constraint
+        # violations.  Remaining DB-tier errors (DataError on
+        # numeric range, OperationalError on connection loss,
+        # etc.) land here.  Non-SQLAlchemy exceptions propagate
+        # to the 500 handler.
         db.session.rollback()
         logger.exception("user_id=%d failed to add deduction to profile %d", current_user.id, profile_id)
         flash("Failed to add deduction. Please try again.", "danger")
@@ -783,7 +811,12 @@ def delete_deduction(ded_id):
             "warning",
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): the StaleDataError branch
+        # above handles optimistic-locking races.  Remaining DB-
+        # tier errors (FK constraint blocks delete, regenerate
+        # flush failure, etc.) land here.  Non-SQLAlchemy
+        # exceptions propagate to the 500 handler.
         db.session.rollback()
         logger.exception("user_id=%d failed to delete deduction %d from profile %d", current_user.id, ded_id, profile.id)
         flash("Failed to remove deduction. Please try again.", "danger")
@@ -899,7 +932,12 @@ def update_deduction(ded_id):
             "warning",
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): the StaleDataError and
+        # IntegrityError branches above handle optimistic-locking
+        # and unique-constraint races.  Remaining DB-tier errors
+        # (DataError, regenerate flush failure, etc.) land here.
+        # Non-SQLAlchemy exceptions propagate to the 500 handler.
         db.session.rollback()
         logger.exception(
             "user_id=%d failed to update deduction %d on profile %d",
@@ -1136,7 +1174,12 @@ def calibrate_confirm(profile_id):
 
         _regenerate_salary_transactions(profile)
         db.session.commit()
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): DB-tier failures during the
+        # delete-then-insert of the calibration row plus the
+        # subsequent transactions regeneration (FK, CHECK, NUMERIC
+        # range, OperationalError) produce the user-facing flash.
+        # Non-SQLAlchemy exceptions propagate to the 500 handler.
         db.session.rollback()
         logger.exception(
             "user_id=%d failed to save calibration for profile %d",
@@ -1174,7 +1217,10 @@ def calibrate_delete(profile_id):
         try:
             _regenerate_salary_transactions(profile)
             db.session.commit()
-        except Exception:
+        except SQLAlchemyError:
+            # Narrow catch (C-46 / F-145): DB-tier failures during
+            # the post-deletion regeneration land here.  Non-
+            # SQLAlchemy exceptions propagate to the 500 handler.
             db.session.rollback()
             logger.exception(
                 "user_id=%d failed to remove calibration for profile %d",
@@ -1314,11 +1360,7 @@ def _regenerate_salary_transactions(profile):
     if not profile.template:
         return
 
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if not scenario:
         return
 
@@ -1342,7 +1384,14 @@ def _regenerate_salary_transactions(profile):
         )
     except RecurrenceConflict as e:
         logger.warning("Recurrence conflict during salary regeneration: %s", e)
-    except Exception:
+    except SQLAlchemyError:
+        # Narrow catch (C-46 / F-145): logging hook that re-raises.
+        # SQLAlchemy errors from the regenerate flush get the
+        # profile-id context here as well as in the calling route's
+        # ``except SQLAlchemyError`` block.  Non-SQLAlchemy
+        # exceptions still propagate to the caller without this
+        # extra log line; the caller's logger.exception then
+        # records the user-id + profile-id context.
         logger.exception("Failed to regenerate salary transactions for profile %d", profile.id)
         raise
 

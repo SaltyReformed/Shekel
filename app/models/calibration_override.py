@@ -136,6 +136,17 @@ class CalibrationDeductionOverride(CreatedAtMixin, db.Model):
             "actual_amount >= 0",
             name="ck_calibration_ded_overrides_nonneg_amount",
         ),
+        # F-140 / C-42: FK-column index on ``deduction_id``.  The
+        # paycheck calculator joins this override table by
+        # ``deduction_id`` to look up the calibrated amount for each
+        # deduction; without this index the join falls back to a
+        # sequential scan.  ``calibration_id`` is already covered by
+        # the unique constraint (it leads the composite uq), so a
+        # separate index on it would be redundant.
+        db.Index(
+            "idx_calibration_deduction_overrides_deduction",
+            "deduction_id",
+        ),
         {"schema": "salary"},
     )
 

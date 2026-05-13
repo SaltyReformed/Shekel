@@ -4,6 +4,16 @@ Revision ID: 415c517cf4a4
 Revises: e138e6f55bf0
 Create Date: 2026-03-28 12:00:00.000000
 
+Review: solo developer, 2026-05-11 (audit 2026-04-15, C-40 retroactive sweep)
+
+Destructive (audit tag D-02): drops the legacy ``category`` String
+column on ``ref.account_types`` after backfilling the new
+``category_id`` FK from the string column.  The string-to-FK backfill
+is the only chance to capture the original category labels; the
+downgrade rebuilds the column but reads category names from the new
+FK and may rename "Asset"/"Liability"/"Retirement"/"Investment" to a
+different casing than the production rows actually held pre-upgrade.
+Forward path verified safe by Check 2 in the 2026-04-15 audit.
 """
 from alembic import op
 import sqlalchemy as sa

@@ -19,7 +19,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, RecurrencePatternEnum, TxnTypeEnum
+from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
@@ -27,6 +27,9 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import balance_calculator
+from app.services.account_resolver import resolve_analytics_account
+from app.services.pay_period_service import get_overlapping_periods
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +111,18 @@ def get_month_detail(
     Returns:
         A MonthSummary with day-level and aggregate data.
     """
-    account = _resolve_account(user_id, account_id)
+    account = resolve_analytics_account(user_id, account_id)
     if account is None:
         return _empty_month(year, month)
 
-    scenario = _get_baseline_scenario(user_id)
+    scenario = get_baseline_scenario(user_id)
     if scenario is None:
         return _empty_month(year, month)
 
     first_day = date(year, month, 1)
     last_day = date(year, month, calendar.monthrange(year, month)[1])
 
-    periods = _get_overlapping_periods(user_id, first_day, last_day)
+    periods = get_overlapping_periods(user_id, first_day, last_day)
     transactions = _query_transactions_for_range(
         account.id, scenario.id, user_id, first_day, last_day,
     )
@@ -150,17 +153,17 @@ def get_year_overview(
     Returns:
         A YearOverview with 12 MonthSummary entries (Jan-Dec).
     """
-    account = _resolve_account(user_id, account_id)
+    account = resolve_analytics_account(user_id, account_id)
     if account is None:
         return _empty_year(year)
 
-    scenario = _get_baseline_scenario(user_id)
+    scenario = get_baseline_scenario(user_id)
     if scenario is None:
         return _empty_year(year)
 
     first_day = date(year, 1, 1)
     last_day = date(year, 12, 31)
-    periods = _get_overlapping_periods(user_id, first_day, last_day)
+    periods = get_overlapping_periods(user_id, first_day, last_day)
     all_txns = _query_transactions_for_range(
         account.id, scenario.id, user_id, first_day, last_day,
     )
@@ -188,65 +191,6 @@ def get_year_overview(
 # ── Internal helpers ────────────────────────────────────────────────
 
 
-def _resolve_account(
-    user_id: int,
-    account_id: int | None,
-) -> Account | None:
-    """Return the account to scope calendar queries to.
-
-    If account_id is given, verifies ownership and returns it.
-    Otherwise falls back to the user's first active checking account.
-    Returns None if no suitable account exists.
-    """
-    if account_id is not None:
-        acct = db.session.get(Account, account_id)
-        if acct and acct.user_id == user_id and acct.is_active:
-            return acct
-        return None
-
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    return (
-        db.session.query(Account)
-        .filter_by(
-            user_id=user_id,
-            is_active=True,
-            account_type_id=checking_type_id,
-        )
-        .order_by(Account.sort_order, Account.id)
-        .first()
-    )
-
-
-def _get_baseline_scenario(user_id: int) -> Scenario | None:
-    """Load the user's baseline scenario."""
-    return (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
-
-
-def _get_overlapping_periods(
-    user_id: int,
-    first_day: date,
-    last_day: date,
-) -> list[PayPeriod]:
-    """Return pay periods that overlap the given date range.
-
-    A period overlaps if start_date <= last_day AND end_date >= first_day.
-    """
-    return (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.start_date <= last_day,
-            PayPeriod.end_date >= first_day,
-        )
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-
-
 def _query_transactions_for_range(
     account_id: int,
     scenario_id: int,
@@ -265,7 +209,7 @@ def _query_transactions_for_range(
     Eager-loads category, status, template -> recurrence_rule, and
     pay_period to prevent N+1 queries downstream.
     """
-    overlapping = _get_overlapping_periods(user_id, first_day, last_day)
+    overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]
 
     return (

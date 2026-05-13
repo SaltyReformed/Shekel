@@ -70,6 +70,15 @@ class PaycheckDeduction(TimestampMixin, db.Model):
             "salary_profile_id", "name",
             name="uq_paycheck_deductions_profile_name",
         ),
+        # F-071 / F-079 / C-42: child-FK index restored after the
+        # 22b3dd9d9ed3 migration dropped it without restoration.  The
+        # paycheck calculator joins paycheck_deductions to its parent
+        # salary_profile on every projection; without this index the
+        # join is a sequential scan that scales linearly with the
+        # total deduction-row count across all users.
+        db.Index(
+            "idx_deductions_profile", "salary_profile_id",
+        ),
         {"schema": "salary"},
     )
 
@@ -79,15 +88,33 @@ class PaycheckDeduction(TimestampMixin, db.Model):
         db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* names on the
+    # two ref-table FKs.  See app/extensions.py for the full
+    # SHEKEL_NAMING_CONVENTION rationale.
     deduction_timing_id = db.Column(
-        db.Integer, db.ForeignKey("ref.deduction_timings.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.deduction_timings.id",
+            name="fk_paycheck_deductions_deduction_timing_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     calc_method_id = db.Column(
-        db.Integer, db.ForeignKey("ref.calc_methods.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.calc_methods.id",
+            name="fk_paycheck_deductions_calc_method_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     name = db.Column(db.String(200), nullable=False)
     amount = db.Column(db.Numeric(12, 4), nullable=False)
-    deductions_per_year = db.Column(db.Integer, default=26, nullable=False)
+    deductions_per_year = db.Column(
+        db.Integer, default=26, nullable=False,
+        server_default=db.text("26"),
+    )
     annual_cap = db.Column(db.Numeric(12, 2))
     inflation_enabled = db.Column(
         db.Boolean, nullable=False, default=False,

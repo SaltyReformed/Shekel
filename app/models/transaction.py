@@ -12,10 +12,10 @@ from decimal import Decimal
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
-from app.models.mixins import TimestampMixin
+from app.models.mixins import SoftDeleteOverridableMixin, TimestampMixin
 
 
-class Transaction(TimestampMixin, db.Model):
+class Transaction(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     """A single income or expense entry within a pay period.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -157,21 +157,24 @@ class Transaction(TimestampMixin, db.Model):
     )
     estimated_amount = db.Column(db.Numeric(12, 2), nullable=False)
     actual_amount = db.Column(db.Numeric(12, 2))
-    is_override = db.Column(
-        db.Boolean, nullable=False, default=False,
-        server_default=db.text("false"),
-    )
-    is_deleted = db.Column(
-        db.Boolean, nullable=False, default=False,
-        server_default=db.text("false"),
-    )
+    # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     transfer_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transfers.id", ondelete="CASCADE"),
     )
     credit_payback_for_id = db.Column(
         db.Integer,
-        db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
+        # F-137 / C-42: explicit FK name follows the project's ``fk_*``
+        # convention documented in ``docs/coding-standards.md``.
+        # Earlier the self-referential FK carried the Alembic-default
+        # ``transactions_credit_payback_for_id_fkey`` name; this
+        # declaration keeps ``db.create_all()`` aligned with the
+        # post-C-42 migrated state.  SET NULL semantics preserved.
+        db.ForeignKey(
+            "budget.transactions.id",
+            name="fk_transactions_credit_payback_for",
+            ondelete="SET NULL",
+        ),
     )
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)

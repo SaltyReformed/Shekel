@@ -45,6 +45,23 @@ class RateHistory(CreatedAtMixin, db.Model):
             "interest_rate >= 0 AND interest_rate <= 1",
             name="ck_rate_history_valid_interest_rate",
         ),
+        # F-139 / C-42: composite index on
+        # ``(account_id, effective_date DESC)`` matches the
+        # predominant query in ``app/routes/loan.py``:
+        # ``RateHistory.query.filter_by(account_id=X)
+        #     .order_by(RateHistory.effective_date.desc())``.
+        # DESC ordering on the second column lets PostgreSQL satisfy
+        # both the WHERE and the ORDER BY from a forward index scan;
+        # an ascending second column would still serve correctness
+        # (B-tree indexes scan backward) but would obscure the
+        # canonical query shape from anyone reading the index.  The
+        # uq_rate_history_account_effective_date unique index covers
+        # ``(account_id, effective_date)`` without DESC; this
+        # secondary non-unique index encodes the sort direction.
+        db.Index(
+            "idx_rate_history_account",
+            "account_id", db.text("effective_date DESC"),
+        ),
         {"schema": "budget"},
     )
 

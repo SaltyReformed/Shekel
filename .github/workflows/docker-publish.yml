@@ -3,6 +3,19 @@
 # Triggers:
 #   - Push to main → tags as "latest"
 #   - Git tag v* → tags as version + "latest"
+#
+# Audit Commit C-36 (findings F-060, F-155):
+#   - Image is digest-pinned downstream by deploy/docker-compose.prod.yml
+#     (the workflow output below carries the digest the operator pastes
+#     into SHEKEL_IMAGE_DIGEST in /opt/docker/shekel/.env).
+#   - Image is signed with Cosign keyless OIDC after every successful
+#     push.  The signature is uploaded to GHCR alongside the image and
+#     can be verified with:
+#         cosign verify \
+#             --certificate-identity-regexp \
+#             "https://github.com/SaltyReformed/Shekel/.github/workflows/docker-publish.yml@.*" \
+#             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#             ghcr.io/saltyreformed/shekel@sha256:<digest>
 
 name: Build & Publish Docker Image
 
@@ -14,11 +27,22 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Pin Cosign to the GitHub-Actions-installer's matching version so
+  # an unexpected upstream API change cannot silently break signing
+  # in steady state.  Update this in the same commit as any cosign
+  # CLI flag change.
+  COSIGN_VERSION: v2.6.4
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
+      # ``id-token: write`` is required for sigstore keyless signing
+      # via OIDC (the Action mints a short-lived OIDC token from the
+      # GitHub provider, which Fulcio exchanges for an X.509
+      # signing certificate).  Without this scope, ``cosign sign``
+      # fails with a 403 from the OIDC token endpoint.
+      id-token: write
       contents: read
       packages: write
 
@@ -36,6 +60,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install Cosign
+        # sigstore/cosign-installer pins a specific cosign version on
+        # the runner.  The same cosign version then runs both the
+        # ``sign`` step below and any operator-side ``verify``, so
+        # signature-format compatibility is a known constant.
+        uses: sigstore/cosign-installer@v3.7.0
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
@@ -48,6 +81,12 @@ jobs:
             type=sha
 
       - name: Build and push image
+        # ``id`` lets the next step reference ``steps.build.outputs.digest``
+        # -- the immutable sha256 digest of the manifest just pushed.
+        # We sign by digest (cosign best practice; signing by tag
+        # would let a future tag-swap detach the signature from the
+        # image bytes it attests to).
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -56,3 +95,55 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Sign image with Cosign (keyless OIDC)
+        # ``cosign sign`` with no ``--key`` uses the sigstore keyless
+        # flow: the workflow's OIDC identity is exchanged for a
+        # short-lived Fulcio cert, which signs the image, and the
+        # signature is uploaded to the registry.  ``--yes`` skips
+        # the interactive confirmation prompt that would otherwise
+        # block CI.
+        #
+        # We sign every tag the metadata action produced.  Each ``sign``
+        # invocation works against the digest, so the multi-tag fanout
+        # records one signature per (tag, digest) pair.
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+              [ -z "$tag" ] && continue
+              echo "Signing ${tag}@${DIGEST}"
+              cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "${TAGS}"
+
+      - name: Emit image digest for downstream pinning
+        # Print the digest in a discoverable spot so the operator can
+        # paste it into /opt/docker/shekel/.env's SHEKEL_IMAGE_DIGEST
+        # variable.  Also write it to the workflow summary so the
+        # latest digest is one click away from the Actions UI.
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          echo "Image digest: ${DIGEST}"
+          {
+              echo "## Image digest"
+              echo ""
+              echo "Pin this digest in \`/opt/docker/shekel/.env\`:"
+              echo ""
+              echo "\`\`\`"
+              echo "SHEKEL_IMAGE_DIGEST=${DIGEST}"
+              echo "\`\`\`"
+              echo ""
+              echo "Verify with:"
+              echo ""
+              echo "\`\`\`"
+              echo "cosign verify \\"
+              echo "    --certificate-identity-regexp \\"
+              echo "    \"https://github.com/${{ github.repository }}/.github/workflows/docker-publish.yml@.*\" \\"
+              echo "    --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+              echo "    ghcr.io/${{ github.repository }}@${DIGEST}"
+              echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

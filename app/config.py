@@ -21,10 +21,21 @@ load_dotenv()
 # is publicly known and cannot provide cryptographic confidentiality
 # for session cookies or itsdangerous-signed tokens.  See audit
 # findings F-001, F-016, F-110, F-111.
+#
+# ``replaced_by_docker_secret`` is the placeholder the audit's Commit
+# C-38 runbook tells operators to leave in ``.env`` when migrating
+# to Docker secrets (Posture 2).  In steady-state Posture 2 the
+# entrypoint loader overwrites the env value with the real secret
+# from ``/run/secrets/secret_key`` before this check runs, so the
+# placeholder is not seen here.  But if the secret file is missing
+# or unreadable, the placeholder remains -- catching it here closes
+# the gap where the operator believes they are on Posture 2 but is
+# actually running on the publicly-known placeholder.
 _KNOWN_DEFAULT_SECRETS = frozenset({
     "dev-only-change-me-in-production",
     "change-me-to-a-random-secret-key",
     "dev-secret-key-not-for-production",
+    "replaced_by_docker_secret",
 })
 
 # Minimum acceptable SECRET_KEY length for production.  32 characters
@@ -33,6 +44,65 @@ _KNOWN_DEFAULT_SECRETS = frozenset({
 # generation command in .env.example produces a 64-char hex string
 # (32 bytes / 256 bits) which is well above this floor.
 _MIN_SECRET_KEY_LENGTH = 32
+
+# Sentinel password embedded in the ``.env.example`` DATABASE_URL and
+# TEST_DATABASE_URL templates so a fresh checkout cannot accidentally
+# boot under the historically-leaked default ``shekel_pass``.  An
+# operator who copies ``.env.example`` to ``.env`` and forgets to
+# substitute their own password is met with a loud app-level
+# ``ValueError`` from ``_reject_sentinel`` below, rather than a
+# generic Postgres "password authentication failed" at connect time.
+# See audit finding F-109 and the C-38 follow-up Issue 3 in
+# ``docs/audits/security-2026-04-15/c-38-followups.md``.
+#
+# The token is intentionally specific (uppercase, hyphen-delimited,
+# 37 chars) so that a real password is extremely unlikely to contain
+# it as a substring.  The substring check is correct here because the
+# token surfaces inside a postgres URI ``user:password@host`` form;
+# parsing the URI would be heavier and is unnecessary given the
+# specificity of the marker.
+_DATABASE_URL_SENTINEL = "REPLACE-ME-WITH-YOUR-POSTGRES-PASSWORD"
+
+
+def _reject_sentinel(uri: str | None, *, var_name: str) -> str | None:
+    """Raise ``ValueError`` when a connection URI still embeds the sentinel.
+
+    Companion of ``_DATABASE_URL_SENTINEL``.  Callers pass the value
+    they just resolved from ``os.getenv(var_name)`` (or its fallback)
+    and either get the URI back unchanged or a clear app-level error
+    that names the offending env var and points at ``.env.example``.
+
+    Args:
+        uri: A SQLAlchemy connection URI, or ``None``.  ``None`` and
+            empty strings fall through unchanged so the caller's own
+            missing-URI validation (e.g. ``ProdConfig.__init__``'s
+            "DATABASE_URL must be set in production" branch) still
+            fires at the right layer.
+        var_name: The environment-variable name to mention in the
+            error message -- ``"DATABASE_URL"``, ``"DATABASE_URL_APP"``,
+            or ``"TEST_DATABASE_URL"``.  Naming the precise variable
+            lets the operator find the offending entry in their
+            ``.env`` without grepping.
+
+    Returns:
+        The ``uri`` unchanged when it does not embed the sentinel
+        (including the ``None`` and empty-string cases).
+
+    Raises:
+        ValueError: When ``uri`` contains ``_DATABASE_URL_SENTINEL``.
+            The message names both the env var and the sentinel so
+            the remediation is actionable from the error text alone.
+    """
+    if uri and _DATABASE_URL_SENTINEL in uri:
+        raise ValueError(
+            f"{var_name} still embeds the .env.example sentinel "
+            f"password '{_DATABASE_URL_SENTINEL}'.  Copy "
+            ".env.example to .env and replace the sentinel with a "
+            "real PostgreSQL password before starting the "
+            "application or the test suite.  See audit finding "
+            "F-109 / Commit C-38 follow-up Issue 3."
+        )
+    return uri
 
 
 class BaseConfig:
@@ -269,12 +339,63 @@ def _runtime_database_uri(default: str | None = None) -> str | None:
         The URI as a string, or ``default`` when neither env var is
         set.  Callers must propagate ``None`` to whichever validation
         the relevant config class performs.
+
+    Raises:
+        ValueError: When the resolved URI still embeds the
+            ``.env.example`` sentinel password -- see
+            ``_reject_sentinel`` for the failure-mode rationale.  The
+            error names ``DATABASE_URL_APP`` or ``DATABASE_URL``
+            depending on which env var contributed the sentinel.
     """
-    return os.getenv("DATABASE_URL_APP") or os.getenv("DATABASE_URL", default)
+    app_uri = os.getenv("DATABASE_URL_APP")
+    if app_uri:
+        # The empty-string case is intentionally treated as unset --
+        # ``os.getenv`` returns ``""`` for an exported-but-empty var,
+        # and the project policy (see ``test_empty_database_url_app_
+        # falls_through``) is to fall through to DATABASE_URL in that
+        # case.  Sentinel-rejection only runs when the value is the
+        # one actually about to be returned, so an empty
+        # DATABASE_URL_APP never triggers a false positive against a
+        # sentinel buried in DATABASE_URL -- the next return is what
+        # validates DATABASE_URL.
+        return _reject_sentinel(app_uri, var_name="DATABASE_URL_APP")
+    return _reject_sentinel(
+        os.getenv("DATABASE_URL", default),
+        var_name="DATABASE_URL",
+    )
 
 
 class DevConfig(BaseConfig):
-    """Development configuration -- debug mode, local PostgreSQL."""
+    """Development configuration -- debug mode, local PostgreSQL.
+
+    Cookie-flag pragma (audit finding F-112):
+        DevConfig deliberately does NOT set ``SESSION_COOKIE_SECURE``,
+        ``REMEMBER_COOKIE_SECURE``, or the ``__Host-`` session cookie
+        prefix that ProdConfig sets.  ``flask run`` serves over plain
+        HTTP on ``http://localhost:5000``: a ``Secure``-flagged cookie
+        would never ride that connection, so an authenticated dev
+        session would silently break -- ``/login`` would 200 but the
+        cookie never reaches the client and every subsequent request
+        would loop back to ``/login``.  Likewise the ``__Host-``
+        prefix is enforced by browsers only when ``Secure=True`` and
+        ``Path="/"`` are set.
+
+        The Flask defaults DevConfig inherits (``SESSION_COOKIE_SECURE
+        = False``, ``SESSION_COOKIE_HTTPONLY = True``,
+        ``SESSION_COOKIE_SAMESITE = None``) are the right posture for
+        local HTTP development -- HttpOnly remains on so a dev XSS
+        does not trivially exfiltrate the session, but Secure stays
+        off so the cookie actually rides ``http://``.  Production
+        traffic terminates TLS at the reverse proxy and the cookie
+        flags ProdConfig sets are correct for that path.
+
+        Operators who run dev under TLS (e.g. behind a local
+        reverse proxy with mkcert) can opt in by setting
+        ``FLASK_ENV=production`` for that shell, which switches the
+        config map to ProdConfig and applies the hardened flags.
+        The DevConfig class is for the supported HTTP-localhost
+        workflow only.
+    """
 
     DEBUG = True
     # Falls back to peer-auth local connection if neither
@@ -288,9 +409,15 @@ class TestConfig(BaseConfig):
 
     TESTING = True
     # Falls back to peer-auth local test database if TEST_DATABASE_URL
-    # is not set in .env.
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        "TEST_DATABASE_URL", "postgresql:///shekel_test"
+    # is not set in .env.  ``_reject_sentinel`` runs at class-body
+    # evaluation time so a copy-pasted ``.env.example`` that still
+    # embeds the sentinel password surfaces as an app-level
+    # ``ValueError`` at test-suite startup, never as a generic
+    # Postgres "password authentication failed" at first connect.
+    # See audit finding F-109 / Commit C-38 follow-up Issue 3.
+    SQLALCHEMY_DATABASE_URI = _reject_sentinel(
+        os.getenv("TEST_DATABASE_URL", "postgresql:///shekel_test"),
+        var_name="TEST_DATABASE_URL",
     )
     WTF_CSRF_ENABLED = False
     LOGIN_DISABLED = False
@@ -395,6 +522,17 @@ class ProdConfig(BaseConfig):
         "RATELIMIT_STORAGE_URI", "redis://redis:6379/0"
     )
 
+    # Production registration posture: defaults to disabled even when
+    # the env var is completely absent (defense-in-depth against an
+    # operator deleting the docker-compose interpolation default).
+    # BaseConfig defaults to "true" so DevConfig and TestConfig retain
+    # the open-registration ergonomics required by the test suite and
+    # by manual local exploration; ProdConfig narrows that to "false".
+    # See audit finding F-053 and remediation Commit C-34.
+    REGISTRATION_ENABLED = os.getenv(
+        "REGISTRATION_ENABLED", "false"
+    ).lower() in ("true", "1", "yes")
+
     def __init__(self):
         """Validate production-critical settings on instantiation.
 
@@ -417,6 +555,7 @@ class ProdConfig(BaseConfig):
         if (
             self.SECRET_KEY in _KNOWN_DEFAULT_SECRETS
             or self.SECRET_KEY.startswith("dev-only")
+            or self.SECRET_KEY.startswith("replaced_by_docker_secret")
         ):
             raise ValueError(
                 "SECRET_KEY matches a known placeholder; "

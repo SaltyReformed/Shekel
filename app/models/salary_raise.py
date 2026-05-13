@@ -75,6 +75,15 @@ class SalaryRaise(CreatedAtMixin, db.Model):
             name="uq_salary_raises_profile_type_year_month",
             postgresql_nulls_not_distinct=True,
         ),
+        # F-071 / F-079 / C-42: child-FK index restored after the
+        # 22b3dd9d9ed3 migration dropped it without restoration.  The
+        # paycheck calculator joins salary_raises to its parent
+        # salary_profile on every projection; without this index the
+        # join is a sequential scan that scales linearly with the
+        # total raise-row count across all users.
+        db.Index(
+            "idx_salary_raises_profile", "salary_profile_id",
+        ),
         {"schema": "salary"},
     )
 
@@ -84,8 +93,17 @@ class SalaryRaise(CreatedAtMixin, db.Model):
         db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name.  See
+    # app/extensions.py for the full SHEKEL_NAMING_CONVENTION
+    # rationale and the close-out story for finding F-078.
     raise_type_id = db.Column(
-        db.Integer, db.ForeignKey("ref.raise_types.id"), nullable=False
+        db.Integer,
+        db.ForeignKey(
+            "ref.raise_types.id",
+            name="fk_salary_raises_raise_type_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     effective_month = db.Column(db.Integer, nullable=False)
     effective_year = db.Column(db.Integer, nullable=True)

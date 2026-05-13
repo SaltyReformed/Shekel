@@ -174,3 +174,43 @@ def get_next_period(period):
         )
         .first()
     )
+
+
+def get_overlapping_periods(
+    user_id: int,
+    first_day: date,
+    last_day: date,
+) -> list[PayPeriod]:
+    """Return all pay periods that overlap a calendar date range.
+
+    A period overlaps ``[first_day, last_day]`` when
+    ``start_date <= last_day`` AND ``end_date >= first_day``.  The
+    range is inclusive on both ends.
+
+    Used by the calendar and budget-variance services to find the
+    pay periods that need to be inspected when reporting on a
+    calendar month or year window.  Centralised here so a future
+    change (e.g. excluding inactive scenarios' periods, or adding a
+    second index ordering) is a single edit rather than chasing the
+    inline copies the audit's Issue 1 noted.
+
+    Args:
+        user_id: The user whose pay periods to consider.
+        first_day: Inclusive lower bound of the date range.
+        last_day: Inclusive upper bound of the date range.
+
+    Returns:
+        List of :class:`PayPeriod` objects, ordered by
+        ``period_index`` ascending.  Empty list when no pay period
+        overlaps the range.
+    """
+    return (
+        db.session.query(PayPeriod)
+        .filter(
+            PayPeriod.user_id == user_id,
+            PayPeriod.start_date <= last_day,
+            PayPeriod.end_date >= first_day,
+        )
+        .order_by(PayPeriod.period_index)
+        .all()
+    )

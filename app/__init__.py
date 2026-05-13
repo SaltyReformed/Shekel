@@ -861,94 +861,28 @@ def _ensure_schemas():
 def _seed_ref_tables():
     """Seed reference lookup tables if empty (dev/test only).
 
-    In production, this is handled by the Docker entrypoint.
-    Idempotent -- skips rows that already exist.  Silently skips if
-    the tables haven't been created yet (e.g. first test-session run
-    before create_all()).
+    In production, this is handled by the Docker entrypoint via
+    ``scripts/seed_ref_tables.py``.  Idempotent -- skips rows that
+    already exist.  Silently skips the entire seed if the tables
+    haven't been created yet (e.g. first test-session run before
+    ``create_all()``).
+
+    Delegates to ``app.ref_seeds.seed_reference_data`` -- the single
+    source of truth for ref-table seeding across the application
+    factory (this function), the production deploy script, the test
+    fixture stack, and the test-template builder.  The outer
+    ``try/except ProgrammingError`` is the only thing this wrapper
+    contributes -- it handles the boot-time race where the factory
+    runs the seed before tables exist (test setup, pre-migration
+    deploys).
     """
     # pylint: disable=import-outside-toplevel
     from sqlalchemy.exc import ProgrammingError
-    from app.models.ref import (
-        AccountType, AccountTypeCategory, CalcMethod, DeductionTiming,
-        FilingStatus, GoalMode, IncomeUnit, RaiseType, RecurrencePattern,
-        Status, TaxType, TransactionType, UserRole,
-    )
+
+    from app.ref_seeds import seed_reference_data
 
     try:
-        # ── Seed AccountTypeCategory (must precede AccountType) ──────
-        category_seeds = ["Asset", "Liability", "Retirement", "Investment"]
-        for cat_name in category_seeds:
-            if not db.session.query(AccountTypeCategory).filter_by(name=cat_name).first():
-                db.session.add(AccountTypeCategory(name=cat_name))
-        db.session.flush()
-
-        # Build category name->id lookup for AccountType seeding.
-        cat_lookup = {
-            c.name: c.id
-            for c in db.session.query(AccountTypeCategory).all()
-        }
-
-        # ── Seed AccountType with FK, booleans, metadata ──────────────
-        from app.ref_seeds import ACCT_TYPE_SEEDS as acct_type_seeds  # pylint: disable=import-outside-toplevel
-        for (name, cat_name, has_params, has_amort,
-             has_int, is_pre, is_liq, icon, max_term) in acct_type_seeds:
-            existing = db.session.query(AccountType).filter_by(name=name).first()
-            if existing:
-                existing.has_parameters = has_params
-                existing.has_amortization = has_amort
-                existing.has_interest = has_int
-                existing.is_pretax = is_pre
-                existing.is_liquid = is_liq
-                existing.icon_class = icon
-                existing.max_term_months = max_term
-            else:
-                db.session.add(AccountType(
-                    name=name,
-                    category_id=cat_lookup[cat_name],
-                    has_parameters=has_params,
-                    has_amortization=has_amort,
-                    has_interest=has_int,
-                    is_pretax=is_pre,
-                    is_liquid=is_liq,
-                    icon_class=icon,
-                    max_term_months=max_term,
-                ))
-
-        # ── Seed remaining ref tables ────────────────────────────────
-        ref_data = {
-            TransactionType: ["Income", "Expense"],
-            Status: [
-                {"name": "Projected", "is_settled": False, "is_immutable": False, "excludes_from_balance": False},
-                {"name": "Paid", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
-                {"name": "Received", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
-                {"name": "Credit", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
-                {"name": "Cancelled", "is_settled": False, "is_immutable": True, "excludes_from_balance": True},
-                {"name": "Settled", "is_settled": True, "is_immutable": True, "excludes_from_balance": False},
-            ],
-            RecurrencePattern: [
-                "Every Period", "Every N Periods", "Monthly", "Monthly First",
-                "Quarterly", "Semi-Annual", "Annual", "Once",
-            ],
-            FilingStatus: ["single", "married_jointly", "married_separately", "head_of_household"],
-            DeductionTiming: ["pre_tax", "post_tax"],
-            CalcMethod: ["flat", "percentage"],
-            TaxType: ["flat", "none", "bracket"],
-            RaiseType: ["merit", "cola", "custom"],
-            GoalMode: ["Fixed", "Income-Relative"],
-            IncomeUnit: ["Paychecks", "Months"],
-            UserRole: ["owner", "companion"],
-        }
-
-        for model, entries in ref_data.items():
-            for entry in entries:
-                if isinstance(entry, dict):
-                    name = entry["name"]
-                    if not db.session.query(model).filter_by(name=name).first():
-                        db.session.add(model(**entry))
-                else:
-                    if not db.session.query(model).filter_by(name=entry).first():
-                        db.session.add(model(name=entry))
-
+        seed_reference_data(db.session)
         db.session.commit()
     except ProgrammingError:
         db.session.rollback()

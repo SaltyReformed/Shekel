@@ -38,6 +38,7 @@ from app.schemas.validation import (
 from app.services import transfer_recurrence, transfer_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
+from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
 from app.utils.db_errors import is_unique_violation
 
@@ -231,11 +232,7 @@ def create_transfer_template():
             flash("Invalid pay period for one-time transfer.", "danger")
             return redirect(url_for("transfers.new_transfer_template"))
 
-        scenario = (
-            db.session.query(Scenario)
-            .filter_by(user_id=current_user.id, is_baseline=True)
-            .first()
-        )
+        scenario = get_baseline_scenario(current_user.id)
         if scenario:
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             try:
@@ -257,11 +254,7 @@ def create_transfer_template():
                 return redirect(url_for("transfers.new_transfer_template"))
     elif rule:
         # Recurring transfer: delegate to the recurrence engine.
-        scenario = (
-            db.session.query(Scenario)
-            .filter_by(user_id=current_user.id, is_baseline=True)
-            .first()
-        )
+        scenario = get_baseline_scenario(current_user.id)
         if scenario:
             periods = pay_period_service.get_all_periods(current_user.id)
             transfer_recurrence.generate_for_template(
@@ -428,11 +421,7 @@ def update_transfer_template(template_id):
         return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
 
     # Regenerate future transfers.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=current_user.id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(current_user.id)
     if scenario and template.recurrence_rule:
         periods = pay_period_service.get_all_periods(current_user.id)
         try:
@@ -571,11 +560,7 @@ def unarchive_transfer_template(template_id):
     restored_count = len(transfers_to_restore)
 
     if template.recurrence_rule:
-        scenario = (
-            db.session.query(Scenario)
-            .filter_by(user_id=current_user.id, is_baseline=True)
-            .first()
-        )
+        scenario = get_baseline_scenario(current_user.id)
         if scenario:
             periods = pay_period_service.get_all_periods(current_user.id)
             transfer_recurrence.generate_for_template(

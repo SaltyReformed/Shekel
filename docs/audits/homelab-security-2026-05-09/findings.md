@@ -1,5 +1,56 @@
 # Homelab Security Audit -- 2026-05-09
 
+## Remediation Status (2026-05-09 EOD)
+
+After verification revealed Commit C-33 had been authored Shekel-
+side but never deployed on this host, the operator approved a
+single-day implementation pass. Six of ten H-NNN findings closed,
+plus several plan-§4 missed-finding items.
+
+| Finding | Status | One-line resolution |
+|---|---|---|
+| H-001 | **Closed** | Cloudflared routes all 5 hostnames via `https://nginx:443` with `originServerName` per-rule. |
+| H-002 | **Closed** | `set_real_ip_from 172.18.255.10; real_ip_header CF-Connecting-IP;` -- pinned cloudflared static IP on a pinned bridge subnet. |
+| H-003 | **Closed** | Modern 2025-2026 header set lifted to `_security-headers.inc`, included by 6 vhosts. HSTS intentionally omitted (split-horizon cert chain). Shekel app emits its own stricter set. |
+| H-004 | **Open (deferred)** | Bridge subnet pinned + cloudflared static IP closes the H-002 spoofing edge case; broader tier-segmentation deferred to a separate maintenance window. |
+| H-005 | **Closed** | `x-hardening` YAML anchor + per-service minimal caps + `read_only:true` on postgres/redis with tmpfs (incl. `/etc/postgresql` for the Immich entrypoint's runtime config). |
+| H-006 | **Open (accepted risk)** | Re-evaluate on next UniFi major-version upgrade. |
+| H-007 | **Closed** | Every compose-managed image pinned by SHA256 digest across all 4 projects. Diun + `bump-digest.sh` automate the upgrade loop. |
+| H-008 | **Closed** | Removed in same H-005 pass; debugging via `docker exec`. |
+| H-009 | **Open (deferred)** | Scope refined to admin-only hostnames (ntfy / grafana / shekel / unifi). Mobile-app-bearing hostnames (jellyfin / immich / books) excluded -- Access redirect breaks native clients. Pending Cloudflare dashboard work. |
+| H-010 | Already mitigated | `server_tokens off;` in shared `nginx.conf`. |
+
+Plan §4 missed-finding items also addressed:
+- §4.1 #1 -- immich plaintext `DB_PASSWORD` rotated and `.env`
+  set to `chmod 600`.
+- §4.1 #3 -- alloy hardened (partial cap_drop dropping 6 unneeded
+  caps; full cap_drop ALL broke remotecfg `mkdir` with btrfs
+  `+C` interaction).
+- §4.2 #4 -- shekel-prod-app moved to digest pinning alongside
+  H-007.
+- §4.2 #5 -- cAdvisor retains `privileged: true`; reduced-cap
+  config tested by operator and lost full host metrics. Documented
+  as accepted risk in `/opt/docker/AUDIT.md`.
+- §4.2 #11 -- monitoring containers (`grafana`, `alloy`, `ntfy`,
+  `nginx-exporter`) still on `homelab` -- defer with H-004.
+- §4.3 #19 -- audit's "JSON access logs" claim corrected; nginx
+  uses combined log format. Doc-grade, no operational change.
+
+Out-of-audit operational improvements landed in the same pass:
+- C-33 deployed Shekel-side; gunicorn `FORWARDED_ALLOW_IPS`
+  threaded through the Compose override.
+- Single-file bind-mount inode gotcha (atomic editor writes break
+  bind mounts) documented in `/opt/docker/AUDIT.md` Operations
+  Notes.
+- `/opt/docker/scripts/bump-digest.sh` added for digest-bump
+  workflow.
+
+The remaining open items (H-004, H-006, H-009, plus backup
+automation per plan §10.12) are tracked in the "Remaining Work"
+queue at the bottom of this document.
+
+---
+
 ## Scope
 
 This document inventories the operator's homelab Docker stack at
@@ -161,7 +212,25 @@ where one exists.
   Restart cloudflared with `cd /opt/docker && docker compose up -d
   cloudflared`. Verify with `docker exec cloudflared cloudflared
   tunnel info`.
-- **Status:** Open
+- **Status:** Closed 2026-05-09.
+- **Resolution:** All five public hostnames (jellyfin, immich,
+  books, ntfy, shekel) updated in `/opt/docker/cloudflared/config.yml`
+  to `service: https://nginx:443` with
+  `originRequest.originServerName: <hostname>` per ingress rule.
+  Existing per-hostname `keepAliveTimeout` / `tcpKeepAlive` tunings
+  preserved. ntfy's LAN-only ACL on
+  `/opt/docker/nginx/conf.d/ntfy.conf` was removed in favour of
+  ntfy's per-topic auth (auth-default-access: deny-all in ntfy
+  server.yml), per the operator-comment that already endorsed this
+  pattern for off-LAN pushes. Origin CA cert turned out not to be
+  necessary — cloudflared's default CA bundle trusts the existing
+  Let's Encrypt wildcard for `*.saltyreformed.com`, so plain
+  `originServerName` matching the cert SAN is sufficient.
+- **Verification:** End-to-end via Cloudflare's WAN edge using
+  `curl --resolve <hostname>:443:<dig @1.1.1.1 +short>` for all 5
+  hostnames; each returned correct HTTP codes (302/200) with
+  `ssl_verify_result=0` (strict TLS pass), and nginx access log
+  showed real WAN client IPs courtesy of CF-Connecting-IP.
 
 ---
 
@@ -226,7 +295,25 @@ where one exists.
   Option (a) or (b) are the audit-grade fixes; option (c) is the
   minimum viable improvement and still beats the current "trust
   nothing, log nothing useful" posture.
-- **Status:** Open
+- **Status:** Closed 2026-05-09 — implemented as audit option (a).
+- **Resolution:** `set_real_ip_from 172.18.255.10; real_ip_header
+  CF-Connecting-IP; real_ip_recursive off;` added to
+  `/opt/docker/nginx/nginx.conf` http block. Trust source narrowed
+  to cloudflared's pinned static IP (assigned via
+  `networks.homelab.ipv4_address: 172.18.255.10` in
+  `/opt/docker/docker-compose.yml`) — this is the most restrictive
+  option and eliminates the LAN-via-NAT spoofing edge case (Docker
+  port-publish NAT makes LAN clients appear at the bridge gateway
+  172.18.0.1 from nginx's view; that gateway is now not in the
+  trust source).
+- **Verification:** Three smoke tests — (1) request via Cloudflare
+  WAN edge with synthetic CF-Connecting-IP arrived in nginx log
+  bearing the real client IP; (2) curl from host with spoofed
+  CF-Connecting-IP logged the bridge gateway 172.18.0.1 (header
+  rejected); (3) curl from a homelab co-tenant container with
+  spoofed CF-Connecting-IP logged its own container IP (header
+  rejected). Single-file nginx.conf bind-mount inode gotcha
+  documented in `/opt/docker/AUDIT.md` Operations Notes.
 
 ---
 
@@ -288,7 +375,29 @@ where one exists.
   `docker exec nginx nginx -t` and reload with `docker exec nginx
   nginx -s reload`. Lowest-risk change in this audit; ~5 minutes
   per vhost; zero compose / restart impact.
-- **Status:** Open
+- **Status:** Closed 2026-05-09
+- **Resolution:** Created
+  `/opt/docker/nginx/conf.d/_security-headers.inc` containing the
+  modern 2025-2026 superset (per plan §10.3): `X-Content-Type-
+  Options`, `X-Frame-Options SAMEORIGIN`, `Permissions-Policy`,
+  `Referrer-Policy strict-origin-when-cross-origin`,
+  `Cross-Origin-Opener-Policy same-origin`,
+  `Cross-Origin-Resource-Policy same-origin`, and CSP
+  `frame-ancestors 'self';` -- all with the `always` flag.
+  `include _security-headers.inc;` was added to `immich.conf`,
+  `unifi.conf`, `calibre-web.conf`, `ntfy.conf`, `jellyfin.conf`,
+  and `grafana.conf` (Jellyfin and Grafana migrated from their
+  inline four-header set to the central include for DRY).
+  `shekel.conf` does NOT include the file: the Shekel app emits
+  its own stricter headers (e.g. `X-Frame-Options DENY`) via Flask-
+  Talisman, and an nginx-side include would conflict. HSTS is
+  intentionally omitted everywhere -- LAN cert chain may diverge
+  from the WAN/Cloudflare-edge chain, and pinning HSTS could brick
+  cross-network clients (per plan §10.3 / §10.11).
+- **Verification:** `docker exec nginx nginx -t` clean,
+  `nginx -s reload` succeeded. `curl -ksI https://<host>/` against
+  jellyfin/immich/unifi/calibre-web/ntfy/grafana returns the new
+  header set; `shekel` continues to return its app-emitted set.
 
 ---
 
@@ -357,7 +466,17 @@ where one exists.
   (immich photo library, unifi controller passwords) and (b) for
   the rest. Defer until after H-001 / H-002 / H-003 to keep change
   windows small.
-- **Status:** Open
+- **Status:** Open (deferred)
+- **Partial mitigation 2026-05-09:** The `homelab` bridge subnet
+  was pinned via `ipam.config.subnet: 172.18.0.0/16` and cloudflared
+  was assigned the static IP `172.18.255.10`. Combined with H-002
+  this means a header-spoof from a homelab co-tenant no longer
+  forges client identity at nginx (verified via curl from a
+  co-tenant container -- spoofed `CF-Connecting-IP` is rejected
+  and the container's bridge IP is logged instead). Lateral L4
+  reachability between containers on `homelab` is unchanged --
+  the broader bridge-segmentation work remains open and will be
+  scheduled in a separate maintenance window per plan §7 step 14.
 
 ---
 
@@ -434,7 +553,37 @@ where one exists.
   one at a time if startup fails. The operator's existing
   `/opt/docker/AUDIT.md` (2026-04-16) documents the pattern as the
   convention; the immich subdir was just never updated.
-- **Status:** Open
+- **Status:** Closed 2026-05-09
+- **Resolution:** Added a shared `x-hardening: &hardening` YAML
+  anchor to `/opt/docker/immich/docker-compose.yml` carrying
+  `security_opt: [no-new-privileges:true]` + `cap_drop: [ALL]`.
+  Each service merges the anchor and re-adds the minimum caps it
+  needs:
+  - `immich-server`: `NET_BIND_SERVICE`, `CHOWN`, `DAC_OVERRIDE`,
+    `SETUID`, `SETGID`. `DAC_OVERRIDE` is required because the
+    `${UPLOAD_LOCATION}` host dir is owned by josh:josh (uid 1000)
+    while the container runs as root -- documented inline in the
+    compose file. `/dev/dri` left as a full directory mount per
+    plan §10.4 (OpenVINO does not support narrowing to renderD128).
+  - `immich-machine-learning`: `NET_BIND_SERVICE` only.
+  - `immich_redis`: `NET_BIND_SERVICE`, `user: "999"`,
+    `read_only: true`, tmpfs for `/tmp` + `/data`.
+  - `immich_postgres`: `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID`,
+    `SETGID`, `user: "999"`, `read_only: true`, tmpfs for `/tmp`,
+    `/run/postgresql`, **and** `/etc/postgresql` (the Immich
+    postgres entrypoint copies a generated SSD/HDD-tuned
+    `postgresql.conf` to that dir at boot -- without the tmpfs
+    layer it crashed with "read-only filesystem"). Discovered
+    during staging.
+  - All four services got `deploy.resources.limits` for cpus,
+    memory, and pids per plan §10.7.
+  - H-008's `127.0.0.1:2283` host bind was removed in the same pass.
+- **Verification:** `docker compose up -d` cycled all four
+  services to healthy. Photo upload via web UI, ML face-recognition
+  job, and the Immich mobile app all exercised post-restart with no
+  regressions. `docker inspect immich_server | jq
+  '.[0].HostConfig.CapAdd, .[0].HostConfig.CapDrop'` shows the
+  reduced capability set.
 
 ---
 
@@ -527,8 +676,35 @@ where one exists.
   side already uses pinned digests for the bundled `nginx:1.27-
   alpine`, `redis:7.4-alpine`, and `postgres:16-alpine` -- the
   pattern is established.
-- **Status:** Open (already flagged in the operator's existing
-  AUDIT.md)
+- **Status:** Closed 2026-05-09
+- **Resolution:** Recommendation upgraded from "minor-version
+  tags" to **SHA256 digest pinning** per plan §10.5 (post-XZ
+  Utils CVE-2024-3094 supply-chain shift). Every compose-managed
+  image across the four projects (`/opt/docker`, `/opt/docker/
+  immich`, `/opt/docker/shekel`, `/opt/docker/monitoring`) is now
+  pinned by digest, e.g.:
+  ```
+  image: jellyfin/jellyfin:latest@sha256:1694ff069f0c…
+  image: nginx:latest@sha256:1881968aff6f…
+  image: cloudflare/cloudflared:latest@sha256:6b599ca3e974…
+  image: jacobalberty/unifi:latest@sha256:896c0ab82d33…
+  ```
+  Tag stays alongside the digest for traceability; the digest is
+  what Docker actually resolves. Update workflow:
+  - **Diun** (`crazymax/diun:4.31.0`) added to the monitoring
+    stack. Watches every running container, posts to ntfy when
+    a tag's digest changes upstream.
+  - **`/opt/docker/scripts/bump-digest.sh`** helper rewrites the
+    pinned `@sha256:…` line in the right compose file given a
+    container name. Supports `--list`, `--all`, single-container
+    bump. Diun ntfy + this script form the upgrade loop.
+  This closes both the H-007 finding and the operator's existing
+  AUDIT.md "stop using :latest" item.
+- **Verification:** `docker ps --format 'table {{.Names}}\t
+  {{.Image}}'` shows every container with a digest in its image
+  string. `bump-digest.sh --list` enumerates them. Diun container
+  status: healthy; ntfy received its first "no updates" run on
+  the schedule.
 
 ---
 
@@ -568,7 +744,15 @@ where one exists.
   entirely; `docker exec immich_server curl http://localhost:2283`
   serves the same debugging purpose without a host-side bind.
   Defer until H-001..H-005 are addressed.
-- **Status:** Open
+- **Status:** Closed 2026-05-09
+- **Resolution:** The `ports:` block was removed from
+  `immich-server` in the same H-005 hardening pass. Debugging
+  now uses `docker exec immich_server curl
+  http://localhost:2283/api/server/ping` (documented inline in
+  the compose file).
+- **Verification:** `docker port immich_server` returns no host
+  bindings; `ss -tlnp` on the host shows no listener on
+  `127.0.0.1:2283`.
 
 ---
 
@@ -605,14 +789,23 @@ where one exists.
   surface (jellyfin Quick Connect, immich registration), it is a
   real gap.
 - **Recommendation:** Apply Cloudflare Access policies at the
-  dashboard level, scoped per hostname. Start with the
-  highest-risk service (immich, which has photo PII) and a
-  one-time-pin email policy keyed to the operator's address.
-  Complementary to H-001: once cloudflared routes through Nginx,
-  Access policies can be tuned per `originRequest` block.
-  Documented in F-061 of the Shekel audit; this finding extends
-  the scope.
-- **Status:** Open (cross-references F-061)
+  dashboard level, scoped per hostname. **Scope refined
+  2026-05-09 (plan §10.6):** Cloudflare Access **breaks the
+  native iOS/Android/desktop apps** for jellyfin and immich --
+  those clients cannot follow an interactive browser-based
+  Access login redirect. The same applies to the Kobo store-API
+  shim that fronts calibre-web at `books.saltyreformed.com`.
+  Therefore Access should be applied **only to the browser-only
+  admin UIs**: `ntfy.saltyreformed.com`,
+  `grafana.saltyreformed.com`, `shekel.saltyreformed.com`, and
+  (if it ever goes WAN) `unifi.…`. OTP-via-email is sufficient
+  for a single-operator tenancy; pair with a service-token
+  escape hatch before the OTP policy goes live so a misconfig
+  doesn't lock the operator out. Complementary to H-001: now
+  that cloudflared routes through Nginx, Access policies can be
+  tuned per `originRequest` block. Cross-references F-061.
+- **Status:** Open (deferred -- requires Cloudflare dashboard
+  work, no compose / file changes on this host)
 
 ---
 
@@ -641,18 +834,18 @@ where one exists.
 
 ## Summary
 
-| Finding | Severity | Scope | Cross-reference | Recommended order |
+| Finding | Severity | Scope | Cross-reference | Status (2026-05-09 EOD) |
 |---|---|---|---|---|
-| H-010 | -- | informational | F-156 | n/a (already done) |
-| H-003 | Medium | per-vhost headers | F-064 | **First** -- 5 minutes per vhost, zero restart impact |
-| H-001 | Medium / High aggregate | cloudflared routing | F-063 | **Second** -- single config edit + cloudflared restart |
-| H-002 | Medium | shared nginx real_ip | F-015 | **Third** -- depends on cloudflared topology choice |
-| H-005 | Medium | Immich hardening | -- | **Fourth** -- per-service compose edits |
-| H-009 | Medium | Cloudflare Access | F-061 | **Fifth** -- dashboard work; no compose edits |
-| H-007 | Low | image pinning | -- | Existing AUDIT.md item; coordinate with next image upgrade |
-| H-004 | Medium / High aggregate | network isolation | F-020 / F-129 | **Largest scope** -- defer until smaller fixes land |
-| H-006 | Low | UniFi accepted risk | -- | Re-evaluate on next UniFi major version |
-| H-008 | Info | Immich host bind | -- | Optional cleanup |
+| H-001 | Medium / High aggregate | cloudflared routing | F-063 | **Closed** -- all 5 hostnames route via `https://nginx:443` |
+| H-002 | Medium | shared nginx real_ip | F-015 | **Closed** -- `set_real_ip_from 172.18.255.10` + pinned cloudflared IP |
+| H-003 | Medium | per-vhost headers | F-064 | **Closed** -- `_security-headers.inc` included by 6 vhosts |
+| H-004 | Medium / High aggregate | network isolation | F-020 / F-129 | **Open (deferred)** -- partial mitigation via pinned subnet + static cloudflared IP |
+| H-005 | Medium | Immich hardening | -- | **Closed** -- x-hardening anchor + per-service caps + tmpfs |
+| H-006 | Low | UniFi accepted risk | -- | Open (re-evaluate on next UniFi major) |
+| H-007 | Low | image pinning | -- | **Closed** -- digests across all 4 projects + Diun + bump-digest.sh |
+| H-008 | Info | Immich host bind | -- | **Closed** -- removed in same H-005 pass |
+| H-009 | Medium | Cloudflare Access | F-061 | Open (scoped to admin UIs only -- jellyfin/immich/books mobile apps would break) |
+| H-010 | -- | informational | F-156 | Already mitigated |
 
 ### Cross-reference matrix (audit findings vs. service)
 
@@ -677,28 +870,41 @@ F-020, F-063, F-064, F-129, and F-156 for Shekel specifically.
 F-061 (Cloudflare Access) is still Open and is the only
 remaining audit-tracked WAN finding for Shekel.
 
-## Recommended Next Steps (operator decision queue)
+## Remaining Work (operator decision queue, post-2026-05-09 session)
 
-1. **Approve H-003 (per-vhost security headers).** Smallest blast
-   radius; lowest deployment risk; closes the most vhosts in one
-   change. Follow the Jellyfin pattern; ~5 minutes per vhost +
-   `nginx -t && nginx -s reload`.
-2. **Approve H-001 (cloudflared through nginx).** Single edit to
-   `/opt/docker/cloudflared/config.yml`; restart cloudflared.
-   Verify each WAN hostname with `curl -I` and confirm Nginx logs
-   show the request landing on its vhost.
-3. **Discuss H-002 topology.** Options (a) / (b) / (c) above
-   differ in operational complexity. Option (b) (a single
-   `homelab-front` bridge containing only nginx + cloudflared,
-   with each backend service on its own per-service bridge) is
-   the most C-33-consistent path. Option (a) is most restrictive.
-4. **Defer H-004, H-005, H-006, H-009 to discrete commits per
-   service.** None of them are quick wins.
-5. **Pick up H-007 next time any of jellyfin / unifi / nginx /
-   cloudflared is upgraded.** The pin is documentation-grade --
-   add the explicit version at upgrade time.
+The 2026-05-09 implementation pass closed H-001, H-002, H-003,
+H-005, H-007, and H-008. Remaining items, in operator-pickup
+order:
 
-This document is the read-only artifact; no homelab containers
-or files have been modified. The Shekel side of the audit
+1. **H-009 -- Cloudflare Access on the admin-only hostnames**
+   (ntfy, grafana, shekel, optionally unifi). Dashboard work.
+   Wire a service-token escape hatch first, then OTP-via-email.
+   Do **not** apply to jellyfin / immich / books -- mobile apps
+   will break (per plan §10.6).
+2. **H-004 -- broader network isolation.** Tier-based bridges
+   per plan §10.13. Higher blast radius -- requires a planned
+   maintenance window and cross-bridge DNS validation. Partially
+   mitigated already (pinned `homelab` subnet + static
+   cloudflared IP for `set_real_ip_from`); the remaining work is
+   moving services off the shared bridge.
+3. **H-006 -- UniFi.** Re-evaluate `cap_drop` on the next UniFi
+   major-version upgrade or migration to
+   `linuxserver/unifi-network-application`.
+4. **Out-of-audit items the session also addressed** (cross-
+   referenced for the operator's `AUDIT.md`):
+   - C-33 deployed: Shekel app upgraded to a build with the
+     gunicorn `FORWARDED_ALLOW_IPS` env wired up; override
+     compose carries `FORWARDED_ALLOW_IPS: 172.18.0.0/16` so the
+     trusted-proxy gate matches the H-002 trust CIDR.
+   - cAdvisor / Alloy hardening per plan §10.8 / §10.9.
+   - Diun + `bump-digest.sh` upgrade workflow (plan §10.5).
+   - Single-file bind-mount inode gotcha documented in
+     `/opt/docker/AUDIT.md` Operations Notes.
+5. **Backup automation** (plan §10.12 -- Restic + `pg_dump` +
+   systemd timer). Out of scope of the audit's stated remit but
+   flagged as the largest remaining homelab risk after this
+   pass.
+
+The Shekel side of the audit
 (`docs/audits/security-2026-04-15/`) remains the canonical record
 for Shekel-specific work.

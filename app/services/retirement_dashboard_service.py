@@ -26,7 +26,6 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import (
@@ -41,8 +40,41 @@ from app.services.investment_projection import (
     adapt_deductions,
     calculate_investment_inputs,
 )
+from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
+
+# Default safe-withdrawal-rate percentage when the user has no
+# ``UserSettings`` row or has not customised ``safe_withdrawal_rate``.
+# 4% is the Trinity Study baseline (Cooley, Hubbard, Walz, 1998) and
+# the standard default for FIRE-style retirement planners.  Stored as
+# a percentage Decimal (not the fractional decimal that the database
+# column carries) because this constant is fed directly into the
+# dashboard slider, whose ``min``/``max`` are expressed in percent.
+_DEFAULT_SWR_PCT = Decimal("4.00")
+
+# Default assumed-annual-return percentage when the user has no
+# retirement / investment accounts (or none with non-zero balances) to
+# weight a real average from.  7% matches the S&P 500's long-run
+# inflation-adjusted total return (Damodaran historical-returns dataset,
+# ~1928-2024) and is the conservative midpoint of common
+# retirement-planning assumptions (5-10%).  Same percent convention as
+# ``_DEFAULT_SWR_PCT``.
+_DEFAULT_RETURN_PCT = Decimal("7.00")
+
+# Percentage scaler.  ``safe_withdrawal_rate`` and
+# ``assumed_annual_return`` are stored as fractional decimals (4% as
+# ``Decimal("0.0400")``); the slider expects percent (4.00).  Pulled
+# out as a named constant so the conversion direction is explicit at
+# every multiplication site.
+_PCT_SCALE = Decimal("100")
+
+# Two-decimal quantum for percentage display.  The SWR slider uses
+# ``"%.2f"|format(current_swr)`` so the underlying Decimal must also
+# carry two fractional digits to avoid rendering artefacts when an
+# unquantised Decimal feeds through Python's % formatter.
+_PCT_QUANTUM = Decimal("0.01")
+
 
 def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     """Compute gap analysis data for the retirement dashboard or HTMX fragment.
@@ -225,17 +257,56 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
 def compute_slider_defaults(data):
     """Compute default slider values for the dashboard template.
 
-    Derives the weighted-average return rate across retirement accounts
-    and formats the safe withdrawal rate as a percentage for the slider.
+    Derives the balance-weighted average return rate across the user's
+    retirement / investment accounts and converts the stored
+    fractional-decimal safe withdrawal rate to the percentage form the
+    SWR slider expects.
+
+    All arithmetic is performed in :class:`~decimal.Decimal` to satisfy
+    the project's "no float for monetary or rate quantities" invariant
+    (coding standards: Type Safety).  ``float()`` arithmetic at this
+    layer historically introduced binary-fraction drift that surfaced
+    only in the dashboard's two-decimal display (e.g. ``4.000000000001``
+    rendered as ``4.00`` only by accident of the formatter); switching
+    to ``Decimal`` removes that latent failure mode and keeps the
+    rate-handling consistent with the column types in
+    ``InvestmentParams.assumed_annual_return`` (``Numeric(7, 5)``) and
+    ``UserSettings.safe_withdrawal_rate`` (``Numeric(5, 4)``).
 
     Args:
-        data: The dict returned by compute_gap_data.
+        data: The dict returned by :func:`compute_gap_data`.  Must
+            carry ``settings`` (``UserSettings`` or ``None``) and
+            ``retirement_account_projections`` (list of per-account
+            projection dicts).
 
     Returns:
-        dict with keys: current_swr (float %), current_return (float %).
+        dict with keys:
+
+        - ``current_swr`` -- ``Decimal`` percentage with 0.01 precision
+          (e.g. ``Decimal("4.00")`` for the 4% rule).  Falls back to
+          :data:`_DEFAULT_SWR_PCT` when ``settings`` is ``None`` or the
+          user has not set a custom rate.
+        - ``current_return`` -- ``Decimal`` balance-weighted average of
+          each account's ``assumed_annual_return``, expressed as a
+          percentage with 0.01 precision.  Falls back to
+          :data:`_DEFAULT_RETURN_PCT` when no account has a non-zero
+          balance to contribute weight.
+
+    Notes:
+        A user-stored SWR of exactly ``Decimal("0")`` is treated as an
+        explicit zero (not as "unset") and round-trips through this
+        function as ``Decimal("0.00")``.  Only ``None`` triggers the
+        default-fallback branch.  This matches the database semantics
+        of the column (``Numeric(5,4)`` with ``CHECK (... >= 0 AND
+        ... <= 1)``, NULL meaning "use the default").
     """
     settings = data["settings"]
-    current_swr = float(settings.safe_withdrawal_rate or 0.04) * 100 if settings else 4.0
+    if settings is None or settings.safe_withdrawal_rate is None:
+        current_swr = _DEFAULT_SWR_PCT
+    else:
+        current_swr = (settings.safe_withdrawal_rate * _PCT_SCALE).quantize(
+            _PCT_QUANTUM,
+        )
 
     projections = data.get("retirement_account_projections", [])
     total_balance = Decimal("0")
@@ -252,9 +323,11 @@ def compute_slider_defaults(data):
             total_balance += bal
             weighted_return += bal * params.assumed_annual_return
     if total_balance > 0:
-        current_return = float(weighted_return / total_balance) * 100
+        current_return = (
+            weighted_return / total_balance * _PCT_SCALE
+        ).quantize(_PCT_QUANTUM)
     else:
-        current_return = 7.0
+        current_return = _DEFAULT_RETURN_PCT
 
     return {"current_swr": current_swr, "current_return": current_return}
 
@@ -325,11 +398,7 @@ def _project_retirement_accounts(
         )
 
     # Compute actual current balances via balance calculator.
-    scenario = (
-        db.session.query(Scenario)
-        .filter_by(user_id=user_id, is_baseline=True)
-        .first()
-    )
+    scenario = get_baseline_scenario(user_id)
     acct_balance_map = {}
     if scenario and period_ids:
         for acct in accounts:
