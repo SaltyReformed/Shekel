@@ -334,8 +334,20 @@ services:
       # postgres image sees it.
       POSTGRES_PASSWORD: ""
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    # Docker secrets default to root:root mode 0400 inside the
+    # container.  With ``user: postgres`` (uid 70 in alpine) on the
+    # base service, the postgres entrypoint cannot read the secret
+    # file -- the docker-entrypoint.sh's ``< file_env`` redirection
+    # fails with "Permission denied" and the container exits before
+    # the cluster boots.  ``uid: "70"`` makes Compose chown the
+    # secret to postgres at mount time so the entrypoint can read it.
+    # ``mode: "0400"`` preserves the strict permission posture.
     secrets:
-      - postgres_password
+      - source: postgres_password
+        target: postgres_password
+        uid: "70"
+        gid: "70"
+        mode: 0400
     volumes:
       # Shared-mode TLS material.  Mounts the operator-generated
       # cert and key read-only into the canonical Postgres cert
@@ -396,10 +408,34 @@ services:
       # SECRETS" comment block above for the threat-model rationale
       # and the operator pre-flight commands.  Audit finding F-148 /
       # Commit C-38.
-      - secret_key
-      - postgres_password
-      - app_role_password
-      - totp_encryption_key
+      #
+      # ``uid: "1000"`` is the ``shekel`` user the Dockerfile creates
+      # via ``useradd --create-home shekel`` (default uid 1000) and
+      # the runtime user the Dockerfile's trailing ``USER shekel``
+      # directive switches to.  Without it, the secret file is owned
+      # root:root mode 0400 inside the container and the entrypoint
+      # cannot read it.  Mirror the postgres uid override above; both
+      # services use the same pattern.
+      - source: secret_key
+        target: secret_key
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: postgres_password
+        target: postgres_password
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: app_role_password
+        target: app_role_password
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: totp_encryption_key
+        target: totp_encryption_key
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
     networks:
       - backend
       - shekel-frontend
