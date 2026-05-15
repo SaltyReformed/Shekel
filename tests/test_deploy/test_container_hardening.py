@@ -254,22 +254,34 @@ class TestBaseComposeHardeningFields:
     def test_mem_limit_set_and_reasonable(
         self, parsed: dict, service_name: str, min_mib: int
     ) -> None:
-        """Each hardened service must declare a ``mem_limit``.  The
+        """Each hardened service must declare a memory cap.  The
         absolute minimum is the smallest plausible working set for
         the workload; the test asserts ``>= min_mib`` rather than an
         exact value so an operator who tunes upward (more workers,
         bigger shared_buffers) does not have to update the test.
         Audit finding F-115.
+
+        Reads ``deploy.resources.limits.memory`` (Compose-Spec form,
+        adopted 2026-05-14) with a fallback to legacy ``mem_limit``
+        for older branches.
         """
         service = parsed["services"][service_name]
-        raw = service.get("mem_limit")
+        raw = (
+            service.get("deploy", {})
+            .get("resources", {})
+            .get("limits", {})
+            .get("memory")
+        )
+        if raw is None:
+            raw = service.get("mem_limit")
         assert raw is not None, (
-            f"service {service_name!r} missing mem_limit "
-            f"(audit F-115)"
+            f"service {service_name!r} missing memory limit "
+            f"(deploy.resources.limits.memory or mem_limit; audit "
+            f"F-115)"
         )
         bytes_value = _parse_mem_limit(raw)
         assert bytes_value >= min_mib * MIB, (
-            f"service {service_name!r} mem_limit={raw!r} "
+            f"service {service_name!r} memory limit={raw!r} "
             f"({bytes_value} bytes) below the minimum "
             f"{min_mib} MiB working-set floor"
         )
@@ -278,15 +290,27 @@ class TestBaseComposeHardeningFields:
     def test_pids_limit_set(
         self, parsed: dict, service_name: str
     ) -> None:
-        """Each hardened service must declare a ``pids_limit`` so a
-        fork bomb in one container cannot exhaust the host's pid
-        space.  Audit finding F-115.
+        """Each hardened service must declare a pids cap so a fork
+        bomb in one container cannot exhaust the host's pid space.
+        Audit finding F-115.
+
+        Reads ``deploy.resources.limits.pids`` (Compose-Spec form,
+        adopted 2026-05-14) with a fallback to legacy ``pids_limit``
+        for older branches.
         """
         service = parsed["services"][service_name]
-        pids_limit = service.get("pids_limit")
+        pids_limit = (
+            service.get("deploy", {})
+            .get("resources", {})
+            .get("limits", {})
+            .get("pids")
+        )
+        if pids_limit is None:
+            pids_limit = service.get("pids_limit")
         assert isinstance(pids_limit, int) and pids_limit > 0, (
-            f"service {service_name!r} pids_limit not set or "
-            f"non-positive (audit F-115): {pids_limit!r}"
+            f"service {service_name!r} pids limit not set or "
+            f"non-positive (deploy.resources.limits.pids or "
+            f"pids_limit; audit F-115): {pids_limit!r}"
         )
 
     @pytest.mark.parametrize("service_name", HARDENED_SERVICES)
@@ -603,6 +627,12 @@ class TestMergedComposeHardeningSurvivesOverride:
             # value never reaches a real pull because ``compose config``
             # only renders the merged YAML.
             "SHEKEL_IMAGE_DIGEST": "sha256:" + "0" * 64,
+            # Phase B3 Redis ACL hardening: the bundled redis service's
+            # ``--user shekel`` ACL line interpolates
+            # ``${SHEKEL_REDIS_PASSWORD:?...}`` from .env.  Synthetic
+            # value satisfies the required-form check; the test never
+            # actually starts the redis container.
+            "SHEKEL_REDIS_PASSWORD": "test-redis-password",
         }
         result = subprocess.run(
             [
@@ -683,18 +713,29 @@ class TestMergedComposeHardeningSurvivesOverride:
         merged: dict,
         service_name: str,
     ) -> None:
-        """The shared-mode merge must preserve mem_limit and
-        pids_limit -- the override does not redeclare them, so any
-        loss here means compose collapsed the values during merge.
+        """The shared-mode merge must preserve the memory and pids
+        caps -- the override does not redeclare them, so any loss
+        here means compose collapsed the values during merge.
+
+        Reads ``deploy.resources.limits`` (Compose-Spec form, adopted
+        2026-05-14) with a fallback to legacy ``mem_limit`` /
+        ``pids_limit`` for older branches.
         """
         service = merged["services"][service_name]
-        mem_limit = service.get("mem_limit")
-        pids_limit = service.get("pids_limit")
+        limits = (
+            service.get("deploy", {})
+            .get("resources", {})
+            .get("limits", {})
+        )
+        mem_limit = limits.get("memory") or service.get("mem_limit")
+        pids_limit = limits.get("pids") or service.get("pids_limit")
         assert mem_limit, (
-            f"merged {service_name} service missing mem_limit: "
+            f"merged {service_name} service missing memory limit "
+            f"(deploy.resources.limits.memory or mem_limit): "
             f"{mem_limit!r}"
         )
         assert pids_limit, (
-            f"merged {service_name} service missing pids_limit: "
+            f"merged {service_name} service missing pids limit "
+            f"(deploy.resources.limits.pids or pids_limit): "
             f"{pids_limit!r}"
         )

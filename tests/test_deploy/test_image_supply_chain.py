@@ -546,6 +546,8 @@ class TestComposeOverrideRequiresDigest:
             "POSTGRES_PASSWORD": "test-postgres-password",
             "SECRET_KEY": "a" * 32,
             "APP_ROLE_PASSWORD": "test-app-role-password",
+            # Phase B3 Redis ACL hardening interpolation.
+            "SHEKEL_REDIS_PASSWORD": "test-redis-password",
         }
 
     def _run_compose_config(self, env: dict[str, str]) -> subprocess.CompletedProcess:

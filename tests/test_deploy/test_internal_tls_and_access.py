@@ -889,6 +889,8 @@ class TestMergedComposeCarriesTLS:
             "SECRET_KEY": "a" * 32,
             "APP_ROLE_PASSWORD": "test-app-role-password",
             "SHEKEL_IMAGE_DIGEST": "sha256:" + "0" * 64,
+            # Phase B3 Redis ACL hardening interpolation.
+            "SHEKEL_REDIS_PASSWORD": "test-redis-password",
         }
         result = subprocess.run(
             [
