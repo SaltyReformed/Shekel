@@ -487,6 +487,16 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+      # Gunicorn's optional control server writes a socket file under
+      # ``$HOME/.gunicorn`` (per gunicorn/sock.py).  Under the C-35
+      # read-only rootfs the directory cannot be created and the
+      # server logs ``Errno 30: Read-only file system`` at every boot.
+      # The worker pool serves requests fine without it -- the control
+      # server is for admin lifecycle signals -- but the WARN is
+      # noise.  A tmpfs at the canonical home-dir path lets the
+      # control server initialise cleanly; the socket is ephemeral
+      # per-process anyway.
+      - /home/shekel/.gunicorn
 
   # ── Nginx Reverse Proxy ──────────────────────────────────────────
   nginx:
