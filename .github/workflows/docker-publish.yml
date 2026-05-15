@@ -74,7 +74,12 @@ jobs:
         # the runner.  The same cosign version then runs both the
         # ``sign`` step below and any operator-side ``verify``, so
         # signature-format compatibility is a known constant.
-        uses: sigstore/cosign-installer@v3.7.0
+        #
+        # Bumped 2026-05-14 from v3.7.0 (which only supports cosign
+        # 2.x) to v4.1.2 (cosign 3.x).  The 2.x releases were pruned
+        # from sigstore's distribution channel; pinning to a 2.x
+        # version under v3.7.0 of this Action fails at download.
+        uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: ${{ env.COSIGN_VERSION }}
 
