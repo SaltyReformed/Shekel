@@ -34,6 +34,33 @@ behavioral expectation (Phase 0.3 addition). Any computation that produces a mon
 boundary (storage, display) without quantizing to two decimal places using ROUND_HALF_UP is a
 finding.
 
+A-01 verification (auditor, 2026-05-15): PARTIALLY ACCURATE. The rule IS the established
+convention (109 `ROUND_HALF_UP` occurrences across 19 files; every service that names a rounding
+mode uses it; rule absent from `CLAUDE.md` and the two standards documents as claimed). The
+"every monetary boundary" framing is not literally true. Concrete violations:
+
+- 24 monetary `.quantize()` calls omit `rounding=ROUND_HALF_UP` (defaults to `ROUND_HALF_EVEN`,
+  banker's rounding):
+  `app/services/investment_projection.py:93, 96, 159`;
+  `app/services/savings_dashboard_service.py:266, 872, 873`;
+  `app/services/retirement_dashboard_service.py:197, 211, 214, 240, 390`;
+  `app/routes/investment.py:131, 223, 226, 319, 458, 535, 538, 580, 585, 586, 589, 670`;
+  `app/routes/loan.py:968`.
+- 1 intentional `ROUND_CEILING` on a money value: `app/services/savings_goal_service.py:462-463`
+  in `_compute_required_monthly` so the user contributes "at least enough" (documented in the
+  function's docstring at line 438).
+- 3 Jinja templates do arithmetic on money (also violates `docs/coding-standards.md` "Templates
+  are for display, not computation"): `app/templates/loan/_schedule.html:55`,
+  `app/templates/loan/_payoff_results.html:72`, `app/templates/loan/_escrow_list.html:37`.
+- 1 JS file does monetary arithmetic: `app/static/js/retirement_gap_chart.js:24-25`.
+- No centralized `round_money()` helper exists; every service redeclares `TWO_PLACES =
+  Decimal("0.01")` locally. This is the substrate for the drift.
+
+Recommendation: either accept A-01 as the canonical rule (with the 24+5 violations as Phase 3
+findings) or amend A-01 to acknowledge them explicitly so Phase 3 starts with a documented list.
+The absence of a centralized money-rounding helper is a candidate Phase 6 DRY finding. See
+`answer_verification.md` Section 1 (A-01) for full evidence.
+
 ## Cross-plan contradictions to adjudicate
 
 Questions surfaced by P0-c when comparing watchlist entries across plans. Each maps to a `C-NN`
@@ -66,6 +93,15 @@ helper were never built. Evidence:
 - End-user observation (developer): the source row stays in the source period showing $65 with a
   Done badge, consistent with Option F and inconsistent with `envelope_view`.
 
+A-02 verification (auditor, 2026-05-15): ACCURATE. All seven evidence bullets verified at the
+cited locations. Two minor notes: `settle_from_entries` ends at
+`app/services/transaction_service.py:168`, not 169 (the file is 168 lines); the render at
+`app/templates/grid/_transaction_cell.html:42-44` is gated on `show_progress` at line 19, which
+requires `status_id == STATUS_PROJECTED` (true for the bumped target canonical in the steady
+state, which is the case the developer is describing). Zero matches for `carried_from_period_id`,
+`EnvelopeCell`, or `grid_aggregation*` anywhere in code or migrations. See
+`answer_verification.md` Section 1 (A-02).
+
 Q-03 (maps to C-02): Recurrence skip rule for `is_override` rows. `carry_fwd_impl` leans on the
 existing rule that any `is_override=True` row blocks regeneration of its canonical; `envelope_view`
 (sections 4.4 and 12) narrows the rule so carried-only overrides do NOT block generation, only
@@ -80,6 +116,15 @@ transfer-recurrence engines still treat any `is_override=True` row as a skip sig
 implemented because `envelope_view`'s data model was never built; see A-02. Option F does not need
 the narrowing -- under settle-and-bump the target canonical IS the canonical (bumped in place), not
 a separate carried sibling, so a single override flag is sufficient.
+
+A-03 verification (auditor, 2026-05-15): ACCURATE. Skip predicates verified at
+`app/services/recurrence_engine.py:128` (`if existing_txn.is_override:`) and
+`app/services/transfer_recurrence.py:97` (`if xfer.is_override:`). The `is_override` column on
+`SoftDeleteOverridableMixin` (`app/models/mixins.py:65-103`) is a single uniform boolean; the
+schema has no provenance metadata, so a "carried-only" sub-rule could not be represented even if
+a future code change wanted to differentiate. Option F's "bumps in place" verified at
+`app/services/carry_forward_service.py:887-896` (no sibling row is created; the existing target
+canonical is mutated). See `answer_verification.md` Section 1 (A-03).
 
 Q-04 (maps to C-03): ARM `current_principal` source for projection. `section5` (5.1-2) says current
 principal must be derived from confirmed payments via engine replay and replace the stored
@@ -101,6 +146,17 @@ ARM. For fixed-rate loans the code walks the schedule forward from origination u
 docstring at `app/services/amortization_engine.py:848-861` documents this dual policy. Phase 3
 should verify the split is consistent across every page that displays principal, not whether one
 plan replaces the other.
+
+A-04 verification (auditor, 2026-05-15): ACCURATE. All four cited locations verified.
+`app/services/amortization_engine.py:977-984` branches on `is_arm` (line 977); ARM sets
+`cur_balance = current_principal` (line 978); fixed-rate walks `for row in reversed(schedule): if
+row.is_confirmed: cur_balance = row.remaining_balance; break` (lines 980-984) with fallback to
+`current_principal`. Minor: the `LoanProjection` docstring at line 855 says fixed-rate
+`current_balance` is "derived from the schedule by walking to today's date", but the
+implementation actually walks for the last `is_confirmed` row. The inline comment at lines
+971-976 acknowledges this is deliberate ("walking to today's date would pick up theoretical
+contractual rows that may not match reality"). Documentation drift, not a logic bug. See
+`answer_verification.md` Section 1 (A-04).
 
 Q-05 (maps to C-04): ARM monthly payment computation. `section5` describes the engine replaying
 actual payments from origination and re-amortizing at every rate change. `arm_anchor` (1A, 1D)
@@ -124,6 +180,39 @@ fixed-rate window, replay and anchor-reset must produce the same number, and any
 finding. Phase 3 must verify all eight call sites receive the same triple for the same loan on the
 same date; Phase 6 should record the DRY violation across the eight sites.
 
+A-05 verification (auditor, 2026-05-15): PARTIAL. All 8 enumerated sites exist and use the ARM
+formula. But "Eight call sites compute it" understates the total: there are 16 call sites in
+`app/`, plus 1 definition at `app/services/amortization_engine.py:178`. The 8 fixed-rate ELSE
+branches use a different formula `(original_principal, rate, term_months)` and produce a
+different value for partially-paid fixed-rate loans. Full inventory:
+
+- ARM-formula branches (the 8 in A-05): `amortization_engine.py:440, :491, :512, :697, :952`;
+  `balance_calculator.py:225`; `loan_payment_service.py:251`; `routes/loan.py:1225`.
+- Fixed-rate ELSE branches (8 sites, missing from A-05): `amortization_engine.py:436, :693,
+  :957`; `balance_calculator.py:231`; `loan_payment_service.py:256`; `routes/loan.py:1231`. These
+  use `(original_principal, rate, term_months)`. Plus 2 in-loop state transitions inside
+  `generate_schedule` (`:491`, `:512`, listed above with the ARM branches because they fire only
+  on ARM schedules in practice) and 2 unconditional sites: `routes/loan.py:1102` (refinance
+  preview, new-loan terms by design) and `app/routes/debt_strategy.py:127` (uses ARM formula on
+  EVERY loan, ARM or fixed; intent unclear).
+
+`app/routes/debt_strategy.py:127` is the 16th site, missed by both A-05 and Q-09. Q-09's "14" is
+also short (its prose enumerates 7 fallback sites despite saying "six"). Three concerns Phase 3
+must verify:
+
+1. Pairs 1-2 in `amortization_engine.py` (`:436/440`, `:693/697`) use caller-state discriminator
+   (`using_contractual` = `original_principal` provided AND `term_months` provided AND no
+   `rate_changes`), not the `is_arm` column. A caller that forgets `original_principal` on a
+   fixed-rate loan silently routes through the ARM branch.
+2. The `:952` predicate is `if is_arm and remaining > 0`. A fully-paid ARM (`remaining <= 0`)
+   routes through the fixed-rate ELSE at `:957` using `orig_principal/term_months`, which
+   produces a meaningless contractual figure for a paid-off loan.
+3. `debt_strategy.py:127` needs developer clarification on intent.
+
+Phase 3 must verify all 16 call sites against the per-loan invariant, not just the 8 ARM
+branches; verifying only the ARM branches answers the W-048 invariant tautologically. See
+`answer_verification.md` Section 1 (A-05) for the full call-site table.
+
 Q-06 (maps to C-05): Year-end mortgage interest source. `section8` (13.D) defines mortgage interest
 total as the sum of interest portions from amortization schedule rows whose `payment_date` falls in
 the calendar year. `year_end_fixes` (1) requires escrow subtraction from shadow transaction amounts
@@ -140,6 +229,23 @@ sums `row.interest` for schedule rows where `payment_date.year == year`. The exa
 `tests/test_services/test_year_end_summary_service.py:1399` (`Decimal("15356.80")`) verifies the
 full pipeline. `section8`'s rule is correct only when applied to a schedule generated from
 `year_end_fixes`-preprocessed payments; both plans are honored simultaneously.
+
+A-06 verification (auditor, 2026-05-15): ACCURATE. All cited locations and the end-to-end
+pipeline verified: `Transaction (shadow income)` -> `get_payment_history`
+(`loan_payment_service.py:156-230`) -> `prepare_payments_for_engine`
+(`loan_payment_service.py:263-353`, called from `load_loan_context` at `:122-125`) ->
+`LoanContext.payments` -> `amortization_engine.generate_schedule` (from
+`year_end_summary_service._generate_debt_schedules` at `:1471-1483`) -> `_compute_mortgage_interest`
+at `year_end_summary_service.py:380-408`. Minor: the escrow subtraction loop spans
+`loan_payment_service.py:305-318` with the reassignment `sorted_payments = adjusted` at line 319.
+Two observations: the test at `tests/test_services/test_year_end_summary_service.py:1399` invokes
+`compute_year_end_summary` end-to-end but creates zero payments, so `prepare_payments_for_engine`
+short-circuits at the empty-list guard (`:297-298`); the actual reshaping is covered by
+dedicated unit tests in `tests/test_services/test_loan_payment_service.py:488+`. Two paths call
+`generate_schedule` WITHOUT preprocessing: `savings_dashboard_service.py:471, 488` (paid-off
+check) and `routes/debt_strategy.py:175, 181` (debt-strategy current-principal). They do not
+affect mortgage interest but could produce wrong schedules in their own contexts when
+escrow-inclusive payments are present. See `answer_verification.md` Section 1 (A-06).
 
 Q-07 (maps to C-06): Envelope source row `pay_period_id` after carry-forward. `carry_fwd_impl`
 (Phase 4 step 7) says the envelope source row stays in its original period as a settled record;
@@ -158,6 +264,21 @@ template-linked rows (`prod_readiness_v1` W-192), source is moved with `pay_peri
 `is_override = True` at lines 415-416. `prod_readiness_v1`'s WU-10 description is the
 discrete-branch behavior; `carry_fwd_impl`'s Phase 4 step 7 is the envelope-branch behavior. Neither
 plan supersedes the other.
+
+A-07 verification (auditor, 2026-05-15): ACCURATE. The three-way partition at
+`carry_forward_service.py:272-278` verified with the exact predicates the developer described;
+lines 415-416 (discrete) and 891-894 (envelope target bump) verified. One nuance the answer did
+not surface: the discrete branch further sub-splits at runtime.
+
+- Template-linked discrete (`template_id IS NOT NULL`, `carry_forward_service.py:405-421`): bulk
+  UPDATE sets `pay_period_id`, `is_override = True`, `version_id += 1`.
+- Ad-hoc discrete (`template_id IS NULL`, `carry_forward_service.py:423-438`): bulk UPDATE sets
+  only `pay_period_id` and `version_id += 1`. It does NOT set `is_override`.
+
+Reason for the ad-hoc carve-out: ad-hoc rows are not constrained by the partial unique index
+`idx_transactions_template_period_scenario` (comment at lines 382-384), so they have no canonical
+to override. The sub-split is intentional. Worth adding to A-07 for completeness. See
+`answer_verification.md` Section 1 (A-07).
 
 ## Behavioral ambiguities raised by Phase 1
 
@@ -182,6 +303,27 @@ the transaction is settled and `actual_amount` is non-null. Two interpretations 
 Which reading is intended? Phase 3 will flag the current code as either AGREE (interpretation 1) or
 DIVERGE (interpretation 2) based on the answer.
 
+A-08 proposed (auditor, 2026-05-15, pending developer confirmation): The current code
+implements interpretation (1) "Budget = what you allocated". `_entry_progress_fields`
+(`app/services/dashboard_service.py:203-246`) anchors `entry_remaining` (line 239) and
+`entry_over_budget` (line 245) on `txn.estimated_amount` unconditionally. `compute_remaining` at
+`app/services/entry_service.py:405-425` is `estimated_amount - sum(e.amount for e in entries)`;
+the function does not receive the transaction and cannot switch on status. For a done txn with
+`actual_amount = $100`, `estimated_amount = $120`, entries summing to $80: returns
+`entry_remaining = $40`, `entry_over_budget = False`; the `$100` `actual_amount` is not
+consulted. Separately, `bill["amount"] = txn.effective_amount` (`dashboard_service.py:191`)
+returns `actual_amount` when non-null, so the displayed bill row has internally inconsistent
+anchors against a single user mental model.
+
+No test exercises (done, actual_amount set, entries present):
+`tests/test_routes/test_dashboard_entries.py:45-88` hard-codes `status_id = projected.id`. The
+audit cannot determine intent from the code alone. If interpretation (1) is the intent, Phase 3
+records AGREE; if interpretation (2), the code is a DIVERGE finding and `compute_remaining`
+needs to accept the transaction and switch base on `is_settled`. The cross-anchor inconsistency
+(amount uses `actual_amount`, remaining uses `estimated_amount`) is a separate concern worth
+labeling regardless of which interpretation is chosen. See `answer_verification.md` Section 2
+(Q-08).
+
 Q-09 (P1-b, 2026-05-15): For an ARM mortgage's `monthly_payment`, A-05 lists eight call sites that
 must receive the same `(current_principal, current_rate, remaining_months)` triple for a given
 loan-on-date. The grep in P1-b finds fourteen `calculate_monthly_payment` call sites, not eight: an
@@ -191,6 +333,44 @@ in `app/routes/loan.py` (lines 1102, 1231). The eight in A-05 are the primary br
 if/else pair; the additional six are the fallback branches. Should Phase 3's consistency audit
 verify all fourteen call sites against the invariant, or only the eight in A-05? If only the
 primary branches matter, what guarantees do the fallback branches make about their inputs?
+
+A-09 proposed (auditor, 2026-05-15, pending developer confirmation): The actual count is 16
+call sites in `app/`, not 14. A-05 listed 8 (the ARM branches); Q-09 listed 7 additional (despite
+saying "six") and missed `app/routes/debt_strategy.py:127`. Full inventory in
+`answer_verification.md` Section 1 (A-05) and Section 2 (Q-09).
+
+Phase 3 should verify all 16 call sites, not just the 8 ARM branches. Reasons:
+
+- The 8 fixed-rate ELSE branches (`amortization_engine.py:436, :693, :957`;
+  `balance_calculator.py:231`; `loan_payment_service.py:256`; `routes/loan.py:1231`) use the
+  formula `(original_principal, rate, term_months)`, NOT the ARM formula. For partially-paid
+  fixed-rate loans these produce a different value than the ARM branches.
+- Verifying only the 8 ARM branches answers the W-048 invariant tautologically (every ARM
+  branch uses the ARM formula, by construction).
+- The fluctuation symptom may originate from a fixed-rate branch firing when the ARM branch was
+  expected, or from the caller-state discriminator (`using_contractual`) misclassifying a
+  fixed-rate loan when `original_principal` is not passed.
+
+Fallback branch input guarantees:
+
+- Pairs 3-6 (`is_arm`-discriminated, sites at `:952/957`, `balance_calculator.py:225/231`,
+  `loan_payment_service.py:251/256`, `routes/loan.py:1225/1231`): the ELSE branches read
+  `LoanParams.original_principal` and `params.term_months`, required model columns wrapped in
+  `Decimal(str(...))`. Risk axis is the discriminator (`is_arm` column correctness), not the
+  inputs.
+- Pairs 1-2 (`amortization_engine.py:436/440`, `:693/697`): discriminator is caller-supplied
+  state (`using_contractual` = `original_principal` provided AND `term_months` provided AND no
+  `rate_changes`). A caller that omits `original_principal` for a fixed-rate loan silently
+  routes through the ARM branch. Phase 3 should audit every direct caller of `generate_schedule`
+  and `calculate_summary` for this pattern.
+- Corner case at `:952`: `if is_arm and remaining > 0` routes a fully-paid ARM (`remaining <=
+  0`) through the fixed-rate ELSE at `:957`, using `orig_principal/term_months`. Likely a
+  meaningless figure for a paid-off ARM.
+- `routes/debt_strategy.py:127`: unconditional ARM-formula call on every loan, fixed-rate or
+  ARM. Intent unclear; needs developer confirmation. For a partially-paid fixed-rate loan, this
+  produces a value lower than the contractual payment.
+
+See `answer_verification.md` Section 2 (Q-09) for the full per-site analysis.
 
 Q-10 (P1-c, 2026-05-15): `grid.index` (`app/routes/grid.py:164`) computes per-period subtotals
 (income, expense, net) inline at lines 263-279 by iterating transactions and accumulating
@@ -210,6 +390,38 @@ Which reading is intended? Phase 6 SRP review needs the answer; Phase 3 must com
 `grid.index` subtotals against the dashboard's spending-comparison values for the same period
 regardless, because both are user-facing financial figures.
 
+A-10 proposed (auditor, 2026-05-15, pending developer confirmation): The current code computes
+per-period subtotal inline in the route at `app/routes/grid.py:263-279` (Projected-only,
+`is_income` + `is_expense` split, `txn.effective_amount`). Three other services compute
+superficially-similar "period totals" with divergent semantics:
+
+- `dashboard._sum_settled_expenses` (`app/services/dashboard_service.py:607-633`): settled-only
+  (status in DONE/RECEIVED/SETTLED), expense-only, `abs(effective_amount)`. OPPOSITE status
+  filter from grid; cannot agree by construction.
+- `balance_calculator._sum_remaining` and `_sum_all`
+  (`app/services/balance_calculator.py:389-451`): same filters as grid (Projected-only,
+  is_income + is_expense), BUT expense uses `_entry_aware_amount(txn)`
+  (`balance_calculator.py:292-386`), which subtracts cleared entry debits when entries are
+  loaded. For a projected envelope expense with cleared entries, the two paths produce different
+  numbers.
+- `spending_trend_service.period_totals` (`app/services/spending_trend_service.py:315-322`):
+  expense-only, abs of effective_amount.
+
+No service-level `period_subtotal` function exists. Grep for `period_subtotal | period_total |
+subtotal` finds only `spending_trend_service.py:315` and the template/route consumers of the
+`subtotals` dict the grid hands to its template.
+
+Phase 3 must record that the grid's inline subtotal and the balance calculator's expense
+disagree on `(period, Projected, envelope-with-cleared-entries)` inputs, regardless of which
+interpretation the developer chooses. This is a DIVERGE the user would see if they compared the
+grid's subtotal row to a running balance derived from the balance calculator (both have
+`selectinload(Transaction.entries)` in effect; `grid.py:229`).
+
+Choosing interpretation (1) "display detail of grid" matches current locality; the divergence
+above still requires a Phase 3 finding. Choosing interpretation (2) "shared concept" requires
+deciding between `effective_amount` and `_entry_aware_amount` as the canonical expense formula.
+See `answer_verification.md` Section 2 (Q-10).
+
 Q-11 (P1-c, 2026-05-15): `loan.refinance_calculate` (`app/routes/loan.py:1027`) derives
 `current_real_principal = proj.current_balance` at line 1087 from
 `amortization_engine.get_loan_projection`. A-04's dual policy means `proj.current_balance` is
@@ -221,6 +433,31 @@ dual policy unchanged (ARM uses stored, fixed uses walked), or should the refina
 principal" always come from a single canonical source regardless of loan type? Phase 3 must
 verify the value the refinance form prefills matches the value rendered on `/accounts/<id>/loan`
 for the same loan-on-date.
+
+A-11 proposed (auditor, 2026-05-15, pending developer confirmation): The `/accounts/<id>/loan`
+dashboard does NOT honor the A-04 dual policy on the display side. This is a real divergence.
+
+The dashboard route at `app/routes/loan.py:405-575` constructs `proj = get_loan_projection(...)`
+(line 429) but the template at `app/templates/loan/dashboard.html:104` renders
+`${{ "{:,.2f}".format(params.current_principal|float) }}` directly, bypassing the projection
+entirely. The refinance route at `app/routes/loan.py:1087` uses `proj.current_balance`.
+
+For ARM loans the two values coincide because
+`app/services/amortization_engine.py:978` assigns `cur_balance = current_principal`. For
+fixed-rate loans with any confirmed payments, `proj.current_balance` is the last `is_confirmed`
+row's `remaining_balance` (`amortization_engine.py:980-984`), which may differ from the stored
+`params.current_principal`. Only when no confirmed payments exist (the fallback at line 980) do
+the two values match.
+
+Phase 3 finding: for a fixed-rate loan with any confirmed payments, the refinance form prefill
+(when "New Principal" is blank, the auto-calc at `loan.py:1095`) does NOT match the "Current
+Principal" card on `/accounts/<id>/loan`. The refinance prefill is the more accurate number
+(reflects committed payments); the dashboard's display value is the stored static.
+
+Developer must decide: either render `proj.current_balance` on the dashboard (pass it via the
+existing engine call at line 429) so prefill matches the on-screen number, or rename the
+dashboard label to make the divergence intentional and visible ("Stored Principal" vs "Current
+Balance" or similar). See `answer_verification.md` Section 2 (Q-11).
 
 Q-12 (P1-c, 2026-05-15): `obligations.summary` (`app/routes/obligations.py:259`) builds monthly
 equivalents for recurring templates inline at lines 331-395 by calling
@@ -235,6 +472,50 @@ aggregation move into a dedicated service so every consumer reads from one canon
 equivalent aggregator? If not, what is the contract that distinguishes the three call paths so
 Phase 3 can verify each produces a consistent number when their inputs overlap?
 
+A-12 proposed (auditor, 2026-05-15, pending developer confirmation): The three paths answer
+different questions; the code makes no guarantee they agree.
+
+- `obligations.summary` (`app/routes/obligations.py:259-423`): forward-projected monthly from
+  active recurring `TransactionTemplate` + `TransferTemplate`. Excludes `ONCE` patterns (lines
+  333-334, 356-357, 378-379). Excludes templates with `end_date < today` (lines 335, 358, 380).
+  Calls `amount_to_monthly(amount, pattern_id, interval_n)` at lines 338, 361, 383.
+- `dashboard._compute_cash_runway` (`app/services/dashboard_service.py:375-417`): trailing
+  30-day average from SETTLED `Transaction` rows (status in DONE/RECEIVED/SETTLED, expense-only).
+  Does NOT consult templates. Returns days of runway, not monthly equivalent.
+- `savings_dashboard._compute_debt_summary`
+  (`app/services/savings_dashboard_service.py:802-876`): amortization-engine P+I
+  (`ad["monthly_payment"]` from `get_loan_projection` at `:362-367`) plus escrow `annual / 12`
+  (`escrow_calculator.calculate_monthly_escrow`). Does NOT call `amount_to_monthly` and does
+  NOT consult templates.
+
+Cash-runway and debt-summary are conceptually independent from obligations: realised history,
+amortization-derived obligation, and forward template projection are different quantities. A
+single aggregator only makes sense within the obligations path itself (three near-identical
+inline loops at obligations.py:331-395 could be extracted to a helper).
+
+The 26/12 biweekly-to-monthly conversion factor is duplicated in three places:
+`savings_goal_service.py:17-18` (`_PAY_PERIODS_PER_YEAR` / `_MONTHS_PER_YEAR`),
+`savings_dashboard_service.py:170-172` (inline `Decimal("26") / Decimal("12")`), and
+`savings_dashboard_service.py:765` (same inline form). Numerically equivalent; not
+cross-imported.
+
+Two real defects surfaced by this question (out of Q-12 scope but reported per CLAUDE.md rule 4):
+
+1. `compute_committed_monthly` at `app/services/savings_goal_service.py:287-328` does NOT skip
+   templates with `end_date < today`, while `obligations.summary` does. Consumers (emergency-fund
+   baseline at `savings_dashboard_service.py:794`, per-goal contributions at `:700`) include
+   expired-template contributions indefinitely.
+2. Mortgage / loan double-counting risk: a user with both (a) a recurring expense template for
+   the mortgage AND (b) a loan account with `loan_params` sees the same payment in
+   `/obligations.total_expense_monthly` AND in the savings dashboard DTI numerator. No
+   reconciliation guard.
+
+Phase 3 contract for verification: for the same set of active recurring expense templates with
+`pattern_id != ONCE` AND `(end_date IS NULL OR end_date >= today)`,
+`obligations.summary.total_expense_monthly` MUST equal the sum of `amount_to_monthly` outputs.
+`cash_runway` and `_compute_debt_summary` have no such relationship with obligations. See
+`answer_verification.md` Section 2 (Q-12).
+
 Q-13 (P1-c, 2026-05-15): `salary.calibrate_preview` (`app/routes/salary.py:1064`) computes the
 calibration's taxable-income input inline at line 1095 (`taxable = gross - total_pre_tax`),
 even though `paycheck_calculator.calculate_paycheck` produces a `breakdown.taxable_income`
@@ -244,6 +525,45 @@ directly so the calibration's effective rates are derived against the same taxab
 the breakdown reports, or is the route's inline subtraction the intended source (and the
 breakdown's field then potentially divergent)? Phase 3 must verify the two values agree for
 identical inputs.
+
+A-13 proposed (auditor, 2026-05-15, pending developer confirmation): The route's inline
+`taxable = gross - bk.total_pre_tax` at `app/routes/salary.py:1095` and `bk.taxable_income` at
+`app/services/paycheck_calculator.py:155-157` measure different quantities by design. They
+agree only when `actual_gross_pay == bk.gross_biweekly`, the trivial case calibration is
+designed to detect deviation from.
+
+- Route: `taxable = data["actual_gross_pay"] - bk.total_pre_tax` (pay-stub-grounded).
+- Breakdown: `bk.taxable_income = max(bk.gross_biweekly - total_pre_tax, 0)` where
+  `bk.gross_biweekly = (annual_salary / pay_periods_per_year).quantize(...)`
+  (`paycheck_calculator.py:133-135`) (profile-grounded, floored at zero at lines 156-157).
+
+The route's intent is pay-stub-grounded taxable so calibration's effective rates derive from the
+user's actual paycheck. Using `bk.taxable_income` directly would defeat the calibration use
+case.
+
+However, a real bug surfaced: `bk.total_pre_tax` includes percentage-based pre-tax deductions
+computed against the PROFILE's `gross_biweekly`, not against the form's `actual_gross_pay`. At
+`paycheck_calculator.py:439-442`:
+
+    if ded.calc_method_id == calc_method_pct_id:
+        amount = (gross_biweekly * amount).quantize(
+            TWO_PLACES, rounding=ROUND_HALF_UP
+        )
+
+When the form's gross differs from the profile's gross (the calibration use case), the
+percentage deduction is applied to the wrong base, and the derived effective rates absorb the
+gap. Concrete example: profile `annual_salary = $60,000` so `bk.gross_biweekly = $2,307.69`;
+pay stub `actual_gross_pay = $2,400.00`; pre-tax 401k is 5% of gross. Then:
+
+- `bk.total_pre_tax = 2,307.69 * 0.05 = $115.38`
+- Route's `taxable = 2,400.00 - 115.38 = $2,284.62`
+- If the 5% were applied to the actual stub gross: `2,400.00 * 0.05 = $120.00`, so taxable
+  would be `$2,280.00`.
+
+Fix needs developer intent: option A (recompute pre-tax deductions inline against
+`actual_gross_pay` via a refactored helper), option B (use `bk.taxable_income / bk.gross_biweekly`
+as a ratio to scale), option C (status quo, document the bias). Option A is what calibration
+semantically wants. See `answer_verification.md` Section 2 (Q-13).
 
 Q-14 (P1-c, 2026-05-15): `dashboard.mark_paid` (`app/routes/dashboard.py:54-139`) was initially
 classified out-of-scope by the route-inventory subagent because its body "updates status/amount
@@ -258,3 +578,44 @@ they intended to produce the same `effective_amount` and `entry_remaining` value
 transaction, with the only difference being which endpoint the UI calls? If so, Phase 3 must
 verify equivalence; if not, the documented difference belongs in section 0.3 as an expected
 behavioral nuance.
+
+A-14 proposed (auditor, 2026-05-15, pending developer confirmation): `mark_paid`
+(`app/routes/dashboard.py:54-138`) and `mark_done` (`app/routes/transactions.py:491-629`) are
+path-similar but NOT path-equivalent. They share the status policy (RECEIVED for income, DONE
+for expense, DONE for transfer shadows) and the same `MarkDoneSchema` for form validation, but
+they diverge on five behaviors:
+
+1. Envelope-with-entries auto-settle. `mark_done` calls
+   `transaction_service.settle_from_entries(txn)` at `transactions.py:596`, which auto-writes
+   `actual_amount = sum(entries)` at `transaction_service.py:153`. `mark_paid` never calls this;
+   it writes `actual_amount` only when the form provided it (`dashboard.py:127-128`). For an
+   envelope-tracked txn with entries, the two endpoints produce DIFFERENT `actual_amount` for
+   the same input request, and therefore different `Transaction.effective_amount` (the property
+   at `app/models/transaction.py:222-245` returns `actual_amount` when non-null else
+   `estimated_amount`). `mark_done` produces `sum(entries)`; `mark_paid` leaves `actual_amount`
+   NULL and `effective_amount` returns `estimated_amount`. This is the most important divergence.
+2. Stale-data handling. `mark_done` catches `StaleDataError` and returns a 409 conflict cell
+   (`transactions.py:618`); `mark_paid` only catches `IntegrityError` (`dashboard.py:132`).
+   Concurrent edits raise 409 in one path and likely 500 in the other.
+3. Ownership scope. `mark_done` allows companions for templates with `companion_visible=True`
+   (`_get_accessible_transaction_for_status` at `transactions.py:210-241`). `mark_paid` is
+   owner-only (`_get_owned_transaction` at `dashboard.py:181-192`).
+4. Rendered partial and HX-Trigger. `mark_paid` returns `dashboard/_bill_row.html` with
+   `HX-Trigger: dashboardRefresh`; `mark_done` returns `grid/_transaction_cell.html` (via
+   `_render_cell` at `transactions.py:628`) with `gridRefresh`. The progress display gating
+   differs (bill row: `not bill.is_paid`; grid cell: `status_id == STATUS_PROJECTED`),
+   semantically equivalent for a just-settled txn.
+5. Logging. `mark_done` emits an info log; `mark_paid` does not.
+
+The arithmetic for `entry_remaining` is identical in both paths (`estimated_amount -
+sum(entries)`); the displayed value differs only by template gating.
+
+Phase 3 verdict: the two endpoints produce the same `effective_amount` for transactions that
+are NOT envelope-tracked or that have no entries. They produce DIFFERENT `effective_amount` for
+envelope-tracked transactions with entries, the case the developer's concern is most likely to
+involve.
+
+Recommendation: either align `mark_paid` to call `settle_from_entries` for envelope-tracked
+transactions (so the two endpoints agree on `actual_amount` and therefore `effective_amount`),
+or document the difference explicitly so future contributors do not assume equivalence. See
+`answer_verification.md` Section 2 (Q-14).
