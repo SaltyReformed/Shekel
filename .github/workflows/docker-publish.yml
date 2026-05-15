@@ -31,7 +31,16 @@ env:
   # an unexpected upstream API change cannot silently break signing
   # in steady state.  Update this in the same commit as any cosign
   # CLI flag change.
-  COSIGN_VERSION: v2.6.4
+  #
+  # Bumped 2026-05-14 from v2.6.4 (no longer downloadable -- the 2.x
+  # release line was pruned from sigstore's distribution channel,
+  # causing back-to-back "Install Cosign" failures on 2026-05-13 and
+  # 2026-05-14 runs).  v3.x is the current major; the sign + verify
+  # CLI surface used here (cosign sign / cosign verify with
+  # --certificate-identity-regexp + --certificate-oidc-issuer) is
+  # backward-compatible with v2.x, so the operator-side verify
+  # commands in deploy/README.md continue to work unchanged.
+  COSIGN_VERSION: v3.0.6
 
 jobs:
   build-and-push:
