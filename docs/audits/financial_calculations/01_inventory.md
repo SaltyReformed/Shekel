@@ -1,27 +1,151 @@
 # Phase 1: Calculation Surface Inventory
 
-Layer-by-layer enumeration. Each Phase 1 session appends one layer.
-Reader should be able to grep this file by concept token and find every
-location that produces or consumes that concept.
+Layer-by-layer enumeration. Each Phase 1 session appends one layer. Reader should be able to grep
+this file by concept token and find every location that produces or consumes that concept.
 
-Audit plan: @docs/financial_calculation_audit_plan.md
-Priors: @docs/audits/financial_calculations/00_priors.md
-Open questions: @docs/audits/financial_calculations/09_open_questions.md
-(Q-01 through Q-07 carry developer answers A-01 through A-07 dated
-2026-05-13; cited inline below where a column or property maps to a
-resolved cross-plan answer.)
+Audit plan: @docs/financial_calculation_audit_plan.md Priors:
+@docs/audits/financial_calculations/00_priors.md Open questions:
+@docs/audits/financial_calculations/09_open_questions.md (Q-01 through Q-07 carry developer answers
+A-01 through A-07 dated 2026-05-13; cited inline below where a column or property maps to a resolved
+cross-plan answer.)
 
 Session ledger:
+
 - 1.5 Models and 1.6 DB aggregates: P1-a, 2026-05-15.
 - 1.1 Service layer: P1-b, 2026-05-15.
 - 1.2 Route layer: P1-c, 2026-05-15.
-- 1.3 Template layer + 1.4 Static/JS: P1-d (pending).
+- 1.3 Template layer + 1.4 Static/JS: P1-d, 2026-05-15.
 - 1.7 Wrap-up: P1-e (pending).
 
 ## Controlled vocabulary
 
-Tokens from Appendix A (section 12) of the audit plan. Each addition
-beyond the starter list cites the file:line where the concept appears.
+Tokens from Appendix A (section 12) of the audit plan plus additions made during Phase 1. Every
+token carries a one-sentence definition naming the value produced and its units (Decimal money,
+integer count, percentage, date). The definitions describe what the value IS, not which function
+computes it; producer/consumer lists live in section 1.7.3.
+
+Appendix A starter set (42 tokens):
+
+- `checking_balance` -- Decimal dollar balance of a checking account at a specific pay-period anchor
+  or at the end of a specific pay period; the "spendable balance" for budgeting decisions.
+- `account_balance` -- Decimal dollar balance of any account (checking, savings, loan, investment)
+  at a specific pay period; superset of `checking_balance`.
+- `projected_end_balance` -- Decimal dollar balance of an account projected to the end of a
+  non-current pay period via the balance calculator.
+- `period_subtotal` -- Decimal dollar sum of transactions in one pay period, partitioned into
+  income, expense, and net components.
+- `loan_principal_real` -- Decimal dollar outstanding principal of a loan derived from the
+  engine-walked schedule (fixed-rate per A-04) or from the stored anchor (ARM per A-04); the value
+  the audit treats as authoritative for projection.
+- `loan_principal_stored` -- Decimal dollar value of `LoanParams.current_principal` as persisted in
+  the DB; AUTHORITATIVE for ARM per A-04, otherwise a snapshot for display.
+- `loan_principal_displayed` -- (orphan; see 1.7.2.) Reserved by Appendix A for any third
+  loan-principal flavor distinct from `_real` or `_stored`; no body site uses it.
+- `monthly_payment` -- Decimal dollar value of a loan's amortized monthly payment derived from
+  `(current_principal, current_rate, remaining_months)` via the standard formula; stable within an
+  ARM's fixed-rate window per E-02.
+- `principal_paid_per_period` -- Decimal dollar principal portion of one period's loan payment
+  derived from the schedule.
+- `interest_paid_per_period` -- Decimal dollar interest portion of one period's loan payment derived
+  from the schedule.
+- `escrow_per_period` -- Decimal dollar escrow component of one period's loan payment, summed from
+  active EscrowComponents and optionally inflated.
+- `payoff_date` -- Calendar date (Python `date`) on which a loan's outstanding principal reaches
+  zero under the projected schedule.
+- `months_saved` -- Integer count of months a payoff is accelerated relative to the contractual
+  schedule under a specified extra-payment plan.
+- `total_interest` -- Decimal dollar sum of all interest paid over the life of a loan (or over the
+  year, for year-end summaries).
+- `interest_saved` -- Decimal dollar difference between contractual lifetime interest and
+  accelerated lifetime interest under a specified extra-payment or refinance plan.
+- `apy_interest` -- Decimal dollar interest accrued on an interest-bearing account over one pay
+  period using actual/365 daily/monthly/quarterly compounding
+  (`interest_projection.calculate_interest`).
+- `growth` -- Decimal-fraction or Decimal dollar value representing a growth, inflation, or trend
+  rate (e.g., investment return rate, raise percentage, escrow inflation, trend-alert threshold);
+  units vary by sub-concept and are documented per producer.
+- `employer_contribution` -- Decimal dollar amount of employer 401(k) match for one pay period
+  derived from flat-percentage or match-percentage plus cap rules.
+- `contribution_limit_remaining` -- Decimal dollar amount of annual 401(k) contribution headroom
+  remaining (`limit - YTD`) at a specific point in the calendar year.
+- `ytd_contributions` -- Decimal dollar year-to-date employee 401(k) contribution total at a
+  specific point in the calendar year.
+- `paycheck_gross` -- Decimal dollar gross wage for one pay period after raises and before
+  deductions/taxes.
+- `paycheck_net` -- Decimal dollar net (take-home) wage for one pay period after taxes and all
+  deductions.
+- `taxable_income` -- Decimal dollar income subject to federal/state income tax after pre-tax
+  deductions and standard deduction.
+- `federal_tax` -- Decimal dollar federal income tax withheld for one pay period via the IRS Pub
+  15-T Percentage Method.
+- `state_tax` -- Decimal dollar state income tax withheld for one pay period via the configured flat
+  rate (or zero for no-tax states).
+- `fica` -- Decimal dollar Social Security + Medicare withholding for one pay period (with
+  cumulative-wage cap for SS and threshold-based surtax for Medicare).
+- `pre_tax_deduction` -- Decimal dollar pre-tax payroll deduction (e.g., 401(k), pre-tax insurance)
+  for one pay period.
+- `post_tax_deduction` -- Decimal dollar post-tax payroll deduction (e.g., Roth 401(k), post-tax
+  insurance) for one pay period.
+- `transfer_amount` -- Decimal dollar amount of a stored `Transfer.amount`; the canonical value
+  mirrored to both shadow transactions per Transfer Invariant 3.
+- `effective_amount` -- Decimal dollar amount used in balance computation: returns `Decimal("0")`
+  for soft-deleted or status-excluded transactions, else `actual_amount` if non-null, else
+  `estimated_amount` (`Transaction.effective_amount` property; `Transfer.effective_amount` is the
+  simpler transfer variant).
+- `goal_progress` -- Decimal-fraction or Decimal-percent value representing how close a savings goal
+  is to its target (`current_balance / target_amount`).
+- `emergency_fund_coverage_months` -- Decimal-fraction count of months of average monthly expenses
+  an emergency-fund balance covers (`savings_balance / avg_monthly_expenses`).
+- `dti_ratio` -- Decimal-fraction debt-to-income ratio
+  (`total_monthly_debt_payments / gross_monthly_income`).
+- `net_worth` -- Decimal dollar `(sum of asset balances) - (sum of debt balances)` at a specific
+  date.
+- `savings_total` -- Decimal dollar sum of all savings and investment account balances (excludes
+  checking and debt).
+- `debt_total` -- Decimal dollar sum of all liability/debt account balances.
+- `chart_balance_series` -- List of Decimal dollar balance values aligned to `chart_date_labels`;
+  the per-period or per-month data points a chart renders.
+- `year_summary_jan1_balance` -- Decimal dollar account balance on January 1 of the configured
+  calendar year (year-end summary).
+- `year_summary_dec31_balance` -- Decimal dollar account balance on December 31 of the configured
+  calendar year (year-end summary).
+- `year_summary_principal_paid` -- Decimal dollar sum of principal paid down on a debt account over
+  the configured calendar year.
+- `year_summary_growth` -- Decimal dollar sum of growth (interest accrued or investment-return
+  growth) on a savings/investment account over the configured calendar year.
+- `year_summary_employer_total` -- Decimal dollar sum of employer contributions deposited to an
+  investment account over the configured calendar year.
+
+P1-b additions (4 tokens; first introduced in section 1.1 -- citations in 1.7.2):
+
+- `pension_benefit_annual` -- Decimal dollar annual defined-benefit pension amount
+  (`pension_calculator.calculate_benefit`).
+- `pension_benefit_monthly` -- Decimal dollar monthly defined-benefit pension amount =
+  `pension_benefit_annual / 12`.
+- `loan_remaining_months` -- Integer count of months until a loan's contractual maturity from the
+  current date.
+- `cash_runway_days` -- Integer count of days a current checking balance covers at the
+  trailing-30-day daily average of paid expenses.
+
+P1-c additions (5 tokens; first introduced in section 1.2 -- citations in 1.7.2):
+
+- `entry_sum_total` -- Decimal dollar sum of `TransactionEntry.amount` for a transaction (cleared +
+  uncleared, with credit and debit partition available).
+- `entry_remaining` -- Decimal dollar value `estimated_amount - sum(entries)` for an entry-tracked
+  transaction; negative = overspent.
+- `paycheck_breakdown` -- Bundle of
+  `paycheck_gross + paycheck_net + federal_tax + state_tax + fica + pre_tax_deduction + post_tax_deduction + employer_contribution`
+  returned as a `PaycheckBreakdown` dataclass; single render unit at the salary breakdown /
+  projection / list pages.
+- `chart_date_labels` -- List of human-readable date strings (e.g. "May 2026") rendered alongside
+  `chart_balance_series` as chart x-axis labels; presentation-only formatting of period start_date.
+- `transfer_amount_computed` -- Decimal dollar route-derived pre-fill value for a new recurring
+  payment-transfer Transfer (loan: P&I+escrow; investment: limit/26 with $500 fallback); distinct
+  from `transfer_amount` (stored) because the user can override before submit.
+
+The raw list below is kept for tooling that greps by token name; the authoritative definitions are
+above. The orphan `loan_principal_displayed` is retained in the list per the audit plan rule that
+Appendix A's starter set defines the contract, even when a token is currently unused.
 
 ```text
 checking_balance
@@ -66,12 +190,20 @@ year_summary_dec31_balance
 year_summary_principal_paid
 year_summary_growth
 year_summary_employer_total
+pension_benefit_annual
+pension_benefit_monthly
+loan_remaining_months
+cash_runway_days
+entry_sum_total
+entry_remaining
+paycheck_breakdown
+chart_date_labels
+transfer_amount_computed
 ```
 
-Additions during 1.5 (none). The starter set covers every numeric column
-in `app/models/`. Some columns (rate inputs, inflation, calibration
-effective rates) map onto a downstream concept token rather than a
-column-level token; this is noted in the per-column rows.
+Additions during 1.5 (none). The starter set covers every numeric column in `app/models/`. Some
+columns (rate inputs, inflation, calibration effective rates) map onto a downstream concept token
+rather than a column-level token; this is noted in the per-column rows.
 
 Additions during 1.1 (P1-b, 2026-05-15):
 
@@ -118,9 +250,9 @@ Additions during 1.2 (P1-c, 2026-05-15):
   `paycheck_calculator.calculate_paycheck` (see section 1.1) and rendered
   on the salary breakdown / projection / list pages. Single-token shorthand
   for the bundle `paycheck_gross + paycheck_net + federal_tax + state_tax
-  + fica + pre_tax_deduction + post_tax_deduction + employer_contribution`;
-  the route layer treats the breakdown as one rendered unit, so the audit
-  needs a single token to track it across pages.
+  - fica + pre_tax_deduction + post_tax_deduction + employer_contribution`;
+  the route layer treats the breakdown as one rendered unit, so the audit needs a single token to
+  track it across pages.
 - `chart_date_labels` -- string-formatted date labels (e.g. "May 2026")
   emitted by `investment.dashboard` (`app/routes/investment.py:242-246`),
   `investment.growth_chart` (`:534`), and the loan chart helper at
@@ -137,23 +269,19 @@ Additions during 1.2 (P1-c, 2026-05-15):
 
 ## 1.5 Models and computed properties
 
-24 model files read in full (P1-a, Explore subagent, very thorough).
-40 classes inventoried, 113 numeric columns, 6 `@property` accessors.
-NO `@hybrid_property` or `@cached_property` in scope.
+24 model files read in full (P1-a, Explore subagent, very thorough). 40 classes inventoried, 113
+numeric columns, 6 `@property` accessors. NO `@hybrid_property` or `@cached_property` in scope.
 
-For each row, the "Concept token" column gives the financial concept the
-column or property feeds. Non-financial columns (sort orders, version
-counters, period indexes, dependent counts, FICA day-counts) are recorded
-as `-` so the inventory is exhaustive across numeric columns; Phase 6's
+For each row, the "Concept token" column gives the financial concept the column or property feeds.
+Non-financial columns (sort orders, version counters, period indexes, dependent counts, FICA
+day-counts) are recorded as `-` so the inventory is exhaustive across numeric columns; Phase 6's
 SOLID audit needs the full surface.
 
-CHECK constraint citations are line numbers in the same model file
-where `db.CheckConstraint(...)` appears inside `__table_args__`. When a
-constraint exists in a migration but not in the model file, the cell
-reads `MIGRATION (not in model)`. The rebuild migration
-(`migrations/versions/a5be2a99ea14_rebuild_audit_infrastructure.py`) is
-the canonical source for audit-trigger attachment but is not a CHECK
-source for these columns.
+CHECK constraint citations are line numbers in the same model file where `db.CheckConstraint(...)`
+appears inside `__table_args__`. When a constraint exists in a migration but not in the model file,
+the cell reads `MIGRATION (not in model)`. The rebuild migration
+(`migrations/versions/a5be2a99ea14_rebuild_audit_infrastructure.py`) is the canonical source for
+audit-trigger attachment but is not a CHECK source for these columns.
 
 ### `app/models/account.py`
 
@@ -189,12 +317,11 @@ Numeric columns:
 | CalibrationOverride.effective_medicare_rate | calibration_override.py:92 | Numeric(12, 10) | False | - | calibration_override.py:66 | fica (input) |
 | CalibrationDeductionOverride.actual_amount | calibration_override.py:164 | Numeric(10, 2) | False | - | calibration_override.py:136 | pre_tax_deduction |
 
-The four Numeric(10, 2) money columns deviate from the `Numeric(12, 2)`
-project standard (E-14). Flag for Phase 6 DRY/SOLID: precision drift on
-calibration tables, which were added later than the canonical money
-columns. Whether 10,2 is correct (calibration values are bounded by a
-single paycheck) or whether the standard should be enforced uniformly
-is a Phase 6 question, not a 1.5 finding.
+The four Numeric(10, 2) money columns deviate from the `Numeric(12, 2)` project standard (E-14).
+Flag for Phase 6 DRY/SOLID: precision drift on calibration tables, which were added later than the
+canonical money columns. Whether 10,2 is correct (calibration values are bounded by a single
+paycheck) or whether the standard should be enforced uniformly is a Phase 6 question, not a 1.5
+finding.
 
 Computed properties: none.
 
@@ -255,9 +382,8 @@ Numeric columns:
 | EscrowComponent.annual_amount | loan_features.py:126 | Numeric(12, 2) | False | - | loan_features.py:104 | escrow_per_period (annual input) |
 | EscrowComponent.inflation_rate | loan_features.py:127 | Numeric(5, 4) | True | - | loan_features.py:111 | growth (escrow inflation input) |
 
-`RateHistory.interest_rate` is the ARM-anchor source flagged by C-04 in
-the priors; Phase 3 must compare which entry points consume RateHistory
-versus the static `LoanParams.interest_rate`.
+`RateHistory.interest_rate` is the ARM-anchor source flagged by C-04 in the priors; Phase 3 must
+compare which entry points consume RateHistory versus the static `LoanParams.interest_rate`.
 
 Computed properties: none.
 
@@ -277,33 +403,27 @@ Numeric columns:
 | LoanParams.arm_first_adjustment_months | loan_params.py:60 | Integer | True | - | - | - |
 | LoanParams.arm_adjustment_interval_months | loan_params.py:61 | Integer | True | - | - | - |
 
-`LoanParams.current_principal` is the source-of-truth column flagged by
-C-03/C-04 in the priors and by E-03 in the developer expectations. Phase
-4 (source-of-truth audit) is the dedicated spot for this column. A-04
-(09_open_questions.md:93-103) resolves the C-03/C-04 ARM-vs-fixed-rate
-split: ARM loans use stored `current_principal` directly
-(`amortization_engine.py:977-985`,
-`savings_dashboard_service.py:373`,
-`year_end_summary_service.py:1465-1469`); fixed-rate loans walk the
-schedule from origination using confirmed `PaymentRecord` rows. The
-column is therefore AUTHORITATIVE for ARM and CACHED-for-display for
-fixed-rate; Phase 4 records the dual classification.
+`LoanParams.current_principal` is the source-of-truth column flagged by C-03/C-04 in the priors and
+by E-03 in the developer expectations. Phase 4 (source-of-truth audit) is the dedicated spot for
+this column. A-04 (09_open_questions.md:93-103) resolves the C-03/C-04 ARM-vs-fixed-rate split: ARM
+loans use stored `current_principal` directly (`amortization_engine.py:977-985`,
+`savings_dashboard_service.py:373`, `year_end_summary_service.py:1465-1469`); fixed-rate loans walk
+the schedule from origination using confirmed `PaymentRecord` rows. The column is therefore
+AUTHORITATIVE for ARM and CACHED-for-display for fixed-rate; Phase 4 records the dual
+classification.
 
-`LoanParams.interest_rate` (line 55) is the static rate; ARM loans
-override it via `RateHistory.interest_rate`
-(`loan_features.py:75`). A-05 (09_open_questions.md:113-125) confirms
+`LoanParams.interest_rate` (line 55) is the static rate; ARM loans override it via
+`RateHistory.interest_rate` (`loan_features.py:75`). A-05 (09_open_questions.md:113-125) confirms
 the eight call sites that compute ARM monthly_payment from
-`(current_principal, current_rate, remaining_months)`; Phase 3 must
-verify all eight sites resolve `current_rate` against the same
-authority for the same loan-on-date.
+`(current_principal, current_rate, remaining_months)`; Phase 3 must verify all eight sites resolve
+`current_rate` against the same authority for the same loan-on-date.
 
 Computed properties: none.
 
 ### `app/models/mixins.py`
 
-103 lines. Classes: `TimestampMixin`, `CreatedAtMixin`,
-`SoftDeleteOverridableMixin`. No numeric columns or computed numeric
-properties of audit interest.
+103 lines. Classes: `TimestampMixin`, `CreatedAtMixin`, `SoftDeleteOverridableMixin`. No numeric
+columns or computed numeric properties of audit interest.
 
 ### `app/models/pay_period.py`
 
@@ -337,10 +457,9 @@ Numeric columns:
 | PaycheckDeduction.sort_order | paycheck_deduction.py:130 | Integer | False | db.text("0") | - | - |
 | PaycheckDeduction.version_id | paycheck_deduction.py:139 | Integer | False | "1" | paycheck_deduction.py:66 | - |
 
-`PaycheckDeduction.amount` is `Numeric(12, 4)` (sub-cent precision),
-unlike the canonical `Numeric(12, 2)`. The wider precision lets the
-paycheck calculator carry intermediate rounding before quantizing the
-displayed paycheck. Phase 3 confirms: every consumer reads through the
+`PaycheckDeduction.amount` is `Numeric(12, 4)` (sub-cent precision), unlike the canonical
+`Numeric(12, 2)`. The wider precision lets the paycheck calculator carry intermediate rounding
+before quantizing the displayed paycheck. Phase 3 confirms: every consumer reads through the
 calculator and quantizes at the boundary, not at the column.
 
 Computed properties: none.
@@ -356,9 +475,8 @@ Numeric columns:
 | PensionProfile.benefit_multiplier | pension_profile.py:78 | Numeric(7, 5) | False | - | pension_profile.py:32 | - |
 | PensionProfile.consecutive_high_years | pension_profile.py:79 | Integer | False | db.text("4") | pension_profile.py:37 | - |
 
-Computed properties: none. Pension calculation logic lives in
-`app/services/pension_calculator.py`; this model only persists the input
-parameters.
+Computed properties: none. Pension calculation logic lives in `app/services/pension_calculator.py`;
+this model only persists the input parameters.
 
 ### `app/models/recurrence_rule.py`
 
@@ -374,19 +492,16 @@ Numeric columns:
 | RecurrenceRule.due_day_of_month | recurrence_rule.py:46 | Integer | True | - | recurrence_rule.py:48 | - |
 | RecurrenceRule.month_of_year | recurrence_rule.py:55 | Integer | True | - | recurrence_rule.py:57 | - |
 
-Computed properties: none. Recurrence logic lives in
-`app/services/recurrence_engine.py`.
+Computed properties: none. Recurrence logic lives in `app/services/recurrence_engine.py`.
 
 ### `app/models/ref.py`
 
-356 lines. Classes: `AccountTypeCategory`, `AccountType`,
-`TransactionType`, `Status`, `RecurrencePattern`, `FilingStatus`,
-`DeductionTiming`, `CalcMethod`, `TaxType`, `RaiseType`, `GoalMode`,
-`IncomeUnit`, `UserRole`. Reference/lookup tables only. No numeric
-columns or computed numeric properties of audit interest. The boolean
-columns on `Status` (e.g., `excludes_from_balance`, `is_settled`) are
-referenced by `Transaction.effective_amount` and the balance calculator;
-consumers are catalogued in section 1.1 (P1-b).
+356 lines. Classes: `AccountTypeCategory`, `AccountType`, `TransactionType`, `Status`,
+`RecurrencePattern`, `FilingStatus`, `DeductionTiming`, `CalcMethod`, `TaxType`, `RaiseType`,
+`GoalMode`, `IncomeUnit`, `UserRole`. Reference/lookup tables only. No numeric columns or computed
+numeric properties of audit interest. The boolean columns on `Status` (e.g.,
+`excludes_from_balance`, `is_settled`) are referenced by `Transaction.effective_amount` and the
+balance calculator; consumers are catalogued in section 1.1 (P1-b).
 
 ### `app/models/salary_profile.py`
 
@@ -437,22 +552,19 @@ Numeric columns:
 | SavingsGoal.income_multiplier | savings_goal.py:115 | Numeric(8, 2) | True | - | savings_goal.py:50 | goal_progress (income-multiplier input) |
 | SavingsGoal.version_id | savings_goal.py:121 | Integer | False | "1" | savings_goal.py:54 | - |
 
-`income_multiplier` uses `Numeric(8, 2)` (max 999,999.99); the project
-standard is `Numeric(12, 2)` for money but this column is a multiplier
-not a money value. Phase 6 confirms this is intentional.
+`income_multiplier` uses `Numeric(8, 2)` (max 999,999.99); the project standard is `Numeric(12, 2)`
+for money but this column is a multiplier not a money value. Phase 6 confirms this is intentional.
 
 Computed properties: none.
 
 ### `app/models/scenario.py`
 
-63 lines. Classes: `Scenario`. No numeric columns or computed numeric
-properties of audit interest. `is_baseline` is Boolean; `cloned_from_id`
-is FK.
+63 lines. Classes: `Scenario`. No numeric columns or computed numeric properties of audit interest.
+`is_baseline` is Boolean; `cloned_from_id` is FK.
 
 ### `app/models/tax_config.py`
 
-240 lines. Classes: `TaxBracketSet`, `TaxBracket`, `StateTaxConfig`,
-`FicaConfig`.
+240 lines. Classes: `TaxBracketSet`, `TaxBracket`, `StateTaxConfig`, `FicaConfig`.
 
 `TaxBracketSet` numeric columns:
 
@@ -515,26 +627,21 @@ Computed properties:
 | Transaction.days_until_due | transaction.py:257-269 | @property | int \| None (inferred) | `None if due_date is None or status.is_settled else (due_date - date.today()).days` | due_date, status.is_settled | - |
 | Transaction.days_paid_before_due | transaction.py:271-283 | @property | int \| None (inferred) | `None if due_date is None or paid_at is None else (due_date - paid_at.date()).days` | due_date, paid_at | - |
 
-`Transaction.effective_amount` is the load-bearing entry point for
-balance computation. The 4-tier branching means a Phase 3 consistency
-audit must compare (a) every site that reads `effective_amount`, (b)
-every site that reads `actual_amount` directly, (c) every site that
-reads `estimated_amount` directly, and (d) every site that filters by
-status before summing. Direct reads of `actual_amount` or
-`estimated_amount` bypass tier 1 (is_deleted) and tier 2 (status
-exclusion); sites that do this on purpose must be intentional, and
-sites that do this by accident are findings.
+`Transaction.effective_amount` is the load-bearing entry point for balance computation. The 4-tier
+branching means a Phase 3 consistency audit must compare (a) every site that reads
+`effective_amount`, (b) every site that reads `actual_amount` directly, (c) every site that reads
+`estimated_amount` directly, and (d) every site that filters by status before summing. Direct reads
+of `actual_amount` or `estimated_amount` bypass tier 1 (is_deleted) and tier 2 (status exclusion);
+sites that do this on purpose must be intentional, and sites that do this by accident are findings.
 
-`is_income` / `is_expense` use `ref_cache.txn_type_id(...)` which is
-the ID-based lookup pattern required by E-15 (no string `name`
-comparisons). This pair satisfies the standard.
+`is_income` / `is_expense` use `ref_cache.txn_type_id(...)` which is the ID-based lookup pattern
+required by E-15 (no string `name` comparisons). This pair satisfies the standard.
 
-NO `is_settled`, `is_done`, `is_received`, `is_credit`, `is_cancelled`,
-or `is_projected` properties exist on `Transaction`. Status checks must
-go through `status.is_settled` / `status.excludes_from_balance` (boolean
-columns on the `Status` ref row). This means consumers either read the
-whole `Status` object or call into a service helper; section 1.1
-inventories which path each site uses.
+NO `is_settled`, `is_done`, `is_received`, `is_credit`, `is_cancelled`, or `is_projected` properties
+exist on `Transaction`. Status checks must go through `status.is_settled` /
+`status.excludes_from_balance` (boolean columns on the `Status` ref row). This means consumers
+either read the whole `Status` object or call into a service helper; section 1.1 inventories which
+path each site uses.
 
 ### `app/models/transaction_entry.py`
 
@@ -549,9 +656,8 @@ Numeric columns:
 
 Computed properties: none.
 
-`TransactionEntry.amount` is the column aggregated by the only two
-money SQL aggregates (`year_end_summary_service.py:519, 520-528`); see
-section 1.6.
+`TransactionEntry.amount` is the column aggregated by the only two money SQL aggregates
+(`year_end_summary_service.py:519, 520-528`); see section 1.6.
 
 ### `app/models/transaction_template.py`
 
@@ -584,13 +690,11 @@ Computed properties:
 | --- | --- | --- | --- | --- | --- | --- |
 | Transfer.effective_amount | transfer.py:174-182 | @property | Decimal (inferred) | `Decimal("0") if status.excludes_from_balance else amount` | status.excludes_from_balance, amount | transfer_amount |
 
-`Transfer.effective_amount` simpler than `Transaction.effective_amount`:
-no actual/estimated split, no soft-delete branch (transfers route
-soft-deletion through cascade to shadow transactions per E-08, so
-queries excluded soft-deleted parents should not reach this property in
-balance contexts). E-09 forbids the balance calculator from querying
-the `transfers` table at all; this property is reserved for the
-transfer service and CRUD/display sites.
+`Transfer.effective_amount` simpler than `Transaction.effective_amount`: no actual/estimated split,
+no soft-delete branch (transfers route soft-deletion through cascade to shadow transactions per
+E-08, so queries excluded soft-deleted parents should not reach this property in balance contexts).
+E-09 forbids the balance calculator from querying the `transfers` table at all; this property is
+reserved for the transfer service and CRUD/display sites.
 
 ### `app/models/transfer_template.py`
 
@@ -629,13 +733,11 @@ Computed properties: none.
 | UserSettings.trend_alert_threshold | user.py:246 | Numeric(5, 4) | False | "0.1000" | user.py:198 | growth (trend alert threshold) |
 | UserSettings.anchor_staleness_days | user.py:249 | Integer | False | "14" | user.py:223 | - |
 
-`UserSettings.trend_alert_threshold` is PA-01's open finding (Marshmallow
-`Range(min=1, max=100)` percentage vs DB CHECK 0..1 decimal).
-`UserSettings.safe_withdrawal_rate` is the column behind PA-04's
-float-cast violation in `compute_slider_defaults`.
-`UserSettings.estimated_retirement_tax_rate` is one of the rate fields
-inspected by PA-02. These three columns are inputs to financial
-calculations; the prior-audit findings live in section 0.6 of
+`UserSettings.trend_alert_threshold` is PA-01's open finding (Marshmallow `Range(min=1, max=100)`
+percentage vs DB CHECK 0..1 decimal). `UserSettings.safe_withdrawal_rate` is the column behind
+PA-04's float-cast violation in `compute_slider_defaults`.
+`UserSettings.estimated_retirement_tax_rate` is one of the rate fields inspected by PA-02. These
+three columns are inputs to financial calculations; the prior-audit findings live in section 0.6 of
 `00_priors.md`.
 
 `MfaConfig` numeric columns:
@@ -692,16 +794,13 @@ Computed properties on `User`, `UserSettings`, `MfaConfig`: none.
 
 ## 1.6 Database queries that aggregate money
 
-The grep
-`func\.sum|func\.avg|func\.min|func\.max|func\.count` over `app/`
-returns FIVE matches (P1-a, 2026-05-15). The raw-SQL grep (`SUM(`,
-`AVG(`, `MIN(`, `MAX(`, `COUNT(` in .py files) returns only the same
-five hits via `db.func.*`; no raw SQL strings with aggregate keywords
-exist outside the SQLAlchemy `func` accessor. `db.text(...)` calls
-elsewhere are all column server defaults or audit-infrastructure DDL,
-not aggregate execution paths. Python-builtin `sum()`, `min()`, `max()`
-calls operate over already-fetched in-memory collections; they belong
-in section 1.1 (services) and are out of scope for 1.6.
+The grep `func\.sum|func\.avg|func\.min|func\.max|func\.count` over `app/` returns FIVE matches
+(P1-a, 2026-05-15). The raw-SQL grep (`SUM(`, `AVG(`, `MIN(`, `MAX(`, `COUNT(` in .py files) returns
+only the same five hits via `db.func.*`; no raw SQL strings with aggregate keywords exist outside
+the SQLAlchemy `func` accessor. `db.text(...)` calls elsewhere are all column server defaults or
+audit-infrastructure DDL, not aggregate execution paths. Python-builtin `sum()`, `min()`, `max()`
+calls operate over already-fetched in-memory collections; they belong in section 1.1 (services) and
+are out of scope for 1.6.
 
 | File:line | SQL aggregate | Aggregated column | Aggregated column type | Money? | Joins | Filters | Layer |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -713,11 +812,9 @@ in section 1.1 (services) and are out of scope for 1.6.
 
 ### Money aggregates: deeper notes
 
-Both money aggregates live inside one function:
-`_compute_envelope_breakdowns_aware()` in
-`app/services/year_end_summary_service.py`, called by the year-end
-summary service to break down envelope-tracked spending by category
-group/item for the configured calendar year. The function:
+Both money aggregates live inside one function: `_compute_envelope_breakdowns_aware()` in
+`app/services/year_end_summary_service.py`, called by the year-end summary service to break down
+envelope-tracked spending by category group/item for the configured calendar year. The function:
 
 - joins TransactionEntry to Transaction to TransactionTemplate to
   PayPeriod to Account, outer-joining Category (lines 530-540);
@@ -728,21 +825,17 @@ group/item for the configured calendar year. The function:
   (`row.due_date.year if row.due_date is not None else
   row.pp_start_date.year`, lines 562-565).
 
-Neither aggregate filters on `entry_credit_workflow` flags directly; the
-credit-vs-debit distinction is encoded entirely by the `case` in the
-second `func.sum`. Phase 3 must verify (a) that the credit-entry
-exclusion is consistent with the entry-aware checking-impact formula in
-the balance calculator
-(`app/services/balance_calculator.py:298-331`, per the docstring) and
-(b) that the same envelope-spending concept computed elsewhere
-(spending trends, budget variance, savings dashboard) uses the same
-filter set or documents the divergence.
+Neither aggregate filters on `entry_credit_workflow` flags directly; the credit-vs-debit distinction
+is encoded entirely by the `case` in the second `func.sum`. Phase 3 must verify (a) that the
+credit-entry exclusion is consistent with the entry-aware checking-impact formula in the balance
+calculator (`app/services/balance_calculator.py:298-331`, per the docstring) and (b) that the same
+envelope-spending concept computed elsewhere (spending trends, budget variance, savings dashboard)
+uses the same filter set or documents the divergence.
 
 ### Aggregates over money outside services or in raw SQL
 
-NONE. All five SQL aggregates are inside service modules. There are no
-SQL aggregates in routes, templates, JS, raw SQL strings, or
-non-service code paths. This satisfies the audit-plan rule that
+NONE. All five SQL aggregates are inside service modules. There are no SQL aggregates in routes,
+templates, JS, raw SQL strings, or non-service code paths. This satisfies the audit-plan rule that
 aggregates over money outside services are suspect.
 
 ### Filter-set checklist for the two money aggregates
@@ -766,27 +859,23 @@ For Phase 3 cross-comparison:
 
 ## Open questions raised in 1.5/1.6
 
-None during this session. All numeric columns and properties mapped
-cleanly to existing controlled-vocabulary tokens with the noted "input"
-qualifications. The classification ambiguities flagged in this section
-(calibration money precision, savings goal multiplier precision, anchor-
-balance lack of CHECK constraint, paycheck deduction Numeric(12, 4)) are
-recorded in the per-model rows for Phase 6 (DRY/SOLID) to evaluate
-rather than as questions for the developer; they do not block any
-calculation reading in subsequent Phase 1 sessions.
+None during this session. All numeric columns and properties mapped cleanly to existing
+controlled-vocabulary tokens with the noted "input" qualifications. The classification ambiguities
+flagged in this section (calibration money precision, savings goal multiplier precision, anchor-
+balance lack of CHECK constraint, paycheck deduction Numeric(12, 4)) are recorded in the per-model
+rows for Phase 6 (DRY/SOLID) to evaluate rather than as questions for the developer; they do not
+block any calculation reading in subsequent Phase 1 sessions.
 
 ## 1.1 Service layer
 
-40 files under `app/services/`. 18,022 LOC total. Three Explore subagents
-ran in parallel, very thorough, each reading every file in scope IN FULL
-before producing the structured inventory. Files were partitioned by
-domain (calculation engines / aggregation / transactional+workflow) to
-keep each subagent's context bounded.
+40 files under `app/services/`. 18,022 LOC total. Three Explore subagents ran in parallel, very
+thorough, each reading every file in scope IN FULL before producing the structured inventory. Files
+were partitioned by domain (calculation engines / aggregation / transactional+workflow) to keep each
+subagent's context bounded.
 
-Out of scope per audit plan section 0.6 (auth and non-financial services
-excluded): `auth_service.py` (805 lines), `mfa_service.py` (413 lines),
-`exceptions.py` (44 lines), `__init__.py` (0 lines). Recorded for
-exhaustiveness but no functions inventoried.
+Out of scope per audit plan section 0.6 (auth and non-financial services excluded):
+`auth_service.py` (805 lines), `mfa_service.py` (413 lines), `exceptions.py` (44 lines),
+`__init__.py` (0 lines). Recorded for exhaustiveness but no functions inventoried.
 
 In scope: 36 files, 16,760 LOC, 67+ public functions/methods.
 
@@ -804,30 +893,24 @@ For every public function in scope:
   A-01;
 - enumerated calls to other service functions or model methods.
 
-The cross-cutting summary tables at the end of section 1.1 collect every
-`effective_amount` bypass, every missing quantization, every Flask
-boundary import, every transfer-model read, and every shadow-mutation
-site, so Phase 3 has a single grep target.
+The cross-cutting summary tables at the end of section 1.1 collect every `effective_amount` bypass,
+every missing quantization, every Flask boundary import, every transfer-model read, and every
+shadow-mutation site, so Phase 3 has a single grep target.
 
-A-05 cross-reference: A-05 lists eight `calculate_monthly_payment` call
-sites; the grep finds fourteen
-(`amortization_engine.py:436, 440, 491, 512, 693, 697, 952, 957`;
-`balance_calculator.py:225, 231`;
-`loan_payment_service.py:251, 256`;
-`app/routes/loan.py:1102, 1225, 1231`). The developer's list captures
-only the primary branch of each call pair; Phase 3 must verify that
-adjacent fallback branches (lines 436, 693, 957 in the engine; line 231
-in the balance calculator; line 256 in loan_payment_service; lines 1102,
-1231 in the loan route) receive the same triple
-`(current_principal, current_rate, remaining_months)` for the same
-loan-on-date as their primary siblings, per the A-05 invariant.
+A-05 cross-reference: A-05 lists eight `calculate_monthly_payment` call sites; the grep finds
+fourteen (`amortization_engine.py:436, 440, 491, 512, 693, 697, 952, 957`;
+`balance_calculator.py:225, 231`; `loan_payment_service.py:251, 256`;
+`app/routes/loan.py:1102, 1225, 1231`). The developer's list captures only the primary branch of
+each call pair; Phase 3 must verify that adjacent fallback branches (lines 436, 693, 957 in the
+engine; line 231 in the balance calculator; line 256 in loan_payment_service; lines 1102, 1231 in
+the loan route) receive the same triple `(current_principal, current_rate, remaining_months)` for
+the same loan-on-date as their primary siblings, per the A-05 invariant.
 
 ### Group A: Calculation engines
 
-11 files inventoried in scope (`tax_config_service.py` is included for
-completeness despite producing no money directly). Total 3,608 LOC.
-Zero Flask imports. Zero shadow mutations. Quantization to `Decimal('0.01')`
-ROUND_HALF_UP is uniform per A-01 except where noted.
+11 files inventoried in scope (`tax_config_service.py` is included for completeness despite
+producing no money directly). Total 3,608 LOC. Zero Flask imports. Zero shadow mutations.
+Quantization to `Decimal('0.01')` ROUND_HALF_UP is uniform per A-01 except where noted.
 
 #### `app/services/amortization_engine.py` (991 lines)
 
@@ -849,7 +932,10 @@ Public functions (sorted by line):
 | 753 | `calculate_payoff_by_date(current_principal, annual_rate, remaining_months, target_date, origination_date, payment_day, original_principal=None, term_months=None, rate_changes=None)` | Decimal \| None | Binary-searches the extra_monthly value required to hit a target payoff_date; returns None if unreachable. | monthly_payment | n/a | n/a | forward range (lines 824-832) | n/a | no | Decimal('0.01'), ROUND_HALF_UP, line 823 | generate_schedule at 779, 824 |
 | 864 | `get_loan_projection(params, schedule_start=None, payments=None, rate_changes=None)` | LoanProjection | Generates the full schedule once, derives summary, and returns `current_balance` from the stored `current_principal` for ARM or the last confirmed schedule row for fixed-rate (A-04 dual policy at lines 977-985). | monthly_payment, total_interest, payoff_date, loan_principal_real, loan_principal_stored, loan_remaining_months | n/a | n/a | full loan term (lines 932-942) | LoanParams.current_principal at 977, 980 | no | n/a (delegates) | calculate_remaining_months at 908; generate_schedule at 932; _derive_summary_metrics at 945; calculate_monthly_payment at 952, 957 |
 
-A-04 anchor: lines 977-985 implement the dual policy. `is_arm=True` -> `cur_balance = current_principal` (line 977-978). `is_arm=False` -> walks the schedule backward from end, taking `row.remaining_balance` from the last `is_confirmed=True` row (lines 980-984). The `LoanProjection` docstring at lines 848-861 documents this asymmetry.
+A-04 anchor: lines 977-985 implement the dual policy. `is_arm=True` ->
+`cur_balance = current_principal` (line 977-978). `is_arm=False` -> walks the schedule backward from
+end, taking `row.remaining_balance` from the last `is_confirmed=True` row (lines 980-984). The
+`LoanProjection` docstring at lines 848-861 documents this asymmetry.
 
 #### `app/services/growth_engine.py` (419 lines)
 
@@ -871,7 +957,8 @@ Imports flagged: none.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 49 | `calculate_interest(balance, apy, compounding_frequency, period_start, period_end)` | Decimal | Computes interest accrued during one pay period under daily/monthly/quarterly compounding using actual/365 convention. Returns ZERO for non-positive balance/APY or inverted period. | apy_interest | n/a | n/a | period span (lines 86-110) | n/a | no | Decimal('0.01'), ROUND_HALF_UP, line 114 | none |
 
-Quarterly compounding (lines 99-110) uses the actual quarter-length from period start rather than a hardcoded 91 days per the L-05 fix comment.
+Quarterly compounding (lines 99-110) uses the actual quarter-length from period start rather than a
+hardcoded 91 days per the L-05 fix comment.
 
 #### `app/services/tax_calculator.py` (321 lines)
 
@@ -902,7 +989,9 @@ Imports flagged: none.
 | 463 | `_inflation_years(period, profile, effective_month)` | int | Counts full inflation years from profile creation to `period`'s month-anniversary. | - | n/a | n/a | profile -> period (469-475) | n/a | no | n/a | none |
 | 480 | `_get_cumulative_wages(profile, period, all_periods)` | Decimal | Sums year-to-date gross wages (post-raises) for FICA SS wage-base cap tracking. | fica | n/a | n/a | YTD (488-504) | n/a | no | Decimal('0.01'), ROUND_HALF_UP, line 499-501 | _apply_raises at 498 |
 
-Calibration override branches at lines 160-173: when `calibration.is_active` is True, FICA/federal/state are computed via `calibration_service.apply_calibration` instead of the bracket path; both paths exit through the same quantization at line 231.
+Calibration override branches at lines 160-173: when `calibration.is_active` is True,
+FICA/federal/state are computed via `calibration_service.apply_calibration` instead of the bracket
+path; both paths exit through the same quantization at line 231.
 
 #### `app/services/loan_payment_service.py` (353 lines)
 
@@ -945,7 +1034,9 @@ Imports flagged: none.
 | 100 | `calculate_investment_inputs(account_id, investment_params, deductions, all_contributions, all_periods, current_period, salary_gross_biweekly=None)` | InvestmentInputs | Computes (periodic_contribution, employer_params, ytd_contributions_start, annual_contribution_limit) from deductions plus shadow income on the investment account. | growth (input), employer_contribution (input), contribution_limit_remaining, ytd_contributions | status.excludes_from_balance at 150 | income (shadow) at 147 | current period + YTD (178-187) | **estimated_amount at 153 and 187** | YES (lines 153, 187) | Decimal('0.01') quantize via .quantize() at 159-160, 186-187 | none |
 | 201 | `build_contribution_timeline(deductions, contribution_transactions, periods)` | list[ContributionRecord] | Builds per-period ContributionRecord stream: same deduction amount each period (past = confirmed); per-transaction shadow contributions (status-confirmed). | growth (input), employer_contribution (input) | status.excludes_from_balance=False at 268; status.is_settled at 284 | income (shadow) at 265 | period list (253, 270) | effective_amount at 274 | no | inherits from `_compute_deduction_per_period` | _compute_deduction_per_period at 248 |
 
-The bypass at `calculate_investment_inputs` lines 153 and 187 reads `t.estimated_amount` directly, but the caller pre-filters by `status.excludes_from_balance` (line 150), so cancelled/credit contributions never reach the sum. Phase 3 must verify that all callers honor this contract.
+The bypass at `calculate_investment_inputs` lines 153 and 187 reads `t.estimated_amount` directly,
+but the caller pre-filters by `status.excludes_from_balance` (line 150), so cancelled/credit
+contributions never reach the sum. Phase 3 must verify that all callers honor this contract.
 
 #### `app/services/escrow_calculator.py` (115 lines)
 
@@ -965,7 +1056,12 @@ Imports flagged: none.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 16 | `load_tax_configs(user_id, profile, tax_year=None)` | dict | Loads TaxBracketSet/StateTaxConfig/FicaConfig for user, filing_status, state, year. | federal_tax (input), state_tax (input), fica (input) | n/a | n/a | tax_year (line 37) | n/a | no | n/a | none |
 
-Phase 3 finding (no F-id yet): docstring at `tax_config_service.py:7` says it was "extracted from the salary route to eliminate a route-to-route import and a duplicate copy in `chart_data_service.py`". That file does not exist anywhere in `app/` (verified by grep); the audit plan's required-grep list (Appendix B) includes `chart_data_service` and the only references in the codebase are this stale docstring and a comment in `app/static/js/chart_theme.js:222`. Phase 3 should determine whether `chart_data_service` was renamed or never implemented.
+Phase 3 finding (no F-id yet): docstring at `tax_config_service.py:7` says it was "extracted from
+the salary route to eliminate a route-to-route import and a duplicate copy in
+`chart_data_service.py`". That file does not exist anywhere in `app/` (verified by grep); the audit
+plan's required-grep list (Appendix B) includes `chart_data_service` and the only references in the
+codebase are this stale docstring and a comment in `app/static/js/chart_theme.js:222`. Phase 3
+should determine whether `chart_data_service` was renamed or never implemented.
 
 #### `app/services/calibration_service.py` (145 lines)
 
@@ -978,11 +1074,15 @@ Imports flagged: none.
 
 ### Group B: Aggregation and dashboard services
 
-11 files inventoried. Total 7,726 LOC. The `_sum_remaining` vs `_sum_all` split in `balance_calculator.py` and the `_compute_mortgage_interest` in `year_end_summary_service.py` (A-06) and the ARM `proj.current_balance` read in `savings_dashboard_service.py:373` (A-04) are the headline cross-page concept-comparison targets for Phase 3.
+11 files inventoried. Total 7,726 LOC. The `_sum_remaining` vs `_sum_all` split in
+`balance_calculator.py` and the `_compute_mortgage_interest` in `year_end_summary_service.py` (A-06)
+and the ARM `proj.current_balance` read in `savings_dashboard_service.py:373` (A-04) are the
+headline cross-page concept-comparison targets for Phase 3.
 
 #### `app/services/balance_calculator.py` (451 lines)
 
-Imports flagged: none. Reads `budget.transfers`? **NO** (Transfer Invariant 5 satisfied; verified by grep -- no `Transfer.query`, no `from app.models.transfer`, no `db.session.query(Transfer)`).
+Imports flagged: none. Reads `budget.transfers`? **NO** (Transfer Invariant 5 satisfied; verified by
+grep -- no `Transfer.query`, no `from app.models.transfer`, no `db.session.query(Transfer)`).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -993,7 +1093,10 @@ Imports flagged: none. Reads `budget.transfers`? **NO** (Transfer Invariant 5 sa
 | 389 | `_sum_remaining(transactions)` | (Decimal, Decimal) | Anchor-period semantics: sum only PROJECTED transactions (skip status_id != projected at 411); income uses `effective_amount`, expenses use `_entry_aware_amount`. | period_subtotal | status_id != projected_id at 411 | income/expense split at 414-417 | anchor period | effective_amount at 415; `_entry_aware_amount` at 417 | no (uses effective_amount) | Decimal('0.00') initialization (403-404) | ref_cache.status_id at 406; _entry_aware_amount at 417 |
 | 422 | `_sum_all(transactions)` | (Decimal, Decimal) | Non-anchor semantics: same filter set and amount logic as `_sum_remaining` but applied to all periods after the anchor. | period_subtotal | status_id != projected_id at 443 | income/expense split at 446-449 | non-anchor period | effective_amount at 447; `_entry_aware_amount` at 449 | no (uses effective_amount) | Decimal('0.00') initialization (436-437) | ref_cache.status_id at 439; _entry_aware_amount at 449 |
 
-`_sum_remaining` vs `_sum_all` differ only in name and which period(s) they receive; the body filters, type splits, amount sources, and lack of quantization are identical. Phase 3 must compare the two functions line-by-line to confirm no behavioral divergence has sneaked in (audit plan section 3.1 calls this out explicitly).
+`_sum_remaining` vs `_sum_all` differ only in name and which period(s) they receive; the body
+filters, type splits, amount sources, and lack of quantization are identical. Phase 3 must compare
+the two functions line-by-line to confirm no behavioral divergence has sneaked in (audit plan
+section 3.1 calls this out explicitly).
 
 #### `app/services/dashboard_service.py` (731 lines)
 
@@ -1009,6 +1112,41 @@ Imports flagged: none. Reads `budget.transfers`? NO.
 | 334 | `_get_balance_info(account, current_period, balance_results)` | dict | Returns current balance and cash runway; flags stale anchor. | checking_balance, cash_runway_days | n/a | n/a | current period | **Account.current_anchor_balance at 350** | YES (stored column read) | n/a | _get_last_anchor_date at 355; _compute_cash_runway at 363 |
 | 375 | `_compute_cash_runway(account_id, current_balance)` | int \| None | Daily-average paid expenses over the past 30 days by due_date; runway = `current_balance / daily_avg` (int days). | cash_runway_days | DONE/RECEIVED/SETTLED at 391-395 | expense at 396 | last 30 calendar days by due_date (390) | effective_amount via Transaction property | no | int truncation; returns 0 for non-positive balance (line 388) | none (raw query) |
 
+**P1-f arithmetic re-verification (2026-05-15).** Source-read every row this
+subsection presents as producing a financial concept via computation, applying
+the P1-d classification rule table (arithmetic operators only; comparison,
+selection, bare clamp/abs, `Decimal(str())` type-normalization, quantize, and
+format do NOT count).
+
+Conditional on financial value (NOT arithmetic -- Phase 3 must not treat these
+as arithmetic producers; original table-row citations above are preserved):
+
+- `dashboard_service.py:252` `_compute_alerts` -- the only financial touches
+  are `bal < _ZERO` (line 298) and `current_bal < Decimal(str(low_threshold))`
+  (line 314), both comparisons; the lone subtraction `date.today() -
+  last_anchor.date()` (line 281) is non-financial date arithmetic. The
+  account_balance / checking_balance tokens are consumed-and-compared, not
+  produced. Concept-token producer attribution in 1.7.3 over-states this row.
+
+Non-arithmetic, reads + delegates (no money operator):
+
+- `dashboard_service.py:334` `_get_balance_info` -- `balance_results.get(...)`
+  / `account.current_anchor_balance` reads plus `_compute_cash_runway`
+  delegation; only a date comparison. Not a producer of checking_balance /
+  cash_runway_days (it delegates the runway computation).
+
+True-negative confirmed (was already framed as a read, no relocation needed):
+
+- `dashboard_service.py:167` `txn_to_bill_dict` -- pure `txn.effective_amount`
+  read (line 191) + non-financial `txn.due_date - today` (line 187) +
+  `_entry_progress_fields` delegate; verified NOT arithmetic, consistent with
+  the inventory's existing "effective_amount read" framing.
+
+KEEP -- genuine arithmetic, re-verified at source: `:203`
+`_entry_progress_fields` (`total = debit + credit`, line 238); `:375`
+`_compute_cash_runway` (`sum(abs(...))` line 411, `current_balance /
+daily_avg` lines 415-416).
+
 #### `app/services/savings_dashboard_service.py` (956 lines)
 
 Imports flagged: none. Reads `budget.transfers`? NO.
@@ -1020,7 +1158,11 @@ Imports flagged: none. Reads `budget.transfers`? NO.
 | 294 | `_compute_account_projections(accounts, all_transactions, all_shadow_income, all_periods, current_period, params)` | list[dict] | Dispatches by account type: interest -> `calculate_balances_with_interest`, no-params -> `calculate_balances`, loan -> `amortization_engine.get_loan_projection`, investment -> `_project_investment`. | account_balance, projected_end_balance, monthly_payment, loan_principal_real, growth | n/a (delegates) | filtered upstream by caller | all periods | **proj.current_balance at 373 (A-04: ARM = stored current_principal, fixed-rate = engine-computed)** | YES (for ARM at 373) | n/a (delegates) | balance_calculator.calculate_balances_with_interest at 335; balance_calculator.calculate_balances at 343; amortization_engine.get_loan_projection at 362; _project_investment at 389 |
 | 802 | `_compute_debt_summary(account_data, escrow_map)` | dict \| None | Aggregates monthly P&I+escrow across loan accounts for DTI. | monthly_payment, debt_total, dti_ratio | n/a | n/a | n/a | `ad["monthly_payment"]` at 846 | no | Decimal('0.01') quantize at 851, 873 | aggregation only |
 
-Numerous private helpers in this file produce balance/goal/projection data; the four entries above are the load-bearing public-facing functions. Phase 3 must specifically compare `_compute_account_projections` line 373 against `balance_calculator.calculate_balances` results for the same account on the same period, as A-04 and the developer's reported symptom #5 (`/accounts` vs `/savings` divergence) make this the central question.
+Numerous private helpers in this file produce balance/goal/projection data; the four entries above
+are the load-bearing public-facing functions. Phase 3 must specifically compare
+`_compute_account_projections` line 373 against `balance_calculator.calculate_balances` results for
+the same account on the same period, as A-04 and the developer's reported symptom #5 (`/accounts` vs
+`/savings` divergence) make this the central question.
 
 #### `app/services/retirement_dashboard_service.py` (500 lines)
 
@@ -1032,9 +1174,27 @@ Imports flagged: none. Reads `budget.transfers`? NO.
 | 257 | `compute_slider_defaults(data)` | dict | Computes balance-weighted average return rate and converts stored SWR (Decimal(0.04)) to display percentage (Decimal(4.00)). | growth, apy_interest | n/a | n/a | n/a | InvestmentParams.assumed_annual_return; UserSettings.safe_withdrawal_rate | no | SWR percentage conversion at 307-308 (PA-04 float-cast finding lives in this helper per priors) | balance-weighted loop at 318-324 |
 | 338 | `_project_retirement_accounts(user_id, accounts, all_periods, current_period, planned_retirement_date, salary_profiles, traditional_type_ids, return_rate_override)` | list[dict] | Projects each retirement account forward via `growth_engine.project_balance` using shadow income contributions. | account_balance, projected_end_balance, growth, employer_contribution | n/a | shadow income at 376 (`transfer_id IS NOT NULL AND income type`) | through retirement date | **acct.current_anchor_balance at 405, 441-442** | YES (stored column at 405, 442) | salary_gross_biweekly quantize at 390 | balance_calculator.calculate_balances at 420; growth_engine.project_balance at 480 |
 
+**P1-f arithmetic re-verification (2026-05-15).** Source-read the one row this
+subsection presents as computing a financial value.
+
+Borderline -- KEEP arithmetic, flag for Phase 3 adjudication:
+
+- `retirement_dashboard_service.py:257` `compute_slider_defaults` -- genuine
+  balance-weighted average (`total_balance += bal` line 323; `weighted_return
+  += bal * params.assumed_annual_return` line 324; `weighted_return /
+  total_balance` line 327), so it stays classified as arithmetic. FLAG: the
+  `settings.safe_withdrawal_rate * _PCT_SCALE` (line 307) and `... *
+  _PCT_SCALE` (line 327) are rate-to-percentage **presentation** conversions
+  (0.04 -> 4.00), exactly the "percentage-to-rate displays" family named in
+  caveat 1.7.6 (1). Phase 3 adjudicates whether presentation-only percentage
+  scaling is in-scope financial arithmetic.
+
 #### `app/services/year_end_summary_service.py` (2248 lines)
 
-Imports flagged: none. Reads `budget.transfers`? **YES** at `_compute_transfers_summary` line 658 (`db.session.query(Transfer)`). Classification: LEGITIMATE -- this is display aggregation for the year-end transfers tab, NOT a balance computation, so Transfer Invariant 5 (which scopes to balance calculation) is not implicated. Phase 3 should still record this read in the transfer-model audit.
+Imports flagged: none. Reads `budget.transfers`? **YES** at `_compute_transfers_summary` line 658
+(`db.session.query(Transfer)`). Classification: LEGITIMATE -- this is display aggregation for the
+year-end transfers tab, NOT a balance computation, so Transfer Invariant 5 (which scopes to balance
+calculation) is not implicated. Phase 3 should still record this read in the transfer-model audit.
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1051,7 +1211,48 @@ Imports flagged: none. Reads `budget.transfers`? **YES** at `_compute_transfers_
 | 1263 | `_compute_payment_timeliness(user_id, period_ids, scenario_id)` | dict | Average days_paid_before_due across settled expense transactions (paid_on_time vs paid_late counts plus mean days-before-due). | - (non-financial; counts plus an average integer-days figure) | settled (`_get_settled_status_ids` filter applied via `_query_settled_expenses`) | expense (via `_query_settled_expenses` at line 1332) | period_ids (year-scoped at caller) | `txn.days_paid_before_due` model property | no | Decimal('0.01'), ROUND_HALF_UP at 1319 | `_query_settled_expenses` at 1332 |
 | 1465-1469 | (ARM schedule anchor in `_balance_from_schedule_at_date`) | row | A-04: anchors the loan schedule at `current_principal` for ARM accounts so the projected schedule starts from the user-verified principal rather than from origination. | loan_principal_stored | n/a | n/a | n/a | LoanParams.current_principal | YES (per A-04 dual policy) | n/a | embedded |
 
-The full file has 30+ private helpers; the above are the public-facing and load-bearing functions Phase 3 will trace through.
+The full file has 30+ private helpers; the above are the public-facing and load-bearing functions
+Phase 3 will trace through.
+
+**P1-f arithmetic re-verification (2026-05-15).** Source-read every in-scope
+computational row; this file is also the caveat 1.7.6 (2) line-drift
+cross-check target, so each citation was checked against actual source and the
+P1-b verified-citations sub-list.
+
+Non-arithmetic, type-normalize + conditional anchor read (per A-04):
+
+- `year_end_summary_service.py:1465-1469` ARM schedule anchor -- `anchor_bal =
+  Decimal(str(params.current_principal)) if params.is_arm else None`. This is
+  `Decimal(str())` type-normalization of a stored column under a conditional;
+  no arithmetic operator. It is the A-04 ARM-anchor read (already a YES in the
+  cross-cutting effective_amount-bypass table), NOT an arithmetic producer of
+  loan_principal_stored. Phase 3 must not treat it as arithmetic.
+
+Citation-quality fixes (caveat 1.7.6 (2) fold-in; line numbers themselves are
+accurate -- the drift is in function attribution / range precision):
+
+- The `1465-1469` ARM anchor is enclosed by `_generate_debt_schedules` (def
+  at line 1421), NOT `_balance_from_schedule_at_date` as stated in this
+  subsection's `| 1465-1469 |` row and in the cross-cutting bypass table
+  (`year_end_summary_service.py:1465-1469`). Trust the line numbers; the
+  enclosing-function name is wrong.
+- `:518-528` -- the two money SQL aggregates are precisely line 519
+  (`db.func.sum(TransactionEntry.amount)`) and 520-528 (`db.func.sum(case(
+  ...))`); cited line 518 is `db.func.count(TransactionEntry.id)` (non-money).
+  Range is loose by one line (within the +/-2 tolerance).
+- `:824` `_compute_debt_progress` -- def-line citation is exact, but the
+  Signature column lists `(user_id, scenario_id, year, debt_schedules,
+  balance_map, debt_accounts)` whereas the actual signature is
+  `_compute_debt_progress(year, debt_accounts, debt_schedules, ...)`.
+  Signature drift, not line drift.
+
+KEEP -- genuine arithmetic, def-line citations EXACT and in the P1-b verified
+sub-list: `:380` `_compute_mortgage_interest` (`total_interest += row.interest`
+line 406); `:414` `_compute_spending_by_category` (sums `effective_amount`
+line 457, per P1-b verified); `:475` / `:518-528` `_compute_entry_breakdowns`
+(`db.func.sum`); `:636` `_compute_transfers_summary` (`total_amount +=
+t.amount` line 679); `:824` `_compute_debt_progress` (`principal_paid =
+jan1_bal - dec31_bal` line 871).
 
 #### `app/services/budget_variance_service.py` (431 lines)
 
@@ -1064,7 +1265,31 @@ Imports flagged: none. Reads `budget.transfers`? NO.
 | 381 | `_compute_actual(txn)` | Decimal | Reads actual if settled and non-null, else estimated; mirrors `effective_amount` logic by hand. | effective_amount | status.is_settled at 389 | n/a | n/a | actual_amount at 390; estimated_amount at 391-393 | YES (direct two-column read) | n/a | status check |
 | 396 | `_pct(variance, estimated)` | Decimal \| None | `variance / estimated * 100`, guarding zero. | - | n/a | n/a | n/a | n/a | no | Decimal('0.01'), ROUND_HALF_UP, line 404 | none |
 
-`_build_txn_variance`/`_compute_actual` reimplement the `effective_amount` logic inline. Phase 3 must compare this hand-rolled version against `Transaction.effective_amount` at `transaction.py:221-245` to confirm they agree on every input (especially around `is_deleted` and `status.excludes_from_balance`).
+`_build_txn_variance`/`_compute_actual` reimplement the `effective_amount` logic inline. Phase 3
+must compare this hand-rolled version against `Transaction.effective_amount` at
+`transaction.py:221-245` to confirm they agree on every input (especially around `is_deleted` and
+`status.excludes_from_balance`).
+
+**P1-f arithmetic re-verification (2026-05-15).** Source-read every
+computational row in this subsection.
+
+Conditional on financial value (NOT arithmetic):
+
+- `budget_variance_service.py:381` `_compute_actual` -- `if
+  txn.status.is_settled: return txn.actual_amount` else `return
+  txn.estimated_amount`; pure conditional attribute selection (a hand-rolled
+  `effective_amount` mirror), no operator. Already listed in the cross-cutting
+  effective_amount-bypass table; recorded here so Phase 3 does not read the
+  combined `358-393` index citation as implying `_compute_actual` itself does
+  arithmetic. `_build_txn_variance` (358) does the subtraction; `_compute_actual`
+  (381) only selects.
+
+KEEP -- genuine arithmetic, re-verified at source: `:99` `compute_variance`
+(`total_act - total_est` line 139, plus the two `sum(...)` lines 137-138);
+`:358` `_build_txn_variance` (`variance = actual - estimated` line 367);
+`:396` `_pct` (`variance / estimated * _HUNDRED` line 404 -- the division is a
+substantive ratio, so genuine arithmetic; the `* 100` is percentage scaling
+but does not reduce the row to presentation-only).
 
 #### `app/services/spending_trend_service.py` (535 lines)
 
@@ -1087,7 +1312,8 @@ Imports flagged: none. Reads `budget.transfers`? NO.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 521 | `calculate_strategy(debts, extra_monthly, strategy, custom_order=None, start_date=None, max_horizon_months=600)` | StrategyResult | Month-by-month avalanche/snowball/custom simulation with interest accrual, minimum payments, and extra-payment cascade as debts are retired. | debt_total, monthly_payment, payoff_date, total_interest, principal_paid_per_period | n/a (pure simulation) | n/a | simulation horizon (max_horizon_months) | DebtAccount fields: current_principal, interest_rate, minimum_payment | no | interest quantize at 413; balance snap via `_snap_to_zero`; totals quantize at 679-680 | _validate_inputs, _sort_debts at 571; simulation 600-624 |
 
-The file contains 14 private helpers (interest accrual, payment cascade, strategy ordering); they are deterministic given the inputs and Phase 6 should look for DRY opportunities here.
+The file contains 14 private helpers (interest accrual, payment cascade, strategy ordering); they
+are deterministic given the inputs and Phase 6 should look for DRY opportunities here.
 
 #### `app/services/savings_goal_service.py` (488 lines)
 
@@ -1116,6 +1342,29 @@ Imports flagged: none. Reads `budget.transfers`? NO.
 | 313 | `_build_month_summary(year, month, account, periods, transactions, large_threshold, user_id, scenario)` | MonthSummary | Assembles month-end balance and totals. | period_subtotal, checking_balance, projected_end_balance | n/a | n/a | month + overlapping periods | n/a | no | n/a | _compute_month_end_balance at 435 |
 | 435 | `_compute_month_end_balance(account, year, month, user_id, scenario)` | Decimal | Looks up last period ending on/before month-end and returns its balance from `balance_calculator.calculate_balances`. | checking_balance, projected_end_balance | n/a (delegates) | n/a (delegates) | last period on/before month-end (464) | **account.current_anchor_balance at 483** | YES (stored column) | n/a (delegates) | balance_calculator.calculate_balances 454-489 |
 
+**P1-f arithmetic re-verification (2026-05-15).** Source-read every
+computational row in this subsection.
+
+Conditional on financial value (NOT arithmetic):
+
+- `calendar_service.py:240` `_build_day_entry` -- `amount =
+  txn.effective_amount` (line 255, pure read) then `is_large = abs(amount) >=
+  threshold` (line 262, bare-`abs` of an already-read value + comparison); no
+  money operator. The period_subtotal / effective_amount tokens are
+  consume-only for this row.
+
+Non-arithmetic, lookup + delegate (no money operator):
+
+- `calendar_service.py:435` `_compute_month_end_balance` -- selects the target
+  period by `p.end_date <= last_day` (date comparison), delegates to
+  `balance_calculator.calculate_balances`, returns `balances.get(...)`. Not a
+  producer of checking_balance / projected_end_balance (it delegates the
+  balance computation).
+
+KEEP -- genuine arithmetic, re-verified at source: `:270`
+`_assign_transactions_to_days` (`total_income += entry.amount` line 302;
+`total_expenses += abs(entry.amount)` line 304).
+
 #### `app/services/companion_service.py` (167 lines)
 
 Imports flagged: none. Reads `budget.transfers`? NO.
@@ -1127,11 +1376,15 @@ Imports flagged: none. Reads `budget.transfers`? NO.
 
 ### Group C: Transactional and workflow services
 
-14 files inventoried. Total 5,135 LOC. Includes the only service permitted to mutate transfer shadows (`transfer_service.py`), the carry-forward branch dispatcher (`carry_forward_service.py`), both recurrence engines, the credit and entry-credit workflows, and resolvers/utilities. Zero Flask imports. Zero shadow mutations outside `transfer_service`.
+14 files inventoried. Total 5,135 LOC. Includes the only service permitted to mutate transfer
+shadows (`transfer_service.py`), the carry-forward branch dispatcher (`carry_forward_service.py`),
+both recurrence engines, the credit and entry-credit workflows, and resolvers/utilities. Zero Flask
+imports. Zero shadow mutations outside `transfer_service`.
 
 #### `app/services/transaction_service.py` (168 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (precondition at line 111 refuses `transfer_id IS NOT NULL`).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (precondition at
+line 111 refuses `transfer_id IS NOT NULL`).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1139,7 +1392,8 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 
 #### `app/services/transfer_service.py` (848 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (this IS the transfer service; mutations are authorized by Transfer Invariant 4).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (this IS the
+transfer service; mutations are authorized by Transfer Invariant 4).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1149,15 +1403,20 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 | 688 | `restore_transfer(transfer_id, user_id)` | Transfer | Sets `is_deleted=False` on parent and both shadows; verifies one expense + one income shadow exists; refuses restore if either account is archived (F-164); reconciles shadow `amount/status/period` drift that may have accumulated while soft-deleted. | transfer_amount | shadow status_id reconciled to parent at 821-828 | shadow types verified as one expense + one income at 755-769 | shadow pay_period_id reconciled to parent at 831-838 | shadow amounts reconciled to parent.amount at 811-818 | no | n/a | _get_transfer_or_raise at 716; db.session.get(Account, ...) at 780, 781; log_event at 841 |
 
 Invariant enforcement summary:
+
 - Invariant 1 (two shadows): create_transfer at 381-421.
 - Invariant 2 (atomic): create_transfer flushes both together at 422.
-- Invariant 3 (mirror): create_transfer 392/413; update_transfer 487/488; restore_transfer 811-818, 821-828, 831-838.
-- Invariant 4 (only this service): all shadow mutations live here; carry_forward_service delegates to update_transfer at carry_forward_service.py:461-466 per A-07.
-- Invariant 5 (balance_calculator does not query transfers): satisfied -- see balance_calculator.py inventory above.
+- Invariant 3 (mirror): create_transfer 392/413; update_transfer 487/488; restore_transfer 811-818,
+  821-828, 831-838.
+- Invariant 4 (only this service): all shadow mutations live here; carry_forward_service delegates
+  to update_transfer at carry_forward_service.py:461-466 per A-07.
+- Invariant 5 (balance_calculator does not query transfers): satisfied -- see balance_calculator.py
+  inventory above.
 
 #### `app/services/carry_forward_service.py` (1016 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (delegates to `transfer_service.update_transfer` for transfer-shadow moves at 461-466 per A-07).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (delegates to
+`transfer_service.update_transfer` for transfer-shadow moves at 461-466 per A-07).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1171,11 +1430,16 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 | 788 | `_settle_source_and_roll_leftover(source_txn, target_period, scenario_id)` | None | A-02 settle-and-roll: computes entries_sum via `compute_actual_from_entries` at 878; calls `_find_or_generate_target_canonical` at 888; if leftover > 0, bumps `target_row.estimated_amount += leftover` and sets `target_row.is_override = True` at 891-893; settles source via `transaction_service.settle_from_entries`. | effective_amount (computed + bumped) | target.status.is_immutable at 970 | n/a | source -> target | entries sum at 878; estimated_amount additive bump at 891-893 | YES (entries) | none (column precision) | compute_actual_from_entries at 878; recurrence_engine deferred import at 870; transaction_service deferred import at 871; _find_or_generate_target_canonical at 888 |
 | 899 | `_find_or_generate_target_canonical(source_txn, target_period, scenario_id, recurrence_engine)` | Transaction | Looks up existing non-deleted target row (template_id, target.id, scenario_id); if mutable, returns it; if immutable raises ValidationError; if absent, calls `recurrence_engine.generate_for_template` to materialize the canonical and returns it. | - | target.status.is_immutable at 970 | n/a | target period at 945 | n/a | n/a | n/a | Transaction.query at 941; recurrence_engine.generate_for_template at 999 |
 
-Bulk UPDATE pattern (lines 405-437) uses `WHERE status_id == projected_id` to guard against race with concurrent `mark_done` (F-049 cite at 371-374); `synchronize_session="fetch"` keeps in-memory Transaction instances coherent with the UPDATE. The whole loop runs inside a `no_autoflush` block at line 358 to prevent partial-mutation autoflushes from violating the partial unique index `idx_transactions_template_period_scenario`.
+Bulk UPDATE pattern (lines 405-437) uses `WHERE status_id == projected_id` to guard against race
+with concurrent `mark_done` (F-049 cite at 371-374); `synchronize_session="fetch"` keeps in-memory
+Transaction instances coherent with the UPDATE. The whole loop runs inside a `no_autoflush` block at
+line 358 to prevent partial-mutation autoflushes from violating the partial unique index
+`idx_transactions_template_period_scenario`.
 
 #### `app/services/recurrence_engine.py` (775 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (refuses transfer-shadow mutation at line 412).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (refuses
+transfer-shadow mutation at line 412).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1190,11 +1454,14 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 | 708 | `_get_salary_profile(template_id)` | SalaryProfile \| None | Looks up active SalaryProfile for template. | - | n/a | n/a | n/a | n/a | n/a | n/a | SalaryProfile.query at 713 |
 | 720 | `_get_transaction_amount(template, salary_profile, period, all_periods)` | Decimal | If salary-linked, calls `paycheck_calculator.calculate_paycheck` and returns `breakdown.net_pay`; else returns `template.default_amount`. Tax year derived from `period.start_date` with fallback to current year for future periods missing configs. | paycheck_net (if salary), effective_amount (template default) | n/a | n/a | period | template.default_amount at 734 or calculator result at 765 | no | n/a (calculator/column precision) | paycheck_calculator.calculate_paycheck at 761; tax_config_service.load_tax_configs at 741, 754 |
 
-Per A-03: `is_override=True` blocks regeneration. The skip logic (lines 119-139) checks `is_override` first (line 128), then `is_deleted` (line 133), then treats remaining auto-generated-unmodified rows as already-existing.
+Per A-03: `is_override=True` blocks regeneration. The skip logic (lines 119-139) checks
+`is_override` first (line 128), then `is_deleted` (line 133), then treats remaining
+auto-generated-unmodified rows as already-existing.
 
 #### `app/services/transfer_recurrence.py` (320 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (creates via `transfer_service.create_transfer` at line 114).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (creates via
+`transfer_service.create_transfer` at line 114).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1205,7 +1472,8 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 
 #### `app/services/credit_workflow.py` (370 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (refuses transfer shadows at line 169).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (refuses transfer
+shadows at line 169).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1216,7 +1484,8 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 
 #### `app/services/entry_credit_workflow.py` (236 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (entry-only mutations).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (entry-only
+mutations).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1225,7 +1494,8 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 
 #### `app/services/entry_service.py` (589 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (entries have no `transfer_id`).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (entries have no
+`transfer_id`).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1263,7 +1533,8 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 
 #### `app/services/pay_period_service.py` (216 lines)
 
-Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (PayPeriod-only operations).
+Imports flagged: none. Mutates shadow transactions outside `transfer_service`? NO (PayPeriod-only
+operations).
 
 | file:line | Signature | Returns | What it does | Concept token(s) | Status filter | Txn-type filter | Period scope | Amount column read | Bypass? | Quantization | Calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1317,7 +1588,9 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 | 330 | `export_variance_csv(report)` | str | 3-level CSV (Group/Item/Transaction) with amounts and percentages. | effective_amount | n/a | n/a | report-defined | estimated/actual/variance via _dec, _pct at 352-368 | n/a | inherits via _dec/_pct | _dec, _pct, _safe, _bool_yn, _write_csv |
 | 383 | `export_trends_csv(report)` | str | Metadata header + trend rows. | period_subtotal | n/a | n/a | window | period_average/pct_change/absolute_change/avg_days via _dec/_pct at 413-419; threshold quantize at 395-396 | n/a | Decimal('0.01'), ROUND_HALF_UP at 395-396 (threshold) + inherits | _dec, _pct, _write_csv |
 
-`csv_export_service.py` is the audit's cleanest A-01 example: every monetary cell passes through `_dec` (line 39) before stringification, and percentages through `_pct` (line 53), both at `Decimal('0.01')` with ROUND_HALF_UP.
+`csv_export_service.py` is the audit's cleanest A-01 example: every monetary cell passes through
+`_dec` (line 39) before stringification, and percentages through `_pct` (line 53), both at
+`Decimal('0.01')` with ROUND_HALF_UP.
 
 ### Cross-cutting: effective_amount bypasses (every site)
 
@@ -1342,33 +1615,57 @@ Imports flagged: none. Mutates shadow transactions outside `transfer_service`? N
 | `entry_service.py:365, 367, 395, 397-399, 424, 446` | entry-sum helpers | All read `entry.amount` directly. | AGREE (entries are sub-transactional). |
 | `investment_projection.py:153, 187` | `calculate_investment_inputs` | Reads `t.estimated_amount` directly for shadow income contributions. Justified by upstream `status.excludes_from_balance` filter at 150. | Phase 3 must verify the upstream-filter contract is always honored by callers. |
 
-Total: 25 effective_amount bypass sites across 12 files. All are intentional reads with documented justifications; none are read paths that compute a checking-account balance from transaction data, which would be a true violation of the `effective_amount` contract.
+Total: 25 effective_amount bypass sites across 12 files. All are intentional reads with documented
+justifications; none are read paths that compute a checking-account balance from transaction data,
+which would be a true violation of the `effective_amount` contract.
 
 ### Cross-cutting: missing quantization (per A-01)
 
-NO display-or-storage-facing function returns money without quantization to `Decimal('0.01')`, ROUND_HALF_UP. The handful of helpers that return raw Decimal sums (`compute_entry_sums`, `compute_remaining`, `compute_actual_from_entries`, `_entry_aware_amount`'s `max()` result) feed into either (a) a column at `Numeric(12, 2)` precision (so storage rounds), (b) a calculator that quantizes (e.g., `paycheck_calculator.calculate_paycheck`), or (c) `csv_export_service._dec` at the display boundary. The `entry_service` chain is the most-bypassed surface but is feeding column-precision storage at every consumer site reviewed.
+NO display-or-storage-facing function returns money without quantization to `Decimal('0.01')`,
+ROUND_HALF_UP. The handful of helpers that return raw Decimal sums (`compute_entry_sums`,
+`compute_remaining`, `compute_actual_from_entries`, `_entry_aware_amount`'s `max()` result) feed
+into either (a) a column at `Numeric(12, 2)` precision (so storage rounds), (b) a calculator that
+quantizes (e.g., `paycheck_calculator.calculate_paycheck`), or (c) `csv_export_service._dec` at the
+display boundary. The `entry_service` chain is the most-bypassed surface but is feeding
+column-precision storage at every consumer site reviewed.
 
 ### Cross-cutting: Flask boundary violations
 
-NONE. Zero `from flask import`, `current_app`, `request`, or `session` references in any service file in scope across all 36 files. The architecture rule (CLAUDE.md "Services are isolated from Flask") holds for the financial calculation surface.
+NONE. Zero `from flask import`, `current_app`, `request`, or `session` references in any service
+file in scope across all 36 files. The architecture rule (CLAUDE.md "Services are isolated from
+Flask") holds for the financial calculation surface.
 
-The earlier grep at the top of this session matched `request`, `session`, or `current_app` as substrings in 25 files, but those matches are all in (a) docstrings, (b) variable names like `previous_period.start_date.year`, or (c) unrelated identifiers. No actual Flask object is imported or accessed by any service.
+The earlier grep at the top of this session matched `request`, `session`, or `current_app` as
+substrings in 25 files, but those matches are all in (a) docstrings, (b) variable names like
+`previous_period.start_date.year`, or (c) unrelated identifiers. No actual Flask object is imported
+or accessed by any service.
 
 ### Cross-cutting: transfer-model reads
 
 The legitimate consumers of the `Transfer` model in scope:
+
 - `transfer_service.py` (CRUD, the only authorized mutator).
-- `transfer_recurrence.py` (template-driven creation and conflict resolution, all delegated to `transfer_service`).
-- `carry_forward_service.py` (queries the partition list and delegates move to `transfer_service.update_transfer`).
-- `year_end_summary_service.py:658` (`_compute_transfers_summary`: display aggregation for the year-end transfers tab). LEGITIMATE -- not a balance computation; Phase 3 should still record and classify.
+- `transfer_recurrence.py` (template-driven creation and conflict resolution, all delegated to
+  `transfer_service`).
+- `carry_forward_service.py` (queries the partition list and delegates move to
+  `transfer_service.update_transfer`).
+- `year_end_summary_service.py:658` (`_compute_transfers_summary`: display aggregation for the
+  year-end transfers tab). LEGITIMATE -- not a balance computation; Phase 3 should still record and
+  classify.
 
-Critically: `balance_calculator.py` does NOT query `budget.transfers`; verified by grep -- no `Transfer.query`, no `from app.models.transfer`, no `db.session.query(Transfer)`. Transfer Invariant 5 (which scopes to balance computation) is satisfied.
+Critically: `balance_calculator.py` does NOT query `budget.transfers`; verified by grep -- no
+`Transfer.query`, no `from app.models.transfer`, no `db.session.query(Transfer)`. Transfer Invariant
+5 (which scopes to balance computation) is satisfied.
 
-Phase 3 follow-up: run the explicit grep `grep -rn "Transfer.query\|db.session.query(Transfer)\|from app.models.transfer" app/` to find any additional Transfer reads in routes or other layers; P1-b's grep was confined to `app/services/`.
+Phase 3 follow-up: run the explicit grep
+`grep -rn "Transfer.query\|db.session.query(Transfer)\|from app.models.transfer" app/` to find any
+additional Transfer reads in routes or other layers; P1-b's grep was confined to `app/services/`.
 
 ### Cross-cutting: shadow-transaction mutations outside transfer_service
 
-NONE. All shadow-row writes route through `transfer_service.create_transfer` / `update_transfer` / `delete_transfer` / `restore_transfer`. Refused at:
+NONE. All shadow-row writes route through `transfer_service.create_transfer` / `update_transfer` /
+`delete_transfer` / `restore_transfer`. Refused at:
+
 - `recurrence_engine.py:412` (`resolve_conflicts` rejects `transfer_id IS NOT NULL`).
 - `transaction_service.py:111` (`settle_from_entries` rejects transfer shadows).
 - `entry_service.py:158` (`create_entry` rejects transfer shadows).
@@ -1378,13 +1675,11 @@ Transfer Invariant 4 is satisfied across the service surface.
 
 ### Citation-quality note (P1-b self-review, 2026-05-15)
 
-The audit plan section 10.8 lists "trust-then-verify gap" as a known
-failure pattern; the inventory itself can suffer the same problem the
-audit is trying to surface in the codebase. Section 1.1 was produced by
-three Explore subagents reading 36 files; after writing, the main
-session spot-checked ~15 file:line citations and found multiple
-errors in `year_end_summary_service.py` and `savings_dashboard_service.py`
-(the two largest files). Citations have been corrected for:
+The audit plan section 10.8 lists "trust-then-verify gap" as a known failure pattern; the inventory
+itself can suffer the same problem the audit is trying to surface in the codebase. Section 1.1 was
+produced by three Explore subagents reading 36 files; after writing, the main session spot-checked
+~15 file:line citations and found multiple errors in `year_end_summary_service.py` and
+`savings_dashboard_service.py` (the two largest files). Citations have been corrected for:
 
 - `savings_dashboard_service.py` `_compute_debt_summary`: was cited at
   line 700; actual line 802 (monthly_payment at 846, quantize at 851
@@ -1415,8 +1710,7 @@ errors in `year_end_summary_service.py` and `savings_dashboard_service.py`
 - `year_end_summary_service.py` `_compute_payment_timeliness`: cited
   quantize at line 1330; actual line 1319. Fixed.
 
-**Verified citations** (spot-checked against `grep`/`Read` in P1-b's
-self-review):
+**Verified citations** (spot-checked against `grep`/`Read` in P1-b's self-review):
 
 - `amortization_engine.py:128, 178, 326, 649, 753, 864` (function
   definitions); `:436, 440, 491, 512, 693, 697, 952, 957`
@@ -1454,9 +1748,8 @@ self-review):
   current_balance per A-04); `:325, 921` (`current_anchor_balance`
   reads).
 
-**Unverified citations** (relied on agent output without independent
-spot-check). Phase 3 should re-verify any cell whose verdict turns on
-the exact line:
+**Unverified citations** (relied on agent output without independent spot-check). Phase 3 should
+re-verify any cell whose verdict turns on the exact line:
 
 - Most internal call-site lines in `dashboard_service`, `calendar_service`,
   `budget_variance_service`, `spending_trend_service`,
@@ -1475,32 +1768,27 @@ the exact line:
   `scenario_resolver`, `csv_export_service` body beyond the two
   formatter functions).
 
-**Reliability rating**: function-definition line numbers (from
-`^def `/`^class ` greps) are reliable everywhere. Function-body
-citations were spot-verified at the load-bearing sites (A-02 through
-A-07 anchor points, the two money SQL aggregates, the transfer-shadow
-guards, the quantization helpers, the eight ARM `calculate_monthly_payment`
-A-05 sites and the six additional sites the audit found). Body citations
-in the largest file (`year_end_summary_service.py`, 2248 lines) had a
-~20% error rate against spot-checks and have been corrected here; Phase
-3 should treat any year_end_summary_service citation NOT in the
-"verified" list as a hypothesis to test, not a fact to rely on.
+**Reliability rating**: function-definition line numbers (from `^def`/`^class` greps) are reliable
+everywhere. Function-body citations were spot-verified at the load-bearing sites (A-02 through A-07
+anchor points, the two money SQL aggregates, the transfer-shadow guards, the quantization helpers,
+the eight ARM `calculate_monthly_payment` A-05 sites and the six additional sites the audit found).
+Body citations in the largest file (`year_end_summary_service.py`, 2248 lines) had a ~20% error rate
+against spot-checks and have been corrected here; Phase 3 should treat any year_end_summary_service
+citation NOT in the "verified" list as a hypothesis to test, not a fact to rely on.
 
 ## 1.2 Route layer
 
-23 route files under `app/routes/` (`__init__.py` plus 22 blueprints),
-13,930 LOC total. Three Explore subagents ran in parallel, very thorough,
-partitioned by domain (grid/transactional / account-and-loan /
-aggregation-and-analytics). Each subagent read every file in scope IN
-FULL (segmented for files over 800 lines) and was given verbatim accuracy
-clauses that required Read-confirmation of each cited line before
-emission. The main session sampled 15 rows per group (8+ from files
-over 800 LOC each) and verified each by Read with a +/-5 line window.
+23 route files under `app/routes/` (`__init__.py` plus 22 blueprints), 13,930 LOC total. Three
+Explore subagents ran in parallel, very thorough, partitioned by domain (grid/transactional /
+account-and-loan / aggregation-and-analytics). Each subagent read every file in scope IN FULL
+(segmented for files over 800 lines) and was given verbatim accuracy clauses that required
+Read-confirmation of each cited line before emission. The main session sampled 15 rows per group (8+
+from files over 800 LOC each) and verified each by Read with a +/-5 line window.
 
 ### Out of scope per audit plan section 0.6
 
-Files that do not prepare a financial figure for rendering. Listed for
-exhaustiveness; their handlers are not inventoried.
+Files that do not prepare a financial figure for rendering. Listed for exhaustiveness; their
+handlers are not inventoried.
 
 | File | Lines | Reason |
 | ---- | ----- | ------ |
@@ -1516,12 +1804,11 @@ In scope: 16 files, 11,691 LOC, organized into three groups below.
 
 ### 1.2.0 Quality control log
 
-Per the verification protocol, each group's Explore return was sampled at
-15 rows (8+ from files over 800 LOC). Each sampled row was re-read with
-`Read` at the cited line (+/-5 line window) and confirmed against four
-failure categories: (i) off-by-N line number outside the +/-2 tolerance,
-(ii) hallucinated function or call, (iii) behavior misdescription
-(paraphrased docstring), (iv) wrong file path.
+Per the verification protocol, each group's Explore return was sampled at 15 rows (8+ from files
+over 800 LOC). Each sampled row was re-read with `Read` at the cited line (+/-5 line window) and
+confirmed against four failure categories: (i) off-by-N line number outside the +/-2 tolerance, (ii)
+hallucinated function or call, (iii) behavior misdescription (paraphrased docstring), (iv) wrong
+file path.
 
 | Group | Files in scope | Total rows | Sampled | Failures | Action | Notes |
 | ----- | -------------- | ---------- | ------- | -------- | ------ | ----- |
@@ -1546,36 +1833,29 @@ Inline classification corrections applied during QC (Group A):
   parsing). No inline arithmetic happens at the construction site;
   corrected to `Inline=NO` in the table below.
 
-Systematic-error check: the off-by-1 citations in Group B (`retirement.py`)
-and Group C (`salary.py` decorators, `templates.py` decorator) are all
-shifted by +1 line in the same direction (Explore line numbers run 1
-short of the actual line). The pattern is small enough (3 of 45 samples)
-to remain inside the protocol's +/-2 tolerance, and is consistent with
-agents counting from the function body rather than the decorator.
-Phase 3 should treat all route-layer citations as ranges `[cited-1,
-cited+2]` when grepping rather than absolute line anchors. The same
-pattern was previously flagged in `year_end_summary_service.py` (P1-b's
-"Citation-quality note"); the route-layer pass shows it concentrates in
-files over 800 LOC. P1-b's largest service file (2248 lines) had a ~20%
-spot-check error rate; the route layer's 0% within-tolerance rate
-indicates the verbatim accuracy clauses and per-file segmentation worked
-as intended for P1-c.
+Systematic-error check: the off-by-1 citations in Group B (`retirement.py`) and Group C (`salary.py`
+decorators, `templates.py` decorator) are all shifted by +1 line in the same direction (Explore line
+numbers run 1 short of the actual line). The pattern is small enough (3 of 45 samples) to remain
+inside the protocol's +/-2 tolerance, and is consistent with agents counting from the function body
+rather than the decorator. Phase 3 should treat all route-layer citations as ranges
+`[cited-1, cited+2]` when grepping rather than absolute line anchors. The same pattern was
+previously flagged in `year_end_summary_service.py` (P1-b's "Citation-quality note"); the
+route-layer pass shows it concentrates in files over 800 LOC. P1-b's largest service file (2248
+lines) had a ~20% spot-check error rate; the route layer's 0% within-tolerance rate indicates the
+verbatim accuracy clauses and per-file segmentation worked as intended for P1-c.
 
-Out-of-scope misclassification spot-check (Group C `dashboard.py:54-139`
-`mark_paid`): the Group C return marked this handler out-of-scope because
-"it updates status/amount in DB and returns a partial row." The QC notes
-the response IS an updated bill-row partial that re-renders financial
-figures; per the audit-plan rule "in scope only if its response renders
-financial figures," this handler IS in scope at the source level.
-Added to Group C inventory below under `dashboard.py`; not a citation
-failure but a scope misclassification.
+Out-of-scope misclassification spot-check (Group C `dashboard.py:54-139` `mark_paid`): the Group C
+return marked this handler out-of-scope because "it updates status/amount in DB and returns a
+partial row." The QC notes the response IS an updated bill-row partial that re-renders financial
+figures; per the audit-plan rule "in scope only if its response renders financial figures," this
+handler IS in scope at the source level. Added to Group C inventory below under `dashboard.py`; not
+a citation failure but a scope misclassification.
 
 ### Group A: grid and transactional routes
 
-Five files, 3,544 LOC. Two large files: `transactions.py` (1182) and
-`transfers.py` (1320). Cross-references to section 1.1 service entries
-are by name only -- the service file:line for each call appears in the
-"Service calls" cell.
+Five files, 3,544 LOC. Two large files: `transactions.py` (1182) and `transfers.py` (1320).
+Cross-references to section 1.1 service entries are by name only -- the service file:line for each
+call appears in the "Service calls" cell.
 
 #### `app/routes/grid.py` (467 lines)
 
@@ -1640,9 +1920,8 @@ Out-of-scope handlers in `transfers.py`:
 
 #### `app/routes/entries.py` (414 lines)
 
-`_render_entry_list` (helper at 83-120) is the shared rendering path
-called by every entry route below; the helper's service calls are listed
-once here and not repeated per row.
+`_render_entry_list` (helper at 83-120) is the shared rendering path called by every entry route
+below; the helper's service calls are listed once here and not repeated per row.
 
 Helper service calls (`_render_entry_list`):
 
@@ -1660,14 +1939,15 @@ Helper service calls (`_render_entry_list`):
 
 #### `app/routes/companion.py` (161 lines)
 
-`_build_entry_data` (helper at 28-64) is the shared per-transaction
-dict assembler used by both companion handlers below; its inline-compute
-classification applies to each row.
+`_build_entry_data` (helper at 28-64) is the shared per-transaction dict assembler used by both
+companion handlers below; its inline-compute classification applies to each row.
 
 Helper inline-compute notes (`_build_entry_data`):
 
-- Calls `entry_service.compute_entry_sums` and `entry_service.compute_remaining` for each transaction (lines 50-53).
-- Computes `pct = float(total / txn.estimated_amount * Decimal("100"))` inline at lines 53-56; this is `goal_progress` derived in the route from service outputs.
+- Calls `entry_service.compute_entry_sums` and `entry_service.compute_remaining` for each
+  transaction (lines 50-53).
+- Computes `pct = float(total / txn.estimated_amount * Decimal("100"))` inline at lines 53-56; this
+  is `goal_progress` derived in the route from service outputs.
 
 | @route line | HTTP | View fn | DB queries (file:line) | Service calls (fn @ file:line) | Context vars (name: token) | Template | HTMX target | Inline compute? |
 | ----------- | ---- | ------- | ---------------------- | ------------------------------ | -------------------------- | -------- | ----------- | --------------- |
@@ -1676,8 +1956,8 @@ Helper inline-compute notes (`_build_entry_data`):
 
 ### Group B: account management and loan routes
 
-Five files, 4,492 LOC. Three large files: `accounts.py` (1468),
-`loan.py` (1295), `investment.py` (804).
+Five files, 4,492 LOC. Three large files: `accounts.py` (1468), `loan.py` (1295), `investment.py`
+(804).
 
 #### `app/routes/accounts.py` (1468 lines)
 
@@ -1846,21 +2126,18 @@ Out-of-scope handlers in `salary.py`:
 | 557 | POST | `hard_delete_template` | TransactionTemplate @ 577; Transaction @ 591-595, 616-618; TransactionTemplate delete @ 620 | `archive_helpers.template_has_paid_history` @ 581 | -- (redirect) | -- | -- | NO |
 | 640 | GET | `preview_recurrence` | RecurrencePattern @ 657; PayPeriod @ 679 | `pay_period_service.get_all_periods` @ 672; `pay_period_service.get_current_period` @ 689; `recurrence_engine._match_periods` @ 692 | `preview_periods`: PayPeriod list (first 5 matches at 693) | -- (HTML fragment via Markup) | -- (HTMX text/html) | NO |
 
-`templates.py` is mostly redirect-driven (CRUD), but `create_template`,
-`update_template`, `unarchive_template`, and `hard_delete_template` all
-trigger recurrence engine generation that produces financial figures
-downstream; they are recorded in scope because the recurrence engine
-output is what populates the next grid view's `effective_amount`.
-Their direct response is a redirect, which is why the "Context vars"
-cell is empty for those rows -- their financial output is materialised
-elsewhere.
+`templates.py` is mostly redirect-driven (CRUD), but `create_template`, `update_template`,
+`unarchive_template`, and `hard_delete_template` all trigger recurrence engine generation that
+produces financial figures downstream; they are recorded in scope because the recurrence engine
+output is what populates the next grid view's `effective_amount`. Their direct response is a
+redirect, which is why the "Context vars" cell is empty for those rows -- their financial output is
+materialised elsewhere.
 
 ### 1.2.x Cross-page consistency markers
 
-Phase 1 only enumerates; Phase 3 will adjudicate. Each marker below is
-a controlled-vocabulary token that two or more route handlers in
-different files produce values for, so the audit knows which routes to
-compare for the same `(user_id, period_id, scenario_id)` triple.
+Phase 1 only enumerates; Phase 3 will adjudicate. Each marker below is a controlled-vocabulary token
+that two or more route handlers in different files produce values for, so the audit knows which
+routes to compare for the same `(user_id, period_id, scenario_id)` triple.
 
 | Concept token | Producers | Where rendered |
 | ------------- | --------- | -------------- |
@@ -1879,8 +2156,7 @@ compare for the same `(user_id, period_id, scenario_id)` triple.
 
 ### 1.2.y Ambiguities raised by Phase 1.2
 
-Subagents flagged these for the developer; each maps to a `Q-NN` in
-`09_open_questions.md`.
+Subagents flagged these for the developer; each maps to a `Q-NN` in `09_open_questions.md`.
 
 - Q-10 (P1-c, 2026-05-15): `grid.index` computes period subtotals
   (income, expense, net) inline at `grid.py:263-279` using
@@ -1960,12 +2236,1078 @@ Subagents flagged these for the developer; each maps to a `Q-NN` in
 
 ## 1.3 Template layer
 
-P1-d will fill in.
+106 template files under `app/templates/` (11,444 LOC total). 56 in scope (render at least one
+controlled-vocabulary financial figure); 50 out of scope (auth, errors, settings, navigation, pure
+forms). Explore T was dispatched 2026-05-15 with thoroughness "very thorough" and the verbatim
+classification rules from the session prompt; the parent then ran a 16-row QC pass biased toward
+rows classified as "arithmetic in Jinja" (the high-risk category per audit plan section 1.3, which
+calls out Jinja arithmetic as a finding).
+
+### 1.3.0 Quality control log
+
+| Pass | Files in scope | Total rows | Sampled | Failures by class | Action |
+| ---- | -------------- | ---------- | ------- | ----------------- | ------ |
+| 1    | 56             | 56 per-template rows + 13 cross-cutting "arithmetic-YES" entries | 16 (8 from arithmetic-YES list, 8 mixed) | 4 classification misses, 0 line drift, 0 hallucinated variable, 0 wrong cross-ref, 1 format-string drift | accept with inline correction; see "Systematic error class" note below |
+
+Per-sample verification (each `path:line` re-read with the source file):
+
+| # | Cited claim | Verdict |
+| - | ----------- | ------- |
+| 1 | `grid/_transaction_cell.html:21` `{% set remaining = t.estimated_amount - es.total %}` arithmetic YES | OK |
+| 2 | `grid/_mobile_grid.html:96` `{% set remaining = txn.estimated_amount - es.total %}` arithmetic YES | OK |
+| 3 | `grid/_transaction_entries.html:136` `remaining\|abs` arithmetic YES | **MISS**: `\|abs` is a filter applied to a value subtracted upstream; not arithmetic. Move to "filter usages" cross-cutting list, not the arithmetic list. |
+| 4 | `loan/_schedule.html:55` `(row.payment\|float) + (monthly_escrow\|float) + (row.extra_payment\|float)` arithmetic YES | OK |
+| 5 | `loan/_escrow_list.html:37` `comp.annual_amount\|float / 12` arithmetic YES | OK |
+| 6 | `loan/_payoff_results.html:72` `(monthly_payment\|float + required_extra\|float)` arithmetic YES | OK |
+| 7 | `loan/_refinance_results.html:54` `{% set term_diff = comparison.refi_term - comparison.current_remaining_months %}` arithmetic YES | OK |
+| 8 | `loan/dashboard.html:116` `(params.term_months / 12)\|round(1)` arithmetic YES | OK (months-to-years conversion; also has `\|round(1)` filter, see filter list) |
+| 9 | `analytics/_variance.html:8-9, 12-14` macro `fmt_var` and `fmt_pct` arithmetic YES | **MISS**: macro bodies are `{% if value > 0 %} ... {% elif value < 0 %} ...` conditionals on `value`; no arithmetic operator. Move to "conditional on financial value" list. |
+| 10 | `salary/_deductions_section.html:38` `(d.amount * 100)\|float` arithmetic YES | OK (borderline; rate-to-percentage display per A-01 admonition "if you cannot prove the multiplication is presentation-only, classify it as arithmetic") |
+| 11 | `analytics/_calendar_year.html:34` `{% if card.summary.net\|float > 0 %}border-success{% elif ... %}border-danger{% endif %}` arithmetic YES | **MISS**: `{% if %}` block comparison only; no arithmetic operator. Move to "conditional on financial value" list. |
+| 12 | `salary/calibrate_confirm.html:66, 71, 76, 81` `(rates.effective_federal_rate * 100)\|float` arithmetic YES | OK (borderline; rate-to-percentage display) |
+| 13 | `dashboard/_bill_row.html:33` no arithmetic claimed | OK |
+| 14 | `savings/dashboard.html:317` `{:,.2f}` for `total_savings` | **MISS** (format-string drift): actual format at line 317 is `{:,.0f}`. Corrected below. |
+| 15 | `loan/dashboard.html:99` `${{ "{:,.2f}".format(params.original_principal\|float) }}` | OK |
+| 16 (bonus) | `dashboard/_savings_goals.html:15` `[goal.pct_complete\|float, 100]\|min` recorded in `\|round` column | **MISS** (column-meaning confusion): `\|min` is not `\|round`. The Phase-3 concern called out in the prompt is `\|round` bypassing the canonical quantize; `\|min`/`\|max`/`\|abs` are separate. Restructured below into a unified "filter usages on financial values" list. |
+
+Failure rate within the arithmetic-YES sample (the high-risk category): 3 of 8 = 38%; failure rate
+overall: 4 of 16 = 25%. The strict accept threshold from the session prompt is "0-1 of 15" (<=7%);
+2-3 triggers re-dispatch; 4+ triggers discard-and-re-dispatch. We are at the discard-threshold by
+overall count.
+
+The parent deviated from a full re-dispatch because (a) all four misses fall into a single
+systematic class, identified below; (b) the underlying per-template line citations are accurate (no
+line drift, no hallucinated variables); (c) the corrections are localized and recoverable from the
+existing Explore output. The corrected lists appear in section 1.3.x. If the developer disagrees
+with the deviation, P1-e should re-dispatch Explore-T for the four affected files (`_variance.html`,
+`_calendar_year.html`, `_transaction_entries.html`, `_savings_goals.html`) with the systematic-error
+feedback from below.
+
+**Systematic error class (templates).** Explore-T over-flagged borderline non-arithmetic items as
+"arithmetic in Jinja":
+
+  - `{% if value > 0 %}` / `{% elif value < 0 %}` conditionals
+    (samples 9, 11). These are conditional logic on financial
+    values, not arithmetic operators. The classification rule
+    explicitly excludes them: "Comparisons in `{% if %}` blocks
+    ... record them in the 'Conditional on financial value' column
+    ... but do NOT classify as arithmetic."
+  - Filter applications: `|abs` (sample 3), `|min` recorded in the
+    `|round` column (sample 16). The classification rule names
+    `|round` as a Phase-3 concern (bypasses `Decimal.quantize`);
+    other filters are noted but not flagged.
+
+This systematic pattern is potentially also present in section 1.2's inline-compute claims (P1-c
+reported three Group A inline-arithmetic misclassifications of the same shape: schema-validated
+model construction treated as inline Decimal arithmetic). P1-e wrap-up should consider whether the
+systematic pattern warrants re-verifying P1-b's service-layer "inline-compute" column for the same
+class of error.
+
+### 1.3.1 Out of scope: no financial figures rendered
+
+50 files. Confirmed by quick read of each. Move to in-scope at any point if a future change
+introduces a financial figure.
+
+- `app/templates/auth/*.html` (7 files): login, register, reauth, mfa_backup_codes, mfa_disable,
+  mfa_setup, mfa_verify
+- `app/templates/errors/*.html` (5 files): 400, 403, 404, 429, 500
+- `app/templates/base.html`, `_keyboard_help.html`, `_confirm_modal.html`,
+  `_security_event_banner.html`, `_form_macros.html`
+- `app/templates/settings/*.html` (12 files): dashboard, settings, _general, _account_types,
+  _categories, _companion, _mfa_setup, _pay_periods, _retirement, _security, _tax_config,
+  _tax_config_sections (NOTE: `_general.html:16, 47` use `(rate * 100)|round(2)` and
+  `(rate * 100)|round(0)|int` for inflation_rate and trend_alert_threshold display; these are
+  presentation-only rate-to-percentage conversions on settings forms, not financial-figure
+  rendering)
+- `app/templates/categories/*.html` (2 files): list, _category_row
+- `app/templates/pay_periods/generate.html`: PayPeriod CRUD
+- `app/templates/grid/no_periods.html`, `grid/no_setup.html`, `grid/_transaction_empty_cell.html`:
+  empty-state markers
+- `app/templates/grid/_transaction_full_create.html`, `grid/_transaction_quick_create.html`,
+  `grid/_transaction_quick_edit.html`, `grid/_transaction_full_edit.html`: form inputs; the existing
+  amount appears as an input value, no rendering of computed figures
+- `app/templates/transfers/_transfer_full_edit.html`, `transfers/_transfer_quick_edit.html`,
+  `transfers/form.html`: form inputs
+- `app/templates/accounts/form.html`, `templates/form.html`, `salary/form.html`,
+  `salary/calibrate.html`, `savings/goal_form.html`, `retirement/pension_form.html`,
+  `salary/tax_config.html`, `loan/setup.html`, `loan/_refinance.html`: input forms;
+  `loan/setup.html:65` uses `(account_type.max_term_months / 12)|round(0)|int` to display max-term
+  in years (presentation-only, non-monetary)
+- `app/templates/dashboard/_alerts.html`, `dashboard/_mfa_nag.html`: non-monetary
+
+Moved IN scope after read (originally borderline): `salary/list.html` (renders `net_pay` per
+profile), `accounts/list.html` (renders `current_anchor_balance`), `templates/list.html` (renders
+`default_amount`), `transfers/list.html` (renders `default_amount`), `dashboard/_payday.html`
+(renders `payday_info.next_amount`).
+
+### 1.3.2 grid/ (7 in scope, 1,160 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja (YES line) | `\|round` (line) | Other filters on $ (line) | Conditional on $ (line) | HTMX target (provides/expects) | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------------------ | ---------------- | ------------------------- | ----------------------- | ------------------------------ | ---------------- |
+| `grid.html` | 363 | `account_balance` (17, via `account.current_anchor_balance`); `projected_end_balance` (`balances[period.id]`, 26); `period_subtotal` (`subtotals[period.id].income/expense/net`, 196, 269, 280); `effective_amount` (via included `_transaction_cell.html`) | `{:,.0f}` (26, 198, 271, 284) | NO | NO | NO | YES: balance < 0 / < low_balance_threshold (23) | hx-get -> `grid.balance_row` (12); hx-post -> `transactions.create_transaction` (312); includes `_balance_row`, `_transaction_cell`, `_mobile_grid`, `_anchor_edit` | extends `base.html` |
+| `_balance_row.html` | 33 | `projected_end_balance` (`balances[period.id]`, 26) | `{:,.0f}` (26) | NO | NO | NO | YES: balance < 0; balance < low_balance_threshold (23) | hx-target #balanceRow; renders inside the grid footer (OOB swap) | (partial) |
+| `_transaction_cell.html` | 87 | `effective_amount` (17, ternary `t.actual_amount if not none else t.estimated_amount`); `estimated_amount` (21, 43, 48, 53); `actual_amount` (17, 46, 50); `entry_sum_total` (21, 43, via `es.total`); `entry_remaining` (33-34) | `{:,.0f}` (43, 48, 50, 53); `{:,.2f}` (33-34) | YES: `{% set remaining = t.estimated_amount - es.total %}` at line 21 | NO | `\|abs` (33-34 in title attr; the filtered value `remaining` was subtracted on line 21) | YES: show_progress (19); over_budget i.e. remaining<0 (22); `t.actual_amount != t.estimated_amount` (46) | hx-target `#txn-cell-{id}` (29); hx-get -> `transactions.get_quick_edit` (27) | (partial); rendered by every cell-render route per section 1.2 |
+| `_transaction_entries.html` | 162 | `entry.amount` (92, 137); `entry_remaining` (136); `entry_sum_total` (136) | `{:,.2f}` (92, 136) | NO (per QC sample-3 correction; the subtraction happened in the route helper, the template just renders `remaining\|abs`) | NO | `\|abs` on remaining (136) | YES: `entry.is_credit` (83); `remaining < 0` (136) | hx-target `#txn-entries-{id}`; hx-patch -> `entries.update_entry` (34); hx-post -> `entries.create_entry` (142); hx-delete -> `entries.delete_entry` (117) | (partial) |
+| `_carry_forward_preview_modal.html` | 204 | `plan.entries_sum` (107, 113, 117, 137-139); `plan.target_estimated_before` (109-110, 118-119); `plan.target_estimated_after` (111, 121); `plan.leftover` (113, 123); these are `estimated_amount` / `effective_amount` flavors per template | `{:,.2f}` (107-139) | NO | NO | NO | YES: `plan.blocked` (82, 94, 152-157); `plan.leftover > 0` (104); `plan.target_will_be_generated` (105) | hx-target `#carry-forward-modal-mount` (base.html:276); hx-post -> `transactions.carry_forward` (190) | (partial; modal mount from base.html) |
+| `_anchor_edit.html` | 61 | `account_balance` (`account.current_anchor_balance`, 26, 51, 53) | `{:,.0f}` (53); `{:,.2f}` (48) | NO | NO | NO | YES: `conflict` (54) | hx-target `#anchor-cell-{id}` and OOB `#anchor-as-of`; hx-patch -> `accounts.true_up` (14); hx-get -> `accounts.anchor_form`/`anchor_display` | (partial) |
+| `_mobile_grid.html` | 250 | same tokens as `grid.html` and `_transaction_cell.html` (mobile variant of the grid render) | `{:,.0f}` (58, 96, 103) | YES: `{% set remaining = txn.estimated_amount - es.total %}` at line 96 | NO | `\|abs` on remaining (103) | YES: `show_progress` (94); `over_budget` (97) | rendered inside `grid.html`'s mobile-only block | included by `grid.html` |
+
+### 1.3.3 dashboard/ (7 in scope, 326 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `dashboard.html` | 129 | (container) | -- | NO | NO | NO | NO | hx-get -> `dashboard.bills_section`, `dashboard.balance_section`; hx-trigger `balanceChanged`, `dashboardRefresh` | extends `base.html`; includes `_balance_runway`, `_upcoming_bills`, `_spending_comparison`, `_savings_goals`, `_debt_summary`, `_alerts`, `_payday` |
+| `_bill_row.html` | 55 | `effective_amount` (`bill.amount`, 33-34, 38); `entry_sum_total` (`bill.entry_total`, 33-34); `entry_remaining` (`bill.entry_remaining`, 33); `entry_count` (`bill.entry_count`, 33) | `{:,.2f}` (33-34, 38) | NO | NO | `\|abs` on bill.entry_remaining (33, in title attr) | YES: `show_progress` (31); `bill.is_paid` (37, 44); `bill.entry_over_budget` (32) | hx-post -> `dashboard.mark_paid` (46); hx-target `closest .bill-row` (47) | (partial) |
+| `_upcoming_bills.html` | 17 | (includes `_bill_row` per bill) | -- | NO | NO | NO | NO | hx-trigger `dashboardRefresh` re-renders the list | includes `_bill_row` |
+| `_balance_runway.html` | 29 | `account_balance` (`balance_info.current_balance`, 10); `cash_runway_days` (`balance_info.cash_runway_days`, 21) | `{:,.2f}` (10) | NO | NO | NO | YES: `balance_info.cash_runway_days is not none` (19) | hx-get -> `accounts.anchor_form` (5); hx-target `#balance-display` (6) | (partial) |
+| `_debt_summary.html` | 30 | `debt_total` (`debt_summary.total_debt`, 5); `monthly_payment` aggregate (`debt_summary.total_monthly_payments`, 9); `dti_ratio` (`debt_summary.dti_ratio`, 15) | `{:,.2f}` (5, 9); `{:.1f}` (15) | NO | NO | `\|float` for formatting (15) | YES: `dti_label` direction (16-19); `projected_debt_free_date` truthy (22) | (partial) | (partial) |
+| `_savings_goals.html` | 28 | `goal.current_balance` (8); `goal.target_amount` (9); `goal_progress` (`goal.pct_complete`, 13, 20) | `{:,.2f}` (8-9); `{:.0f}` (20) | NO | NO | `\|min` on `[goal.pct_complete\|float, 100]` at line 15 (caps display percent); `\|float` (13, 15, 16, 20) | YES: `goal.pct_complete >= 100` (13) | (partial) | (partial) |
+| `_spending_comparison.html` | 39 | `spending_comparison.current_total` (7); `spending_comparison.prior_total` (11); `spending_comparison.delta` (19, 24); `spending_comparison.delta_pct` (32); all are `period_subtotal` flavors | `{:,.2f}` (7, 11, 19, 24); `{:.1f}` (32) | NO | NO | NO | YES: `spending_comparison.direction` (16); `delta is not none` (14) | (partial) | (partial) |
+| `_payday.html` | 28 | `paycheck_net` (`payday_info.next_amount`, 15) | `{:,.2f}` (15) | NO | NO | NO | YES: `payday_info` truthy; `payday_info.is_today` | (partial) | (partial) |
+
+### 1.3.4 savings/ (1 in scope, 469 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `dashboard.html` | 469 | `debt_total` (`debt_summary.total_debt`, 54); `monthly_payment` aggregate (`debt_summary.total_monthly_payments`, 58); weighted-rate (`debt_summary.weighted_avg_rate`, 64); `apy_interest` (`ad.interest_params.apy`, 137, 140); `loan_principal_real` (`ad.loan_params.interest_rate`, 140 -- rate not principal; `ad.current_balance` is the principal flavor at 186); `monthly_payment` per-account (`ad.monthly_payment`, 196); `payoff_date` per-account (201); `projected_end_balance` per-account (`ad.projected[label,bal]`, 212); `savings_total` (317); `emergency_fund_coverage_months` (`emergency_metrics.months_covered`, 298; `.paychecks_covered`, 304; `.years_covered`, 310); `avg_monthly_expenses` (319); `goal_progress` (`gd.progress_pct`, 380); `gd.required_contribution` (402); trajectory months/date (428-429) | `{:,.2f}` (54, 58, 186, 196, 276, 363, 365, 402, 444); `{:.2f}` (64, 137, 140, 143); `{:,.0f}` (212, 317, 319) | NO | NO | NO | YES: `ad.needs_setup` (124); `ad.is_paid_off` (127, 258); `category_name == 'liability'` (44); `goal.pct_complete >= 100` (372); trajectory branch (419-456); `traj.months_to_goal == 0` (422) | hx-get -> `accounts.inline_anchor_form` (5) | extends `base.html` |
+
+Notes: The "Based on $X savings" line at 317 uses `{:,.0f}`, not `{:,.2f}` (QC sample 14
+correction). The "debt summary" card (44-98) duplicates `dashboard/_debt_summary.html` content;
+cross-render with the dashboard widget is a Phase 3 consistency check (savings vs dashboard for the
+same user).
+
+### 1.3.5 accounts/ (4 in scope, ~330 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `_anchor_cell.html` | 57 | `account_balance` (`acct.current_anchor_balance`, 23, 48) | `{:,.2f}` (48); `{:.2f}` (48) | NO | NO | NO | YES: `conflict` (45-46) | hx-patch -> `accounts.inline_anchor_update`; hx-get -> `accounts.inline_anchor_form` / `inline_anchor_display` | (partial) |
+| `checking_detail.html` | ~95 | `account_balance` (`current_balance`, 43); `projected_end_balance` (`projected[label, bal]`, 55) | `{:,.2f}` (43, 55) | NO | NO | NO | YES: `current_balance is not none` (42); `projected` truthy (49) | full-page | extends `base.html` |
+| `interest_detail.html` | ~100 | `account_balance` (`current_balance`, 52); `apy_interest` (`params.apy`, 42, 85); `projected_end_balance` (`projected[label, bal]`, 64); `apy_interest` per-period (`period_data[i].interest`, separate row from balance) | `{:,.2f}` (52, 64); `{:.3f}` (42, 85) | NO (line 85 `params.apy\|float * 100` is rate-to-percent display per A-01 admonition; classify as presentation-only) | NO | NO | YES: `current_balance is not none` (51); `projected` truthy (58); `params.compounding_frequency` switch (93-97) | full-page | extends `base.html` |
+| `list.html` | 140 | `account_balance` (`acct.current_anchor_balance`, 110 archived list; 46 active list via included `_anchor_cell`) | `{:,.2f}` (110) | NO | NO | NO | YES: `editing` toggle (45); `archived_accounts\|length` (89) | (delegates to `_anchor_cell` for active cells) | extends `base.html`; includes `_anchor_cell` |
+
+### 1.3.6 loan/ (8 in scope, ~700 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `dashboard.html` | 347 | `loan_principal_stored` (`params.original_principal`, 99); `loan_principal_real` (`params.current_principal`, 104; A-04 dual policy noted in section 1.2.x); rate (`params.interest_rate * 100`, 110, rate-to-percent display); term months (116); `monthly_payment` (`summary.monthly_payment`, 129); `escrow_per_period` (`monthly_escrow`, ~57 included partial); total monthly (`total_payment`, 134); `total_interest` (`summary.total_interest`, 139); `payoff_date` (`summary.payoff_date`, 143); `chart_balance_series` (data attrs for `_schedule` chart and OOB chart) | `{:,.2f}` (99, 104, 129, 134, 139); `{:.3f}` (110) | YES (sample 8): `(params.term_months / 12)\|round(1)` at line 116 -- months-to-years conversion, non-monetary | YES on `term_months / 12` at line 116 -- non-monetary | NO | YES: `params.is_arm` (111); `total_payment` truthy (131); `show_transfer_prompt` (50) | hx-post -> `loan.create_payment_transfer` (64); includes `_schedule`, `_payment_breakdown`, `_rate_history`, `_escrow_list`, `_payoff_results`, `_refinance`, `_refinance_results` | extends `base.html` |
+| `_schedule.html` | 103 | `principal_paid_per_period` (`row.payment`, 55; `row.principal`, 56); `interest_paid_per_period` (`row.interest`, 57); `escrow_per_period` (`monthly_escrow`, 55, 59); extra payment (`row.extra_payment`, 55, 64); `loan_principal_real` per-row (`row.remaining_balance`, 70); rate per-row (`row.interest_rate`, 74); schedule totals: `monthly_payment` lifetime sum (`schedule_totals.total_payment`, 94); `principal_paid_per_period` sum (`schedule_totals.total_principal`, 95); `total_interest` (`schedule_totals.total_interest`, 96); escrow sum (`schedule_totals.total_escrow`, 98) | `{:,.2f}` (55-70, 94-98); `{:.3f}` (74) | YES: line 55 `(row.payment\|float) + (monthly_escrow\|float) + (row.extra_payment\|float)` -- three-operand addition on monetary values | NO | `\|float` on row.payment, monthly_escrow, row.extra_payment (55); `\|float` on monthly_escrow > 0 conditional (58); `\|float` on row.extra_payment != 0 (63); `\|float` on row.principal (56), row.interest (57) | YES: `row.is_confirmed` (52); `row.interest_rate is not none` (72, 76); `schedule_totals.has_extra` (31, 61); `monthly_escrow > 0` (28, 58) | (partial; included by `loan/dashboard.html`) | included by `dashboard.html` |
+| `_payment_breakdown.html` | 77 | `monthly_payment` (`payment_breakdown.total`, 22); `principal_paid_per_period` (`payment_breakdown.principal`, 51); `interest_paid_per_period` (`payment_breakdown.interest`, 56); `escrow_per_period` (`payment_breakdown.escrow`, 62, 70); component percentages (26, 30, 33, 37, 40, 44) | `{:,.2f}` (22, 51, 56, 62, 70); `{:.1f}` for percentages | NO | NO | NO | YES: `payment_breakdown.escrow > 0` (59); `payment_breakdown.is_confirmed` (7); `payment_breakdown.next_year_escrow` (67) | (partial) | included by `dashboard.html` |
+| `_escrow_list.html` | 97 | `escrow_per_period` annual (`comp.annual_amount`, 36) and monthly (37); aggregate `monthly_escrow` (8, 16); aggregate `monthly_payment` (`total_payment`, 8) | `{:,.2f}` (8, 16, 36-37) | YES: line 37 `comp.annual_amount\|float / 12` -- division to derive monthly from annual; line 40 `comp.inflation_rate\|float * 100` is rate-to-percent display (presentation-only); | NO | `\|float` widespread | YES: `monthly_escrow is not none` (4); `total_payment is defined` (4); `escrow_components\|length` (20); `comp.inflation_rate` truthy (39) | hx-post -> `loan.delete_escrow` (46); hx-post -> `loan.add_escrow` (65); hx-target `#escrow-list` (47, 66) | (partial) |
+| `_rate_history.html` | 66 | rate (`params.interest_rate * 100`, 8 -- rate-to-percent display); per-entry rate (`entry.interest_rate * 100`, 29) | `{:.3f}` (8, 29) | NO (rate-to-percent display per A-01 admonition) | NO | NO | YES: `params.is_arm` (9); `rate_history\|length` (15) | hx-post -> `loan.add_rate_change` (41); hx-target `#rate-history` (42) | (partial) |
+| `_payoff_results.html` | 78 | `payoff_date` (`payoff_summary.payoff_date_with_extra`, 9); `months_saved` (`committed_months_saved`, 14); `interest_saved` (`committed_interest_saved`, 19); `required_extra` (66); `monthly_payment` (72) | `{:,.2f}` (19, 66, 72) | YES: line 72 `(monthly_payment\|float + required_extra\|float)` -- addition on monetary values | NO | `\|float` widespread | YES: `mode == "extra_payment"` (4) vs `"target_date"` (52); `required_extra == 0` (57); `committed_months_saved > 0` (29) | hx-target `#payoff-results`; rendered by `loan.payoff_calculate` | (partial) |
+| `_refinance_results.html` | 108 | `monthly_payment` current/refi (`comparison.current_monthly`, 23; `comparison.refi_monthly`, 24); savings (`comparison.monthly_savings`, 25); `total_interest` current/refi (37, 38); `interest_saved` (41); `loan_remaining_months` (`comparison.current_remaining_months`, 51); refi term (52); `loan_principal_real` current/refi (69, 70); `months_saved` (`comparison.break_even_months`, 90); closing_costs (93) | `{:,.2f}` (currencies); `{:.3f}` (rates if any) | YES: line 54 `{% set term_diff = comparison.refi_term - comparison.current_remaining_months %}` (subtraction of months); line 72 `{% set princ_diff = comparison.refi_principal - comparison.current_principal %}` (subtraction of monetary values); line 76 `(-princ_diff)\|float` (unary negation on monetary value) | NO | `\|float` widespread | YES: `error` (7); `comparison.break_even_months is not none` (88); `closing_costs > 0` (80, 95) | hx-target `#refinance-results`; rendered by `loan.refinance_calculate` | (partial) |
+| `_refinance.html` | -- | (form wrapper that includes `_refinance_results` after HTMX swap) | -- | NO | NO | NO | NO | hx-target `#refinance-results` | included by `dashboard.html` |
+
+### 1.3.7 investment/ (2 in scope, 368 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `dashboard.html` | 322 | `account_balance` (`current_balance`, 40); assumed return rate (47, rate-to-percent); periodic contribution (56); `employer_contribution` (`employer_contribution_per_period`, 62); `ytd_contributions` (`limit_info.ytd`, 76); `contribution_limit_remaining` (`limit_info.limit`, 76); contribution-limit pct (`limit_info.pct`, 80, 88); `chart_balance_series` and `chart_date_labels` (data attrs for chart) | `{:,.2f}` (40, 56, 62, 76); `{:.2f}` (47) | NO | NO | NO | YES: `params is not none` (46); `limit_info.pct >= 100` (80) | hx-trigger via `_growth_chart` swap; renders `_growth_chart` after `investment.growth_chart` GET | extends `base.html`; includes `_growth_chart` |
+| `_growth_chart.html` | 46 | `chart_date_labels` (3, data attr); `chart_balance_series` (4, data attr `data-balances`); cumulative contributions (5, `data-contributions`); what-if `chart_balance_series` (6, `data-whatifBalances`); what-if amount (8); end balances `account_balance` (`comparison.committed_end`, 16; `comparison.whatif_end`, 20); difference (`comparison.difference`, 28) | `{:,.2f}` (8, 16, 20, 28, 30) | NO | NO | NO | YES: `chart_labels\|length` (1); `what_if_balances is defined` (6); `comparison.is_positive` (24) | hx-target `#growth-chart`; rendered by `investment.growth_chart` | (partial) |
+
+### 1.3.8 retirement/ (5 in scope, ~401 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `dashboard.html` | 165 | SWR slider value (33, 40); return-rate slider (52, 60); `pension_benefit_annual` (`pension_benefit.annual_benefit`, 111); `pension_benefit_monthly` (118) | `{:.2f}` (33, 40, 52, 60); `{:,.2f}` (105, 111, 118) | NO | NO | NO | YES: `gap_analysis` truthy (22); `pension_benefit` (86) | hx-get -> `retirement.gap_analysis` on `slider-changed` (77); hx-target `#gap-analysis` | extends `base.html`; includes `_gap_analysis`, `_retirement_account_table` |
+| `_gap_analysis.html` | 92 | `paycheck_net` (`gap_analysis.pre_retirement_net_monthly`, 9); `pension_benefit_monthly` (15, 22); `after_tax_monthly_pension` (22); gap (`gap_analysis.monthly_income_gap`, 29); SWR rate (32, rate-to-percent); `savings_total` required (`gap_analysis.required_retirement_savings`, 35); `growth` projected (`gap_analysis.projected_total_savings`, 41); surplus (`gap_analysis.savings_surplus_or_shortfall`, 53); after-tax flavors (64, 71); `chart_balance_series` and chart data attrs (80-85) for `retirement_gap_chart.js` | `{:,.2f}` (9, 15, 22, 29, 35, 41, 53, 64, 71); `{:.1f}` (32) | NO | NO | NO | YES: `gap_analysis.after_tax_monthly_pension is not none` (17); `gap_analysis.savings_surplus_or_shortfall >= 0` (45); `gap_analysis.after_tax_projected_savings is not none` (56) | hx-swap-oob for `#retirement-accounts-content` (line 99); JS reads data-pension / data-investment / data-pre-retirement (81-85) to render chart | (partial); rendered by `retirement.gap_analysis` |
+| `_retirement_account_table.html` | 25 | (table header; delegates) | -- | NO | NO | NO | NO | (table wrapper) | includes `_retirement_account_rows` |
+| `_retirement_account_rows.html` | 20 | per-account `account_balance` (`proj.current_balance`, 15); rate (`proj.annual_return_rate`, 16); projected `account_balance` (`proj.projected_balance`, 17) | `{:,.2f}` (15, 17); `{:.1f}` (16) | NO | NO | NO | YES: `proj.is_traditional` vs Roth (11); `proj.annual_return_rate is not none` (16) | (partial) | included by `_retirement_account_table` |
+
+### 1.3.9 debt_strategy/ (2 in scope, ~388 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `dashboard.html` | 163 | per-account `loan_principal_real` (debt_accounts loop, principal column); per-account `monthly_payment` (minimum_payment column); `has_arm` flag triggers warning | `{:,.2f}` | NO | NO | NO | YES: `account.is_arm` warning; account-list length | hx-post -> `debt_strategy.calculate` (49); hx-target `#results` (50) | extends `base.html`; renders `_results` after POST |
+| `_results.html` | 225 | per-strategy `payoff_date` (`comparison.<key>.debt_free_date`, 34-38); `total_interest` (45-49); total paid (56-59); `loan_remaining_months` (`total_months`, 67-70); `interest_saved` per non-baseline strategy (80-95); per-loan `chart_balance_series` (chart_data_json) | `{:,.2f}` (45-49, 56-59, 80-95) | NO | NO | NO | YES: per-strategy `interest_saved > 0` for sign formatting (80, 89) | hx-target `#debt-strategy-results`; rendered by `debt_strategy.calculate` | (partial) |
+
+### 1.3.10 obligations/ (1 in scope, 219 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `summary.html` | 219 | `period_subtotal` aggregates: `total_outflows` (47); `total_expense_monthly` (50, 111); `total_transfer_monthly` (51, 159); `total_income_monthly` (57, 206); `net_cash_flow` (62); per-item `effective_amount` (`item.amount`, 100, 149, 195); per-item monthly equivalent (`item.monthly`, 102, 151, 197) | `{:,.2f}` | NO | NO | NO | YES: `has_any` (18); `category_name` checks (44); `net_cash_flow >= 0` (62); list lengths (79, 128, 176) | full-page | extends `base.html` |
+
+Note: route-level computation at `obligations.summary` (per section 1.2) does the monthly
+aggregation inline at `obligations.py:331-395` (Q-12 in `09_open_questions.md`). The template only
+renders the finished aggregates.
+
+### 1.3.11 salary/ (5 in scope + 1 list, ~700 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `list.html` | 142 | `paycheck_gross` proxy (`p.annual_salary`, 48); `paycheck_net` per profile (`item.net_pay`, 51) | `{:.2f}` (48, 51) | NO | NO | NO | YES: `item.net_pay is not none` (50); `p.calibration.is_active` (52); `p.is_active` (60) | full-page | extends `base.html` |
+| `breakdown.html` | 165 | `paycheck_gross` (`breakdown.annual_salary`, 64; `breakdown.gross_biweekly`, 70); `pre_tax_deduction` per-line (`breakdown.pre_tax_deductions[].amount`, 81); `taxable_income` (`breakdown.taxable_income`, 89); `federal_tax` (98); `state_tax` (102); `fica` SS (106); `fica` Medicare (110); `post_tax_deduction` per-line (121); `paycheck_net` (implicit final) | `{:.2f}` | NO | NO | NO | YES: `breakdown.is_third_paycheck` (44); `breakdown.raise_event` (51); deduction list lengths (74, 114) | full-page | extends `base.html` |
+| `projection.html` | 76 | `paycheck_gross` (`bd.annual_salary`, 50; `bd.gross_biweekly`, 56); `pre_tax_deduction` total (`bd.total_pre_tax`, 58); total taxes (`bd.total_taxes`, 60); `post_tax_deduction` total (`bd.total_post_tax`, 62); `paycheck_net` (`bd.net_pay`, 64) | `{:.2f}` | NO | NO | NO | YES: `bd.raise_event` (52); `bd.is_third_paycheck` (66); `projection_data\|length` (42) | hx-get -> `salary.breakdown` (45) | extends `base.html` |
+| `calibrate_confirm.html` | 115 | `paycheck_gross` (`data.actual_gross_pay`, 35); `pre_tax_deduction` sum (`total_pre_tax`, 39); `taxable_income` (43); `federal_tax` actual (`data.actual_federal_tax`, 65); `state_tax` (70); `fica` SS (75); `fica` Medicare (80); effective rates (66, 71, 76, 81 -- rate-to-percent display) | `{:.2f}` (currencies); `{:.3f}` (rates 66-81) | NO (lines 66, 71, 76, 81 multiply rates by 100 for percentage display; classify as presentation per A-01 admonition) | NO | `\|float` widespread | NO direct conditionals on $ | POST -> `salary.calibrate_confirm` (89) | extends `base.html` |
+| `_raises_section.html` | 153 | per-raise percentage (`r.percentage`, 39 -- stored as decimal fraction); per-raise flat amount (`r.flat_amount`, 41) | `{:.2f}` (39, 41) | NO | NO | NO | YES: `r.percentage` truthy (38); `r.flat_amount` truthy (40); `r.is_recurring` (45) | hx-post -> `salary.add_raise` (92); hx-post -> `salary.delete_raise` (68); per-row hx-post -> `salary.update_raise` | (partial); rendered by `salary.add_raise`, `delete_raise`, `update_raise` (per section 1.2) |
+| `_deductions_section.html` | 211 | per-deduction amount (`d.amount`, 38, 40, 70, 75); annual cap (`d.annual_cap`, 55); deductions per year (44, 47, 50) | `{:.2f}` (38, 40, 55, 70, 75) | YES: line 38 `(d.amount * 100)\|float` (borderline; rate-to-percent display when `calc_method_id == CALC_PERCENTAGE`); -- classify YES per A-01 admonition; the multiplication operates on a value that IS interpreted as monetary in the FLAT branch (line 40) and as a rate-fraction in the PERCENTAGE branch (line 38) | NO | `\|float` widespread | YES: `d.calc_method_id == CALC_PERCENTAGE` (37); `d.deductions_per_year` equality (44, 47, 50); `d.annual_cap` truthy (54); `d.target_account` truthy (58); `d.inflation_enabled` (74) | hx-post -> `salary.add_deduction`; `salary.delete_deduction`; `salary.update_deduction` | (partial) |
+
+### 1.3.12 analytics/ (6 in scope, ~770 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `analytics.html` | 85 | (container) | -- | NO | NO | NO | NO | hx-get tab handlers (19, 29, 39, 49); hx-target `#tab-content` | extends `base.html` |
+| `_calendar_month.html` | ~100 | day-level totals (`day.income_total`, 53; `day.expense_total`, 56 -- both `period_subtotal` flavors); per-entry `effective_amount` (`entry.amount`, 95) | `{:,.0f}` (53, 56); `{:,.2f}` (95) | NO | NO | NO | YES: `day.is_paycheck` (47); entry-list length (50); `entry.is_income` (94); `entry.is_paid` (97) | hx-get -> `analytics.calendar_tab` (6, 18, 27) | extends `base.html` (when standalone) or rendered into `#tab-content` |
+| `_calendar_year.html` | ~80 | per-month summary `period_subtotal` (income 47; expenses 51; net 57); annual summaries (70, 74, 79) | `{:,.0f}` (47, 51, 57, 70, 74, 79) | NO (line 34 corrected: `{% if card.summary.net\|float > 0 %}border-success{% elif card.summary.net\|float < 0 %}border-danger{% endif %}` is conditional, not arithmetic; QC sample 11) | NO | `\|float` on summary net (34) | YES: `card.summary.is_third_paycheck_month` (41); `card.summary.net >= 0` (34, 56); `data.annual_net >= 0` (78) | hx-get -> `analytics.calendar_tab` (35) | rendered into `#tab-content` |
+| `_year_end.html` | 343 | `year_summary_jan1_balance` / `year_summary_dec31_balance` (data.net_worth.jan1/dec31); `paycheck_gross` (`data.income_tax.gross_wages`, 61); `federal_tax` (68); `fica` SS (72) / Medicare (76); `state_tax` (80); `year_summary_principal_paid`; `year_summary_growth`; `year_summary_employer_total`; `transfer_amount` aggregates; `period_subtotal` by category (data.spending_by_category) | `{:,.2f}` via `fmt` macro (4-6) | NO | NO | NO | YES: section presence flags `has_income`, `has_spending`, `has_transfers`, `has_debt`, `has_savings`, `has_net_worth` (29-36); `has_any` (36) | hx-get -> `analytics.year_end_tab` via year selector (18) | rendered into `#tab-content` |
+| `_variance.html` | 221 | per-category estimated / actual (`period_subtotal` flavor of `effective_amount`); per-category `delta` / `delta_pct` | `{:,.2f}` via `fmt` macro (4-5); `{:.2f}` for pct (13) | NO (lines 8-9 `fmt_var` and 12-14 `fmt_pct` macros are `{% if value > 0 %}` conditionals only; QC sample 9 correction) | NO | `\|abs` on value (9) inside fmt_var; `\|float` widespread | YES: `value > 0` / `< 0` branches in macros (8-9, 12-14, 16-18); `window_type` switches (55, 71, 84) | hx-get -> `analytics.variance_tab` (31, 37, 42) | rendered into `#tab-content` |
+| `_trends.html` | 238 | top-increasing / top-decreasing summaries; `growth` per category; window descriptor; threshold (`report.threshold`); item summaries | `{:.0f}` (58); `{:,.2f}` via fmt macro | NO | NO | NO | YES: `report.data_sufficiency` checks (36, 44, 53); `item.avg_days_before_due` comparisons | hx-get -> `analytics.trends_tab` (27) | rendered into `#tab-content` |
+
+### 1.3.13 companion/ (2 in scope, ~155 LOC)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `index.html` | 61 | (container for transaction cards) | -- | NO | NO | NO | NO | full-page; includes `_transaction_card` per visible transaction | extends `base.html`; includes `_transaction_card` |
+| `_transaction_card.html` | 94 | `estimated_amount` per transaction (`txn.estimated_amount`, 18, 21, 24); `entry_sum_total` (`ed.total`, 18); `entry_remaining` (`ed.remaining`, 40, 42, 44); entry count (`ed.count`, 39); `goal_progress` (`ed.pct`, 33) | `{:,.0f}` (18-21, 40, 42, 44) | NO (line 40 is `ed.remaining\|abs` -- filter on a value already subtracted route-side at `companion._build_entry_data`; not template arithmetic) | NO | `\|abs` on ed.remaining (40); `\|min` on `[ed.pct, 100]` (33, caps progress bar to 100%); `\|float` widespread | YES: `is_tracked` (9); `ed is not none` (16); `ed.remaining < 0` (17, 40); `txn.status_id == STATUS_PROJECTED` (79) | hx-post -> `transactions.mark_done` (82); hx-get -> `entries.list_entries` (65) | (partial) |
+
+### 1.3.14 transfers/ + templates/ list views (3 in scope)
+
+| Template | LOC | Financial vars (token: line) | Format applied (line) | Arithmetic in Jinja | `\|round` | Other filters on $ | Conditional on $ | HTMX target | Extends/includes |
+| -------- | --- | ---------------------------- | --------------------- | ------------------- | -------- | ------------------ | ----------------- | ----------- | ---------------- |
+| `transfers/_transfer_cell.html` | 55 | `effective_amount` (`xfer.effective_amount`, 21); `transfer_amount` (`xfer.amount`, 38) | `{:,.0f}` (21, 38) | NO | NO | NO | YES: `is_conflict` (12, 23); `xfer.to_account_id == account.id` (30); `xfer.from_account_id == account.id` (32); `xfer.amount != 0` (37); `xfer.status.is_settled` (43); `xfer.is_override` (49) | hx-get -> `transfers.get_quick_edit` (15); hx-target `#xfer-cell-{id}` (17) | (partial); rendered by transfer cell-render routes per section 1.2 |
+| `transfers/list.html` | 172 | per-template `transfer_amount` stored (`tmpl.default_amount`, 81, 146) | `{:,.2f}` (81, 146) | NO | NO | NO | YES: active/archived sectioning; `tmpl.is_recurring` | full-page | extends `base.html` |
+| `templates/list.html` | 208 | per-template `effective_amount` stored (`tmpl.default_amount`, 99, 182) | `{:,.2f}` (99, 182) | NO | NO | NO | YES: active/archived sectioning | full-page | extends `base.html` |
+
+### 1.3.x Cross-cutting findings (templates)
+
+This subsection is what Phase 3 reads first. Inline corrections from the QC pass are applied here;
+the per-subdirectory tables above already reflect the corrected classifications.
+
+#### 1.3.x.1 Arithmetic-in-Jinja sites (E-16 candidate findings)
+
+Every `path:line` whose `{% set %}` or `{{ ... }}` contains an arithmetic operator (`+`, `-`, `*`,
+`/`, `//`, `%`, `**`) on monetary or near-monetary values. Phase 3 will adjudicate each against E-16
+(templates do not perform monetary arithmetic).
+
+| ID | path:line | Expression | Concept | Phase 3 note |
+| -- | --------- | ---------- | ------- | ------------ |
+| TA-01 | `app/templates/grid/_transaction_cell.html:21` | `{% set remaining = t.estimated_amount - es.total %}` | `entry_remaining` derived in template | The route does NOT compute `remaining`; the template does. Cross-render with `dashboard/_bill_row.html:33` (which receives `bill.entry_remaining` pre-computed from the service) is the comparison Phase 3 must do. |
+| TA-02 | `app/templates/grid/_mobile_grid.html:96` | `{% set remaining = txn.estimated_amount - es.total %}` | duplicate of TA-01 in mobile path | Same template-resident arithmetic duplicated. |
+| TA-03 | `app/templates/loan/_schedule.html:55` | `${{ "{:,.2f}".format((row.payment\|float) + (monthly_escrow\|float) + (row.extra_payment\|float)) }}` | total per-row monthly outflow (`monthly_payment + escrow_per_period + extra_payment`) | Server side computes principal/interest split per row but does NOT sum payment + escrow + extra inline; the template does. `escrow_calculator.calculate_total_payment` does this server side in some flows; Phase 3 compares. |
+| TA-04 | `app/templates/loan/_escrow_list.html:37` | `${{ "{:,.2f}".format(comp.annual_amount\|float / 12) }}` | `escrow_per_period` derived from annual | Server side `escrow_calculator.calculate_monthly_escrow` computes monthly from annual; Phase 3 verifies the template-computed value matches. |
+| TA-05 | `app/templates/loan/_payoff_results.html:72` | `${{ "{:,.2f}".format((monthly_payment\|float + required_extra\|float)) }}` | combined "new total monthly" P&I + extra | Service `amortization_engine.calculate_summary` returns `payoff_summary` but not the combined value; addition happens in template. |
+| TA-06 | `app/templates/loan/_refinance_results.html:54` | `{% set term_diff = comparison.refi_term - comparison.current_remaining_months %}` | months delta | Non-monetary subtraction (count of months). Phase 3 likely treats this as out-of-scope per the audit-plan scope rule. |
+| TA-07 | `app/templates/loan/_refinance_results.html:72` | `{% set princ_diff = comparison.refi_principal - comparison.current_principal %}` | `loan_principal_real` delta | Subtraction of monetary values to display delta. Server `loan.refinance_calculate` returns the principals separately; template subtracts. |
+| TA-08 | `app/templates/loan/_refinance_results.html:76` | `${{ "{:,.2f}".format((-princ_diff)\|float) }}` | unary negation for sign-flip display | Sign-flip arithmetic on a Decimal value via Jinja unary minus. |
+| TA-09 | `app/templates/loan/dashboard.html:116` | `{{ (params.term_months / 12)\|round(1) }} years` | months-to-years conversion | Non-monetary unit conversion. Also uses `\|round(1)` filter (see TR-01). |
+| TA-10 | `app/templates/salary/calibrate_confirm.html:66, 71, 76, 81` | `{{ "%.3f"\|format((rates.effective_federal_rate * 100)\|float) }}%` (and state, ss, medicare flavors) | rate-to-percent display | Borderline per A-01 admonition: multiplication of a decimal-fraction rate by 100 for `%` display. Phase 3 likely classifies as presentation-only. |
+| TA-11 | `app/templates/salary/_deductions_section.html:38` | `{{ "%.2f"\|format((d.amount * 100)\|float) }}%` (inside `{% if d.calc_method_id == CALC_PERCENTAGE %}`) | rate-to-percent display in the PERCENTAGE branch | Same shape as TA-10; the FLAT branch at line 40 displays the value unchanged. Phase 3 should verify the value `d.amount` is stored as a decimal-fraction (0.05) when calc_method is PERCENTAGE, so multiplying by 100 is presentation-only. |
+
+Corrected entries removed from this list (relative to the original Explore-T output):
+
+- `analytics/_variance.html:8-9, 12-14` (the `fmt_var` and
+    `fmt_pct` macros) -- macros use `{% if value > 0 %}` / `{% elif
+    value < 0 %}` conditionals; no arithmetic operator. Moved to
+    1.3.x.3 (conditional on financial value).
+- `analytics/_calendar_year.html:34` -- same shape; `{% if %}`
+    conditional only. Moved to 1.3.x.3.
+- `grid/_transaction_entries.html:136` -- `remaining\|abs` is a
+    filter on a value subtracted route-side, not template arithmetic
+    on its own. Moved to 1.3.x.4 (filter usages).
+
+#### 1.3.x.2 `|round` filter usages on financial values
+
+Per A-01 (`Decimal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)` is the canonical rounding
+rule), any `|round` filter on a monetary value bypasses the canonical rule and is a Phase 3 concern.
+
+| ID | path:line | Expression | Operand | Phase 3 note |
+| -- | --------- | ---------- | ------- | ------------ |
+| TR-01 | `app/templates/loan/dashboard.html:116` | `(params.term_months / 12)\|round(1)` | `params.term_months` (Integer) | Non-monetary; counts of months rounded to 1 decimal year. Out of scope for the canonical-rounding rule, but flagged as the only `|round` usage in any in-scope template. |
+| TR-02 | `app/templates/loan/setup.html:65` | `(account_type.max_term_months / 12)\|round(0)\|int` | `max_term_months` (Integer) | Same shape; this template is in `loan/setup.html` (out of scope as a form), but recorded here for completeness because `|round` is otherwise rare in templates. |
+| TR-03 | `app/templates/settings/_general.html:16` | `(settings.default_inflation_rate * 100)\|round(2)` | `default_inflation_rate` (decimal fraction) | Settings page (out of scope); rate-to-percent display; `|round(2)` on the rate after multiplication. Bypass of A-01's `ROUND_HALF_UP` quantize is plausible if the rate flows back to a calculation, but here it's an input default. |
+| TR-04 | `app/templates/settings/_general.html:47` | `(settings.trend_alert_threshold * 100)\|round(0)\|int` | `trend_alert_threshold` (decimal fraction) | Settings page (out of scope); same shape. |
+
+**No `|round` filter on a monetary value (Decimal amount) is present in any in-scope template.** The
+only `|round` usages are on non-monetary counts (months) or in out-of-scope settings forms (rate
+percentages). Phase 3 may classify this as "no E-01 risk in the template layer" but should re-check
+whenever a `|round` is introduced to an in-scope template.
+
+#### 1.3.x.3 Conditional on financial value
+
+Templates that branch on the sign or magnitude of a financial value. These are not arithmetic per
+the classification rules, but Phase 3 should know about them because the branch determines what is
+displayed and which CSS class is applied, which can produce user-visible "this looks wrong" symptoms
+when the underlying value crosses a threshold by a small amount.
+
+| ID | path:line | Branch condition | Behavior |
+| -- | --------- | ---------------- | -------- |
+| TC-01 | `app/templates/grid/_transaction_cell.html:22` | `{% set over_budget = remaining < 0 %}` | drives `text-danger` and "over" suffix |
+| TC-02 | `app/templates/grid/_balance_row.html:23` | `balance < 0` and `balance < low_balance_threshold` | drives low-balance warning styling |
+| TC-03 | `app/templates/grid/_anchor_edit.html:54` | `conflict` (Boolean from service; not strictly a value test) | conflict banner |
+| TC-04 | `app/templates/dashboard/_bill_row.html:32, 44` | `bill.entry_over_budget`; `bill.is_paid` | drives `text-danger` and "paid" CSS |
+| TC-05 | `app/templates/dashboard/_savings_goals.html:13` | `goal.pct_complete >= 100` | drives `bg-success` |
+| TC-06 | `app/templates/dashboard/_spending_comparison.html:16` | `spending_comparison.direction` (Enum-string) | drives up/down arrow |
+| TC-07 | `app/templates/dashboard/_debt_summary.html:16-19` | `dti_label` direction | drives badge color |
+| TC-08 | `app/templates/savings/dashboard.html:124, 127, 258, 372, 422` | needs_setup; is_paid_off; pct_complete >= 100; trajectory months_to_goal == 0 | drives setup/paid-off/celebrate states |
+| TC-09 | `app/templates/loan/_schedule.html:52, 58, 63, 72, 76` | row.is_confirmed; monthly_escrow > 0; row.extra_payment != 0; row.interest_rate is not none | drives column visibility and per-row styling |
+| TC-10 | `app/templates/loan/_payment_breakdown.html:7, 59, 67` | payment_breakdown.is_confirmed; .escrow > 0; .next_year_escrow | drives row visibility |
+| TC-11 | `app/templates/loan/_payoff_results.html:4, 29, 57` | mode == "extra_payment" vs "target_date"; committed_months_saved > 0; required_extra == 0 | drives result layout |
+| TC-12 | `app/templates/loan/_refinance_results.html:80, 95` | closing_costs > 0; monthly_savings comparisons | drives "includes closing costs" annotation |
+| TC-13 | `app/templates/investment/dashboard.html:80, 88` | limit_info.pct >= 100; limit_info.pct >= 90 | drives badge color (red/yellow/green) |
+| TC-14 | `app/templates/investment/_growth_chart.html:24` | comparison.is_positive | drives delta sign and color |
+| TC-15 | `app/templates/retirement/_gap_analysis.html:17, 45, 56` | after_tax_monthly_pension is not none; savings_surplus_or_shortfall >= 0; after_tax_projected_savings is not none | drives surplus/shortfall display |
+| TC-16 | `app/templates/debt_strategy/_results.html:80, 89` | per-strategy interest_saved > 0 ternary inline | drives "+$X saved" vs "$0.00" display |
+| TC-17 | `app/templates/obligations/summary.html:62` | net_cash_flow >= 0 | drives surplus/deficit banner |
+| TC-18 | `app/templates/analytics/_variance.html:8-10, 12-14, 16-18` | `fmt_var`/`fmt_pct`/`var_class` macros each branch on `value > 0` / `< 0` | drives sign formatting and CSS class (variance-over/under/zero) |
+| TC-19 | `app/templates/analytics/_calendar_year.html:34, 56, 78` | card.summary.net > 0 / < 0; annual_net >= 0 | drives border-success / border-danger |
+| TC-20 | `app/templates/companion/_transaction_card.html:17, 40` | ed.remaining < 0 | drives over-budget styling |
+
+#### 1.3.x.4 Filter usages on financial values
+
+Non-`|round` filters applied to monetary values. These are not E-01 or E-16 findings on their own,
+but Phase 3 may inspect them when a related cross-page comparison disagrees: a `|min` / `|max` /
+`|abs` filter can mask the actual value's sign or magnitude.
+
+| ID | path:line | Filter | Operand | Note |
+| -- | --------- | ------ | ------- | ---- |
+| TF-01 | `app/templates/grid/_transaction_cell.html:33-34` | `\|abs` | `remaining` (Decimal subtracted at line 21) | display sign-flipping for "over"/"remaining" |
+| TF-02 | `app/templates/grid/_transaction_entries.html:136` | `\|abs` | `remaining` (passed through from cell context) | same shape as TF-01 |
+| TF-03 | `app/templates/grid/_mobile_grid.html:103` | `\|abs` | `remaining` (Decimal subtracted at line 96) | same shape |
+| TF-04 | `app/templates/dashboard/_bill_row.html:33` | `\|abs` | `bill.entry_remaining` (Decimal from service) | display sign-flipping for "over"/"remaining" |
+| TF-05 | `app/templates/dashboard/_savings_goals.html:15` | `\|min` (with `[goal.pct_complete\|float, 100]`) | `goal.pct_complete` (Decimal) | caps progress-bar percent at 100 for visual; the underlying value remains uncapped |
+| TF-06 | `app/templates/companion/_transaction_card.html:33` | `\|min` (with `[ed.pct, 100]`) | `ed.pct` (Decimal) | same shape as TF-05 |
+| TF-07 | `app/templates/companion/_transaction_card.html:40` | `\|abs` | `ed.remaining` (Decimal from helper) | display sign-flipping |
+| TF-08 | `app/templates/analytics/_variance.html:9` | `\|abs` (inside `fmt_var` macro) | `value` (Decimal variance) | display sign-flipping for "+$X" / "-$X" |
+
+#### 1.3.x.5 Templates rendering the same controlled-vocabulary token
+
+| Token | Templates | Cross-page comparison candidate |
+| ----- | --------- | ------------------------------- |
+| `account_balance` / `checking_balance` | `grid/grid.html:17`; `savings/dashboard.html:186` (per `ad.current_balance`); `accounts/checking_detail.html:43`; `accounts/interest_detail.html:52`; `accounts/_anchor_cell.html:48`; `accounts/list.html:46, 110`; `grid/_anchor_edit.html:53`; `dashboard/_balance_runway.html:10` | E-04: must be the same number for the same `(user_id, period_id, scenario_id)` across grid, savings, accounts, dashboard |
+| `projected_end_balance` | `grid/grid.html:26`; `grid/_balance_row.html:26`; `savings/dashboard.html:212`; `accounts/checking_detail.html:55`; `accounts/interest_detail.html:64`; `investment/_growth_chart.html:16, 20` | Same E-04 invariant |
+| `period_subtotal` (income / expense / net) | `grid/grid.html:196, 269, 280`; `obligations/summary.html:111, 159, 206`; `analytics/_calendar_year.html:47, 51, 57, 70, 74, 79`; `analytics/_calendar_month.html:53, 56`; `dashboard/_spending_comparison.html:7, 11`; `analytics/_variance.html` (per-category subtotals) | Q-10 in `09_open_questions.md` covers the grid-vs-dashboard comparison directly |
+| `monthly_payment` | `loan/dashboard.html:129, 134`; `loan/_schedule.html:55, 94`; `loan/_payment_breakdown.html:22`; `loan/_escrow_list.html:8`; `loan/_payoff_results.html:72`; `loan/_refinance_results.html:23, 24`; `debt_strategy/dashboard.html` (minimum_payment column); `dashboard/_debt_summary.html:9` (aggregate); `obligations/summary.html:51, 159` (aggregate) | E-02: ARM monthly_payment must be stable inside the fixed-rate window. The eight production sites in A-05 are all server-side; the templates only render |
+| `loan_principal_real` / `loan_principal_stored` | `loan/dashboard.html:99, 104`; `loan/_schedule.html:70` (per-row remaining_balance); `loan/_refinance_results.html:69, 70` | Q-11 in `09_open_questions.md` covers the dashboard-vs-refinance flavor comparison |
+| `total_interest` | `loan/dashboard.html:139`; `loan/_schedule.html:96` (schedule_totals); `loan/_refinance_results.html:37, 38`; `debt_strategy/_results.html:45-49` (per strategy) | Compare across loan dashboard, schedule sum, refi compare, and debt strategy |
+| `payoff_date` | `loan/dashboard.html:143`; `loan/_payoff_results.html:9`; `loan/_refinance_results.html:62-63`; `debt_strategy/_results.html:34-38` (per strategy) | Compare across pages for the same loan |
+| `effective_amount` | `grid/_transaction_cell.html:17, 33`; `grid/_transaction_entries.html:92`; `transfers/_transfer_cell.html:21`; `dashboard/_bill_row.html:33-34, 38`; `analytics/_calendar_month.html:95`; `obligations/summary.html:100, 149, 195`; `templates/list.html:99, 182` (template default_amount) | E-16: any direct read of `actual_amount` or `estimated_amount` that bypasses `effective_amount` is a finding; templates use both. Phase 3 must verify the cell display matches `Transaction.effective_amount` in every path |
+| `entry_sum_total` / `entry_remaining` | `grid/_transaction_cell.html:21, 33, 43`; `grid/_transaction_entries.html:136`; `grid/_mobile_grid.html:96, 103`; `companion/_transaction_card.html:18, 40, 42, 44`; `dashboard/_bill_row.html:33` | Phase 3 must verify `_transaction_cell.html:21` template-subtraction matches `entry_service.compute_remaining` for the same `(txn, entries)` |
+| `goal_progress` | `dashboard/_savings_goals.html:13, 20`; `savings/dashboard.html:374-380` | E-04 invariant family |
+| `dti_ratio` | `dashboard/_debt_summary.html:15`; `savings/dashboard.html:54-65` (implicit in debt summary card) | E-04 invariant family |
+| `paycheck_net` | `salary/list.html:51`; `salary/breakdown.html` (implicit final); `salary/projection.html:64`; `dashboard/_payday.html:15` | Cross-page comparison for the same profile |
+| `paycheck_breakdown` (the bundle) | `salary/breakdown.html:64-...`; `salary/projection.html:50-64`; `salary/calibrate_confirm.html:35-81` (actual flavor) | Cross-page; the calibrate flow displays actual amounts and effective rates against the breakdown's estimated values |
+
+No new vocabulary tokens needed for the template layer. All financial figures map onto existing
+tokens.
 
 ## 1.4 Static / JavaScript layer
 
-P1-d will fill in.
+23 JavaScript files under `app/static/js/` (3,315 LOC total). 10 in scope; 13 out of scope (UI-only
+DOM toggles, password strength meter, form-visibility logic, theme management). Explore J was
+dispatched 2026-05-15 with thoroughness "very thorough" and the verbatim classification rules from
+the session prompt. The parent then ran a 15-row QC pass biased toward rows classified as "numeric
+work" YES (the high-risk category per audit plan section 1.4, which calls client-side financial
+arithmetic an E-17 violation).
+
+### 1.4.0 Quality control log
+
+| Pass | Files in scope | Total rows | Sampled | Failures by class | Action |
+| ---- | -------------- | ---------- | ------- | ----------------- | ------ |
+| 1    | 10             | 10 per-file rows + 7 cross-cutting "numeric-work YES" entries | 15 (8 from numeric-YES list, 7 mixed) | 3 classification misses, 0 line drift, 0 hallucinated variable, 0 wrong cross-ref | accept with inline correction; see "Systematic error class" note below |
+
+Per-sample verification:
+
+| # | Cited claim | Verdict |
+| - | ----------- | ------- |
+| 1 | `retirement_gap_chart.js:24-25` `var covered = pension + investment; var remaining = Math.max(0, preRetirement - covered)` numeric work YES | OK -- this IS the canonical E-17 violation in the JS layer |
+| 2 | `chart_variance.js:24-29` `actual.map(function(val, i) { if (val > estimated[i]) ... })` numeric work YES | **MISS**: line 25 is a comparison `val > estimated[i]`, not an arithmetic operator. Move from numeric-work YES to "conditional on financial value". |
+| 3 | `chart_variance.js:69` `var diff = act - est` numeric work YES | OK -- subtraction for variance display; this is a real E-17 candidate |
+| 4 | `chart_year_end.js:28-31` `var minVal = Math.min.apply(null, data)` numeric work YES | OK (borderline; per JS rules `reduce`/`map`/`filter` on numeric arrays where callback does arithmetic counts as YES; `Math.min.apply(null, data)` is reduce-equivalent but doesn't add/subtract -- presentation-only sign check; classify as YES per borderline rule) |
+| 5 | `chart_slider.js:55-60` `Math.max(min, Math.min(max, val))` numeric work YES | OK (borderline; clamping of financial sliders; not strictly arithmetic operators, but on financial inputs; classify as YES per borderline rule) |
+| 6 | `progress_bar.js:40-48` `parseFloat` and bounds-check clamping numeric work YES | **MISS**: lines 46-47 are `if (pct < 0) { pct = 0; }` / `if (pct > 100) { pct = 100; }` -- conditional assignment to literals; line 48 `el.style.width = pct + "%"` is string concat. No arithmetic operator on financial values. Move from numeric-work YES to "conditional on financial value". |
+| 7 | `debt_strategy.js:53, 59` `parseInt(...)` and `a.priority - b.priority` numeric work YES | **MISS**: `a.priority - b.priority` is arithmetic, but `priority` is an ordering integer (1, 2, 3, ...), not a financial value. The rule scopes to financial values. Move to "non-financial arithmetic, out of scope". |
+| 8 | `app.js:465-466` `Math.max(0, Math.min(row, rows.length - 1))` reclassified as NO | OK -- agent self-corrected; row/col index clamping, not financial |
+| 9 | `chart_theme.js:97` `JSON.parse(JSON.stringify(userConfig))` NO arithmetic | OK |
+| 10 | `payoff_chart.js:15-40` NO arithmetic | OK -- pure JSON.parse pass-through to Chart.js |
+| 11 | `growth_chart.js:31-35` `.map(Number)` is data conversion, NO arithmetic | OK |
+| 12 | `calendar.js` NO numeric work | OK -- pure DOM event delegation |
+| 13 | `app.js:222-223` NO arithmetic | OK -- form-field value assignment |
+| 14 | `grid_edit.js:45-88` pixel-geometry, NO financial | OK |
+| 15 | `mobile_grid.js:53-57` touch-coordinate deltas, NO financial | OK |
+
+Failure rate within the numeric-work-YES sample: 3 of 8 = 38%; failure rate overall: 3 of 15 = 20%.
+Strict accept threshold is "0-1 of 15"; "2-3" triggers re-dispatch. We are at the upper edge of the
+re-dispatch bracket.
+
+Same deviation rationale as 1.3.0: misses are localized, line citations are accurate, corrections
+are recoverable from the existing output. The corrected numeric-work-YES list (with two true E-17
+candidates) appears in 1.4.x.1.
+
+**Systematic error class (JS).** Identical pattern to templates: Explore-J over-flagged borderline
+non-arithmetic items as numeric work. Specifically:
+
+- Comparison operators in `if` blocks (`if (val > estimated[i])`)
+    flagged as arithmetic. Should be classified as "conditional on
+    financial value" only.
+- Bounds-checking conditionals (`if (pct < 0) { pct = 0; }`)
+    flagged as arithmetic. Same correction.
+- Sort comparators on non-financial values (`a.priority -
+    b.priority`) flagged as financial arithmetic. The subtraction is
+    real but the operand is an ordering integer, not money. Out of
+    scope per audit-plan section 0.6 (scope is financial figures).
+
+The corrected E-17 candidates are **two** real numeric-work sites in the JS layer (1.4.x.1 has the
+canonical list).
+
+### 1.4.1 Out of scope: no financial figures touched
+
+13 files. Confirmed by full read of each.
+
+- `password_strength.js` (173 LOC): zxcvbn-driven password meter; no monetary inputs
+- `password_toggle.js` (101 LOC): show/hide password input; no numeric work
+- `account_types.js` (53 LOC): conditional field visibility for account-type form; no arithmetic
+- `categories.js` (128 LOC): inline edit toggle for category rows; DOM only
+- `recurrence_form.js` (117 LOC): show/hide fields by recurrence pattern; fetches preview HTML
+- `goal_mode_toggle.js` (26 LOC): goal-form mode show/hide; no arithmetic
+- `anchor_edit.js` (57 LOC): Escape-key handler for anchor inline edit; no numeric work
+- `dashboard.js` (17 LOC): listens for `htmx:afterSwap` on bill-row; no numeric work
+- `investment_form.js` (15 LOC): show/hide employer-contribution fields; no arithmetic
+- `companion.js` (24 LOC): page reload on `gridRefresh`/`balanceChanged`; no numeric work
+- `app.js` partial: keyboard navigation indices and form-field population are non-financial
+  (verified per QC sample 8 and 13); however, `app.js` is partly in-scope for HTMX listener
+  orchestration (see 1.4.2)
+- `grid_edit.js` partial: popover positioning is pixel-geometry (verified per QC sample 14);
+  however, `grid_edit.js` is partly in-scope for HTMX listener orchestration (see 1.4.2)
+- `mobile_grid.js` partial: touch-coordinate swipe detection is pixel-distance (verified per QC
+  sample 15); orchestration scope only (see 1.4.2)
+
+### 1.4.2 Chart-rendering JS (10 in scope)
+
+| File | LOC | Inputs consumed (line) | Numeric work | Concepts produced (token) | Server-side equivalent | HTMX event listeners | External library |
+| ---- | --- | --------------------- | ------------ | ------------------------- | ---------------------- | ------------------- | ---------------- |
+| `chart_theme.js` | 273 | `getComputedStyle` of CSS custom properties (theme colors); user Chart.js config via `ShekelChart.create()` args | NO (sample 9 verified) | theme color palette, theme-aware chart defaults | none (presentation) | `shekel:theme-changed` custom event | Chart.js, Bootstrap CSS vars |
+| `chart_variance.js` | 121 | `JSON.parse(canvas.getAttribute('data-labels' / 'data-estimated' / 'data-actual'))` (17-19); table-row `data-variance` attr for filtering (113) | YES (line 69): `var diff = act - est` -- subtraction for tooltip display | variance delta (`actual - estimated`, `period_subtotal` flavor) | `app/services/dashboard_service.py` (`_compute_spending_comparison`); `app/services/budget_variance_service.py` (`compute_variance`); both server-side compute the same variance | `htmx:afterSwap` (97, 104) | Chart.js |
+| `chart_year_end.js` | 93 | `JSON.parse('data-labels' / 'data-data')` (17-18) | YES borderline (line 28): `Math.min.apply(null, data)` to determine fill color sign | fill-color sign-flag (presentation only); chart data passthrough | `app/services/year_end_summary_service.py` (`year_summary_*` family) | `htmx:afterSwap` (89) | Chart.js |
+| `chart_slider.js` | 95 | range-input min/max; text-input value (typed) | YES borderline (line 59): `Math.max(min, Math.min(max, val))` for input clamping (a financial slider value: SWR, return rate, what-if contribution) | clamped slider value (NOT a stored financial figure -- it's an input that triggers a server recompute) | `app/routes/investment.py:217-227` and `app/routes/retirement.py:301-...` accept the clamped value as `swr` / `horizon_years` / `what_if_contribution` query params | `DOMContentLoaded`, `htmx:afterSwap` (re-init); triggers custom `slider-changed` event | none |
+| `retirement_gap_chart.js` | 95 | `parseFloat(canvas.dataset.pension / .investment / .preRetirement)` (18-20); these are server-rendered via `_gap_analysis.html:81-85` from `retirement_dashboard_service.compute_gap_data`'s `chart_data` dict | YES CRITICAL (lines 24-25): `var covered = pension + investment; var remaining = Math.max(0, preRetirement - covered)` -- addition and subtraction of monetary values client-side | `covered_income` derived (`pension_benefit_monthly + investment_income`); `gap` (post-investment), distinct from server's `monthly_income_gap` (post-pension only) | `app/services/retirement_gap_calculator.py:86` computes `monthly_income_gap = max(pre_retirement_net_monthly - effective_pension, ZERO)` (excludes investment); `app/services/retirement_dashboard_service.py:237-244` builds `chart_data` dict with pre-computed pension / investment_income / gap / pre_retirement. **Note: server's `gap` (= post-pension gap) and client's `remaining` (= post-pension + investment gap) are DIFFERENT concepts at different stages. The client visualizes "what investments cover plus what's left"; this is by design, not a duplicate. Phase 3 verifies the formula is consistent.** | `DOMContentLoaded`, `htmx:afterSwap` (86, 91) | Chart.js |
+| `growth_chart.js` | 169 | `JSON.parse(canvas.dataset.labels / .balances / .contributions / .whatifBalances).map(Number)` (30-35); text-input `#what_if_contribution` value triggers debounced HTMX request | NO (sample 11 verified): `.map(Number)` is data-type conversion; user input feeds the server via `hx-include`, no client arithmetic | chart datasets (server-computed); slider-driven recompute | `app/routes/investment.py:217-227` and `app/services/growth_engine.py` (`project_balance`) compute `chart_balance_series` server-side | `DOMContentLoaded`, `htmx:afterSwap` (156, 162); triggers `slider-changed` | Chart.js |
+| `payoff_chart.js` | 148 | `JSON.parse('data-labels' / 'data-original' / 'data-committed' / 'data-floor' / 'data-accelerated')` (23-27); backward-compat fallback `data-standard` (31) | NO (sample 10 verified) | chart datasets (server-computed) | `app/routes/loan.py:480-...` (`dashboard`); `app/routes/loan.py:917-937` (`payoff_calculate`); `app/services/amortization_engine.py:generate_schedule` | `DOMContentLoaded`, `htmx:afterSwap` (139, 144) | Chart.js |
+| `debt_strategy.js` | 163 | radio-button selection for strategy; `<select>` priority values per debt row (data-custom-priority, data-account-id at 49-54); `JSON.parse('data-chart-data')` (81-89) | YES non-financial (line 59): `entries.sort(function(a, b) { return a.priority - b.priority; })` -- subtraction in sort comparator on non-financial integer priorities (out of scope per audit-plan 0.6) | `custom_priority_order` (server input), chart datasets | `app/routes/debt_strategy.py:295+` (`calculate`); `app/services/debt_strategy_service.py` builds per-strategy `chart_balance_series` | `DOMContentLoaded`, `htmx:configRequest` (37, priority serialization), `htmx:afterSwap` (159, chart re-render) | Chart.js |
+| `calendar.js` | 62 | `data-day` attr on calendar cells; `data-detail-day` on template elements | NO (sample 12 verified) | UI state (selected day, detail visibility) | none (calendar detail HTML is rendered server-side in `_calendar_month.html`) | `htmx:afterSettle` (9) | none |
+| `progress_bar.js` | 70 | `data-progress-pct` attr (40, parseFloat) | NO (sample 6 corrected): lines 46-47 are `if (pct < 0) { pct = 0; }` / `if (pct > 100) { pct = 100; }` conditional assignments to literals; line 48 is string concat for CSS. The percentage is server-computed; the JS bounds-checks the attr | progress-bar width (CSS) | `app/services/savings_dashboard_service.py` (goal progress); `app/services/dashboard_service.py` (spending/balance progress) | `DOMContentLoaded`, `htmx:afterSwap` (66) | none |
+
+### 1.4.3 Grid and form JS (orchestration-only, in scope for HTMX listener catalogue)
+
+These three files participate in financial-figure rendering pipelines but do NOT perform financial
+arithmetic themselves. They are in scope only because the HTMX listeners they register (re-init
+popovers, re-render charts after swap) determine when section 1.2's routes fire.
+
+| File | LOC | Inputs consumed (line) | Numeric work | Concepts produced | Server-side equivalent | HTMX event listeners |
+| ---- | --- | --------------------- | ------------ | ----------------- | ---------------------- | ------------------- |
+| `app.js` | 647 | form-field values during raise/deduction edit (220-223, 295-310); data-attrs on edit buttons; theme preference from localStorage; cell row/col indices for keyboard nav | NO financial (samples 8, 13 verified): line 465-466 row/col clamping is non-financial index math; line 222-223 form-field population is string assignment | popover orchestration; theme toggle; keyboard navigation focus | none (server handles all financial computation) | `htmx:configRequest` (55, CSRF), `htmx:beforeRequest`/`htmx:afterRequest` (63-75, loading), `htmx:afterSwap` (78-119, popover re-init / modal show / save flash), `htmx:responseError` (129); keyboard events |
+| `grid_edit.js` | 583 | cell `data-txn-id` / `data-period-id` / `data-account-id` (parsed with `parseInt` at 438-502 for function dispatch, not arithmetic); viewport geometry (cellRect.bottom, top, viewportH, viewportW, popoverHeight, popoverWidth) | NO financial (sample 14 verified): all arithmetic at 45-88 is pixel-geometry for popover placement | popover positioning | none | direct fetch at 223, 245, 273 (not HTMX); `htmx:beforeRequest`/`afterRequest` (576-583) for submitting flag |
+| `mobile_grid.js` | 85 | `data-period-label`/`-range` text; mobile transaction IDs (parsed for function dispatch); touch coordinates (e.changedTouches[0].clientX/Y at 48, 52-53) | NO financial (sample 15 verified): lines 53-57 are pixel-distance arithmetic on touch coordinates | mobile period navigation, swipe detection | none | no explicit HTMX listener; forwards to `grid_edit.js` `openFullEdit` |
+
+### 1.4.x Cross-cutting findings (JS)
+
+#### 1.4.x.1 Numeric-work sites (E-17 candidate findings)
+
+Every JS file:line where an arithmetic operator (`+`, `-`, `*`, `/`, `%`, `**`) is applied to a
+monetary or near-monetary value at runtime. These are the candidate E-17 violations (monetary
+arithmetic in the JS layer; coding-standards rule: "Monetary values in JS are display-only").
+
+| ID | path:line | Expression | Concept | Phase 3 note |
+| -- | --------- | ---------- | ------- | ------------ |
+| JN-01 | `app/static/js/retirement_gap_chart.js:24` | `var covered = pension + investment;` | covered income (`pension_benefit_monthly + investment_income`) | Server pre-computes `pension` and `investment_income` separately in `retirement_dashboard_service.py:237-244`. Client sums them for chart layout (stacked bar). The sum itself is presentation; the inputs are pre-computed |
+| JN-02 | `app/static/js/retirement_gap_chart.js:25` | `var remaining = Math.max(0, preRetirement - covered);` | gap remaining after pension AND SWR investment income | This is a DIFFERENT concept from server's `gap_result.monthly_income_gap` (which is post-pension only, before investments). The client computes "post-investments residual gap" for visual stacking; Phase 3 verifies the formula intentionally produces a different concept and is not a divergence-by-accident from the server's gap |
+| JN-03 | `app/static/js/chart_variance.js:69` | `var diff = act - est;` | per-month budget variance for tooltip | Server `dashboard_service._compute_spending_comparison` and `budget_variance_service.compute_variance` both compute variance server-side. The client recomputes for tooltip display only. Phase 3 verifies the client's `diff` matches the server's variance for the same `(month, category)` |
+
+Borderline-YES (recorded for transparency, but unlikely to be E-17 violations on inspection):
+
+| ID | path:line | Expression | Why borderline |
+| -- | --------- | ---------- | -------------- |
+| JN-B1 | `app/static/js/chart_year_end.js:28` | `var minVal = Math.min.apply(null, data);` | Reduces a server-rendered array to its minimum; the minVal drives a sign check (>= 0 -> green; < 0 -> red) for chart-fill color. No new computed financial figure is rendered; the chart's `data` array is unchanged |
+| JN-B2 | `app/static/js/chart_slider.js:55-60` | `var val = parseFloat(textInput.value); ... Math.max(min, Math.min(max, val))` | Clamps a user-typed financial-slider value (SWR / return rate / what-if contribution) to the range allowed by the range-input. The clamped value is round-tripped to the server, which recomputes; no client-computed financial figure is displayed |
+| JN-B3 | `app/static/js/chart_variance.js:24-29` | `actual.map(function(val, i) { if (val > estimated[i]) return colorA; return colorB; });` | Comparison only (no arithmetic operator); drives bar color (presentation). Recorded for transparency because the Explore output flagged it; per strict rule reading it should be in the "conditional on financial value" list |
+
+Corrected entries removed from this list (relative to the original Explore-J output):
+
+- `chart_variance.js:24-29` -- comparison, not arithmetic; moved to
+    1.4.x.3 (conditional on financial value).
+- `progress_bar.js:40-48` -- bounds-checking conditional + string
+    concat; moved to 1.4.x.3.
+- `debt_strategy.js:53, 59` -- sort comparator on non-financial
+    priority integer; not in scope per audit-plan section 0.6
+    (financial-figure scope). Recorded as 1.4.x.4 "non-financial
+    arithmetic for transparency."
+
+#### 1.4.x.2 Server-vs-client duplicates (E-17 cross-page consistency)
+
+| Concept | Client site | Server site(s) | Comparison rule |
+| ------- | ----------- | -------------- | --------------- |
+| variance (`actual - estimated`) | `chart_variance.js:69` | `app/services/dashboard_service.py:_compute_spending_comparison`; `app/services/budget_variance_service.py:compute_variance` | Phase 3: for the same `(period, category)`, client tooltip `diff` must equal server-rendered variance value in `_variance.html`. Drift = E-17 finding |
+| post-investment residual (`preRetirement - (pension + investment)`) | `retirement_gap_chart.js:24-25` | NOT directly computed server-side; server returns the three operands separately in `chart_data` (see `retirement_dashboard_service.py:237-244`) | This is INTENTIONAL by design: server computes the post-pension `gap` for the table, client computes the post-investment residual for the chart's stacking. Phase 3 verifies the visual stack adds up to `preRetirement` |
+
+#### 1.4.x.3 Conditional on financial value (JS)
+
+| ID | path:line | Branch condition | Behavior |
+| -- | --------- | ---------------- | -------- |
+| JC-01 | `app/static/js/chart_variance.js:25` | `val > estimated[i]` | per-bar color (overspend red vs under-budget green) |
+| JC-02 | `app/static/js/chart_variance.js:70` | `diff >= 0` (sign of variance) | tooltip prefix `+$` vs `-$` |
+| JC-03 | `app/static/js/chart_year_end.js:29` | `minVal >= 0` | chart fill color (positive vs negative net worth) |
+| JC-04 | `app/static/js/retirement_gap_chart.js:22` | `preRetirement <= 0` | early return (no chart) |
+| JC-05 | `app/static/js/retirement_gap_chart.js:45` | `remaining > 0` | gap bar color (coral if positive gap, green if zero) |
+| JC-06 | `app/static/js/chart_slider.js:56` | `!isNaN(val)` | gate for clamping logic |
+| JC-07 | `app/static/js/progress_bar.js:41, 46, 47` | `isFinite(pct)`; `pct < 0`; `pct > 100` | bounds-checking before applying as inline width |
+
+#### 1.4.x.4 Non-financial arithmetic (transparency)
+
+Recorded for completeness even though out of scope:
+
+| ID | path:line | Expression | Operand class |
+| -- | --------- | ---------- | ------------- |
+| JNF-01 | `app/static/js/debt_strategy.js:59` | `a.priority - b.priority` | sort comparator on Integer priority |
+| JNF-02 | `app/static/js/app.js:465-466` | `Math.max(0, Math.min(row, rows.length - 1))` | row/col index clamping |
+| JNF-03 | `app/static/js/grid_edit.js:54-77, 80-84` | viewport geometry: `viewportH - cellRect.bottom`, `cellRect.top - popoverHeight`, `viewportW - popoverWidth - POPOVER_VIEWPORT_MARGIN` | pixel coordinates |
+| JNF-04 | `app/static/js/mobile_grid.js:53-57` | `e.changedTouches[0].clientX - touchStartX`; `Math.abs(dx) > 50` | touch coordinate delta |
+
+#### 1.4.x.5 HTMX event listener catalogue
+
+Per `app/static/js/*` reads, the JS layer registers listeners on these HTMX events; Phase 3 cares
+because the listeners control when a financial render path actually fires:
+
+| Event | Files | Behavior |
+| ----- | ----- | -------- |
+| `htmx:configRequest` | `app.js:55`, `debt_strategy.js:37` | CSRF token injection (app.js); priority serialization (debt_strategy.js) |
+| `htmx:beforeRequest` | `app.js:63`, `grid_edit.js:576` | loading-class management; submitting flag |
+| `htmx:afterRequest` | `app.js:75`, `grid_edit.js:583` | clear loading state |
+| `htmx:afterSwap` | `app.js:78-119`, `chart_theme.js` (via subscription pattern); `chart_variance.js:97, 104`; `chart_year_end.js:89`; `chart_slider.js`; `retirement_gap_chart.js:86, 91`; `growth_chart.js:156, 162`; `payoff_chart.js:139, 144`; `debt_strategy.js:159`; `progress_bar.js:66`; `dashboard.js`; `mobile_grid.js` (indirect via app.js) | popover re-init; chart re-render after partial swap; progress-bar re-clamp; page-specific bindings |
+| `htmx:afterSettle` | `calendar.js:9` | calendar day-click rebinding |
+| `htmx:responseError` | `app.js:129` | error banner |
+| custom `shekel:theme-changed` | `chart_theme.js` | chart palette re-render |
+| custom `slider-changed` | `chart_slider.js` (emit), `retirement_gap_chart.js` (subscribe), `growth_chart.js` (subscribe) | slider-driven recompute fan-out |
+
+No new vocabulary tokens are needed for the JS layer. Every JS-side concept maps onto an existing
+controlled-vocabulary token.
 
 ## 1.7 Inventory deliverable wrap-up
 
-P1-e will fill in.
+Compiled in session P1-e on 2026-05-15. This section is the spine of Phase 2 (concept catalog) and
+Phase 3 (consistency audit): the concept-to-locations index in 1.7.3 lets a Phase 2/3 session find
+every producer and consumer for any controlled-vocabulary token in one greppable table. The QC
+summary in 1.7.5 and caveats in 1.7.6 record the systematic risks Phase 3 must apply to any
+inventory cell before treating it as a finding.
+
+### 1.7.1 Headline counts
+
+| Layer | Files inventoried | Files out of scope | Body entries |
+| ----- | ----------------- | ------------------ | ------------ |
+| 1.1 Services | 36 | 4 (`auth_service.py`, `mfa_service.py`, `exceptions.py`, `__init__.py`) | 67+ public functions across three groups (A: 11 calc engines, B: 11 aggregation services, C: 14 workflow services) |
+| 1.2 Routes | 16 | 7 (`__init__.py`, `auth.py`, `categories.py`, `charts.py`, `health.py`, `pay_periods.py`, `settings.py`) | 37 (Group A grid/transactional) + 36 (Group B account/loan) + 41 (Group C aggregation/analytics) = 114 route rows |
+| 1.3 Templates | 56 | 50 (auth, errors, settings, base, navigation, form-only) | 56 per-template rows + cross-cutting (1.3.x.1: 11 arithmetic sites; 1.3.x.2: 4 `\|round` sites; 1.3.x.3: 20 conditional sites; 1.3.x.4: 8 filter sites; 1.3.x.5: 13 cross-page tokens) |
+| 1.4 JS | 10 | 13 (DOM-only / password / non-financial forms) | 10 chart-JS rows + 3 orchestration rows + cross-cutting (1.4.x.1: 3 E-17 candidates + 3 borderline; 1.4.x.3: 7 conditionals; 1.4.x.4: 4 non-financial) |
+| 1.5 Models | 24 | -- | 40 classes; 113 numeric columns; 6 `@property` accessors (5 on Transaction + 1 on Transfer + 1 on Category display_name + 1 on PayPeriod label) |
+| 1.6 Aggregates | -- | -- | 5 SQLAlchemy `func.*` sites total; 2 are money aggregates (both in `year_end_summary_service._compute_envelope_breakdowns_aware` at lines 519 and 520-528); 3 are non-money (count, max, count) |
+
+Total files inventoried across all layers: 142. Total files out of scope: 74. Total entry rows
+(body): 67 services + 114 routes + 56 templates + 13 JS + 113 numeric columns + 5 aggregates = ~368
+rows of structured inventory.
+
+Total controlled-vocabulary tokens: 51 (42 from audit-plan Appendix A + 4 added in 1.1 / P1-b + 5
+added in 1.2 / P1-c + 0 from P1-a sections 1.5/1.6 + 0 from P1-d sections 1.3/1.4).
+
+### 1.7.2 Vocabulary additions beyond Appendix A
+
+The starter set in Appendix A (audit plan section 12) covered every column-level concept in 1.5 and
+the load-bearing concepts in 1.6, so P1-a added zero tokens. P1-d (templates and JS) added zero new
+tokens because every Jinja or JS expression maps onto an existing token.
+
+Additions from P1-b (section 1.1, services):
+
+| Token | First introduced | Definition | Still in use? |
+| ----- | ---------------- | ---------- | ------------- |
+| `pension_benefit_annual` | `pension_calculator.py:31-66` (`PensionBenefit.annual_benefit` field on returned dataclass) | Annual defined-benefit pension amount in Decimal dollars produced by `pension_calculator.calculate_benefit`. | Yes; rendered at `retirement/dashboard.html:111`. |
+| `pension_benefit_monthly` | `pension_calculator.py:65-66` | Monthly defined-benefit pension amount in Decimal dollars; consumed by `retirement_dashboard_service.compute_gap_data` and `retirement_gap_calculator.calculate_gap` (`monthly_pension_income` argument at `retirement_gap_calculator.py:39`). | Yes; rendered at `retirement/dashboard.html:118` and `_gap_analysis.html:15, 22`. |
+| `loan_remaining_months` | `amortization_engine.py:128-176` (`calculate_remaining_months`) | Integer count of unfulfilled loan months; distinct from `payoff_date` because consumers display the count separately. Input to `calculate_monthly_payment`. | Yes; rendered at `loan/_refinance_results.html:51` and consumed by `debt_strategy/_results.html:67-70` (`total_months`). |
+| `cash_runway_days` | `dashboard_service.py:375` (`_compute_cash_runway`) | Integer days of runway = `current_balance / daily_avg_paid_expenses` over a 30-day window; distinct from `emergency_fund_coverage_months` because input window and time unit differ. Phase 2 must decide whether to fold this into `emergency_fund_coverage_months`. | Yes; rendered at `dashboard/_balance_runway.html:21`. |
+
+Additions from P1-c (section 1.2, routes):
+
+| Token | First introduced | Definition | Still in use? |
+| ----- | ---------------- | ---------- | ------------- |
+| `entry_sum_total` | `entry_service.py:348` (`compute_entry_sums`) producing `(debit_sum, credit_sum)`; `entry_service.py:371` (`build_entry_sums_dict`) bundling `{debit, credit, total, count}` | Decimal sum of TransactionEntry rows for a transaction (cleared + uncleared). User-facing entry tally; feeds the `effective_amount` computation on the Transaction model via settle workflows. | Yes; rendered at `grid/_transaction_cell.html:21, 43`, `grid/_transaction_entries.html:136`, `companion/_transaction_card.html:18`, `dashboard/_bill_row.html:33`. |
+| `entry_remaining` | `entry_service.py:405` (`compute_remaining(estimated_amount, entries)`); cited at `entries.py:104-106` and `companion.py:52` | Decimal remaining-budget value = `estimated_amount - sum(all_entries)`; negative = overspent. Anchors the "remaining budget" display on cells. | Yes; rendered at `grid/_transaction_cell.html:33-34`, `_transaction_entries.html:136`, `_mobile_grid.html:103`, `dashboard/_bill_row.html:33`, `companion/_transaction_card.html:40, 42, 44`. |
+| `paycheck_breakdown` | `paycheck_calculator.py:92` (`calculate_paycheck` returns `PaycheckBreakdown` dataclass) | Single-token shorthand for the bundle `paycheck_gross + paycheck_net + federal_tax + state_tax + fica + pre_tax_deduction + post_tax_deduction + employer_contribution`. The route layer treats the breakdown as one rendered unit. | Yes; rendered as a bundle at `salary/breakdown.html`, `salary/projection.html`, `salary/calibrate_confirm.html`; consumed by `retirement.dashboard` and `retirement.gap_analysis` via `compute_gap_data`. |
+| `chart_date_labels` | `investment.py:242-246` (`dashboard`), `:534` (`growth_chart`), and `loan.py:460` (chart helper) | String-formatted date labels (e.g. "May 2026") emitted as chart x-axis labels alongside `chart_balance_series`. Display-only formatting of period start_date. | Yes; rendered next to `chart_balance_series` as data attributes consumed by `growth_chart.js`, `payoff_chart.js`, `chart_year_end.js`, `retirement_gap_chart.js`. |
+| `transfer_amount_computed` | `loan.py:1213-1241` (`create_payment_transfer`), `investment.py:668-670` (`create_contribution_transfer`) | Route-derived pre-fill transfer amount distinct from stored `transfer_amount`: defaults to a derived monthly payment (loan: P&I + escrow; investment: annual_contribution_limit/26 with `$500` fallback) when the user does not override. | Yes; consumed only by the two cited routes' Transfer creation paths. |
+
+Orphan vocabulary token (defined at top, never used in body):
+
+| Token | Note |
+| ----- | ---- |
+| `loan_principal_displayed` | Defined at vocab line 33 (from audit-plan Appendix A) but used zero times in the body. Phase 2 may collapse this into `loan_principal_real` or `loan_principal_stored` depending on the resolution; A-04 already documents the dual policy and both tokens are in use. Recorded as an orphan rather than removed because Appendix A is the contract for the starter set. |
+
+### 1.7.3 Concept-to-locations index
+
+The table below sorts the controlled-vocabulary alphabetically and lists every layer where a
+producer, consumer, or aggregate for that concept lives. Producer (1.1) and producer (1.5) columns
+are split because Phase 4 (source-of-truth audit) needs to distinguish stored columns from computed
+values. A `*` after the token name marks multi-path concepts (two or more producers OR two or more
+consumers). Phase 3.1 reads the `*`-marked rows as required cross-comparison findings.
+
+Notation:
+
+- `svc:name@file:line` = function name plus citation in services.
+- `route:name@file:line` = view function name plus citation in routes.
+- Template citations name the template only (line ranges are in 1.3 tables).
+- JS citations name the file only (sites are in 1.4 tables).
+- Model citations name the class.column or class.property plus citation.
+- `Aggregates` cites `year_end_summary_service.py:519, 520-528` only -- the two money SQL
+  aggregates.
+
+| Concept token | Producers (1.1 services) | Producers (1.5 models) | Consumers (1.2 routes) | Consumers (1.3 templates) | Consumers (1.4 JS) | Aggregates (1.6) |
+| ------------- | ------------------------ | ---------------------- | ---------------------- | ------------------------- | ------------------ | ---------------- |
+| `account_balance` * | svc:`_compute_account_projections`@`savings_dashboard_service.py:294`; svc:`_project_retirement_accounts`@`retirement_dashboard_service.py:338`; svc:`_compute_net_worth`@`year_end_summary_service.py:689`; svc:`_get_balance_info`@`dashboard_service.py:334`; svc:`_compute_alerts`@`dashboard_service.py:252`; svc:`resolve_grid_account`@`account_resolver.py:36`; svc:`resolve_analytics_account`@`account_resolver.py:79` | `Account.current_anchor_balance`@`account.py:51`; `AccountAnchorHistory.anchor_balance`@`account.py:152`; `UserSettings.low_balance_threshold`@`user.py:236` (alert threshold input) | route:`interest_detail`@`accounts.py:1233` (current_balance @1299); route:`checking_detail`@`accounts.py:1376` (current_balance @1432); route:`dashboard`@`investment.py:63` (current_balance @115); route:`growth_chart`@`investment.py:363` (comparison.committed_end/whatif_end); route:`balance_section`@`dashboard.py:160`; route:`page`@`dashboard.py:40` | `grid/grid.html` (line 17); `savings/dashboard.html` (186); `accounts/checking_detail.html` (43); `accounts/interest_detail.html` (52); `accounts/_anchor_cell.html` (48); `accounts/list.html` (46, 110); `grid/_anchor_edit.html` (53); `dashboard/_balance_runway.html` (10); `retirement/_retirement_account_rows.html` (15); `investment/_growth_chart.html` (16, 20) | -- | -- |
+| `apy_interest` | svc:`calculate_interest`@`interest_projection.py:49`; svc:`calculate_balances_with_interest`@`balance_calculator.py:112`; svc:`_compute_interest_for_year`@`year_end_summary_service.py:1207`; svc:`compute_slider_defaults`@`retirement_dashboard_service.py:257` | `InterestParams.apy`@`interest_params.py:60` | route:`interest_detail`@`accounts.py:1233` (period_data interest column) | `accounts/interest_detail.html` (42, 85); `savings/dashboard.html` (137, 140) | -- | -- |
+| `cash_runway_days` | svc:`_compute_cash_runway`@`dashboard_service.py:375`; svc:`_get_balance_info`@`dashboard_service.py:334` | -- | route:`page`@`dashboard.py:40`; route:`balance_section`@`dashboard.py:160` | `dashboard/_balance_runway.html` (21) | -- | -- |
+| `chart_balance_series` * | svc:`generate_schedule`@`amortization_engine.py:326`; svc:`get_loan_projection`@`amortization_engine.py:864`; svc:`project_balance`@`growth_engine.py:164`; svc:`reverse_project_balance`@`growth_engine.py:297`; svc:`calculate_strategy`@`debt_strategy_service.py:521`; svc:`calculate_balances_with_interest`@`balance_calculator.py:112` | -- | route:`dashboard`@`loan.py:405`; route:`payoff_calculate`@`loan.py:860`; route:`dashboard`@`investment.py:63`; route:`growth_chart`@`investment.py:363`; route:`calculate`@`debt_strategy.py:295`; route:`gap_analysis`@`retirement.py:301`; route:`balance_row`@`grid.py:393` | `loan/_schedule.html`; `loan/dashboard.html` (chart data attrs); `loan/_payoff_results.html`; `loan/_refinance_results.html`; `investment/dashboard.html`; `investment/_growth_chart.html` (3-6); `debt_strategy/_results.html`; `retirement/_gap_analysis.html` (80-85) | `chart_year_end.js`; `payoff_chart.js`; `growth_chart.js`; `retirement_gap_chart.js`; `debt_strategy.js` | -- |
+| `chart_date_labels` | svc:(formatted inline at route level; no service producer) | -- | route:`dashboard`@`investment.py:63` (242-246); route:`growth_chart`@`investment.py:363` (534); route:`dashboard`@`loan.py:405` (460) | (rendered as data attrs only, not as visible text) | `growth_chart.js`; `payoff_chart.js`; `chart_year_end.js`; `retirement_gap_chart.js` | -- |
+| `checking_balance` * | svc:`calculate_balances`@`balance_calculator.py:35`; svc:`calculate_balances_with_interest`@`balance_calculator.py:112`; svc:`_compute_alerts`@`dashboard_service.py:252`; svc:`_get_balance_info`@`dashboard_service.py:334`; svc:`get_month_detail`@`calendar_service.py:88`; svc:`_compute_month_end_balance`@`calendar_service.py:435` | `Account.current_anchor_balance`@`account.py:51` (anchor read by all balance services) | route:`index`@`grid.py:164`; route:`balance_row`@`grid.py:393`; route:`page`@`dashboard.py:40`; route:`balance_section`@`dashboard.py:160`; route:`checking_detail`@`accounts.py:1376` | `grid/grid.html`; `accounts/checking_detail.html`; `dashboard/_balance_runway.html`; `accounts/_anchor_cell.html`; `grid/_anchor_edit.html` | -- | -- |
+| `contribution_limit_remaining` | svc:`calculate_investment_inputs`@`investment_projection.py:100`; svc:`project_balance`@`growth_engine.py:164` (enforces annual_contribution_limit) | `InvestmentParams.annual_contribution_limit`@`investment_params.py:84`; `PaycheckDeduction.annual_cap`@`paycheck_deduction.py:118` (consumer field) | route:`dashboard`@`investment.py:63` (limit_info.limit @173-181) | `investment/dashboard.html` (76) | -- | -- |
+| `debt_total` * | svc:`compute_dashboard_data`@`dashboard_service.py:40`; svc:`compute_dashboard_data`@`savings_dashboard_service.py:61`; svc:`_compute_debt_summary`@`savings_dashboard_service.py:802`; svc:`calculate_strategy`@`debt_strategy_service.py:521`; svc:`_compute_net_worth`@`year_end_summary_service.py:689`; svc:`_compute_debt_progress`@`year_end_summary_service.py:824` | -- | route:`page`@`dashboard.py:40`; route:`dashboard`@`savings.py:107`; route:`dashboard`@`debt_strategy.py:275` | `dashboard/_debt_summary.html` (5); `savings/dashboard.html` (54); `debt_strategy/dashboard.html` (per-account principal) | -- | -- |
+| `dti_ratio` * | svc:`_compute_debt_summary`@`savings_dashboard_service.py:802` (quantize @851, 873); svc:`compute_dashboard_data`@`dashboard_service.py:40` (DTI quantize @172, 176) | -- | route:`page`@`dashboard.py:40`; route:`dashboard`@`savings.py:107` | `dashboard/_debt_summary.html` (15); `savings/dashboard.html` (54-65, debt summary card) | -- | -- |
+| `effective_amount` * | property:`Transaction.effective_amount`@`transaction.py:221-245`; svc:`settle_from_entries`@`transaction_service.py:38`; svc:`_entry_aware_amount`@`balance_calculator.py:292`; svc:`_sum_remaining`@`balance_calculator.py:389`; svc:`_sum_all`@`balance_calculator.py:422`; svc:`_compute_actual` and `_build_txn_variance`@`budget_variance_service.py:358-393`; svc:`mark_as_credit`@`credit_workflow.py:112` (line 229 hand-rolled fallback); svc:`_compute_mortgage_interest`@`year_end_summary_service.py:380`; svc:`_compute_spending_by_category`@`year_end_summary_service.py:414`; svc:`_compute_entry_breakdowns`@`year_end_summary_service.py:475`; svc:`_create_payback`@`entry_credit_workflow.py:170`; svc:`_settle_source_and_roll_leftover`@`carry_forward_service.py:788`; property:`Transfer.effective_amount`@`transfer.py:174-182` | `Transaction.estimated_amount`@`transaction.py:158`; `Transaction.actual_amount`@`transaction.py:159`; `TransactionEntry.amount`@`transaction_entry.py:73`; `TransactionTemplate.default_amount`@`transaction_template.py:59`; `Transfer.amount`@`transfer.py:142`; `TransferTemplate.default_amount`@`transfer_template.py:60` | every cell-render route in 1.2 Group A: route:`get_cell`@`transactions.py:244`; route:`update_transaction`@`transactions.py:304`; route:`mark_done`@`transactions.py:491`; route:`mark_credit`@`transactions.py:632`; route:`unmark_credit`@`transactions.py:675`; route:`cancel_transaction`@`transactions.py:713`; route:`create_inline`@`transactions.py:909`; route:`create_transaction`@`transactions.py:987`; route:`get_cell`@`transfers.py:698`; route:`update_transfer`@`transfers.py:744`; route:`create_ad_hoc`@`transfers.py:850`; route:`mark_done`@`transfers.py:1055`; route:`cancel_transfer`@`transfers.py:1118`; route:`mark_paid`@`dashboard.py:54` (Q-14); route:`calendar_tab`@`analytics.py:107`; route:`variance_tab`@`analytics.py:205`; route:`trends_tab`@`analytics.py:272`; route:`summary`@`obligations.py:259` | `grid/_transaction_cell.html` (17, 33); `grid/_transaction_entries.html` (92); `transfers/_transfer_cell.html` (21); `dashboard/_bill_row.html` (33-34, 38); `analytics/_calendar_month.html` (95); `obligations/summary.html` (100, 149, 195); `templates/list.html` (99, 182); `transfers/list.html` (81, 146) | -- | `func.sum(TransactionEntry.amount)`@`year_end_summary_service.py:519`; conditional `case(is_credit) sum`@`year_end_summary_service.py:520-528` |
+| `emergency_fund_coverage_months` | svc:`calculate_savings_metrics`@`savings_goal_service.py:139`; svc:`compute_dashboard_data`@`savings_dashboard_service.py:61` (delegates) | -- | route:`dashboard`@`savings.py:107` | `savings/dashboard.html` (298, 304, 310) | -- | -- |
+| `employer_contribution` * | svc:`calculate_employer_contribution`@`growth_engine.py:91`; svc:`project_balance`@`growth_engine.py:164`; svc:`reverse_project_balance`@`growth_engine.py:297`; svc:`calculate_paycheck`@`paycheck_calculator.py:92`; svc:`compute_gap_data`@`retirement_dashboard_service.py:79`; svc:`_project_retirement_accounts`@`retirement_dashboard_service.py:338`; svc:`_compute_savings_progress`@`year_end_summary_service.py:887` | `InvestmentParams.employer_flat_percentage`@`investment_params.py:90`; `InvestmentParams.employer_match_percentage`@`investment_params.py:91`; `InvestmentParams.employer_match_cap_percentage`@`investment_params.py:92` | route:`dashboard`@`investment.py:63` (employer_contribution_per_period @187-189) | `investment/dashboard.html` (62) | -- | -- |
+| `entry_remaining` * | svc:`compute_remaining`@`entry_service.py:405`; svc:`build_entry_sums_dict`@`entry_service.py:371`; svc:`_entry_progress_fields`@`dashboard_service.py:203` (consumes); helper:`_build_entry_data`@`companion.py:28-64` (consumes); helper:`_render_entry_list`@`entries.py:83-120` (consumes) | `TransactionEntry.amount`@`transaction_entry.py:73`; `Transaction.estimated_amount`@`transaction.py:158` (input) | route:`list_entries`@`entries.py:200`; route:`get_cell`@`transactions.py:244` (via build_entry_sums_dict); route:`page`@`dashboard.py:40` (via _entry_progress_fields); route:`index`@`companion.py:80`; route:`mark_paid`@`dashboard.py:54` (Q-14) | `grid/_transaction_cell.html` (33-34); `grid/_transaction_entries.html` (136); `grid/_mobile_grid.html` (103); `dashboard/_bill_row.html` (33); `companion/_transaction_card.html` (40, 42, 44) | -- | -- |
+| `entry_sum_total` * | svc:`compute_entry_sums`@`entry_service.py:348`; svc:`build_entry_sums_dict`@`entry_service.py:371`; svc:`compute_actual_from_entries`@`entry_service.py:428` | `TransactionEntry.amount`@`transaction_entry.py:73` | route:`get_cell`@`transactions.py:244` (build_entry_sums_dict @88); route:`list_entries`@`entries.py:200`; route:`index`@`companion.py:80` | `grid/_transaction_cell.html` (21, 43); `grid/_transaction_entries.html` (136); `companion/_transaction_card.html` (18); `dashboard/_bill_row.html` (33) | -- | `func.sum(TransactionEntry.amount)`@`year_end_summary_service.py:519` |
+| `escrow_per_period` * | svc:`calculate_monthly_escrow`@`escrow_calculator.py:14`; svc:`calculate_total_payment`@`escrow_calculator.py:60`; svc:`project_annual_escrow`@`escrow_calculator.py:79`; svc:`load_loan_context`@`loan_payment_service.py:78`; svc:`prepare_payments_for_engine`@`loan_payment_service.py:263` (A-06); svc:`_compute_mortgage_interest`@`year_end_summary_service.py:380` (consumes preprocessed) | `EscrowComponent.annual_amount`@`loan_features.py:126`; `EscrowComponent.inflation_rate`@`loan_features.py:127` | route:`dashboard`@`loan.py:405` (`monthly_escrow` @433-435); route:`add_escrow`@`loan.py:761`; route:`delete_escrow`@`loan.py:815`; route:`create_payment_transfer`@`loan.py:1170` (`escrow_calculator.calculate_total_payment`@1241) | `loan/dashboard.html`; `loan/_schedule.html` (55, 59); `loan/_payment_breakdown.html` (62, 70); `loan/_escrow_list.html` (8, 16, 36-37); `loan/_refinance_results.html` (component breakdowns) | -- | -- |
+| `federal_tax` * | svc:`calculate_federal_withholding`@`tax_calculator.py:35`; svc:`calculate_federal_tax`@`tax_calculator.py:215`; svc:`_apply_marginal_brackets`@`tax_calculator.py:173`; svc:`calculate_paycheck`@`paycheck_calculator.py:92`; svc:`derive_effective_rates`@`calibration_service.py:34`; svc:`apply_calibration`@`calibration_service.py:106`; svc:`load_tax_configs`@`tax_config_service.py:16` (input); svc:`calculate_gap`@`retirement_gap_calculator.py:37` (retirement tax input) | `TaxBracketSet.standard_deduction`@`tax_config.py:52`; `TaxBracketSet.child_credit_amount`@`tax_config.py:59`; `TaxBracketSet.other_dependent_credit_amount`@`tax_config.py:63`; `TaxBracket.rate`@`tax_config.py:115`; `CalibrationOverride.actual_federal_tax`@`calibration_override.py:81`; `CalibrationOverride.effective_federal_rate`@`calibration_override.py:89`; `UserSettings.estimated_retirement_tax_rate`@`user.py:242`; `SalaryProfile.additional_deductions`@`salary_profile.py:92` (W-4 input); `SalaryProfile.extra_withholding`@`salary_profile.py:96` | route:`breakdown`@`salary.py:960`; route:`projection`@`salary.py:1020`; route:`calibrate_preview`@`salary.py:1064` (Q-13); route:`calibrate_confirm`@`salary.py:1127`; route:`year_end_tab`@`analytics.py:171`; route:`dashboard`@`retirement.py:46`; route:`gap_analysis`@`retirement.py:301` | `salary/breakdown.html` (98); `salary/projection.html` (60); `salary/calibrate_confirm.html` (65, 66); `analytics/_year_end.html` (68); `retirement/_gap_analysis.html` (implicit via SWR rate) | -- | -- |
+| `fica` * | svc:`calculate_fica`@`tax_calculator.py:274`; svc:`calculate_paycheck`@`paycheck_calculator.py:92`; svc:`_get_cumulative_wages`@`paycheck_calculator.py:480`; svc:`derive_effective_rates`@`calibration_service.py:34`; svc:`apply_calibration`@`calibration_service.py:106` | `CalibrationOverride.actual_social_security`@`calibration_override.py:83`; `CalibrationOverride.actual_medicare`@`calibration_override.py:84`; `CalibrationOverride.effective_ss_rate`@`calibration_override.py:91`; `CalibrationOverride.effective_medicare_rate`@`calibration_override.py:92`; `FicaConfig.ss_rate`@`tax_config.py:217`; `FicaConfig.ss_wage_base`@`tax_config.py:221`; `FicaConfig.medicare_rate`@`tax_config.py:225`; `FicaConfig.medicare_surtax_rate`@`tax_config.py:229`; `FicaConfig.medicare_surtax_threshold`@`tax_config.py:233` | route:`breakdown`@`salary.py:960`; route:`projection`@`salary.py:1020`; route:`calibrate_preview`@`salary.py:1064`; route:`calibrate_confirm`@`salary.py:1127`; route:`year_end_tab`@`analytics.py:171`; route:`update_fica_config`@`salary.py:1310` | `salary/breakdown.html` (106, 110); `salary/projection.html` (60); `salary/calibrate_confirm.html` (75, 76, 80, 81); `analytics/_year_end.html` (72, 76) | -- | -- |
+| `goal_progress` * | svc:`resolve_goal_target`@`savings_goal_service.py:21`; svc:`calculate_required_contribution`@`savings_goal_service.py:109`; svc:`calculate_trajectory`@`savings_goal_service.py:331`; svc:`compute_dashboard_data`@`savings_dashboard_service.py:61`; svc:`_entry_progress_fields`@`dashboard_service.py:203` (Q-08); helper:`_build_entry_data`@`companion.py:28-64` (`pct` inline at lines 53-56) | `SavingsGoal.target_amount`@`savings_goal.py:75`; `SavingsGoal.contribution_per_period`@`savings_goal.py:77`; `SavingsGoal.income_multiplier`@`savings_goal.py:115` | route:`dashboard`@`savings.py:107`; route:`gap_analysis`@`retirement.py:301`; route:`index`@`companion.py:80`; route:`mark_paid`@`dashboard.py:54` (Q-14) | `dashboard/_savings_goals.html` (13, 20); `savings/dashboard.html` (374-380, 402); `retirement/_gap_analysis.html` (implicit savings_surplus); `companion/_transaction_card.html` (33) | -- | -- |
+| `growth` * | svc:`project_balance`@`growth_engine.py:164`; svc:`reverse_project_balance`@`growth_engine.py:297`; svc:`_compute_trends`@`spending_trend_service.py:97`; svc:`_safe_pct_change`@`spending_trend_service.py:470`; svc:`compute_gap_data`@`retirement_dashboard_service.py:79`; svc:`_project_retirement_accounts`@`retirement_dashboard_service.py:338`; svc:`_compute_savings_progress`@`year_end_summary_service.py:887`; svc:`_compute_debt_progress`@`year_end_summary_service.py:824`; svc:`_compute_interest_for_year`@`year_end_summary_service.py:1207` | `InvestmentParams.assumed_annual_return`@`investment_params.py:80`; `SalaryRaise.percentage`@`salary_raise.py:110`; `PaycheckDeduction.inflation_rate`@`paycheck_deduction.py:123`; `EscrowComponent.inflation_rate`@`loan_features.py:127`; `UserSettings.default_inflation_rate`@`user.py:234`; `UserSettings.safe_withdrawal_rate`@`user.py:237`; `UserSettings.trend_alert_threshold`@`user.py:246` | route:`dashboard`@`investment.py:63`; route:`growth_chart`@`investment.py:363`; route:`dashboard`@`retirement.py:46`; route:`gap_analysis`@`retirement.py:301`; route:`trends_tab`@`analytics.py:272`; route:`year_end_tab`@`analytics.py:171` | `investment/dashboard.html`; `investment/_growth_chart.html`; `retirement/_gap_analysis.html` (41); `analytics/_trends.html`; `analytics/_year_end.html` (year_summary_growth section) | -- | -- |
+| `interest_paid_per_period` * | svc:`generate_schedule`@`amortization_engine.py:326`; svc:`get_loan_projection`@`amortization_engine.py:864`; svc:`calculate_balances_with_amortization`@`balance_calculator.py:176`; svc:`_compute_mortgage_interest`@`year_end_summary_service.py:380`; svc:`_compute_debt_progress`@`year_end_summary_service.py:824` | -- | route:`dashboard`@`loan.py:405`; route:`payoff_calculate`@`loan.py:860`; route:`year_end_tab`@`analytics.py:171` | `loan/_schedule.html` (57); `loan/_payment_breakdown.html` (56); `analytics/_year_end.html` | -- | -- |
+| `interest_saved` * | svc:`calculate_summary`@`amortization_engine.py:649`; svc:`calculate_strategy`@`debt_strategy_service.py:521` | -- | route:`payoff_calculate`@`loan.py:860`; route:`refinance_calculate`@`loan.py:1027`; route:`calculate`@`debt_strategy.py:295` | `loan/_payoff_results.html` (19); `loan/_refinance_results.html` (41); `debt_strategy/_results.html` (80-95) | -- | -- |
+| `loan_principal_real` * | svc:`get_loan_projection`@`amortization_engine.py:864` (fixed-rate engine-walked balance per A-04); svc:`generate_schedule`@`amortization_engine.py:326`; svc:`_compute_account_projections`@`savings_dashboard_service.py:294`; svc:`calculate_balances_with_amortization`@`balance_calculator.py:176`; svc:`calculate_strategy`@`debt_strategy_service.py:521`; svc:`_compute_debt_progress`@`year_end_summary_service.py:824` | `LoanParams.current_principal`@`loan_params.py:54` (CACHED-for-display per A-04 for fixed-rate; AUTHORITATIVE for ARM) | route:`dashboard`@`loan.py:405`; route:`payoff_calculate`@`loan.py:860`; route:`refinance_calculate`@`loan.py:1027` (current_real_principal @1087, Q-11); route:`create_payment_transfer`@`loan.py:1170`; route:`dashboard`@`debt_strategy.py:275` | `loan/dashboard.html` (104); `loan/_schedule.html` (70, per-row remaining_balance); `loan/_refinance_results.html` (69-70); `debt_strategy/dashboard.html`; `debt_strategy/_results.html` | -- | -- |
+| `loan_principal_stored` * | svc:`get_loan_projection`@`amortization_engine.py:864` (ARM stored per A-04, lines 977-985); svc:`load_loan_context`@`loan_payment_service.py:78`; svc:`compute_contractual_pi`@`loan_payment_service.py:233`; svc:`_compute_account_projections`@`savings_dashboard_service.py:294` (proj.current_balance @373 ARM); svc:`_compute_interest_for_year`@`year_end_summary_service.py:1207`; svc:`_balance_from_schedule_at_date`@`year_end_summary_service.py:1465-1469` | `LoanParams.original_principal`@`loan_params.py:53`; `LoanParams.current_principal`@`loan_params.py:54` (AUTHORITATIVE for ARM per A-04) | route:`dashboard`@`loan.py:405`; route:`update_params`@`loan.py:631`; route:`refinance_calculate`@`loan.py:1027`; route:`create_payment_transfer`@`loan.py:1170` (ARM branch @1222-1225) | `loan/dashboard.html` (99); `loan/_refinance_results.html` (closing_costs vs principal); `loan/_rate_history.html` | -- | -- |
+| `loan_principal_displayed` | -- (orphan; see 1.7.2) | -- | -- | -- | -- | -- |
+| `loan_remaining_months` | svc:`calculate_remaining_months`@`amortization_engine.py:128`; svc:`get_loan_projection`@`amortization_engine.py:864`; svc:`compute_contractual_pi`@`loan_payment_service.py:233` | -- | route:`refinance_calculate`@`loan.py:1027` (current_remaining_months); route:`create_payment_transfer`@`loan.py:1170` | `loan/_refinance_results.html` (51); `debt_strategy/_results.html` (67-70, total_months) | -- | -- |
+| `monthly_payment` * | svc:`calculate_monthly_payment`@`amortization_engine.py:178` (14 call sites listed under A-05 cross-reference); svc:`calculate_summary`@`amortization_engine.py:649`; svc:`get_loan_projection`@`amortization_engine.py:864`; svc:`calculate_payoff_by_date`@`amortization_engine.py:753`; svc:`compute_contractual_pi`@`loan_payment_service.py:233`; svc:`calculate_balances_with_amortization`@`balance_calculator.py:176`; svc:`calculate_total_payment`@`escrow_calculator.py:60`; svc:`_compute_debt_summary`@`savings_dashboard_service.py:802`; svc:`calculate_strategy`@`debt_strategy_service.py:521`; svc:`amount_to_monthly`@`savings_goal_service.py:199` | `LoanParams.interest_rate`@`loan_params.py:55`; `LoanParams.term_months`@`loan_params.py:56`; `RateHistory.interest_rate`@`loan_features.py:75` (ARM override) | route:`dashboard`@`loan.py:405`; route:`payoff_calculate`@`loan.py:860`; route:`refinance_calculate`@`loan.py:1027`; route:`create_payment_transfer`@`loan.py:1170` (ARM @1225, fixed @1231); route:`dashboard`@`debt_strategy.py:275`; route:`calculate`@`debt_strategy.py:295`; route:`summary`@`obligations.py:259` (Q-12 monthly aggregation) | `loan/dashboard.html` (129, 134); `loan/_schedule.html` (55, 94); `loan/_payment_breakdown.html` (22); `loan/_escrow_list.html` (8); `loan/_payoff_results.html` (72); `loan/_refinance_results.html` (23, 24); `debt_strategy/dashboard.html` (minimum_payment); `debt_strategy/_results.html`; `dashboard/_debt_summary.html` (9, aggregate); `obligations/summary.html` (51, 159, aggregate) | -- | -- |
+| `months_saved` | svc:`generate_schedule`@`amortization_engine.py:326`; svc:`calculate_summary`@`amortization_engine.py:649`; svc:`calculate_strategy`@`debt_strategy_service.py:521` | -- | route:`payoff_calculate`@`loan.py:860` (committed_months_saved); route:`refinance_calculate`@`loan.py:1027` (break_even_months); route:`calculate`@`debt_strategy.py:295` | `loan/_payoff_results.html` (14, 29); `loan/_refinance_results.html` (90); `debt_strategy/_results.html` | -- | -- |
+| `net_worth` | svc:`_compute_net_worth`@`year_end_summary_service.py:689` | -- | route:`year_end_tab`@`analytics.py:171` | `analytics/_year_end.html` (data.net_worth.* section) | -- | -- |
+| `paycheck_breakdown` * | svc:`calculate_paycheck`@`paycheck_calculator.py:92`; svc:`project_salary`@`paycheck_calculator.py:250`; svc:`compute_gap_data`@`retirement_dashboard_service.py:79` (consumer) | -- | route:`list_profiles`@`salary.py:102`; route:`breakdown`@`salary.py:960`; route:`projection`@`salary.py:1020`; route:`calibrate_preview`@`salary.py:1064`; route:`dashboard`@`retirement.py:46`; route:`gap_analysis`@`retirement.py:301` | `salary/list.html`; `salary/breakdown.html` (64-...); `salary/projection.html` (50-64); `salary/calibrate_confirm.html` (35-81 actual flavor); `dashboard/_payday.html` | -- | -- |
+| `paycheck_gross` * | svc:`calculate_paycheck`@`paycheck_calculator.py:92`; svc:`_apply_raises`@`paycheck_calculator.py:274`; svc:`_apply_single_raise`@`paycheck_calculator.py:329`; svc:`project_salaries_by_year`@`pension_calculator.py:78`; svc:`compute_gap_data`@`retirement_dashboard_service.py:79` | `SalaryProfile.annual_salary`@`salary_profile.py:72`; `SalaryProfile.additional_income`@`salary_profile.py:88`; `SalaryRaise.flat_amount`@`salary_raise.py:111`; `CalibrationOverride.actual_gross_pay`@`calibration_override.py:80` | route:`list_profiles`@`salary.py:102`; route:`breakdown`@`salary.py:960`; route:`projection`@`salary.py:1020`; route:`calibrate_preview`@`salary.py:1064`; route:`calibrate_confirm`@`salary.py:1127`; route:`year_end_tab`@`analytics.py:171`; route:`gap_analysis`@`retirement.py:301` | `salary/list.html` (48); `salary/breakdown.html` (64, 70); `salary/projection.html` (50, 56); `salary/calibrate_confirm.html` (35); `analytics/_year_end.html` (61) | -- | -- |
+| `paycheck_net` * | svc:`calculate_paycheck`@`paycheck_calculator.py:92`; svc:`project_salary`@`paycheck_calculator.py:250`; svc:`calculate_gap`@`retirement_gap_calculator.py:37` (net_biweekly input); svc:`_get_transaction_amount`@`recurrence_engine.py:720` (salary-linked breakdown.net_pay) | -- | route:`list_profiles`@`salary.py:102` (net_pay @122-125); route:`breakdown`@`salary.py:960` (implicit final); route:`projection`@`salary.py:1020` (bd.net_pay); route:`create_profile`@`salary.py:149` (init_breakdown.net_pay @264) | `salary/list.html` (51); `salary/breakdown.html` (implicit); `salary/projection.html` (64); `dashboard/_payday.html` (15); `retirement/_gap_analysis.html` (9) | -- | -- |
+| `payoff_date` * | svc:`_derive_summary_metrics`@`amortization_engine.py:622`; svc:`calculate_summary`@`amortization_engine.py:649`; svc:`get_loan_projection`@`amortization_engine.py:864`; svc:`calculate_payoff_by_date`@`amortization_engine.py:753`; svc:`calculate_strategy`@`debt_strategy_service.py:521` | -- | route:`dashboard`@`loan.py:405`; route:`payoff_calculate`@`loan.py:860`; route:`refinance_calculate`@`loan.py:1027`; route:`calculate`@`debt_strategy.py:295` | `loan/dashboard.html` (143); `loan/_payoff_results.html` (9); `loan/_refinance_results.html` (62-63); `debt_strategy/_results.html` (34-38) | -- | -- |
+| `pension_benefit_annual` | svc:`calculate_benefit`@`pension_calculator.py:31` | `PensionProfile.benefit_multiplier`@`pension_profile.py:78`; `PensionProfile.consecutive_high_years`@`pension_profile.py:79` | route:`dashboard`@`retirement.py:46`; route:`gap_analysis`@`retirement.py:301` | `retirement/dashboard.html` (111) | -- | -- |
+| `pension_benefit_monthly` | svc:`calculate_benefit`@`pension_calculator.py:31`; svc:`compute_gap_data`@`retirement_dashboard_service.py:79`; svc:`calculate_gap`@`retirement_gap_calculator.py:37` | (derived from pension_benefit_annual; no direct stored column) | route:`dashboard`@`retirement.py:46`; route:`gap_analysis`@`retirement.py:301` | `retirement/dashboard.html` (118); `retirement/_gap_analysis.html` (15, 22) | `retirement_gap_chart.js` (data-pension attr at `_gap_analysis.html:81-85`) | -- |
+| `period_subtotal` * | svc:`calculate_balances`@`balance_calculator.py:35`; svc:`_sum_remaining`@`balance_calculator.py:389`; svc:`_sum_all`@`balance_calculator.py:422`; svc:`_compute_spending_by_category`@`year_end_summary_service.py:414`; svc:`compute_variance`@`budget_variance_service.py:99`; svc:`compute_trends`@`spending_trend_service.py:97`; svc:`get_month_detail`@`calendar_service.py:88`; svc:`get_year_overview`@`calendar_service.py:136`; svc:`compute_committed_monthly`@`savings_goal_service.py:287`; svc:`_compute_spending_comparison`@`dashboard_service.py` (referenced in section 1.2.x Q-10) | -- | route:`index`@`grid.py:164` (inline subtotal loop @263-279, Q-10); route:`page`@`dashboard.py:40` (spending_comparison); route:`summary`@`obligations.py:259` (Q-12 monthly aggregation @331-408); route:`variance_tab`@`analytics.py:205`; route:`trends_tab`@`analytics.py:272`; route:`calendar_tab`@`analytics.py:107` | `grid/grid.html` (196, 269, 280); `obligations/summary.html` (47, 50, 51, 57, 62, 111, 159, 206); `analytics/_calendar_year.html` (47, 51, 57, 70, 74, 79); `analytics/_calendar_month.html` (53, 56); `dashboard/_spending_comparison.html` (7, 11); `analytics/_variance.html` (per-category subtotals) | `chart_variance.js` (diff @69) | -- |
+| `post_tax_deduction` | svc:`_calculate_deductions`@`paycheck_calculator.py:403`; svc:`calculate_paycheck`@`paycheck_calculator.py:92` | `PaycheckDeduction.amount`@`paycheck_deduction.py:113` (timing-dependent) | route:`add_deduction`@`salary.py:696`; route:`update_deduction`@`salary.py:833`; route:`breakdown`@`salary.py:960`; route:`projection`@`salary.py:1020` | `salary/breakdown.html` (121); `salary/projection.html` (62); `salary/_deductions_section.html` | -- | -- |
+| `pre_tax_deduction` | svc:`_calculate_deductions`@`paycheck_calculator.py:403`; svc:`calculate_paycheck`@`paycheck_calculator.py:92`; svc:`derive_effective_rates`@`calibration_service.py:34` (input total_pre_tax) | `PaycheckDeduction.amount`@`paycheck_deduction.py:113`; `CalibrationDeductionOverride.actual_amount`@`calibration_override.py:164` | route:`add_deduction`@`salary.py:696`; route:`update_deduction`@`salary.py:833`; route:`breakdown`@`salary.py:960`; route:`projection`@`salary.py:1020`; route:`calibrate_preview`@`salary.py:1064` (Q-13 inline subtraction @1095) | `salary/breakdown.html` (81); `salary/projection.html` (58); `salary/calibrate_confirm.html` (39); `salary/_deductions_section.html` (38, 40) | -- | -- |
+| `principal_paid_per_period` * | svc:`generate_schedule`@`amortization_engine.py:326`; svc:`calculate_balances_with_amortization`@`balance_calculator.py:176`; svc:`calculate_strategy`@`debt_strategy_service.py:521`; svc:`_compute_debt_progress`@`year_end_summary_service.py:824` | -- | route:`dashboard`@`loan.py:405`; route:`payoff_calculate`@`loan.py:860`; route:`year_end_tab`@`analytics.py:171` | `loan/_schedule.html` (55, 56); `loan/_payment_breakdown.html` (51); `analytics/_year_end.html` (year_summary_principal_paid) | -- | -- |
+| `projected_end_balance` * | svc:`calculate_balances`@`balance_calculator.py:35`; svc:`calculate_balances_with_interest`@`balance_calculator.py:112`; svc:`_compute_account_projections`@`savings_dashboard_service.py:294`; svc:`_project_retirement_accounts`@`retirement_dashboard_service.py:338`; svc:`get_month_detail`@`calendar_service.py:88`; svc:`_compute_month_end_balance`@`calendar_service.py:435` | -- | route:`index`@`grid.py:164`; route:`balance_row`@`grid.py:393`; route:`dashboard`@`savings.py:107`; route:`checking_detail`@`accounts.py:1376`; route:`interest_detail`@`accounts.py:1233`; route:`dashboard`@`investment.py:63`; route:`growth_chart`@`investment.py:363` | `grid/grid.html` (26); `grid/_balance_row.html` (26); `savings/dashboard.html` (212); `accounts/checking_detail.html` (55); `accounts/interest_detail.html` (64); `investment/_growth_chart.html` (16, 20); `retirement/_retirement_account_rows.html` (17) | `growth_chart.js`; `payoff_chart.js` (chart datasets); `retirement_gap_chart.js` (preRetirement clamp) | -- |
+| `savings_total` * | svc:`compute_dashboard_data`@`savings_dashboard_service.py:61`; svc:`compute_gap_data`@`retirement_dashboard_service.py:79`; svc:`_compute_savings_progress`@`year_end_summary_service.py:887` | -- | route:`dashboard`@`savings.py:107`; route:`dashboard`@`retirement.py:46`; route:`gap_analysis`@`retirement.py:301`; route:`year_end_tab`@`analytics.py:171` | `savings/dashboard.html` (317); `retirement/_gap_analysis.html` (35, 41); `analytics/_year_end.html` | -- | -- |
+| `state_tax` | svc:`calculate_state_tax`@`tax_calculator.py:240`; svc:`calculate_paycheck`@`paycheck_calculator.py:92`; svc:`derive_effective_rates`@`calibration_service.py:34`; svc:`apply_calibration`@`calibration_service.py:106` | `CalibrationOverride.actual_state_tax`@`calibration_override.py:82`; `CalibrationOverride.effective_state_rate`@`calibration_override.py:90`; `StateTaxConfig.flat_rate`@`tax_config.py:175`; `StateTaxConfig.standard_deduction`@`tax_config.py:176` | route:`breakdown`@`salary.py:960`; route:`projection`@`salary.py:1020`; route:`calibrate_preview`@`salary.py:1064`; route:`update_tax_config`@`salary.py:1251`; route:`year_end_tab`@`analytics.py:171` | `salary/breakdown.html` (102); `salary/projection.html` (60); `salary/calibrate_confirm.html` (70, 71); `analytics/_year_end.html` (80) | -- | -- |
+| `taxable_income` * | svc:`calculate_federal_withholding`@`tax_calculator.py:35`; svc:`_apply_marginal_brackets`@`tax_calculator.py:173`; svc:`calculate_federal_tax`@`tax_calculator.py:215`; svc:`calculate_state_tax`@`tax_calculator.py:240`; svc:`derive_effective_rates`@`calibration_service.py:34`; svc:`calculate_paycheck`@`paycheck_calculator.py:92` | `TaxBracket.min_income`@`tax_config.py:113`; `TaxBracket.max_income`@`tax_config.py:114`; `SalaryProfile.additional_income`@`salary_profile.py:88` | route:`breakdown`@`salary.py:960`; route:`projection`@`salary.py:1020`; route:`calibrate_preview`@`salary.py:1064` (Q-13: route inline `gross - total_pre_tax` @1095 vs breakdown.taxable_income); route:`calibrate_confirm`@`salary.py:1127` | `salary/breakdown.html` (89); `salary/calibrate_confirm.html` (43) | -- | -- |
+| `total_interest` * | svc:`_derive_summary_metrics`@`amortization_engine.py:622`; svc:`calculate_summary`@`amortization_engine.py:649`; svc:`get_loan_projection`@`amortization_engine.py:864`; svc:`_compute_mortgage_interest`@`year_end_summary_service.py:380`; svc:`calculate_strategy`@`debt_strategy_service.py:521` | -- | route:`dashboard`@`loan.py:405`; route:`payoff_calculate`@`loan.py:860`; route:`refinance_calculate`@`loan.py:1027`; route:`calculate`@`debt_strategy.py:295`; route:`year_end_tab`@`analytics.py:171` | `loan/dashboard.html` (139); `loan/_schedule.html` (96, schedule_totals); `loan/_refinance_results.html` (37, 38); `debt_strategy/_results.html` (45-49) | -- | -- |
+| `transfer_amount` * | svc:`create_transfer`@`transfer_service.py:283`; svc:`update_transfer`@`transfer_service.py:443`; svc:`restore_transfer`@`transfer_service.py:688`; svc:`generate_for_template`@`transfer_recurrence.py:43`; svc:`regenerate_for_template`@`transfer_recurrence.py:141`; svc:`resolve_conflicts`@`transfer_recurrence.py:224`; svc:`carry_forward_unpaid`@`carry_forward_service.py:291`; svc:`_compute_transfers_summary`@`year_end_summary_service.py:636` (year-end display) | `Transfer.amount`@`transfer.py:142`; property:`Transfer.effective_amount`@`transfer.py:174-182`; `TransferTemplate.default_amount`@`transfer_template.py:60` | every transfer-cell-render route: route:`update_transfer`@`transfers.py:744`; route:`create_ad_hoc`@`transfers.py:850`; route:`mark_done`@`transfers.py:1055`; route:`cancel_transfer`@`transfers.py:1118`; route:`delete_transfer`@`transfers.py:1020`; route:`create_transfer_template`@`transfers.py:127`; route:`year_end_tab`@`analytics.py:171` | `transfers/_transfer_cell.html` (21, 38); `transfers/list.html` (81, 146); `analytics/_year_end.html` (transfer_amount per destination) | -- | -- |
+| `transfer_amount_computed` | -- (route-derived inline; no service producer) | -- | route:`create_payment_transfer`@`loan.py:1170` (lines 1213-1241); route:`create_contribution_transfer`@`investment.py:609` (lines 668-670) | (route prefills the form; no template displays this token directly) | -- | -- |
+| `year_summary_dec31_balance` | svc:`_compute_net_worth`@`year_end_summary_service.py:689` | -- | route:`year_end_tab`@`analytics.py:171` | `analytics/_year_end.html` (data.net_worth.dec31) | -- | -- |
+| `year_summary_employer_total` | svc:`_compute_savings_progress`@`year_end_summary_service.py:887` | -- | route:`year_end_tab`@`analytics.py:171` | `analytics/_year_end.html` (savings section) | -- | -- |
+| `year_summary_growth` | svc:`_compute_savings_progress`@`year_end_summary_service.py:887`; svc:`_compute_debt_progress`@`year_end_summary_service.py:824`; svc:`_compute_interest_for_year`@`year_end_summary_service.py:1207`; svc:`_compute_mortgage_interest`@`year_end_summary_service.py:380` | -- | route:`year_end_tab`@`analytics.py:171` | `analytics/_year_end.html` (savings + debt sections) | -- | -- |
+| `year_summary_jan1_balance` | svc:`_compute_net_worth`@`year_end_summary_service.py:689` | -- | route:`year_end_tab`@`analytics.py:171` | `analytics/_year_end.html` (data.net_worth.jan1) | -- | -- |
+| `year_summary_principal_paid` | svc:`_compute_debt_progress`@`year_end_summary_service.py:824` | -- | route:`year_end_tab`@`analytics.py:171` | `analytics/_year_end.html` (debt section) | -- | -- |
+| `ytd_contributions` | svc:`calculate_investment_inputs`@`investment_projection.py:100`; svc:`project_balance`@`growth_engine.py:164` | `InvestmentParams.annual_contribution_limit`@`investment_params.py:84`; `InvestmentParams.contribution_limit_year`@`investment_params.py:85` | route:`dashboard`@`investment.py:63` (limit_info.ytd @173-181) | `investment/dashboard.html` (76) | -- | -- |
+
+Sub-list: orphans by category.
+
+Tokens with producers but no consumers (the implementation runs but no page or chart consumes the
+result): none after the index pass. Phase 2 should treat this as a load-bearing finding -- every
+concept that the code computes is read somewhere.
+
+Tokens with consumers but no producers (a render path reads a value no service produces): only
+`transfer_amount_computed`, which is intentional (route-resident derivation; no service exists for
+it, which is itself an SRP candidate per Q-12).
+
+Tokens with neither producers nor consumers (purely orphan in the inventory):
+`loan_principal_displayed` only, per 1.7.2.
+
+### 1.7.4 Multi-path concepts requiring Phase 3 comparison
+
+Multi-path concepts are tokens with two or more producers OR two or more consumers. Per audit plan
+section 3.1, every multi-path concept becomes a required Phase 3 finding. The list below is derived
+mechanically from the `*`-marked rows in 1.7.3.
+
+Tier-1 concepts (3+ producers AND 3+ consumers; highest blast radius because divergence between any
+pair propagates broadly):
+
+- `account_balance` -- 7 service producers, 6 route consumers, 10 template render sites. Phase 3.1
+  explicit comparison required: grid vs accounts vs savings vs dashboard vs investment for the same
+  `(user_id, period_id, scenario_id)`. Anchor of the developer's reported symptom #5 (`/accounts` vs
+  other pages divergence).
+- `effective_amount` -- 13 service producers (incl. `Transaction.effective_amount` property and
+  seven hand-rolled mirrors), every cell-render route, 8 template render sites, plus the only two
+  money SQL aggregates (1.6). Phase 3.1 must cross-check every `actual_amount`/`estimated_amount`
+  direct read against the property semantics (4-tier branching: `is_deleted`,
+  `status.excludes_from_balance`, `actual_amount`, `estimated_amount`).
+- `monthly_payment` -- 10 service producers including 14 `calculate_monthly_payment` call sites
+  (A-05 lists 8; P1-b's grep found 6 more in adjacent fallback branches per Q-09), 7 route
+  consumers, 11 template render sites. Phase 3.1 must verify all 14 call sites receive the same
+  `(current_principal, current_rate, remaining_months)` triple for the same loan-on-date (E-02 ARM
+  stability invariant).
+- `period_subtotal` -- 10 service producers, 6 route consumers (including Q-10 grid inline @263-279
+  and Q-12 obligations Q-12 inline @331-408), 6 template render sites, plus `chart_variance.js:69`
+  (E-17 candidate JN-03). Phase 3.1 must compare grid subtotals against dashboard's
+  `_compute_spending_comparison` and variance/calendar/obligations for the same period.
+
+Tier-2 concepts (2 producers and/or 2 consumers; routine multi-path):
+
+- `apy_interest` -- 4 producers, 1 route, 2 templates. Single-page comparison:
+  `accounts/interest_detail.html` vs `savings/dashboard.html`.
+- `chart_balance_series` -- 6 producers across engines, 7 route consumers, 6+ template/JS consumers.
+  Phase 3 must verify the array each chart receives matches the server-computed balance series at
+  the same time points.
+- `debt_total` -- 6 producers (3 services + 3 specialized), 3 routes, 3 templates. Compare
+  `_debt_summary` widget on dashboard vs savings card vs debt_strategy.
+- `dti_ratio` -- 2 producers, 2 routes, 2 templates. Compare dashboard vs savings for same user.
+- `employer_contribution` -- 7 producers, 1 route, 1 template. Single-consumer; the producer
+  multiplicity is what Phase 3 checks (does `growth_engine.calculate_employer_contribution` agree
+  with `paycheck_calculator.calculate_paycheck`'s employer line).
+- `entry_remaining` -- 5 producers, 4 routes, 5 templates. Q-08 hinges here: should settled
+  transactions use `actual_amount` or `estimated_amount` for over-budget display? Phase 3 verifies
+  template subtractions match `compute_remaining`.
+- `entry_sum_total` -- 3 producers, 3 routes, 4 templates, plus the one money SQL aggregate (1.6).
+  Phase 3 verifies that envelope SQL sum matches per-template entry sum.
+- `escrow_per_period` -- 6 producers, 4 routes, 5 templates. A-06 anchor (escrow subtraction
+  preprocessing); Phase 3 verifies the dashboard escrow display matches the schedule's escrow
+  attribution.
+- `federal_tax` -- 8 producers, 7 routes, 5 templates. Calibration vs bracket-based paths split
+  (Q-13 inline taxable derivation); Phase 3 verifies both paths produce the same `federal_tax` for
+  the same inputs.
+- `fica` -- 5 producers, 6 routes, 4 templates. Same calibration/bracket split.
+- `goal_progress` -- 6 producers, 4 routes, 4 templates. Compare dashboard savings widget vs
+  `/savings` panel vs companion `pct` inline (`companion.py:53-56`).
+- `growth` -- 9 producers, 6 routes, 5 templates. Wide concept (return rate, inflation, raise
+  growth, trend pct); Phase 3 must distinguish sub-concepts before comparing.
+- `interest_paid_per_period` -- 5 producers, 3 routes, 3 templates. Compare schedule rows vs
+  year-end mortgage interest aggregate (A-06).
+- `interest_saved` -- 2 producers, 3 routes, 3 templates. Compare amortization payoff results vs
+  debt strategy results for the same loan.
+- `loan_principal_real` -- 6 producers, 5 routes, 5 templates. A-04 dual policy anchor; Phase 3
+  cross-checks every page that displays principal (`/accounts/<id>/loan` vs refinance vs debt
+  strategy).
+- `loan_principal_stored` -- 6 producers, 4 routes, 3 templates. A-04 ARM anchor; cross-page
+  consistency for ARM stored vs displayed.
+- `paycheck_breakdown` -- 3 producers, 6 routes, 5 templates. Compare list_profiles vs breakdown vs
+  projection vs calibrate flows for the same profile and period.
+- `paycheck_gross` -- 5 producers, 7 routes, 5 templates. Raise sequencing (`_apply_raises`) is the
+  largest variance source; Phase 3 verifies the same gross is produced by every entry path for the
+  same profile on the same date.
+- `paycheck_net` -- 4 producers, 4 routes, 5 templates. End-of-pipeline; should match across all
+  rendering sites if intermediate concepts agree.
+- `payoff_date` -- 5 producers, 4 routes, 4 templates. Compare loan dashboard vs payoff results vs
+  refinance vs debt strategy.
+- `principal_paid_per_period` -- 4 producers, 3 routes, 4 templates. Schedule consistency check.
+- `projected_end_balance` -- 6 producers, 7 routes, 7 templates + 3 JS render paths. E-04 invariant
+  anchor; same-number-on-every-page requirement.
+- `savings_total` -- 3 producers, 4 routes, 3 templates. Compare savings dashboard vs retirement gap
+  vs year-end summary.
+- `taxable_income` -- 6 producers, 4 routes, 2 templates. Q-13 anchor (route-inline vs
+  breakdown.taxable_income).
+- `total_interest` -- 5 producers, 5 routes, 4 templates. Compare amortization vs year-end vs debt
+  strategy.
+- `transfer_amount` -- 8 producers, 7 routes, 3 templates. Compare `Transfer.amount` stored vs
+  `transfer_service` mutations vs year-end summary.
+
+Single-path tokens (1 producer AND 1 consumer; lowest risk; Phase 3 only verifies the cited site is
+correct internally):
+
+- `cash_runway_days`, `checking_balance` (functions as alias for account_balance in most contexts;
+  Phase 3 must verify this aliasing is intentional), `chart_date_labels` (always parallel to
+  chart_balance_series), `contribution_limit_remaining`, `emergency_fund_coverage_months`,
+  `loan_remaining_months`, `months_saved`, `net_worth`, `pension_benefit_annual`,
+  `pension_benefit_monthly`, `post_tax_deduction`, `pre_tax_deduction`, `state_tax`,
+  `transfer_amount_computed`, `year_summary_*` family (each token is a single producer feeding a
+  single route).
+
+### 1.7.5 QC summary across Phase 1 sessions
+
+| Session | Layers | QC logged? | Sample size | Failures | Re-dispatches | Notes |
+| ------- | ------ | ---------- | ----------- | -------- | ------------- | ----- |
+| P1-a | 1.5 + 1.6 | informal | per-column read | none recorded | 0 | Sessions preceded the formal QC protocol; the column-by-column inventory pattern is mechanical and produced no agent-classification ambiguity (113 numeric columns + 6 `@property` accessors). |
+| P1-b | 1.1 | informal | ~15 cited-line spot-checks against the largest two files (`year_end_summary_service.py` 2248 lines; `savings_dashboard_service.py` 956 lines) | ~20% line-citation drift in `year_end_summary_service.py` body citations; ~5% in `savings_dashboard_service.py` | 0 (corrected inline) | Self-review captured in section 1.1 "Citation-quality note" with verified/unverified split. Function-definition lines reliable everywhere; body-line citations were re-verified at all load-bearing sites (A-02 through A-07, money SQL aggregates, transfer-shadow guards, eight A-05 monthly-payment sites and six additional sites). |
+| P1-c | 1.2 | yes | 45 (15 per Group A/B/C, 8+ from files >800 LOC) | 0 line-drift outside +/-2 tolerance; 3 inline-classification fixes (grid.py:164 Inline=YES, transactions.py:909/987 Inline=NO); 1 scope misclassification (`dashboard.mark_paid` originally out-of-scope, re-classified IN scope) | 0 | Systematic off-by-1 in 3 of 45 samples on decorator-line citations in `retirement.py`, `salary.py`, `templates.py` (Phase 3 should treat route-layer citations as range `[cited-1, cited+2]`). |
+| P1-d | 1.3 + 1.4 | yes | 16 (templates) + 15 (JS) = 31 samples; both biased toward "arithmetic-YES" / "numeric-work-YES" rows | Templates: 4/16 = 25% classification misses; numeric-work-YES subsample 3/8 = 38%. JS: 3/15 = 20%; numeric-YES subsample 3/8 = 38%. All misses fall into a single systematic over-flagging class (comparisons and bounds-checks classified as arithmetic) | 0 (corrected inline with explicit rationale at sections 1.3.0 and 1.4.0) | Systematic-error class documented (Explore over-flags `{% if value > 0 %}` and bounds-checking conditionals as arithmetic). After correction, the actual arithmetic-in-Jinja count drops from 13 to 11, and JS E-17 candidates drop from 7 (including borderlines) to 3 strict + 3 borderline. |
+| P1-e | 1.7 wrap-up | n/a | inventory consistency audit only (Task 1: orphan token, QC-asymmetry, cross-references); index spot-checks per 1.7.5 verification | 1 orphan vocabulary token (`loan_principal_displayed`); zero body tokens missing from vocab; zero duplicate entries | 0 | This session does not produce new layer content; it produces 1.7.1 through 1.7.6. Spot-check verification recorded in 1.7.7. |
+| P1-f | 1.1 re-verify (arithmetic classification only) | yes | 29 HIGH-RISK rows source-read exhaustively + 15 LOW-RISK engine rows sampled = 44 of ~84 candidates verified against actual source | HIGH-RISK: 6/29 (~21%) reclassified non-arithmetic (`dashboard_service._compute_alerts`/`_get_balance_info`, `budget_variance_service._compute_actual`, `calendar_service._build_day_entry`/`_compute_month_end_balance`, `year_end_summary_service.py:1465-1469` ARM anchor); 1/29 borderline KEPT+flagged (`retirement_dashboard_service.compute_slider_defaults` SWR `* _PCT_SCALE`). LOW-RISK: 0/15 fail (partition accepted, not promoted). | 0 (corrected inline per affected file) | Section 1.1 has no discrete arithmetic column; the P1-d error class manifests here as concept-token **producer over-attribution** (compare/read/delegate functions listed as money-token producers). Caveat 1.7.6 (1)'s named suspect `amount_to_monthly` verified GENUINE arithmetic. year_end cross-check (caveat 1.7.6 (2)): 380/414/475/636/824 def-lines EXACT and in P1-b verified list; 518-528 range loose by 1 (518 is `func.count`); 1465-1469 line numbers OK but enclosing-fn mis-attributed (`_balance_from_schedule_at_date` -> actually `_generate_debt_schedules`@1421); 824 signature-column drift. Full log at 1.7.8. |
+
+### 1.7.6 Known caveats for Phase 2 and Phase 3 consumers
+
+Phase-2 and Phase-3 sessions reading this inventory should be aware of these caveats before drawing
+structural conclusions.
+
+1. **Systematic over-flagging of comparisons / reads as
+   arithmetic (P1-d affected; P1-b section 1.1 RE-VERIFIED by
+   P1-f 2026-05-15).** Explore-T (templates) and Explore-J (JS)
+   over-flagged `{% if value > 0 %}` conditionals, `|abs` /
+   `|min` / `|max` filters, `.toFixed()`-style formatting, and
+   bounds-checking conditionals as arithmetic; P1-d corrected
+   these inline (sections 1.3.x.3 / 1.4.x.3 / 1.3.x.4;
+   systematic-error class at 1.3.0 and 1.4.0). The open question
+   was whether P1-b's section 1.1 carried the same class.
+   **Resolved by P1-f.** Section 1.1 has NO discrete arithmetic
+   column (unlike 1.3.x/1.4.x); its implicit "performs
+   arithmetic" classification is the concept-token producer
+   attribution plus the "What it does" framing, so the error
+   class manifests as concept-token **producer over-attribution**
+   -- functions that only compare, read, or delegate listed as
+   producers of money/balance tokens. P1-f source-read all 29
+   HIGH-RISK suspect rows (suspect-named functions plus every
+   computational row in the display/aggregation files) and
+   sampled 15 LOW-RISK calculation-engine rows. Result:
+   false-positive rate **6/29 (~21%) in the HIGH-RISK suspect
+   partition, 0/15 in the LOW-RISK engine partition**. The six
+   false positives -- `dashboard_service._compute_alerts` and
+   `_get_balance_info`, `budget_variance_service._compute_actual`,
+   `calendar_service._build_day_entry` and
+   `_compute_month_end_balance`, and the
+   `year_end_summary_service.py:1465-1469` ARM anchor -- were
+   relocated inline to per-file "Conditional on financial value"
+   / "Non-arithmetic" lists with original citations preserved.
+   One borderline (`retirement_dashboard_service.compute_slider_defaults`,
+   SWR `* _PCT_SCALE` rate-to-percentage display) is KEPT as
+   arithmetic with an inline Phase-3-adjudication flag. The
+   suspect specifically named in the prior version of this caveat,
+   `amount_to_monthly`, was verified to be GENUINE money
+   arithmetic (multiply/divide of a money amount), NOT a false
+   positive. **Phase 3 instruction (changed):** Phase 3 MAY rely
+   on the section 1.1 arithmetic classification as re-verified by
+   P1-f rather than re-applying the rules from scratch. Residual
+   risk: the LOW-RISK calculation-engine partition was
+   sample-verified (0 failures in 15 of ~55 rows; the strict
+   accept threshold of 0-1 was met so full re-verification was
+   not triggered) -- a Phase 3 finding that turns on a LOW-RISK
+   engine row's exact body citation should still spot-check that
+   one row. Borderline rows flagged inline still require Phase 3
+   adjudication.
+
+2. **QC asymmetry: P1-a and P1-b preceded the formal QC protocol
+   introduced in P1-c.** Their line-citation accuracy is uneven:
+   P1-a's column-level inventory is mechanical and reliable; P1-b's
+   function-definition citations are reliable everywhere, but
+   body-line citations in `year_end_summary_service.py` (2248 lines)
+   had a ~20% spot-check error rate that was corrected in the
+   P1-b self-review. Phase 3 should spot-check any P1-b row before
+   quoting its body-line citation as evidence in a finding, and
+   should explicitly verify any body citation in
+   `year_end_summary_service.py` that was NOT listed in P1-b's
+   verified citations sub-list at the end of section 1.1.
+   **P1-f fold-in (2026-05-15):** P1-f re-checked every
+   arithmetic-classified `year_end_summary_service.py` row against
+   source. Def-line citations `:380`, `:414`, `:475`, `:636`,
+   `:824` are EXACT (0 drift) and were already in P1-b's verified
+   sub-list. Three residual citation-quality issues, all recorded
+   inline in the file's P1-f block: (a) the `:518-528` SQL-aggregate
+   range is loose by one line -- 518 is `db.func.count`, the two
+   money sums are precisely 519 and 520-528; (b) the `:1465-1469`
+   ARM anchor has accurate line numbers but is attributed to
+   `_balance_from_schedule_at_date` when the enclosing def is
+   `_generate_debt_schedules` (line 1421); (c) `_compute_debt_progress`
+   `:824` has a Signature-column drift (actual signature
+   `(year, debt_accounts, debt_schedules, ...)`). Phase 3 should
+   trust the line numbers over the function-name attribution for
+   the ARM anchor.
+
+3. **Cross-reference completeness across sections.** Sections 1.2,
+   1.3, and 1.4 cite their upstream entries by name and file:line
+   (route -> service, template -> route, JS -> service/route).
+   Sections 1.5 and 1.6 stand alone -- downstream sections do not
+   always cite back to specific model columns or aggregate sites.
+   Phase 2 should walk concept tokens from sections 1.1-1.4 back to
+   the 1.5 columns and 1.6 aggregates that underlie them; the
+   1.7.3 index makes this walk straightforward.
+
+4. **Resolved Phase-0 questions (A-01 through A-07 in
+   `00_priors.md`).** These define behavioral expectations the
+   inventory documents but does not enforce. For example:
+   - A-01 (canonical rounding rule) is verified per-function in
+     the 1.1 quantization column; Phase 3 must check the
+     boundary-quantize claim at every consumer site, not just at
+     the producer.
+   - A-02 (carry-forward envelope settle-and-roll) is verified at
+     the service level; Phase 3 must verify that no other branch
+     (discrete, transfer, manual) accidentally invokes
+     `_settle_source_and_roll_leftover` semantics.
+   - A-04 (ARM stored vs fixed-rate engine-walked principal) is
+     verified in `amortization_engine.py:977-985`; Phase 3 must
+     cross-check every page that displays principal (six pages
+     listed in `loan_principal_real` / `loan_principal_stored`
+     rows of the 1.7.3 index).
+   - A-05 (eight monthly_payment call sites) is expanded to
+     fourteen by P1-b's grep; six additional sites in adjacent
+     fallback branches (Q-09 question). Phase 3 must verify the
+     invariant against all fourteen, with the six fallback-branch
+     sites separately scrutinized.
+   - A-06 (year-end mortgage interest pipeline) is verified across
+     `loan_payment_service.py:263-353` (preprocessing) and
+     `year_end_summary_service.py:380-408` (aggregation).
+   - A-07 (carry-forward three-branch partition) is verified in
+     `carry_forward_service.py:273-277` and the bulk-update
+     pattern at lines 405-437; Phase 3 must verify each branch's
+     output matches the expectations documented in
+     `prod_readiness_v1` (discrete) and `carry_fwd_impl`
+     (envelope).
+
+5. **Q-NN open questions raised by Phase 1.** Q-08 (P1-b),
+   Q-09 (P1-b), Q-10 through Q-14 (P1-c) are awaiting developer
+   answers before Phase 3 can adjudicate the relevant findings.
+   Phase 2 (concept catalog) should explicitly note in each
+   concept's primary-path entry that the answer to the question
+   determines which implementation is canonical. The questions
+   are filed in `09_open_questions.md`.
+
+> Developer note: the targeted re-verification proposed here was RUN as session P1-f on
+> 2026-05-15 (QC log 1.7.8). The systematic-classification-error risk for section 1.1 is now
+> characterised, not merely flagged: a ~21% false-positive rate in the HIGH-RISK suspect partition
+> (six rows relocated inline) and 0/15 in the sampled LOW-RISK engine partition. Caveat 1.7.6 (1)
+> has been rewritten from "Phase 3 must re-apply the rules" to "Phase 3 may rely on the
+> P1-f-re-verified classification, with the sampled-LOW-RISK residual and the inline borderline
+> flags as the only remaining adjudication items." No further pre-Phase-2 re-verification session
+> is needed unless the developer wants the full LOW-RISK engine partition exhaustively re-read
+> rather than sampled.
+
+### 1.7.7 P1-e verification spot-checks
+
+Per the prompt's verification protocol, five concept-to-locations index rows were sampled at random
+and re-verified by Read against the cited file:line. Results:
+
+| # | Token sampled | Citation checked | Verdict |
+| - | ------------- | ---------------- | ------- |
+| 1 | `monthly_payment` | `calculate_monthly_payment`@`amortization_engine.py:178` | OK (function definition at line 178 per P1-b verified-citations sub-list at end of section 1.1). |
+| 2 | `effective_amount` | `Transaction.effective_amount`@`transaction.py:221-245` | OK (P1-a section 1.5 cites the same range; property body at lines 221-245). |
+| 3 | `escrow_per_period` | `calculate_monthly_escrow`@`escrow_calculator.py:14` | OK (P1-b Group A inventory at the file-defined function table). |
+| 4 | `period_subtotal` inline | `index`@`grid.py:164` subtotal loop @263-279 | OK (Q-10 cites the same range; P1-c QC log inline correction confirmed the inline arithmetic). |
+| 5 | `paycheck_breakdown` | `calculate_paycheck`@`paycheck_calculator.py:92` | OK (P1-b Group A inventory and P1-c route consumers all align). |
+
+Greppability spot-check: every controlled-vocabulary token from 1.7.2 plus the index in 1.7.3 was
+confirmed grep-able in this file (`grep -c <token>`); the orphan `loan_principal_displayed` returns
+exactly one hit (its definition line). No body token uses a name that isn't in the vocabulary.
+
+Phase 1 is complete after this section is written. The output file is `01_inventory.md`. Phase 2
+(concept catalog) begins in a separate session with this file as primary input; the caveats in 1.7.6
+are required reading.
+
+### 1.7.8 P1-f arithmetic re-verification QC log
+
+(The session prompt named this subsection "1.7.7"; 1.7.7 was already written by
+P1-e for its verification spot-checks, so the P1-f log is filed as 1.7.8 to
+avoid clobbering P1-e content. The numbering is the only deviation.)
+
+Session P1-f, 2026-05-15. Single purpose: re-verify the "performs arithmetic on
+financial values" classification in section 1.1 (Services), correcting the
+systematic over-flagging documented in caveat 1.7.6 (1), and folding in the
+`year_end_summary_service.py` line-drift cross-check from caveat 1.7.6 (2).
+Read-only audit; source files, tests, and migrations untouched.
+
+**Structural note (material -- read before consuming this log).** Section 1.1
+does NOT have a discrete "Arithmetic (YES/NO)" column the way sections 1.3.x
+(`Arithmetic in Jinja`) and 1.4.x (`Numeric work`) do. Its columns are
+`file:line | Signature | Returns | What it does | Concept token(s) | ... |
+Quantization | Calls`. The "classification that marks a row as performing
+arithmetic on financial values" was therefore operationalised as: **the row's
+`What it does` description asserts the function itself performs an arithmetic
+operation (sum, subtract, multiply, divide, formula, accrue, convert-by-factor)
+producing/transforming a financial concept token, AND/OR the 1.7.3 index lists
+the function as a `svc:` producer of a money/rate token.** Pure
+query/lookup/CRUD/state/date/log/resolver rows with concept token `-` and
+structural descriptions were treated as never-classified-as-arithmetic and left
+out of scope (per the scope guardrail forbidding re-classification of
+non-arithmetic rows). Consequence: the P1-d error class manifests in 1.1 not as
+a binary-column over-flag but as **concept-token producer over-attribution** --
+a function that only compares / reads / delegates is listed (in the per-file
+table's token column and in the 1.7.3 producer column) as a producer of a
+money/balance token. That is the section-1.1 analogue of P1-d's
+"comparison-flagged-as-arithmetic" and is exactly what the six relocations
+below correct. This operational definition is the honest adaptation of the
+task to 1.1's actual structure; Phase 3 should read the relocations with it in
+mind.
+
+**Candidate set.** ~84 rows (per-file table rows the inventory frames as the
+function itself computing a financial value; pure delegators/orchestrators with
+"delegates"/"assembles" descriptions and structural `-`-token rows excluded as
+never-classified-as-arithmetic). Partitioned per the prompt's risk rule.
+
+| Partition | Rows | Verified how | False positives | Borderline kept+flagged | year_end line/attribution fixes | Action |
+| --------- | ---- | ------------ | --------------- | ----------------------- | ------------------------------- | ------ |
+| HIGH-RISK (suspect-named fns + every computational row in `dashboard_service`, `savings_dashboard_service`, `retirement_dashboard_service`, `year_end_summary_service`, `budget_variance_service`, `calendar_service`, `spending_trend_service`, plus the `carry_forward` decision-tree guard and `calibration.derive_effective_rates`) | 29 | Exhaustive: every cited `file:line` read at source with a +/-6 window (<=40 rows, so no Explore raw-fetch needed) and the prompt's rule table applied mechanically | 6 (`dashboard_service._compute_alerts` @252, `_get_balance_info` @334; `budget_variance_service._compute_actual` @381; `calendar_service._build_day_entry` @240, `_compute_month_end_balance` @435; `year_end_summary_service` ARM anchor @1465-1469) | 1 (`retirement_dashboard_service.compute_slider_defaults` @257 -- genuine balance-weighted average KEPT; SWR `* _PCT_SCALE` percentage-display flagged) | 3 recorded (518-528 range loose by 1; 1465-1469 enclosing-fn mis-attributed to `_balance_from_schedule_at_date`, actual `_generate_debt_schedules`@1421; 824 signature-column drift). Def-lines 380/414/475/636/824 EXACT and in P1-b verified list. | Relocated the 6 false positives inline to per-file "Conditional on financial value" / "Non-arithmetic" lists with original citations preserved; flagged the 1 borderline inline; recorded the year_end citation-quality issues in the file's P1-f block and folded into caveat 1.7.6 (2). |
+| LOW-RISK (recognised calculators in `amortization_engine`, `growth_engine`, `interest_projection`, `tax_calculator`, `paycheck_calculator`, `loan_payment_service`, `balance_calculator`, plus `debt_strategy`, `savings_goal` recognised calcs and Group C entry/settle sum helpers) | ~55 | Sampled 15 spanning every engine file (incl. all section-1.1 `calculate_monthly_payment` sites for the Task-4 completeness check), read at source, rule table applied | 0/15 | 0 | n/a | Accepted as correctly classified (strict threshold 0-1 met); partition NOT promoted to exhaustive. A Phase 3 finding turning on a LOW-RISK engine row's exact body citation should still spot-check that one row (residual recorded in caveat 1.7.6 (1)). |
+
+**HIGH-RISK per-row verdicts (all source-read).** Genuine arithmetic, KEEP
+(operator + financial value confirmed at the cited line): `calibration_service.py:34`
+`derive_effective_rates` (`federal / taxable` etc., division, lines 83-95);
+`dashboard_service.py:203` `_entry_progress_fields` (`total = debit + credit`,
+238) and `:375` `_compute_cash_runway` (`sum(abs(...))` 411, `/ daily_avg`
+415-416); `savings_dashboard_service.py:802` `_compute_debt_summary` (`+=`, `*`,
+`/` 851-863); `budget_variance_service.py:99` `compute_variance` (`total_act -
+total_est` 139), `:358` `_build_txn_variance` (`actual - estimated` 367),
+`:396` `_pct` (`variance / estimated * _HUNDRED` 404); `savings_goal_service.py:199`
+`amount_to_monthly` (`amount * 26/12`, `amount / 3`, ... 264-281 -- the suspect
+NAMED in caveat 1.7.6 (1), verified GENUINE); `calendar_service.py:270`
+`_assign_transactions_to_days` (`+=` 302, 304); `carry_forward_service.py:602`
+`_resolve_envelope_target_fields` (`target_row.estimated_amount + leftover`
+686, `canonical_default + leftover` 750 -- the inventory description
+"decision tree / leftover precomputed" understated it, but the classification
+as arithmetic-bearing is correct, so KEEP); `year_end_summary_service.py:380`
+(`total_interest += row.interest` 406), `:414` (sums `effective_amount` 457 per
+P1-b verified), `:475`/`:518-528` (`db.func.sum`), `:636` (`total_amount +=
+t.amount` 679), `:824` (`principal_paid = jan1_bal - dec31_bal` 871);
+`spending_trend_service.py:97`/`:265`/`:296`/`:360`/`:470` (regression / `+=`
+totals / weighted `sum(... * ...) / total` / `(last - first) / first *
+_HUNDRED`; `:296`, `:360`, `:470` source-read, `:97`/`:265` confirmed via the
+call graph into the verified helpers).
+
+Reclassified NON-arithmetic (relocated inline, original citation preserved):
+`dashboard_service.py:252` `_compute_alerts` (only `bal < _ZERO` 298,
+`current_bal < Decimal(str(low_threshold))` 314 -- comparisons; the sole
+subtraction is non-financial date math 281); `dashboard_service.py:334`
+`_get_balance_info` (reads + `_compute_cash_runway` delegate + date compare);
+`budget_variance_service.py:381` `_compute_actual` (conditional selection of
+`actual_amount` / `estimated_amount`, no operator);
+`calendar_service.py:240` `_build_day_entry` (`amount = effective_amount`
+read, `abs(amount) >= threshold` bare-abs + compare);
+`calendar_service.py:435` `_compute_month_end_balance` (period lookup +
+`calculate_balances` delegate + dict read);
+`year_end_summary_service.py:1465-1469` ARM anchor (`Decimal(str(
+params.current_principal)) if params.is_arm else None` -- type-normalize +
+conditional anchor read per A-04). True-negative confirmed clean (was already
+framed as a read, no relocation): `dashboard_service.py:167` `txn_to_bill_dict`.
+
+**Task 4 -- monthly_payment completeness (the only false-negative check).**
+A-05/Q-09's call-site set, restricted to section 1.1's scope: definition
+`amortization_engine.py:178` (annuity formula `principal * (monthly_rate *
+factor) / (factor - 1)` at line 196 -- genuine), and the service-layer call
+sites `:436, :440, :491, :512` (in `generate_schedule`@326), `:693, :697` (in
+`calculate_summary`@649), `:952, :957` (in `get_loan_projection`@864),
+`balance_calculator.py:225, :231` (in `calculate_balances_with_amortization`@176),
+`loan_payment_service.py:251, :256` (in `compute_contractual_pi`@233). All were
+source-confirmed present and enclosed by functions classified as arithmetic;
+none were wrongly dropped by the systematic bias. The remaining A-05/Q-09 sites
+(`app/routes/loan.py:1102, 1225, 1231`) are section 1.2 and out of this
+session's scope. No Q-09-linked finding: the bias did not drop a real
+monthly_payment site from the 1.1 arithmetic classification.
+
+**Verification before declaring complete.** (a) Re-grepped section 1.1; five
+remaining arithmetic rows spot-re-read at random -- `amortization_engine.py:178`
+(annuity, op present), `balance_calculator.py:292` `_entry_aware_amount`
+(`estimated_amount - cleared_debit - sum_credit` inside `max`, 383-385, op
+present), `tax_calculator.py:173` `_apply_marginal_brackets` (`total_tax +=
+amount_in_bracket * rate`, 207, op present), `paycheck_calculator.py:329`
+`_apply_single_raise` (`salary * (1 + pct)`, 333, op present),
+`growth_engine.py:91` `calculate_employer_contribution` (`gross * pct`, 114, op
+present) -- all genuinely contain an arithmetic operator on a financial value
+per the rule table. (b) Every relocated row retains its original `file:line`
+citation in its new per-file list. (c) The 14 (A-05/Q-09) monthly_payment
+sites: the 12 in section-1.1 scope all resolve to an arithmetic classification;
+the 3 route sites are section 1.2 (out of scope) -- no finding. (d) `wc -l`
+confirms `01_inventory.md` changed (3012 -> 3313 lines).
+
+No new behavioral ambiguity (Q-NN) surfaced: every P1-f decision was a
+classification call against the rule table, not a "what is this code intended
+to do" question. The one structural ambiguity (section 1.1 has no arithmetic
+column) is a property of the audit document, not the codebase, and is resolved
+above by the documented operational definition rather than a developer
+question.
+
+Phase 1 remains complete. P1-f is a post-Phase-1 remediation of section 1.1's
+arithmetic classification only; Phase 2 begins in a separate session with this
+file as primary input and the updated caveats in 1.7.6 as required reading.
