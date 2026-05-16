@@ -5627,3 +5627,234 @@ cluster (P3-cmp-1..5 done). Phase 3 is **NOT** complete -- **P3-reconcile** (the
 session that may declare Phase 3 complete) remains. F-001..F-056 / triage table /
 P3-cmp-1..4 subsections / `Finding IDs used` header unmodified (append-only). No source,
 test, or migration file modified. Not committed; developer reviews between sessions.
+
+## Phase 3 reconciliation
+
+Session P3-reconcile. Gate-not-new-work: this section declares Phase 3 complete only if
+Gates A-E all pass and verification a-e all hold. It is append-only and modifies NONE of
+F-001..F-056, the triage table, the P3-cmp-1..5 subsections, or the `Finding IDs used`
+header. 03_consistency.md was analyzed mechanically (grep/awk projections + ~25 targeted
+Reads), never end-to-end.
+
+### Gate A -- W-NN completeness (PASS)
+
+Mechanical reconciliation of the 375-W universe (priors `00_priors.md:240-244`) against the
+triage table (`03_consistency.md:4092-4475`) and the five P3-cmp verdict subsections.
+
+| Check | Result |
+| --- | --- |
+| Triage rows | 375; W-001..W-375 distinct; **zero duplicate, zero gap** (mechanical `comm` vs `seq 1 375`) |
+| Bin tally (triage) | COVERED 180 + SUPERSEDED 24 + NEEDS-COMPARISON 161 + DUPLICATE-OF-0.3 10 = **375** |
+| COVERED sub-tally | HOLDS 120 + UNKNOWN 31 + PARTIALLY_HOLDS 18 + VIOLATED-DEAD 8 + VIOLATED 3 = **180** (matches the Bin-counts reconciliation block `:4480`) |
+| SUPERSEDED | W-127..W-150 = 24 consecutive (all `envelope_view`, A-02); zero mis-binned VIOLATED |
+| DUPLICATE-OF-0.3 | W-118/119/120, W-187, W-192, W-205/206, W-300/301, W-330 = exactly the 10 declared |
+| Plan-column cross-check | triage plan tally == priors 0.4 declared per-plan counts, **all 20 plans identical** (independent corroboration that the triage universe is faithful) |
+| P3-cmp verdict counts | cmp-1=38, cmp-2=35, cmp-3=40, cmp-4=20, cmp-5=28 -> **161** (== completion-line declarations) |
+| 161 NC vs 161 cmp | cmp union = 161 total, 161 distinct; **zero W-NN in two cmp subsections**; cmp set == NC set exactly (`comm` both directions empty) |
+
+Bins sum to 375; the 161 NEEDS-COMPARISON W-NNs are each verdicted exactly once across
+P3-cmp-1..5 with no overlap and no omission. **Gate A PASSES.**
+
+### Gate B -- trust-but-verify spot-check (PASS, 15/15)
+
+Section-10.8 applied to Phase 3's own output. 15 samples (9 cmp proportional; 6 F biased to
+DIVERGE/symptom). Each cited `file:line` Read at source this session and the verdict /
+divergence / HOLDS claim confirmed.
+
+| # | Item | Verdict claimed | Source-confirm | Pass |
+| --- | --- | --- | --- | --- |
+| 1 | W-019 (cmp1) | VIOLATED / PLAN_DRIFT-STRUCTURAL | `interest_params.py` full-file: cols = id/account_id/apy/compounding_frequency only; **no maturity_date, no term_months**; table `interest_params:20` | PASS |
+| 2 | W-016 (cmp1) | PARTIALLY_HOLDS | `savings_dashboard_service.py:208-216` filters `InterestParams` by `account_type.has_interest`, NOT HYSA acct_type_id | PASS |
+| 3 | W-106 (cmp2) | HOLDS | `recurrence_engine.py:54` def, `:144-145` amount, `:162` estimated_amount, `:163` is_override=False, `:170` flush | PASS |
+| 4 | W-110 (cmp2) | HOLDS | `carry_forward_service.py:273-278` exact three-way partition (transfer / `is_envelope` / discrete) | PASS |
+| 5 | W-111 (cmp2) | HOLDS | single `settle_from_entries` def `transaction_service.py:38`; consumers `transactions.py:596` (gated `:592-594`), `carry_forward_service.py:896` | PASS |
+| 6 | W-065 (cmp3) | HOLDS + escalated DEFINITION_DRIFT | `analytics.py:413-426` per-day income/expense totals added to each day dict in `_build_calendar_weeks` | PASS |
+| 7 | W-277 (cmp3) | UNKNOWN-Q-18 + escalated SILENT_DRIFT + SCOPE | `calendar_service.py:449-450` anchor-None ret 0; `:461-466` last period end<=last_day; `:471-480` **no selectinload(entries)**; all three divergences confirmed | PASS |
+| 8 | W-235 (cmp4) | HOLDS | `amortization_engine.py:277-281` pre-origination rate-change filter `if r.effective_date >= origination_date` | PASS |
+| 9 | W-179 (cmp5) | IN-FINANCIAL HOLDS | `auth_helpers.py:121` `get_or_404` ownership helper (user_id scoping, IDOR forensic log) -- the centralized carve-out | PASS |
+| 10 | F-009 (sym #1) | DIVERGE / SILENT | `grid.py:229` selectinload(entries) PRESENT; `savings_dashboard_service.py:92-100` ABSENT; `balance_calculator.py:353-354` short-circuit, `:383-386` entry formula | PASS |
+| 11 | F-013 (sym #2) | DIVERGE / SILENT+DEFINITION+PLAN | `amortization_engine.py:908-910` `n`, `:913` stored principal, `:914` stored rate, `:952-954` site-7 ARM branch | PASS |
+| 12 | F-014 (sym #3) | DIVERGE / SOURCE+SCOPE+SILENT | grep: no `current_principal=` settle writer (only model:54 / engine-input:913 / schema:1444,1466); `:977-984` ARM-stored vs fixed-walk branch | PASS |
+| 13 | F-026 (sym #4) | DIVERGE / SILENT+PLAN | grep: `arm_first/adjustment_months` consumed by ZERO calc sites (only model:60-61 / `_PARAM_FIELDS` loan.py:670 / schema); `:138-142` shrinking `n`; `:952-954` | PASS |
+| 14 | F-037 (CRIT) | DIVERGE / DEFINITION | `calibration_service.py:139-144` flat `gross*ss_rate` NO cap; grep zero `ss_wage_base` in calibration_service; `tax_calculator.py:299-307` cap ENFORCED | PASS |
+| 15 | F-042 (CRIT) | DIVERGE / SILENT | `retirement_dashboard_service.py:304` `is None`; `:220` `or "0.04"` truthiness; `:321` `if params and params.assumed_annual_return` truthiness | PASS |
+
+**15/15 PASS, 0 failures** (FAIL threshold 2+). No citation resolved to unexpected code; no
+verdict overstated. **Gate B PASSES.**
+
+### Gate C -- finding-set + symptom-spine consolidation
+
+#### C1 -- consolidated verdict register (Phase 4 / Phase 5 load this)
+
+56 findings: 23 AGREE + 1 AGREE-by-construction (F-053) + 21 DIVERGE + 9 UNKNOWN + 1
+DEAD_CODE (F-040); F-056 splits (`entry_sum_total` AGREE / `entry_remaining` UNKNOWN-Q-08).
+Non-AGREE findings + the non-HOLDS cmp verdicts:
+
+**DIVERGE findings (21)** -- file:line in the named finding:
+
+| F | Concept | Classification | Blocking / governing Q |
+| --- | --- | --- | --- |
+| F-001 | account_balance | SILENT + SCOPE + SOURCE + PLAN | Q-15 (dispatcher), Q-16 (anchor-None), Q-11 (loan card) |
+| F-002 | checking_balance | SILENT | -- (E-04 makes it a finding) |
+| F-003 | projected_end_balance | SILENT + SOURCE | Q-11; cross sym #1/#5 |
+| F-005 | chart_balance_series | SILENT | -- |
+| F-009 | proj_end vs checking (**sym #1**) | SILENT | none to classify (E-04) |
+| F-013 | monthly_payment (**sym #2**) | SILENT + DEFINITION + PLAN | Q-09 (site-16 intent); Q-17 (fix shape) |
+| F-014 | loan_principal_real (**sym #3**) | SOURCE + SCOPE + SILENT | Q-15; Q-11 |
+| F-015 | loan_principal_stored | SOURCE | Q-11; Phase 4 owns AUTHORITATIVE/CACHED |
+| F-017 | principal_paid_per_period | SCOPE | inherits A-05/Q-09 |
+| F-018 | interest_paid_per_period | DEFINITION | A-06; C-05 |
+| F-020 | total_interest | DEFINITION (by design) | A-06; C-05 |
+| F-021 | interest_saved | ROUNDING | inherits A-05 |
+| F-022 | months_saved | DEFINITION | P2-b override 1.7.4 |
+| F-023 | payoff_date | SILENT | inherits A-05 |
+| F-026 | 5/5 ARM stability (**sym #4**) | SILENT + PLAN | Q-17 (fix shape; verdict NOT blocked) |
+| F-027 | effective_amount | SILENT (+ E-16) | Q-08, Q-14 |
+| F-032 | paycheck_gross | DEFINITION | A-01 (`:266` 24-list) |
+| F-037 | fica (**CRITICAL**) | DEFINITION | none -- IRS cap is a hard invariant (PA-21) |
+| F-042 | growth (**CRITICAL**) | SILENT | none -- PA-04/PA-05 reconciliation |
+| F-043 | employer_contribution | SILENT | A-01 caveat |
+| F-055 | year_summary_employer_total | SILENT + PLAN | inherits F-043; Q-15 |
+
+**UNKNOWN findings (9 + F-056 sub)** -- each blocked on a real pending Q:
+
+| F | Concept | Blocked on |
+| --- | --- | --- |
+| F-004 | period_subtotal | **Q-10** |
+| F-006 | net_worth | **Q-15** |
+| F-007 | savings_total | **Q-15** |
+| F-008 | debt_total | **Q-15** (internal stored-vs-engine DIVERGE holds regardless: `savings_dashboard_service.py:840/855` vs `:373`) |
+| F-016 | loan_principal_displayed | **Q-11** |
+| F-028 | entry-progress cross-anchor | **Q-08** (cross-anchor SILENT DIVERGE holds regardless) |
+| F-051 | year_summary_jan1_balance | **Q-15** |
+| F-052 | year_summary_dec31_balance | **Q-15** |
+| F-054 | year_summary_growth (YG1) | **Q-15** (YG2 AGREE-by-construction) |
+| F-056 | entry_remaining (sub) | **Q-08** (`entry_sum_total` sub = AGREE) |
+
+**DEAD_CODE:** F-040 legacy `calculate_federal_tax` (zero `app/` consumers, grep-confirmed).
+
+**Non-HOLDS cmp verdicts (PLAN-DRIFT corpus for Phase 8):**
+
+| cmp | W-NN | Verdict |
+| --- | --- | --- |
+| cmp-1 | W-019 | **VIOLATED** (Option A CD columns never added; latent missing feature, no wrong number) |
+| cmp-1 | W-010/013/014/016/018/021/022/030/040 | **PARTIALLY_HOLDS** x9 (all PLAN_DRIFT-STRUCTURAL: type-ID dispatch superseded by metadata flags; substance holds, zero wrong-number) |
+| cmp-1 | W-020 | **N/A-OPTION-NOT-ADOPTED** |
+| cmp-2 | W-126 | **PARTIALLY_HOLDS** (HTTP-status deviation only; no dollar figure) |
+| cmp-3 | W-277 | **UNKNOWN-Q-18** + escalated entries-load SILENT_DRIFT (inherits F-003/F-009) + SCOPE (Q-16) |
+| cmp-3 | W-262 | HOLDS literal + **escalated RECEIVED hard-delete data-loss, axis UNKNOWN-Q-19** |
+| cmp-3 | W-065 | HOLDS + escalated filter-set DEFINITION_DRIFT (calendar all-status vs grid Projected-only; F-004) |
+| cmp-3 | W-082/083/084 | **N/A-TEST-CLAIM** x3 |
+| cmp-4 | -- | 0 non-HOLDS (20/20 HOLDS, money-math hand-verified) |
+| cmp-5 | -- | 0 non-HOLDS (11 IN-FINANCIAL HOLDS, 17 OUT-OF-SCOPE; no IDOR escalation) |
+
+#### C2 -- symptom -> root-cause map (each Read-confirmed with a worked example)
+
+| Symptom (developer) | Root-cause finding(s) | Read-confirmed mechanism + worked example |
+| --- | --- | --- |
+| **#1** $160 grid vs $114.29 /savings, same current period | **F-009** + **W-277** (new consuming path) | F-009: sole pinned dimension is `selectinload(Transaction.entries)` PRESENT `grid.py:229` / ABSENT `savings_dashboard_service.py:92-100`; `_entry_aware_amount` returns the entry formula `balance_calculator.py:383-386` vs `effective_amount` `:353-354`. Worked: gap `$160-$114.29=$45.71` = sum(estimated - max(est-cleared-credit, uncleared)) the entries-unloaded path double-subtracts. **W-277** is the SAME gap on a NEW page: `calendar_service.py:471-480` also omits selectinload -> calendar month-end balance DIVERGES from grid identically. |
+| **#2** $1911.54/$1914.34/$1912.94 -> $1910.95 | **F-013** | 16 sites feed `calculate_monthly_payment` incompatible `(principal,rate,n)` triples. Site-7 `:952-954` (stored principal `:913`, stored rate `:914`, calendar `n` `:908-910`) vs site-3 schedule per-row `n=max_months-month_num+1` -> few-dollar gap. Worked: P=400000,r=.065,T=360,e=48 -> site7 n=312 ($2628.xx), site3 n~=311 ($2631.xx). "$1910.95 after editing current principal" = `update_params` setattr `loan.py:672-674` writes stored col, site-7 recomputes lower. |
+| **#3** current principal does not move as transfers settle | **F-014** | grep-proven: zero `current_principal=` settle writer; sole writer `update_params` setattr (`loan.py:672-674`). ARM `cur_balance = current_principal` (`amortization_engine.py:978`, STORED) -> never consults confirmed rows. Worked: ARM $312,000 unchanged after N confirmed payments until manual edit; fixed engine-walks but card still renders STORED `loan/dashboard.html:104`. |
+| **#4** 5/5 ARM payment fluctuates inside fixed window | **F-026** | `arm_first_adjustment_months` inert (grep zero calc consumers); site-7 re-amortizes FROZEN stored principal (F-014) over STRICTLY-DECREASING `remaining` (`:138-142`). Hand arithmetic: $400k @ 6%/360, months_elapsed 24 -> $2,460.45; month 25 -> $2,463.27 (**+$2.82**), both != correct constant $2,398.20, no rate change, no edit. |
+| **#5** /accounts balances match nowhere else | **F-001** + **F-008** | F-001: same `(user,period,scenario,account)` -> grid/dashboard $962.34 (entry formula) vs /savings//accounts/net-worth $500.00 (effective_amount) for one Projected envelope expense, anchor $1000, cleared $462.34; + anchor-None 4-way SCOPE + loan-base 3-way SOURCE + dual dispatch (Q-15). F-008: stored `current_principal` $300,000 debt card vs engine `proj.current_balance` $297,450 account card vs net-worth liability $297,450 -- three figures, one loan, one page. |
+
+All five C2 mappings hold; each named finding was Read in full this session and contains a
+source-cited worked example that root-causes the symptom. No mapping failed.
+
+#### C3 -- CRITICAL pre-list for Phase 8 (money impact, one line each)
+
+Severity is a Phase-8 assignment (audit-plan section 8); these are pre-flagged from the
+Read-confirmed money impact in the finding bodies.
+
+| Item | Money impact (Read-confirmed) |
+| --- | --- |
+| **F-037** fica SS-cap bypass | High earner on the calibration path: SS accrues all 26 periods -> year SS $19,344 vs correct $11,439 = **+$7,905/yr FICA overstatement**, net pay understated $744/over-cap period, no error (`calibration_service.py:139-144` has no `ss_wage_base`/cumulative input). |
+| **F-042** growth phantom income | Explicit-zero SWR: slider shows 0.00% but gap math uses 4% -> **$4,000/mo phantom retirement income**; zero-return $100k account dropped from denominator -> displayed 7.00% vs true 3.50% weighted return (`retirement_dashboard_service.py:220/:321` truthiness). |
+| **Q-19 / W-262** RECEIVED hard-delete | `hard_delete_template` (`templates.py:616-618`) permanently destroys RECEIVED income transaction history because `template_has_paid_history` checks only [DONE,SETTLED]; RECEIVED is `is_settled=True` -> **irreversible settled-income data loss on an explicit user delete**, no wrong number. |
+| **W-065 / W-277** calendar drift | Calendar "End Balance" (`calendar_service.py:435-489`) omits `selectinload(entries)` (`:471-480`) -> shows a **different dollar amount than the grid** for the same month with Projected envelope+cleared entries (inherits F-003/F-009); period-selection off-by-one (Q-18); per-day totals use all-status vs grid Projected-only (W-065 DEFINITION_DRIFT, F-004). |
+| (symptom CRITICALs) | F-001/F-008/F-009/F-013/F-014/F-026 are the developer-reported wrong-dollar symptoms (C2); CRITICAL by the audit-plan section-8 rubric -- already the Phase-5 spine, listed here for Phase-8 ordering. |
+
+**Gate C PASSES** (C1/C2/C3 delivered; every C2 mapping Read-confirmed with a worked
+example).
+
+### Gate D -- E1 completeness (PASS, zero orphan)
+
+The E1 register (`02_concepts.md:3215-3271`) = 41 multi-path + 8 single-path = **49 rows**
+(47 cataloged + 2 Gate-A orphans). The Phase-3 family-coverage tally
+(`03_consistency.md:3964-4052`) maps every E1 row to a finding.
+
+| Reconciliation | Result |
+| --- | --- |
+| E1 multi-path rows (mechanical count `02_concepts.md:3215-3271`) | 41 -> F-IDs (entry_sum_total + entry_remaining both -> F-056) |
+| E1 single-path rows | 8 -> F-024/F-030/F-044/F-045/F-047/F-048/F-049/F-050 |
+| Tally finding-ID union | exactly **F-001..F-056, 56 distinct, contiguous, no gap** |
+| Tally F-IDs vs actual `## Finding F-` headers | identical both directions (`comm` empty) -- 56 == 56 |
+| Standalone section-3.1 findings (no own E1 row, by design) | F-009/F-010/F-011/F-012/F-026/F-028/F-031/F-040 = 8 |
+| Orphan E1 rows | **0** |
+
+Every E1 row maps to a finding; the P3-d2 zero-orphan assertion reconciles against the
+actual 56 F-headers with no collision. **Gate D PASSES.**
+
+### Gate E -- open-questions blocked register (PASS, no dangling UNKNOWN)
+
+Distinct Q referenced in 03_consistency.md = **Q-08..Q-19** (12, contiguous); all 12 exist
+as headers in `09_open_questions.md`; **highest Q = Q-19**; Q-01..Q-07 are the
+answered/verified cross-plan + A-01 set. Every UNKNOWN verdict cites a real pending Q
+(mechanical: 10 F-UNKNOWN lines L287/364/402/449/1089/2047/3575/3602/3700/3859 each carry a
+Q within 3 lines; cmp UNKNOWNs W-277->Q-18, W-262->Q-19). **Zero dangling UNKNOWN.**
+
+| Q | Gates (findings / verdicts) | Developer input that resolves it |
+| --- | --- | --- |
+| Q-08 | F-028, F-056(`entry_remaining`), F-027 rows S2/S3/R1-R3, F-046 GP2 | estimated_amount vs re-anchor on actual_amount for a settled entry-tracked txn (A-08 proposed) |
+| Q-09 | F-013 site-16 *intent* (DIVERGE itself not blocked), inheritors F-017/F-020/F-021/F-023 | `debt_strategy.py:127` unconditional ARM-formula intent; 16-site count (A-09 proposed = 16) |
+| Q-10 | F-004 (UNKNOWN), W-065 escalation, F-009/F-002 cross-link | period_subtotal: grid display detail vs shared concept (effective_amount vs _entry_aware_amount canonical) (A-10 proposed) |
+| Q-11 | F-016 (UNKNOWN), F-014/F-015/F-001 loan-base | which principal a user-facing page MUST show (stored vs engine-real) (A-11 proposed) |
+| Q-12 | F-025 dti context, period_subtotal obligations path | obligations route-resident aggregation SRP; mortgage double-count; 26/12 dup (A-12 proposed) |
+| Q-13 | F-034, F-035, F-038 | calibrate_preview inline `gross-total_pre_tax` pct-base bias (A-13 proposed) |
+| Q-14 | F-027 R4/R5 (effective_amount write), F-056 `entry_sum_total` | mark_paid vs mark_done settle/auto-settle asymmetry (A-14 proposed) |
+| Q-15 | F-001/F-006/F-007/F-008/F-014/F-051/F-052/F-054/F-055, F-042 G4 (largest cluster) | canonical per-account dispatcher (`_compute_account_projections` vs `_get_account_balance_map`); net_worth_amort W-152 catch-up vs superseded |
+| Q-16 | F-001/F-003/F-006/F-007 SCOPE axis, W-277 anchor-None | intended no-anchor behavior: blank / $0-anchored / omit account |
+| Q-17 | remediation direction of F-013 + F-026 (verdict DIVERGE NOT blocked), ties F-014 | 5/5 ARM site-7: re-amortize engine-real balance vs honor arm_first_adjustment_months vs maintain stored col |
+| Q-18 | W-277 verdict (P3-cmp-3) | calendar month-end "last period ending in/after the month" vs current "last completed within month" |
+| Q-19 | W-262 escalation (P3-cmp-3) | widen `template_has_paid_history` to `is_settled` / enumerate [DONE,RECEIVED,SETTLED] vs RECEIVED-only history intentionally hard-deletable |
+
+No new gate-surfaced ambiguity (the gate is reconciliation; every divergence already maps to
+an existing Q or is a provable-from-code DIVERGE). **Gate E PASSES.**
+
+### Verification before completion
+
+- **(a)** Gate A arithmetic reconciled and shown -- bins 180+24+161+10=375; cmp 38+35+40+20+28=161 unique; cmp set == NC set; plan-column == priors 0.4 (20/20). **HOLDS.**
+- **(b)** Gate B 15-row spot-check table present; **15/15 PASS** (threshold 2+). **HOLDS.**
+- **(c)** Gate C C1/C2/C3 tables present; all five C2 symptom mappings Read-confirmed with source-cited worked examples. **HOLDS.**
+- **(d)** Gate D zero-orphan reconciliation shown -- 49 E1 rows mapped; tally F-IDs == 56 actual F-headers, contiguous, no orphan/collision. **HOLDS.**
+- **(e)** Gate E register present; Q-08..Q-19 each gated to findings; every UNKNOWN cites a real pending Q; highest Q-19; **zero dangling UNKNOWN.** **HOLDS.**
+
+## Phase 3 complete
+
+Gates A-E all PASS; verification a-e all hold.
+
+- **Gate results:** A PASS (375 reconciled; 161 cmp unique) / B PASS (15/15 spot-check) /
+  C PASS (C1 verdict register + C2 symptom spine + C3 CRITICAL pre-list) / D PASS (zero E1
+  orphan) / E PASS (no dangling UNKNOWN).
+- **Counts:** **56 findings** (F-001..F-056, contiguous, no collision: 23 AGREE + 1
+  AGREE-by-construction + 21 DIVERGE + 9 UNKNOWN + 1 DEAD_CODE, F-056 split). **375 W-NN**
+  fully binned (180 COVERED / 24 SUPERSEDED / 161 NEEDS-COMPARISON verdicted across
+  P3-cmp-1..5 / 10 DUPLICATE-OF-0.3). **12 open questions** (Q-08..Q-19; Q-01..Q-07 the
+  answered/verified set).
+- **Symptom spine (Phase 5 input):** #1 -> F-009 (+ W-277 new consuming path); #2 -> F-013;
+  #3 -> F-014; #4 -> F-026; #5 -> F-001 + F-008. Each Read-confirmed with a worked example.
+- **CRITICAL pre-list (Phase 8 input):** F-037 (+$7,905/yr FICA), F-042 ($4,000/mo phantom
+  income + weighted-return overstatement), Q-19/W-262 (irreversible RECEIVED income
+  data-loss), W-065/W-277 (calendar dollar drift), plus the six symptom findings.
+- **Phase 4 (source-of-truth) loads:** C1 SOURCE_DRIFT rows -- F-014/F-015/F-001/F-008
+  stored-vs-engine `current_principal`/balance; the anchor stored-column cluster (F-027
+  OUT-OF-SCOPE S4/S6/S8/S11); Q-15-blocked dispatcher set. **Phase 5 (symptoms) loads:** the
+  C2 map.
+- This statement supersedes the P3-cmp-5 "P3-reconcile remains" marker. F-001..F-056, the
+  triage table, the P3-cmp-1..5 subsections, and the `Finding IDs used` header are
+  unmodified (this section is append-only). No source, test, or migration file modified by
+  this session. Not committed; the developer reviews (natural commit+push point is here,
+  before Phase 4/5).
+
+**Phase 4 and Phase 5 may begin.**
+
