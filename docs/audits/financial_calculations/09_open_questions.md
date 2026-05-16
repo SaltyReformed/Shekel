@@ -656,3 +656,85 @@ Where it came up: `docs/audits/financial_calculations/02_concepts.md` (P2-a), `a
 `savings_total` / `debt_total` primary-path entries;
 `app/services/savings_dashboard_service.py:294,802` and
 `app/services/year_end_summary_service.py:689,750`.
+
+## Behavioral divergences raised by Phase 3
+
+Phase 3 sessions append a `Q-NN` here whenever the consistency audit finds the code does the same
+thing more than one way and no documented intent picks the canonical behavior. The auditor records
+the divergence as a finding (provable from code) and STOPS on the "which behavior is intended"
+question for the developer (audit-plan section 9; hard rule 5 -- no guessed verdict).
+
+Q-16 (P3-a, 2026-05-15): When a checking/savings account has `current_anchor_period_id IS NULL`
+(no anchor period set), the five balance producers do three different things for the same account:
+
+- Grid (`app/routes/grid.py:239-241`): passes `None` as `anchor_period_id`; the engine
+  (`app/services/balance_calculator.py:69-86`) matches no anchor period, so `running_balance`
+  stays `None` and every period hits `continue` (`:82-84`) -- `balances` is empty and the grid
+  renders a blank balance row.
+- `/accounts` checking detail (`app/routes/accounts.py:1419-1421`) and `/savings`
+  (`app/services/savings_dashboard_service.py:326-328`): `... or (current_period.id if ...)`
+  falls back to the current period as the anchor with a `$0.00` anchor balance, producing a
+  populated (but anchored-at-zero) projection.
+- Net worth (`app/services/year_end_summary_service.py:2065-2066`) and the dashboard
+  (`app/services/dashboard_service.py:683-684`): `return None`, omitting the account from the
+  net-worth total and the dashboard balance card entirely.
+
+Question for the developer: what is the intended behavior when an account has no anchor period --
+blank (grid), a `$0`-anchored projection (`/accounts`, `/savings`), or omit the account (net
+worth, dashboard)? Phase 3 records the divergence as SCOPE_DRIFT in F-001/F-003/F-006/F-007
+regardless; the answer tells Phase 8 which of the three is the bug and which is the target.
+
+Why it matters: governs the SCOPE_DRIFT axis in F-001 (`account_balance`), F-003
+(`projected_end_balance`), F-006 (`net_worth`), and F-007 (`savings_total`); a user who has
+created an account but not yet set its anchor sees it as blank on the grid, as `$0` on
+`/accounts` and `/savings`, and as absent from net worth and the dashboard -- four different
+representations of one account state, an unlabeled difference under developer expectation E-04
+(`00_priors.md:178-182`).
+
+Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-a), F-001 / F-003 /
+F-006 / F-007 anchor-handling dimension; `app/routes/grid.py:239-241`,
+`app/routes/accounts.py:1419-1421`, `app/services/savings_dashboard_service.py:326-328`,
+`app/services/year_end_summary_service.py:2065-2066`, `app/services/dashboard_service.py:683-684`.
+
+Q-17 (P3-b, 2026-05-15): For a 5/5 ARM inside its fixed-rate window (e.g. the first 60 months,
+`LoanParams.arm_first_adjustment_months = 60`), the displayed "Monthly P&I" is computed by
+`get_loan_projection` at `app/services/amortization_engine.py:952-954` as
+`calculate_monthly_payment(current_principal, rate, remaining)` where
+`current_principal = Decimal(str(params.current_principal))` (`:913`, the STORED column) and
+`remaining = calculate_remaining_months(params.origination_date, params.term_months)`
+(`:908-910`, a calendar formula that decreases by 1 every month). The stored
+`current_principal` is not reduced as transfers settle (Q-3/A-3 / F-014: the only writer is the
+manual `update_params` form at `loan.py:672-674`). Re-amortizing a non-decreasing principal
+over a strictly decreasing `remaining` makes the payment drift upward a few dollars every month
+even with no rate change and no manual edit -- the developer's symptom #4. The
+`arm_first_adjustment_months` / `arm_adjustment_interval_months` columns
+(`app/models/loan_params.py:60-61`) are stored and form-bound but consumed by zero calculation
+sites (grep-verified), so the engine has no representation of the fixed-rate window. Two
+plausible intended behaviors:
+
+- "The stored column is the anchor and must be maintained": per A-04 the ARM
+  `current_principal` is authoritative; the intended fix is that confirmed transfers reduce the
+  stored column (closing the symptom-#3 gap), after which re-amortizing the *true* remaining
+  balance over the shrinking `remaining` reproduces the constant payment via the amortization
+  identity. Site 7 is then correct and the bug is purely the missing settle-driven update
+  (F-014).
+- "The engine must hold the payment constant in the fixed window": site 7 should re-amortize
+  `proj.current_balance` (engine-real) over `remaining`, or reset the payment only at
+  `arm_first_adjustment_months` / `arm_adjustment_interval_months` boundaries, so the displayed
+  payment is invariant for the whole window regardless of whether the stored column is
+  maintained.
+
+Which behavior is intended? E-02 (`00_priors.md:166-170`) requires the payment be one value
+for the whole fixed window; the audit records the current code as a DIVERGE (F-026) regardless,
+but the answer determines whether the remediation target is F-014 (maintain the stored column
+on settle) or a change at `amortization_engine.py:952-954` (re-amortize the engine-real
+balance / honor the ARM-adjustment columns).
+
+Why it matters: governs the remediation direction for F-013 (`monthly_payment` symptom #2) and
+F-026 (5/5 ARM symptom #4), and ties them to F-014 (symptom #3, the un-maintained stored
+`current_principal`). The verdict (DIVERGE) is not blocked; only the fix shape is.
+
+Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-b), F-013 and
+F-026; `app/services/amortization_engine.py:908-959`, `app/models/loan_params.py:60-61`,
+`app/routes/loan.py:672-674`. Cross-link Q-09, Q-11, Q-15, A-04/A-05 verification (this file),
+E-02 (`00_priors.md:166-170`).
