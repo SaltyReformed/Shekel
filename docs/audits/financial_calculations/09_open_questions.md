@@ -619,3 +619,125 @@ Recommendation: either align `mark_paid` to call `settle_from_entries` for envel
 transactions (so the two endpoints agree on `actual_amount` and therefore `effective_amount`),
 or document the difference explicitly so future contributors do not assume equivalence. See
 `answer_verification.md` Section 2 (Q-14).
+
+## Concept-catalog canonicality questions (Phase 2)
+
+Phase 2 sessions append a `Q-NN` here when the concept catalog cannot assign a primary path
+because no authoritative source designates the canonical producer. The developer answers; Phase
+3 then has a single reference to compare against.
+
+Q-15 (P2-a, 2026-05-15): There is no single canonical producer for a multi-account aggregate
+balance figure, and two independent per-account dispatch implementations exist. Concretely:
+
+- Aggregate `debt_total`: `savings_dashboard_service._compute_debt_summary`
+  (`app/services/savings_dashboard_service.py:802`, `total_debt` at line 855) sums the stored
+  `LoanParams.current_principal` (`Decimal(str(lp.current_principal))` at line 840), while the
+  liability contribution to net worth `year_end_summary_service._compute_net_worth`
+  (`app/services/year_end_summary_service.py:689`) derives each loan's balance from the
+  amortization schedule via `_build_account_data` / `_get_account_balance_map`
+  (`app/services/year_end_summary_service.py:750`). Per A-04 the stored column and the
+  engine-walked balance differ for a fixed-rate loan with confirmed payments, so the dashboard /
+  `/savings` debt card and the net-worth liability figure can disagree for the same loan.
+- Aggregate `account_balance` / `savings_total`: the per-account dispatch (which engine per
+  account type) is implemented twice -- `_compute_account_projections`
+  (`app/services/savings_dashboard_service.py:294`, drives `/savings` and the dashboard) and
+  `_build_account_data` / `_get_account_balance_map`
+  (`app/services/year_end_summary_service.py:750`, drives net worth and the year-end savings
+  progress). Roadmap v5 Section 2 Stage A names "a single canonical balance computation" as
+  PENDING (`docs/audits/financial_calculations/00_priors.md:152`); net_worth_amort W-152
+  ("Net worth section and savings progress section must use identical calculation paths for all
+  account types") is `planned-per-plan`, i.e. not yet implemented.
+
+Question for the developer: which producer is the canonical source of truth that the displayed
+aggregate `debt_total` (and, by extension, `account_balance` / `savings_total`) must derive from
+-- the savings-dashboard dispatch (`_compute_account_projections` / `_compute_debt_summary`,
+stored `current_principal` base) or the year-end dispatch (`_get_account_balance_map`,
+amortization-real base) -- so Phase 3 knows which side is the reference when E-04 (same number on
+every page) is violated?
+
+Why it matters: determines the primary path for `account_balance`, `savings_total`, and
+`debt_total` in `02_concepts.md` (P2-a); governs the symptom #5 (`/accounts` vs other pages
+divergence) hypothesis tree in Phase 5; the answer also tells Phase 3 whether the net_worth_amort
+W-152 plan-drift is a "code must catch up to plan" finding or a "plan superseded" finding.
+
+Where it came up: `docs/audits/financial_calculations/02_concepts.md` (P2-a), `account_balance`
+/ `savings_total` / `debt_total` primary-path entries;
+`app/services/savings_dashboard_service.py:294,802` and
+`app/services/year_end_summary_service.py:689,750`.
+
+A-15 proposed (auditor, 2026-05-15, pending developer confirmation): No authoritative document
+designates a canonical producer. Roadmap v5 Section 2.1 Stage A is "committed but not started"
+with no implementation plan written and no producer named (`docs/project_roadmap_v5.md:125,
+137-155`; `00_priors.md:152`). The net_worth_amort W-152 plan
+(`docs/implementation_plan_net_worth_and_amort_cleanup.md`; ledger `00_priors.md:399`,
+planned-per-plan / Phase 3 / not implemented) governs ONLY investment-account
+net-worth-vs-savings-progress (growth engine as reference) and is silent on the debt aggregate
+Q-15 asks about. Code is silent on intent. E-03 explicitly calls stored-vs-recompute "an
+implementation choice" the audit must determine; E-04 selects no producer. So the designation is
+a developer decision -- but the code and E-03/E-04/A-04 constrain it tightly.
+
+Q-15's framing is partly inaccurate (corrected from code reading):
+
+- It is FOUR divergent "current balance" code paths for one loan, not two:
+  (a) raw `Account.current_anchor_balance` -- `/accounts` list (`app/routes/accounts.py:230`;
+  template `app/templates/accounts/_anchor_cell.html:48`), typically `$0`/unset for loan
+  accounts; (b) stored `LoanParams.current_principal` -- loan dashboard headline
+  (`app/templates/loan/dashboard.html:104`) and Total Debt / DTI on `/savings`, `/`,
+  `/dashboard` (`_compute_debt_summary:840`); (c) amortization-real
+  `amortization_engine.get_loan_projection.current_balance`
+  (`app/services/amortization_engine.py:977-984`) -- loan schedule + refinance panel
+  (`app/routes/loan.py:429,1087,1152`), `/savings` per-loan card
+  (`_compute_account_projections:373`), year-end net worth; (d) amortization-real but a separate
+  implementation `debt_strategy._compute_real_principal` (`app/routes/debt_strategy.py:57,147`)
+  -- `/debt-strategy`.
+- Line-number error: `_get_account_balance_map` is at
+  `app/services/year_end_summary_service.py:2036-2128`, not "around line 750". Line 750 is
+  `_build_account_data`, a thin wrapper that calls it per account ~1290 lines away.
+- Terminology: there are no `account_balance` or `savings_total` variables. The savings-dashboard
+  liquid aggregate `total_savings` (`savings_dashboard_service.py:142-145`) excludes loans, so it
+  is unaffected by A-04. The year-end savings-progress section is per-account with no total row.
+  Only `debt_total` (`_compute_debt_summary`) and the net-worth liability (`_compute_net_worth`)
+  touch loans.
+
+Symptom #5 reframed: `/accounts` (`app/routes/accounts.py:230-269`) does NO balance computation
+-- it renders raw `Account.current_anchor_balance` from the ORM
+(`app/templates/accounts/_anchor_cell.html:48`, `list.html:109`). For loan / savings /
+investment accounts that column is typically never written, so it reads `$0`/stale REGARDLESS of
+which dispatcher is canonicalized. Choosing a canonical aggregate producer will not by itself
+fix symptom #5; the Phase 5 hypothesis tree must start from "`/accounts` renders an unwritten
+per-account stored column", not from a dispatcher disagreement.
+
+Headline defect (Phase 3 CRITICAL): `_compute_debt_summary`
+(`app/services/savings_dashboard_service.py:802`) builds `total_debt` from
+`Decimal(str(lp.current_principal))` at line 840 (raw stored column, UNCONDITIONAL, no `is_arm`
+predicate), accumulated at line 855. The A-04-compliant value is already in the same
+`account_data` dict under `ad["current_balance"]` (set at `_compute_account_projections:373`)
+and is simply not read. Worked example (fixed-rate, confirmed payments, stored `250000`, real
+`242000`): `/savings` per-loan card shows `242000` while Total Debt / DTI on the SAME page shows
+`250000` (and `/`, `/dashboard` inherit it via `dashboard_service._get_debt_summary:539-543`);
+year-end net-worth liability correctly shows `-242000`. `weighted_avg_rate` is also weighted by
+the stale base. This contradicts E-03 and E-04. It is a plain code defect (no plan covers the
+debt aggregate; it reads the wrong sibling key), not plan-drift. One-line fix at line 840
+(`ad["current_balance"]` instead of `Decimal(str(lp.current_principal))`) inherits A-04
+automatically. Reported, not applied (read-only audit).
+
+Decision points for the developer:
+
+1. Confirm the canonical base is amortization-real (E-03 implies it), not stored
+   `LoanParams.current_principal`.
+2. Pick the single canonical amortization-real implementation among (c1)
+   `amortization_engine.get_loan_projection.current_balance`, (c2) year-end
+   `generate_schedule` + `_schedule_to_period_balance_map`, (c3)
+   `debt_strategy._compute_real_principal`. Roadmap 2.1 Stage A requires ONE; three exist.
+   Recommended: `get_loan_projection` (lowest-level shared engine API; already used by the
+   per-loan card and refinance), with year-end and debt-strategy converging on it. Phase 3 must
+   verify the three amortization-real derivations agree (do not assume "walked == walked").
+3. Separately decide what `/accounts` shows for non-checking accounts (symptom #5's actual
+   cause; independent of the aggregate-producer decision).
+4. W-152 classification: "code must catch up to plan" (still the intended direction, Phase 3,
+   not superseded), but W-152 covers only investment-account net-worth-vs-savings-progress, NOT
+   the debt aggregate. The `_compute_debt_summary` field bug is a standalone code defect; the
+   broader single-canonical-balance goal is Roadmap 2.1 Stage A (pending, not started, no
+   producer named), so the audit verifies the current divergent state, not a plan.
+
+See `answer_verification.md` Section 2a for the full four-agent evidence with citations.

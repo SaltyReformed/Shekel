@@ -528,6 +528,145 @@ to involve.
 transactions (so the two endpoints agree on `actual_amount` and therefore `effective_amount`),
 or document the difference explicitly so future contributors do not assume equivalence.
 
+## 2a. Q-15 (Phase 2, P2-a): canonical aggregate balance producer
+
+Q-15 asks which producer is the canonical source of truth for the displayed aggregate
+`debt_total` (and by extension `account_balance` / `savings_total`): the savings-dashboard
+dispatch (`savings_dashboard_service._compute_account_projections` / `_compute_debt_summary`) or
+the year-end dispatch (`year_end_summary_service._get_account_balance_map` / `_build_account_data`).
+Investigated by four parallel read-only agents (savings-dashboard path, year-end path,
+`/accounts` and cross-page map, documented-intent scan).
+
+### 2a.1 Verdict on the literal question
+
+NO authoritative document designates a canonical producer. This is definitive:
+
+- Roadmap v5 Section 2.1 Stage A names "a single canonical computation" as an outcome but is
+  "committed but not yet started", with no implementation plan written and no producer named
+  (`docs/project_roadmap_v5.md:125, 137-155`; restated pending at
+  `docs/audits/financial_calculations/00_priors.md:152`).
+- The net_worth_amort plan (`docs/implementation_plan_net_worth_and_amort_cleanup.md`, W-152,
+  ledger row `00_priors.md:399`, status planned-per-plan / Phase 3 / not implemented) mandates
+  only that the year-end net-worth section conform to the year-end savings-progress section FOR
+  INVESTMENT ACCOUNTS (growth engine as reference, plan lines 21-38, 104-106). Both functions it
+  governs live inside `year_end_summary_service.py`. It is silent on the
+  savings-dashboard-vs-year-end `debt_total` question Q-15 asks.
+- Neither `savings_dashboard_service.py` nor `year_end_summary_service.py` contains any
+  docstring/comment asserting source-of-truth status (grep for "source of truth", "canonical",
+  "authoritative", "must match": zero relevant matches).
+- Developer expectation E-03 (`docs/financial_calculation_audit_plan.md:146-152`,
+  `00_priors.md:172-176`) explicitly calls the stored-vs-recompute choice "an implementation
+  choice" the audit must determine. E-04 (`:153-158`, `00_priors.md:178-182`) requires the same
+  number on every page or a labeled+documented intentional difference, but selects no producer.
+
+The designation is therefore a developer decision. The code and E-03/E-04/A-04 constrain it
+heavily (2a.4).
+
+### 2a.2 Q-15's framing is partly wrong: four paths, not two
+
+For a single loan's "current balance" there are four independent code paths, not the two Q-15
+names:
+
+| Path | Source | Where shown | Fixed-rate w/ confirmed payments |
+| ---- | ------ | ----------- | -------------------------------- |
+| (a) `Account.current_anchor_balance` | raw model column (`app/models/account.py:51`) | `/accounts` list (`app/routes/accounts.py:230`; template `app/templates/accounts/_anchor_cell.html:48`, `list.html:109`) | typically `$0`/unset for loan accounts |
+| (b) stored `LoanParams.current_principal` | raw model column | loan dashboard headline (`app/templates/loan/dashboard.html:104`); Total Debt / DTI on `/savings`, `/`, `/dashboard` via `_compute_debt_summary:840` | stale stored value |
+| (c) `amortization_engine.get_loan_projection.current_balance` | amortization-real (`app/services/amortization_engine.py:977-984`) | loan schedule + refinance panel (`app/routes/loan.py:429, 1087, 1152`); `/savings` per-loan card (`savings_dashboard_service._compute_account_projections:373`); year-end net worth via `_schedule_to_period_balance_map` | correct walked value |
+| (d) `debt_strategy._compute_real_principal` | amortization-real, separate implementation (`app/routes/debt_strategy.py:57, 147`) | `/debt-strategy` (template var misleadingly named `current_principal`, `templates/debt_strategy/dashboard.html:132`) | correct walked value |
+
+Q-15 line-number error: `_get_account_balance_map` is at `year_end_summary_service.py:2036-2128`,
+not "around line 750". Line 750 is `_build_account_data`, a thin per-account wrapper that calls
+`_get_account_balance_map` (~1290 lines away).
+
+Q-15 terminology: there are no variables named `account_balance` or `savings_total`. The
+savings-dashboard liquid aggregate is `total_savings` (`savings_dashboard_service.py:142-145`),
+which excludes loans (`is_liquid` filter), so it is unaffected by the A-04 question. The
+year-end savings-progress section is per-account with no total row. The only loan-touching
+aggregates are `debt_total` (`_compute_debt_summary`) and the net-worth liability
+(`_compute_net_worth`).
+
+### 2a.3 Symptom #5 reframed
+
+Q-15 says the answer governs symptom #5 ("Account balances on /accounts do not match the
+balances shown anywhere else"). But `/accounts` (`app/routes/accounts.py:230-269`,
+`list_accounts`) does NO balance computation: it renders the raw `Account.current_anchor_balance`
+column straight from the ORM via `app/templates/accounts/_anchor_cell.html:48` (active) and
+`list.html:109` (archived). For loan / savings / investment accounts that column is typically
+never written, so it reads `$0`/stale regardless of which dispatcher is canonicalized.
+
+Consequence: choosing a canonical aggregate producer will NOT by itself fix symptom #5. The
+Phase 5 hypothesis tree for symptom #5 must start from "`/accounts` renders an unwritten
+per-account stored column", not from a dispatcher disagreement. This is the gap Q-15 left open
+and it materially changes symptom #5's analysis.
+
+### 2a.4 The headline defect (Phase 3 CRITICAL)
+
+`_compute_debt_summary` (`app/services/savings_dashboard_service.py:802`) builds `total_debt`
+from `principal = Decimal(str(lp.current_principal))` at line 840 (accumulated
+`total_debt += principal` at line 855), the raw stored column, UNCONDITIONALLY, with no `is_arm`
+predicate (grep-confirmed absent in the function body 802-876). The A-04-compliant value
+(`proj.current_balance`) is already present in the same `account_data` dict under
+`ad["current_balance"]` (set at `_compute_account_projections:373`) and is simply not read.
+
+Worked example, fixed-rate loan with confirmed payments, stored `LoanParams.current_principal =
+250000`, amortization-real balance `= 242000`:
+
+- `_compute_account_projections:373` -> `ad["current_balance"] = 242000` (A-04 correct).
+- `_compute_debt_summary:840` -> `principal = Decimal(str(lp.current_principal)) = 250000`.
+- `_compute_debt_summary:855` -> `total_debt = 250000`; `:857` -> `weighted_rate_sum` weighted
+  by `250000`; `:872` -> returned `total_debt = Decimal("250000.00")`.
+- Year-end `_compute_net_worth` for the same loan -> liability `-242000`
+  (`_get_account_balance_map` loan branch -> `_schedule_to_period_balance_map` ->
+  `row.remaining_balance`; A-04 enforced upstream in `_generate_debt_schedules:1455-1483`).
+
+So on `/savings` (and `/`, `/dashboard` via `dashboard_service._get_debt_summary:539-543`
+delegation) the per-loan card shows `242000` while the Total Debt / DTI box on the SAME PAGE
+shows `250000`; the year-end net-worth liability shows `242000`. This contradicts E-03 ("loan
+principal updates as confirmed transfers occur") and E-04 (same number every page). It is a
+plain code defect (no plan covers the debt aggregate; it reads the wrong sibling key), not
+plan-drift. The fix is a one-line field swap at line 840 (`ad["current_balance"]` instead of
+`Decimal(str(lp.current_principal))`), which inherits A-04 automatically. Reported, not applied
+(read-only audit).
+
+### 2a.5 A-04 compliance per path
+
+- `_compute_account_projections` (`savings_dashboard_service.py:294`): HONORS A-04 (loan card =
+  `proj.current_balance` at line 373; ARM=stored-via-anchor, fixed=walked, per
+  `amortization_engine.py:977-984`).
+- `_compute_debt_summary` (`savings_dashboard_service.py:802`): BYPASSES A-04 (raw stored
+  `current_principal`, no ARM/fixed branch).
+- `_compute_net_worth` -> `_build_account_data` -> `_get_account_balance_map`
+  (`year_end_summary_service.py:689, 750, 2036`): HONORS A-04, but the policy is enforced
+  upstream in the shared schedule producer `_generate_debt_schedules:1455-1483` (ARM:
+  `anchor_bal = current_principal`, `original_for_engine = None`; fixed: walk from
+  `original_principal` over confirmed payments). It uses the `generate_schedule` +
+  `_schedule_to_period_balance_map` API, NOT `get_loan_projection`. Same A-04 principle, a
+  different walk implementation than the savings-dashboard card. Phase 3 must verify the two
+  amortization-real derivations agree, not assume "walked == walked".
+
+### 2a.6 Decision points for the developer
+
+1. Confirm the canonical base is amortization-real (E-03 implies it), not stored
+   `LoanParams.current_principal`.
+2. Pick the single canonical amortization-real implementation among (c1)
+   `amortization_engine.get_loan_projection.current_balance`, (c2) year-end
+   `generate_schedule` + `_schedule_to_period_balance_map`, (c3)
+   `debt_strategy._compute_real_principal`. Roadmap 2.1 Stage A requires ONE; there are
+   currently three. Recommended: `get_loan_projection` (lowest-level shared engine API; already
+   used by the per-loan card and refinance), with year-end and debt-strategy converging on it.
+3. Separately decide what `/accounts` shows for non-checking accounts (symptom #5's actual
+   cause; independent of the aggregate-producer decision).
+4. W-152 classification: "code must catch up to plan" (still the intended direction, Phase 3,
+   not superseded), but W-152 covers only investment-account net-worth-vs-savings-progress, NOT
+   the debt aggregate. The `_compute_debt_summary` field bug (2a.4) is a standalone code defect.
+   The broader single-canonical-balance goal is Roadmap 2.1 Stage A: pending, not started, no
+   producer named, so the audit correctly verifies the current divergent state rather than a
+   plan.
+
+This is a proposed analysis pending developer confirmation, consistent with the A-08..A-14
+treatment. The canonical-producer designation (decision points 1-3) is the developer's; the
+factual state and the defect in 2a.4 are proven from code with the citations above.
+
 ## 3. Additional findings surfaced by the verification
 
 These are out of the literal scope of each question but surfaced during the verification. Per
