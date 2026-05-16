@@ -4760,3 +4760,870 @@ P3-cmp-5 (ops/audit/misc), then **P3-reconcile** (the only session that may decl
 complete) remain. F-001..F-056 / triage table / `Finding IDs used` header unmodified
 (append-only). No source, test, or migration file modified. Not committed; developer
 reviews between sessions.
+
+### P3-cmp-2 verdicts: carry-forward Option F mechanics
+
+Session P3-cmp-2, 2026-05-16. Fresh-code-read session: for each of the 35 W-NN the code that
+should embody the claim was located and Read **in full at source THIS session** -- the entire
+`carry_forward_service.py` (1016 lines), `transaction_service.settle_from_entries`
+(`:38-168`), `entry_service.compute_actual_from_entries` (`:428-446`),
+`recurrence_engine.generate_for_template` (`:54-177`) + `can_generate_in_period`
+(`:180-248`), `schemas/validation.py:170-257`, `routes/transactions.py:1071-1183` +
+`mark_done:585-619`, `routes/templates.py:163-252`,
+`templates/grid/_carry_forward_preview_modal.html` (full). Append-only; F-001..F-056, the
+`Finding IDs used` header, the triage table, and the P3-cmp-1 subsection are untouched. No
+source/test/migration modified.
+
+**Triage residual reconciliation.** Cluster definition (`03_consistency.md:4530`): P3-cmp-2
+= carry_fwd_design (17 NC) + carry_fwd_impl (18 NC). The 35 W-NN, enumerated:
+
+- carry_fwd_design NC (17): W-085, W-086, W-087, W-088, W-089, W-090, W-094, W-095, W-096,
+  W-097, W-098, W-099, W-100, W-101, W-102, W-103, W-104.
+- carry_fwd_impl NC (18): W-106, W-107, W-108, W-109, W-110, W-111, W-112, W-113, W-114,
+  W-115, W-116, W-117, W-121, W-122, W-123, W-124, W-125, W-126.
+
+**Triage residual for this cluster: 35; rows produced: 35** (17 + 18 = 35, reconciled).
+W-091/W-092/W-093 (COV F-002/F-004), W-105 (COV F-004 Q-10), W-118/W-119/W-120 (DUP-0.3
+A-07/A-03) are NOT in this cluster -- excluded by design, not missed.
+
+**Comparand framing (mandated asymmetry).** A-02 (RESOLVED, auditor-verified ACCURATE
+`09_open_questions.md:96-102`): the data-layer settle (Option F / `carry_fwd_impl`) IS
+current; `envelope_view` is superseded and its data model was never built. Option F is the
+C-01 **winning** side -- so these are verdicted by fresh read AGAINST THE CURRENT CODE, NOT
+against `envelope_view` (which would be backwards). A-03 (is_override blocks regeneration)
+and A-07 (three-branch partition transfer/envelope/discrete, with the discrete sub-split
+template-linked-vs-ad-hoc) are the resolved partition/skip comparands. **The carry-forward
+settle-source / roll-leftover / bump-canonical mechanism IS the money arithmetic** (unlike
+P3-cmp-1's account-param dispatch, which reaches the same number via a superseding
+mechanism). The "PLAN_DRIFT-STRUCTURAL / no wrong number by supersession" reflex from
+P3-cmp-1 is therefore explicitly NOT inherited here. Every settle/roll/bump claim was
+verified by Reading the arithmetic and computing the dollar result by hand against the
+plan's stated behavior. The result: the money math is **provably exactly the plan's intent
+at every site** -- the verdicts are HOLDS *because the arithmetic is correct*, not
+"structural, number unverified."
+
+| W-NN | plan | claim (one line) | code location Read (file:line) | verdict | classification if drift | evidence (file:line + actual dollar math) | cross-ref |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| W-085 | carry_fwd_design | Multi-hop: each successive CF re-applies settle-and-roll incl. previous bumps as part of estimate | `carry_forward_service.py:803-807,891-892,941-948`; partition `:258-278` | HOLDS | -- | Target lookup deliberately OMITS the `is_override` filter (`:941-948` filters only template_id/period/scenario/is_deleted; docstring `:803-807`) so a prior-bumped canonical (is_override=True from hop 1) is FOUND, not skipped/duplicated. Bump is additive: `target_row.estimated_amount = target_row.estimated_amount + leftover` (`:891-892`). Partition (`:258-278`) filters `status_id==projected` only (NOT is_override), so a bumped-still-Projected canonical is a valid next-hop source. Numeric: hop1 E=100 -> 100+L1(35)=135; hop2 reads estimated_amount=135 (incl. L1), leftover2=max(0,135-entries2), bumps to 135+L2. Prior bump IS in the estimate. | A-02, A-03, W-098 |
+| W-086 | carry_fwd_design | Wife overspent: entries>estimate -> settled actual=entry sum, NO leftover bump | `carry_forward_service.py:879,887`; `transaction_service.py:153` | HOLDS | -- | `leftover = max(Decimal("0"), estimated - entries_sum)` (`:879`). Overspend: estimated=$100, entries_sum=$130 -> `max(0, 100-130)=max(0,-30)=$0`. `if leftover > 0:` (`:887`) False -> target untouched. `settle_from_entries` sets `actual_amount = compute_actual_from_entries = $130` (`transaction_service.py:153`). Settled actual = full overspend; no bump. Exact. | W-097, F-027 |
+| W-087 | carry_fwd_design | Wife spent zero: entries sum 0 -> settled actual=0, full estimate carries as leftover | `entry_service.py:446`; `carry_forward_service.py:879,887-894` | HOLDS | -- | `compute_actual_from_entries([])` = `sum((), Decimal("0"))` = `$0` (`entry_service.py:446`). leftover = `max(0, $135 - $0) = $135` (full estimate). `if leftover>0` True -> target bumped by $135 (`:891-892`); source `actual_amount=$0` (`transaction_service.py:153`). Exact. | W-097, W-117 |
+| W-088 | carry_fwd_design | Untracked (template-linked discrete) move whole + is_override True (33cd21e) | `carry_forward_service.py:397-421` | HOLDS | -- | Discrete `template_ids` bulk UPDATE sets `pay_period_id=target_period_id`, `is_override=True`, `version_id=version_id+1` (`:413-421`), `synchronize_session="fetch"`. WHERE re-checks `status_id==projected` (F-049 race guard). Matches A-07 discrete-template-linked branch. No money figure (row relocation). | A-07, W-119 |
+| W-089 | carry_fwd_design | Ad-hoc rows unchanged (33cd21e) | `carry_forward_service.py:423-438` | HOLDS | -- | Ad-hoc `adhoc_ids` (template_id IS NULL) bulk UPDATE sets ONLY `pay_period_id=target_period_id` + `version_id+1` (`:431-438`); does NOT set is_override (outside partial unique index in every state, comment `:382-384`). Matches A-07 ad-hoc sub-split exactly. No money figure. | A-07, W-119 |
+| W-090 | carry_fwd_design | Shadow transfers unchanged (33cd21e) | `carry_forward_service.py:454-468` | HOLDS | -- | Shadow branch: de-dup by `transfer_id` (`:456,467`), delegate `transfer_service.update_transfer(transfer_id, user_id, pay_period_id=target, is_override=True)` (`:461-466`) -- moves parent + both shadow legs atomically (Invariant 5). No direct shadow mutation. Matches A-07 transfer branch. No money figure. | A-07, F-031 |
+| W-094 | carry_fwd_design | entries_sum from source.entries | `carry_forward_service.py:878`; `entry_service.py:446` | HOLDS | -- | `entries_sum = compute_actual_from_entries(source_txn.entries)` (`:878`) = `sum((e.amount for e in entries), Decimal("0"))` (`entry_service.py:446`). Reads exactly `source_txn.entries`. | W-114, F-027 |
+| W-095 | carry_fwd_design | source settled DONE/RECEIVED, actual=entries_sum | `transaction_service.py:144-153`; `carry_forward_service.py:878,896` | HOLDS | -- | `settle_from_entries`: `if txn.is_income: RECEIVED else DONE` (`:144-147`); `txn.actual_amount = compute_actual_from_entries(txn.entries)` (`:153`). entries_sum (`carry_forward_service.py:878`) and actual (`transaction_service.py:153`) both call the SAME pure fn on the SAME `source_txn.entries` (instance-cached after first lazy-load inside `no_autoflush`; fn never mutates entries, docstring `:874-877`) => numerically identical. actual == entries_sum, guaranteed. | W-112, F-027 |
+| W-096 | carry_fwd_design | source paid_at = now | `transaction_service.py:150` | HOLDS | -- | `txn.paid_at = paid_at if paid_at is not None else db.func.now()`. `_settle_source_and_roll_leftover` calls `settle_from_entries(source_txn)` with NO paid_at (`carry_forward_service.py:896`) -> `db.func.now()` (server-evaluated at flush). | W-112 |
+| W-097 | carry_fwd_design | leftover = max(0, estimated - entries_sum) | `carry_forward_service.py:879` | HOLDS | -- | `leftover = max(Decimal("0"), source_txn.estimated_amount - entries_sum)` -- literal claim, exact. Decimal-clean (estimated_amount is NUMERIC(12,2), entries_sum Decimal). | W-116, W-086 |
+| W-098 | carry_fwd_design | target canonical estimated += leftover | `carry_forward_service.py:887-893` | HOLDS | -- | `if leftover > 0:` (`:887`) then `target_row.estimated_amount = target_row.estimated_amount + leftover` (`:891-892`). Additive, conditional on leftover>0. E.g. target $100 + leftover $35 = $135. Exact. | W-117, W-102 |
+| W-099 | carry_fwd_design | target canonical is_override=True | `carry_forward_service.py:894` | HOLDS | -- | `target_row.is_override = True` (`:894`), inside `if leftover > 0` block. Blocks recurrence regen per A-03 (`recurrence_engine.py:128`). | A-03, W-117 |
+| W-100 | carry_fwd_design | missing canonical: run recurrence then bump | `carry_forward_service.py:888-894,999-1016` | HOLDS | -- | `_find_or_generate_target_canonical`: no existing row -> `recurrence_engine.generate_for_template(template,[target_period],scenario_id)` (`:999`), pick `new_canonical` where `pay_period_id==target_period.id` (`:1002-1005`), return it; caller then bumps `estimated_amount += leftover` + `is_override=True` (`:891-894`). Generate-then-bump order exact. | W-106, W-123 |
+| W-101 | carry_fwd_design | envelope rows create NO sibling rows | `carry_forward_service.py:888-896` | HOLDS | -- | Envelope branch bumps the EXISTING/engine-generated canonical IN PLACE (`:891-894`) and settles the source IN PLACE (`settle_from_entries`, pay_period_id unchanged per A-07). Only row materialised is the engine's own canonical when target was empty (one canonical, not a sibling of source). Zero sibling creation -- matches A-02 (envelope_view's carried-sibling model never built). | A-02, A-07 |
+| W-102 | carry_fwd_design | period subtotal increases by exactly the leftover bump | `carry_forward_service.py:891-892`; xref F-002/F-004 | HOLDS | -- | Target period grid subtotal sums Projected `effective_amount` (F-004 D1 `grid.py:263-279`). Bumped canonical stays PROJECTED (bump touches estimated_amount+is_override only, NOT status), no actual -> `effective_amount = estimated_amount`, which rose by exactly `leftover` (`:891-892`). Source row settled DONE/RECEIVED -> excluded from Projected subtotal (W-091/F-002 HOLDS). Target subtotal delta = +leftover, exact. Broader same-page subtotal-vs-balance equality is the separate Q-10 question (F-004), not this delta. | F-002, F-004(Q-10) |
+| W-103 | carry_fwd_design | balance projection reduced by additional leftover in target period | `carry_forward_service.py:891-892`; xref F-009/F-004 | HOLDS | -- | Bumped target is a Projected expense; balance calculator subtracts its expense amount. Freshly-bumped canonical has NO entries yet -> `_entry_aware_amount` (F-009) = `estimated_amount` (nothing to subtract) = bumped value. Target balance projection drops by an additional `leftover` (`:891-892`). The `_entry_aware_amount` vs `effective_amount` divergence (F-004/Q-10) manifests only once the target later acquires cleared entries -- a DIFFERENT state than the immediate post-CF state this claim scopes. | F-009, F-004(Q-10) |
+| W-104 | carry_fwd_design | net forward cash flow across source+target unchanged | `carry_forward_service.py:878-896` | HOLDS | -- | Conservation proof from the arithmetic: total recognised = `entries_sum` (settled on source actual) + `max(0, estimated - entries_sum)` (rolled to target). entries_sum <= estimated: = `entries_sum + (estimated - entries_sum) = estimated` (conserved exactly; e.g. $65 settled + $35 rolled = $100 original). entries_sum > estimated (overspend): = `entries_sum + 0 = entries_sum` (forward flow correctly reflects the actual overspend, never duplicates/loses money). No money created/destroyed by the mechanism. | W-097, W-102 |
+| W-106 | carry_fwd_impl | missing canonical via generate_for_template then bump | `carry_forward_service.py:999-1016,888-894`; `recurrence_engine.py:54-177` | HOLDS | -- | Same path as W-100. `generate_for_template` (`recurrence_engine.py:54`) creates a Projected row `estimated_amount=_get_transaction_amount` (`:145,162`), `is_override=False` (`:163`), flush `:170`; `_find_or_generate_target_canonical` returns it (`:1002-1016`); caller bumps (`:891-894`). | W-100, W-123 |
+| W-107 | carry_fwd_impl | already-settled target -> ValidationError + atomic batch fail | `carry_forward_service.py:961-982`; `routes/transactions.py:1171-1178` | HOLDS | -- | `_find_or_generate_target_canonical`: 1 existing row + `target_row.status is None or status.is_immutable` -> `raise ValidationError` (`:970-982`). Route `except ValidationError: db.session.rollback(); return str(exc),400` (`:1171-1178`) -- whole uncommitted batch (discrete bulk UPDATEs + prior envelope settles, all pre-commit) reverted. Atomic. | W-115, W-124 |
+| W-108 | carry_fwd_impl | is_envelope=True rejected at Marshmallow level on income templates | `schemas/validation.py:218-257` | HOLDS | -- | `TemplateCreateSchema.validate_envelope_only_on_expense` (`@validates_schema`): `if not data.get("is_envelope"): return`; `if txn_type_id is None: return`; `if ref_cache.transaction_type_is_income(txn_type_id): raise ValidationError("Purchase tracking is only available for expense templates.", field_name="is_envelope")` (`:248-257`). Rejected at schema level exactly as claimed. | W-126 |
+| W-109 | carry_fwd_impl | transfer_id NOT NULL stays 33cd21e path (no envelope semantics) | `carry_forward_service.py:273-274,454-468` | HOLDS | -- | Partition: `if txn.transfer_id is not None: shadow_txns.append(txn)` (`:273-274`) -- FIRST branch, so transfer rows never reach the envelope `elif`. Processed only via `transfer_service.update_transfer` (`:461-466`). Matches A-07. | A-07, W-090 |
+| W-110 | carry_fwd_impl | partition transfer-status then is_envelope; envelope settle+bump; non-envelope move-whole | `carry_forward_service.py:272-278,397-449` | HOLDS | -- | `_build_carry_forward_context`: `if transfer_id is not None: shadow; elif template is not None and template.is_envelope: envelope; else: discrete` (`:272-278`). Envelope -> `_settle_source_and_roll_leftover` (`:445-449`); discrete -> bulk move-whole (`:397-438`). Exact A-07 three-way partition. | A-07, W-101 |
+| W-111 | carry_fwd_impl | shared settle_from_entries extracted, used by mark_done AND envelope CF | `transaction_service.py:38`; `routes/transactions.py:596`; `carry_forward_service.py:896` | HOLDS | -- | Single `settle_from_entries` def (`transaction_service.py:38`). Consumers: `mark_done` envelope-with-entries branch `transaction_service.settle_from_entries(txn)` (`routes/transactions.py:596`, gated `template.is_envelope and txn.entries` `:592-594`); carry-forward `_settle_source_and_roll_leftover` (`carry_forward_service.py:896`). One source of truth. Nuance: mark_done gates on `txn.entries` truthy; CF calls unconditionally (empty entries -> actual $0, full rollover) -- both still the same helper. | F-027(S12), W-112 |
+| W-112 | carry_fwd_impl | settle_from_entries sets actual=sum, status DONE/RECEIVED, paid_at=now if absent | `transaction_service.py:144-153` | HOLDS | -- | `if txn.is_income: RECEIVED else DONE` (`:144-147`); `txn.paid_at = paid_at if paid_at is not None else db.func.now()` (`:150`); `txn.actual_amount = compute_actual_from_entries(txn.entries)` (`:153`). All three writes exact. | W-095, W-096 |
+| W-113 | carry_fwd_impl | settle_from_entries rejects transfers + requires template.is_envelope | `transaction_service.py:106-138` | HOLDS | -- | Guards (cheap-first, pre-relationship to avoid autoflush): is_deleted `:106`; `transfer_id is not None -> ValidationError` (`:111-115`); `template_id is None -> ValidationError` (`:116-120`); `template is None or not template.is_envelope -> ValidationError` (`:121-125`); immutable status `:130-138`. Exact. | W-111, W-115 |
+| W-114 | carry_fwd_impl | entries_sum via compute_actual_from_entries | `carry_forward_service.py:586,878` | HOLDS | -- | `_build_envelope_plan` `compute_actual_from_entries(source_txn.entries)` (`:586`); `_settle_source_and_roll_leftover` same (`:878`). Both the planning and mutating paths use the one helper. | W-094, W-121 |
+| W-115 | carry_fwd_impl | settled target (DONE/RECEIVED/SETTLED/PAID) -> ValidationError, batch fails no state change | `carry_forward_service.py:970-982`; `routes/transactions.py:1171-1178` | HOLDS | -- | `if target_row.status is None or target_row.status.is_immutable: raise ValidationError` (`:970-982`). `is_immutable` covers DONE/RECEIVED/SETTLED + also CREDIT/CANCELLED -- code is STRICTER than the claim's 4-status list (refuses on more finalised states), which is more conservative and correct; no wrong number. Route rollback (`:1177`) reverts the uncommitted batch. | W-107, W-124 |
+| W-116 | carry_fwd_impl | leftover = max(Decimal("0"), source.estimated_amount - entries_sum) | `carry_forward_service.py:879` | HOLDS | -- | `leftover = max(Decimal("0"), source_txn.estimated_amount - entries_sum)` -- literal claim verbatim incl. the `Decimal("0")` floor. | W-097 |
+| W-117 | carry_fwd_impl | leftover>0: target.estimated += leftover AND target.is_override=True | `carry_forward_service.py:887-894` | HOLDS | -- | `if leftover > 0:` -> `target_row.estimated_amount = target_row.estimated_amount + leftover` (`:891-892`) and `target_row.is_override = True` (`:894`). Both writes, conditional on leftover>0, exact. | W-098, W-099 |
+| W-121 | carry_fwd_impl | preview computes SAME partition + per-row actions (settle X / roll Y, or BLOCKED) | `carry_forward_service.py:482-560,563-754`; `recurrence_engine.py:180-248` | HOLDS | -- | `preview_carry_forward` and `carry_forward_unpaid` BOTH call the shared `_build_carry_forward_context` (`:532` vs `:335`) -> identical partition. `_build_envelope_plan` recomputes `entries_sum`/`leftover` with the same formula (`:586-589`) and `_resolve_envelope_target_fields` mirrors every `_find_or_generate_target_canonical` ValidationError as a `blocked=True`+block_reason_code (`:602-754`). Empty-period prediction uses `can_generate_in_period` (`recurrence_engine.py:180-248`) -- VERIFIED faithful: identical cross-user/rule-None/ONCE/`_match_periods`/`_get_existing_map`-any-existing predicates; effective_from equivalent for the single `[target_period]` call. Read-only mirror, no SILENT_DRIFT. | A-07, W-122 |
+| W-122 | carry_fwd_impl | any BLOCKED -> Confirm disabled + batch refuses atomically on POST | `_carry_forward_preview_modal.html:188-199`; `carry_forward_service.py:150-159,970-982`; `routes/transactions.py:1171-1178` | HOLDS | -- | Modal Confirm button `{% if preview.any_blocked or preview.plans|length == 0 %} disabled aria-disabled="true" {% endif %}` (`:193-196`); `any_blocked = any(p.blocked for p in self.plans)` (`carry_forward_service.py:159`). Even if disabled is bypassed, POST -> `_find_or_generate_target_canonical` raises ValidationError (`:976`) -> route `rollback();return str(exc),400` (`:1177-1178`). Disabled UI + atomic server refusal. | W-121, W-124 |
+| W-123 | carry_fwd_impl | generate_for_template empty -> ValidationError + atomic refuse | `carry_forward_service.py:999-1016`; `routes/transactions.py:1171-1178` | HOLDS | -- | `created = generate_for_template(...)`; `new_canonical = next((t for t in created if t.pay_period_id==target_period.id), None)` (`:1002-1005`); `if new_canonical is None: raise ValidationError(...)` (`:1006-1015`). generate_for_template returns `[]` on no-rule/ONCE/no-match/any-existing (`recurrence_engine.py:84,89,94,141`). Route rollback -> atomic. | W-106, W-124 |
+| W-124 | carry_fwd_impl | all CF-loop ValidationErrors roll back whole batch; route handles ValidationError + NotFoundError | `routes/transactions.py:1164-1178` | HOLDS | -- | `try: count = carry_forward_unpaid(...); db.session.commit()` `except NotFoundError as exc: return str(exc),404` `except ValidationError as exc: db.session.rollback(); return str(exc),400` (`:1164-1178`). commit reached only if zero exceptions; any envelope-loop ValidationError aborts before commit, rollback discards discrete bulk UPDATEs + prior settles. Atomic; both exception types handled. | W-107, W-122 |
+| W-125 | carry_fwd_impl | post-CF: source DONE actual $65; target $135 is_override PROJECTED; no new rows; subtotal +$35; balance -$135 not -$100 | `carry_forward_service.py:878-896`; `transaction_service.py:144-153`; xref F-002/F-004/F-009 | HOLDS | -- | Worked example below. All six post-state assertions verified numerically against the cited code. | W-098, F-002, F-004(Q-10) |
+| W-126 | carry_fwd_impl | income+is_envelope POST -> 400 with validation message | `schemas/validation.py:218-257`; `routes/templates.py:163-188` | PARTIALLY_HOLDS | PLAN_DRIFT-STRUCTURAL | Schema rejection HOLDS (W-108: `validate_envelope_only_on_expense` raises). Route `create_template`: `errors = _create_schema.validate(request.form); if errors: flash(_flash_message_for_errors(errors),"danger"); return redirect(...)` (`:168-171`) -- and a SECOND defense `_is_tracking_on_non_expense` flash+redirect (`:186-188`). The validation message IS surfaced (flash), but the form route returns **HTTP 302 redirect (Post/Redirect/Get + flash)**, NOT the claimed **400**. Numeric proof no dollar figure changes: the rejection is TOTAL -- no `TransactionTemplate` created, zero `Transaction` rows generated, no estimated/actual/leftover/subtotal/balance figure produced anywhere; only the HTTP envelope differs (302+flash vs 400). | W-108 |
+
+**Worked example (W-125, the canonical Option-F demonstration -- AFFIRMATIVE numeric proof
+the mechanism is correct, not an escalation).** Inputs: source envelope row (grocery
+template), `estimated_amount = $100.00`, entries summing to `$65.00` (the wife spent $65 of
+the $100 budget); target period already holds the next canonical at
+`estimated_amount = $100.00`, status PROJECTED.
+
+- `entries_sum = compute_actual_from_entries(source.entries)` = `$65.00`
+  (`entry_service.py:446`, `carry_forward_service.py:878`).
+- `leftover = max(Decimal("0"), $100.00 - $65.00)` = `$35.00`
+  (`carry_forward_service.py:879`).
+- `leftover > 0` True (`:887`) -> `_find_or_generate_target_canonical` returns the existing
+  mutable PROJECTED canonical (`:961-983`); bump: `estimated_amount = $100.00 + $35.00 =
+  $135.00` (`:891-892`); `is_override = True` (`:894`). Status unchanged -> still PROJECTED.
+- `settle_from_entries(source)` (`:896`): `actual_amount = $65.00`
+  (`transaction_service.py:153`), `status_id = DONE` (expense, `:147`), `paid_at = now()`
+  (`:150`), `pay_period_id` UNCHANGED (A-07 envelope branch -- source stays in its period).
+- No new rows: source mutated in place, target existing canonical mutated in place; the
+  only row-materialising path (`generate_for_template`) is NOT taken because the target
+  canonical already existed. Row count in both periods unchanged.
+- Target period subtotal (Projected `effective_amount` sum, `grid.py:263-279`): the
+  bumped canonical's `effective_amount` rose $100.00 -> $135.00, delta **+$35.00**
+  (= leftover exactly). Source row now DONE -> excluded from the source-period Projected
+  subtotal (W-091/F-002 HOLDS).
+- Target balance projection: the Projected expense canonical (no entries yet ->
+  `_entry_aware_amount` == `estimated_amount`) reduces the projected balance by **$135.00**
+  instead of the pre-bump **$100.00**.
+
+Every figure matches W-125's claim exactly. The Option-F arithmetic is correct.
+
+**Escalation decision.** The rule escalates only VIOLATED/PARTIALLY_HOLDS that produce a
+**wrong financial number**. The carry-forward settle/roll/bump mechanism IS the money
+arithmetic; it was verified numerically at every site (entries_sum, leftover floor, additive
+bump, conditional-on-leftover>0, settle actual==entries_sum via the same pure fn, overspend
+clamp, zero-spend full carry, multi-hop additive re-bump, conservation). **All 34 mechanism
+verdicts are HOLDS because the dollar math is provably exactly the plan's intent -- there is
+no wrong number to escalate.** The single non-HOLDS, W-126 (PARTIALLY_HOLDS), is an
+HTTP-status / UX deviation (302 redirect+flash vs the claimed 400): the numeric check is
+that the rejection is TOTAL and produces ZERO dollar figures (no template, no transactions),
+so no worked example / sub-finding is warranted -- the deviation cannot change any monetary
+value because it aborts before any monetary value is computed. Recorded one-row
+PLAN_DRIFT-STRUCTURAL with that numeric proof, consistent with the escalation convention.
+This is NOT the P3-cmp-1 "structural by supersession, number unverified" framing -- here the
+numbers WERE verified and they are correct.
+
+**P3-cmp-2 verification (a-f):**
+
+- **(a) 35 rows == triage NEEDS-COMPARISON carry-forward list.** Triage residual for this
+  cluster: 35; rows produced: 35 (carry_fwd_design 17 + carry_fwd_impl 18). Every W-NN from
+  the `03_consistency.md:4530` cluster definition appears exactly once; the enumerated lists
+  reconcile to 35. W-091/092/093/105 (COVERED) and W-118/119/120 (DUP-0.3) correctly
+  excluded. **PASS.**
+- **(b) Every verdict cites code Read this session.** `carry_forward_service.py` read in
+  full (1016 lines); `settle_from_entries` `:38-168`; `compute_actual_from_entries`
+  `:428-446`; `generate_for_template` `:54-177` + `can_generate_in_period` `:180-248`;
+  `validation.py:170-257`; `transactions.py:1071-1183` + `mark_done:585-619`;
+  `templates.py:163-252`; the preview modal in full. No verdict inherited from a plan's
+  "planned-per-plan" self-report (every priors row was `planned-per-plan` -- a prior to
+  test, tested here by source read). **PASS.**
+- **(c) Every wrong-number VIOLATED/PARTIALLY has a worked example.** Zero wrong-number
+  non-HOLDS: all 34 mechanism claims HOLD with the dollar math shown inline; W-126
+  PARTIALLY_HOLDS produces zero dollar figures (numeric proof recorded, no escalation
+  warranted). The W-125 worked example is recorded as the AFFIRMATIVE proof the
+  settle/roll/bump arithmetic is correct (the prompt's mandate to show the dollar math for
+  settle/roll/bump claims, satisfied even though the verdict is HOLDS). **PASS.**
+- **(d) Every PLAN_DRIFT-STRUCTURAL row states the numeric check proving no dollar figure
+  changes.** W-126: the rejection is total -- no TransactionTemplate, no Transaction rows,
+  no estimated/actual/leftover/subtotal/balance figure produced; only HTTP 302+flash vs 400
+  differs. Numeric proof recorded in the row and the escalation decision. **PASS.**
+- **(e) Self-spot-check: 6 random verdicts re-Read (mix; >=2 touch settle/roll/bump).**
+  1. **W-097 HOLDS** -- re-read `carry_forward_service.py:879`:
+     `leftover = max(Decimal("0"), source_txn.estimated_amount - entries_sum)`. Re-did
+     math: estimated $100 - entries $65 = $35 = max(0,$35). Verbatim. Confirmed.
+  2. **W-095 HOLDS** (settle arithmetic) -- re-read `transaction_service.py:153`
+     (`txn.actual_amount = compute_actual_from_entries(txn.entries)`) +
+     `carry_forward_service.py:878`. Both call the same pure `sum((e.amount...),Decimal("0"))`
+     on the same `source_txn.entries`; actual == entries_sum. Confirmed.
+  3. **W-098 HOLDS** (bump arithmetic) -- re-read `carry_forward_service.py:887-892`:
+     `if leftover > 0:` then `target_row.estimated_amount = target_row.estimated_amount +
+     leftover`. $100 + $35 = $135. Additive, conditional. Confirmed.
+  4. **W-089 HOLDS** -- re-read `carry_forward_service.py:423-438`: ad-hoc bulk UPDATE sets
+     `pay_period_id` + `version_id+1` only, NO `is_override` (vs template-linked `:413-421`
+     which does set is_override). Matches A-07 sub-split. Confirmed.
+  5. **W-126 PARTIALLY_HOLDS** -- re-read `templates.py:168-171`:
+     `errors = _create_schema.validate(...); if errors: flash(...); return redirect(...)`.
+     `redirect()` => HTTP 302, not 400. Schema raises (W-108) but route is 302+flash.
+     Confirmed PARTIALLY_HOLDS / PLAN_DRIFT-STRUCTURAL.
+  6. **W-085 HOLDS** (multi-hop roll arithmetic) -- re-read `carry_forward_service.py:803-807`
+     (docstring: lookup omits is_override "so subsequent carry-forwards re-bump the same
+     row") + `:941-948` (filter has no is_override clause) + `:891-892` (additive). Hop2
+     reads estimated incl. hop1's L1; re-bumps additively. Confirmed.
+  **Spot-check pass rate: 6/6** (3 of which touch settle/roll/bump arithmetic: W-095,
+  W-098, W-085). No 2+ failures; stop-condition not triggered.
+- **(f) Every UNKNOWN names the blocking Q.** Zero UNKNOWN verdicts in this cluster -- the
+  Option-F mechanism is fully resolved by A-02/A-03/A-07 (C-01/C-02/C-06 closed), so no
+  claim inherits a pending Q-08..Q-17. (W-102/W-103/W-104/W-125 cross-ref F-004's Q-10 for
+  the *broader* same-page subtotal-vs-balance question, but their own narrower
+  immediate-post-CF delta claims are numerically provable and verdicted HOLDS, not deferred
+  -- the bumped target has no entries so `effective_amount == _entry_aware_amount` at that
+  instant.) **PASS (vacuous).**
+
+P3-cmp-2 complete: 35 carry-forward Option-F mechanics verdicts (34 HOLDS, 1
+PARTIALLY_HOLDS; 0 VIOLATED, 0 UNKNOWN, 0 VIOLATED-DEAD, 0 N/A). Zero wrong-number
+escalations -- and, per the mandated asymmetry, this is because the settle/roll/bump money
+arithmetic was verified NUMERICALLY and is provably correct at every site, NOT because the
+drift was waved through as "structural." The lone PARTIALLY_HOLDS (W-126) is an HTTP-status
+deviation that produces no dollar figure. The carry-forward mechanism is LIVE (route
+registered `app/__init__.py:499`; grid invokes preview `grid/grid.html:117`; modal Confirm
+posts to `transactions.carry_forward`). Phase 3 is **NOT** complete -- P3-cmp-3
+(calendar/analytics/deletion), P3-cmp-4 (loan/strategy/transfer), P3-cmp-5 (ops/audit/misc),
+then **P3-reconcile** (the only session that may declare Phase 3 complete) remain.
+F-001..F-056 / triage table / P3-cmp-1 subsection / `Finding IDs used` header unmodified
+(append-only). No source, test, or migration file modified. Not committed; developer reviews
+between sessions.
+
+### P3-cmp-4 verdicts: loan/strategy + transfer-shape
+
+Session P3-cmp-4, 2026-05-16. Fresh-code-read session: for each of the 20 W-NN the code
+that should embody the claim was located and Read **in full at source THIS session** --
+`amortization_engine.calculate_remaining_months`/`calculate_monthly_payment`/
+`_build_rate_change_list`/`_find_applicable_rate`/`generate_schedule` (`:128-619` full),
+`debt_strategy_service._sort_debts`/`_apply_minimum_payments`/`_cascade_extra_payments`/
+`calculate_strategy` (`:298-639`), `savings_dashboard_service._compute_debt_summary`
+(`:802-876` full), `obligations.summary` (`:262-423` full) + `amount_to_monthly`
+(`savings_goal_service.py:199-282` full), `transaction.py:128-131`,
+`transaction_template.py:43-46`, `transfer_service._validate_positive_amount`/
+`create_transfer`/`update_transfer` (`:60-82,283-613`), `recurrence_engine.py:140-168`,
+`credit_workflow.mark_as_credit` (`:112-249`), `transactions.py:400-464`,
+`carry_forward_service.py:440-479`. Append-only; F-001..F-056, the `Finding IDs used`
+header, the triage table, and the P3-cmp-1 / P3-cmp-2 subsections are untouched. No
+source/test/migration modified.
+
+**Triage residual reconciliation.** Cluster definition (`03_consistency.md:4532`):
+P3-cmp-4 = section5 (11 NC) + transfer_rework_impl (7 NC) + transfer_rework_design (2 NC).
+The 20 W-NN, enumerated:
+
+- section5 NC (11): W-219, W-235, W-236, W-237, W-238, W-243, W-244, W-245, W-248, W-251,
+  W-252.
+- transfer_rework_impl NC (7): W-332, W-333, W-334, W-342, W-343, W-344, W-345.
+- transfer_rework_design NC (2): W-305, W-329.
+
+**Triage residual for this cluster: 20; rows produced: 20** (11 + 7 + 2 = 20, reconciled).
+W-218/220..234/239..242/246/247/249/250 (COVERED F-013/F-017/F-018/F-022/F-023/F-025/F-026/
+F-042..F-050 or DUP-0.3) are NOT in this cluster -- excluded by design, not missed.
+
+**Comparand framing (mandated, two sub-natures).**
+
+- **LOAN/STRATEGY (the 11 section5 entries).** `implementation_plan_section5` is a
+  RELEVANT_HISTORICAL plan *document* (priors-0.1: v5 App-B marks the original plan defunct;
+  Section 5 was completed from a fresh plan), but the *behavioral claims* it stated for the
+  engine edges / debt-strategy / obligations describe behaviour the **completed** Section 5
+  work implements (roadmap A.7: payment-linkage to the amortization engine, payoff lifecycle,
+  debt summary, savings-goal trajectory -- COMPLETE). Per audit-plan 3.1 the comparand is the
+  **current code**; each claim was verified by reading the live arithmetic and computing the
+  dollar result by hand (the P3-cmp-2 numeric-asymmetry discipline, NOT the P3-cmp-1
+  "structural by supersession" reflex). Resolved gates honoured: A-04 (ARM stored vs fixed
+  schedule-walk principal -- dual policy INTENDED; W-248's principal *base* inherits the
+  F-008/Q-15 stored-vs-walked question but its *formula* claim is judged on its own and
+  HOLDS), A-05 (16-site monthly_payment anchor-reset current -- the W-219/235..238
+  edge-mechanic claims are a DIFFERENT axis from F-013's input-triple divergence and are
+  verdicted fresh), A-06 (year-end interest pipeline -- not in this cluster's scope).
+- **TRANSFER-SHAPE (the 9 transfer_rework_* entries).** Comparand = the CLAUDE.md Transfer
+  Invariants (`00_priors.md:111-119` / E-05..E-09): exactly two linked shadows; never
+  orphaned; shadow amount/status/period always equal the parent; no path mutates a shadow
+  outside the transfer service; balance calculator never queries `budget.transfers`.
+  Verification is STRUCTURAL INTEGRITY -- the actual shadow-pair lifecycle was traced in
+  code. A genuine invariant violation would be CRITICAL; **none was found** (consistent with
+  F-029 AGREE / F-031 zero-violation).
+
+| W-NN | plan | sub-nature | claim (one line) | code location Read (file:line) | verdict | classification if drift | evidence (file:line + dollar math OR shadow-pair trace) | cross-ref |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| W-219 | section5 | LOAN/STRATEGY | remaining principal < calculated payment: interest on the smaller balance, excess reduces principal exactly to zero | `amortization_engine.py:517,561-577` (generate_schedule, full fn Read) | HOLDS | -- | No-payment-record branch: `interest = (balance * monthly_rate).quantize(TWO_PLACES,ROUND_HALF_UP)` `:517` -- interest on the CURRENT (smaller) `balance`. `principal_portion = monthly_payment - interest` `:566`; `is_final = (principal_portion >= balance) or (month_num == max_months)` `:572`; if final: `principal_portion = balance` `:574`, `actual_payment = principal_portion + interest` `:575`, `balance = 0` `:577`. Dollar math: balance $500.00, monthly_rate 0.005, monthly_payment $1,000.00 -> interest $2.50 (on $500, the smaller); principal_portion $997.50 >= $500 -> capped to $500.00; payment $502.50; balance $0.00. Exactly the claim. | F-013 (input axis, separate), W-236 |
+| W-235 | section5 | LOAN/STRATEGY | rate changes with effective_date before origination must be ignored | `amortization_engine.py:277-281` (`_build_rate_change_list`) | HOLDS | -- | `if origination_date is not None: sorted_changes = [r for r in sorted_changes if r.effective_date >= origination_date]` `:277-281`. Strictly-pre-origination entries dropped; an entry exactly ON origination is kept (correct -- an origination-day rate is not a pre-origination artifact). No off-by-one. | W-234 (COV) |
+| W-236 | section5 | LOAN/STRATEGY | payment > remaining principal + interest: principal capped to zero, payment recorded as the exact amount needed | `amortization_engine.py:531,543-547` (payment-record branch) | HOLDS | -- | `principal_portion = total_payment - interest` `:531`; `if principal_portion >= balance:` (i.e. total_payment >= balance + interest) -> `principal_portion = balance` `:544`, `actual_payment = principal_portion + interest` `:545`, `balance = 0` `:547`. Dollar math: balance $1,000.00, interest $5.00, payment-record total $5,000.00 -> principal_portion $4,995.00 >= $1,000 -> capped $1,000.00; recorded actual_payment = $1,005.00 (exact: remaining principal + interest), NOT the $5,000 tendered; balance $0.00. | W-237 |
+| W-237 | section5 | LOAN/STRATEGY | schedule terminates (no further rows) once remaining balance reaches zero | `amortization_engine.py:475-476,610-611` | HOLDS | -- | Top-of-loop `if balance <= 0: break` `:475-476`; post-append `if balance <= 0: break` `:610-611`. The zeroing (payoff) row IS appended, then the loop breaks -- no rows after payoff. Terminates exactly at zero. | W-236, W-238 |
+| W-238 | section5 | LOAN/STRATEGY | payments in the input list after the loan reaches zero are ignored | `amortization_engine.py:474,520-521,610-611` | HOLDS | -- | `amount_by_month` consulted ONLY inside the loop via `month_key in amount_by_month` `:520-521`; the loop (`for month_num in range(1, max_months+1)`) breaks at payoff `:610-611`, so post-payoff months are never iterated and their payments are never read or applied to the schedule. | W-237 |
+| W-243 | section5 | LOAN/STRATEGY | avalanche: prioritise highest interest rate; extra applied to the target debt | `debt_strategy_service.py:323-331,503-512` | HOLDS | -- | Avalanche sort key `(-d.interest_rate, d.current_principal, d.account_id)` `:326-330` -> highest rate first. `_cascade_extra_payments` iterates `sorted_debts`, `if balances[i] <= ZERO: continue`, `extra_pay = min(remaining, balances[i])` `:503-512` -> extra hits the first unpaid (highest-rate) debt. Dollar math: A(rate 0.18,$5,000), B(rate 0.06,$2,000) -> sorted A,B; extra_pool to A until A=0, then cascades. | W-244 |
+| W-244 | section5 | LOAN/STRATEGY | snowball: prioritise smallest balance; extra applied to the target debt | `debt_strategy_service.py:333-341,503-512` | HOLDS | -- | Snowball sort key `(d.current_principal, -d.interest_rate, d.account_id)` `:336-340` -> smallest principal first. Same `_cascade_extra_payments` mechanism applies extra to the first unpaid (smallest-balance) debt. Dollar math: A($5,000,0.06), B($2,000,0.18) -> sorted B,A; extra to B first. | W-243 |
+| W-245 | section5 | LOAN/STRATEGY | on payoff, the freed payment (minimum + allocated extra) is added to the extra pool for subsequent debts | `debt_strategy_service.py:459-464,514-516,611,619` | HOLDS | (note) parenthetical-gloss | On payoff in `_apply_minimum_payments`: `newly_freed += debt.minimum_payment` (FULL min, future months) `:464` AND `minimum_surplus += debt.minimum_payment - min_pay` (unused capped portion, THIS month) `:462`; in `_cascade_extra_payments`: `newly_freed += debt.minimum_payment` `:516`; `calculate_strategy` step 4 `extra_pool += freed_from_min + freed_from_extra` `:619`, and `available_extra = extra_pool + minimum_surplus` `:611`. The "allocated extra" is never a fixed per-debt sum -- `extra_pool` starts at `extra_monthly` and is NEVER decremented (fully cascaded each month), so adding it again would double-count; the code adds only the freed *minimum* (`:619`) and the extra is structurally always redeployed. Dollar math: A($1,000,0%,min $500), B($10,000,0%,min $200), extra $300, avalanche -> mo1 A=$200; mo2 A min_pay min($500,$200)=$200 -> A=0 payoff: newly_freed +=$500, minimum_surplus += $500-$200=$300; available_extra = $300 pool + $300 surplus = $600 -> all to B; extra_pool -> $300+$500 = $800 for mo3+. Total monthly capacity ($500+$200 mins + $300 extra = $1,000) is conserved and fully redirected to B once A retires. The economic claim holds and the arithmetic is provably exact; the parenthetical "(minimum + allocated extra)" is an explanatory gloss of the conserved capacity, not a literal `pool += min + extra` (which would be a double-count bug). HOLDS, code is more-correct-than-literal (cf. W-030/W-115 convention). | W-243, W-244, F-022/F-023 (payoff-token cross-producer, separate) |
+| W-248 | section5 | LOAN/STRATEGY | weighted avg interest rate = sum(rate * principal) / sum(principal) across active loans | `savings_dashboard_service.py:835-843,855-867` (`_compute_debt_summary`, full fn) | HOLDS | -- | Per loan: skip `ad["is_paid_off"]` `:836-837`, skip `principal <= 0` `:842-843`; `total_debt += principal` `:855` (= sum(principal)); `weighted_rate_sum += rate * principal` `:857` (= sum(rate*principal)); `weighted_avg_rate = (weighted_rate_sum / total_debt).quantize(_RATE_PLACES, ROUND_HALF_UP)` `:862-865`. Dollar math: A($300,000,0.065)+B($100,000,0.045) -> (0.065*300000 + 0.045*100000)/(400000) = 24000/400000 = 0.06000 exactly. Formula is verbatim the claim. `principal` reads stored `lp.current_principal` `:840` -- per A-04 ARM-authoritative; the fixed-rate stored-vs-walked base is the F-008/Q-15 question and does NOT alter the formula verdict (claim is the formula shape). | F-008, Q-15 (principal base), F-025 (DTI, separate) |
+| W-251 | section5 | LOAN/STRATEGY | monthly equivalents use pattern-to-monthly normalization factors (EVERY_PERIOD = biweekly->monthly, etc.) | `obligations.py:333-338,361,383`; `savings_goal_service.py:261-282` (`amount_to_monthly`, full fn) | HOLDS | -- | `amount_to_monthly`: ONCE -> None `:262`; EVERY_PERIOD -> `amount * 26 / 12` `:265`; EVERY_N -> `amount * 26 / n / 12` `:269`; MONTHLY/MONTHLY_FIRST -> `amount` `:272`; QUARTERLY -> `/3` `:275`; SEMI_ANNUAL -> `/6` `:278`; ANNUAL -> `/12` `:281`. Constants `_PAY_PERIODS_PER_YEAR=Decimal("26")`/`_MONTHS_PER_YEAR=Decimal("12")` (string Decimals, E-10/E-11). `obligations.summary` calls it per active recurring template `:338/361/383`, skipping ONCE `:333-334` and expired `end_date < today` `:335-336`. Dollar math: biweekly $100 -> 100*26/12 = $216.67 (quantize HALF_UP `:348`); ANNUAL $1,200 -> $100.00/mo; QUARTERLY $300 -> $100.00/mo. Factors exact. | W-252, Q-12 (aggregator-owner/SRP, Phase-6, separate) |
+| W-252 | section5 | LOAN/STRATEGY | net monthly committed = total monthly income - total monthly outflows (expenses + transfers) | `obligations.py:398-408` | HOLDS | -- | `total_outflows = total_expense_monthly + total_transfer_monthly` `:407`; `net_cash_flow = total_income_monthly - total_outflows` `:408`. Component totals quantized `TWO_PLACES, ROUND_HALF_UP` `:398-406` (A-01-clean). Verbatim income - (expenses + transfers). Dollar math: income $5,000.00 - (expense $3,000.00 + transfer $1,000.00) = $1,000.00. | W-251 |
+| W-305 | transfer_rework_design | TRANSFER-SHAPE | every transaction row has a non-nullable account_id FK | `transaction.py:128-131` | HOLDS | -- | `account_id = db.Column(db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"), nullable=False)` -- non-nullable FK; the DB rejects any INSERT with NULL account_id. Schema-level guarantee. | W-332 |
+| W-329 | transfer_rework_design | TRANSFER-SHAPE | shadow transactions must not be allowed to be marked as "credit" | `credit_workflow.py:168-169`; `transactions.py:408-428,463` | HOLDS | -- | Shadow-pair trace: a shadow has non-null `transfer_id` (`transfer_service.py:385,406`). The CC-payback entry `mark_as_credit`: `if txn.transfer_id is not None: raise ValidationError("Cannot mark transfer transactions as credit.")` `:168-169`. The transaction-edit route guards `txn.transfer_id` rows EARLIER (`:408-428`, "--- End guard ---" `:428`) and delegates to `transfer_service.update_transfer`, so a shadow NEVER reaches the direct `setattr(txn,'status_id',...)` path `:463`. Invariant 4 intact: no path independently sets a shadow to CC-credit; Invariant 3 (shadow status == parent) is never broken by a unilateral shadow-credit. | F-027 S14 (actual/estimated, separate), F-031 |
+| W-332 | transfer_rework_impl | TRANSFER-SHAPE | every transaction has a non-null account_id value at every creation path | `transaction.py:128-131`; `transfer_service.py:383,404`; `recurrence_engine.py:154`; `credit_workflow.py:233` | HOLDS | -- | NOT NULL FK `transaction.py:128-131`. Every creation path supplies it: expense shadow `account_id=from_account_id` `:383`, income shadow `account_id=to_account_id` `:404` (both validated owned accounts); template-gen `account_id=template.account_id` `recurrence_engine.py:154`; credit payback `account_id=txn.account_id` `credit_workflow.py:233`. No NULL-account_id creation path exists. | W-305, W-333, W-334 |
+| W-333 | transfer_rework_impl | TRANSFER-SHAPE | template-generated transactions: account_id == template.account_id at creation | `recurrence_engine.py:152-166`; `transaction_template.py:43-46` | HOLDS | -- | `txn = Transaction(account_id=template.account_id, template_id=template.id, ...)` `recurrence_engine.py:153-166` -- account_id copied verbatim from the template. `TransactionTemplate.account_id` is itself `nullable=False` `transaction_template.py:43-46`, so the copied value is always non-null (closes the W-332 NOT NULL chain -- no latent IntegrityError gap). | W-332 |
+| W-334 | transfer_rework_impl | TRANSFER-SHAPE | credit payback transactions: account_id == original transaction's account_id | `credit_workflow.py:165,232-243` | HOLDS | -- | `txn = lock_source_transaction_for_payback(transaction_id, user_id)` `:165` (the original); `payback = Transaction(account_id=txn.account_id, ..., credit_payback_for_id=txn.id)` `:232-243` -- payback account_id is exactly the original's account_id. | F-027 S14 (actual/estimated, separate), W-332 |
+| W-342 | transfer_rework_impl | TRANSFER-SHAPE | transfers with zero/negative amount rejected at service validation before insert | `transfer_service.py:333,60-82` | HOLDS | -- | `create_transfer` first validation statement `amount = _validate_positive_amount(amount)` `:333` -- BEFORE `db.session.add(xfer)` `:376` / shadow construction `:382-421`. `_validate_positive_amount`: `if amount <= 0: raise ValidationError("Transfer amount must be positive.")` `:78-81`. No shadow pair is ever materialised for an invalid amount (Invariant 2 -- never a half-built pair). | W-343, F-029 |
+| W-343 | transfer_rework_impl | TRANSFER-SHAPE | transfers where from_account == to_account rejected at service validation | `transfer_service.py:335-338` | HOLDS | -- | `if from_account_id == to_account_id: raise ValidationError("Source and destination accounts must be different.")` `:335-338` -- before `db.session.add(xfer)` `:376`. No self-transfer shadow pair created. | W-342 |
+| W-344 | transfer_rework_impl | TRANSFER-SHAPE | carried-forward transfers: is_override=True on the transfer AND both shadows | `carry_forward_service.py:461-466`; `transfer_service.py:481,596-600` | HOLDS | -- | Shadow-pair trace: CF transfer branch calls `transfer_service.update_transfer(txn.transfer_id, user_id, pay_period_id=target, is_override=True)` `:461-466` (the authorized mutator -- Invariant 4). `update_transfer` fetches the pair via `_get_shadow_transactions(transfer_id)` `:481` (raises if count != 2 -- Invariant 1), then `xfer.is_override = flag; expense_shadow.is_override = flag; income_shadow.is_override = flag` `:596-600` -- all three set True. Invariant 3 (shadows == parent) preserved. | W-345, A-07, F-031 |
+| W-345 | transfer_rework_impl | TRANSFER-SHAPE | on carry-forward both shadows move atomically to the target period with the parent | `carry_forward_service.py:455-470`; `transfer_service.py:481,536-541,602` | HOLDS | -- | Shadow-pair trace: CF de-dups by `transfer_id` `:455-467` (comment `:457-460`: the service moves the parent AND both shadows even if only one shadow was in the query -- self-heals sibling period mismatch). `update_transfer`: `_get_shadow_transactions` `:481` (exactly-2 guard); `xfer.pay_period_id = new_period_id; expense_shadow.pay_period_id = new_period_id; income_shadow.pay_period_id = new_period_id` `:539-541`; single `db.session.flush()` `:602` -> all three rows move in one flush (atomic). Invariant 3 (period == parent), Invariant 2 (never orphaned). | W-344, F-031 |
+
+**Escalation decision.** The rule escalates (a) any loan/strategy VIOLATED/PARTIALLY_HOLDS
+that changes a dollar figure, and (b) ANY transfer-shape invariant violation (CRITICAL).
+Walked every row: **all 20 are HOLDS.** The 11 loan/strategy money-math claims were each
+verified by computing the dollar result by hand against the plan's stated behaviour (worked
+inputs inline in every evidence cell) -- the arithmetic is provably exactly the plan's
+intent at every site, so there is **no wrong number to escalate** (this is the P3-cmp-2
+numeric-verification posture, not the P3-cmp-1 "structural, number unverified" reflex). The
+single (note) row, W-245, is HOLDS with the dollar math shown (capacity conserved and
+redirected); its parenthetical-gloss note explains why a literal `pool += min + extra` would
+be a double-count *bug* and the code is correctly more-conservative -- no dollar figure is
+wrong. The 9 transfer-shape claims were verified by tracing the actual shadow-pair lifecycle;
+**zero invariant violations** -- every shadow mutation flows through the authorized transfer
+service (Invariant 4), the pair is always exactly two and never orphaned (Invariant 1/2,
+`_get_shadow_transactions` exactly-2 guard), shadow amount/status/period/is_override always
+equal the parent's (Invariant 3), and no balance path queries `budget.transfers` (Invariant
+5, cross-ref F-031). No CRITICAL sub-finding warranted; no worked-example escalation
+required (all worked examples are recorded inline as AFFIRMATIVE proofs, not escalations).
+
+**P3-cmp-4 verification (a-f):**
+
+- **(a) 20 rows == triage NEEDS-COMPARISON count for this cluster.** Triage residual for
+  this cluster: 20; rows produced: 20 (section5 11 + transfer_rework_impl 7 +
+  transfer_rework_design 2). Every W-NN from the `03_consistency.md:4532` cluster definition
+  appears exactly once; the enumerated lists reconcile to 20. **PASS.**
+- **(b) Every verdict cites code Read this session.** `amortization_engine.py:128-619`
+  (helpers + full `generate_schedule`); `debt_strategy_service.py:298-639`
+  (`_sort_debts`/`_apply_minimum_payments`/`_cascade_extra_payments`/`calculate_strategy`);
+  `savings_dashboard_service.py:802-876` (full `_compute_debt_summary`);
+  `obligations.py:262-423` (full `summary`) + `savings_goal_service.py:199-282` (full
+  `amount_to_monthly`); `transaction.py:128-131`; `transaction_template.py:43-46`;
+  `transfer_service.py:60-82,283-440,443-613`; `recurrence_engine.py:140-168`;
+  `credit_workflow.py:150-249`; `transactions.py:400-464`;
+  `carry_forward_service.py:440-479`. No verdict inherited from a plan's
+  `planned-per-plan` self-report (every priors-0.4 row for these W-NN is `planned-per-plan`
+  -- a prior to test, tested here by source read). **PASS.**
+- **(c) Every loan/strategy wrong-number finding has a worked example with the dollar
+  delta.** Zero wrong-number findings (all 11 loan/strategy claims HOLD with the dollar math
+  shown inline as affirmative proof; no delta because actual == plan-intended at every
+  site). The mandate to show the dollar math for money-movement-adjacent claims is satisfied
+  even though every verdict is HOLDS. **PASS (vacuous on escalation; affirmative math
+  recorded).**
+- **(d) Every transfer-shape violation cites the exact invariant-breaking path.** Zero
+  transfer-shape violations: the shadow-pair lifecycle was traced for all 9 entries and
+  every mutation flows through the authorized `transfer_service` (Invariant 4); the
+  exactly-2 guard (`_get_shadow_transactions`), the before-insert amount/self-transfer
+  rejections, and the atomic single-flush period/override propagation were each cited. No
+  PLAN_DRIFT-STRUCTURAL row exists in this cluster (no drift at all), so the
+  "numeric/structural proof nothing breaks" requirement is vacuously satisfied. **PASS.**
+- **(e) Self-spot-check: 6 random verdicts re-Read (>=2 loan/strategy money-math, >=2
+  transfer-shape invariant).**
+  1. **W-219 HOLDS** (loan/strategy money-math) -- re-read `amortization_engine.py:517,566,
+     572-577`: interest computed on current `balance` `:517`; `is_final` caps
+     `principal_portion = balance`, `actual_payment = principal_portion + interest`,
+     `balance = 0`. Re-did math $500/$2.50 -> capped $500, payment $502.50. Confirmed.
+  2. **W-245 HOLDS** (loan/strategy money-math, the trickiest) -- re-read
+     `debt_strategy_service.py:459-464` (full min to `newly_freed`, unused-capped to
+     `minimum_surplus`), `:611` (`available_extra = extra_pool + minimum_surplus`), `:619`
+     (`extra_pool += freed_from_min + freed_from_extra`). Re-walked the A/B example: A's
+     $500 min freed to pool, $300 surplus cascaded same month, capacity conserved. The
+     parenthetical-gloss reasoning re-confirmed (literal `+extra` would double-count).
+     Confirmed.
+  3. **W-248 HOLDS** (loan/strategy money-math) -- re-read
+     `savings_dashboard_service.py:855,857,863`: `total_debt += principal`,
+     `weighted_rate_sum += rate*principal`, `(weighted_rate_sum/total_debt).quantize`.
+     Re-did $300k@6.5% + $100k@4.5% = 24000/400000 = 0.06. Confirmed.
+  4. **W-329 HOLDS** (transfer-shape invariant) -- re-read `credit_workflow.py:168-169`
+     (`if txn.transfer_id is not None: raise ValidationError`) and `transactions.py:408-428`
+     (shadow guard delegates to `update_transfer`, returns before the direct setattr path
+     `:463`). A shadow cannot be independently CC-credited. Confirmed.
+  5. **W-344 HOLDS** (transfer-shape invariant) -- re-read `carry_forward_service.py:461-466`
+     (`update_transfer(..., is_override=True)`) and `transfer_service.py:596-600`
+     (`xfer/expense_shadow/income_shadow.is_override = flag`). All three set; via the
+     authorized mutator. Confirmed.
+  6. **W-345 HOLDS** (transfer-shape invariant) -- re-read `transfer_service.py:481`
+     (`_get_shadow_transactions` exactly-2), `:539-541` (period set on parent + both
+     shadows), `:602` (single flush). Atomic three-row move. Confirmed.
+  **Spot-check pass rate: 6/6** (3 loan/strategy money-math: W-219, W-245, W-248; 3
+  transfer-shape invariant: W-329, W-344, W-345). No 2+ failures; stop-condition not
+  triggered.
+- **(f) Every UNKNOWN names the blocking Q.** Zero UNKNOWN verdicts in this cluster. The
+  section5 edge/strategy/obligations claims are fully resolved by source read (no behaviour
+  is ambiguous: each claim's intended behaviour is unmistakable and the code matches);
+  W-248's principal-base cross-refs F-008/Q-15 but its *formula* claim is independently
+  provable and verdicted HOLDS, not deferred. The transfer-shape claims are resolved by the
+  CLAUDE.md invariants + A-07. No new question (Q-18+) is raised -- nothing in this cluster
+  has unclear intended behaviour. **PASS (vacuous).**
+
+P3-cmp-4 complete: 20 loan/strategy + transfer-shape verdicts (**20 HOLDS**; 0
+PARTIALLY_HOLDS, 0 VIOLATED, 0 UNKNOWN, 0 VIOLATED-DEAD, 0 N/A). Zero escalations -- the 11
+loan/strategy money-math claims are HOLDS *because the dollar arithmetic was verified by
+hand and is provably exactly the plan's intent* (not waved through as structural), and the 9
+transfer-shape claims are HOLDS *because the shadow-pair lifecycle was traced and every
+invariant holds* (zero CRITICAL). The section5 engine-edge / debt-strategy / obligations
+behaviour and the transfer shadow-pair shape are LIVE and correct. Phase 3 is **NOT**
+complete -- P3-cmp-3 (calendar/analytics/deletion) and P3-cmp-5 (ops/audit/misc), then
+**P3-reconcile** (the only session that may declare Phase 3 complete) remain. F-001..F-056 /
+triage table / P3-cmp-1 / P3-cmp-2 subsections / `Finding IDs used` header unmodified
+(append-only). No source, test, or migration file modified. Not committed; developer reviews
+between sessions.
+
+### P3-cmp-3 verdicts: calendar/analytics/deletion
+
+Session P3-cmp-3, 2026-05-16. Fresh-code-read session: for each of the 40 W-NN the code that
+should embody the claim was located and Read **in full at source THIS session** --
+`analytics._build_calendar_weeks`/`_render_month_view`/`calendar_tab` (`analytics.py:107-168,
+311-352, 380-428`), the entire `calendar_service.py` (517 lines),
+`budget_variance_service.py:1-405` (`compute_variance`/`_get_transactions_for_window`/
+`_query_by_period`/`_query_by_date_range`/`_build_txn_variance`/`_compute_actual`/`_pct`),
+`dashboard_service._get_upcoming_bills`/`txn_to_bill_dict` (`:99-198`),
+`recurrence_engine._compute_due_date` (`:610-669`), `transactions.mark_done`/
+`update_transaction` paid_at lifecycle (`:388-467, 533-622`), the full
+`archive_helpers.py` (132 lines), `templates.hard_delete_template` (`:561-637`),
+`transfers.hard_delete_transfer_template` (`:596-670`), `accounts.hard_delete_account`
+(`:596-741`), `categories.delete_category` (`:178-205`), `grid.py:279-317,337-346`
+(category dispatch), the full `_calendar_month.html` (130 lines) and `calendar.js`
+(62 lines). Append-only; F-001..F-056, the `Finding IDs used` header, the triage table, and
+the P3-cmp-1 / P3-cmp-2 / P3-cmp-4 subsections are untouched. No source/test/migration
+modified.
+
+**Triage residual reconciliation.** Cluster definition (`03_consistency.md:4531`): P3-cmp-3
+= calendar_totals (21) + section8 calendar/variance (9: W-273,274,276..279,281,282,288) +
+section5a deletion/archive (10: W-262..271). The 40 W-NN, enumerated:
+
+- calendar_totals (21): W-064, W-065, W-066, W-067, W-068, W-069, W-070, W-071, W-072,
+  W-073, W-074, W-075, W-076, W-077, W-078, W-079, W-080, W-081, W-082, W-083, W-084.
+- section8 calendar/variance (9): W-273, W-274, W-276, W-277, W-278, W-279, W-281, W-282,
+  W-288.
+- section5a deletion/archive (10): W-262, W-263, W-264, W-265, W-266, W-267, W-268, W-269,
+  W-270, W-271.
+
+**Triage residual for this cluster: 40; rows produced: 40** (21 + 9 + 10 = 40, reconciled).
+W-272/W-275/W-280/W-283..287 (section8, COVERED/SUPERSEDED in the triage) and
+W-253..261 (section5a, COVERED) are NOT in this cluster -- excluded by the triage, not
+missed.
+
+**Comparand framing (mandated -- this cluster's financial trap is FILTER-DISCIPLINE DRIFT,
+not cosmetic).** The canonical filter sets the calendar/analytics aggregates are measured
+against, each Read at source this session and cross-referenced (NOT re-derived) from the
+P3-a/P3-d findings:
+
+- `Transaction.effective_amount` 4-tier (`transaction.py:238-245`): tier-1 `is_deleted ->
+  Decimal("0")`, tier-2 `status.excludes_from_balance -> Decimal("0")` (Credit + Cancelled,
+  `ref_seeds.py:79-84`), tier-3 `actual_amount if not None`, tier-4 `estimated_amount`.
+- Grid period-subtotal canonical (F-004 D1, `grid.py:263-279`): **Projected-only**
+  (`status_id != projected_id: continue` `:269`), `is_deleted` re-checked `:269`,
+  income/expense split, raw `txn.effective_amount` `:272,274`. F-004 verdict is **UNKNOWN,
+  blocked Q-10** -- `period_subtotal` has NO canonical owner; `02_concepts.md:274-323`
+  catalogs **the calendar totals explicitly as period_subtotal "Definition 3 (per-domain
+  analytics totals ... each compute a period total with their own status and type
+  filters)"**, primary path `UNKNOWN`, governed by Q-10.
+- F-009 entries-load matrix: `grid.index`/dashboard `selectinload(Transaction.entries)`;
+  `/savings`, `/accounts`, net-worth do NOT -> `_entry_aware_amount` falls back to
+  `effective_amount`. The "NO selectinload" side is the symptom-#1 SILENT_DRIFT side.
+- F-011 (credit) AGREE, F-012 (Invariant 5) AGREE, F-027 S10 (`budget_variance_service`
+  EQUIVALENT: query filters `is_deleted False` + `~status_id.in_([CREDIT,CANCELLED])` ==
+  effective_amount tier-1+tier-2), F-027 S11 (`calendar_service.py:483` anchor column is
+  Phase-4 OUT-OF-SCOPE), F-028/Q-08 (entry-progress estimated-vs-actual base).
+
+The per-domain analytics total is NOT waved through as "display." Each aggregate's filter
+set was proven equal-or-divergent to the grid D1 canonical with file:line on BOTH sides, and
+every divergence is escalated below with a worked dollar example. Because `period_subtotal`'s
+primary path is itself `UNKNOWN/Q-10` (F-004), a calendar/analytics total whose ONLY
+divergence from grid D1 is the Definition-1-vs-Definition-3 status set inherits **UNKNOWN-Q-10**
+(the divergence FACTS are recorded regardless, mirroring F-004's treatment of D1-vs-D3).
+
+| W-NN | plan | claim (one line) | code location Read (file:line) | verdict | classification if drift | evidence (filter-set comparison / dollar math -- both sides cited) | cross-ref |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| W-064 | calendar_totals | inline totals show a line only if its total is non-zero | `_calendar_month.html:50-58` | HOLDS | -- | `{% if day.income_total %}` `:52`, `{% if day.expense_total %}` `:55` -- truthy gate hides `Decimal("0")` lines. Display gate only; **NO Jinja arithmetic** (P1-d 1.3.12 `01_inventory.md:2450` classifies this template arithmetic=NO; totals computed in `analytics._build_calendar_weeks`). Non-financial display. | W-068, W-069, P1-d 1.3.12 |
+| W-065 | calendar_totals | per-day income_total/expense_total computed from entries list, added to each day dict in `_build_calendar_weeks()` | `analytics.py:413-426` (`_build_calendar_weeks:380-428` full) | HOLDS (+ escalated filter-set DEFINITION_DRIFT) | DEFINITION_DRIFT (status set) -- canonical-match axis **UNKNOWN-Q-10** | Structural claim met verbatim: `income_total = sum(e.amount for e in entries if e.is_income)` `:413-415`, `expense_total = sum(abs(e.amount) for e in entries if not e.is_income)` `:416-418`, both added to the day dict `:419-426`. `e.amount` = `txn.effective_amount` (`calendar_service.py:255`). **Filter-set vs grid D1 (`grid.py:263-279`):** is_deleted EXCLUDED (`calendar_service.py:228` query `is_deleted.is_(False)` + effective_amount tier-1) == grid D1 (`grid.py:269`) -- MATCH; Credit/Cancelled -> `$0` via effective_amount tier-2 (`:255`) == grid D1 (tier-2 + `!=projected`) -- MATCH (F-011); expense formula raw `effective_amount` (`:255`, NOT `_entry_aware_amount`) == grid D1 (`grid.py:274`) -- MATCH. **DIVERGES on status set:** calendar has NO status filter (`_query_transactions_for_range:225-235` filters account/scenario/is_deleted/date only) so Projected + DONE + RECEIVED + SETTLED ALL contribute; grid D1 is Projected-ONLY (`grid.py:269`). This is exactly period_subtotal Definition-3-vs-Definition-1 (`02_concepts.md:289-296`), primary path UNKNOWN/Q-10. Worked example A below. | **F-004 (Q-10)**, F-011, W-066, 02_concepts period_subtotal |
+| W-066 | calendar_totals | `popover_html` key removed from each day dict | `analytics.py:398-405,419-426` (`_build_calendar_weeks` full) | HOLDS | -- | Full-fn Read: the only keys built into either day dict are `number, entries, is_paycheck, is_today, income_total, expense_total` (empty cell `:398-405`; populated `:419-426`). NO `popover_html` key anywhere. Absence confirmed by full-fn read. | W-067, W-080 |
+| W-067 | calendar_totals | `_build_popover_html()` deleted | `analytics.py` (`grep -n "_build_popover_html"` this session) | HOLDS | -- | `grep` THIS session: zero matches for `_build_popover_html` anywhere in `analytics.py` (or `app/`). Function deleted as claimed. (note) stale docstring drift: `_render_month_view` docstring `analytics.py:315` still says "pre-computes popover HTML for days with transactions" -- doc-only drift, no code/number effect; recorded, not escalated. | W-066, W-080 |
+| W-068 | calendar_totals | inline income green only when non-zero, `calendar-day-income` class | `_calendar_month.html:52-54` | HOLDS | -- | `{% if day.income_total %}<div class="calendar-day-income font-mono">${{ "{:,.0f}".format(day.income_total\|float) }}</div>{% endif %}` -- class `calendar-day-income` (CSS green), non-zero gate. Display only. | W-064, W-070 |
+| W-069 | calendar_totals | inline expense red only when non-zero, `calendar-day-expense` class | `_calendar_month.html:55-57` | HOLDS | -- | `{% if day.expense_total %}<div class="calendar-day-expense font-mono">...{% endif %}` -- class `calendar-day-expense` (CSS red), non-zero gate. Display only. | W-064, W-070 |
+| W-070 | calendar_totals | inline totals whole-dollar `{:,.0f}`, not cents | `_calendar_month.html:53,56` | HOLDS | (note) E-10 display | `"{:,.0f}".format(day.income_total\|float)` `:53`, `...expense_total\|float` `:56` -- whole-dollar format string, **no arithmetic operator** (P1-d 1.3.12 arithmetic=NO `01_inventory.md:2450`). `\|float` is display-only cast (E-10), app-wide Jinja money-format pattern, not a new finding. The Decimal value is produced in the route helper; the template only formats. | W-073, P1-d 1.3.12 |
+| W-071 | calendar_totals | cells with entries get `data-day`=day number + `role="button"` | `_calendar_month.html:48` | HOLDS | -- | `{% if day.entries %}data-day="{{ day.number }}" role="button" tabindex="0"{% endif %}`. Exact. Non-financial UI. | W-075, W-076 |
+| W-072 | calendar_totals | `<template data-detail-day>` pre-rendered for each day with entries | `_calendar_month.html:70-108` | HOLDS | -- | `{% for week %}{% for day %}{% if day.entries %}<template data-detail-day="{{ day.number }}">...detail table...{% endif %}{% endfor %}{% endfor %}` `:70-108`. Pre-rendered per day-with-entries. Non-financial UI. | W-076, W-073 |
+| W-073 | calendar_totals | detail table full amounts `{:,.2f}` with cents | `_calendar_month.html:94-96` | HOLDS | (note) E-10 display | `<td class="...">${{ "{:,.2f}".format(entry.amount\|float) }}</td>` `:95`. `entry.amount` = `effective_amount` (`calendar_service.py:255`). Format string only, no arithmetic (P1-d 1.3.12). `\|float` display cast (E-10, app-wide). | W-070, W-074 |
+| W-074 | calendar_totals | status badge "Paid" when `entry.is_paid` else "Projected" | `_calendar_month.html:97-99`; `calendar_service.py:261` | HOLDS | -- | `<span class="badge {{ 'bg-success' if entry.is_paid else 'bg-secondary' }}">{{ "Paid" if entry.is_paid else "Projected" }}</span>` `:97-99`. `entry.is_paid = bool(txn.status and txn.status.is_settled)` (`calendar_service.py:261`) -- ID/flag-based (`is_settled`), NOT a string-name compare. Display only. | W-072 |
+| W-075 | calendar_totals | JS binds click handlers to `data-day` cells on `htmx:afterSettle` | `calendar.js:9,22-23` | HOLDS | -- | `document.addEventListener('htmx:afterSettle', ...)` `:9`; `tabContent.querySelectorAll('.calendar-day[data-day]').forEach(function(cell){ cell.addEventListener('click', ...) })` `:22-23`. JS UI only, NO money math (E-17; P1-d 1.4 `01_inventory.md:2686` arithmetic=NO). | W-071, W-076 |
+| W-076 | calendar_totals | click clones `<template data-detail-day>` into `#calendar-day-detail` | `calendar.js:17,25-27,45-46` | HOLDS | -- | `detailContainer = ...#calendar-day-detail` `:17`; `template = ...querySelector('template[data-detail-day="'+day+'"]')` `:25-27`; `detailContainer.innerHTML=''; detailContainer.appendChild(template.content.cloneNode(true))` `:45-46`. JS UI only. | W-072, W-075 |
+| W-077 | calendar_totals | same-day click toggles detail off + removes `calendar-day--selected` | `calendar.js:31-36` | HOLDS | -- | `if (activeDay === day) { detailContainer.innerHTML=''; cell.classList.remove('calendar-day--selected'); activeDay=null; return; }`. Exact. JS UI. | W-078, W-079 |
+| W-078 | calendar_totals | different-day click deselects previous + shows new detail | `calendar.js:39-48` | HOLDS | -- | `if (activeDay !== null) { prev = ...querySelector('.calendar-day--selected'); if (prev) prev.classList.remove('calendar-day--selected'); }` `:39-42`; then show new + `cell.classList.add('calendar-day--selected'); activeDay=day` `:45-48`. Exact. JS UI. | W-077 |
+| W-079 | calendar_totals | close button dismisses detail + removes selected highlight | `calendar.js:51-58` | HOLDS | -- | `closeBtn = detailContainer.querySelector('#calendar-detail-close'); if (closeBtn) closeBtn.addEventListener('click', function(){ detailContainer.innerHTML=''; cell.classList.remove('calendar-day--selected'); activeDay=null; })` `:51-58`. Exact. JS UI. | W-077, W-078 |
+| W-080 | calendar_totals | all popover code (`disposePopovers`, `bootstrap.Popover`) removed | `calendar.js` (full 62-line Read) | HOLDS | -- | Full-file Read (62 lines): zero `disposePopovers`, zero `bootstrap.Popover`, zero `popover`. Removal confirmed by exhaustive read. | W-066, W-067, W-081 |
+| W-081 | calendar_totals | no `data-bs-toggle="popover"` in rendered HTML | `_calendar_month.html` (full 130-line Read) | HOLDS | -- | Full-file Read (130 lines): zero `data-bs-toggle`, zero `popover` anywhere. Confirmed. | W-080 |
+| W-082 | calendar_totals | existing tests pass after HTML changes | `tests/test_routes/test_analytics.py` | N/A-TEST-CLAIM | -- | Test-suite pass/fail is not a Phase-3 plan-vs-code money-behavior claim and cannot be verdicted in a read-only audit (hard rules 1, 2: no test runs, no test changes). Test-coverage state is Phase 7's domain (`07_test_gaps.md`). Non-financial. | Phase 7 |
+| W-083 | calendar_totals | new tests verify inline-total classes rendered | `tests/test_routes/test_analytics.py` | N/A-TEST-CLAIM | -- | Test existence/quality is Phase 7's domain, not a Phase-3 consistency money claim. Read-only audit does not assert test presence as a watchlist verdict. Non-financial. | Phase 7 |
+| W-084 | calendar_totals | new tests verify `<template>` contains txn names | `tests/test_routes/test_analytics.py` | N/A-TEST-CLAIM | -- | Same as W-082/083: Phase-7 test-coverage scope, not a Phase-3 plan-vs-code financial verdict. Non-financial. | Phase 7 |
+| W-273 | section8 | `due_date` populated from `day_of_month`, clamped to month last day | `recurrence_engine.py:610-669`; gen `:150,165` | HOLDS | -- | `_compute_due_date`: `dom = rule.day_of_month` `:636`; if `dom is None` (every-paycheck/every-N) return `period.start_date` `:640-641` (documented exception, always populated); else clamp `last_day = cal.monthrange(...)` `:650/660`, `min(dom, last_day)` `:651,661`. Generation calls it unconditionally: `due = _compute_due_date(rule, period)` `:150`, `due_date=due` `:165`. Clamp ("day 31 in Apr -> 30") verbatim. Recurrence mechanic feeding calendar/variance attribution (W-276/W-281). | W-276, W-281 |
+| W-274 | section8 | `paid_at` set on Done/Received, cleared on revert to non-settled | `transactions.py:534-537,546,596,610-611,399-400,459-467` | HOLDS | -- | mark_done: income -> RECEIVED `:535`, expense -> DONE `:537`; direct branch `txn.status_id=status_id; txn.paid_at=db.func.now()` `:610-611`; envelope branch `settle_from_entries(txn)` `:596` (writes status+paid_at+actual, F-027 S12 / P3-cmp-2 W-112); transfer-shadow branch `paid_at: db.func.now()` `:546` via service. update_transaction revert: regular `if new_status and not new_status.is_settled and txn.paid_at is not None: revert_paid_at=True` `:459-460` -> `txn.paid_at=None` `:466-467`; shadow `if new_status and not new_status.is_settled: svc_kwargs["paid_at"]=None` `:399-400`. Timestamp lifecycle; does NOT alter calendar money (calendar attributes by `due_date`, `is_paid` reads `status.is_settled` not `paid_at`). | W-273, F-027 S12 |
+| W-276 | section8 | monthly attribution: `due_date` else `pay_period.start_date` | `calendar_service.py:225-235,373-397` | HOLDS | -- | `_query_transactions_for_range`: `or_(Transaction.due_date.between(first_day,last_day), Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(period_ids))` `:229-234`. `_get_display_day`: `if txn.due_date is not None:` use `due_date` month/day `:388-391`; else `start = txn.pay_period.start_date` `:394-396`. Attribution exactly "due_date primary, pay_period.start_date fallback." Filter set: `is_deleted.is_(False)` `:228` (== effective_amount tier-1 / grid D1); Credit/Cancelled -> `$0` via `effective_amount` tier-2 at `_build_day_entry:255`. Status-set divergence vs grid D1 is the W-065 Definition-3 issue (cross-ref, not re-escalated here). | W-065, W-273, F-004(Q-10) |
+| W-277 | section8 | month-end balance = projected end of last pay period ending in/after the month | `calendar_service.py:435-489` (`_compute_month_end_balance` full) | **UNKNOWN-Q-18** (period-selection axis) + escalated entries-load SILENT_DRIFT | SILENT_DRIFT (entries-load, inherits F-003/F-009); SCOPE_DRIFT (anchor-None, Q-16) | Engine call is correct: `balance_calculator.calculate_balances(account.current_anchor_balance, account.current_anchor_period_id, all_periods, all_txns)` `:482-487`, returns `balances.get(target_period.id, Decimal("0"))` `:489` -- same engine/anchor as grid F-003 Path A. **Three divergences:** (1) period selection `for p in all_periods: if p.end_date <= last_day: target_period = p` `:461-466` = LAST period ending ON/BEFORE month-end; the plan claim says "ending in or **after** the month." A boundary-straddling period is excluded and the PRIOR period's balance is shown -- ambiguous intended behavior -> **Q-18** (this file). (2) `all_txns` query `:471-480` has **NO `selectinload(Transaction.entries)`** -> per F-009 matrix this is the symptom-#1 "NO" side: `_entry_aware_amount` falls back to `effective_amount`, so calendar month-end balance DIVERGES from grid (entries-loaded) for a Projected envelope expense with cleared entries -- inherits **F-003/F-009 SILENT_DRIFT** (worked example B). (3) `if account.current_anchor_period_id is None: return Decimal("0")` `:449-450` -- the Q-16 anchor-None axis ("zero" representation, like net-worth/dashboard). | **F-003, F-009, Q-16, Q-18** |
+| W-278 | section8 | large flag if `effective_amount` exceeds user `large_transaction_threshold` | `calendar_service.py:255,262`; `analytics.py:143` | HOLDS | (note) fn-cite + boundary | Substance holds: `is_large = abs(amount) >= threshold` where `amount = txn.effective_amount` (`calendar_service.py:255,262`) and `threshold = settings.large_transaction_threshold if settings else 500` (`analytics.py:143`, the user's configured value). Two (note)s, no money error: (a) claim cites `_get_display_day()` but the flag is in `_build_day_entry:262` (function mis-attribution in the plan; behavior present). (b) claim says "exceeds" (`>`), code is `>=` (`:262`) -- a txn exactly at the threshold is flagged large; this is a display highlight, not a money figure, and `>=` ("at or above") is a defensible reading of "large" (same more-correct/boundary precedent as W-030/W-115). | W-279 |
+| W-279 | section8 | 3rd-paycheck-month detection by counting period start_dates; biweekly = 2/yr | `calendar_service.py:419-432` (`_detect_third_paycheck_months`) | HOLDS | -- | `month_counts: dict[int,int] = defaultdict(int); for p in periods: if p.start_date.year == year: month_counts[p.start_date.month] += 1; return {m for m,count in month_counts.items() if count >= 3}` `:427-432`. Counts pay-period `start_date`s per calendar month, flags months with `>= 3`. The "biweekly produces exactly 2 such months/year" is an arithmetic property of biweekly cadence, NOT code-enforced -- the code correctly detects `>=3` generically; HOLDS as the detection mechanic. No money figure. | W-277 |
+| W-281 | section8 | txn attributed to `due_date` month else `pay_period` start | `budget_variance_service.py:284-296,231-258,177-228` | HOLDS | -- | `_query_by_date_range`: `or_(due_date.between(first_day,last_day), due_date.is_(None) & pay_period_id.in_(overlapping period_ids))` `:289-294` -- identical attribution to calendar (W-276). Pay-period window uses `_query_by_period` `:231-258`. **Filter set MATCHES the canonical (F-027 S10 EQUIVALENT):** `Transaction.is_deleted.is_(False)` `:287` (== effective_amount tier-1) AND `~Transaction.status_id.in_(excluded_status_ids)` `:288` where `excluded_status_ids = [CREDIT, CANCELLED]` `:207-210` (== effective_amount tier-2 `ref_seeds.py:79-84`). Both sides cited; the omitted effective_amount tiers provably cannot reach the hand-rolled `_compute_actual` (F-027 S10). | **F-027 S10**, W-276, W-282 |
+| W-282 | section8 | variance pct = (variance / estimated) * 100 when estimated != 0, else null | `budget_variance_service.py:396-404` (`_pct`) | HOLDS | -- | `_pct`: `if estimated == Decimal("0"): return None` `:402-403`; `return (variance / estimated * _HUNDRED).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)` `:404`, `_HUNDRED=Decimal("100")` / `_TWO_PLACES=Decimal("0.01")` `:34-35`, `ROUND_HALF_UP` `:16` (A-01-clean: string Decimals + HALF_UP). Dollar math: variance `$30.00`, estimated `$120.00` -> `30/120*100 = 25.00%`; estimated `$0.00` -> `None`. Verbatim the claim. `variance`/`estimated` base = F-027 S10 EQUIVALENT (query-guarded tiers). | W-281, F-027 S10 |
+| W-288 | section8 | upcoming bills = unpaid expense, current period remainder + full next, sorted due_date asc | `dashboard_service.py:99-164,191` (`_get_upcoming_bills`/`txn_to_bill_dict`) | HOLDS | (note) "remainder" wording | `period_ids = [current_period.id]` + `next_period.id` if present `:122-124`. Filter: `account_id`, `scenario_id`, `pay_period_id.in_(period_ids)` `:143`, `is_deleted.is_(False)` `:144`, `status_id == projected_id` `:145` (unpaid), `transaction_type_id == expense_type_id` `:146`. Sort: `bills.sort(key=lambda b: (b["_sort_date"], b["name"]))` `:159` where `_sort_date = txn.due_date if txn.due_date else txn.pay_period.start_date` `:154` (due_date asc, then name; period-start fallback). **Filter discipline MATCHES grid D1 canonical:** Projected-only (`:145` == `grid.py:269`), is_deleted excluded (`:144`), per-bill `amount = txn.effective_amount` (`:191`, canonical). The plan's "remainder of the current period" is achieved naturally -- the Projected-only filter excludes already-paid (DONE/RECEIVED) bills, so what remains IS the unpaid remainder; an unpaid-but-overdue bill is correctly still listed (you still owe it). A bill LIST, not a money aggregate -> no total-filter-divergence; per-bill amount is canonical. Entry-progress fields feed the Q-08/F-028 cluster (cross-ref, not re-verdicted). | F-004 D1, F-028(Q-08) |
+| W-262 | section5a | txn templates with Paid/Settled history cannot hard-delete; archive instead | `templates.py:561-637`; `archive_helpers.py:17-38` | HOLDS (+ escalated rule-4 data-loss) -- RECEIVED axis **UNKNOWN-Q-19** | (note) latent silent data-loss on RECEIVED-only income templates | Code matches the literal "Paid or Settled" claim: `if archive_helpers.template_has_paid_history(template.id):` -> `flash(...archived instead)`, `if template.is_active: template.is_active=False`, soft-delete Projected (query filters `is_deleted.is_(False)` `:594`), `return redirect` `:581-609`. `template_has_paid_history`: `status_id.in_([DONE, SETTLED])` AND `is_deleted.is_(False)` `:29-37` (DONE = Paid; is_deleted correctly filtered -- a soft-deleted Paid txn does not block, correct). **Escalated (CLAUDE.md rule 4):** RECEIVED is NOT in `[DONE, SETTLED]` yet RECEIVED is `is_settled=True` (`ref_seeds.py:79-84`) and is what `mark_done` assigns income (`transactions.py:535`). A template whose only history is RECEIVED income txns -> `template_has_paid_history=False` -> `db.session.query(Transaction).filter(template_id==template.id).delete()` `:616-618` permanently destroys RECEIVED income history. Plan-vs-code: code = plan's literal wording (HOLDS); whether the plan's "Paid or Settled" is too narrow -> **Q-19** (this file). | **Q-19**, W-263, W-264 |
+| W-263 | section5a | template hard delete removes template + all linked Projected txns | `templates.py:611-637` | HOLDS | -- | No-history branch: `db.session.query(Transaction).filter(Transaction.template_id == template.id).delete(synchronize_session="fetch")` `:616-618` (all linked -- comment `:612-614`: only Projected remain after the history check, deleted unconditionally for safety), then `db.session.delete(template)` `:620`, `commit` `:622`. This is an intentional permanent `.delete()` (not a display aggregate) -> the is_deleted-omission/double-count concern does NOT apply (no money is summed). Removes template + all linked (Projected) txns as claimed. | W-262 |
+| W-264 | section5a | transfer templates with Paid/Settled history cannot hard-delete; archive instead | `transfers.py:596-659`; `archive_helpers.py:41-62` | HOLDS | -- | `if archive_helpers.transfer_template_has_paid_history(template.id):` -> archived (is_active=False), Projected transfers soft-deleted via `transfer_service.delete_transfer(..., soft=True)` `:644-645` (Invariant 4), `return redirect` `:624-659`. `transfer_template_has_paid_history`: `status_id.in_([DONE, SETTLED])` AND `is_deleted.is_(False)` `:53-60`. **No RECEIVED gap (unlike W-262):** transfers only ever use DONE/SETTLED -- the transfer service sets DONE on both shadows (`transactions.py:541-545`), there is no RECEIVED transfer state -> `[DONE, SETTLED]` is complete here. | W-262, W-265 |
+| W-265 | section5a | transfer template hard delete preserves shadow invariants (no orphaned shadows) | `transfers.py:596-670` | HOLDS | -- | Docstring `:599-610` maps all 5 invariants. Archive branch: Projected transfers removed via `transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)` `:644-645` (query first filters `is_deleted.is_(False)` `:640`). No-history branch: ALL linked transfers deleted through `transfer_service.delete_transfer(..., soft=False)` `:661-670` -> CASCADE on `Transaction.transfer_id` removes BOTH shadows atomically (Invariant 1/2/4). No direct shadow mutation; the authorized transfer service is the sole mutator. Cross-ref F-031 (Invariant 5 AGREE), F-029, P3-cmp-4 W-345 (shadow-pair lifecycle). | W-264, F-031, F-029 |
+| W-266 | section5a | account delete blocked if any txn/transfer history, regardless of status | `accounts.py:626-684`; `archive_helpers.py:65-87` | HOLDS | -- | Guard 2: ANY `TransferTemplate` (from/to this account) -> block `:628-645`. Guard 3: ANY `TransactionTemplate` -> block `:649-660`. Guard 4: `archive_helpers.account_has_history` = ANY `Transaction` with `is_deleted.is_(False)` (NO status filter, `:82-86`) -> archive `:662-684`. Transfer history is detected via shadow `Transaction` rows (Invariant 1: every transfer has 2 shadow txns with `account_id`) -> "any transaction or transfer history" is covered. Regardless of status confirmed (no status predicate in `account_has_history`). | W-267, W-268, F-031 |
+| W-267 | section5a | account hard delete deletes LoanParams/InterestParams/InvestmentParams/AccountAnchorHistory | `accounts.py:711-725` | HOLDS | -- | Step 3 explicit deletes: `db.session.query(LoanParams).filter_by(account_id=account_id).delete()` `:711`, `InterestParams` `:712`, `InvestmentParams` `:713` (+ `EscrowComponent`/`RateHistory`/`SavingsGoal` `:714-716` -- superset). Step 4 `db.session.delete(account)` `:725`; `AccountAnchorHistory` via ORM `cascade="all, delete-orphan"` (docstring `:718-719`). All four named records removed; code deletes a strict superset (correct). | W-266, W-268 |
+| W-268 | section5a | account hard delete blocked if active transfer/transaction templates reference it | `accounts.py:628-660` | HOLDS | -- | Guard 2 blocks on ANY `TransferTemplate` with `from_account_id==account_id OR to_account_id==account_id` `:628-638` (active OR archived). Guard 3 blocks on ANY `TransactionTemplate` `filter_by(account_id=account_id)` `:649-653`. Code is STRICTER than the claim's "active" (blocks on archived too) -- correct, because the FK is `ON DELETE RESTRICT`; more-conservative-than-claim precedent (W-115/W-030/W-268). No money figure. | W-266, W-267 |
+| W-269 | section5a | category hard delete fails if in use by templates/transactions | `categories.py:178-205`; `archive_helpers.py:90-131` | HOLDS | (note) conservative is_deleted | `if archive_helpers.category_has_usage(category_id, current_user.id):` -> `flash(...archived instead)`, `if category.is_active: category.is_active=False; commit`, `return redirect` `:190-199`; else `db.session.delete(category)` `:202`. `category_has_usage`: ANY `TransactionTemplate(category_id, user_id)` `:114-118` OR ANY `Transaction` joined `PayPeriod` on `user_id` with `category_id` `:124-131` (user-scoped, no IDOR). "Cannot permanently delete an in-use category" met via archive-instead-of-delete (same unified pattern as W-262/264/266). (note) the Transaction-usage check does NOT filter `is_deleted` (`:124-131`) -- intentionally conservative: a category used only by soft-deleted txns is still treated as "in use" and blocks delete. This is an `.exists()` existence check, NOT a money aggregate -> the is_deleted-double-count concern does not apply (no money summed); over-blocking is safe. | W-262, W-264, W-266 |
+| W-270 | section5a | archived categories excluded from Add Transaction modal dropdown | `grid.py:283-290,337-346` | HOLDS | -- | `all_categories = query(Category).filter_by(user_id=user_id)...all()` `:283-288` (incl. archived); `active_categories = [c for c in all_categories if c.is_active]` `:290` (`is_active` boolean flag -- ID/flag-based, not string compare). `render_template(..., categories=active_categories, ...)` `:337,346` -- the Add Transaction modal dropdown receives **active-only**; archived excluded. UI dropdown, no money figure. | W-271 |
+| W-271 | section5a | txns with archived categories still render in the grid | `grid.py:281-288,312-317`; `grid.py:107,130-131` | HOLDS | -- | `all_categories` (incl. archived, NO `is_active` filter `:283-288`) is passed to `_build_row_keys(row_source_txns, all_categories, ...)` `:312-317`. `_build_row_keys` indexes `cat_by_id = {c.id: c for c in categories}` `:107` and falls back to "Uncategorized" only if the cat id is absent `:130-131`; an archived category IS in `all_categories`, so a txn with an archived `category_id` resolves its group/name and renders. Comment `:281-282` states this intent verbatim. | W-270 |
+
+**Worked example A (W-065 -- the calendar-total filter-set DEFINITION_DRIFT vs grid D1).**
+This is the cluster's filter-discipline trap, escalated per the prompt (NOT defaulted to
+"display"). Inputs, one calendar month = pay period P (Projected expense `$300.00`,
+`due_date` in the month) + pay period P-1 settled history landing in the same month by
+`due_date` (one DONE expense `$120.00`, one RECEIVED income `$2,000.00`, both `due_date` in
+the month; both already reflected in the checking anchor):
+
+- **Grid D1 period subtotal for P** (`grid.py:263-279`, Projected-only, `effective_amount`):
+  income `$0.00`, expense `$300.00`, net `-$300.00` (the DONE/RECEIVED rows are excluded by
+  `status_id != projected_id` `:269`).
+- **Calendar month total** (`calendar_service.py:_assign_transactions_to_days:301-304`,
+  NO status filter, `effective_amount`): `total_income = $2,000.00` (the RECEIVED row,
+  `effective_amount = actual`), `total_expenses = $300.00 + $120.00 = $420.00` (Projected
+  `$300` + DONE `$120`), `net = $1,580.00` (`_build_month_summary:364`).
+- **Delta:** income `+$2,000.00`, expense `+$120.00`, net `+$1,880.00` between the two
+  surfaces for the same underlying transactions. The divergence driver is the **status
+  set**: calendar has no `status_id` filter (`_query_transactions_for_range:225-235`); grid
+  D1 is Projected-only (`grid.py:269`). is_deleted and Credit/Cancelled handling MATCH on
+  both sides (calendar `is_deleted` query `:228` + `effective_amount` tier-1/tier-2 `:255`;
+  grid `:269` + tiers). This is precisely `period_subtotal` Definition-3-vs-Definition-1
+  (`02_concepts.md:289-296`). **Verdict gate:** the canonical-match axis is **UNKNOWN-Q-10**
+  -- F-004 establishes `period_subtotal` has no canonical owner; whether the all-status
+  calendar total "should" equal the Projected-only grid subtotal is exactly what Q-10 asks.
+  The divergence FACTS are recorded here regardless (mirroring F-004's recording of D1-vs-D3
+  facts independent of Q-10). W-065's structural plan claim is independently HOLDS.
+
+**Worked example B (W-277 -- entries-load SILENT_DRIFT, the symptom-#1 mechanism on the
+calendar month-end balance).** The calendar's `_compute_month_end_balance` queries
+`all_txns` WITHOUT `selectinload(Transaction.entries)` (`calendar_service.py:471-480`),
+so it is on the F-009 matrix "NO" side. Inputs: checking anchor `A`; the target period
+holds one Projected envelope expense `estimated_amount = $500.00` with cleared debit entries
+summing `$462.34` (entries already reflected in the checking anchor):
+
+- **Grid current-period balance** (`grid.py:229` `selectinload(entries)` ->
+  `_entry_aware_amount` = `max(500.00 - 462.34 - 0, 0) = $37.66`): balance =
+  `A - other - $37.66`.
+- **Calendar month-end balance** (`calendar_service.py:471-480` NO entries load ->
+  `_entry_aware_amount` short-circuits `'entries' not in __dict__` `balance_calculator.py:
+  353-354` -> returns `effective_amount = estimated_amount = $500.00`): balance =
+  `A - other - $500.00`.
+- **Delta:** the calendar month-end balance is **`$462.34` lower** than the grid balance for
+  the same account/period/anchor -- identical in mechanism, sign, and controlling dimension
+  to symptom #1 / F-009 (the only input difference is the `selectinload`). Classified
+  **SILENT_DRIFT**, inherited from F-003/F-009 (not a new finding -- recorded here because
+  the calendar is a NEW consuming path on the F-009 "NO" side). The W-277 period-selection
+  axis is separately **UNKNOWN-Q-18**; the anchor-None `return Decimal("0")` `:449-450` is
+  the Q-16 SCOPE_DRIFT axis.
+
+**Escalation decision.** The cluster rule escalates (i) any calendar/analytics aggregate
+whose filter set diverges from the canonical producers, with a worked dollar example;
+(ii) any `is_deleted`-omission that double-counts soft-deleted money; (iii) any Jinja
+financial arithmetic. Walked every row:
+
+- (i) **Filter-set divergence: exactly one** -- W-065 (and its inherited consumers W-276,
+  the calendar-total face of W-277). The calendar month/day totals' status set (all-status)
+  diverges from grid D1 (Projected-only); is_deleted and Credit/Cancelled MATCH. Worked
+  example A above (delta income `+$2,000`, expense `+$120`, net `+$1,880`). This is
+  `period_subtotal` Definition-3-vs-Definition-1 -> canonical-match axis **UNKNOWN-Q-10**
+  (F-004), divergence facts recorded. W-277 additionally carries the F-003/F-009 entries-load
+  **SILENT_DRIFT** (worked example B) and the Q-18 period-selection ambiguity.
+  `budget_variance_service` (W-281/W-282) and `_get_upcoming_bills` (W-288) filter sets were
+  proven to **MATCH** the canonical (F-027 S10: `is_deleted False` + `~[CREDIT,CANCELLED]`;
+  W-288: Projected-only + is_deleted + `effective_amount`) -- no divergence, no escalation.
+- (ii) **is_deleted-omission double-count: none.** Every money-bearing aggregate filters
+  is_deleted at the query (`calendar_service.py:228`, `budget_variance_service.py:287`,
+  `dashboard_service.py:144`) or via `effective_amount` tier-1. The deletion routes'
+  `.delete()` calls (W-263 `templates.py:616-618`, W-265 `transfers.py:661-670`,
+  W-267 `accounts.py:711-716`) are intentional permanent removals, NOT display aggregates --
+  no money is summed, so the double-count class does not apply. `category_has_usage`'s
+  non-is_deleted Transaction check (W-269) is an `.exists()` existence test, conservative
+  over-blocking, not a money sum.
+- (iii) **Jinja financial arithmetic: none.** `_calendar_month.html` (full Read) contains
+  zero arithmetic operators on money -- all totals are produced in `analytics.
+  _build_calendar_weeks` (route, Python Decimal) and `calendar_service` and merely
+  format-stringed (`{:,.0f}`/`{:,.2f}` + `\|float` display cast). This is independently
+  confirmed by P1-d's template-arithmetic inventory: `01_inventory.md:2450` (section 1.3.12)
+  classifies `_calendar_month.html` **arithmetic = NO**, and `01_inventory.md:2686`
+  (section 1.4) classifies `calendar.js` **arithmetic = NO** (E-17 compliant). The `\|float`
+  display cast (E-10) is the app-wide Jinja money-format pattern, not a new finding.
+- **Latent silent data-loss (CLAUDE.md rule 4, out of the three escalation classes but
+  reported per rule 4): one** -- W-262: `template_has_paid_history` omits RECEIVED, so a
+  RECEIVED-only income template is silently hard-deletable, permanently destroying settled
+  income history (`archive_helpers.py:29-37` vs `transactions.py:535` vs `ref_seeds.py:79-84`
+  `Received.is_settled=True`). No wrong number on any page; an irreversible history loss on
+  an explicit user delete. Raised as **Q-19**; W-262's plan-vs-code verdict is HOLDS (code
+  matches the plan's literal "Paid or Settled"); Q-19 asks whether the plan definition is
+  too narrow.
+
+No CRITICAL Phase-3 consistency (wrong-number-on-a-page) sub-finding: the one genuine
+money-divergence (W-065/W-276/W-277 calendar-total status set) is the F-004/Q-10
+`period_subtotal` definitional question (the calendar is a calendar-month all-status view by
+design, a different concept than the Projected-only pay-period grid subtotal -- the
+developer's Q-10 answer decides whether that is a bug or intended). W-277's entries-load
+SILENT_DRIFT is inherited F-003/F-009, already CRITICAL there; recorded here as a new
+consuming path on the "NO selectinload" side. Two new questions filed: **Q-18** (W-277
+month-end period selection), **Q-19** (W-262 RECEIVED hard-delete gap).
+
+**P3-cmp-3 verification (a-g):**
+
+- **(a) Row count == triage NEEDS-COMPARISON count for this cluster.** Triage residual:
+  **40**; rows produced: **40** (calendar_totals 21 + section8 9 + section5a 10). Every W-NN
+  from the `03_consistency.md:4531` cluster definition appears exactly once; the enumerated
+  lists reconcile to 40. The triage-table rows for all 40 were re-read this session and
+  confirmed all classified `NC`. **PASS.**
+- **(b) Every verdict cites code Read this session, with the filter-set comparison (both
+  sides' file:line) for any aggregate claim.** `calendar_service.py` (517 lines full),
+  `budget_variance_service.py:1-405`, `dashboard_service.py:99-198`, `analytics.py:107-168,
+  311-428`, `recurrence_engine.py:610-669`, `transactions.py:388-467,533-622`,
+  `archive_helpers.py` (132 full), `templates.py:561-637`, `transfers.py:596-670`,
+  `accounts.py:596-741`, `categories.py:178-205`, `grid.py:279-346`, `_calendar_month.html`
+  (130 full), `calendar.js` (62 full) -- all Read at source THIS session. Every aggregate
+  row (W-065/276/277/281/282/288) cites the calendar/variance/bill filter set AND the grid
+  D1 / F-027-S10 canonical with file:line on both sides. No verdict inherited from a plan's
+  `planned-per-plan` self-report. **PASS.**
+- **(c) Every wrong-number finding (filter divergence / is_deleted omission /
+  display-vs-grid mismatch) has a worked example with the dollar delta.** Worked example A
+  (W-065 status-set, delta income `+$2,000` / expense `+$120` / net `+$1,880`); worked
+  example B (W-277 entries-load, delta `$462.34`). is_deleted omission: none (proven, not a
+  vacuous claim -- each aggregate's is_deleted filter cited). **PASS.**
+- **(d) Every Jinja financial-arithmetic claim recorded per section 1.3 with the template
+  file:line and cross-ref to P1-d's template inventory.** Result: ZERO Jinja financial
+  arithmetic in `_calendar_month.html` (full Read, format-strings only) -- cross-referenced
+  to P1-d `01_inventory.md:2450` (1.3.12, arithmetic=NO) and `:2686` (1.4 calendar.js,
+  arithmetic=NO). The affirmative compliance is recorded in W-064/070/073 and the escalation
+  decision (iii). **PASS.**
+- **(e) Every PLAN_DRIFT-STRUCTURAL row states the proof the number matches the canonical
+  producer (not "appears display-only").** No row is verdicted PLAN_DRIFT-STRUCTURAL-by-
+  supersession (the P3-cmp-1 reflex is explicitly NOT used). W-281/W-282/W-288 are HOLDS
+  *because the filter set was proven equal to the canonical with both-sides file:line*
+  (F-027 S10 / grid D1), not "display-only." W-065's number divergence is escalated with
+  example A and gated UNKNOWN-Q-10 (not waved through). **PASS.**
+- **(f) Self-spot-check: 6 random verdicts re-Read (>=3 touching a filter-set/number
+  comparison).**
+  1. **W-065 HOLDS+escalated** (filter-set) -- re-Read `analytics.py:413-426`
+     (sum income/expense added to day dict) + `calendar_service.py:225-235` (no status
+     filter), `:255` (effective_amount) vs `grid.py:269,274` (Projected-only, effective).
+     Status-set divergence confirmed; example A delta re-derived. Confirmed.
+  2. **W-281 HOLDS** (filter-set) -- re-Read `budget_variance_service.py:287-294`
+     (`is_deleted.is_(False)` + `~status_id.in_(excluded)`) and `:207-210`
+     (`excluded=[CREDIT,CANCELLED]`); matches F-027 S10 / effective_amount tiers 1-2.
+     Confirmed.
+  3. **W-288 HOLDS** (filter-set) -- re-Read `dashboard_service.py:143-146` (Projected +
+     expense + is_deleted) and `:191` (`amount=txn.effective_amount`); matches grid D1.
+     Confirmed.
+  4. **W-277 UNKNOWN-Q-18 + SILENT_DRIFT** (number) -- re-Read `calendar_service.py:461-466`
+     (period select `end_date <= last_day`), `:471-480` (NO selectinload), `:482-489`
+     (calculate_balances), `:449-450` (anchor-None). All three divergences confirmed;
+     example B `$462.34` delta re-derived. Confirmed.
+  5. **W-262 HOLDS+Q-19** -- re-Read `archive_helpers.py:29-37` (`[DONE,SETTLED]` +
+     is_deleted) vs `transactions.py:535` (income->RECEIVED) vs `ref_seeds.py:79-84`
+     (Received is_settled=True) vs `templates.py:616-618` (unconditional delete). RECEIVED
+     gap confirmed; code matches literal "Paid or Settled" (HOLDS) + Q-19 raised. Confirmed.
+  6. **W-074 HOLDS** -- re-Read `_calendar_month.html:97-99` (`entry.is_paid` badge) +
+     `calendar_service.py:261` (`is_paid = bool(txn.status and txn.status.is_settled)` --
+     flag-based). Confirmed.
+  **Spot-check pass rate: 6/6** (4 of which touch a filter-set/number comparison: W-065,
+  W-281, W-288, W-277). No 2+ failures; stop-condition not triggered.
+- **(g) Every UNKNOWN names the blocking Q.** W-065 canonical-match axis: **UNKNOWN-Q-10**
+  (F-004 `period_subtotal`, `09_open_questions.md:373-421`). W-277 period-selection axis:
+  **UNKNOWN-Q-18** (filed this session, `09_open_questions.md`). W-262 RECEIVED axis:
+  **UNKNOWN-Q-19** (filed this session). W-082/083/084: **N/A-TEST-CLAIM** (Phase-7 scope,
+  not a blocked-on-Q verdict -- a category exclusion, stated as such). **PASS.**
+
+P3-cmp-3 complete: 40 calendar/analytics/deletion verdicts (**36 HOLDS** incl. W-065 and
+W-262 whose structural plan claims hold with escalated sub-findings; **1 UNKNOWN-Q-18**
+W-277 period-selection [also escalated SILENT_DRIFT via F-003/F-009 + Q-16]; **3
+N/A-TEST-CLAIM** W-082/083/084; **0 VIOLATED, 0 VIOLATED-DEAD, 0 PARTIALLY_HOLDS**; the
+remaining HOLDS rows carry only (note)s). The one genuine money divergence -- the
+calendar-total all-status set vs the Projected-only grid subtotal (W-065/W-276/W-277-face)
+-- is the F-004 `period_subtotal` Definition-3-vs-Definition-1 question, canonical-match
+gated **UNKNOWN-Q-10**, divergence facts + worked dollar delta recorded regardless. W-277
+additionally inherits the F-003/F-009 entries-load **SILENT_DRIFT** (worked example B,
+`$462.34` delta) -- a NEW consuming path on the symptom-#1 "NO selectinload" side -- and the
+Q-16 anchor-None **SCOPE_DRIFT**. `budget_variance_service` and `_get_upcoming_bills` filter
+sets were PROVEN to match the canonical (F-027 S10 / grid D1); no `is_deleted` double-count
+and no Jinja financial arithmetic exist in this cluster (P1-d 1.3.12/1.4 cross-confirmed).
+Two new questions filed: **Q-18** (W-277 month-end period selection), **Q-19** (W-262
+RECEIVED-only income template silent hard-delete data-loss). Phase 3 is **NOT** complete --
+P3-cmp-5 (ops/audit/misc), then **P3-reconcile** (the only session that may declare Phase 3
+complete) remain. F-001..F-056 / triage table / P3-cmp-1 / P3-cmp-2 / P3-cmp-4 subsections /
+`Finding IDs used` header unmodified (append-only). No source, test, or migration file
+modified. Not committed; developer reviews between sessions.
+
+### P3-cmp-5 verdicts: ops/audit/config
+
+Session P3-cmp-5, 2026-05-16. FINAL plan-vs-code comparison sub-session. Fresh-code-read:
+each of the 28 W-NN was located and Read at source THIS session -- `auth_helpers.py`
+(416 lines full), `account_resolver.py:38-132` (`resolve_grid_account`/
+`resolve_analytics_account`), `savings_dashboard_service.py:70-296,520-549`,
+`dashboard_service.py:120-175`, `calendar_service.py:200-237`,
+`budget_variance_service.py:230-298`, `loan_payment_service.py:185-228`,
+`carry_forward_service.py:55-74,210-364,479`, `retirement_gap_calculator.py` (137 full),
+`retirement_dashboard_service.py:350-429`, `recurrence_engine.py:468-492`,
+`balance_calculator.py:49-109,176`, `audit_infrastructure.py:146-245`,
+`scripts/audit_cleanup.py:1-40`, `scripts/seed_user.py:7-91`, `app/config.py:48-81`,
+`app/routes/loan.py:109-110`, model `user_id` columns (`account.py:42`,
+`transaction_template.py:39`, `transfer.py:92`, `salary_profile.py:43`,
+`pay_period.py:25`). Append-only; F-001..F-056, the `Finding IDs used` header, the triage
+table, and the P3-cmp-1 / P3-cmp-2 / P3-cmp-3 / P3-cmp-4 subsections are untouched. No
+source/test/migration modified.
+
+**Triage residual reconciliation.** Cluster definition (`03_consistency.md:4533`): P3-cmp-5
+= phase8_hardening (10) + phase8b (3) + prod_impl (2: W-183,185) + prod_readiness_v1 (9:
+W-186,189,190,191,193,194,195,196,197) + net_worth_amort (1: W-169) + req_v3_addendum (2:
+W-207,215) + test_remediation (1: W-303). The 28 W-NN, enumerated:
+
+- phase8_hardening (10): W-170, W-171, W-172, W-173, W-174, W-175, W-176, W-177, W-178,
+  W-179.
+- phase8b (3): W-180, W-181, W-182.
+- prod_impl (2): W-183, W-185.
+- prod_readiness_v1 (9): W-186, W-189, W-190, W-191, W-193, W-194, W-195, W-196, W-197.
+- net_worth_amort (1): W-169.  req_v3_addendum (2): W-207, W-215.  test_remediation (1):
+  W-303.
+
+**Triage residual for this cluster: 28; rows produced: 28** (10 + 3 + 2 + 9 + 1 + 2 + 1 =
+28, reconciled). The triage-table rows for all 28 (`03_consistency.md:4268-4402`) were
+re-read this session and confirmed all classified `NC`.
+
+**Scope framing (the carve-out, mandated).** Audit-plan section 0 excludes routing, auth,
+audit-log forensics, observability events, retention scripts, and config from "calculations
+of money." The IN-FINANCIAL carve-out for this cluster is: (i) any claim about `user_id`
+scoping on `budget.*`/`salary.*` queries -- a missing filter is an IDOR that mixes financial
+data across users (CRITICAL); (ii) any claim that gates a money value's correctness. Every
+OUT-OF-SCOPE row below carries a one-line code-cited justification (what the code does, why
+it is not a money computation), NOT a plan-name assumption. Forensic-gap notes flag any
+out-of-scope mechanism whose failure would leave a financial mutation unrecorded.
+
+| W-NN | plan | claim (one line) | scope | code location Read (file:line) | verdict | classn if drift | evidence (file:line) | cross-ref |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| W-169 | net_worth_amort | `calculate_balances_with_amortization` must remain in balance_calculator.py + 17 tests | OUT-OF-SCOPE (test-retention/Phase-7 + liveness) | `balance_calculator.py:176`; `tests/.../test_balance_calculator_debt.py:14,97..389`; `year_end_summary_service.py` (grep) | HOLDS | -- | Function present `balance_calculator.py:176`; grep this session: ZERO `app/` callers, the SOLE refs are the named test file (`test_balance_calculator_debt.py:14` import, exercised `:97,135,162,217,307,389`). The callerless state is the PLAN-INTENDED outcome of net_worth_amort W-153 (remove the net-worth fallback caller) -- confirmed: zero `calculate_balances_with_amortization` refs remain in `year_end_summary_service.py`. NOT VIOLATED-DEAD: W-169 (G Downstream) explicitly retains the fn as a tested library utility while W-153 removes its only caller. Exact "17" count is Phase-7's domain (like P3-cmp-3 W-082/083/084). | W-153, Phase 7 |
+| W-170 | phase8_hardening | audit_log records row-level INSERT/UPDATE/DELETE with old/new JSONB | OUT-OF-SCOPE (PG forensic trigger, not a money computation) | `app/audit_infrastructure.py:146-148,198-245` | OUT-OF-SCOPE | -- | `audit_log` cols `old_data JSONB :146`, `new_data JSONB :147`, `changed_fields TEXT[] :148`; `audit_trigger_func` DELETE->old `:198-206`, INSERT->new `:209-217`, UPDATE->both `:220-245`. A PL/pgSQL forensic capture trigger; records state, computes no money. **Forensic-gap note:** this trigger is the project's sole tamper-resistant record of `budget.*`/`salary.*` mutations (CLAUDE.md); a gap on an audited table = an unrecorded financial mutation -- Phase-8 awareness. | W-181, W-182, Phase 8 |
+| W-171 | phase8_hardening | audit_log captures only changed fields for UPDATE, not whole row | OUT-OF-SCOPE (forensic diff, not money) | `app/audit_infrastructure.py:225-233` | OUT-OF-SCOPE | -- | UPDATE branch builds `v_changed` from `jsonb_each(v_new_data) WHERE NOT v_old_data ? key OR v_old_data->key IS DISTINCT FROM v_new_data->key` `:227-233`; `changed_fields` column populated from it `:243`. JSONB symmetric-diff for the forensic trail; no money figure. **Forensic-gap note:** same trail as W-170. | W-170, W-180, Phase 8 |
+| W-172 | phase8_hardening | audit trigger captures app-level user_id from `app.current_user_id` | OUT-OF-SCOPE (forensic attribution, not money) | `app/audit_infrastructure.py:193` | OUT-OF-SCOPE | -- | `v_user_id := current_setting('app.current_user_id', true)::INTEGER` `:193`, written to every audit row `:206,217,245`. Session-local user attribution for forensics; computes no money. **Forensic-gap note:** if unset, financial-mutation rows are attributed NULL (orphaned forensic rows, CLAUDE.md) -- Phase-8 awareness. | W-170, Phase 8 |
+| W-173 | phase8_hardening | transaction CRUD logged as structured JSON events | OUT-OF-SCOPE (observability, not money) | `transaction_service.py:155`; `app/utils/log_events.py:408` | OUT-OF-SCOPE | -- | `log_event(...)` (the structured-JSON primitive, `log_events.py:408`) emitted after the txn mutation, e.g. `transaction_service.py:155`. Logs an event record; does not compute or alter any Decimal. Audit-plan section 0 excludes observability events. | W-174, W-177 |
+| W-174 | phase8_hardening | transfer-create logged as structured JSON events | OUT-OF-SCOPE (observability, not money) | `transfer_service.py:424`; `log_events.py:408` | OUT-OF-SCOPE | -- | `log_event(...)` at `transfer_service.py:424` after `create_transfer` builds the shadow pair. Observability record post-mutation; no money computation. | W-173, F-029 |
+| W-175 | phase8_hardening | anchor-balance-update logged as structured JSON events | OUT-OF-SCOPE (observability, not money) | `app/utils/log_events.py:408` (structured-log primitive) | OUT-OF-SCOPE | -- | `log_event` (`log_events.py:408`) is the app-wide structured-JSON observability primitive; an anchor-update log line records the event, it does not compute the anchor balance (that is `accounts` route + balance_calculator, F-001/Phase-4). Plan source "unspecified" (priors `00_priors.md:422`). Not a money computation. | W-185, Phase 4 |
+| W-176 | phase8_hardening | carry-forward logged as structured JSON events | OUT-OF-SCOPE (observability, not money) | `app/utils/log_events.py:408` | OUT-OF-SCOPE | -- | Same `log_event` observability primitive (`log_events.py:408`); a carry-forward event line is emitted post-mutation by the carry-forward path (W-190..194 own the money mechanic). Logging records, does not compute. | W-190, W-177 |
+| W-177 | phase8_hardening | recurrence-regeneration logged as structured JSON events | OUT-OF-SCOPE (observability, not money) | `recurrence_engine.py:171` | OUT-OF-SCOPE | -- | `log_event(logger, logging.INFO, EVT_RECURRENCE_GENERATED, BUSINESS, ...)` `recurrence_engine.py:171` after generation. Observability record; the generated txns' money is owned elsewhere. Not a money computation. | W-173, W-303 |
+| W-178 | phase8_hardening | audit_log rows older than retention (default 365d) deleted by script | OUT-OF-SCOPE (ops retention script, not money) | `scripts/audit_cleanup.py:4,11-12,17` | OUT-OF-SCOPE | -- | "Deletes audit_log rows older than the configured retention period ... default: AUDIT_RETENTION_DAYS env var, or 365" `:4,11-12`; `--days N`/`--dry-run` flags `:17`. An ops cleanup script over the forensic table; touches no `budget.*`/`salary.*` money column. | W-170, Phase 8 |
+| W-179 | phase8_hardening | EVERY budget.*/salary.* (+auth.user_settings/mfa) query must filter user_id | **IN-FINANCIAL** (IDOR carve-out) | proof block below; `auth_helpers.py:121-263`, `account_resolver.py:48-131`, `savings_dashboard_service.py:78-116`, `calendar_service.py:212-234`, `budget_variance_service.py:241-296`, `loan_payment_service.py:194-214`, `carry_forward_service.py:237-267`, model `user_id` cols | **HOLDS** | -- | **Proven user-scoped across the financial surface (no missing filter found -- verification (d) "explicitly proven" branch).** See "W-179 user-scoping proof" below. `budget.*`/`salary.*` carve-out only; `auth.user_settings`/`auth.mfa_configs` are auth-domain, out of this audit's financial scope (not re-verified here). | W-190, F-012, F-031 |
+| W-180 | phase8b | UPDATE skips audit write if no column value changed | OUT-OF-SCOPE (forensic no-op suppression, not money) | `app/audit_infrastructure.py:236-239` | OUT-OF-SCOPE | -- | `IF array_length(v_changed, 1) IS NULL THEN RETURN NEW;` `:236-239` -- comment `:234-235` "Suppress no-op UPDATEs ... add no forensic value". Trigger-level forensic optimisation; no money. **Forensic-gap note:** same trail as W-170 (a genuine change still records). | W-171, Phase 8 |
+| W-181 | phase8b | DELETE records the deleted row's data as old_data | OUT-OF-SCOPE (forensic capture, not money) | `app/audit_infrastructure.py:198-206` | OUT-OF-SCOPE | -- | `IF TG_OP = 'DELETE' THEN v_old_data := to_jsonb(OLD)` `:198-199`; `INSERT INTO system.audit_log (... old_data, new_data ...) VALUES (... v_old_data, NULL ...)` `:203-206`. Forensic; no money. **Forensic-gap note:** financial-row deletes recorded here only -- Phase-8. | W-170, Phase 8 |
+| W-182 | phase8b | INSERT records the new row's data as new_data | OUT-OF-SCOPE (forensic capture, not money) | `app/audit_infrastructure.py:209-217` | OUT-OF-SCOPE | -- | `ELSIF TG_OP = 'INSERT' THEN v_new_data := to_jsonb(NEW)` `:209-210`; `INSERT ... VALUES (... NULL, v_new_data, NULL ...)` `:214-217`. Forensic; no money. **Forensic-gap note:** financial-row inserts recorded here only -- Phase-8. | W-170, Phase 8 |
+| W-183 | prod_impl | carry-forward must filter transactions by scenario_id | **IN-FINANCIAL** (scenario scope gates which money rows move) | `carry_forward_service.py:262`; threaded `:291-292,335-337` | **HOLDS** | -- | `_build_carry_forward_context` query filters `Transaction.scenario_id == scenario_id` `:262` (alongside `pay_period_id == source_period_id :261`, `status_id == projected :263`, `is_deleted False :264`). `scenario_id` is a required param of `carry_forward_unpaid` `:291-292`, passed straight into `_build_carry_forward_context` `:335-337`, sourced from the route (`transactions.py:1165` caller). Cross-scenario contamination prevented as claimed. Per-number consistency owned by F-029 / P3-cmp-2 (Option F); not re-verdicted here. | F-029, P3-cmp-2, W-190 |
+| W-185 | prod_impl | `stale_anchor_warning` flag returned when done/received exist post-anchor | OUT-OF-SCOPE (Phase-4 stale-detection; flag is a bool, not money) | `balance_calculator.py:49-51,92,104-109` | HOLDS | -- | Docstring `:49-51` "(balances, stale_anchor_warning) ... True if done/received transactions ..."; `stale_anchor_warning = False :92`; set `True :104` on the post-anchor done/received condition; `return balances, stale_anchor_warning :109`. Production side HOLDS as claimed. Whether anything CONSUMES the flag is Phase-4's stale-drift question (`04_source_of_truth.md`), not Phase-3. | Phase 4, F-001 |
+| W-186 | prod_readiness_v1 | test conftest ref data includes the "settled" status to match prod | OUT-OF-SCOPE (test fixture / Phase-7) | `tests/conftest.py:1641`; `app/ref_seeds.py` (canonical seed) | OUT-OF-SCOPE | -- | `conftest.py:1641` resolves `STATUS_SETTLED = ref_cache.status_id(StatusEnum.SETTLED)` -- a successful resolve proves the SETTLED status is present in the seeded ref data the test template clones (canonical seed `app/ref_seeds.py`, per CLAUDE.md test-template build). Test-fixture parity; not a money computation. | W-303, Phase 7 |
+| W-189 | prod_readiness_v1 | float conversions in route chart files isolated + inline-commented presentation-only | OUT-OF-SCOPE (E-10 presentation boundary; float at JSON serialization does not alter Decimal calc) | `app/routes/loan.py:109-110`; `app/routes/retirement.py`,`investment.py` (grep) | HOLDS | (1.7.8) plan named auto_loan.py/mortgage.py -> consolidated to loan.py | grep this session: the ONLY route-layer chart float is `loan.py:110` `balances.append(float(row.remaining_balance))`, directly preceded by `:109` `# Presentation boundary: float() for Chart.js JSON serialization.` -- isolated + commented as claimed. `retirement.py`/`investment.py` have ZERO `float(` (Decimals/chart_data_service used). Plan files `auto_loan.py`/`mortgage.py` do not exist (consolidated to `loan.py`; 1.7.8 attribution). The float is at the serialization boundary only; upstream calc stays Decimal -- E-10, no money error. | F-005, W-188(COVERED) |
+| W-190 | prod_readiness_v1 | carry_forward_unpaid verifies ownership of BOTH source+target periods, rejects mismatch | **IN-FINANCIAL** (IDOR on a financial mutation) | `carry_forward_service.py:237-243,291-296,335-337` | **HOLDS** | -- | `_build_carry_forward_context`: `source = db.session.get(PayPeriod, source_period_id); if source is None or source.user_id != user_id: raise NotFoundError` `:237-239`; identical for `target` `:241-243`. Called unconditionally as step 1 of `carry_forward_unpaid` (`:335-337`, docstring step 1 `:296`). Both periods ownership-checked; mismatch -> NotFoundError -> route 404. Defense-in-depth even if the route already checked (docstring `:316-317`). LIVE: caller `transactions.py:1165`. | W-183, W-191, F-012 |
+| W-191 | prod_readiness_v1 | carry_forward_unpaid skips txns with status done/cancelled/credit | **IN-FINANCIAL** (status filter gates which money rows move) | `carry_forward_service.py:258-263` | **HOLDS** | -- | `_build_carry_forward_context` query `Transaction.status_id == projected_id` (`projected_id = ref_cache.status_id(StatusEnum.PROJECTED)` `:256`, filter `:263`). A Projected-ONLY predicate inherently excludes done/cancelled/credit (and received/settled) -- a superset-correct realisation of "skip done/cancelled/credit". The bulk-UPDATE re-asserts `status_id == projected` to close the F-049 SELECT->flush race (comment `:361-365`). | W-190, W-193 |
+| W-193 | prod_readiness_v1 | carry_forward_unpaid skips soft-deleted txns | **IN-FINANCIAL** (is_deleted filter gates which money rows move) | `carry_forward_service.py:258-265` | **HOLDS** | -- | Same query: `Transaction.is_deleted.is_(False)` `:264`. Soft-deleted source rows are excluded from the partition; HOLDS verbatim. | W-191, W-194 |
+| W-194 | prod_readiness_v1 | carry_forward_unpaid returns a count == number of txns moved | OUT-OF-SCOPE (return is an int count, not a money figure) | `carry_forward_service.py:344,346,406,424,449,468,479` | HOLDS | -- | `count = 0 :346`; incremented per processed row -- discrete `:406`, transfer `:424`, envelope `:449,468`; `return count :479`; empty-partition short-circuit `return 0 :344`. Docstring `:302-304,322-323` "1 per source row processed (envelope settle=1, discrete=1, each transfer=1)". HOLDS; the value is a count, not money. | W-190, W-191 |
+| W-195 | prod_readiness_v1 | DevConfig provides a sensible DATABASE_URL fallback when env var unset | OUT-OF-SCOPE (config/env resolution, not money) | `app/config.py:48-81` | OUT-OF-SCOPE | -- | `_DATABASE_URL_SENTINEL = "REPLACE-ME-WITH-YOUR-POSTGRES-PASSWORD"` `:64`; fallback/sentinel-rejection resolution `:70-81` (callers pass `os.getenv(var_name)` or its fallback; prod-missing branch raises loud). Connection-string config; computes no money. | -- |
+| W-196 | prod_readiness_v1 | seed_user rejects passwords <12 chars with error + exit code 1 | OUT-OF-SCOPE (credential script / auth, not money) | `scripts/seed_user.py:7-9,83,91` | OUT-OF-SCOPE | -- | Docstring `:7-9` "Validates that the password is at least 12 characters ... Exits with code 1 if the password is" too short; `sys.exit(1)` `:83,91`. Credential-seeding script (auth domain, audit-plan section 0 excludes auth); no money. | W-197 |
+| W-197 | prod_readiness_v1 | seed_user enforces the same 12-char minimum as registration | OUT-OF-SCOPE (credential script / auth, not money) | `scripts/seed_user.py:7-9,63-65` | OUT-OF-SCOPE | -- | Docstring `:7-9,63-65` "at least 12 characters, matching the minimum enforced by the application's `change_password()` and `register_user()` functions". States parity with the registration flow; auth-domain script, no money. | W-196 |
+| W-207 | req_v3_addendum | deduction with target_account_id auto-applied as income to target each paycheck | **IN-FINANCIAL** (feeds a money projection) | `savings_dashboard_service.py:242-254,520-549`; `retirement_dashboard_service.py:353-366`; `year_end_summary_service.py:1944-1982` | **HOLDS** | -- | Deductions with `target_account_id` are loaded per investment account (`savings_dashboard_service.py:242-254` `PaycheckDeduction.target_account_id.in_(inv_account_ids)`; mirror `retirement_dashboard_service.py:357-366`, `year_end_summary_service.py:1972-1982`) and fed via `adapt_deductions` -> `calculate_investment_inputs(deductions=...)` -> `inputs.periodic_contribution` -> growth projection (`savings_dashboard_service.py:520-549`). The deduction IS applied as a per-period income/contribution to the target account. **(note)** it is modeled as a FORWARD PROJECTION contribution, not posted as an actual income Transaction at receipt time; the resulting figure's cross-producer consistency is owned by F-043 (employer_contribution: `:periodic_contribution`->`calculate_employer_contribution`) / F-042 (growth) -- not re-verdicted here. | F-043, F-042 |
+| W-215 | req_v3_addendum | monthly income gap = pre_ret_net_monthly - monthly_pension; pre_ret = net_biweekly*26/12 | **IN-FINANCIAL** (money formula) | `retirement_gap_calculator.py:67-89` | **HOLDS** | (note) documented more-correct refinement (plan-text under-specification, not code drift) | `pre_retirement_net_monthly = (net_biweekly_pay * 26 / 12).quantize(TWO_PLACES, ROUND_HALF_UP)` `:68-70` -- the "net biweekly * 26 / 12" claim VERBATIM. Gap `:85-89`: `monthly_income_gap = max(pre_retirement_net_monthly - effective_pension, ZERO)` where `effective_pension = after_tax_monthly_pension if ... is not None else monthly_pension_income` `:85`. Default path (no `estimated_tax_rate`) == the literal claim. **(note)** when a tax rate is supplied the subtrahend is the AFTER-TAX pension (documented `:83-85` "apples-to-apples ... with net (post-tax) current income") and a `max(...,0)` floor is applied -- both deliberate, in-code-documented correctness refinements of an under-specified plan claim (same more-correct-than-claim precedent as P3-cmp-3 W-278 / P3-cmp-1 W-030/W-115), recorded not escalated, no Q. F-049/F-050 verified only pension pass-through; the gap subtraction is verified HERE. | F-049, F-050, F-035, F-037 |
+| W-303 | test_remediation | recurrence interval_n=0 must raise ValueError OR guard against infinite loop / not hang/crash | OUT-OF-SCOPE (recurrence robustness guard, not a money computation; no F-NN audits recurrence_engine) | `recurrence_engine.py:475-478` | HOLDS | -- | `EVERY_N_PERIODS` branch: `n = rule.interval_n or 1` `:476` coerces `0`/`None` -> `1`; `return [p for p in candidates if (p.period_index - offset) % n == 0]` `:478`. With `n` floored to 1, `% n` can never be `% 0` (no ZeroDivisionError/crash) and the match is a finite list-comprehension over `candidates` (no loop -> cannot hang). The claim's "guard against infinite loops / not crash" branch is satisfied. Robustness guard; computes no money figure. | W-177 |
+
+**W-179 user-scoping proof (verification (d): the "explicitly proven" branch).** The
+financial scope of W-179 is `budget.*`/`salary.*` queries. Proven structurally + by source
+read this session that every such query reaches the DB user-scoped:
+
+1. **Models with a direct `user_id` column** -- `Account` (`account.py:42`),
+   `TransactionTemplate` (`transaction_template.py:39`), `Transfer` (`transfer.py:92`),
+   `SalaryProfile` (`salary_profile.py:43`), `PayPeriod` (`pay_period.py:25`). Service
+   queries on these filter it directly: `savings_dashboard_service.py:80`
+   (`Account ... filter_by(user_id=user_id, is_active=True)`), `:258-260`
+   (`SalaryProfile filter_by(user_id=user_id ...)`), `account_resolver.py:62-66,72-76,
+   122-131` (all `filter_by(user_id=user_id ...)`),
+   `retirement_dashboard_service.py:357-360` (`SalaryProfile.user_id == user_id`).
+2. **`Transaction` has NO `user_id` column** -- scoped transitively, two independent ways
+   (usually both): (a) `pay_period_id.in_(period_ids)` where `period_ids` derive from
+   `pay_period_service.get_all_periods(user_id)` / `get_overlapping_periods(user_id, ...)`
+   (user-scoped period sets): `savings_dashboard_service.py:87-100`,
+   `calendar_service.py:212-234`, `budget_variance_service.py:274-296`,
+   `dashboard_service.py:122-149`; and/or (b) `account_id == <ownership-checked account>` --
+   the account is resolved via `resolve_analytics_account` (IDOR check
+   `account_resolver.py:115-119`: `if acct and acct.user_id == user_id and acct.is_active:
+   return acct; return None`), `resolve_grid_account` (`:48-76`, every branch gated
+   `acct.user_id == user_id`), or route-layer `get_or_404`/`@require_owner`
+   (`auth_helpers.py:121-178`; `savings.py:108-126`, `grid.py:166,182`,
+   `analytics.py:96,127` + `resolve_analytics_account`).
+3. **`TransactionEntry` / `Entry`** (no `user_id`) -- scoped via `Transaction` ->
+   `PayPeriod.user_id` (`entry_service.resolve_owner_id` ownership; P1 inventory
+   `01_inventory.md:1504-1507`).
+4. **Mutation entry points re-assert ownership at the service boundary**
+   (defense-in-depth): `carry_forward_service._build_carry_forward_context:237-243` (both
+   periods `user_id != user_id -> NotFoundError`); `transfer_service._get_owned_*`
+   (P1 inventory `01_inventory.md:1400`); `auth_helpers.get_owned_via_parent:181-263`
+   (Transaction -> PayPeriod.user_id).
+
+Conclusion: no `budget.*`/`salary.*` query was found that reaches the DB without a user
+scope (direct `user_id`, user-derived `period_ids`, or an ownership-checked `account_id`).
+No unscoped financial query -> **no CRITICAL IDOR escalation**; W-179 HOLDS for the
+financial carve-out. `auth.user_settings`/`auth.mfa_configs` are auth-domain and out of
+this audit's financial scope (not re-verified; an auth-IDOR concern, not a money figure).
+
+**Escalation decision.** The cluster escalates ONLY (i) a genuine missing-`user_id` filter
+on a financial table (CRITICAL + exact query), or (ii) an in-scope money claim VIOLATED
+with a wrong-number consequence (worked example). Walked every row:
+
+- (i) **Missing user_id filter: NONE.** W-179 proven user-scoped across `budget.*`/
+  `salary.*` (proof block above); W-190 both carry-forward period-ownership checks present
+  (`carry_forward_service.py:237-243`). No unscoped financial query found. No CRITICAL.
+- (ii) **VIOLATED in-scope money claim: NONE.** Every IN-FINANCIAL row (W-179, W-183,
+  W-190, W-191, W-193, W-207, W-215) verdicts HOLDS, verified at source on both sides.
+  W-215's after-tax/zero-floor refinement is a documented more-correct deviation from
+  under-specified plan text (recorded, not drift; no wrong-number-vs-intent -- the code
+  produces a MORE correct gap); W-207's projection-vs-posted-income nuance is owned by
+  F-042/F-043. No worked-example escalation required.
+- **Forensic-gap notes (OUT-OF-SCOPE, Phase-8 awareness):** W-170/171/172/180/181/182 --
+  the `system.audit_trigger_func` is the sole tamper-resistant forensic record of
+  `budget.*`/`salary.*` mutations (CLAUDE.md "Audit Triggers"); a missing trigger on an
+  audited table, or an unset `app.current_user_id`, leaves a financial mutation
+  unrecorded/unattributed. Forensic completeness is gated by `AUDITED_TABLES` +
+  the entrypoint trigger-count health check (CLAUDE.md); flagged for Phase-8, NOT a
+  Phase-3 money divergence.
+
+No new open question filed (highest remains **Q-19**): every W-NN resolved HOLDS or
+OUT-OF-SCOPE; no UNKNOWN, no two-plausible-behaviors ambiguity surfaced (W-215 is a
+documented refinement, not an ambiguity).
+
+**P3-cmp-5 verification (a-f):**
+
+- **(a) Row count == triage NEEDS-COMPARISON count for this cluster.** Triage residual:
+  **28**; rows produced: **28** (phase8_hardening 10 + phase8b 3 + prod_impl 2 +
+  prod_readiness_v1 9 + net_worth_amort 1 + req_v3_addendum 2 + test_remediation 1). Every
+  W-NN from the `03_consistency.md:4533` cluster definition appears exactly once; the
+  enumerated lists reconcile to 28; the triage rows (`:4268-4402`) re-read, all `NC`.
+  **PASS.**
+- **(b) Every OUT-OF-SCOPE row has a one-line code-cited justification (not plan-name
+  assumed).** All 17 OUT-OF-SCOPE-scope rows cite the actual file:line and state what the
+  code does + why it is not a money computation (audit-infra trigger SQL `:146-245`,
+  retention script `:4-17`, conftest `:1641`, config `:48-81`, seed_user `:7-91`,
+  log_event primitive `log_events.py:408` + representative call sites, recurrence guard
+  `:476`, balance_calculator stale flag `:92-109`, loan.py float `:109-110`,
+  balance_calculator fn `:176`). None inferred from the plan title. **PASS.**
+- **(c) Every IN-FINANCIAL row fully verified at source on both sides.** W-179 (proof
+  block: 4 scoping mechanisms, model cols + service queries + resolver IDOR check, both
+  sides cited); W-183 (filter `:262` + threading `:291-292,335-337` + route caller
+  `transactions.py:1165`); W-190 (`:237-243` ownership + `:335-337` call + LIVE caller);
+  W-191 (`:256,263` projected-only) / W-193 (`:264` is_deleted); W-207 (load
+  `:242-254` + feed `:520-549` + mirrors) ; W-215 (formula `:68-70` + gap `:85-89`,
+  cross-ref F-049/F-050 stated). **PASS.**
+- **(d) Missing-user_id-filter escalated CRITICAL with the exact query, OR explicitly
+  proven user-scoped.** Taken the "explicitly proven" branch: the W-179 proof block
+  enumerates the 4 user-scoping mechanisms with file:line and concludes no unscoped
+  `budget.*`/`salary.*` query exists. No CRITICAL. **PASS.**
+- **(e) Self-spot-check: 5 random verdicts re-Read (>=2 OUT-OF-SCOPE, >=1 IN-FINANCIAL).**
+  1. **W-179 IN-FINANCIAL HOLDS** -- re-Read `account_resolver.py:115-119`
+     (`acct.user_id == user_id ... else return None` IDOR check) +
+     `savings_dashboard_service.py:80,95` (Account `filter_by(user_id)`, Transaction
+     `pay_period_id.in_(period_ids)` from user-scoped `get_all_periods(user_id) :87`).
+     Scoping confirmed both sides. Confirmed.
+  2. **W-215 IN-FINANCIAL HOLDS+note** -- re-Read `retirement_gap_calculator.py:68-70`
+     (`net_biweekly_pay * 26 / 12` quantized) and `:85-89` (`max(pre_ret - effective_pension,
+     ZERO)`, `effective_pension` after-tax when tax rate set). Base formula verbatim;
+     refinement documented `:83-85`. Confirmed.
+  3. **W-180 OUT-OF-SCOPE** -- re-Read `audit_infrastructure.py:236-239`
+     (`IF array_length(v_changed,1) IS NULL THEN RETURN NEW;` no-op UPDATE suppression,
+     comment `:234-235`). Forensic trigger, not money; justification holds. Confirmed.
+  4. **W-194 OUT-OF-SCOPE HOLDS** -- re-Read `carry_forward_service.py:346`
+     (`count = 0`), `:479` (`return count`), increments `:406,424,449,468`. Return is an
+     integer count, not money; HOLDS. Confirmed.
+  5. **W-189 OUT-OF-SCOPE HOLDS** -- re-Read `loan.py:109-110` (`# Presentation boundary:
+     float() for Chart.js JSON serialization.` then `float(row.remaining_balance)`);
+     grep retirement.py/investment.py zero `float(`. E-10 boundary, plan files
+     consolidated to loan.py (1.7.8). Confirmed.
+  **Spot-check pass rate: 5/5** (3 OUT-OF-SCOPE: W-180/W-194/W-189; 2 IN-FINANCIAL:
+  W-179/W-215). No 2+ failures; stop-condition not triggered.
+- **(f) Every UNKNOWN names the blocking Q.** ZERO UNKNOWN verdicts in this cluster (all
+  HOLDS or OUT-OF-SCOPE) -- vacuously satisfied; no Q-NN gating any row. **PASS.**
+
+P3-cmp-5 complete: 28 ops/audit/config verdicts (**11 HOLDS** -- W-169, W-179, W-183,
+W-185, W-189, W-190, W-191, W-193, W-194, W-207, W-215; **17 OUT-OF-SCOPE** -- the
+audit-infra / observability / retention / config / credential-script / test-fixture rows,
+each code-cited; **0 VIOLATED, 0 VIOLATED-DEAD, 0 PARTIALLY_HOLDS, 0 UNKNOWN**). The
+IN-FINANCIAL carve-out (W-179 user-scoping; W-183/190/191/193 carry-forward
+scope/ownership; W-207 deduction-contribution; W-215 income-gap formula) was fully
+source-verified both sides and all HOLD. **No CRITICAL IDOR escalation:** every
+`budget.*`/`salary.*` query proven user-scoped (direct `user_id`, user-derived
+`period_ids`, or ownership-checked `account_id`). Six forensic-gap notes
+(W-170/171/172/180/181/182) flag the audit-trigger trail for Phase-8 awareness (still
+OUT-OF-SCOPE). No new question (highest remains Q-19). This was the LAST comparison
+cluster (P3-cmp-1..5 done). Phase 3 is **NOT** complete -- **P3-reconcile** (the only
+session that may declare Phase 3 complete) remains. F-001..F-056 / triage table /
+P3-cmp-1..4 subsections / `Finding IDs used` header unmodified (append-only). No source,
+test, or migration file modified. Not committed; developer reviews between sessions.

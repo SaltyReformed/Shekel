@@ -738,3 +738,70 @@ Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-b),
 F-026; `app/services/amortization_engine.py:908-959`, `app/models/loan_params.py:60-61`,
 `app/routes/loan.py:672-674`. Cross-link Q-09, Q-11, Q-15, A-04/A-05 verification (this file),
 E-02 (`00_priors.md:166-170`).
+
+Q-18 (P3-cmp-3, 2026-05-16): The calendar's "month-end balance" (the "End Balance" figure on
+`/analytics` calendar month view) is computed by `_compute_month_end_balance`
+(`app/services/calendar_service.py:435-489`). It selects the target period by
+`for p in all_periods: if p.end_date <= last_day: target_period = p`
+(`app/services/calendar_service.py:461-466`, `all_periods` ordered by `period_index`,
+`last_day` = the calendar month's last day) -- i.e. the LAST pay period whose `end_date` is
+on or before the month's last day, then returns `balances.get(target_period.id)`. The
+section8 watchlist claim W-273-cluster (`00_priors.md:524`, plan section 5.D) states the
+month-end balance must be "the projected end balance of the last pay period ending in or
+after the month." When a pay period straddles the month boundary (starts in-month, ends in
+the following month), the code excludes it (its `end_date > last_day`) and instead reports
+the projected end balance of the PRIOR period, which can be up to ~13 days before the actual
+calendar month-end. Two plausible intended behaviors: (1) "balance as of the last completed
+pay period within the month" -- the current code; the displayed figure is a real period-end
+projection but not the literal calendar month-end. (2) "balance covering the whole month" --
+the period that contains (or first ends on/after) the month-end day, so the figure reflects
+every transaction through month-end. Which is intended?
+
+Why it matters: governs the W-277 verdict in P3-cmp-3 (the period-selection axis is recorded
+UNKNOWN-Q-18). The displayed "End Balance" is a user-facing money figure on the calendar; an
+off-by-one-period selection silently shows a different dollar amount than the user expects
+for "month-end," and it interacts with the F-003/F-009 entries-load SILENT_DRIFT (the
+calendar path does NOT `selectinload(Transaction.entries)`, `calendar_service.py:471-480`)
+and the Q-16 anchor-None axis (`calendar_service.py:449-450` returns `Decimal("0")` when
+`current_anchor_period_id is None`).
+
+Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-cmp-3), W-277;
+`app/services/calendar_service.py:435-489` (esp. `:461-466` period selection, `:471-480`
+no-entries-load, `:449-450` anchor-None). Cross-link F-003, F-009, Q-16,
+W-273 (`00_priors.md:524`).
+
+Q-19 (P3-cmp-3, 2026-05-16): `archive_helpers.template_has_paid_history`
+(`app/utils/archive_helpers.py:17-38`) decides whether a transaction template may be
+permanently hard-deleted (`app/routes/templates.py:581-637`). It blocks deletion only when a
+linked, non-soft-deleted transaction has `status_id in [DONE, SETTLED]`
+(`app/utils/archive_helpers.py:29-37`). RECEIVED is not in that set, yet RECEIVED is a
+settled-equivalent state (`Status.is_settled = True` for Received,
+`app/ref_seeds.py:79-84`) and is exactly the status `mark_done` assigns to income
+transactions (`app/routes/transactions.py:534-535`: `if txn.is_income: status_id =
+RECEIVED`). A transaction template whose generated income transactions were all marked
+RECEIVED (and never further transitioned to SETTLED) therefore returns
+`template_has_paid_history = False`, so `hard_delete_template` proceeds to
+`db.session.query(Transaction).filter(Transaction.template_id == template.id).delete()`
+(`app/routes/templates.py:616-618`) and permanently destroys the RECEIVED income history.
+The section5a watchlist claim W-262 (`00_priors.md:509`, plan section 5A.5-2) is phrased
+"templates with Paid or Settled history cannot be permanently deleted" -- the code matches
+that literal wording ([DONE = Paid, SETTLED]), so the question is whether the plan's
+"Paid or Settled" definition is itself too narrow for income templates: should the guard
+also treat RECEIVED (and any `is_settled = True` status) as blocking history, or is
+hard-deleting a RECEIVED-only income template's history intended? (The transfer analogue
+`transfer_template_has_paid_history`, `app/utils/archive_helpers.py:41-62`, has no such gap:
+transfers only ever use DONE/SETTLED -- the transfer service sets DONE on both shadows,
+`app/routes/transactions.py:541-545` -- so [DONE, SETTLED] is complete there.)
+
+Why it matters: governs the W-262 escalation in P3-cmp-3. This is a silent data-loss path on
+an explicit user delete action (no wrong number on a page, but irreversible loss of settled
+income transaction history). The fix shape depends on intent: widen the predicate to
+`Status.is_settled = True` (catches RECEIVED + any future settled-equivalent), enumerate
+`[DONE, RECEIVED, SETTLED]`, or document that RECEIVED-only income history is intentionally
+hard-deletable. The auditor does not choose (audit-plan section 9).
+
+Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-cmp-3), W-262;
+`app/utils/archive_helpers.py:17-38` (predicate), `app/routes/templates.py:581-637`
+(hard-delete path, esp. `:616-618` the unconditional delete), `app/ref_seeds.py:79-84`
+(Received `is_settled = True`), `app/routes/transactions.py:534-535` (income -> RECEIVED).
+Cross-link W-262, W-264 (the transfer analogue that does NOT have the gap), F-031.
