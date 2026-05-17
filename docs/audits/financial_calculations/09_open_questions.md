@@ -805,3 +805,593 @@ Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-cmp
 (hard-delete path, esp. `:616-618` the unconditional delete), `app/ref_seeds.py:79-84`
 (Received `is_settled = True`), `app/routes/transactions.py:534-535` (income -> RECEIVED).
 Cross-link W-262, W-264 (the transfer analogue that does NOT have the gap), F-031.
+
+## Source-of-truth questions raised by Phase 4
+
+Phase 4 sessions append a `Q-NN` here whenever a stored column's role
+(AUTHORITATIVE / CACHED / DERIVED) cannot be classified without developer
+intent, or whenever Phase-4 re-verification finds a prior-phase document
+miscited. The auditor records the drift surface from code and STOPS on the
+intent question (audit-plan section 9; hard rule 5).
+
+Q-20 (P4-a, 2026-05-16) -- **sharpens Q-16.** `budget.accounts.current_anchor_period_id`
+is `NULL` for every newly-registered user (`app/services/auth_service.py:781-786`
+creates the default "Checking" account with `current_anchor_balance=0` and the
+period column unset) and is re-reachable post-creation any time a balance is
+edited while `pay_period_service.get_current_period` returns None
+(`app/routes/accounts.py:460,794` gate the period assignment on
+`if current_period:`). The codebase nowhere defines what `NULL` means; five
+runtime producers do four different things with the SAME stored row, an
+unlabeled difference under developer expectation E-04 (`00_priors.md:178-182`):
+
+- **blank** -- grid: `app/routes/grid.py:239-241` passes the NULL period to
+  `balance_calculator.calculate_balances`, which matches no anchor period
+  (`app/services/balance_calculator.py:72`) and returns an empty dict
+  (`:82-84`); the grid renders a blank balance row.
+- **current-period-anchored projection seeded with the stored balance** --
+  `/accounts` checking detail `app/routes/accounts.py:1418-1432` and `/savings`
+  `app/services/savings_dashboard_service.py:325-352`: `... or
+  (current_period.id ...)` falls back to the current period and seeds the
+  engine with `current_anchor_balance or Decimal("0.00")`. Note this is NOT
+  literally a "$0.00 anchor" as Q-16 worded it -- it is *whatever the stored
+  balance is* (collapsing to $0.00 only when the column itself is 0/NULL).
+- **account omitted entirely** -- dashboard `app/services/dashboard_service.py:683-684`
+  and net worth `app/services/year_end_summary_service.py:2065-2066`:
+  `return None`.
+- **`$0.00`** -- calendar month-end `app/services/calendar_service.py:449-450`:
+  `return Decimal("0")`.
+
+Additional evidence Q-16 did not have: `scripts/integrity_check.py` BA-01
+(`:292-297`) flags `(current_anchor_balance IS NOT NULL AND
+current_anchor_period_id IS NULL)` as an anomaly -- i.e. the offline tooling
+classifies the literal default new-user state as invalid, directly
+contradicting the runtime fallbacks that treat it as a routine projection
+input. Two readings (auditor does not choose):
+
+- Interpretation A (`NULL` = "no usable balance yet"): omit/blank is correct;
+  the `/accounts`+`/savings` current-period fallback
+  (`accounts.py:1419-1421`, `savings_dashboard_service.py:326-328`) is the bug
+  that fabricates a projection from an unset anchor. integrity_check BA-01
+  leans this way.
+- Interpretation B (`NULL` = "anchor at current period, balance as stored"):
+  the fallback is correct; the omit/blank/`$0` paths are the bug that hides an
+  account the user created and set a balance on.
+
+Why it matters: classifies `current_anchor_period_id` (Phase 4
+`04_source_of_truth.md` Family A, currently UNCLEAR) and governs the
+SCOPE_DRIFT axis in F-001/F-003/F-006/F-007/W-277. Where it came up:
+`docs/audits/financial_calculations/04_source_of_truth.md` Family A;
+`app/services/auth_service.py:781-786`, `app/routes/grid.py:239-241`,
+`app/routes/accounts.py:1418-1432`, `app/services/savings_dashboard_service.py:325-352`,
+`app/services/dashboard_service.py:683-684`,
+`app/services/year_end_summary_service.py:2065-2066`,
+`app/services/calendar_service.py:449-450`, `scripts/integrity_check.py:292-297`.
+Cross-link Q-16.
+
+Q-21 (P4-a, 2026-05-16) -- anchor stored/audit-mirror invariant, the create-path
+history gap, the absent DB CHECK, and a Phase-1 inventory correction. Four
+linked sub-questions surfaced by Phase 4 Family A; none has a documented intent:
+
+1. Is "the latest `budget.account_anchor_history` row for an account mirrors
+   `budget.accounts.current_anchor_balance`" a required invariant? The two are
+   written together at `app/routes/accounts.py:462-467,796-801,1110-1115`, but
+   `create_account` (`:321-332`), `auth_service.py:781-786`, and
+   `seed_user.py:147` set the column with NO history row, and `update_account`
+   /`inline_anchor_update` skip the history INSERT when no current pay period
+   exists (`:460,794`) while still mutating the column. So the audit trail can
+   permanently under-record. Should the mirror hold, and should it be enforced?
+2. Should `create_account` / `auth_service` / `seed_user` emit a t0
+   `AccountAnchorHistory` row? Today they do not, so
+   `dashboard_service._get_last_anchor_date` (`:659-670`) returns None and the
+   dashboard reports "Your checking balance has never been set."
+   (`dashboard_service.py:276`) for an account whose balance IS set -- a
+   stored-vs-counterpart mis-signal on the default account of every new user.
+3. `budget.accounts.current_anchor_balance` and
+   `budget.account_anchor_history.anchor_balance` have **no CHECK constraint**
+   in the model (`app/models/account.py:51,152`) OR the migration
+   (`migrations/versions/9dea99d4e33e_initial_schema.py:181,198`,
+   bare `Numeric(12,2)`). `docs/coding-standards.md` requires a DB CHECK on
+   every financial column, but a *checking* balance can legitimately be
+   negative (overdraft), so a blanket `>= 0` may be wrong. What is the intended
+   domain (any Decimal? `>= some floor`? unconstrained by design)? The auditor
+   does not assume.
+4. Phase-1 inventory correction (not editing `01_inventory.md` per protocol):
+   its §1.5 `app/models/account.py` block records the CHECK for these two
+   columns as "MIGRATION (not in model)" -- verified FALSE (no CHECK anywhere)
+   -- and omits `current_anchor_period_id` from the column list entirely.
+   Should `01_inventory.md` be corrected in a later reconciliation pass?
+
+Why it matters: classifies `current_anchor_balance` (AUTHORITATIVE but with an
+unenforced audit mirror) and `account_anchor_history.anchor_balance` (CACHED
+with a reachable sync gap) in `04_source_of_truth.md` Family A; sub-question 2
+is a live user-visible mis-alert on every new account. Where it came up:
+`docs/audits/financial_calculations/04_source_of_truth.md` Family A;
+`app/routes/accounts.py:321-332,460-467,794-801,1106-1115`,
+`app/services/auth_service.py:781-786`, `scripts/seed_user.py:147`,
+`app/services/dashboard_service.py:276,659-670`,
+`app/models/account.py:51,152`,
+`migrations/versions/9dea99d4e33e_initial_schema.py:181,198`,
+`01_inventory.md` §1.5. Cross-link Q-20, Q-16, F-001.
+
+Q-22 (P4-b1, 2026-05-16) -- **the `current_principal` source-of-truth role,
+and a sharpening of Q-11 / Q-15 / Q-17.** Phase 4 Family B cannot classify
+`budget.loan_params.current_principal` (it is recorded **UNCLEAR** in
+`04_source_of_truth.md` Family B) without developer intent. The audit
+determined definitively (re-run grep, full reads -- not inherited): **no code
+path writes or recomputes `current_principal` when a transfer to a loan
+settles.** Proof: `grep -rEn "\.current_principal\s*=[^=]" app/ scripts/`
+returns zero attribute-write matches; the sole post-creation writer is the
+manual `update_params` form (`app/routes/loan.py:674`,
+`setattr(params, field, value)` gated by `_PARAM_FIELDS` at
+`app/routes/loan.py:668-671`); and none of the 12 settle/status-transition
+modules (`transfer_service.py`, `transaction_service.py`, `state_machine.py`,
+`entry_service.py`, `credit_workflow.py`, `entry_credit_workflow.py`,
+`carry_forward_service.py`, `recurrence_engine.py`, `transfer_recurrence.py`,
+`routes/transactions.py`, `routes/transfers.py`, `routes/dashboard.py`) even
+imports the `LoanParams` model. `transfer_service.update_transfer`
+(`app/services/transfer_service.py:497-502`) propagates only status to the
+parent and the two shadows; `transaction_service.settle_from_entries`
+(`app/services/transaction_service.py:38-168`) writes only
+status/paid_at/actual_amount and **rejects transfer shadows outright**
+(`:111-115`). E-03 (`00_priors.md:172-176`) explicitly allows either "writing
+a stored column" or "recomputing from confirmed payments"; the code does
+**neither end-to-end** -- ARM reads the stored column everywhere and never
+maintains it (`amortization_engine.py:978`,
+`app/routes/debt_strategy.py:172-173`); fixed-rate recomputes via engine
+walk on the refinance / debt-strategy / net-worth surfaces
+(`amortization_engine.py:981-984`, `app/routes/debt_strategy.py:181-195`,
+`app/services/year_end_summary_service.py:2078-2081`) but the prominent
+`/accounts/<id>/loan` "Current Principal" card renders the stored column
+regardless of loan type (`app/templates/loan/dashboard.html:104`, route passes
+`params=params` at `app/routes/loan.py:553-557`; `proj` is computed at
+`:429` but never wired to the card).
+
+Two readings (auditor does not choose -- audit-plan section 9, hard rule 5):
+
+- **Interpretation A -- AUTHORITATIVE:** the stored column is the intended
+  source of truth and a settled transfer SHOULD reduce it by the principal
+  portion (E-03's "writing a stored column"). Then the bug is the missing
+  settle-driven update (F-014) plus, for fixed-rate, the engine-walk that
+  diverges from the column. Classification -> AUTHORITATIVE with a
+  SOURCE/SILENT drift finding.
+- **Interpretation B -- CACHED:** the engine-real value is the truth and the
+  stored column is a creation-time/manual seed that goes stale the instant a
+  payment settles (E-03's "recomputing from confirmed payments", already done
+  for fixed-rate on three surfaces). Then the bug is the dashboard card (and
+  the `/savings` debt card, `app/services/savings_dashboard_service.py:840`)
+  showing the stale mirror. Classification -> CACHED.
+
+Sub-questions that sharpen the deferred questions, with both-side `path:line`
+so the developer adjudicates without re-reading the code:
+
+1. **Sharpens Q-11** (which principal the user-facing page MUST show). The
+   divergence is now exact and proven: for a fixed-rate loan with any confirmed
+   payment, the bold dashboard card shows STORED
+   (`app/templates/loan/dashboard.html:104`) while the refinance prefill for
+   the same loan-on-date shows engine-real
+   (`app/routes/loan.py:1087` `current_real_principal = proj.current_balance`,
+   `:1095`, `:1152`, `app/templates/loan/_refinance_results.html:69`) and the
+   debt-strategy page shows a THIRD value (RAW-replay engine-real,
+   `app/routes/debt_strategy.py:139,175-195`,
+   `app/templates/debt_strategy/dashboard.html:132`). Worked example in
+   `04_source_of_truth.md` Family B: `$200,000.00` / `$199,399.70` /
+   `$198,495.20` for one loan-on-date, no error raised. Decide: render
+   `proj.current_balance` on the dashboard, or relabel the card, or make all
+   principal surfaces read one canonical resolver.
+2. **Sharpens Q-15** (canonical aggregate-debt base). The F-008 internal
+   inconsistency is now confirmed at source and holds **regardless of Q-15's
+   answer**: inside one service, one loan, `_compute_account_projections` sets
+   the account card's `current_balance` to `proj.current_balance`
+   (`app/services/savings_dashboard_service.py:373`, engine) while
+   `_compute_debt_summary` sums `lp.current_principal`
+   (`:840` -> `:855` `total_debt += principal`, stored) -- the `/savings` page
+   can show two different principals for the same loan. Q-15 governs which
+   base is canonical for the aggregate; this sub-question asks additionally
+   whether the within-`/savings` account-card-vs-debt-card mismatch is itself
+   intended.
+3. **Sharpens Q-17** (ARM re-amortization / symptom #4). Confirmed at source
+   that the ARM monthly payment is re-amortized from the STORED column:
+   `app/services/amortization_engine.py:951-953` computes
+   `calculate_monthly_payment(current_principal, rate, remaining)` with
+   `current_principal = Decimal(str(params.current_principal))`
+   (`:913`) and `remaining = calculate_remaining_months(...)` (`:908-910`,
+   strictly decreasing each month). Because `current_principal` is never
+   reduced on settle (this Q's core finding), re-amortizing a non-decreasing
+   principal over a shrinking `remaining` drifts the ARM payment upward
+   monthly -- symptom #4 is the SAME un-maintained column as symptom #3. The
+   two Q-17 interpretations (maintain the stored column on settle, vs.
+   re-amortize the engine-real balance / honor the
+   `arm_first_adjustment_months` window) map directly onto Interpretations A
+   and B above.
+
+Why it matters: classifies `current_principal` in `04_source_of_truth.md`
+Family B (currently UNCLEAR); the answer also picks the symptom-#3 remediation
+shape (F-014: maintain the column on settle, vs. F-016/Q-11: change the display
+to the engine value) and ties symptoms #2/#3/#4/#5 to one column. E-01's escrow
+rule is independently violated on the fixed-rate replay: `_compute_real_principal`
+(`app/routes/debt_strategy.py:147-197`, read in full) passes RAW
+`get_payment_history` (`:175`) into `generate_schedule` with NO
+`prepare_payments_for_engine`, so the engine attributes the escrow portion to
+principal paydown (`amortization_engine.py:531`
+`principal_portion = total_payment - interest`); corroborated by A-06
+verification (`09_open_questions.md:244-247`). That escrow-as-principal defect
+is recorded as a Phase-3 SCOPE matter (F-014/F-017) and does not need a new
+question -- A-06 already resolves that both pipeline layers must apply.
+
+Where it came up: `docs/audits/financial_calculations/04_source_of_truth.md`
+Family B (the two per-column findings, the settle-update trace, the worked
+example). `app/models/loan_params.py:53-54`,
+`app/routes/loan.py:553-557,622,668-679,1087,1095,1152`,
+`app/routes/debt_strategy.py:119,139,147-197`,
+`app/services/amortization_engine.py:908-984`,
+`app/services/transfer_service.py:497-502`,
+`app/services/transaction_service.py:38-168`,
+`app/services/savings_dashboard_service.py:373,840,855`,
+`app/services/year_end_summary_service.py:2078-2081`,
+`app/templates/loan/dashboard.html:104`,
+`app/schemas/validation.py:1438-1466`. Cross-link **Q-11**, **Q-15**,
+**Q-17**, **A-04** / **A-05** / **A-06** (this file), **E-01** / **E-03**
+(`00_priors.md:160-176`), **E-04** (`00_priors.md:178-182`), F-014, F-015,
+F-016, F-008, F-017, loan side of F-001 / F-003.
+
+Q-23 (P4-b2, 2026-05-16) -- **the `loan_params.interest_rate` source-of-truth
+role, the effective-date-unaware mirror write, the missing `<= 1` DB CHECK,
+and a sharpening of Q-17 with the engine source resolved so the developer can
+adjudicate without re-reading the engine.** Phase 4 Family B classifies
+`budget.loan_params.interest_rate` **UNCLEAR**. The audit determined
+definitively (full reads of `amortization_engine.py`,
+`loan_payment_service.py`, `loan.py`; tree-wide grep -- not inherited):
+
+- **Rate authority is split by surface.** Every scalar `monthly_payment`
+  display reads the STORED `loan_params.interest_rate`
+  (`amortization_engine.py:914` -> ARM `:952-954`; `:957-959` fixed;
+  `loan_payment_service.py:253,258`; `balance_calculator.py:216`;
+  `loan.py:1227,1233`; `debt_strategy.py:110`;
+  `savings_dashboard_service.py:478,845`;
+  `year_end_summary_service.py:1473`). `RateHistory.interest_rate` is
+  authoritative ONLY inside `generate_schedule`'s per-row loop via
+  `_find_applicable_rate` (`amortization_engine.py:298-323`, fires at
+  `:498-514` only when `rate_changes` is passed), and `rate_changes` is built
+  ONLY by `load_loan_context:131-144` for ARM loans, consumed only by the
+  loan-dashboard schedule (`loan.py:429-431`) and the year-end schedule
+  (`year_end_summary_service.py:1470-1480`). So the bold "Monthly P&I" card
+  (`loan/dashboard.html:129`, site 7) uses the stored mirror while the
+  schedule on the same page (site 4) uses the RateHistory series.
+- **The mirror is written effective-date-unaware.** `add_rate_change`
+  (`loan.py:685-758`) INSERTs the RateHistory row (`:700-706`) and then
+  unconditionally executes `params.interest_rate = data["interest_rate"]`
+  (`:709`) with the just-submitted rate, regardless of its `effective_date`.
+  Recording a future-effective change moves the displayed scalar payment NOW;
+  recording a backdated correction after a later change leaves the mirror at
+  the backdated value. Nothing reconciles
+  `loan_params.interest_rate` to "the RateHistory row in effect today."
+- **Symptom #4 is rate-independent inside the fixed window.** A 5/5 ARM has
+  no RateHistory rows in its first 60 months, so the scalar and schedule
+  agree on rate there; the in-window drift is purely the frozen stored
+  `current_principal` (Q-22) re-amortized over the calendar-shrinking
+  `calculate_remaining_months` (`amortization_engine.py:908-910,136-142`) at
+  `:952-954`. Exact-Decimal worked example
+  (`04_source_of_truth.md` Family B): `P=$400,000`, `r=6.000%`, `T=360`,
+  fixed window 60 mo -- correct constant **$2,398.20**; engine returns
+  **$2,400.59** (mo 1), **$2,460.50** (mo 24), **$2,573.51** (mo 59), a
+  strictly upward creep, no rate change, no manual edit. Confirmed E-02
+  violation. `arm_first_adjustment_months` / `arm_adjustment_interval_months`
+  (`loan_params.py:60-61`) are stored, form-bound (`loan.py:670`),
+  schema-validated (`validation.py:1450-1451,1471-1472`) and consumed by
+  **zero** calculation sites (grep-proven) -- the engine has no fixed-window
+  concept.
+
+Three linked questions (auditor does not choose -- audit-plan section 9, hard
+rule 5):
+
+1. **Column role (sharpens Q-17, parallels Q-22).** Is
+   `loan_params.interest_rate` intended to be **AUTHORITATIVE** (the
+   user-maintained current rate; the bug is then that the schedule path uses
+   a different RateHistory-resolved rate and that the scalar payment ignores
+   the fixed-window columns -> remediate at the engine), or **CACHED** (a
+   denormalized mirror of the latest RateHistory entry; the bug is then that
+   every scalar display reads the stale mirror instead of resolving
+   `_find_applicable_rate(today, ...)` from RateHistory)? This is the same
+   fork as Q-17 (hold the payment constant via the stored anchor vs.
+   recompute from the authoritative series) and Q-22 (the `current_principal`
+   role); the answers should be consistent across all three.
+2. **Effective-date-unaware mirror write.** Is `add_rate_change:709`
+   overwriting `params.interest_rate` with the submitted rate regardless of
+   `effective_date` the intended behavior, or must the mirror equal the
+   RateHistory rate in effect *today* (i.e. the write should resolve via
+   effective-date, and future-dated changes should not move the displayed
+   payment until they take effect)?
+3. **Intended numeric domain / missing DB CHECK.**
+   `loan_params.interest_rate` DB CHECK is `>= 0` with **no upper bound**
+   (`loan_params.py:35-38`, migration `dc46e02d15b4:32`), whereas its own
+   audit mirror `rate_history.interest_rate` has CHECK `>= 0 AND <= 1`
+   (`loan_features.py:44-47`) and `add_rate_change` writes the same value to
+   both. The Marshmallow schemas bound the *percent* input to `0-100`
+   (`validation.py:1445,1467`) but that is not a DB constraint. A checking
+   *rate* `> 100%` is implausible, but `docs/coding-standards.md` requires
+   schema/DB range parity and the auditor does not assume the intended
+   domain. What is the intended DB-enforced domain for
+   `loan_params.interest_rate` (mirror its `rate_history` sibling at
+   `<= 1`? a different ceiling? intentionally unconstrained)?
+
+Why it matters: classifies `loan_params.interest_rate`
+(`04_source_of_truth.md` Family B, currently UNCLEAR); governs the
+remediation shape for F-013 (symptom #2) and F-026 (symptom #4) jointly with
+Q-17/Q-22 (the answers must agree -- symptoms #2/#3/#4 are one
+un-maintained-stored-column family); sub-question 2 is a live user-visible
+mis-display whenever a future-dated or out-of-order rate change is entered;
+sub-question 3 is an unenforced-domain gap analogous to Q-21 sub-question 3
+(Family A's missing anchor CHECK). The verdict (DIVERGE for F-013/F-026) is
+not blocked; only the fix shape is.
+
+Where it came up: `docs/audits/financial_calculations/04_source_of_truth.md`
+Family B (the three per-column findings, the symptom-#4/E-02/Q-17 crux
+subsection, the worked example, the entry-point matrix).
+`app/services/amortization_engine.py:298-323,498-514,908-910,913-914,
+936,950-959`, `app/services/loan_payment_service.py:121-144,247-260,263-353`,
+`app/routes/loan.py:340-389,399-402,429-431,665-674,698-709,1222-1234`,
+`app/routes/debt_strategy.py:110,127-129,147-197`,
+`app/services/savings_dashboard_service.py:478,845-857`,
+`app/services/year_end_summary_service.py:1470-1480`,
+`app/models/loan_params.py:35-38,55,60-61`,
+`app/models/loan_features.py:44-47,75,103-106,126`,
+`app/schemas/validation.py:1445,1467,1484,1496`,
+`migrations/versions/dc46e02d15b4_add_check_constraints_to_loan_params_.py:32`,
+`migrations/versions/b71c4a8f5d3e_c24_marshmallow_range_check_sweep.py:109-110,201-202`.
+Cross-link **Q-17** (`09_open_questions.md:699-740`, this Q resolves its
+engine-source half), **Q-22** (`:916-1035`, the `current_principal`
+sibling -- same fork, answers must agree), **Q-11** / **Q-15**,
+**E-02** (`00_priors.md:166-170`), **E-01** / **E-03**
+(`00_priors.md:160-176`), F-013, F-026, F-019, F-014, F-017.
+
+---
+
+Q-24 (P4-c, 2026-05-16) -- **Family C (Interest/Investment params): a Phase-3
+miscite to correct, plus three stored-input "0 vs None" intent questions the
+developer must adjudicate.** Phase 4 Family C classified all six columns
+AUTHORITATIVE and proved no cached projected-balance column exists. Three
+items need a developer decision:
+
+1. **`contribution_limit_remaining` is cited to code that does not exist.**
+   `02_concepts.md:2169-2200` and `03_consistency.md` **F-044** state the
+   `annual_contribution_limit - ytd_contributions` "remaining" subtraction is
+   "route-resident at `app/routes/investment.py:173-181` (`limit_info`)" and
+   give F-044 verdict AGREE / single-path. Verified at source this session:
+   `investment.py:173-181` is the `calculate_investment_inputs(...)` call;
+   `limit_info` is built at `investment.py:230-238` and is
+   `{"limit", "ytd", "pct"}` with **no `limit - ytd` subtraction**; the
+   template (`app/templates/investment/dashboard.html:76,88`) renders
+   "`ytd / limit`" and a percent-used bar only. A "remaining" figure is
+   **never computed or displayed anywhere.** Question: is a contribution-
+   limit *remaining* figure intended to be shown (in which case it is
+   unimplemented and F-044's AGREE is moot), or is the concept-catalog entry
+   an over-specification of a concept the app deliberately expresses as
+   percent-used? (Audit will revise F-044 / the `02_concepts.md` entry per
+   the answer; `01`/`02`/`03` left unedited per protocol -- `01_inventory.md`
+   §1.2 is itself accurate.)
+2. **A blank `apy` (or `assumed_annual_return`) on a first save silently
+   becomes 4.5% (or 7%), not zero and not an error.** The interest handler
+   binds `InterestParamsUpdateSchema` (`app/routes/accounts.py:64`) in which
+   `apy` is **not `required`** and blanks are stripped
+   (`app/schemas/validation.py:1393-1395,1414`); with the `if not params:`
+   create branch (`accounts.py:1356-1363`) a first save omitting `apy`
+   commits a row whose `server_default="0.04500"`
+   (`app/models/interest_params.py:60`) yields a silent 4.5% APY that
+   projects real interest the user never set (`calculate_interest` treats
+   only `apy <= 0` as no-interest, `interest_projection.py:83`).
+   `InvestmentParams.assumed_annual_return` carries the symmetric
+   `server_default="0.07000"` plus a **float** Python `default=0.07000`
+   (`investment_params.py:81`, a coding-standards "construct Decimals from
+   strings" violation). Question: is a blank-rate first save a reachable UI
+   flow, and should a missing rate be a validation error (or an explicit 0)
+   rather than a silent plausible-looking default?
+3. **A stored `annual_contribution_limit = 0` means three different things on
+   one app.** `investment.py:231` truthiness -> limit card suppressed ("no
+   limit"); `investment.py:667` truthiness -> contribution-transfer default
+   falls to the `$500.00` literal ("no limit"); `growth_engine.py:206`
+   `is not None` -> absolute zero cap (no contribution ever counts). The
+   CHECK permits 0 (`investment_params.py:31-35`,
+   `... IS NULL OR ... >= 0`). Question: is `annual_contribution_limit = 0` a
+   meaningful user state ("contributions disallowed"), and if so which
+   interpretation is correct -- or should 0 be normalised to NULL / rejected
+   at the schema tier?
+
+Why it matters: sub-question 1 governs whether F-044's AGREE stands or the
+concept is unimplemented (affects the `02_concepts.md` /
+`03_consistency.md` F-044 entries and any Phase-7 test for
+`contribution_limit_remaining`); sub-questions 2-3 are live coding-standards
+"`0` and `None` mean different things" hazards on AUTHORITATIVE stored input
+columns -- 2 is a silent wrong-projection on a first save, 3 is an E-04-class
+cross-consumer divergence (`04_source_of_truth.md` Family C,
+`budget.investment_params.annual_contribution_limit`). None blocks a Family C
+verdict (all six columns are AUTHORITATIVE regardless); only the F-044
+disposition and the remediation shape for 2-3 depend on the answers. The
+zero-`assumed_annual_return` read-path drop at
+`retirement_dashboard_service.py:321` is already owned by F-042 (no new
+question -- cross-link only).
+
+Where it came up:
+`docs/audits/financial_calculations/04_source_of_truth.md` Family C (the
+cached-balance determination, the six per-column findings, the
+consumer-routing section, and the Phase-3 re-verification log).
+`app/routes/investment.py:173-181,185-189,230-238,667-670`,
+`app/templates/investment/dashboard.html:70-88`,
+`app/routes/accounts.py:64,1349-1367`,
+`app/schemas/validation.py:1393-1397,1414`,
+`app/models/interest_params.py:33-36,60`,
+`app/models/investment_params.py:21-24,31-35,80-83`,
+`app/services/investment_projection.py:169-171,175-190`,
+`app/services/growth_engine.py:206-209`,
+`app/services/retirement_dashboard_service.py:321`,
+`02_concepts.md:2169-2200`, `03_consistency.md` F-044.
+Cross-link **F-042** (`09`/`03`; the zero-`assumed_annual_return` slider drop
+and SWR `or "0.04"` SILENT_DRIFT -- this Q does not re-raise it),
+**F-041** (`apy_interest` single engine, AGREE), **F-044** / **F-045**,
+**Q-21** (the Phase-1/Phase-3 miscite-correction protocol this follows;
+Family C's §1.5 model blocks are by contrast ACCURATE),
+**E-04** (`00_priors.md:178`).
+
+Q-25 (P4-d, 2026-05-16) -- **Family D: the calibration `effective_*_rate`
+columns are UNCLEAR (the audit cannot classify them without an intent
+decision), plus a secondary savings-goal plan-vs-need reconciliation
+question.** Two items need a developer decision:
+
+1. **Is a saved `CalibrationOverride` a frozen pay-stub snapshot, or a live
+   derived rate?** `effective_federal_rate`/`effective_state_rate`/
+   `effective_ss_rate`/`effective_medicare_rate`
+   (`app/models/calibration_override.py:89-92`) are computed from the same
+   row's `actual_*` columns plus the profile's pre-tax-deduction total by
+   `derive_effective_rates`@`app/services/calibration_service.py:83-96`, but
+   persisted by a path that never re-derives them: `calibrate_preview`
+   computes them (`app/routes/salary.py:1105-1112`), ships them as hidden
+   form inputs (`app/templates/salary/calibrate_confirm.html:97-100`), and
+   `calibrate_confirm` stores `effective_*_rate=data["effective_*_rate"]`
+   straight from the POST (`app/routes/salary.py:1161-1164`) independently of
+   the separately-posted `actual_*` (`:1156-1160`), with only a `[0,1]`
+   range check (`app/schemas/validation.py:1858-1873`) and no cross-check
+   that `effective_x == actual_x / base`. `apply_calibration`@
+   `app/services/calibration_service.py:133-144` then multiplies the stored
+   rate against the **live** per-period taxable/gross every calibrated
+   paycheck. Two silent drift surfaces follow: (a) a tampered/replayed/stale
+   two-step POST stores a rate pair inconsistent with the actual_* pair;
+   (b) editing the profile's pre-tax deductions or salary after save does
+   not recompute the rates (the only writer is calibrate_confirm), so the
+   stored federal/state rate is derived against a now-stale taxable base.
+   Question: is the calibration intended to be an immutable pay-stub
+   snapshot (then the actual_*-vs-rate inconsistency window and the absence
+   of a derive-at-confirm step are the defect, and the column is
+   AUTHORITATIVE-snapshot), or a live derived rate (then the missing
+   recompute on profile/deduction edit is the defect, and the column is
+   DERIVED-stale)? The auditor does not pick a side (hard rule 5 / Phase-4
+   decision 2); the classification stays **UNCLEAR** until answered.
+2. **Are `savings_goals.contribution_per_period` (the user's planned
+   contribution) and the dashboard's computed `required_contribution` (the
+   contribution needed to hit the target by date) meant to be reconciled?**
+   `contribution_per_period` is a pure user input -- no service writes it
+   (tree-wide grep; `app/routes/savings.py:143,236`,
+   `app/models/savings_goal.py:77`); `calculate_required_contribution`@
+   `app/services/savings_goal_service.py:109-136` produces a separate,
+   never-persisted figure surfaced beside it on `/savings`
+   (`app/services/savings_dashboard_service.py:676-678,717`;
+   `app/templates/savings/dashboard.html:411-414`). The code never validates
+   or warns when the stored plan is below the computed need (a user can
+   store $50/period while the dashboard says $400/period is required).
+   Question: is this an intentional plan-vs-actual display, or should the
+   stored value be validated/flagged against the computed requirement?
+
+Why it matters: sub-question 1 is the only item in Family D that blocks a
+column classification -- the four `effective_*_rate` columns feed every
+calibrated federal/state/FICA withholding projection
+(`apply_calibration`@`calibration_service.py:133-144`,
+`paycheck_calculator.py:160-167`), so a stale or inconsistent stored rate is
+a silent wrong-paycheck-projection with no error; the remediation shape
+(re-derive at confirm + recompute-on-profile-edit, vs lock the snapshot)
+depends entirely on the intended contract. Sub-question 2 does not block any
+classification (`contribution_per_period` is AUTHORITATIVE regardless) and is
+a UX/validation-intent question only. Neither blocks the other Family-D
+verdicts (all ~40 triage columns and `transactions.actual_amount` /
+`savings_goals.contribution_per_period` are AUTHORITATIVE regardless).
+
+Where it came up:
+`docs/audits/financial_calculations/04_source_of_truth.md` Family D
+(Escalation 3 -- the UNCLEAR `effective_*_rate` group finding; Escalation 2 --
+the `contribution_per_period` finding).
+`app/models/calibration_override.py:53-68,89-92`,
+`app/services/calibration_service.py:34-103,106-145`,
+`app/routes/salary.py:1064-1176`,
+`app/templates/salary/calibrate_confirm.html:97-100`,
+`app/schemas/validation.py:1858-1873`,
+`app/services/paycheck_calculator.py:160-167`,
+`app/services/savings_goal_service.py:109-136`,
+`app/routes/savings.py:37,143,236`,
+`app/services/savings_dashboard_service.py:665-722`,
+`app/templates/savings/dashboard.html:411-414`.
+Cross-link **F-035** (`federal_tax` bracket-vs-calibrated gated AGREE),
+**F-037** (`fica` calibration-path SS-cap bypass DEFINITION_DRIFT -- the same
+calibrated path consuming these rate columns), **F-046** (`goal_progress`
+GP1, the savings-goal producers in sub-question 2),
+**Q-13** (`salary.calibrate_preview` taxable derivation),
+**Q-21** (the Phase-1/Phase-3 miscite-correction protocol; Family D's §1.5
+model blocks are by contrast ACCURATE, consistent with Family C).
+
+---
+
+P4-e cross-link addendum to Q-25 (2026-05-16) -- **not a new question; a
+missing cross-link the Phase-4 consolidation surfaced.** Q-25's
+`effective_*_rate` AUTHORITATIVE-snapshot-vs-DERIVED-stale fork is, per
+`04_source_of_truth.md` Phase 4 deliverable 5 (headline consolidation), a
+**facet of the same structural decision** as **Q-17** (ARM re-amortization
+source), **Q-22** (`current_principal` role), and **Q-23**
+(`loan_params.interest_rate` role): *is a stored column that mirrors/anchors a
+computation AUTHORITATIVE (bug = missing maintenance-on-event) or
+CACHED/DERIVED (bug = display reads the stale mirror)?* The
+`effective_*_rate` columns are written once from a client snapshot at
+`calibrate_confirm` and never re-derived on the triggering event (profile /
+pre-tax-deduction edit) -- structurally identical to `current_principal`
+written once and never re-derived on settle. Q-25's existing cross-links
+(F-035, F-037, F-046, Q-13, Q-21) did not reach Q-17/Q-22/Q-23, so the
+coupling was not discoverable from Q-25 alone; this addendum supplies it. The
+developer should answer Q-17/Q-22/Q-23/Q-25 as **one stored-mirror-maintenance
+policy**, not piecemeal. Cross-link **Q-17**, **Q-22**, **Q-23**, **Q-26**.
+
+Q-26 (P4-e, 2026-05-16) -- **the `auth.user_settings.estimated_retirement_tax_rate`
+Phase-4 coverage GAP, and its intended source-of-truth role.** The Phase-4
+completeness reconciliation (`04_source_of_truth.md` Phase 4 deliverable 2,
+finding **F-046-SoT**) found this column is **absent from every Family section
+of `04_source_of_truth.md`** (`grep -n estimated_retirement_tax_rate
+04_source_of_truth.md` -> zero matches before this session's consolidation):
+no family classifies it, and the Family D triage table (`04:1841-1883`) omits
+it while listing 5 of the 6 `UserSettings` rate/threshold columns -- so the
+triage table's closing completeness claim (`04:1885-1886`, "No stored-monetary
+column outside this list was found during the per-column greps") is
+**inaccurate**. The column is `Numeric(5,4)` nullable, CHECK at
+`app/models/user.py:216` (defined `:242`), `01_inventory.md:731` concept token
+`federal_tax (retirement projection input)`, consumed as a `federal_tax`
+producer input by the retirement gap analysis
+(`02_concepts.md:2875` lists `UserSettings.estimated_retirement_tax_rate@user.py:242`),
+and is "one of the rate fields inspected by PA-02" (`01_inventory.md:739`). It
+is money-affecting: it multiplies projected retirement income to a withholding
+figure.
+
+Two readings (auditor does not choose -- audit-plan section 9, hard rule 5):
+
+- **Interpretation A -- AUTHORITATIVE:** a pure user-setting input with no
+  service writer (the expected disposition by the Family D triage table's own
+  rule, "AUTHORITATIVE unless a service computes+stores it"). The defect is
+  then only the Phase-4 omission itself (and the inaccurate `04:1885-1886`
+  completeness claim), and the remediation is a documentation pass: run the
+  confirmatory `grep -rn '\.estimated_retirement_tax_rate\s*=' app/services/`
+  that backs every other triage row but was never run for this column, then
+  add the per-column row + classification line.
+- **Interpretation B -- CACHED/DERIVED:** some path derives, recomputes, or
+  stores it (e.g. from a profile or a prior projection), giving it a staleness
+  surface analogous to the Q-25 `effective_*_rate` columns. Then it belongs to
+  the headline stored-mirror-maintenance family (Q-17/Q-22/Q-23/Q-25) and the
+  defect is the missing re-derivation on the triggering edit.
+
+The auditor does not assert the verdict (the confirmatory write-grep that
+backs every other triage row was not run/recorded for this column); the
+classification stays **UNCLEAR / GAP** until the developer confirms the role.
+
+Why it matters: it is the **single Phase-4 coverage GAP** -- every other
+stored-monetary §1.5 column is covered or escalation-handled. The column feeds
+every retirement federal-tax projection (`02_concepts.md:2875`,
+`paycheck_calculator`/`retirement_gap_calculator` chain), so a mis-classified
+role or an undetected staleness is a silent wrong-projection with no error.
+Sub-point: the Family D triage completeness claim at `04:1885-1886` should be
+corrected in a later reconciliation pass (consistent with the Q-21 sub-q4 /
+Q-24 miscite-correction protocol; no edit to the Family D section this
+session, per the additive-only Phase-4 protocol). Resolving this also closes
+the last open `04` acceptance-gate item (deliverable 6 criterion b: PASS with
+this one recorded GAP).
+
+Where it came up: `docs/audits/financial_calculations/04_source_of_truth.md`
+Phase 4 deliverable 2 (F-046-SoT) and the consolidated classification table
+(deliverable 3). `app/models/user.py:216,242`, `01_inventory.md:731,739`,
+`02_concepts.md:2875`. Cross-link **Q-21** / **Q-24** (the Phase-1/Phase-3
+miscite-correction protocol this follows), **F-042** (the other `UserSettings`
+rate read-path 0-vs-None hazards -- `safe_withdrawal_rate`,
+`trend_alert_threshold`; this Q does not re-raise those), **PA-02**
+(`00_priors.md` section 0.6, the prior-audit rate-field finding),
+**Q-17**/**Q-22**/**Q-23**/**Q-25** (the stored-mirror-maintenance family, if
+Interpretation B holds), **E-04** (`00_priors.md:178`).
