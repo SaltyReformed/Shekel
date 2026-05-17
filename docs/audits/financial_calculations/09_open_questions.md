@@ -1395,3 +1395,69 @@ rate read-path 0-vs-None hazards -- `safe_withdrawal_rate`,
 (`00_priors.md` section 0.6, the prior-audit rate-field finding),
 **Q-17**/**Q-22**/**Q-23**/**Q-25** (the stored-mirror-maintenance family, if
 Interpretation B holds), **E-04** (`00_priors.md:178`).
+
+--- P4-f ANNOTATION (2026-05-16; question NOT deleted, see hard rule 5) ---
+
+**Source-of-truth-role sub-question: RESOLVED -> AUTHORITATIVE.** P4-f
+(`04_source_of_truth.md` "Phase 4 - P4-f gap closure", finding F-046-SoT,
+now CLOSED) settled the Q-26 A-vs-B fork mechanically, not by auditor
+preference: the confirmatory `grep -rn 'estimated_retirement_tax_rate\s*='
+app/services/` returns zero matches (exit 1) -- no service computes-and-
+stores it; the single write path is user-driven
+(`app/routes/retirement.py:338-410 update_settings`); the single
+computational consumer reads it
+(`app/services/retirement_dashboard_service.py:222-226`); nothing derives
+into it. Interpretation A (AUTHORITATIVE, pure user input, no staleness
+surface) holds; Interpretation B (CACHED/DERIVED) is disproven. The column
+is **AUTHORITATIVE**; the GAP is closed; it is no longer the open Phase-4
+coverage gap. Acceptance-gate 6(b) now PASSes on an independently model-
+derived 62-column denominator (P4-f Deliverable 2), superseding the P4-e
+§1.5-based reconciliation (`04:2040-2047`); the model-derived census
+surfaced **zero new gaps**, so no new open questions are raised by the
+census.
+
+**NEW sharpened sub-question (developer adjudicates; auditor does not pick
+a side):** When `estimated_retirement_tax_rate` is **unset (NULL)**, what
+is the intended behavior?
+
+- Code behavior: `retirement_dashboard_service.compute_gap_data:222-226`
+  passes `None` to `retirement_gap_calculator.calculate_gap`, whose
+  `estimated_tax_rate is not None` guards (`:76`, `:108`) then **skip the
+  entire after-tax computation** -- the projection uses **gross/untaxed**
+  retirement income (`:85` falls back to gross `monthly_pension_income`;
+  `after_tax_*` fields stay `None`). There is **no bracket-based estimate
+  anywhere in `calculate_gap` (full read, `:37-136`)**.
+- Documented behavior: the model comment
+  `app/models/user.py:215-216` states NULL means "fall back to current
+  bracket-based estimate".
+
+These diverge silently in every retirement projection of a user who has
+not set the field (untaxed over-optimistic figure vs a bracket-based
+estimate). Which is correct: should `calculate_gap` gain a bracket-based
+fallback to match the model comment, or should the model comment be
+corrected to "NULL = no retirement-tax adjustment applied" to match the
+code? Why it matters: this is now the live defect behind F-046-SoT
+(the source-of-truth *classification* is settled; the *NULL-semantics
+contract* is not). Cites: `app/models/user.py:215-216` (doc),
+`app/services/retirement_gap_calculator.py:43,76,85,108` (code),
+`app/services/retirement_dashboard_service.py:222-226` (the bridge).
+
+**Secondary (route to Phase-3/Phase-6 with the F-042 family, not adjudicated
+here):** the read guard `if settings and
+settings.estimated_retirement_tax_rate`
+(`app/services/retirement_dashboard_service.py:224`) is a truthiness test;
+an explicit user `Decimal("0.0000")` (CHECK admits `>= 0`; semantically
+distinct from NULL "unset" per the model comment) is coerced to `None`,
+suppressing the after-tax dataclass fields. Violates coding-standards.md
+"Do not rely on truthiness for business logic". Same shape as **F-042**
+(`safe_withdrawal_rate`/`trend_alert_threshold` 0-vs-None); recorded, not
+re-litigated under Q-26.
+
+**PA-02 status (for completeness):** PA-02's percent-Range-vs-decimal-CHECK
+hazard does **not** hold for this column in current source --
+`RetirementSettingsSchema` uses `Range(0,1)`
+(`app/schemas/validation.py:1752-1755`), the route `/100`-normalizes before
+validation (`app/routes/retirement.py:348-351`), DB CHECK is `0..1`
+(`user.py:217-219`); remediated by C-24/F-077. `01_inventory.md:739`'s
+"one of the rate fields inspected by PA-02" is an over-broad linkage and is
+moot. Full reasoning in `04_source_of_truth.md` finding F-046-SoT.

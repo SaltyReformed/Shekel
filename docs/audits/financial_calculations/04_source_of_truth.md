@@ -2267,3 +2267,414 @@ and Q-26.
    single-scan artifact pairing every column with its class and blocking-Q.
 
 Phase 5 is NOT begun in this session.
+
+## Phase 4 - P4-f gap closure
+
+Session P4-f. Strictly additive: nothing above this heading was edited,
+trimmed, or rewritten (Family A/B/C/D and the P4-e section are untouched).
+Scope is exactly two deliverables: close the F-046-SoT GAP with a full
+per-column finding, and rebuild the completeness denominator from model
+source so the completeness claim no longer rests on the twice-failed
+§1.5 inventory (Q-21 `current_anchor_period_id`, P4-e F-046). Every factual
+claim below was produced by a `grep`/`glob`/full-file read run this session;
+no conclusion was inherited from §1.5, the planning inventory, or P4-d's
+triage list.
+
+### Deliverable 1 -- Finding F-046-SoT (closed): `auth.user_settings.estimated_retirement_tax_rate`
+
+- **Column:** `auth.user_settings.estimated_retirement_tax_rate`
+  `Numeric(5,4)` nullable. Definition `app/models/user.py:242`
+  (`db.Column(db.Numeric(5, 4), nullable=True)`, no server default).
+  DB CHECK `ck_user_settings_valid_estimated_tax_rate`
+  `app/models/user.py:216-221`
+  (`estimated_retirement_tax_rate IS NULL OR (>= 0 AND <= 1)`).
+  Model-vs-migration: the add migration
+  `migrations/versions/c3d4e5f6g7h8_add_investment_retirement_tables.py:171-179`
+  declares `sa.Numeric(5, 4), nullable=True` (no server default); the
+  CHECK was added by the C-24 sweep
+  `migrations/versions/b71c4a8f5d3e_c24_marshmallow_range_check_sweep.py:224-237`.
+  Model type and CHECK match both migrations exactly -- **no schema drift**.
+
+- **Represents:** the user's estimated effective income-tax rate during
+  retirement, stored as a fractional decimal in `[0, 1]` (a planning
+  assumption multiplied against projected traditional/pension retirement
+  income to produce an after-tax view). The model comment
+  `app/models/user.py:215-216` states "Estimated effective tax rate during
+  retirement (NULL = unset, fall back to current bracket-based estimate)".
+  Entered on `app/templates/settings/_retirement.html:27-29` as a percent;
+  the route divides by 100 before persistence.
+
+- **Computational counterpart:** **NONE exists in code.** The model comment
+  (`user.py:215-216`) claims a "fall back to current bracket-based estimate"
+  when NULL. Full read of the only consuming chain disproves the claim:
+  `retirement_dashboard_service.compute_gap_data`
+  (`app/services/retirement_dashboard_service.py:79-254`, the
+  `estimated_retirement_tax_rate` read is `:222-226`) computes
+  `tax_rate = Decimal(str(settings.estimated_retirement_tax_rate)) if
+  settings and settings.estimated_retirement_tax_rate else None` and passes
+  it as `estimated_tax_rate` to
+  `retirement_gap_calculator.calculate_gap`
+  (`app/services/retirement_gap_calculator.py:37-136`). In `calculate_gap`,
+  `estimated_tax_rate=None` (`:43`) means the guarded blocks at `:76-80`
+  (after-tax pension) and `:108-122` (after-tax projected savings) are
+  **skipped entirely**: `after_tax_monthly_pension=None` (`:75`),
+  `after_tax_projected=None` (`:108`), and `effective_pension` falls back
+  to the **gross** `monthly_pension_income` (`:85`). There is no
+  bracket-based estimate anywhere in the function. NULL therefore yields
+  an **untaxed/gross** retirement projection, not a computed estimate. The
+  model comment documents a fallback the code does not implement -- a
+  DEFINITION discrepancy (documentation vs behavior), surfaced for the
+  developer in Q-26, not adjudicated here (hard rule 5).
+
+- **Update paths:** exactly one, user-driven.
+  `app/routes/retirement.py:338-410` `update_settings()`
+  (`@retirement_bp.route("/retirement/settings", POST)`):
+  raw form captured `:344`; percent->decimal `form_data[field] =
+  str(Decimal(form_data[field]) / Decimal("100"))` for
+  `("safe_withdrawal_rate", "estimated_retirement_tax_rate")` `:348-359`
+  (narrow `InvalidOperation` catch `:352-359`, C-46/F-145); validate via
+  `_settings_schema` (= `RetirementSettingsSchema()`,
+  `app/routes/retirement.py:43`, import `:23-26`) `:361`; on error
+  re-render 422 `:362-386`; `load` `:388`; `setattr(settings, field_name,
+  value)` for `field_name in _SETTINGS_FIELDS` (set includes
+  `"estimated_retirement_tax_rate"` `:401`) `:403-405`;
+  `db.session.commit()` `:407`. **Confirmatory write-grep**
+  `grep -rn 'estimated_retirement_tax_rate\s*=' app/services/` ->
+  **zero matches (exit 1)**: no service computes-and-stores this column.
+  This is the same grep that backs every Family D triage row; it was the
+  one never run for this column in P4-e (the F-046-SoT GAP cause). It is
+  run and recorded now.
+
+- **Direct-read paths:**
+  1. `app/services/retirement_dashboard_service.py:222-226`
+     (`compute_gap_data`) -- the **only computational consumer**. Reads
+     `settings.estimated_retirement_tax_rate` under a **truthiness** guard
+     `if settings and settings.estimated_retirement_tax_rate`, then passes
+     `Decimal(str(...))` or `None` to `calculate_gap(..., estimated_tax_rate=)`.
+  2. `app/templates/settings/_retirement.html:29` -- **display only**:
+     `("%.1f"|format(settings.estimated_retirement_tax_rate|float * 100) ...)`
+     (decimal->percent for the form field; Jinja arithmetic + `|float`
+     cast, a templates-layer/Decimal-contract concern owned by Phase 6 /
+     the F-042 family, cross-link only).
+  No other read exists (full-repo
+  `grep -rn estimated_retirement_tax_rate app/ scripts/ migrations/`:
+  `user.py` def/CHECK, `retirement.py:348,401`, `validation.py:1752`,
+  `retirement_dashboard_service.py:223-224`, `_retirement.html:27-31`,
+  the two migrations -- complete surface).
+
+- **Drift risk:** This is **not** a stored-vs-computed staleness surface
+  (the Phase-4 concern): no service writer, no cache, nothing derives INTO
+  the column. Two real defects observed while reading, neither a Phase-4
+  staleness, both routed to Q-26 / cross-refs (hard rule 4 -- recorded, not
+  ignored, not fixed):
+  - **(a) Documentation-vs-code fallback discrepancy.** `user.py:215-216`
+    promises a bracket-based estimate when NULL; `calculate_gap` applies
+    **no tax** when NULL (gross figures). A user who leaves the field unset
+    sees an over-optimistic (untaxed) retirement projection with no error,
+    while the model comment asserts the opposite behavior.
+  - **(b) 0-vs-None truthiness conflation**
+    (`retirement_dashboard_service.py:224`). The CHECK admits `>= 0`, so an
+    explicit `0.0000` ("I expect 0% retirement tax" -- realistic for
+    Roth-only withdrawals) is a valid stored value distinct from NULL
+    ("unset", per the model comment). The guard
+    `if settings and settings.estimated_retirement_tax_rate` treats
+    `Decimal("0.0000")` as falsy and coerces it to `None`. The gap *math*
+    coincidentally agrees (0% tax and "no tax" yield the same
+    `monthly_income_gap`), but the `RetirementGapAnalysis` after-tax fields
+    (`after_tax_monthly_pension`, `after_tax_projected_savings`,
+    `after_tax_surplus_or_shortfall`,
+    `retirement_gap_calculator.py:26,33-34,124-136`) stay `None` instead of
+    the explicit-0% numeric values, suppressing the after-tax view for a
+    user who deliberately entered 0. Violates coding-standards.md "Do not
+    rely on truthiness for business logic ... `0` and `None` mean different
+    things". Same class as `Transaction.effective_amount`'s deliberately
+    correct `is not None` (`transaction.py:242-245`).
+
+- **Stale-detection:** N/A -- no stored/computed pair, no staleness flag,
+  none needed.
+
+- **Phase-3 cross-ref:** F-042 (other `UserSettings` rate read-path
+  0-vs-None hazards: `safe_withdrawal_rate`, `trend_alert_threshold`;
+  04:2111 / triage 04:1882-1883), PA-04 (`safe_withdrawal_rate`
+  float-cast, `00_priors.md:667`), F-027/F-028 (the `effective_amount`
+  truthiness-bypass family). The defect (b) here is the *same shape* as
+  F-042's but on a different column; recorded, not re-litigated.
+
+- **PA-02 status (does the prior-audit concern still hold here?):** **No,
+  not for this column in current source.** PA-02 (`00_priors.md:665`,
+  findings.md F-014) is the Marshmallow `Range(min=0, max=100)`
+  (percentage) vs DB CHECK `0..1` (decimal) mismatch on "inflation_rate,
+  FICA tax rates, state tax rates". Current source for THIS column:
+  `RetirementSettingsSchema.estimated_retirement_tax_rate`
+  (`app/schemas/validation.py:1752-1755`) validates
+  `Range(min=0, max=1)` -- the **decimal** range, not the percent range;
+  the route normalizes percent->decimal via `/100` **before** validation
+  (`retirement.py:348-351`); the DB CHECK is `0..1`
+  (`user.py:217-219`, migration `b71c4a8f5d3e:224-237`). All three layers
+  are consistent. The percent/decimal hazard PA-02 describes is **absent
+  here**, remediated by C-24/F-077 (model comment `user.py:214` "F-077 /
+  C-24"; commit CM-02 `42720ca`, `00_priors.md:714`). Note also: PA-02 as
+  recorded at `00_priors.md:665` does **not** enumerate this column;
+  `01_inventory.md:739`'s "one of the rate fields inspected by PA-02" is an
+  over-broad linkage and is moot regardless, since the hazard is not
+  present in current source. The still-live PA-01/PA-02-class surfaces are
+  the *other* schema -- `UserSettingsSchema.default_inflation_rate`
+  (`validation.py:1779`, `Range(0,100)`) and `trend_alert_threshold`
+  (`validation.py:1788`, `Range(1,100)`) -- which are out of P4-f scope.
+
+- **Classification: AUTHORITATIVE.** As a stored column it is a pure
+  user-entered planning input: a single user-driven write path
+  (`retirement.py:update_settings`), zero service writers (write-grep exit
+  1), nothing derives into it, no cache, no staleness surface. The two
+  interpretations Q-26 posed are settled mechanically by the code, not by
+  auditor preference: Interpretation A (AUTHORITATIVE) holds; Interpretation
+  B (CACHED/DERIVED) is disproven -- no path recomputes or stores it.
+  **GAP F-046-SoT is CLOSED with verdict AUTHORITATIVE.** Defects (a) and
+  (b) are Phase-3/5/6 read-path/documentation findings, not a Phase-4
+  source-of-truth staleness; they do not change the stored column's class.
+
+- **Open questions:** the source-of-truth-role sub-question of Q-26 is
+  **RESOLVED (AUTHORITATIVE)**. One new sharpened sub-question is added to
+  Q-26 (the developer adjudicates, hard rule 5): does an *unset* (NULL)
+  `estimated_retirement_tax_rate` mean "apply no tax / show gross
+  retirement figures" (what `retirement_gap_calculator.calculate_gap:76,108`
+  actually does) or "fall back to a current bracket-based estimate" (what
+  the model comment `app/models/user.py:215-216` documents)? The two
+  diverge silently in every retirement projection of a user who has not
+  set the field. Plus the 0-vs-None conflation at
+  `retirement_dashboard_service.py:224` (defect (b)) is flagged for
+  Phase-3/Phase-6 alongside the F-042 family.
+
+### Deliverable 2 -- Completeness denominator rebuilt from model source
+
+`glob app/models/*.py` -> 25 files; all 23 concrete-model files read in
+full this session (`__init__.py` is an import registry, `mixins.py` carries
+only timestamp/soft-delete columns -- no money/rate). The census below was
+built **only** from that model source plus a migration backstop. It was
+**not** seeded from §1.5, the planning inventory, or P4-d's triage list
+(the artifacts that failed twice). Comparison to §1.5 is done only *after*,
+to explain discrepancies.
+
+Inclusion rule (audit-plan section 4): a stored numeric column representing
+money, a balance, a rate, a limit, a count with a money/rate computational
+counterpart, or a source-of-truth pointer. Excluded: pure relational FKs,
+booleans, timestamps, dates, strings, PKs, and structural/config Integers
+with no money/rate counterpart (`version_id` optimistic-lock counters,
+`sort_order`, `period_index`, term/day/month/year/dependent counters) --
+enumerated in the out-of-scope appendix so the denominator is auditable,
+matching the audit-plan's "has, or should have, a computational
+counterpart" scope.
+
+Coverage column maps each census row to where 04 already classifies it:
+**A** = Family A / consolidated 04:2101-2103; **B** = Family B /
+consolidated 04:2104-2109; **C** = Family C / consolidated 04:2110-2115;
+**D-tri:NNNN** = Family D triage table row at 04:NNNN; **D-esc:NNNN** =
+consolidated/Escalation row at 04:NNNN (not in the triage table);
+**F-046** = closed by Deliverable 1 above; **NONE** = uncovered.
+
+#### Canonical census -- in-scope stored numeric columns (model-derived)
+
+| schema.table.column | type | nullable | CHECK | 04 coverage |
+| --- | --- | --- | --- | --- |
+| budget.accounts.current_anchor_balance | Numeric(12,2) | yes | none | A (04:2101) |
+| budget.accounts.current_anchor_period_id | Integer FK->pay_periods | yes (SET NULL) | none | A (04:2102, UNCLEAR Q-20) |
+| budget.account_anchor_history.anchor_balance | Numeric(12,2) | no | none | A (04:2103, CACHED) |
+| budget.loan_params.original_principal | Numeric(12,2) | no | `> 0` (user.py loan_params:27-30) | B (04:2105) |
+| budget.loan_params.current_principal | Numeric(12,2) | no | `>= 0` (loan_params.py:31-34) | B (04:2104, UNCLEAR Q-22) |
+| budget.loan_params.interest_rate | Numeric(7,5) | no | `>= 0` (loan_params.py:35-38) | B (04:2106, UNCLEAR Q-23) |
+| budget.rate_history.interest_rate | Numeric(7,5) | no | `>=0 AND <=1` (loan_features.py:44-47) | B (04:2107) |
+| budget.escrow_components.annual_amount | Numeric(12,2) | no | `>= 0` (loan_features.py:103-106) | B (04:2108) |
+| budget.escrow_components.inflation_rate | Numeric(5,4) | yes | NULL OR `0..1` (loan_features.py:111-115) | B (04:2109, D2 nit) |
+| budget.interest_params.apy | Numeric(7,5) | no | `>=0 AND <=1` (interest_params.py:33-36) | C (04:2110) |
+| budget.investment_params.assumed_annual_return | Numeric(7,5) | no | `-1..1` (investment_params.py:21-24) | C (04:2111) |
+| budget.investment_params.annual_contribution_limit | Numeric(12,2) | yes | NULL OR `>= 0` (investment_params.py:31-35) | C (04:2112) |
+| budget.investment_params.employer_flat_percentage | Numeric(5,4) | yes | NULL OR `0..1` (investment_params.py:40-45) | C (04:2113) |
+| budget.investment_params.employer_match_percentage | Numeric(5,4) | yes | NULL OR `0..10` (investment_params.py:53-58) | C (04:2114) |
+| budget.investment_params.employer_match_cap_percentage | Numeric(5,4) | yes | NULL OR `0..1` (investment_params.py:64-69) | C (04:2115) |
+| budget.transactions.estimated_amount | Numeric(12,2) | no | `>= 0` (transaction.py:112-115) | D-tri:1843 / 04:2117 |
+| budget.transactions.actual_amount | Numeric(12,2) | yes | NULL OR `>= 0` (transaction.py:116-119) | D-esc:2116 (F-027/F-028) |
+| budget.transaction_entries.amount | Numeric(12,2) | no | `> 0` (transaction_entry.py:51-54) | D-tri:1844 |
+| budget.transfers.amount | Numeric(12,2) | no | `> 0` (transfer.py:37) | D-tri:1845 |
+| budget.transaction_templates.default_amount | Numeric(12,2) | no | `>= 0` (transaction_template.py:30) | D-tri:1846 |
+| budget.transfer_templates.default_amount | Numeric(12,2) | no | `> 0` (transfer_template.py:31-34) | D-tri:1847 |
+| budget.savings_goals.target_amount | Numeric(12,2) | yes | `> 0` (savings_goal.py:41-44) | D-tri:1848 |
+| budget.savings_goals.contribution_per_period | Numeric(12,2) | yes | NULL OR `> 0` (savings_goal.py:45-48) | D-esc:2118 (Q-25 #2) |
+| budget.savings_goals.income_multiplier | Numeric(8,2) | yes | NULL OR `> 0` (savings_goal.py:49-52) | D-tri:1849 |
+| salary.salary_profiles.annual_salary | Numeric(12,2) | no | `> 0` (salary_profile.py:28) | D-tri:1850 |
+| salary.salary_profiles.additional_income | Numeric(12,2) | no | `>= 0` (salary_profile.py:32) | D-tri:1851 |
+| salary.salary_profiles.additional_deductions | Numeric(12,2) | no | `>= 0` (salary_profile.py:33) | D-tri:1852 |
+| salary.salary_profiles.extra_withholding | Numeric(12,2) | no | `>= 0` (salary_profile.py:34) | D-tri:1853 |
+| salary.salary_raises.percentage | Numeric(5,4) | yes | NULL OR `> 0` (salary_raise.py:66) | D-tri:1857 |
+| salary.salary_raises.flat_amount | Numeric(12,2) | yes | NULL OR `> 0` (salary_raise.py:67) | D-tri:1858 |
+| salary.paycheck_deductions.amount | Numeric(12,4) | no | `> 0` (paycheck_deduction.py:40) | D-tri:1854 |
+| salary.paycheck_deductions.annual_cap | Numeric(12,2) | yes | NULL OR `> 0` (paycheck_deduction.py:42-45) | D-tri:1855 |
+| salary.paycheck_deductions.inflation_rate | Numeric(5,4) | yes | NULL OR `0..1` (paycheck_deduction.py:51-55) | D-tri:1856 |
+| salary.pension_profiles.benefit_multiplier | Numeric(7,5) | no | `> 0` (pension_profile.py:32-35) | D-tri:1865 |
+| salary.calibration_overrides.actual_gross_pay | Numeric(10,2) | no | `> 0` (calibration_override.py:27-30) | D-tri:1859 |
+| salary.calibration_overrides.actual_federal_tax | Numeric(10,2) | no | `>= 0` (calibration_override.py:31-34) | D-tri:1860 |
+| salary.calibration_overrides.actual_state_tax | Numeric(10,2) | no | `>= 0` (calibration_override.py:35-38) | D-tri:1861 |
+| salary.calibration_overrides.actual_social_security | Numeric(10,2) | no | `>= 0` (calibration_override.py:39-42) | D-tri:1862 |
+| salary.calibration_overrides.actual_medicare | Numeric(10,2) | no | `>= 0` (calibration_override.py:43-46) | D-tri:1863 |
+| salary.calibration_overrides.effective_federal_rate | Numeric(12,10) | no | `0..1` (calibration_override.py:53-56) | D-esc:2119 (UNCLEAR Q-25) |
+| salary.calibration_overrides.effective_state_rate | Numeric(12,10) | no | `0..1` (calibration_override.py:57-60) | D-esc:2120 (Q-25) |
+| salary.calibration_overrides.effective_ss_rate | Numeric(12,10) | no | `0..1` (calibration_override.py:61-64) | D-esc:2121 (Q-25) |
+| salary.calibration_overrides.effective_medicare_rate | Numeric(12,10) | no | `0..1` (calibration_override.py:65-68) | D-esc:2122 (Q-25) |
+| salary.calibration_deduction_overrides.actual_amount | Numeric(10,2) | no | `>= 0` (calibration_override.py:135-138) | D-tri:1864 |
+| salary.tax_bracket_sets.standard_deduction | Numeric(12,2) | no | `>= 0` (tax_config.py:21) | D-tri:1866 |
+| salary.tax_bracket_sets.child_credit_amount | Numeric(12,2) | no | `>= 0` (tax_config.py:22) | D-tri:1867 |
+| salary.tax_bracket_sets.other_dependent_credit_amount | Numeric(12,2) | no | `>= 0` (tax_config.py:23) | D-tri:1868 |
+| salary.tax_brackets.min_income | Numeric(12,2) | no | `>= 0` (tax_config.py:86) | D-tri:1869 |
+| salary.tax_brackets.max_income | Numeric(12,2) | yes | NULL OR `>= min_income` (tax_config.py:87-90) | D-tri:1870 |
+| salary.tax_brackets.rate | Numeric(5,4) | no | `0..1` (tax_config.py:91) | D-tri:1871 |
+| salary.state_tax_configs.flat_rate | Numeric(5,4) | yes | NULL OR `0..1` (tax_config.py:136-139) | D-tri:1872 |
+| salary.state_tax_configs.standard_deduction | Numeric(12,2) | yes | NULL OR `>= 0` (tax_config.py:143-146) | D-tri:1873 |
+| salary.fica_configs.ss_rate | Numeric(5,4) | no | `0..1` (tax_config.py:194) | D-tri:1874 |
+| salary.fica_configs.ss_wage_base | Numeric(12,2) | no | `> 0` (tax_config.py:195) | D-tri:1875 |
+| salary.fica_configs.medicare_rate | Numeric(5,4) | no | `0..1` (tax_config.py:196) | D-tri:1876 |
+| salary.fica_configs.medicare_surtax_rate | Numeric(5,4) | no | `0..1` (tax_config.py:197-200) | D-tri:1877 |
+| salary.fica_configs.medicare_surtax_threshold | Numeric(12,2) | no | `> 0` (tax_config.py:201) | D-tri:1878 |
+| auth.user_settings.default_inflation_rate | Numeric(5,4) | yes | `0..1` (user.py:187-188) | D-tri:1879 |
+| auth.user_settings.low_balance_threshold | Integer (money) | yes | `>= 0` (user.py:192) | D-tri:1880 |
+| auth.user_settings.large_transaction_threshold | Integer (money) | no | `>= 0` (user.py:193-196) | D-tri:1881 |
+| auth.user_settings.safe_withdrawal_rate | Numeric(5,4) | yes | NULL OR `0..1` (user.py:207-211) | D-tri:1882 |
+| auth.user_settings.trend_alert_threshold | Numeric(5,4) | no | `0..1` (user.py:197-200) | D-tri:1883 |
+| auth.user_settings.estimated_retirement_tax_rate | Numeric(5,4) | yes | NULL OR `0..1` (user.py:216-221) | **F-046 (CLOSED by Deliverable 1: AUTHORITATIVE)** |
+
+**62 in-scope columns. Coverage column has zero NONE rows** -- the only
+previously-uncovered column (`estimated_retirement_tax_rate`) is closed by
+Deliverable 1.
+
+#### Out-of-scope structural Integers (model-derived, audit-plan section 4)
+
+Independently enumerated so the denominator's exclusions are auditable
+(matches P4-e's "~46 non-monetary structural Integers" bucket, 04:2047, by
+the audit-plan's "has/should have a computational counterpart" rule, not by
+trusting it): `auth.user_settings.grid_default_periods`,
+`auth.user_settings.anchor_staleness_days`, `auth.users.failed_login_count`,
+`auth.mfa_configs.last_totp_timestep`, `budget.loan_params.term_months`,
+`budget.loan_params.payment_day`,
+`budget.loan_params.arm_first_adjustment_months`,
+`budget.loan_params.arm_adjustment_interval_months`,
+`budget.investment_params.contribution_limit_year`,
+`budget.recurrence_rules.{interval_n,offset_periods,day_of_month,due_day_of_month,month_of_year}`,
+`budget.pay_periods.period_index`,
+`salary.salary_profiles.{pay_periods_per_year,qualifying_children,other_dependents}`,
+`salary.salary_raises.{effective_month,effective_year}`,
+`salary.paycheck_deductions.{deductions_per_year,inflation_effective_month}`,
+`salary.pension_profiles.consecutive_high_years`,
+`salary.tax_bracket_sets.tax_year`, `salary.state_tax_configs.tax_year`,
+`salary.fica_configs.tax_year`, `ref.account_types.max_term_months`, plus
+`version_id` (9 tables) and `sort_order` (5 tables). None has a money/rate
+computational counterpart; all correctly out of Phase-4 scope.
+
+#### Census-vs-04 set-difference
+
+`census in-scope columns` MINUS `columns covered by a 04 family/section` =
+**{ `auth.user_settings.estimated_retirement_tax_rate` }** -- the single
+known GAP, **closed by Deliverable 1 above (verdict AUTHORITATIVE)**.
+
+**Zero NEW gaps.** (Well under the "stop and escalate if > ~3 new gaps"
+threshold -- no developer re-sweep decision required.) Coverage verified
+mechanically, not asserted: for each non-triage-table column,
+`grep -c <col> docs/audits/financial_calculations/04_source_of_truth.md`
+returns substantive hits in a Family/consolidated section
+(`current_anchor_balance` 30, `current_anchor_period_id` 17,
+`original_principal` 20, `interest_rate` 65, `apy` 28,
+`assumed_annual_return` 12, `employer_match_cap_percentage` 4,
+`actual_amount` 19, `estimated_amount` 16, `contribution_per_period` 9,
+`effective_federal_rate` 8, `effective_medicare_rate` 4); the triage-table
+columns were confirmed by direct read of 04:1843-1883.
+`estimated_retirement_tax_rate` returns 9 hits, **all** in F-046-SoT /
+consolidated-GAP / Q-26 context (no Family classification line) -- which is
+exactly why it was the GAP and why Deliverable 1 was needed.
+
+Migration backstop (catch a DB column with no model, or a model column
+whose migration type differs):
+- `comm -23` of {tables in any migration `op.create_table`/`op.add_column`}
+  vs {model `__tablename__`} = **empty** -- every migrated table has a
+  model; no DB-only table.
+- `grep -B2 'sa.Numeric('` over `migrations/versions/*.py` surfaced no
+  column name absent from the model census (`effective_date`/`name` are
+  Date/String false positives of the window).
+- Targeted model-vs-migration check on the F-046 column: model
+  `user.py:242` `Numeric(5,4) nullable` == add migration
+  `c3d4e5f6g7h8:171-179`; model CHECK `user.py:216-221` == C-24 migration
+  `b71c4a8f5d3e:224-237`. No drift.
+The model layer is the project's canonical schema source (the
+`db.create_all()` test path and the Alembic chain are kept convergent;
+see e.g. `interest_params.py:43-51`, `scenario.py:18-26`); the backstop
+confirms no DB-side column escapes the model-derived denominator.
+
+#### Census spot-check (trust-but-verify; 3 columns re-read at source)
+
+1. `salary.fica_configs.ss_wage_base` -- reopened `app/models/tax_config.py`:
+   `:221-224` `db.Numeric(12, 2), nullable=False, server_default=db.text("176100")`;
+   CHECK `:195` `ss_wage_base > 0`. Census row says
+   `Numeric(12,2) | no | > 0`. **Match.**
+2. `budget.savings_goals.income_multiplier` -- reopened
+   `app/models/savings_goal.py`: `:115-118`
+   `db.Numeric(8, 2), nullable=True`; CHECK `:49-52`
+   `income_multiplier IS NULL OR income_multiplier > 0`. Census row says
+   `Numeric(8,2) | yes | NULL OR > 0`. **Match.**
+3. `budget.loan_params.current_principal` -- reopened
+   `app/models/loan_params.py`: `:54`
+   `db.Numeric(12, 2), nullable=False`; CHECK `:31-34`
+   `current_principal >= 0`. Census row says
+   `Numeric(12,2) | no | >= 0`. **Match.**
+All three verified at source; the census is verified, not asserted.
+
+#### §1.5 discrepancy explanation (compared only after the census was built)
+
+The independent census matches the P4-e *union* of covered columns;
+the integer partition differs (P4-e: "~38 triage" + "7 escalation";
+P4-f: 41 triage rows read at 04:1843-1883 + 6 escalation-only rows) only
+because the triage/escalation boundary was drawn differently and P4-e
+hedged ("13 stated to avoid recount", 04:2042). The load-bearing result is
+identical: the set-difference is exactly the one F-046 column. §1.5's
+known omissions (Q-21 `current_anchor_period_id`; the
+`estimated_retirement_tax_rate` row §1.5 *did* list at 01:731 but no Family
+classified) did not produce any additional uncovered column once the
+denominator is rebuilt from `app/models/*.py`.
+
+### Supersession note for 04:1885-1886 (additive; the prior section is unedited)
+
+The Family-D triage-table closing claim at **04:1885-1886** ("No
+stored-monetary column outside this list was found during the per-column
+greps...") is **superseded as the completeness basis** by this P4-f
+model-derived census. That sentence was already known inaccurate (it
+omitted `estimated_retirement_tax_rate` -- the F-046-SoT GAP / Q-26); per
+the additive-only Phase-4 protocol the sentence is **not edited**. A reader
+of 04 who reaches 04:1885-1886 should treat the authoritative completeness
+statement as: *the triage table 04:1841-1883 + the consolidated Families
+A/B/C and Escalation rows 04:2101-2122 + this P4-f finding for
+`auth.user_settings.estimated_retirement_tax_rate` together cover 100% of
+the independently model-derived in-scope stored-numeric columns (62
+columns); zero NONE remain.* This supersession pointer is the protocol-
+compliant correction (no edit to the Family D section, consistent with the
+Q-21 sub-q4 / Q-24 miscite-correction protocol).
+
+### Acceptance-gate item 6(b) -- corrected, supersedes the P4-e §1.5 reconciliation
+
+P4-e's completeness reconciliation (04:2040-2047) leaned on the §1.5
+inventory denominator, which this audit caught omitting columns twice
+(Q-21, F-046). **This P4-f item 6(b) supersedes 04:2040-2047 as the
+completeness basis.** Re-asserted against the verified denominator:
+
+> Every stored numeric value in `app/models/*.py` that has, or should
+> have, a money/rate computational counterpart (62 in-scope columns,
+> enumerated in the P4-f canonical census, each with `path:line` type +
+> CHECK, each spot-checkable, three re-verified at source) maps to a
+> Phase-4 classification: Family A/B/C (consolidated 04:2101-2115),
+> Family D triage (04:1843-1883), Escalation/Q-25 (04:2116-2122), or the
+> P4-f F-046-SoT finding for `estimated_retirement_tax_rate`
+> (AUTHORITATIVE). The set-difference census-minus-04 is empty after
+> Deliverable 1. The denominator is **model-derived, not §1.5-derived**,
+> and is backstopped by a migration-vs-model table diff (no DB-only
+> table) and a targeted model-vs-migration type/CHECK check on the
+> formerly-uncovered column (no drift). **Acceptance criterion 6(b):
+> PASS, on an independently model-derived denominator.** UNCLEAR
+> classifications remain open as developer-input findings
+> (Q-20/Q-22/Q-23/Q-25/Q-26) per acceptance criterion 3; they are
+> classified, not unclassified -- completeness is satisfied.
+
+Phase 5 is NOT begun in this session.
