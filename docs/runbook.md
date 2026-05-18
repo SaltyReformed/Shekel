@@ -372,6 +372,122 @@ Any non-empty diff is an incident: investigate before re-syncing,
 because the host change may carry an undocumented production fix that
 must be brought into the repo first.
 
+#### One-shot reconciliation script
+
+`scripts/reconcile_prod_to_canonical.sh` bundles the seven host-side
+steps that bring a drifted `/opt/docker/shekel/` runtime back to the
+repo's canonical state. Use this when the host has diverged
+substantially (multiple files, secrets directory missing, network
+attachment wrong) or to bootstrap a fresh shared-mode deployment
+from a host that previously ran bundled-mode.
+
+```bash
+# On the host, from the repo root:
+cd /opt/shekel
+git pull --ff-only
+bash scripts/reconcile_prod_to_canonical.sh
+# sudo will prompt once -- the script needs root only for the cert
+# chown to uid 70 (postgres) on deploy/postgres/server.key.
+```
+
+The script:
+
+1. Generates the Postgres TLS cert if not present
+   (`deploy/postgres/server.{crt,key}`)
+2. Creates `/opt/docker/shekel/{secrets,deploy/postgres}` directories
+3. Migrates the four high-sensitivity secrets from the current `.env`
+   into per-file entries under `secrets/` (mode 0600)
+4. Rewrites `/opt/docker/shekel/.env` with `replaced_by_docker_secret`
+   placeholders for the four secrets, plus `SHEKEL_IMAGE_DIGEST`,
+   `SHEKEL_REDIS_PASSWORD`, and `REGISTRATION_ENABLED=false`. Backs
+   up the old `.env` to `.env.bak.<timestamp>`.
+5. Creates the `shekel-frontend` bridge with the pinned subnet
+   (172.32.0.0/24) if missing
+6. Snapshots `/opt/docker/nginx/nginx.conf` and prints critical-
+   directive presence (limit_req_zone, set_real_ip_from, timeouts)
+   before overwriting from `deploy/nginx-shared/`. The pre-overwrite
+   diff is saved to `/opt/docker/nginx/.reconcile-snapshot-<ts>/`.
+7. Copies the repo's `docker-compose.yml` and `deploy/docker-compose.prod.yml`
+   to `/opt/docker/shekel/`. Snapshots the old files for rollback.
+
+The script STOPS short of `docker compose down && up -d` so you can
+review the merged config before pulling the trigger. Its trailing
+output prints the exact post-script commands.
+
+##### Gotchas that triggered hotfixes in this session
+
+* **Docker secrets `uid`/`gid`/`mode` are ignored in non-Swarm
+  Compose v2.** The default secret mount inherits the host file's
+  ownership and mode. The `postgres_password` file must be readable
+  by uid 70 (postgres) inside the db container; since the host file
+  is josh:josh, the script writes it world-readable
+  (`chmod 0644 /opt/docker/shekel/secrets/postgres_password`) so the
+  postgres user can read via the "other" bits. Directory containment
+  (`/opt/docker/shekel/secrets/` is mode 0700 josh-only) keeps the
+  value protected from host-side enumeration. The other three
+  secrets (`secret_key`, `app_role_password`, `totp_encryption_key`)
+  are read by uid 1000 (shekel) inside the app container, which
+  matches the host file owner, so 0600 works for those.
+
+* **Repo `deploy/nginx-shared/nginx.conf` drift.** The audit B7
+  hardening (`limit_req_zone`, `client_*_timeout`, `client_max_body_size`,
+  narrowed `set_real_ip_from`) was applied to the on-host file but
+  never back-ported. A blind repo->host sync clobbers them and
+  crashes nginx with `zero size shared memory zone "public"`. The
+  script's Step 6 snapshots the host file first and prints critical-
+  directive presence before overwriting. After running the script
+  the operator should diff the snapshot against the new file and
+  confirm no audit-fix directive was lost.
+
+* **Backend network subnet pin.** The repo file pins `backend` to
+  172.31.0.0/24. The on-host file under prior versions used the
+  auto-assigned 172.25.0.0/16. `docker compose up -d` after the
+  override copy tries to recreate the backend network and fails
+  with `Resource still in use` because `shekel-postgres-exporter`
+  in the monitoring stack is attached. Stop the exporter first:
+  `cd /opt/docker/monitoring && docker compose stop shekel-postgres-exporter`,
+  let the Shekel stack come up under the new subnet, then
+  `docker compose up -d --force-recreate shekel-postgres-exporter`
+  to rejoin.
+
+* **Image entrypoint must support `_load_secret`.** The C-38 docker
+  secrets pre-date the entrypoint code that reads them. Before
+  flipping `.env` to placeholders, confirm the deployed image's
+  entrypoint contains the `_load_secret` function:
+
+  ```bash
+  docker run --rm --entrypoint sh ghcr.io/saltyreformed/shekel@sha256:<pinned> \
+      -c 'grep -c _load_secret /home/shekel/app/entrypoint.sh'
+  # Output must be >= 5 (one definition + four call sites).
+  ```
+
+  An image without `_load_secret` reads the placeholders as the
+  literal SECRET_KEY value and fails the 32-char minimum check at
+  every boot. Rebuild via CI (push to `main`) and update
+  `SHEKEL_IMAGE_DIGEST` in `/opt/docker/shekel/.env` before the
+  flip.
+
+##### Post-script verification
+
+```bash
+# Re-read the merged config (the script also writes it to
+# /opt/docker/shekel/.reconcile-snapshot-<ts>/merged-config.yml).
+cd /opt/docker/shekel
+docker compose config | less
+
+# When ready to recreate:
+cd /opt/docker && docker compose up -d nginx cloudflared  # attach to shekel-frontend
+docker exec nginx nginx -t && docker exec nginx nginx -s reload
+cd /opt/docker/shekel && docker compose down && docker compose up -d
+
+# Health checks:
+docker compose ps                                            # all four healthy
+docker inspect shekel-prod-app --format '{{.HostConfig.ReadonlyRootfs}}'    # → true
+docker logs shekel-prod-app 2>&1 | grep '^Loaded '            # → 4 lines, one per secret
+curl -sI https://shekel.saltyreformed.com/login | head -5     # → 200 + sec headers
+docker exec jellyfin bash -c 'getent hosts shekel-prod-app'   # → fails (isolation confirmed)
+```
+
 ---
 
 ## 3. Backup & Restore
