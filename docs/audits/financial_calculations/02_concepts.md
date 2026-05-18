@@ -3424,3 +3424,35 @@ This statement supersedes the P2-d marker comment ("Do not mark Phase 2 complete
 P2-reconcile's gate"). P2-a/b/c/d content is unmodified. **Phase 3 may begin** (required
 reading per audit-plan 10.3: `00_priors.md`, `01_inventory.md`, `02_concepts.md` -- the latter
 including this reconciliation section and its E1 register).
+
+--- Q-answer reconciliation (2026-05-18) ---
+
+Trigger: every Q raised by Phases 0-4 was adjudicated by the developer
+2026-05-18 and recorded as behavioral expectations E-18..E-28 in
+`00_priors.md` 0.3 (with A-NN in `09_open_questions.md`). This section
+reconciles the Phase-2 primary-path verdicts that were `PRIMARY PATH: UNKNOWN`
+pending those answers. Additive only: no P2 entry text is rewritten; the
+original `UNKNOWN` verdicts stand as the point-in-time record and are
+superseded here.
+
+Trust-but-verify: resolutions are re-derived independently from the locked
+E-18..E-28 / A-NN, not inherited from any prior gate. The concept
+producer/consumer FACTS recorded in P2 are unchanged (no code re-proof);
+only the previously-blocked "which producer is canonical" axis is now set.
+
+Completeness: `02_concepts.md` self-certifies "exactly 3 of 47" concepts at
+`PRIMARY PATH: UNKNOWN` (gate (d) / cumulative tally). All 3 reconciled below
+-> count parity, complete.
+
+| Concept (P2 line) | Was | Now -> canonical primary path | Governing |
+|---|---|---|---|
+| `period_subtotal` (~323) | UNKNOWN (Q-10) | RESOLVED -- one service producer; expense base `_entry_aware_amount` shared with `balance_calculator`; subtotal.net reconciles with the running-balance delta by construction | A-10 -> E-25 |
+| `debt_total` (~511) | UNKNOWN (Q-15) | RESOLVED -- stored-`current_principal` base RETIRED; aggregate derives from the single loan-state resolver; W-152 becomes "code must catch up to E-18" | A-15 -> E-18 |
+| `loan_principal_displayed` (~882) | UNKNOWN (Q-11) | RESOLVED -- no authoritative stored `current_principal`; every page reads the one resolver, equal by construction for the same loan-on-date | A-11/A-22 -> E-18 |
+
+`entry_remaining` for a settled txn (Q-08) is explicitly NOT a 4th
+`PRIMARY PATH: UNKNOWN` (P2 confirms the function is canonical); it is an
+estimated-vs-actual base axis handled in `03_consistency.md` F-028 / F-056
+and resolved by A-08 -> E-21. No new P2 concept is affected.
+
+**Phase 5 may consume `02_concepts.md` with all primary paths resolved.**

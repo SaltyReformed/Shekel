@@ -2678,3 +2678,46 @@ completeness basis.** Re-asserted against the verified denominator:
 > classified, not unclassified -- completeness is satisfied.
 
 Phase 5 is NOT begun in this session.
+
+--- Q-answer reconciliation (2026-05-18) ---
+
+Trigger: the Q-NN raised by Phase 4 (Q-20..Q-26) and the inherited Q-11/15/16/17
+were adjudicated by the developer 2026-05-18 and recorded as E-18..E-28 in
+`00_priors.md` 0.3 (A-NN in `09_open_questions.md`). This section closes the
+column classifications left `UNCLEAR` pending those answers. Additive only: the
+original `UNCLEAR` blocks and both-interpretation write-ups stand as the
+point-in-time record and are superseded here.
+
+Trust-but-verify: each classification is re-derived independently from the
+locked E/A; the per-column drift FACTS and write-path traces recorded in
+Families A-D are unchanged (no code re-proof). Only the role label, blocked on
+developer intent, is now set.
+
+Completeness: every `UNCLEAR` classification line in this document is reconciled
+below (Family A current_anchor_period_id; Family B current_principal,
+interest_rate; Family D effective_*_rate Escalation 3). Family C was already
+all-AUTHORITATIVE (no UNCLEAR). `estimated_retirement_tax_rate` (F-046-SoT) was
+already AUTHORITATIVE per the P4-f annotation; only its NULL-semantics
+sub-question is closed here. Count parity with the doc's UNCLEAR set: complete.
+
+| Column (Family) | Was | Now -> classification | Governing |
+|---|---|---|---|
+| `budget.accounts.current_anchor_period_id` (A) | UNCLEAR (Q-16) | RETIRED as an authoritative stored column -> DERIVED: the NULL state is eliminated (account creation = dated t0 anchor); effective anchor period is resolver-computed on read | A-16/A-20 -> E-19 |
+| `budget.accounts.current_anchor_balance` (A) | AUTHORITATIVE, "audit-mirror unenforced" | AUTHORITATIVE with the audit-mirror now ENFORCED (atomic t0 + every change); NOT NULL; no range CHECK by design (overdraft-legal -- E-28 sanctioned exception) | A-21 -> E-19/E-28 |
+| `budget.account_anchor_history.anchor_balance` (A) | CACHED, "sync invariant not enforced" | CACHED with the mirror invariant ENFORCED (written in one txn with the column at t0 and on every anchor change); NOT NULL, no range CHECK (same exception) | A-21 -> E-19/E-28 |
+| `budget.loan_params.current_principal` (B) | UNCLEAR (Q-22/11/15/17) | RETIRED -- neither AUTHORITATIVE nor CACHED; balance is event-derived on read via the single loan-state resolver (origination + confirmed payments + dated anchors) | A-22 -> E-18 |
+| `budget.loan_params.interest_rate` (B) | UNCLEAR (Q-23/17) | RETIRED as a hand-maintained mirror; the authoritative series is `rate_history`, resolved on read; DB CHECK aligned to `>= 0 AND <= 1` (sibling parity) | A-23 -> E-18/E-28 |
+| `salary.calibration_overrides.effective_*_rate` (D, Escalation 3) | UNCLEAR (Q-25) | AUTHORITATIVE-snapshot -- an immutable pay-stub snapshot whose deriving inputs are frozen at capture; derived server-side at confirm; not re-derived on profile/deduction edit (a new calibration is a new snapshot) | A-25 -> E-20 |
+| `auth.user_settings.estimated_retirement_tax_rate` (F-046-SoT) | AUTHORITATIVE (P4-f) -- NULL semantics open | AUTHORITATIVE unchanged; NULL-semantics RESOLVED: correct the model comment (`user.py:215-216`) to "NULL = no retirement-tax adjustment applied" to match `calculate_gap` (no bracket fallback added) | A-26 |
+
+Family C: all six columns already AUTHORITATIVE (no UNCLEAR); only the F-044
+`contribution_limit_remaining` miscite is documentation-only and routed to the
+reconciliation pass per the Q-21 sub-4 / Q-24 protocol -- not a classification
+change. The Family-C `0`-vs-`None` hazards (Q-24) are E-28 remediation, not a
+role change (columns stay AUTHORITATIVE).
+
+Prior in-file gate/consolidation tables are superseded by this section for the
+reconciled columns; their non-gated content is unaffected and re-checked
+consistent.
+
+**Phase 5 may consume `04_source_of_truth.md` with every UNCLEAR classification closed.**
