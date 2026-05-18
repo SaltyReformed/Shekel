@@ -6158,3 +6158,47 @@ Gates A-E all PASS; verification a-e all hold.
   before Phase 4/5).
 
 **Phase 4 and Phase 5 may begin.**
+
+--- Q-answer reconciliation (2026-05-18) ---
+
+Trigger: every Q this Phase-3 document filed or inherited was adjudicated by
+the developer 2026-05-18 and recorded as behavioral expectations E-18..E-28 in
+`00_priors.md` 0.3 (A-NN in `09_open_questions.md`). This section flips the
+`UNKNOWN-Q-NN` axes and annotates the "DIVERGE...regardless" findings with their
+now-determined remediation direction. Additive only: every original finding
+verdict and its proven divergence FACTS are unchanged; only the gated axis is
+resolved.
+
+Trust-but-verify: re-derived independently from the locked E/A. The prior
+ad-hoc reconcile-gate tables in this file (the gate (a)-(g) block, the Non-AGREE
+summary, and the cmp-3 tables) were treated as UNVERIFIED and re-checked, not
+trusted. No code is re-proved -- the divergence is already proven from source;
+only the developer-intent axis flips.
+
+Completeness: the universe is closed by this document's own passed gate (g)
+("every UNKNOWN names its blocking Q"). The exhaustive set of gated findings is
+enumerated below; each maps to a locked E/A. Items NOT listed had no
+answer-dependent axis (their AGREE/DIVERGE verdicts were independent of any Q
+and are unaffected).
+
+| Finding | Was (gated axis) | Now | Governing | Note |
+|---|---|---|---|---|
+| F-004 `period_subtotal` | UNKNOWN (Q-10) | DIVERGE; canonical = single producer, `_entry_aware_amount` base | A-10 -> E-25 | D1-D2/D1-D3 divergence facts already recorded; verdict label flips UNKNOWN->DIVERGE |
+| F-006 / F-007 dispatcher | UNKNOWN (Q-15) | DIVERGE vs E-18; W-152 = "code must catch up" (not "plan superseded") | A-15 -> E-18 | multi-aggregator + stored-vs-engine divergence already recorded regardless |
+| F-008 `debt_total` | Q-15 (DIVERGE holds regardless) | stays DIVERGE; canonical aggregate base = the single resolver | A-15 -> E-18 | internal `:840/855` vs `:373` inconsistency unchanged |
+| F-013 / F-016 `loan_principal_displayed` | UNKNOWN (Q-11) PRIMARY PATH | DIVERGE vs E-18; `current_principal` RETIRED, one resolver | A-11/A-22 -> E-18 | E-04 unlabeled-divergence facts stand |
+| F-028 entry-progress | Q-08 (SILENT cross-anchor DIVERGE regardless) | base axis -> AGREE on `estimated_amount` (interpretation 1); cross-anchor amount-vs-remaining inconsistency stays DIVERGE | A-08 -> E-21 | the AGREE is on the base only; the mixed-base row remains a finding (label/reconcile remediation) |
+| F-046 `goal_progress` GP2 | UNKNOWN (Q-08) | AGREE (estimated base) | A-08 -> E-21 | GP1 AGREE unchanged |
+| F-054 `year_summary_growth` YG1 | UNKNOWN (Q-15) | resolved vs E-18 (single resolver); YG2/YG3 AGREE-by-construction unchanged | A-15 -> E-18 | -- |
+| F-055 `year_summary_employer_total` | DIVERGE(F-043) + UNKNOWN (Q-15) | DIVERGE(F-043) stands; the Q-15 component resolved vs E-18 | A-15 -> E-18 | inherited F-043 DIVERGE independent of Q |
+| F-056 `entry_remaining` | UNKNOWN-Q-08 (`entry_sum_total` AGREE) | AGREE on `estimated_amount` base | A-08 -> E-21 | split unchanged |
+| W-065 `calendar_totals` | UNKNOWN-Q-10 (canonical-match axis) | DIVERGE; canonical = the single subtotal producer; status-set + entry-aware divergence stands | A-10 -> E-25 | HOLDS structural claim unchanged |
+| W-277 `_compute_month_end_balance` | UNKNOWN-Q-18 + SILENT_DRIFT + SCOPE(Q-16) | period-selection DIVERGE vs E-27; entries-load SILENT_DRIFT closed by routing through the canonical entries-aware path (E-27); anchor-None resolved by E-19 (state eliminated) | A-18 -> E-27; A-16/A-20 -> E-19 | F-003/F-009 inheritance stands as the entries-load instance |
+| W-262 hard-delete RECEIVED axis | UNKNOWN-Q-19 (HOLDS literal + escalated) | critical DIVERGE -- silent irreversible data loss; semantic `is_settled` guard + constrained delete | A-19 -> E-22 | literal-wording HOLDS superseded: the plan's "Paid or Settled" wording itself too narrow |
+| F-003 / F-009 anchor-None axis | Q-16 (SCOPE_DRIFT regardless) | DIVERGE vs E-19; the NULL anchor-period state is eliminated (dated anchor, derived period) | A-16/A-20/A-21 -> E-19 | entries-load SILENT_DRIFT half independent, unchanged |
+
+Prior ad-hoc reconcile-gate artifacts in this file (gate (a)-(g), Non-AGREE
+summary, cmp-3 tables) are superseded by this section for the gated axes; their
+non-gated content is unaffected and was re-checked consistent.
+
+**Phase 5 may consume `03_consistency.md` with every UNKNOWN-Q axis resolved.**
