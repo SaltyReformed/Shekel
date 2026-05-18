@@ -61,6 +61,20 @@ findings) or amend A-01 to acknowledge them explicitly so Phase 3 starts with a 
 absence of a centralized money-rounding helper is a candidate Phase 6 DRY finding. See
 `answer_verification.md` Section 1 (A-01) for full evidence.
 
+A-01 resolution (developer, 2026-05-18): Accept A-01 as the canonical rule, refined and formalised
+as E-26 (`00_priors.md` §0.3). Rule: full-precision Decimal intermediates; quantize 2dp
+ROUND_HALF_UP ONLY at the storage/display boundary, via ONE centralized helper
+(`app/utils/money.py`: `round_money(x)` default, explicitly-named sanctioned variants e.g.
+`round_money_ceiling(x)`, no `rounding=` kwarg). The 24 bare-`.quantize()` banker's-rounding sites
+are Phase-3 DIVERGE findings against E-26. The `savings_goal_service.py:462` ROUND_CEILING is a
+SANCTIONED documented exception (re-expressed as `round_money_ceiling()`), explicitly NOT a
+finding -- so A-01 verbatim ("no exceptions") is rejected as proven-incorrect. The template/JS
+money-arithmetic sites are findings against the existing E-16/E-17, not re-litigated here. The
+absence of a centralized helper plus the 19-file `TWO_PLACES` redeclaration is confirmed as the
+Phase-6 DRY root cause; remediation is the single helper with named variants. Verification status
+of A-01 moves from PARTIALLY ACCURATE (open) to RESOLVED via E-26. Consistent with the E-18
+through E-25 single-source-of-truth family.
+
 ## Cross-plan contradictions to adjudicate
 
 Questions surfaced by P0-c when comparing watchlist entries across plans. Each maps to a `C-NN`
@@ -213,6 +227,18 @@ Phase 3 must verify all 16 call sites against the per-loan invariant, not just t
 verifying only the ARM branches answers the W-048 invariant tautologically. See
 `answer_verification.md` Section 1 (A-05) for the full call-site table.
 
+A-05 addendum (developer, 2026-05-18): Resolved by E-18 (`00_priors.md` §0.3). The
+anchor-reset-versus-engine-replay split is not an implementation latitude; both are unified into a
+single pure resolver that replays confirmed payments forward from the most recent anchor
+(origination for fixed-rate, the user-verified statement balance for ARM) and honors the ARM
+fixed-rate window so the in-window payment is constant by construction. The 16-call-site DRY
+violation is remediated by routing every site through that one resolver. The open tail of this
+question -- `debt_strategy.py:127` calling the ARM formula unconditionally on every loan -- is
+answered by the same policy: that site stops calling a formula directly and reads the resolver like
+every other consumer, so the "is the unconditional ARM formula intended" question dissolves rather
+than needing a separate intent decision. Phase 3 still records the divergence findings; the
+remediation target is the single resolver, not per-site patching.
+
 Q-06 (maps to C-05): Year-end mortgage interest source. `section8` (13.D) defines mortgage interest
 total as the sum of interest portions from amortization schedule rows whose `payment_date` falls in
 the calendar year. `year_end_fixes` (1) requires escrow subtraction from shadow transaction amounts
@@ -322,6 +348,18 @@ the transaction and switch base on `is_settled`. The cross-anchor inconsistency 
 `actual_amount`, remaining uses `estimated_amount`) is a separate concern worth labeling regardless
 of which interpretation is chosen. See `answer_verification.md` Section 2 (Q-08).
 
+A-08 (developer, 2026-05-18): Interpretation 1 (budget = what you allocated). Resolved by E-21
+(`00_priors.md` §0.3). `remaining` and `over-budget` always anchor on `estimated_amount`,
+projected or settled; the current code's remaining/over-budget base is correct and stays. The
+auditor's proposed A-08 (interpretation 1 is current) is confirmed as the INTENDED behavior, so
+Phase 3 records AGREE on the remaining/over-budget base. The separately-flagged cross-anchor
+inconsistency (proven: `amount` = `effective_amount` returns `actual_amount` once settled at
+`dashboard_service.py:191` / `transaction.py:245`, while remaining/over-budget anchor on
+`estimated_amount` at `:240,245`) IS a finding regardless: the bill row must present one coherent
+plan-versus-actual model with the two figures explicitly labeled, not silently mixed-base.
+`compute_remaining` stays a pure `estimated_amount - sum(entries)` (no `txn`/`is_settled`
+parameter). Remediation is display reconciliation/labeling only.
+
 Q-09 (P1-b, 2026-05-15): For an ARM mortgage's `monthly_payment`, A-05 lists eight call sites that
 must receive the same `(current_principal, current_rate, remaining_months)` triple for a given
 loan-on-date. The grep in P1-b finds fourteen `calculate_monthly_payment` call sites, not eight: an
@@ -369,6 +407,12 @@ Fallback branch input guarantees:
   produces a value lower than the contractual payment.
 
 See `answer_verification.md` Section 2 (Q-09) for the full per-site analysis.
+
+A-09 (developer, 2026-05-18): Resolved by E-18 (`00_priors.md` §0.3). All 16 call sites (the
+auditor's corrected count, not 14) must route through the single loan-state resolver; per-site
+input guarantees become moot once no site computes the payment independently. `debt_strategy.py:127`
+is covered by the same policy (see A-05 addendum). Phase 3 verifies the divergence as a finding
+against E-18; the fix is the resolver, not reconciling 16 independent call sites.
 
 Q-10 (P1-c, 2026-05-15): `grid.index` (`app/routes/grid.py:164`) computes per-period subtotals
 (income, expense, net) inline at lines 263-279 by iterating transactions and accumulating
@@ -420,6 +464,15 @@ still requires a Phase 3 finding. Choosing interpretation (2) "shared concept" r
 between `effective_amount` and `_entry_aware_amount` as the canonical expense formula. See
 `answer_verification.md` Section 2 (Q-10).
 
+A-10 (developer, 2026-05-18): Interpretation 2 (shared financial concept). Resolved by E-25
+(`00_priors.md` §0.3). The per-period subtotal moves to ONE service producer that every consumer
+reads (no route-layer inline aggregation), and the canonical expense base is `_entry_aware_amount`
+-- the SAME base the balance calculator uses -- so `balance[p] - balance[p-1]` equals
+`subtotal.net` by construction, including the projected-envelope-with-cleared-entries case that
+currently diverges. The proven divergence is a DIVERGE finding regardless; remediation is the
+single producer sharing `_entry_aware_amount` with the balance pass (ideally computed in the same
+pass so they cannot drift). Consistent with the E-18 through E-24 single-source-of-truth family.
+
 Q-11 (P1-c, 2026-05-15): `loan.refinance_calculate` (`app/routes/loan.py:1027`) derives
 `current_real_principal = proj.current_balance` at line 1087 from
 `amortization_engine.get_loan_projection`. A-04's dual policy means `proj.current_balance` is the
@@ -455,6 +508,14 @@ Developer must decide: either render `proj.current_balance` on the dashboard (pa
 existing engine call at line 429) so prefill matches the on-screen number, or rename the dashboard
 label to make the divergence intentional and visible ("Stored Principal" vs "Current Balance" or
 similar). See `answer_verification.md` Section 2 (Q-11).
+
+A-11 (developer, 2026-05-18): Resolved by E-18 (`00_priors.md` §0.3). Neither "render
+`proj.current_balance`" nor "relabel the card" is the answer; both still treat a stored mirror as a
+value that exists. Under E-18 there is no authoritative stored `current_principal` and therefore no
+second value to reconcile: the dashboard card, the refinance prefill, debt strategy, and net worth
+all read the same single resolver, so they are equal by construction for the same loan-on-date.
+F-016 and the loan side of F-001 remain DIVERGE findings; the remediation target is the single
+resolver.
 
 Q-12 (P1-c, 2026-05-15): `obligations.summary` (`app/routes/obligations.py:259`) builds monthly
 equivalents for recurring templates inline at lines 331-395 by calling
@@ -511,6 +572,32 @@ Phase 3 contract for verification: for the same set of active recurring expense 
 `cash_runway` and `_compute_debt_summary` have no such relationship with obligations. See
 `answer_verification.md` Section 2 (Q-12).
 
+A-12 (developer, 2026-05-18): Resolved by E-24 (`00_priors.md` §0.3).
+
+- DRY aggregator: the three structurally-identical loops (`obligations.py:331-395`) and the
+  parallel `compute_committed_monthly` logic collapse into ONE canonical monthly-equivalent
+  aggregator with a single shared filter rule (skip ONCE, skip `end_date < today`). The 26/12
+  factor is defined once and imported, not re-inlined.
+- Defect #1 (PROVEN): confirmed -- `compute_committed_monthly` (`savings_goal_service.py:287-325`)
+  omits the `end_date < today` skip that `obligations.summary` applies, so expired-template
+  contributions inflate the EF baseline and per-goal floors indefinitely. Fixed by the single
+  shared filter in the canonical aggregator (all consumers at once).
+- Defect #2 (PROVEN): confirmed -- one loan obligation is represented two unreconciled ways
+  (committed transfer template vs amortization PITI), divergent across `/obligations`, the EF
+  baseline, and the DTI card, with a latent double-count trap. Resolution: an explicit nullable
+  FK linking a recurring template to the loan account it funds. Developer rationale (recorded
+  verbatim intent): a committed template amount is REAL even when it differs from the amortization
+  obligation -- so neither blind exclusion nor independence is correct. With the link, debt/DTI
+  uses the amortization figure, cash-flow/obligations/EF uses the committed template figure (each
+  counted once), and the template-minus-required delta is surfaced to the user as voluntary extra
+  principal (not a silent sub-dollar phantom bug, not a silent $100 masquerading as required).
+- Three top-level paths (`obligations.summary` / `_compute_cash_runway` / `_compute_debt_summary`)
+  remain intentionally distinct questions, NOT required to agree; only the obligations-internal
+  aggregation is unified. The auditor's A-12 reading is confirmed on that point.
+
+Phase 3 records defects #1 and #2 as DIVERGE against E-24; the FK migration follows the
+explicit-`ondelete` (`SET NULL`) and three-step nullable-add rules.
+
 Q-13 (P1-c, 2026-05-15): `salary.calibrate_preview` (`app/routes/salary.py:1064`) computes the
 calibration's taxable-income input inline at line 1095 (`taxable = gross - total_pre_tax`), even
 though `paycheck_calculator.calculate_paycheck` produces a `breakdown.taxable_income` field on its
@@ -557,6 +644,19 @@ Fix needs developer intent: option A (recompute pre-tax deductions inline agains
 via a refactored helper), option B (use `bk.taxable_income / bk.gross_biweekly` as a ratio to
 scale), option C (status quo, document the bias). Option A is what calibration semantically wants.
 See `answer_verification.md` Section 2 (Q-13).
+
+A-13 (developer, 2026-05-18): PROVEN DEFECT confirmed; resolved by E-20 (`00_priors.md` §0.3) as
+Option A' (a refinement of the auditor's Option A). The fix is not to recompute the profile's
+configured pre-tax rules against `actual_gross_pay`, but to collect the actual pre-tax deduction
+total as a new pay-stub field so the taxable base is 100% pay-stub-grounded:
+`taxable = actual_gross_pay - actual_pre_tax_deductions`. Option B (ratio scale) and Option C
+(document the bias) are rejected (B is exact only when all pre-tax deductions are percentage-based;
+C is unacceptable for a money calculation). This is the concrete form of the A-25 sub-1
+immutable-snapshot remediation: effective rates derived server-side at confirm from posted
+`actual_*` values, never accepted as hidden client inputs. Scope addition acknowledged and
+accepted (new `actual_pre_tax_deductions` field + `CalibrationSchema`/`CalibrationConfirmSchema` +
+template + snapshot semantics); correctness over scope minimisation per the project mandate.
+Phase 3 records the taxable-base defect and the A-25 hidden-input gap as DIVERGE against E-20.
 
 Q-14 (P1-c, 2026-05-15): `dashboard.mark_paid` (`app/routes/dashboard.py:54-139`) was initially
 classified out-of-scope by the route-inventory subagent because its body "updates status/amount in
@@ -612,6 +712,23 @@ transactions (so the two endpoints agree on `actual_amount` and therefore `effec
 document the difference explicitly so future contributors do not assume equivalence. See
 `answer_verification.md` Section 2 (Q-14).
 
+A-14 (developer, 2026-05-18): All five auditor-proposed divergences confirmed from source.
+Resolved by E-23 (`00_priors.md` §0.3): NOT path-equivalence-by-coincidence and NOT
+document-as-nuance, but unification -- "settle a transaction" becomes one service orchestrator
+both routes delegate to (transfer-shadow -> `transfer_service`; envelope+entries ->
+`settle_from_entries`; else -> one `verify_transition` + status/paid_at/optional actual; one
+`StaleDataError` contract). This fixes #1 (the proven envelope `effective_amount` divergence) and
+#2 (`mark_paid`'s missing `StaleDataError` -> latent 500) together; #5 (logging parity) falls
+out. #3 ownership scope: developer-confirmed INTENTIONAL -- companions operate on the grid and do
+not reach the dashboard (origin of the `@require_owner` blanket); the accessor stays per-route, no
+finding. #4 partial/HX-Trigger: legitimate per-surface difference, documented, no finding.
+Developer-stated product context (out of audit scope, recorded not adjudicated): the dashboard
+mark-paid affordance does not clearly communicate which expense/pay-period is being settled and is
+a redesign-or-removal candidate; if removed, `mark_paid` retires and E-23 holds with only
+`mark_done`. Phase 3 records #1/#2 as DIVERGE against E-23; remediation is the shared orchestrator
+plus a regression test asserting identical `effective_amount`/`entry_remaining` from both routes
+for an envelope-tracked transaction with entries.
+
 ## Concept-catalog primary-path questions raised by Phase 2
 
 Phase 2 sessions append a `Q-NN` here whenever a concept has more than one producer and the codebase
@@ -657,6 +774,19 @@ Where it came up: `docs/audits/financial_calculations/02_concepts.md` (P2-a), `a
 `app/services/savings_dashboard_service.py:294,802` and
 `app/services/year_end_summary_service.py:689,750`.
 
+A-15 (developer, 2026-05-18): Resolved by E-18 (`00_priors.md` §0.3). The question asked which of
+two per-account dispatch implementations (savings-dashboard stored-`current_principal` base vs
+year-end amortization-real base) is canonical. Under E-18 the answer is neither-as-written: the
+stored-`current_principal` base is retired entirely, and both `debt_total` and
+`account_balance` / `savings_total` derive from the single loan-state resolver (the same
+event-replayed balance the year-end path approximates today). The two duplicate dispatch
+implementations (`_compute_account_projections` / `_compute_debt_summary` and
+`_build_account_data` / `_get_account_balance_map`) must collapse to one path that reads the
+resolver -- this is the W-152 "single canonical balance computation" requirement, now a
+"code must catch up to E-18" finding, not "plan superseded". Phase 3 records the E-04 / F-008
+divergences against E-18; the within-`/savings` account-card-vs-debt-card mismatch (Q-22
+sub-question 2) is resolved the same way (both cards read the resolver).
+
 ## Behavioral divergences raised by Phase 3
 
 Phase 3 sessions append a `Q-NN` here whenever the consistency audit finds the code does the same
@@ -695,6 +825,18 @@ Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-a),
 F-006 / F-007 anchor-handling dimension; `app/routes/grid.py:239-241`,
 `app/routes/accounts.py:1419-1421`, `app/services/savings_dashboard_service.py:326-328`,
 `app/services/year_end_summary_service.py:2065-2066`, `app/services/dashboard_service.py:683-684`.
+
+A-16 (developer, 2026-05-18): Resolved by E-19 (`00_priors.md` §0.3). The question "blank,
+`$0`-anchored, or omit" is answered by removing the state, not by choosing one of the three. The
+`current_anchor_period_id IS NULL` state is eliminated: account creation establishes a dated t0
+anchor `(current_anchor_balance, anchor_date)` plus a t0 `AccountAnchorHistory` row, and the
+effective anchor pay period is resolved on read by one resolver (first pay period whose range
+contains or follows `anchor_date`) that all five producers call. Verified-from-source basis: the
+NULL state is the guaranteed default of every signup/seed (`auth_service.py:781-786`,
+`seed_user.py:143-149`; neither generates pay periods), so it is not an edge case but the universal
+new-user state, which is why a defined uniform behavior -- not a per-consumer NULL branch -- is
+required. F-001/F-003/F-006/F-007 stay SCOPE_DRIFT/DIVERGE findings; the remediation target is the
+single date-anchored resolver. Consistent with A-20 and A-21.
 
 Q-17 (P3-b, 2026-05-15): For a 5/5 ARM inside its fixed-rate window (e.g. the first 60 months,
 `LoanParams.arm_first_adjustment_months = 60`), the displayed "Monthly P&I" is computed by
@@ -739,6 +881,19 @@ F-026; `app/services/amortization_engine.py:908-959`, `app/models/loan_params.py
 `app/routes/loan.py:672-674`. Cross-link Q-09, Q-11, Q-15, A-04/A-05 verification (this file),
 E-02 (`00_priors.md:166-170`).
 
+A-17 (developer, 2026-05-18): Resolved by E-18 (`00_priors.md` §0.3). The two interpretations
+offered ("maintain the stored column on settle" vs "re-amortize the engine-real balance / honor the
+ARM-adjustment columns") are unified, not chosen between. There is no authoritative stored
+`current_principal` to maintain; the ARM payment is computed by the single resolver, which (a)
+replays confirmed payments forward from the latest user-verified anchor so the principal it
+amortizes is the true reduced balance, and (b) honors `arm_first_adjustment_months` /
+`arm_adjustment_interval_months` so the payment is constant for the whole fixed window by
+construction rather than drifting as `calculate_remaining_months` shrinks. Symptom #4 closes
+because the principal decreases as payments clear (it is event-derived, never frozen). F-013 and
+F-026 stay DIVERGE; the remediation target is the resolver, and this answer is consistent with
+Q-22 and Q-23 by design (one stored-mirror policy, per the P4-e addendum's requirement that they
+be answered together).
+
 Q-18 (P3-cmp-3, 2026-05-16): The calendar's "month-end balance" (the "End Balance" figure on
 `/analytics` calendar month view) is computed by `_compute_month_end_balance`
 (`app/services/calendar_service.py:435-489`). It selects the target period by
@@ -769,6 +924,21 @@ Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-cmp
 `app/services/calendar_service.py:435-489` (esp. `:461-466` period selection, `:471-480`
 no-entries-load, `:449-450` anchor-None). Cross-link F-003, F-009, Q-16,
 W-273 (`00_priors.md:524`).
+
+A-18 (developer, 2026-05-18): Interpretation 2 sharpened to its exact form. Resolved by E-27
+(`00_priors.md` §0.3). Neither the current "last period ending on/before month-end" (undershoot,
+proven `calendar_service.py:461-466`) nor the W-273 "period covering month-end" (overshoot --
+includes early-next-month transactions) is accepted; "End Balance" means the projected balance as
+of EXACTLY the calendar month-end date, with the straddling period contributing only its
+transactions effective on/before month-end. Computed through ONE canonical entries-aware "balance
+as of date" path shared with `balance_calculator` (reconciles with grid/`/savings` per E-25);
+anchor supplied by the E-19 date-anchored resolver (the `:449-450` Decimal("0") branch is
+subsumed). The calendar entries-load gap (`:471-480`, no `selectinload`) is the F-003/F-009
+instance and is closed by routing through the canonical path. Open implementation detail
+explicitly NOT pre-decided: the per-transaction effective-date rule within a straddling period
+(transactions carry `pay_period_id` + nullable `due_date` only) must be defined and documented at
+remediation; the audit does not assume the data model trivially supports day-level partitioning.
+W-277 period-selection axis moves from UNKNOWN-Q-18 to DIVERGE against E-27.
 
 Q-19 (P3-cmp-3, 2026-05-16): `archive_helpers.template_has_paid_history`
 (`app/utils/archive_helpers.py:17-38`) decides whether a transaction template may be
@@ -805,6 +975,24 @@ Where it came up: `docs/audits/financial_calculations/03_consistency.md` (P3-cmp
 (hard-delete path, esp. `:616-618` the unconditional delete), `app/ref_seeds.py:79-84`
 (Received `is_settled = True`), `app/routes/transactions.py:534-535` (income -> RECEIVED).
 Cross-link W-262, W-264 (the transfer analogue that does NOT have the gap), F-031.
+
+A-19 (developer, 2026-05-18): PROVEN silent irreversible data-loss path confirmed; the plan's
+"Paid or Settled" wording (W-262) is itself too narrow for income templates. Resolved by E-22
+(`00_priors.md` §0.3). The deletion-blocking predicate is widened to the semantic boolean --
+block when any linked non-deleted transaction has a status with `is_settled = True` -- NOT an
+enumerated `[DONE, RECEIVED, SETTLED]` list (enumeration is the E-15 anti-pattern that caused this
+and would re-drift on a future settled-equivalent status). Applied to BOTH
+`template_has_paid_history` and `transfer_template_has_paid_history` for DRY/consistency even
+though only the transaction path has the current gap. Additionally, defense-in-depth: the
+`hard_delete_template` delete (`templates.py:614-617`) is constrained to non-settled rows so a
+future guard regression can never physically destroy settled history (two enforcement points of
+one invariant; no behavior change in the correct path). Verified-from-source basis: the full
+chain `archive_helpers.py:29-37` -> `transactions.py:534-535` -> `ref_seeds.py:81` ->
+`templates.py:614-617` reproduced this session; sibling predicates `account_has_history` /
+`category_has_usage` do not filter by status and have no analogous gap (in scope, no further
+action). Phase 3 records this as a critical DIVERGE (silent data loss) with a mandatory
+regression test for the RECEIVED-only income-template delete path. Not intended behavior; the
+`templates.py:610-613` guard comment proves the opposite invariant.
 
 ## Source-of-truth questions raised by Phase 4
 
@@ -868,6 +1056,18 @@ SCOPE_DRIFT axis in F-001/F-003/F-006/F-007/W-277. Where it came up:
 `app/services/calendar_service.py:449-450`, `scripts/integrity_check.py:292-297`.
 Cross-link Q-16.
 
+A-20 (developer, 2026-05-18): Resolved by E-19 (`00_priors.md` §0.3). Interpretation A
+(`NULL` = no usable balance) and Interpretation B (`NULL` = anchor at current period with stored
+balance) are both rejected: each presupposes a `NULL` state that has to be interpreted. Under E-19
+the state is unreachable -- the anchor is a dated event from account creation, the period is
+resolved on read, and `current_anchor_period_id` ceases to be an authoritative stored column. The
+`integrity_check.py` BA-01 contradiction (it flags the universal default new-user state as an
+anomaly, proven at `:294-296`) is removed because no account is ever in the anchor-set / period-NULL
+shape. The auditor's "NOT literally a `$0.00` anchor -- it is whatever the stored balance is"
+refinement is acknowledged and moot under E-19 (the stored balance is the t0 anchor, NOT NULL, no
+range CHECK, overdraft-legal). Classifies `current_anchor_period_id` in `04_source_of_truth.md`
+Family A as DERIVED (resolver-computed, non-authoritative), not UNCLEAR. Consistent with A-16/A-21.
+
 Q-21 (P4-a, 2026-05-16) -- anchor stored/audit-mirror invariant, the create-path
 history gap, the absent DB CHECK, and a Phase-1 inventory correction. Four
 linked sub-questions surfaced by Phase 4 Family A; none has a documented intent:
@@ -912,6 +1112,33 @@ is a live user-visible mis-alert on every new account. Where it came up:
 `app/models/account.py:51,152`,
 `migrations/versions/9dea99d4e33e_initial_schema.py:181,198`,
 `01_inventory.md` §1.5. Cross-link Q-20, Q-16, F-001.
+
+A-21 (developer, 2026-05-18): Resolved by E-19 (`00_priors.md` §0.3), four sub-questions:
+
+1. Audit-mirror invariant -- YES, it must hold and be enforced. The latest `AccountAnchorHistory`
+   row always mirrors `current_anchor_balance` / `anchor_date`, written together in one transaction
+   at t0 and on every anchor change; no creation path may set the anchor without emitting the
+   history row. Classifies `current_anchor_balance` AUTHORITATIVE with an enforced (not unenforced)
+   audit mirror; `account_anchor_history.anchor_balance` is the mirror, kept in sync by the same
+   write, not a sync-gap CACHED column.
+2. t0 history row on create -- YES. `create_account`, `auth_service.register_user`, and
+   `seed_user` must emit the t0 `AccountAnchorHistory` row atomically with the account. This closes
+   the live "Your checking balance has never been set." mis-signal
+   (`dashboard_service.py:276`, proven: `_get_last_anchor_date:659-672` returns None only when no
+   history row exists, which under E-19 cannot happen for a created account).
+3. DB CHECK / intended domain -- DECIDED here (not deferred): `current_anchor_balance` and
+   `account_anchor_history.anchor_balance` become NOT NULL with NO range CHECK, because a real
+   checking balance can legitimately be negative (overdraft). The deliberate absence of a range
+   CHECK is documented in a column comment per coding-standards' schema/DB-parity rule. (This is
+   the one CHECK-domain item resolved in-cluster; Q-23 sub-3 and Q-24's CHECK items remain routed
+   to the consolidated DB-constraint pass.)
+4. Phase-1 §1.5 inventory miscite -- routed to the later reconciliation pass per the Q-21 sub-4 /
+   Q-24 miscite-correction protocol (CHECK recorded as "MIGRATION (not in model)" is verified
+   FALSE -- no CHECK anywhere; `current_anchor_period_id` omitted from the column list).
+   `01_inventory.md` is NOT edited this session, consistent with the additive-only protocol.
+
+F-001/F-003/F-006/F-007/W-277 stay findings; remediation target is the single date-anchored
+resolver and the guaranteed atomic t0 anchor-plus-history write. Consistent with A-16/A-20.
 
 Q-22 (P4-b1, 2026-05-16) -- **the `current_principal` source-of-truth role,
 and a sharpening of Q-11 / Q-15 / Q-17.** Phase 4 Family B cannot classify
@@ -1034,6 +1261,22 @@ example). `app/models/loan_params.py:53-54`,
 (`00_priors.md:160-176`), **E-04** (`00_priors.md:178-182`), F-014, F-015,
 F-016, F-008, F-017, loan side of F-001 / F-003.
 
+A-22 (developer, 2026-05-18): Resolved by E-18 (`00_priors.md` §0.3). Interpretation A
+(AUTHORITATIVE, maintain on settle) and Interpretation B (CACHED, display reads engine-real) are
+both rejected as framed, because both presuppose a stored scalar that is either the truth or a
+cache. `budget.loan_params.current_principal` is reclassified in `04_source_of_truth.md` Family B
+as NEITHER AUTHORITATIVE NOR CACHED but RETIRED: it ceases to be an authoritative or hand-edited
+column. The source of truth is the event stream (origination terms, confirmed payments, rate
+changes, dated user-verified anchor events); one resolver derives balance, payment, and schedule on
+read. Decisive proven constraint behind this choice: `amortization_engine.py:977-978` returns
+`current_principal` verbatim for ARM, so a distinct engine-replayed value does not exist for ARM
+(Interpretation B is vacuous for ARM); only event-derivation produces a decreasing ARM balance.
+Sub-question 1 (Q-11) and sub-question 2 (Q-15 within-`/savings` mismatch) are resolved by every
+surface reading the one resolver. Sub-question 3 (Q-17 symptom #4) closes because the resolver
+amortizes the true event-derived balance and honors the fixed window. F-014/F-015/F-016/F-008/F-017
+and the loan side of F-001/F-003 remain findings; the remediation target is the single resolver,
+not maintenance of a mirror. Consistent with A-17 and A-23 (one stored-mirror policy).
+
 Q-23 (P4-b2, 2026-05-16) -- **the `loan_params.interest_rate` source-of-truth
 role, the effective-date-unaware mirror write, the missing `<= 1` DB CHECK,
 and a sharpening of Q-17 with the engine source resolved so the developer can
@@ -1144,6 +1387,35 @@ sibling -- same fork, answers must agree), **Q-11** / **Q-15**,
 **E-02** (`00_priors.md:166-170`), **E-01** / **E-03**
 (`00_priors.md:160-176`), F-013, F-026, F-019, F-014, F-017.
 
+A-23 (developer, 2026-05-18): Resolved by E-18 (`00_priors.md` §0.3), consistent with A-22 and A-17
+(the P4-e addendum required these be answered as one policy).
+
+- Sub-question 1 (column role): `loan_params.interest_rate` is neither AUTHORITATIVE nor a CACHED
+  mirror; like `current_principal` it is RETIRED as a hand-maintained scalar. The authoritative
+  rate series is `RateHistory`; the rate in effect on any date is resolved from that series by the
+  single resolver, and every scalar display reads the resolver, not a denormalized mirror. (The
+  rate is not perfectly symmetric with principal -- it has its own real authoritative series rather
+  than being replayed from payment events -- but the policy is the same: derive on read from the
+  event/series, never hand-maintain a mirror.)
+- Sub-question 2 (effective-date-unaware mirror write at `add_rate_change:709`): moot once the
+  scalar mirror is retired. There is no `params.interest_rate` to overwrite; `add_rate_change`
+  inserts the `RateHistory` row (the event) and the resolver picks the row in effect on the
+  evaluation date. Future-dated and out-of-order changes therefore no longer move the displayed
+  payment until they take effect, which is the correct behavior.
+- Sub-question 3 (missing DB CHECK domain): this is an unenforced-domain question independent of
+  the source-of-truth policy and is NOT decided by E-18. Routed to the Phase-6 / DB-constraint
+  pass together with Q-21 sub-3 and Q-24's CHECK-domain items; the developer will set the intended
+  DB-enforced ceiling for any rate column retained as input (mirror the `rate_history` sibling at
+  `<= 1`, a different ceiling, or intentionally unconstrained) in that consolidated pass.
+  RESOLVED 2026-05-18 by E-28 (`00_priors.md` §0.3): mirror the sibling --
+  `loan_params.interest_rate` CHECK becomes `interest_rate >= 0 AND interest_rate <= 1`,
+  identical to `rate_history.interest_rate`; schema percent input stays `Range(0,100)`,
+  stored as the 0..1 fraction. (Note: under A-23 sub-1, `loan_params.interest_rate` is RETIRED
+  as a hand-maintained mirror; the CHECK parity still applies for any retained input column and
+  for `rate_history` as the authoritative series.)
+
+F-013/F-026/F-019/F-014/F-017 remain findings; remediation target is the single resolver.
+
 ---
 
 Q-24 (P4-c, 2026-05-16) -- **Family C (Interest/Investment params): a Phase-3
@@ -1231,6 +1503,28 @@ and SWR `or "0.04"` SILENT_DRIFT -- this Q does not re-raise it),
 Family C's §1.5 model blocks are by contrast ACCURATE),
 **E-04** (`00_priors.md:178`).
 
+A-24 (developer, 2026-05-18): Resolved by E-28 (`00_priors.md` §0.3), the consolidated DB-CHECK
+pass.
+
+- Sub-question 1 (`contribution_limit_remaining` F-044 miscite): documentation-only; the concept
+  is genuinely unimplemented (the app expresses it as percent-used, no `limit - ytd`). NOT a code
+  decision; routed to the reconciliation pass per the Q-21 sub-4 / Q-24 miscite-correction
+  protocol. F-044's AGREE is moot; `02_concepts.md` / `03_consistency.md` revised there, `01`
+  unedited per the additive-only protocol.
+- Sub-question 2 (blank `apy` / `assumed_annual_return` first save -> silent server_default):
+  PROVEN reachable this session (handler binds `InterestParamsUpdateSchema` for the create branch,
+  `accounts.py:64,1349-1366`; the dedicated required-rate `InterestParamsCreateSchema` is unused).
+  Resolved: rate is REQUIRED on the create path (clean 400, no silent default); `server_default`
+  kept as DB safety net only. The `investment_params.py:81` float `default=0.07000` is a
+  coding-standards "construct Decimals from strings" finding, fixed as part of the change (not an
+  intent question).
+- Sub-question 3 (`annual_contribution_limit = 0` three-way divergence): PROVEN (truthiness at
+  `investment.py:231,667` = "no limit"; `is not None` at `growth_engine.py:206` = hard zero cap).
+  Resolved: normalise `0 -> NULL` at the Marshmallow tier; states are NULL = "no limit" and
+  `> 0` = "a real limit"; CHECK becomes `IS NULL OR > 0`; all consumers use `is not None`. No
+  "0 = disallowed" state. The CHECK narrowing is a destructive migration (review line + migrate
+  existing `= 0` rows to NULL first + verifying SELECT).
+
 Q-25 (P4-d, 2026-05-16) -- **Family D: the calibration `effective_*_rate`
 columns are UNCLEAR (the audit cannot classify them without an intent
 decision), plus a secondary savings-goal plan-vs-need reconciliation
@@ -1313,6 +1607,39 @@ GP1, the savings-goal producers in sub-question 2),
 **Q-13** (`salary.calibrate_preview` taxable derivation),
 **Q-21** (the Phase-1/Phase-3 miscite-correction protocol; Family D's §1.5
 model blocks are by contrast ACCURATE, consistent with Family C).
+
+A-25 (developer, 2026-05-18):
+
+- Sub-question 1 (the `effective_*_rate` calibration columns -- frozen snapshot vs live derived
+  rate): Resolved by E-18 (`00_priors.md` §0.3), consistent with A-17/A-22/A-23 (the P4-e addendum
+  required this be answered as one stored-mirror policy). A hand-maintained scalar that mirrors a
+  computation is never the source of truth. The intended contract is the immutable-snapshot reading:
+  a `CalibrationOverride` is a frozen pay-stub snapshot whose deriving inputs are captured at
+  capture time, so it is AUTHORITATIVE-snapshot, not DERIVED-stale. The defects are therefore (a)
+  the actual_*-vs-rate inconsistency window (the rates must be derived at confirm from the same
+  posted actual_* values, not accepted as independent hidden form inputs) and (b) the absence of a
+  derive-at-confirm step; these are the remediation, recorded as findings, classification UNCLEAR ->
+  AUTHORITATIVE-snapshot in `04_source_of_truth.md` Family D. (Editing the profile/deductions after
+  save does NOT silently re-derive a stored rate, by design -- the snapshot is immutable; a new
+  calibration is a new snapshot event.) Sharpened 2026-05-18 by E-20 (`00_priors.md` §0.3) and
+  A-13: the concrete remediation is a new `actual_pre_tax_deductions` pay-stub field so the taxable
+  base is 100% pay-stub-grounded (`taxable = actual_gross_pay - actual_pre_tax_deductions`), plus
+  server-side derive-at-confirm of the four effective rates from the posted `actual_*` values. This
+  also fixes the proven Q-13 profile-gross contamination, which is the same remediation surface.
+- Sub-question 2 (`savings_goals.contribution_per_period` planned vs computed
+  `required_contribution`): This is a UX/validation-intent question independent of E-18 and is NOT
+  decided by it. Intentional plan-vs-actual display is acceptable; the stored value is not forced to
+  match the computed requirement. RESOLVED (developer, 2026-05-18): a non-blocking advisory is
+  surfaced on `/savings` when `contribution_per_period` is below the computed
+  `required_contribution` (clear indicator that the goal reaches completion after the target
+  date, with the required figure shown); saving is never blocked and the input is never
+  auto-changed. `contribution_per_period` stays AUTHORITATIVE -- this applies the E-24 principle
+  ("a committed user amount is real; surface the delta, never override") at the display layer,
+  the same shape as E-21. Not formalised as a separate E-expectation (a non-blocking display
+  advisory, not a calculation invariant; formalising it would be gold-plating). Phase 3 / 5
+  verification direction: the absence of any plan-vs-required signal is a UX finding; remediation
+  is the advisory only, no validation hard-stop, no classification change
+  (`contribution_per_period` remains AUTHORITATIVE).
 
 ---
 
@@ -1461,3 +1788,18 @@ validation (`app/routes/retirement.py:348-351`), DB CHECK is `0..1`
 (`user.py:217-219`); remediated by C-24/F-077. `01_inventory.md:739`'s
 "one of the rate fields inspected by PA-02" is an over-broad linkage and is
 moot. Full reasoning in `04_source_of_truth.md` finding F-046-SoT.
+
+A-26 (developer, 2026-05-18): The source-of-truth-role half is already CLOSED (AUTHORITATIVE, P4-f
+annotation above) and is consistent with E-18 (`00_priors.md` §0.3): a pure user input with no
+mirror has no staleness surface, so it is not part of the stored-mirror-retirement family of
+A-17/A-22/A-23/A-25. E-18 does NOT decide the remaining open item -- the NULL-semantics contract --
+which is a model-comment-vs-code divergence, not a source-of-truth question. Decision on that
+sub-question: correct the model comment at `app/models/user.py:215-216` to read "NULL = no
+retirement-tax adjustment applied" so it matches the code (`calculate_gap` has no bracket-based
+fallback, full read `:37-136`); do NOT add a bracket-based fallback. Rationale: a silent
+bracket-based estimate the user never set is itself a hidden-default hazard of exactly the kind
+E-18 and coding-standards "0 and None mean different things" exist to prevent; an explicit, visible
+"no retirement-tax adjustment applied (set an estimated rate to model withholding)" is the honest
+behavior. This is now an F-046-SoT documentation-correction finding. The secondary truthiness guard
+(`retirement_dashboard_service.py:224` coercing an explicit `Decimal("0.0000")` to None) stays
+routed to the F-042 family as already recorded; not re-litigated here.
