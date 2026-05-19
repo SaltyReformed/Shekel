@@ -12,13 +12,16 @@
 name: CI
 
 # ── Triggers ──────────────────────────────────────────────────────
-# Run on pushes to main and dev, and on all pull requests.  The dev
-# push trigger gives test feedback during iteration before a PR even
-# exists; the pull_request trigger is the one that gates the merge
-# into main once a branch protection rule requires this check green.
+# Run on pushes to main and on all pull requests.  An open PR (open it
+# as a draft early for pre-merge feedback) runs this check on every
+# push to its branch, and the branch protection rule on main requires
+# that check green before merge.  ``push`` is intentionally NOT
+# extended to dev: dev work is already covered by the pull_request
+# trigger, and listing dev here double-runs CI (push + pull_request)
+# on every PR'd dev push for zero added coverage.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
 
 # ── Jobs ──────────────────────────────────────────────────────────
