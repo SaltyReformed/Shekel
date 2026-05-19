@@ -1803,3 +1803,147 @@ E-18 and coding-standards "0 and None mean different things" exist to prevent; a
 behavior. This is now an F-046-SoT documentation-correction finding. The secondary truthiness guard
 (`retirement_dashboard_service.py:224` coercing an explicit `Decimal("0.0000")` to None) stays
 routed to the F-042 family as already recorded; not re-litigated here.
+
+---
+
+## Phase 9 close -- open-question completeness, carried-item reconciliation, audit-level acceptance (2026-05-19)
+
+Phase 9 deliverable per `financial_calculation_audit_plan.md` section 9 (this
+file holds every "what is the intended behavior here?" the audit raised) and
+section 11 (the eight audit-level acceptance criteria). This is the audit's
+single completion capstone: Phases 0-8 each closed with their own gate
+roll-up; the audit as a whole was never formally certified. This section does
+that and stops.
+
+Discipline: additive only -- no Q/A text above is rewritten; the point-in-time
+record stands and is certified here. Trust-but-verify applied to the audit's
+own output: the one carried item is re-derived from live source this session,
+not inherited from the Phase-8 handoff. No source, test, migration, template,
+or static file is touched (acceptance criterion 7, re-proven in Part C/E).
+
+### Part A -- open-question completeness
+
+- Q-01 .. Q-26 present; each carries a developer `A-NN`. Q/A id parity 26/26
+  (`grep -oE '^Q-[0-9]+' | sort -u` vs `^A-[0-9]+ \(developer`, both yield the
+  identical 01..26 set).
+- Zero `STILL OPEN` / `UNRESOLVED` / `NOT ANSWERED` markers anywhere in the
+  file.
+- Q-01..Q-07 answered 2026-05-13; Q-08..Q-26 answered 2026-05-18. All locked
+  as behavioral expectations E-01..E-28 in `00_priors.md` section 0.3 and
+  reconciled back into the gated phase outputs by the dedicated reconciliation
+  passes (commits `06c26b1`, `63c7800`, `c7fb790`, `2de5dd6`; reconciliation
+  sections at the tails of `02_concepts.md`, `03_consistency.md`,
+  `04_source_of_truth.md`).
+- No new ambiguity surfaced by Phases 5-8 (each phase's G8 attested "no new
+  `09_open_questions.md` entry required"); this close raises none. The
+  open-question universe is closed at Q-26.
+
+### Part B -- the one Phase-8-carried item, reconciled (Q-26 sub-2)
+
+Phase 8's handoff (`08_findings.md:3097-3106`) records the Q-26 sub-2
+NULL-semantics contract as "carried to Phase 9 UNCHANGED ... Phase 8 does not
+decide it." Phase 9 reconciles that carry against live source this session
+(re-derived, not inherited):
+
+- `app/models/user.py:212-215` (read 2026-05-19): comment reads "Estimated
+  effective tax rate during retirement (NULL = unset, fall back to current
+  bracket-based estimate)." The bracket-fallback promise is on lines 213-214.
+  CONFIRMED -- the documented contract promises a fallback.
+- `app/services/retirement_gap_calculator.py:37-136` (full `calculate_gap`
+  read): `estimated_tax_rate=None` default (`:43`); `if estimated_tax_rate is
+  not None:` guards at `:76` and `:110`; when None, `after_tax_monthly_pension`
+  stays None (`:75`), `effective_pension` falls back to gross
+  `monthly_pension_income` (`:85`), the after-tax block (`:108-122`) is
+  skipped. CONFIRMED -- no bracket-based fallback exists anywhere in the
+  function; the code applies no tax adjustment when the rate is unset.
+- `app/services/retirement_dashboard_service.py:222-226`: `tax_rate =
+  Decimal(str(settings.estimated_retirement_tax_rate)) if settings and
+  settings.estimated_retirement_tax_rate else None` -- passes None when unset;
+  the `:224` truthiness guard also coerces an explicit `Decimal("0.0000")` to
+  None (the F-042-family secondary hazard, as already recorded). CONFIRMED.
+
+Reconciliation verdict: the model-comment-vs-code divergence is REAL, and
+A-26 (this file, developer, 2026-05-18) is a COMPLETE adjudication of it.
+A-26 explicitly answers the product-contract question -- "should a
+bracket-based fallback exist?" -- with NO ("do NOT add a bracket-based
+fallback"), with a stated rationale (a silent estimate the user never set is
+exactly the hidden-default hazard E-18 and the coding-standard "0 and None
+mean different things" exist to prevent). There is NO residual open question.
+The Phase-8 "carried UNCHANGED" phrasing is correct only in the narrow sense
+that *Phase 8* does not adjudicate questions (the developer does); the matter
+was already adjudicated by A-26 before Phase 8 ran. Disposition: Q-26 is
+CLOSED in full. Finding LOW-05 (`08_findings.md:2170`) is a settled
+documentation-correction finding (correct the comment; do not build the
+fallback). The only thing that post-dates the audit is the *remediation*
+itself (apply the one-comment fix), which is the separate post-audit exercise
+by plan section 11 -- not an open question.
+
+Citation-precision corrections (Phase-9 R-items, recorded per the Q-21
+sub-q4 / Q-24 / Phase-8 R-1..R-10 miscite-correction protocol;
+documentation-only, no disposition change):
+
+- R-P9-1: the model comment to correct is at `app/models/user.py:212-215`
+  (fallback clause on `:213-214`). Q-26 / A-26 / `08_findings.md` LOW-05
+  cite it as `user.py:215-216`; live source places the comment at 212-215,
+  the CHECK constraint at 216-221, the column def at 242. The LOW-05
+  remediation must edit lines 213-214, not 215-216.
+- R-P9-2: the second `is not None` guard in `calculate_gap` is at
+  `retirement_gap_calculator.py:110`, not `:108` (Q-26 cites `:43,76,85,108`;
+  `:108` is the `after_tax_projected = None` initialiser, `:110` is the
+  guard). The `:76` guard and the `:85` gross fallback are cited correctly.
+
+### Part C -- audit-level acceptance criteria (`financial_calculation_audit_plan.md` section 11)
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| C1 | Files 00-09 exist, non-empty, each meeting its deliverable | PASS | 10 files, 890-6204 lines; deliverable attested per phase: P0 priors complete; P1 "Phase 1 remains complete" (P1-f); P2/P3/P4 reconcile-gate + Q-reconcile tails; P5/P6/P7/P8 each G1-G9 9/9; P9 = this section |
+| C2 | Every concept in the catalog | PASS | `02_concepts.md:3443` self-certifies 47 controlled-vocabulary concepts (3 prior PRIMARY-PATH-UNKNOWN reconciled); `07_test_gaps.md:3858,3942` independently re-confirms 47/47 (G6) |
+| C3 | Every multi-impl concept has a Phase-3 finding with a verdict | PASS | `03_consistency.md` P3-reconcile gate A-E; gate (g) "every UNKNOWN names its blocking Q"; all UNKNOWN-Q axes flipped via E-18..E-28 (commit `da3d108`) |
+| C4 | Every reported symptom has a Phase-5 entry + hypothesis tree + root cause | PASS | `05_symptoms.md` G1-G9 9/9; 5/5 symptoms carry every section-3 element; #2/#3/#4 collapse onto the one un-maintained `current_principal` column (E-18) |
+| C5 | Findings sorted by severity with file/line evidence | PASS | `08_findings.md` Part 8.A strict order CRIT-01..05, HIGH-01..08, MED-01..07, LOW-01..05 (25 clusters); G5 17/17 evidence + 17/17 severity re-resolved at live source |
+| C6 | Open-questions doc contains every uncertainty (Phase-9 scope) | PASS | Part A: Q-01..Q-26, 26/26 parity, zero STILL-OPEN, E-01..E-28 lock; Part B closes the one Phase-8-carried item with no residual |
+| C7 | No code/test/migration/template/static modified; only audit-dir files | PASS | 27 commits touched `docs/audits/financial_calculations/`; per-commit `git diff-tree --name-only` shows zero non-`docs/` paths; working tree clean. Only non-subdir docs touched were the Phase-0 bootstrap pair `docs/financial_calculation_audit_plan.md` + `docs/prompt_calculation_consistency_audit_phase_0.md`, both later relocated into the audit dir (commits `830e9739`, `2482e203`, `b87d786`). The plan's literal `docs/audit/` path was deliberately relocated to `docs/audits/`; the criterion is read against the actual location |
+| C8 | Every session launched with `--permission-mode plan` | ATTESTED-VIA-PROXY (not artifact-verifiable) | Launch-time permission mode is a process fact not recoverable from git or the filesystem. The mechanical proxy is C7: across all 27 audit commits, zero source/test/migration/template/static mutations -- exactly the property plan-mode enforces. Recorded honestly as not independently re-verifiable rather than rubber-stamped (audit-plan section 10.8 anti-trust-then-verify discipline applied to the audit itself) |
+
+Seven of eight criteria mechanically PASS. C8 is the one
+process-attested-not-artifact-verifiable criterion; it is corroborated by
+C7's hard evidence and flagged honestly, not asserted as independently proven.
+
+### Part D -- audit completion and handoff
+
+The financial-calculation audit (Phases 0-9) is COMPLETE. Every concept is
+catalogued, every multi-path concept has a Phase-3 verdict, every reported
+symptom has a Phase-5 root cause, every uncertainty is captured and
+developer-answered (Q-01..Q-26 -> E-01..E-28), and the prioritized findings
+report (`08_findings.md`, 25 clusters CRIT-01..LOW-05) is severity-sorted with
+file/line evidence and surjection-proven against the section-1 source set.
+
+Out of audit scope, the next exercise (audit-plan section 8 final paragraph,
+section 11): converting the 25 finding clusters into an ordered remediation
+plan. No finding is blocked on an unanswered question -- the three findings
+that name a governing Q (HIGH-03/Q-25, MED-03/Q-08, LOW-05/Q-26 sub-2) all
+carry a developer A-NN (A-25, A-08, A-26), so the remediation *direction* is
+fixed for every cluster; only sequencing and effort remain, and that is the
+separate post-audit exercise, not part of this audit.
+
+### Part E -- git status (acceptance criterion 7, this session)
+
+This session's only write is this appended section to
+`09_open_questions.md` (a tracked file, so `git status` shows it as modified,
+not untracked). No source, test, migration, template, or static file was
+touched; all source access this session was read-only (`Read`, `grep`,
+`git log`/`diff-tree`, `wc`, `nl`); `pytest` was never invoked; the app was
+never run. The verbatim `git status --porcelain` for this session is recorded
+beneath the roll-up.
+
+## Phase 9 complete -- financial-calculation audit complete
+
+Acceptance roll-up: **C1 PASS, C2 PASS, C3 PASS, C4 PASS, C5 PASS, C6 PASS,
+C7 PASS, C8 ATTESTED-VIA-PROXY -- 7/8 mechanically proven, 1 process-attested
+and honestly flagged.** All 26 open questions answered and locked
+(E-01..E-28); the one Phase-8-carried item (Q-26 sub-2) reconciled to A-26 at
+live source with no residual; two citation-precision R-items recorded for the
+LOW-05 remediation. The financial-calculation audit's full deliverable -- ten
+phase outputs, developer-adjudicated, trust-but-verify-grounded -- is
+complete. Remediation planning is a distinct post-audit exercise and is
+explicitly not part of this audit. Session ends.
