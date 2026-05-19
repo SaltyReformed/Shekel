@@ -766,9 +766,17 @@ class TestSharedNginxRuntimeHeaders:
     upstream hangs.  So this fixture creates a user-defined Docker
     network for the run, attaches both the stub upstream container
     (named ``shekel-prod-app`` so Docker DNS hands out the right
-    address) and the Nginx container.  The stub upstream is a tiny
-    Python http.server one-shot listening on 8000 inside
-    python:3.14-alpine.
+    address) and the Nginx container.  The stub upstream is a
+    python:3.14-alpine container that backgrounds ``python -m
+    http.server 8000`` and hands PID 1 to ``tail -f /dev/null`` so
+    the container -- and its ``shekel-prod-app`` network alias --
+    outlives the server.  headers_502 forces the 5xx by killing only
+    the recorded server PID in place: nginx then connects to a
+    still-routable container IP and gets an immediate TCP RST (a
+    fast, deterministic 502), instead of the unrouted-IP hang a
+    ``docker stop`` of an ``--rm`` stub produced -- which timed curl
+    out on CI's Docker network.  This also faithfully models the
+    real failure (gunicorn process dies, container stays up).
 
     Skipped when Docker is not available on the test host.
     """
@@ -857,22 +865,34 @@ class TestSharedNginxRuntimeHeaders:
                     f"{net_result.stderr}"
                 )
 
-            # 2. Start a stub upstream that returns 200 OK with a
-            #    known body on every request.  python:3.14-alpine
-            #    ships ``python -m http.server`` out of the box.
-            #    ``--network-alias`` makes the stub answer to
-            #    ``shekel-prod-app`` on this network so the shared
+            # 2. Start a stub upstream that returns 200 OK on every
+            #    request.  ``--network-alias`` makes the stub answer
+            #    to ``shekel-prod-app`` on this network so the shared
             #    config's ``set $upstream_shekel shekel-prod-app:
             #    8000;`` resolves to it without colliding with the
-            #    developer's real production container of that
-            #    name on the same Docker daemon.
+            #    developer's real production container of that name
+            #    on the same Docker daemon.
+            #
+            #    PID 1 is ``tail -f /dev/null``, not the HTTP server:
+            #    the container (and its alias / routable IP) must
+            #    outlive the server so headers_502 can drop the
+            #    listener in place and have nginx hit a live IP with
+            #    a closed port -> immediate TCP RST -> fast 502.
+            #    Removing the container instead (the old ``docker
+            #    stop`` of an ``--rm`` stub) left nginx's 30s
+            #    resolver cache pointing at an unrouted IP, which
+            #    hangs with no RST until proxy_connect_timeout and
+            #    timed curl out on CI's Docker network.
             stub_result = _docker(
                 "run", "-d", "--rm",
                 "--name", stub_name,
                 "--network", net_name,
                 "--network-alias", stub_alias,
                 "python:3.14-alpine",
-                "python", "-m", "http.server", "8000",
+                "sh", "-c",
+                "python -m http.server 8000 & "
+                "echo $! > /tmp/srv.pid; "
+                "exec tail -f /dev/null",
             )
             if stub_result.returncode != 0:
                 pytest.skip(
@@ -995,25 +1015,33 @@ class TestSharedNginxRuntimeHeaders:
 
     @pytest.fixture(scope="class")
     def headers_502(self, running_stack) -> dict[str, str]:
-        """Stop the upstream stub mid-test, then capture 502
-        response headers.  This is the real-world failure mode the
-        ``always`` flag exists for.
+        """Kill the upstream stub's HTTP listener in place, then
+        capture the 5xx response headers.  This is the real-world
+        failure mode the ``always`` flag exists for (a gunicorn
+        process dies while its container stays up).
         """
         host_port, stub_name = running_stack
-        # Stop the stub.  ``--rm`` was set on it so this also
-        # removes it; the resolver still has a valid 30s cache,
-        # but the actual TCP connect will refuse.
+        # Kill only the recorded server PID; the container (PID 1 is
+        # ``tail -f /dev/null``) and its ``shekel-prod-app`` alias
+        # stay alive, so nginx resolves a still-routable IP and the
+        # closed :8000 port yields an immediate TCP RST -> fast,
+        # deterministic 5xx on any Docker network.  The old ``docker
+        # stop`` removed the container, leaving the cached resolver
+        # IP unrouted -> connect hang -> curl timeout on CI.
         subprocess.run(
-            ["docker", "stop", stub_name],
+            [
+                "docker", "exec", stub_name,
+                "sh", "-c", 'kill "$(cat /tmp/srv.pid)"',
+            ],
             capture_output=True,
             text=True,
             timeout=DOCKER_SUBPROCESS_TIMEOUT_S,
             check=False,
         )
-        # Brief wait for nginx's resolver cache to expire OR for
-        # the connect to actively fail.  Connect refusal happens
-        # immediately, so a single attempt usually suffices; one
-        # retry covers the rare race.
+        # The RST is immediate, so the first probe normally already
+        # sees the 5xx; the short retry loop only covers the brief
+        # race between ``docker exec`` returning and the kernel
+        # tearing the listening socket down.
         last_status = ""
         last_headers: dict[str, str] = {}
         for _ in range(8):
@@ -1027,7 +1055,7 @@ class TestSharedNginxRuntimeHeaders:
                 break
             time.sleep(0.5)
         assert "502" in last_status or "504" in last_status, (
-            f"could not force a 5xx after stub upstream stopped; "
+            f"could not force a 5xx after killing the stub listener; "
             f"last status: {last_status!r}"
         )
         return last_headers
