@@ -36,6 +36,7 @@ from importlib import reload
 from pathlib import Path
 
 import pytest
+import yaml
 
 from app import config as config_module
 
@@ -89,6 +90,59 @@ def _docker_available() -> bool:
     except (subprocess.TimeoutExpired, OSError):
         return False
     return result.returncode == 0
+
+
+def _service_secret_names(compose: dict[str, object], service: str) -> set[str]:
+    """Return the set of secret names a compose service grants access to.
+
+    Accepts both Compose secret syntaxes because they are
+    behaviourally identical for access-grant purposes -- the service
+    can read ``/run/secrets/<name>`` either way:
+
+    * short form -- ``secrets: [secret_key, ...]`` (list of str);
+    * long form  -- ``secrets: [{source: secret_key, target: ...,
+      uid: ..., gid: ..., mode: ...}, ...]`` (list of mappings).
+
+    Commit 4e551f5 moved the prod override to the long form to add
+    the ``uid``/``gid`` override the non-root container user needs in
+    order to read the root-owned ``/run/secrets/<name>`` file (without
+    it the entrypoint cannot open the secret and the container exits
+    before boot).  The secret is still mounted; only the YAML spelling
+    changed.  Asserting on this parsed name set keeps the deploy tests
+    coupled to behaviour rather than to one of two valid spellings
+    (testing-standards.md: test behaviour, not implementation).
+
+    Args:
+        compose: a parsed docker-compose document (the override file
+            on its own, or the merged ``docker compose config``
+            output).
+        service: the service name to inspect (e.g. ``"app"``).
+
+    Returns:
+        The set of top-level secret names ``service`` can read at
+        ``/run/secrets/<name>``.  Empty when the service is absent or
+        declares no ``secrets:`` block -- the caller asserts on
+        membership, so an empty set fails the access-grant check with
+        a clear message.
+    """
+    services = compose.get("services")
+    if not isinstance(services, dict):
+        return set()
+    service_def = services.get(service)
+    if not isinstance(service_def, dict):
+        return set()
+    raw = service_def.get("secrets")
+    if raw is None:
+        return set()
+    names: set[str] = set()
+    for entry in raw:
+        if isinstance(entry, str):
+            names.add(entry)
+        elif isinstance(entry, dict):
+            source = entry.get("source")
+            if isinstance(source, str):
+                names.add(source)
+    return names
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1370,6 +1424,20 @@ class TestProdComposeSecretsBlock:
         """Return the full deploy/docker-compose.prod.yml source as a string."""
         return DOCKER_COMPOSE_PROD.read_text(encoding="utf-8")
 
+    @pytest.fixture(scope="class")
+    def prod_compose(self) -> dict[str, object]:
+        """Return deploy/docker-compose.prod.yml parsed into a dict.
+
+        The access-grant assertions parse the document rather than
+        regex the raw text so they accept both the short
+        (``- secret_key``) and long (``- source: secret_key``) Compose
+        secret syntaxes -- see ``_service_secret_names``.  The
+        ``${VAR:?msg}`` interpolation tokens in the override are inert
+        plain scalars to the YAML parser; the secrets structure under
+        assertion does not depend on them being resolved.
+        """
+        return yaml.safe_load(DOCKER_COMPOSE_PROD.read_text(encoding="utf-8"))
+
     @pytest.mark.parametrize(
         "secret_name",
         [
@@ -1407,49 +1475,29 @@ class TestProdComposeSecretsBlock:
         ],
     )
     def test_app_service_grants_access_to_secret(
-        self, compose_text: str, secret_name: str,
+        self, prod_compose: dict[str, object], secret_name: str,
     ) -> None:
         """The app service's ``secrets:`` list grants access to every required secret."""
-        # Capture the app service's body up to the next service or
-        # top-level block.  We then scan inside it for the secret
-        # name on a list item line.
-        app_match = re.search(
-            r"\n  app:\n(.+?)(?=\n  \w|\nnetworks:|\nsecrets:|\Z)",
-            compose_text,
-            re.DOTALL,
-        )
-        assert app_match is not None, (
-            "deploy/docker-compose.prod.yml no longer defines an "
-            "``app`` service block."
-        )
-        app_body = app_match.group(1)
-        # The list item appears as ``      - secret_name`` (six
-        # spaces of indent inside the secrets: block).  Match
-        # whitespace tolerantly so a future indentation cleanup does
-        # not break the test.
-        assert re.search(rf"\n\s+-\s+{secret_name}\b", app_body), (
+        granted = _service_secret_names(prod_compose, "app")
+        assert secret_name in granted, (
             f"app service in deploy/docker-compose.prod.yml does not "
             f"reference ``{secret_name}`` in its ``secrets:`` list; "
             "the secret will be declared at the top level but never "
-            "mounted into /run/secrets/ for the container."
+            f"mounted into /run/secrets/ for the container.  The app "
+            f"service grants access to: {sorted(granted)}."
         )
 
     def test_db_service_grants_access_to_postgres_password(
-        self, compose_text: str,
+        self, prod_compose: dict[str, object],
     ) -> None:
         """The db service mounts the postgres_password secret natively."""
-        db_match = re.search(
-            r"\n  db:\n(.+?)(?=\n  \w|\nnetworks:|\nsecrets:|\Z)",
-            compose_text,
-            re.DOTALL,
-        )
-        assert db_match is not None, "db service block missing"
-        db_body = db_match.group(1)
-        assert re.search(r"\n\s+-\s+postgres_password\b", db_body), (
+        granted = _service_secret_names(prod_compose, "db")
+        assert "postgres_password" in granted, (
             "db service does not mount the ``postgres_password`` "
             "docker secret; the postgres image cannot read /run/"
             "secrets/postgres_password and the POSTGRES_PASSWORD_FILE "
-            "handoff will fail at container start."
+            f"handoff will fail at container start.  The db service "
+            f"grants access to: {sorted(granted)}."
         )
 
     def test_db_service_uses_postgres_password_file(
@@ -1591,21 +1639,30 @@ class TestProdComposeMergedConfig:
             "POSTGRES_PASSWORD_FILE as non-empty and error at start."
         )
 
-        # The app service must mount each required secret to
-        # /run/secrets/<name>.  Compose's expanded form is
-        # ``- source: <name>\n  target: /run/secrets/<name>``.
+        # Every required secret must be wired into the app service so
+        # the entrypoint can read ``/run/secrets/<name>``.  Compose's
+        # rendered long form is ``- source: <name>\n  target:
+        # <name>``: ``target`` is the in-container *filename* (Docker
+        # mounts it at /run/secrets/<target> at runtime), so ``docker
+        # compose config`` never emits an absolute ``/run/secrets/``
+        # path -- asserting on that prefix is wrong for either secret
+        # syntax.  Parse the merged document and assert on the source-
+        # name set, which is robust to the short/long split and to
+        # the rendering detail.
+        merged_doc = yaml.safe_load(merged)
+        app_secrets = _service_secret_names(merged_doc, "app")
         for secret in (
             "secret_key",
             "postgres_password",
             "app_role_password",
             "totp_encryption_key",
         ):
-            target_line = f"target: /run/secrets/{secret}"
-            assert target_line in merged, (
-                f"merged compose config does not mount {secret} at "
-                f"/run/secrets/{secret} for any container; the "
+            assert secret in app_secrets, (
+                f"merged compose config does not wire {secret} into "
+                "the app service's ``secrets:`` list; the "
                 "entrypoint.sh _load_secret helper will not find the "
-                "file at the documented path."
+                f"file at /run/secrets/{secret}.  The app service "
+                f"grants access to: {sorted(app_secrets)}."
             )
 
 
