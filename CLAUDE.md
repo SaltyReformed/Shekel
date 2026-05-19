@@ -7,10 +7,10 @@ calendar months. Every transaction maps to a specific paycheck with ~2-year forw
 Bootstrap 5
 
 **YOU ARE THE ONLY SAFEGUARD.** This project has no QA team and no human code reviewer. CI
-(`.github/workflows/ci.yml`: pylint + the full pytest suite) exists, but it runs only on push to
-`main` and on pull requests; development happens on `dev` without PRs, so CI does not run during
-dev iteration and only catches a regression after it lands on `main` -- a post-merge backstop, not
-a pre-merge reviewer. The developer is a solo operator. If you miss a bug, skip an edge case, or take a shortcut, that defect
+(`.github/workflows/ci.yml`: pylint + the full pytest suite) runs on every push to `dev` and
+`main` and on every pull request, and a branch protection rule on `main` blocks the merge until
+that `lint-and-test` check is green. CI is therefore an enforced pre-merge gate -- but it is only
+as good as the tests, and no human will catch a bad assertion or a missing case for you. The developer is a solo operator. If you miss a bug, skip an edge case, or take a shortcut, that defect
 ships to production. In a budgeting app, that means real money is mismanaged. Treat every line of
 code as if someone's rent payment depends on it being correct.
 
@@ -186,7 +186,19 @@ hardening that the repo is missing.
 ## Style
 
 No Unicode dashes. Use periods, commas, semicolons, or colons for sentence
-breaks. Use - for ranges. All development on the `dev` branch.
+breaks. Use - for ranges.
+
+## Git Workflow
+
+All development on the `dev` branch. `main` is branch-protected: direct
+pushes are rejected, and a merge requires an open pull request whose
+`lint-and-test` (CI) check is green. To ship `dev` to `main`: push `dev`
+(CI runs automatically), open a PR `dev` -> `main`, wait for the green
+check, then merge via the PR. Do NOT
+`git checkout main && git merge dev && git push origin main` -- branch
+protection rejects it. After a PR merges, resync `dev` so the next PR is
+not flagged out of date:
+`git fetch origin && git checkout dev && git merge origin/main && git push origin dev`.
 
 ## Standards and Protocols
 
