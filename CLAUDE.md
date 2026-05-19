@@ -6,8 +6,11 @@ calendar months. Every transaction maps to a specific paycheck with ~2-year forw
 **Stack:** Python 3.12+ · Flask 3.1 · SQLAlchemy 2.0 · PostgreSQL (multi-schema) · Jinja2 · HTMX ·
 Bootstrap 5
 
-**YOU ARE THE ONLY SAFEGUARD.** This project has no QA team, no code reviewer, no CI pipeline. The
-developer is a solo operator. If you miss a bug, skip an edge case, or take a shortcut, that defect
+**YOU ARE THE ONLY SAFEGUARD.** This project has no QA team and no human code reviewer. CI
+(`.github/workflows/ci.yml`: pylint + the full pytest suite) exists, but it runs only on push to
+`main` and on pull requests; development happens on `dev` without PRs, so CI does not run during
+dev iteration and only catches a regression after it lands on `main` -- a post-merge backstop, not
+a pre-merge reviewer. The developer is a solo operator. If you miss a bug, skip an edge case, or take a shortcut, that defect
 ships to production. In a budgeting app, that means real money is mismanaged. Treat every line of
 code as if someone's rent payment depends on it being correct.
 
