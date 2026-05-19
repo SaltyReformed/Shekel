@@ -15,6 +15,13 @@ pytest-timeout==2.4.0
 pytest-xdist==3.8.0
 factory-boy==3.3.3
 
+# YAML parsing for the deploy-layer tests (tests/test_deploy/*) that
+# assert the structure of docker-compose / nginx config.  Test-only:
+# the application itself never imports yaml, so this stays out of
+# requirements.txt.  Pinned to the version the suite is validated
+# against locally.
+PyYAML==6.0.3
+
 # Linting
 pylint==4.0.5
 pylint-flask==0.6
