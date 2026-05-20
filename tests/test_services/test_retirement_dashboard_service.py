@@ -384,3 +384,360 @@ class TestRetirementProjectionEntryAware:
             assert target["current_balance"] == producer.balances[
                 current_period.id
             ]
+
+
+# ── C20: retirement zero-is-a-value, not "missing" (CRIT-04) ─────────
+#
+# Pre-Commit-20 ``retirement_dashboard_service`` resolved the SWR
+# with truthiness (``or "0.04"``) in ``compute_gap_data`` while
+# ``compute_slider_defaults`` used ``is None``; an explicit
+# ``safe_withdrawal_rate = Decimal("0.0000")`` displayed 0.00% on
+# the slider but drove the projection at 4% -- phantom $4,000/mo of
+# retirement income on a $1.2M balance the slider said was zero.
+# Separately, ``if params and params.assumed_annual_return:`` truthiness
+# dropped any zero-return account from the balance-weighted average
+# (two $100k accounts at 0% and 7% reported 7.00% instead of the true
+# blended 3.50%).  Commit 20 routes both sites through one
+# ``_resolve_swr_fraction`` helper and replaces the weighted-return
+# truthiness with explicit ``is not None`` so zero stays zero.
+# See: CRIT-04, F-042, PA-04, PA-05; coding-standard E-12 ("0 vs None").
+
+
+def _seed_active_salary_profile(db_session, user, scenario):
+    """Attach an active salary profile so ``compute_gap_data`` reaches
+    the ``_project_retirement_accounts`` path.
+
+    The retirement dashboard's gap computation short-circuits without
+    one (the net-biweekly path is gated on a salary profile being
+    present), so the C20 fixtures must guarantee the projection code
+    actually runs for the bug repro.
+    """
+    filing = db_session.query(FilingStatus).first()
+    profile = SalaryProfile(
+        user_id=user.id,
+        scenario_id=scenario.id,
+        filing_status_id=filing.id,
+        name="C20 Day Job",
+        annual_salary=Decimal("80000.00"),
+        pay_periods_per_year=26,
+        state_code="NC",
+        is_active=True,
+    )
+    db_session.add(profile)
+    db_session.flush()
+    return profile
+
+
+def _make_retirement_account(user, name, anchor_balance):
+    """Create a 401(k) retirement account with a dated anchor.
+
+    ``account_service.create_account`` writes the matching
+    ``AccountAnchorHistory`` row so ``balance_resolver`` reads a
+    consistent dated source of truth; the C20 tests then assert
+    against the resolved balance, not the raw column.
+    """
+    inv_type = (
+        db.session.query(AccountType)
+        .filter_by(name="401(k)").one()
+    )
+    return account_service.create_account(
+        user_id=user.id,
+        account_type_id=inv_type.id,
+        name=name,
+        anchor_balance=anchor_balance,
+    )
+
+
+class TestSwrResolverConsistency:
+    """CRIT-04 / F-042 / PA-04 / PA-05: SWR resolution is unified.
+
+    Pre-fix, ``compute_gap_data`` and ``compute_slider_defaults``
+    resolved the same ``UserSettings.safe_withdrawal_rate`` column
+    under two different rules (truthiness ``or "0.04"`` vs.  ``is
+    None``); an explicit ``Decimal("0.0000")`` stored SWR therefore
+    displayed 0.00% on the slider but drove the projection at 4%.
+    These tests pin the corrected behaviour: both surfaces read the
+    SWR through the single ``_resolve_swr_fraction`` helper, and an
+    explicit zero is a real zero on both surfaces.
+    """
+
+    def test_explicit_zero_swr_no_phantom_income(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C20-1: explicit zero SWR shows $0.00 income AND 0.00% slider.
+
+        Reproduction of the CRIT-04 phantom-income failure mode:
+
+          - ``safe_withdrawal_rate`` stored as ``Decimal("0")`` (the
+            user explicitly entered 0%; the column's CHECK admits 0).
+          - One retirement account with a $1,200,000 anchor balance,
+            no ``InvestmentParams`` (so ``_project_retirement_accounts``
+            skips the growth simulation and ``projected_balance`` ==
+            ``current_balance`` == 1,200,000).
+          - Active salary profile so the gap-projection path runs.
+
+        Hand arithmetic (CRIT-04 / F-042 / PA-04):
+
+          gap_result.projected_total_savings = 1,200,000.00
+          swr (resolver) = Decimal("0") (was Decimal("0.04") pre-fix)
+          chart investment_income
+              = (1,200,000 * 0 / 12).quantize(0.01)
+              = 0.00
+          slider current_swr
+              = (Decimal("0") * 100).quantize(0.01)
+              = 0.00
+
+        Pre-fix the slider rendered 0.00% but the chart rendered
+        ``str((1,200,000 * 0.04 / 12).quantize(0.01)) = "4000.00"``
+        -- the phantom $4,000/mo the audit cited.  All three numbers
+        (resolver swr, chart income, slider %) MUST agree on zero.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+
+            settings = (
+                db.session.query(UserSettings)
+                .filter_by(user_id=user.id)
+                .one()
+            )
+            settings.safe_withdrawal_rate = Decimal("0")
+
+            _seed_active_salary_profile(db.session, user, scenario)
+            _make_retirement_account(
+                user, "C20-1 401k", Decimal("1200000.00"),
+            )
+            db.session.commit()
+
+            data = retirement_dashboard_service.compute_gap_data(user.id)
+            slider = retirement_dashboard_service.compute_slider_defaults(data)
+
+            assert data["gap_analysis"].safe_withdrawal_rate == Decimal("0"), (
+                "Resolver fed truthiness fallback into the gap "
+                "calculator (CRIT-04)."
+            )
+            assert data["gap_analysis"].projected_total_savings == Decimal(
+                "1200000.00"
+            )
+            # 1,200,000 * 0 / 12 = 0.00, not the pre-fix 4,000.00.
+            assert data["chart_data"]["investment_income"] == "0.00", (
+                "Phantom retirement income from truthiness fallback "
+                "(CRIT-04 / F-042)."
+            )
+            assert slider["current_swr"] == Decimal("0.00")
+
+    def test_none_swr_uses_default_on_both_surfaces(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C20-2: ``None`` SWR -> default applies to slider AND gap.
+
+        Splices ``safe_withdrawal_rate = None`` (the column is
+        nullable; NULL is the documented "use default" sentinel,
+        distinct from an explicit stored zero).  Both surfaces must
+        fall back to ``_DEFAULT_SWR_PCT`` (4% / 0.04 fractional)
+        through the shared resolver.
+
+        Hand arithmetic (CRIT-04 default-fallback):
+
+          resolver = _DEFAULT_SWR_PCT / _PCT_SCALE
+                   = Decimal("4.00") / Decimal("100")
+                   = Decimal("0.04")
+          slider   = (0.04 * 100).quantize(0.01) = 4.00
+          gap_analysis.safe_withdrawal_rate = 0.04 (passed through)
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            settings = (
+                db.session.query(UserSettings)
+                .filter_by(user_id=user.id)
+                .one()
+            )
+            settings.safe_withdrawal_rate = None
+            db.session.commit()
+
+            data = retirement_dashboard_service.compute_gap_data(user.id)
+            slider = retirement_dashboard_service.compute_slider_defaults(data)
+
+            assert data["gap_analysis"].safe_withdrawal_rate == Decimal("0.04")
+            assert slider["current_swr"] == Decimal("4.00")
+
+
+class TestWeightedReturnZeroIsAValue:
+    """CRIT-04 / F-042 / PA-04: zero return contributes, ``None`` skips.
+
+    Pre-fix ``compute_slider_defaults`` used ``if params and
+    params.assumed_annual_return:`` -- truthiness on a Decimal -- so
+    a stable-value / cash sleeve at exactly 0.00% return was
+    silently dropped from the weighted-average denominator.  Post-
+    fix the gate is ``params is not None and
+    params.assumed_annual_return is not None``: a zero rate is a real
+    rate (counts), a missing ``InvestmentParams`` row is still
+    "missing" (skipped).
+    """
+
+    def test_zero_return_account_in_weighted_avg(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C20-3: two $100k accounts at 0% and 7% blend to 3.50%.
+
+        Hand arithmetic (CRIT-04 / F-042 / PA-04):
+
+          weighted_return = 100,000 * 0.00000 + 100,000 * 0.07000
+                          = 0 + 7,000
+                          = 7,000
+          total_balance   = 100,000 + 100,000 = 200,000
+          current_return  = (7,000 / 200,000) * 100
+                          = 0.035 * 100
+                          = Decimal("3.50")
+
+        Pre-fix the zero-return account was dropped from both numerator
+        and denominator, yielding (7,000 / 100,000) * 100 = 7.00 -- the
+        7.00% the audit cited for a portfolio whose true blended return
+        is 3.50%.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            _seed_active_salary_profile(db.session, user, scenario)
+
+            acct_zero = _make_retirement_account(
+                user, "C20-3 zero", Decimal("100000.00"),
+            )
+            acct_seven = _make_retirement_account(
+                user, "C20-3 seven", Decimal("100000.00"),
+            )
+            db.session.add(InvestmentParams(
+                account_id=acct_zero.id,
+                assumed_annual_return=Decimal("0.00000"),
+                employer_contribution_type="none",
+            ))
+            db.session.add(InvestmentParams(
+                account_id=acct_seven.id,
+                assumed_annual_return=Decimal("0.07000"),
+                employer_contribution_type="none",
+            ))
+            db.session.commit()
+
+            data = retirement_dashboard_service.compute_gap_data(user.id)
+            slider = retirement_dashboard_service.compute_slider_defaults(data)
+
+            # 100,000*0 + 100,000*0.07 = 7,000; 7,000 / 200,000 * 100 = 3.50.
+            assert slider["current_return"] == Decimal("3.50"), (
+                "Zero-return account dropped from weighted-return "
+                "denominator (CRIT-04 / F-042 / PA-04)."
+            )
+
+    def test_none_params_excluded_zero_return_included(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C20-4: an account with no ``InvestmentParams`` row is "missing"
+        and skipped; an account with an explicit zero return contributes.
+
+        Setup:
+
+          - Account A: $50,000 anchor, NO ``InvestmentParams`` row
+            (``params is None`` -- the genuine "missing" case).
+          - Account B: $100,000 anchor, ``InvestmentParams`` with
+            ``assumed_annual_return = Decimal("0.00000")`` (explicit
+            zero, not "missing").
+
+        Hand arithmetic (CRIT-04 / E-12):
+
+          A is skipped (params is None).
+          B contributes: weighted = 100,000 * 0 = 0;
+                         denom    = 100,000.
+          current_return = (0 / 100,000) * 100 = Decimal("0.00")
+
+        Pre-fix B was ALSO skipped (truthiness on a zero Decimal), so
+        ``total_balance`` was zero and the default 7.00% fallback ran
+        -- the audit-cited misbehaviour.  Post-fix only A is missing.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            _seed_active_salary_profile(db.session, user, scenario)
+
+            _make_retirement_account(user, "C20-4 A", Decimal("50000.00"))
+            acct_b = _make_retirement_account(
+                user, "C20-4 B", Decimal("100000.00"),
+            )
+            db.session.add(InvestmentParams(
+                account_id=acct_b.id,
+                assumed_annual_return=Decimal("0.00000"),
+                employer_contribution_type="none",
+            ))
+            db.session.commit()
+
+            data = retirement_dashboard_service.compute_gap_data(user.id)
+            slider = retirement_dashboard_service.compute_slider_defaults(data)
+
+            # B's explicit zero contributes; A's missing params is
+            # skipped.  Weighted = 0; denom = 100,000 -> 0.00%.
+            assert slider["current_return"] == Decimal("0.00")
+
+
+class TestSwrResolverSingleDefinition:
+    """C20-5: source-text gate against re-introducing the bug.
+
+    The defect was structural -- two truthiness expressions in the
+    same module that disagreed with each other.  This test scans the
+    source for the offending patterns so a future edit cannot
+    silently regress to truthiness on a financial value.
+    """
+
+    def test_no_truthiness_on_financial_values(self):
+        """No ``or "0.04"`` and no ``and X:`` truthiness on financial
+        Decimal columns survives in executable code.
+
+        Scans :mod:`app.services.retirement_dashboard_service` line by
+        line; skips comments and docstring lines (their references
+        documenting the historical pattern are intentional).  A failure
+        names the surviving expression so the diagnostic is concrete.
+        """
+        import inspect  # pylint: disable=import-outside-toplevel
+        source = inspect.getsource(retirement_dashboard_service)
+        forbidden = (
+            'or "0.04"',
+            "or 0.04",
+            "and params.assumed_annual_return:",
+        )
+        offending = []
+        in_block_doc = False
+        for lineno, raw in enumerate(source.splitlines(), start=1):
+            stripped = raw.lstrip()
+            # Strip block docstrings and comments so the gate only
+            # inspects executable lines.  Counts triple-quote
+            # openings/closings on each line to track state.
+            triple = stripped.count('"""') + stripped.count("'''")
+            line_was_in_doc = in_block_doc
+            if triple % 2 == 1:
+                in_block_doc = not in_block_doc
+            if line_was_in_doc or in_block_doc:
+                continue
+            if stripped.startswith("#"):
+                continue
+            # Strip the inline comment suffix so a forbidden literal
+            # appearing only in a trailing ``# ...`` does not trip.
+            code = raw.split("#", 1)[0]
+            # Strip string literals (a docstring that opens and closes
+            # on the same line, or a normal string) so historical
+            # references inside quotes are not flagged.
+            code_no_strings = code
+            for quote in ('"""', "'''", '"', "'"):
+                while quote in code_no_strings:
+                    start = code_no_strings.find(quote)
+                    end = code_no_strings.find(quote, start + len(quote))
+                    if end == -1:
+                        break
+                    code_no_strings = (
+                        code_no_strings[:start]
+                        + code_no_strings[end + len(quote):]
+                    )
+            for pattern in forbidden:
+                if pattern in code_no_strings:
+                    offending.append((lineno, pattern, raw.rstrip()))
+        assert not offending, (
+            "Truthiness on financial values re-introduced (CRIT-04 / "
+            "E-12):\n"
+            + "\n".join(f"  line {n}: {p!r} in {r}" for n, p, r in offending)
+        )

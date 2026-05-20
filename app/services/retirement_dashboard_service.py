@@ -76,6 +76,40 @@ _PCT_SCALE = Decimal("100")
 _PCT_QUANTUM = Decimal("0.01")
 
 
+def _resolve_swr_fraction(settings):
+    """Resolve the active safe-withdrawal rate as a fractional Decimal.
+
+    A single definition shared by :func:`compute_gap_data` and
+    :func:`compute_slider_defaults` so the slider display and the
+    gap/projection math read the stored SWR exactly once -- the
+    CRIT-04 / F-042 / PA-04 / PA-05 phantom-income defect was that
+    those two call sites resolved the same column under two
+    different rules (truthiness ``or "0.04"`` vs.  ``is None``), so
+    an explicit ``Decimal("0.0000")`` safe-withdrawal rate rendered
+    as 0.00% on the slider but drove the projection at 4% -- a
+    phantom $4,000/mo of retirement income on a $1.2M balance the
+    slider says is zero.  E-12 / coding-standard "do not rely on
+    truthiness for business logic": a stored zero rate is a real
+    zero; only ``settings is None`` or ``safe_withdrawal_rate is
+    None`` means "unset, use the default."
+
+    Args:
+        settings: the user's :class:`~app.models.user.UserSettings`
+            row, or ``None`` when the user has not yet created one.
+
+    Returns:
+        The fractional-decimal SWR (the form
+        :func:`app.services.retirement_gap_calculator.calculate_gap`
+        expects: ``0.04`` for the 4% rule, not ``4.0``).  Falls back
+        to ``_DEFAULT_SWR_PCT / _PCT_SCALE`` when ``settings`` is
+        ``None`` or the stored column is ``None``; an explicit zero
+        stored value is preserved as :class:`~decimal.Decimal` zero.
+    """
+    if settings is None or settings.safe_withdrawal_rate is None:
+        return _DEFAULT_SWR_PCT / _PCT_SCALE
+    return Decimal(str(settings.safe_withdrawal_rate))
+
+
 def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     """Compute gap analysis data for the retirement dashboard or HTMX fragment.
 
@@ -214,10 +248,13 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
                 ).quantize(Decimal("0.01"))
 
     # ── Gap calculation ─────────────────────────────────────────
+    # CRIT-04 / E-12: route both call sites through the same
+    # resolver so an explicit zero SWR is honoured everywhere (no
+    # truthiness fallback to the default for a stored zero).
     swr = (
         swr_override
         if swr_override is not None
-        else Decimal(str(settings.safe_withdrawal_rate or "0.04")) if settings else Decimal("0.04")
+        else _resolve_swr_fraction(settings)
     )
     tax_rate = (
         Decimal(str(settings.estimated_retirement_tax_rate))
@@ -301,12 +338,14 @@ def compute_slider_defaults(data):
         ... <= 1)``, NULL meaning "use the default").
     """
     settings = data["settings"]
-    if settings is None or settings.safe_withdrawal_rate is None:
-        current_swr = _DEFAULT_SWR_PCT
-    else:
-        current_swr = (settings.safe_withdrawal_rate * _PCT_SCALE).quantize(
-            _PCT_QUANTUM,
-        )
+    # CRIT-04 / E-12: scale the shared fractional resolver into
+    # percent for the slider.  The previous code had a parallel
+    # ``is None`` branch here while ``compute_gap_data`` used
+    # truthiness ``or "0.04"`` -- two definitions of "missing SWR"
+    # that disagreed on explicit zero (slider 0.00%, projection 4%).
+    current_swr = (
+        _resolve_swr_fraction(settings) * _PCT_SCALE
+    ).quantize(_PCT_QUANTUM)
 
     projections = data.get("retirement_account_projections", [])
     total_balance = Decimal("0")
@@ -318,7 +357,13 @@ def compute_slider_defaults(data):
             .filter_by(account_id=acct.id)
             .first()
         )
-        if params and params.assumed_annual_return:
+        # CRIT-04 / E-12: zero is a real value, only ``None`` means
+        # "unset."  A stable-value / cash sleeve at exactly 0.00%
+        # return must contribute its balance to the weighted-average
+        # denominator; the prior truthiness check dropped it
+        # entirely (two $100k accounts at 0% and 7% reported 7.00%
+        # instead of the true blended 3.50%).
+        if params is not None and params.assumed_annual_return is not None:
             bal = proj.get("current_balance", acct.current_anchor_balance) or Decimal("0")
             total_balance += bal
             weighted_return += bal * params.assumed_annual_return

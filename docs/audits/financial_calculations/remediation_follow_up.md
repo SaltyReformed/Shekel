@@ -846,4 +846,146 @@ here would inflate the diff substantially and mix concerns Commit
 
 ---
 
+## F-11. Truthiness `or Decimal("0")` on the per-account balance read in `compute_slider_defaults`
+
+- **Surfaced during:** Commit 20 (`fix(retirement): zero is a value not
+  missing (E-12, CRIT-04)`).
+- **Status:** not started; pick up alongside any future MED-02 sweep of
+  inline truthiness on financial values.
+
+### Problem
+
+`app/services/retirement_dashboard_service.py:362` (post-Commit-20 line
+number) reads the per-account balance for the weighted-return loop as
+
+```python
+bal = proj.get(
+    "current_balance", acct.current_anchor_balance
+) or Decimal("0")
+```
+
+The trailing ``or Decimal("0")`` is truthiness on a monetary value -- the
+same pattern Commit 20 removed from the SWR resolver and the
+weighted-return gate.  A genuine zero-balance account behaves the same
+either way (the account contributes ``0 * rate = 0`` to the numerator
+and ``0`` to the denominator regardless), so the line is behaviourally
+inert today, but it violates the post-Commit-20 invariant
+"no truthiness on financial values" in spirit and is the kind of latent
+hazard that surfaces only after an upstream refactor changes what
+``proj.get`` can return.
+
+### Why defer
+
+Commit 20's charter is "fix the two specific truthiness sites the audit
+cited (CRIT-04 / F-042 / PA-04 / PA-05)."  This third site is not
+called out in any finding and is behaviourally inert.  Folding it in
+would expand scope and require a separate verification that
+``proj.get("current_balance", ...)`` cannot in practice return ``None``
+upstream (verified empirically today but not statically enforced).
+
+### Acceptance criteria for the eventual PR
+
+- Replace with an explicit ``is None`` guard or remove the ``or
+  Decimal("0")`` once the upstream `_project_retirement_accounts`
+  contract is documented as always returning a non-None Decimal.
+- Add a unit-test pinning the upstream contract so the guard's removal
+  is safe in perpetuity.
+
+---
+
+## F-12. Stylistic truthiness `if params and projection_periods:` in `_project_retirement_accounts`
+
+- **Surfaced during:** Commit 20 (`fix(retirement): zero is a value not
+  missing (E-12, CRIT-04)`).
+- **Status:** not started; pick up alongside F-11.
+
+### Problem
+
+`app/services/retirement_dashboard_service.py:444` (post-Commit-20 line
+number) gates the per-account growth simulation with
+
+```python
+if params and projection_periods:
+    ...
+```
+
+The first conjunct (``params``) is truthiness on a SQLAlchemy
+`InvestmentParams` instance, which Python evaluates as ``is not None``
+for any non-None object (no ``__bool__`` override on the class).  So
+this is not a bug -- it produces the same behaviour as ``params is not
+None`` -- but it is stylistically inconsistent with the post-Commit-20
+``params is not None`` gate immediately above (in `compute_slider_defaults`)
+and could mislead a future reader into thinking truthiness is the
+project's convention here.
+
+### Why defer
+
+Behaviourally a no-op; the audit did not cite it.  Worth a one-line edit
+in a future style-pass commit but does not justify expanding Commit 20's
+diff.
+
+### Acceptance criteria for the eventual PR
+
+- Replace ``if params and projection_periods:`` with ``if params is not
+  None and projection_periods:`` so the gate matches the post-Commit-20
+  convention in the same file.
+- No behaviour change; existing tests stay green.
+
+---
+
+## F-13. `retirement_gap_calculator` does not validate `safe_withdrawal_rate >= 0`
+
+- **Surfaced during:** Commit 20 (`fix(retirement): zero is a value not
+  missing (E-12, CRIT-04)`).
+- **Status:** not started; product decision required (validation vs.
+  clamping vs.  status quo).
+
+### Problem
+
+`tests/test_services/test_retirement_gap_calculator.py:309-311` carries
+a pre-existing in-code TODO that pre-dates Commit 20:
+
+```
+# BUG: Source does not validate SWR > 0 -- negative SWR silently
+# accepted. Should raise ValidationError.
+# TODO: Source should validate safe_withdrawal_rate > 0.
+```
+
+`app/services/retirement_gap_calculator.calculate_gap` guards the
+division by zero (``if safe_withdrawal_rate > 0:``) but silently treats
+a negative SWR the same as zero -- ``required_retirement_savings``
+collapses to ``ZERO``.  Existing test
+``test_safe_withdrawal_rate_negative`` pins that behaviour
+intentionally.  The dashboard's `_resolve_swr_fraction` (added in
+Commit 20) reads the column as-is, and the column's CHECK constraint
+(`ck_user_settings_valid_safe_withdrawal`) admits ``0 <= rate <= 1``
+only, so a negative value cannot reach the calculator through the
+normal storage path.  The hazard is the slider-override path
+(`retirement.gap_analysis` route accepts any float and divides by 100),
+where a negative ``swr=`` query parameter would flow through to the
+calculator.
+
+### Why defer
+
+Commit 20's charter is CRIT-04 (truthiness on financial values).  The
+"validate or clamp negative SWR" decision is a product / UX call that
+deserves its own design discussion -- the right answer might be a
+Marshmallow validator on the route, a database column CHECK on the
+override channel (there isn't one yet), or status quo with a comment
+explaining why silent-clamp-to-zero is acceptable.
+
+### Acceptance criteria for the eventual PR
+
+- Decide: reject (422), clamp (silently floor to 0), or document (keep
+  current behaviour and write a comment naming the constraint at the
+  route layer).
+- If reject: add Marshmallow `Range(min=0)` validator on the
+  `swr` query parameter; update or remove the
+  ``test_safe_withdrawal_rate_negative`` and matching dashboard-route
+  tests.
+- Remove the ``# BUG:`` / ``# TODO:`` lines in
+  ``test_retirement_gap_calculator.py:309-311``.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
