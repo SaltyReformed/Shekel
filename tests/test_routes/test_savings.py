@@ -1225,8 +1225,17 @@ class TestEmergencyFundCommittedBaseline:
         """
         with app.app_context():
             # Savings account so emergency fund section renders.
-            savings = _create_savings_account(seed_user, name="EF Savings")
-            savings.current_anchor_balance = Decimal("10000.00")
+            # Origination anchor written at create time so the dated
+            # AccountAnchorHistory SoT (E-19 / Commit 4) carries the
+            # test's intended $10,000.  Mutating ``current_anchor_balance``
+            # after the fact is reconciled-against by the canonical
+            # producer (it logs EVT_ANCHOR_CACHE_RECONCILED and uses
+            # history); the proper anchor-update path appends a fresh
+            # history row, which is what the factory does at creation.
+            savings = _create_savings_account(
+                seed_user, name="EF Savings",
+                anchor_balance=Decimal("10000.00"),
+            )
 
             # Transfer template: checking -> savings, every period.
             rule = _create_recurrence_rule(
@@ -1257,8 +1266,17 @@ class TestEmergencyFundCommittedBaseline:
         should be overridden by the $3,250/month committed baseline.
         """
         with app.app_context():
-            savings = _create_savings_account(seed_user, name="EF Savings")
-            savings.current_anchor_balance = Decimal("10000.00")
+            # Origination anchor written at create time so the dated
+            # AccountAnchorHistory SoT (E-19 / Commit 4) carries the
+            # test's intended $10,000.  Mutating ``current_anchor_balance``
+            # after the fact is reconciled-against by the canonical
+            # producer (it logs EVT_ANCHOR_CACHE_RECONCILED and uses
+            # history); the proper anchor-update path appends a fresh
+            # history row, which is what the factory does at creation.
+            savings = _create_savings_account(
+                seed_user, name="EF Savings",
+                anchor_balance=Decimal("10000.00"),
+            )
 
             # Create small settled expenses across 6 recent periods.
             settled_id = ref_cache.status_id(StatusEnum.SETTLED)
@@ -1306,8 +1324,17 @@ class TestEmergencyFundCommittedBaseline:
         active templates is used instead of the historical $0 average.
         """
         with app.app_context():
-            savings = _create_savings_account(seed_user, name="EF Savings")
-            savings.current_anchor_balance = Decimal("10000.00")
+            # Origination anchor written at create time so the dated
+            # AccountAnchorHistory SoT (E-19 / Commit 4) carries the
+            # test's intended $10,000.  Mutating ``current_anchor_balance``
+            # after the fact is reconciled-against by the canonical
+            # producer (it logs EVT_ANCHOR_CACHE_RECONCILED and uses
+            # history); the proper anchor-update path appends a fresh
+            # history row, which is what the factory does at creation.
+            savings = _create_savings_account(
+                seed_user, name="EF Savings",
+                anchor_balance=Decimal("10000.00"),
+            )
 
             # Monthly expense template = $2,000/month.
             rule = _create_recurrence_rule(
@@ -1335,8 +1362,17 @@ class TestEmergencyFundCommittedBaseline:
         stays at $0 and coverage metrics show zero.
         """
         with app.app_context():
-            savings = _create_savings_account(seed_user, name="EF Savings")
-            savings.current_anchor_balance = Decimal("10000.00")
+            # Origination anchor written at create time so the dated
+            # AccountAnchorHistory SoT (E-19 / Commit 4) carries the
+            # test's intended $10,000.  Mutating ``current_anchor_balance``
+            # after the fact is reconciled-against by the canonical
+            # producer (it logs EVT_ANCHOR_CACHE_RECONCILED and uses
+            # history); the proper anchor-update path appends a fresh
+            # history row, which is what the factory does at creation.
+            savings = _create_savings_account(
+                seed_user, name="EF Savings",
+                anchor_balance=Decimal("10000.00"),
+            )
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -1412,8 +1448,17 @@ class TestEmergencyFundCommittedBaseline:
         contribute to the committed monthly baseline.
         """
         with app.app_context():
-            savings = _create_savings_account(seed_user, name="EF Savings")
-            savings.current_anchor_balance = Decimal("10000.00")
+            # Origination anchor written at create time so the dated
+            # AccountAnchorHistory SoT (E-19 / Commit 4) carries the
+            # test's intended $10,000.  Mutating ``current_anchor_balance``
+            # after the fact is reconciled-against by the canonical
+            # producer (it logs EVT_ANCHOR_CACHE_RECONCILED and uses
+            # history); the proper anchor-update path appends a fresh
+            # history row, which is what the factory does at creation.
+            savings = _create_savings_account(
+                seed_user, name="EF Savings",
+                anchor_balance=Decimal("10000.00"),
+            )
 
             # Inactive template -- excluded by route query.
             rule1 = _create_recurrence_rule(
