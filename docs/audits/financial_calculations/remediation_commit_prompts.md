@@ -76,9 +76,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -92,7 +94,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -152,9 +154,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -168,7 +172,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -244,9 +248,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -280,7 +286,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -350,9 +356,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -370,7 +378,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -392,7 +400,8 @@ If anything is unclear, ASK.
 ### Commit 5 -- `feat(balance): canonical entries-aware balance/subtotal producer (E-25)`
 
 **Prereqs on dev:** 1, 2, 4. **Closes:** CRIT-01 (E-25; removes the silent-degrade seam; routes grid
-+ dashboard_service).
+
+- dashboard_service).
 
 ```text
 You are executing Commit 5 of the Shekel financial-calculation audit remediation in a fresh
@@ -456,9 +465,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -479,7 +490,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -553,9 +564,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -573,7 +586,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -639,9 +652,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -655,7 +670,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -729,9 +744,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -745,7 +762,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -817,9 +834,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -833,7 +852,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -902,9 +921,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -921,7 +942,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -997,9 +1018,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1013,7 +1036,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1099,9 +1122,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1126,7 +1151,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1215,9 +1240,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1233,7 +1260,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1320,9 +1347,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1341,7 +1370,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1425,9 +1454,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1443,7 +1474,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1545,9 +1576,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1561,7 +1594,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1640,9 +1673,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1660,7 +1695,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1742,9 +1777,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1761,7 +1798,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1838,9 +1875,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1857,7 +1896,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -1933,9 +1972,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -1952,7 +1993,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2027,9 +2068,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2043,7 +2086,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2119,9 +2162,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2144,7 +2189,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2223,9 +2268,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2243,7 +2290,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2325,9 +2372,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2349,7 +2398,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2424,9 +2473,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2443,7 +2494,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2510,9 +2561,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2529,7 +2582,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2599,9 +2652,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2618,7 +2673,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2701,9 +2756,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2717,7 +2774,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2793,9 +2850,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2809,7 +2868,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2886,9 +2945,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2905,7 +2966,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -2981,9 +3042,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -2997,7 +3060,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -3072,9 +3135,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -3094,7 +3159,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -3159,9 +3224,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -3175,7 +3242,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -3243,9 +3310,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -3259,7 +3328,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -3338,9 +3407,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -3356,7 +3427,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -3421,9 +3492,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -3437,7 +3510,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
@@ -3527,9 +3600,11 @@ Apply these rules (the plan's Section 1 is the authoritative version):
    baseline); full pytest (-n 12 default) green as the per-commit final gate. Migrations
    (if any) round-trip upgrade->downgrade->upgrade cleanly; destructive changes get a Review
    docstring line and explicit developer approval before authoring.
-6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed
-   but did not perform MUST be flagged in the work summary with file:line and a one-sentence
-   reason for not acting. Do not silently fold them in.
+6. Stay in scope. Out-of-scope issues, gold-plating opportunities, or refactors you noticed but did not
+   perform MUST be flagged in the work summary with file:line and a one-sentence reason for not acting.
+   Do not silently fold them in. Items that are not directly handled by a future commit need to be
+   added to docs/audits/financial_calculations/remediation_follow_up.md. Any trivial items offer to
+   address as a separate commit.
 7. Do not push. After the work is green, present the work summary and ASK whether to commit
    and push to dev (this triggers CI; PR-to-main is required for promotion).
 
@@ -3547,7 +3622,7 @@ F. Pylint final line, verbatim.
 G. Migrations: upgrade->downgrade->upgrade result, or "n/a".
 H. Invariants: which existing regression locks stayed green; which new locks added.
 I. Discovered refinements folded in: each with rationale.
-J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item.
+J. OUT OF SCOPE -- flagged, not fixed: file:line + reason per item + F-# entry in remediation_follow_up.md.
 K. Open questions / assumptions made.
 L. Proposed commit message (format: <type>(<scope>): <what> with the Co-Authored-By trailer
    per CLAUDE.md).
