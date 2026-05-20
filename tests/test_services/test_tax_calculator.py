@@ -16,6 +16,7 @@ from app.services.tax_calculator import (
     calculate_federal_tax,
     calculate_state_tax,
     calculate_fica,
+    capped_social_security,
     _apply_marginal_brackets,
 )
 from app.services.exceptions import (
@@ -790,4 +791,137 @@ class TestNegativeAndBoundaryPaths:
         )
         assert result["medicare"] == Decimal("0.00"), (
             f"Medicare: expected 0.00, got {result['medicare']}"
+        )
+
+
+# ── capped_social_security helper (CRIT-03 / F-037) ───────────────
+
+
+class _FicaConfig184500:
+    """Fixed FicaConfig stub at the 2026-seed wage base.
+
+    capped_social_security only reads `ss_rate` and `ss_wage_base`.
+    Medicare attributes are populated because test_calculate_fica_delegates_to_helper
+    exercises the full calculate_fica pipeline (which reads them) to prove
+    the bracket path also routes through the helper.
+    """
+
+    def __init__(self):
+        self.ss_rate = Decimal("0.062")
+        self.ss_wage_base = Decimal("184500")
+        self.medicare_rate = Decimal("0.0145")
+        self.medicare_surtax_rate = Decimal("0.009")
+        self.medicare_surtax_threshold = Decimal("200000")
+
+
+class TestCappedSocialSecurityHelper:
+    """Direct tests for capped_social_security.
+
+    Verifies the helper's three branches against hand-computed cap
+    arithmetic.  The helper is the single source of truth for SS in both
+    the bracket and calibration paths (CRIT-03 / F-037); these tests pin
+    each branch independently of either caller so a regression here
+    surfaces before the broader pipeline tests.
+    """
+
+    def test_branch_under_cap_full_rate(self):
+        """cumul + gross < ss_wage_base -> full statutory rate.
+
+        $12,000 gross, $48,000 cumul; $60,000 << $184,500.
+        12000 * 0.062 = 744.00.
+        """
+        result = capped_social_security(
+            Decimal("12000.00"),
+            Decimal("48000.00"),
+            _FicaConfig184500(),
+        )
+        assert result == Decimal("744.00"), (
+            f"Under-cap SS must be 744.00, got {result}"
+        )
+
+    def test_branch_partial_at_crossing(self):
+        """cumul + gross > ss_wage_base, cumul < ss_wage_base -> partial.
+
+        cumul = 180000, gross = 12000; cumul + gross = 192000 > 184500.
+        ss_taxable = 184500 - 180000 = 4500.00.
+        ss = 4500.00 * 0.062 = 279.00.
+        """
+        result = capped_social_security(
+            Decimal("12000.00"),
+            Decimal("180000.00"),
+            _FicaConfig184500(),
+        )
+        assert result == Decimal("279.00"), (
+            f"Partial-crossing SS must be 279.00, got {result}"
+        )
+
+    def test_branch_at_cap_zero(self):
+        """cumul == ss_wage_base -> ZERO (boundary inclusive).
+
+        Equality at the cap zeros the period; the IRS cap is inclusive.
+        """
+        result = capped_social_security(
+            Decimal("12000.00"),
+            Decimal("184500.00"),
+            _FicaConfig184500(),
+        )
+        assert result == Decimal("0.00"), (
+            f"At-cap SS must be 0.00, got {result}"
+        )
+
+    def test_branch_above_cap_zero(self):
+        """cumul > ss_wage_base -> ZERO.
+
+        cumul = 192000 > 184500 -> SS = 0.00.
+        """
+        result = capped_social_security(
+            Decimal("12000.00"),
+            Decimal("192000.00"),
+            _FicaConfig184500(),
+        )
+        assert result == Decimal("0.00"), (
+            f"Above-cap SS must be 0.00, got {result}"
+        )
+
+    def test_calculate_fica_delegates_to_helper(self):
+        """C18-4: calculate_fica's SS line equals capped_social_security exactly.
+
+        Both produce identical Decimal pennies for the same inputs.  This
+        is the "single source of truth" lock: if the bracket path ever
+        reintroduces its own copy of the cap arithmetic, this assertion
+        fails because the rounding boundaries diverge.
+        """
+        cfg = _FicaConfig184500()
+        # Sample the partial-crossing branch where rounding is most fragile.
+        gross = Decimal("12000.00")
+        cumul = Decimal("180000.00")
+
+        helper_ss = capped_social_security(gross, cumul, cfg)
+        fica_ss = calculate_fica(gross, cfg, cumul)["ss"]
+
+        assert helper_ss == fica_ss == Decimal("279.00"), (
+            f"calculate_fica SS ({fica_ss}) must equal helper ({helper_ss})"
+        )
+
+    def test_string_inputs_accepted(self):
+        """String gross/cumulative are coerced to Decimal -- mirrors callers."""
+        result = capped_social_security(
+            "12000.00", "48000.00", _FicaConfig184500()
+        )
+        assert result == Decimal("744.00")
+
+    def test_none_fica_config_returns_zero(self):
+        """`fica_config=None` returns ZERO, mirroring `calculate_fica`.
+
+        `calculate_fica` already returns all-ZERO when fica_config is None
+        (paycheck-projection contract for profiles without a seeded FICA
+        config -- e.g. early bootstrap, unit tests that omit the FICA
+        seed).  The helper must preserve this contract so the calibration
+        path remains symmetric with the bracket path on missing config.
+        """
+        result = capped_social_security(
+            Decimal("12000.00"), Decimal("0"), None
+        )
+        assert result == Decimal("0.00"), (
+            f"None fica_config must yield ZERO, got {result}"
         )

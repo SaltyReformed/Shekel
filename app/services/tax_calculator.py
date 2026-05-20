@@ -271,11 +271,63 @@ def calculate_state_tax(annual_gross, state_config):
 # ── FICA ──────────────────────────────────────────────────────────
 
 
+def capped_social_security(gross, cumulative_wages, fica_config):
+    """Compute one period's Social Security tax with the wage-base cap enforced.
+
+    Sole source of truth for SS arithmetic.  Both the bracket-based path
+    (`calculate_fica`) and the calibrated path (`apply_calibration`) delegate
+    here so the IRS wage-base invariant (SS accrual stops once year-to-date
+    wages reach `fica_config.ss_wage_base`) cannot drift between the two.
+    This is the F-037 / CRIT-03 fix: prior to this helper the calibration
+    path had no `cumulative_wages` parameter and no `ss_wage_base` reference,
+    so a high earner who calibrated from a pay stub was over-charged SS for
+    every period after the cap (+$7,905/yr on a $312k salary, audit
+    2026-05-19).
+
+    Args:
+        gross:            Gross pay for this pay period (NOT annualized).
+        cumulative_wages: Year-to-date gross wages BEFORE this period.
+        fica_config:      FicaConfig with `ss_rate` and `ss_wage_base`.  When
+                          None, returns ZERO -- mirroring `calculate_fica`'s
+                          None-fica handling so paycheck projection on a
+                          profile without a seeded FICA config produces a
+                          zero SS line on both the bracket and calibration
+                          paths (e.g. during early bootstrap or unit tests
+                          that omit the FICA seed).
+
+    Returns:
+        Decimal: SS tax for the period, quantised HALF_UP to two places.
+
+    Branches (matching IRS Publication 15 SS-cap behaviour):
+        1. cumulative_wages >= ss_wage_base       -> ZERO (over cap).
+        2. cumulative_wages + gross > ss_wage_base -> partial; only the
+           portion of `gross` that fits under the remaining cap room is
+           taxed (`ss_taxable = ss_wage_base - cumulative_wages`).
+        3. cumulative_wages + gross <= ss_wage_base -> full `gross * ss_rate`.
+    """
+    if fica_config is None:
+        return ZERO.quantize(TWO_PLACES)
+
+    gross = Decimal(str(gross))
+    cumulative = Decimal(str(cumulative_wages))
+    ss_rate = Decimal(str(fica_config.ss_rate))
+    ss_wage_base = Decimal(str(fica_config.ss_wage_base))
+
+    if cumulative >= ss_wage_base:
+        return ZERO.quantize(TWO_PLACES)
+    if cumulative + gross > ss_wage_base:
+        ss_taxable = ss_wage_base - cumulative
+        return (ss_taxable * ss_rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    return (gross * ss_rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+
 def calculate_fica(annual_gross, fica_config, cumulative_wages=ZERO):
     """Calculate FICA taxes (Social Security + Medicare) for a pay period.
 
     Handles the SS wage base cap and Medicare surtax threshold using
-    cumulative wages to track year-to-date totals.
+    cumulative wages to track year-to-date totals.  The SS portion is
+    delegated to `capped_social_security` so the bracket and calibration
+    paths cannot drift on the cap invariant (F-037 / CRIT-03).
 
     Args:
         annual_gross:     Gross income for this pay period (NOT annualized).
@@ -290,20 +342,11 @@ def calculate_fica(annual_gross, fica_config, cumulative_wages=ZERO):
 
     gross = Decimal(str(annual_gross))
     cumulative = Decimal(str(cumulative_wages))
-    ss_rate = Decimal(str(fica_config.ss_rate))
-    ss_wage_base = Decimal(str(fica_config.ss_wage_base))
     medicare_rate = Decimal(str(fica_config.medicare_rate))
     surtax_rate = Decimal(str(fica_config.medicare_surtax_rate))
     surtax_threshold = Decimal(str(fica_config.medicare_surtax_threshold))
 
-    # Social Security -- capped at wage base
-    if cumulative >= ss_wage_base:
-        ss_tax = ZERO
-    elif cumulative + gross > ss_wage_base:
-        ss_taxable = ss_wage_base - cumulative
-        ss_tax = (ss_taxable * ss_rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-    else:
-        ss_tax = (gross * ss_rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    ss_tax = capped_social_security(gross, cumulative, fica_config)
 
     # Medicare -- base rate on all income + surtax above threshold
     medicare_tax = (gross * medicare_rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)

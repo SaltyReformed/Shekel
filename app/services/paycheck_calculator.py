@@ -162,10 +162,23 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
         and getattr(calibration, "is_active", False)
     )
 
+    # Cumulative YTD wages are needed by both branches for the SS wage-base
+    # cap (CRIT-03 / F-037: the calibration path used to skip this and
+    # over-charged SS after the cap on high earners).
+    cumulative_wages = _get_cumulative_wages(
+        profile, period, all_periods
+    )
+
     if use_calibration:
-        # Use effective rates from the pay stub calibration.
+        # Use effective rates from the pay stub calibration.  The SS line
+        # inside apply_calibration delegates to capped_social_security so
+        # the wage-base cap is enforced identically to the bracket path.
         cal_taxes = apply_calibration(
-            gross_biweekly, taxable_biweekly, calibration
+            gross_biweekly,
+            taxable_biweekly,
+            calibration,
+            cumulative_wages=cumulative_wages,
+            fica_config=fica_config,
         )
         federal_biweekly = cal_taxes["federal"]
         state_biweekly = cal_taxes["state"]
@@ -204,9 +217,6 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
         )
 
         # FICA -- use cumulative wages for SS cap tracking.
-        cumulative_wages = _get_cumulative_wages(
-            profile, period, all_periods
-        )
         fica = tax_calculator.calculate_fica(
             gross_biweekly, fica_config, cumulative_wages
         )

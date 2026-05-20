@@ -2938,3 +2938,144 @@ class TestBiweeklyResidueDocstring:
         doc = calculate_paycheck.__doc__ or ""
         assert "residue" in doc.lower()
         assert "F-127" in doc
+
+
+# ── CRIT-03 / F-037 integration: calibration path SS cap ──────────
+
+
+class TestCalibrationSSCapIntegration:
+    """End-to-end integration: calibrated paycheck honours the SS cap.
+
+    Verifies that calculate_paycheck plumbs cumulative_wages into the
+    calibration branch correctly and that the year-total SS on the
+    calibration path equals the bracket-path year-total to the cent
+    for the F-037 worked example ($312k salary, 26 periods at $12,000).
+
+    Pre-fix (audit 2026-05-19): the calibration branch never received
+    cumulative_wages, so SS accrued for every period of the year
+    (26 * $744.00 = $19,344.00), overstating FICA by $7,905.00 vs the
+    correct $11,439.00 (= ss_wage_base * ss_rate = 184500 * 0.062).
+    """
+
+    @staticmethod
+    def _high_earner_periods():
+        """26 biweekly periods starting 2026-01-02."""
+        start = date(2026, 1, 2)
+        return [
+            FakePeriod(
+                start_date=date.fromordinal(
+                    start.toordinal() + i * 14
+                ),
+                period_id=i + 1,
+            )
+            for i in range(26)
+        ]
+
+    @staticmethod
+    def _fica_2026():
+        """Seed 2026 FICA: ss_rate 0.062, ss_wage_base $184,500."""
+        return FakeFicaConfig(
+            ss_rate="0.062",
+            ss_wage_base="184500",
+        )
+
+    def _tax_configs(self, simple_bracket_set, nc_state_config):
+        """Tax configs with the 2026-seed wage base."""
+        return {
+            "bracket_set": simple_bracket_set,
+            "state_config": nc_state_config,
+            "fica_config": self._fica_2026(),
+        }
+
+    def test_calibration_year_ss_matches_bracket_year_ss(
+        self, simple_bracket_set, nc_state_config,
+    ):
+        """C18-3 integration: 26-period year SS sums match to the cent.
+
+        $312,000 salary, 26 periods, $12,000/period gross, calibration
+        active with effective_ss_rate = statutory 0.062.  Both paths must
+        produce the IRS-invariant year total $11,439.00.
+        """
+        profile = FakeProfile(
+            annual_salary=312000,
+            created_at=date(2026, 1, 1),
+        )
+        periods = self._high_earner_periods()
+        tax_configs = self._tax_configs(
+            simple_bracket_set, nc_state_config
+        )
+        cal = FakeCalibration(
+            federal_rate="0.20000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        bracket = project_salary(profile, periods, tax_configs)
+        calibrated = project_salary(
+            profile, periods, tax_configs, calibration=cal,
+        )
+
+        bracket_year_ss = sum(r.social_security for r in bracket)
+        cal_year_ss = sum(r.social_security for r in calibrated)
+
+        # Bracket path year SS: 15 * (12000*0.062) + 279.00 + 10 * 0.00
+        # = 15*744.00 + 279.00 = 11160.00 + 279.00 = 11439.00
+        assert bracket_year_ss == Decimal("11439.00"), (
+            f"Bracket year SS must be 11439.00 (ss_wage_base * ss_rate); "
+            f"got {bracket_year_ss}"
+        )
+        assert cal_year_ss == bracket_year_ss, (
+            f"Calibration year SS ({cal_year_ss}) must equal bracket "
+            f"year SS ({bracket_year_ss}); pre-fix divergence was "
+            f"$7,905.00 (F-037)"
+        )
+
+    def test_calibration_partial_period_at_cap(
+        self, simple_bracket_set, nc_state_config,
+    ):
+        """C18-5 integration: period 16 SS = $279.00 (partial crossing).
+
+        After 15 periods at $12,000 each, cumul = $180,000.  Period 16
+        crosses the $184,500 cap: ss_taxable = $4,500.00, SS = $279.00.
+        Periods 17-26 must be exactly $0.00.
+        """
+        profile = FakeProfile(
+            annual_salary=312000,
+            created_at=date(2026, 1, 1),
+        )
+        periods = self._high_earner_periods()
+        tax_configs = self._tax_configs(
+            simple_bracket_set, nc_state_config
+        )
+        cal = FakeCalibration(
+            federal_rate="0.20000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        results = project_salary(
+            profile, periods, tax_configs, calibration=cal,
+        )
+
+        # Periods 1-15 (indexes 0-14): full SS.  12000.00 * 0.062 = 744.00.
+        for i in range(15):
+            assert results[i].social_security == Decimal("744.00"), (
+                f"Period {i+1}: SS expected 744.00, got "
+                f"{results[i].social_security}"
+            )
+
+        # Period 16 (index 15): partial.  cumul=180000, ss_taxable=4500.
+        # 4500 * 0.062 = 279.00.
+        assert results[15].social_security == Decimal("279.00"), (
+            f"Period 16 (partial crossing): SS expected 279.00, got "
+            f"{results[15].social_security}"
+        )
+
+        # Periods 17-26 (indexes 16-25): cumul >= cap, SS = 0.00.
+        for i in range(16, 26):
+            assert results[i].social_security == Decimal("0.00"), (
+                f"Period {i+1}: SS expected 0.00 (over cap), got "
+                f"{results[i].social_security}"
+            )
