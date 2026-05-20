@@ -126,4 +126,184 @@ Quoted here so the split planner knows what conflicts with what:
 
 ---
 
+## F-2. Remove dead anchor-None branches in `calendar_service`
+
+- **Surfaced during:** Commit 9 (`fix(calendar): month-end balance via
+  canonical balance-as-of-date (E-27)`), commit `9871bf7`.
+- **Status:** not started; defer until after Commit 37.
+
+### Problem
+
+Three branches in `app/services/calendar_service.py` short-circuit on
+the pre-E-19 NULL-anchor state and return zeroed
+`MonthSummary` / `YearOverview` objects:
+
+- `get_month_detail` (`:115-120`) -- `if account is None: return
+  _empty_month(...)` and `if scenario is None: return
+  _empty_month(...)`.
+- `get_year_overview` (`:156-162`) -- the matching pair returning
+  `_empty_year(year)`.
+- `_empty_month` (`:482`) -- builds the zeroed summary used by both
+  routes, including a hardcoded `projected_end_balance=Decimal("0")`
+  (the "D6-02 fifth anchor-None behavior" the audit named at
+  `08_findings.md:751-753`).
+
+After Commit 3 (`fix(anchor): backfill origination anchor`) plus
+Commit 4 (`feat(balance): date-anchored anchor resolver`), every
+account row has a resolvable anchor and `resolve_anchor` either
+returns a valid `AnchorPoint` or raises `RuntimeError`.  The
+`account is None` / `scenario is None` paths can only fire when the
+upstream resolvers (`resolve_analytics_account`,
+`get_baseline_scenario`) themselves return `None`, which would
+indicate a separate ownership / scenario-setup defect.  Treating
+that case as a silently-zeroed calendar masks the upstream bug; the
+zeroed `MonthSummary` ships a `Decimal("0")` calendar to the user
+with no error.
+
+### Recommended direction
+
+The remediation plan's locked answer (E-19, Q-16/A-16) is "one anchor
+resolver, NULL anchor unreachable."  The calendar should adopt the
+same contract: `resolve_analytics_account` raises (or the route
+short-circuits with a 404) when the account is gone; missing
+scenario likewise.  Concretely:
+
+1. Convert `get_month_detail` / `get_year_overview` to raise a
+   specific exception (e.g. `AccountNotResolvableError`) when the
+   account / scenario resolvers return `None`.  Routes catch the
+   exception and surface a 404 -- matching the project's "404 for
+   both 'not found' and 'not yours'" security rule.
+2. Delete `_empty_month` and `_empty_year` (no remaining caller).
+3. Update tests: any test that relied on the implicit zeroed return
+   becomes an explicit 404 assertion or sets up a valid account /
+   scenario.
+
+### Why defer
+
+The plan's "anchor-None family" cleanup (D6-02 -> CRIT-01) was
+scoped to the balance producers (Commits 3-8) and the calendar
+month-end (Commit 9 just landed).  The per-route surfacing of the
+unreachable state -- including the calendar's `_empty_*` factories
+plus any sibling unreachable-state branches in
+`savings_dashboard_service`, `dashboard_service`,
+`year_end_summary_service`, etc. -- is a separate sweep, best done
+in one PR after Commit 37 so the audit-fix commits and the dead-code
+removal do not interleave.
+
+### Acceptance criteria for the eventual PR
+
+- `git grep -n "if.*is None.*return.*_empty_" app/services/` shows
+  no matches.
+- `git grep -nF 'return Decimal("0")' app/services/calendar_service.py`
+  shows no matches (the hardcoded zero is gone with `_empty_month`).
+- Calendar / year-overview routes return 404 for an unresolvable
+  account or scenario; targeted route tests assert the 404.
+- Full pytest suite passes.
+
+---
+
+## F-3. Calendar per-day filter: all-status vs grid Projected-only (W-065)
+
+- **Surfaced during:** Commit 9 (`fix(calendar): month-end balance via
+  canonical balance-as-of-date (E-27)`), commit `9871bf7`.
+- **Status:** not started; defer until after Commit 37.
+
+### Problem
+
+`app/services/calendar_service.py::_assign_transactions_to_days`
+classifies and totals every non-deleted transaction returned by
+`_query_transactions_for_range`, with NO Projected-only gate.  The
+grid, by contrast, sums only Projected items into its per-period
+subtotal and excludes Settled / Cancelled / Credit rows from the
+balance-contributing set (E-15 / Commit 2's
+`balance_contributing_clause`).  The audit named this drift in
+HIGH-02 / W-065:
+
+> "per-day totals use all-status vs grid Projected-only (W-065
+> DEFINITION_DRIFT, F-004 cross-ref)" -- `08_findings.md:731`,
+> `03_consistency.md:6044`
+
+Worked example: on a single calendar day with one Projected $500
+expense and one Settled $500 actual paid on the same date, the
+calendar day-cell shows $1,000 of expenses while the grid's
+period subtotal counts $500.  Same data, two surfaces, different
+totals.  Commit 9 fixed the month-end *balance* (E-27) but left
+the per-day classification untouched -- the day-cell display path
+was explicitly out of scope.
+
+The relevant code:
+
+- `_assign_transactions_to_days` (`:270-310`) -- no status gate;
+  every transaction with a `due_date` in the range hits the
+  `day_map` and the `total_income` / `total_expenses` totals.
+- `_query_transactions_for_range` (`:194-237`) -- the query also
+  returns all-status (only `is_deleted=False` is enforced); a
+  status filter would need to land here too to keep the SQL
+  predicate aligned with the Python summation predicate (the same
+  "SQL and Python must agree" principle that motivated
+  `balance_contributing_clause` in Commit 2).
+
+### Recommended direction
+
+Apply the locked E-15 / E-25 predicate to the calendar per-day
+classification so the same rule that governs grid subtotals,
+`/savings`, `/accounts`, and the dashboard governs calendar day
+cells too.  Two design choices remain for the developer to confirm:
+
+- **Choice 1: Projected-only (matches grid).**  Settled / Received
+  rows do not appear on calendar day cells.  Loses visibility of
+  realized payments at the calendar surface.
+- **Choice 2: balance-contributing (Projected + Settled, excludes
+  Credit / Cancelled).**  Settled rows appear on the calendar at
+  their settled date; Credit / Cancelled hidden.  More aligned
+  with what a user expects of a "calendar of activity," but the
+  per-day totals will then differ from the grid's
+  Projected-only subtotal.
+
+Either choice resolves the W-065 drift; the developer must pick
+which surface defines the canon.  The plan's locked E-25 names
+the balance producer's Projected-only predicate; the calendar's
+per-day *display* may legitimately want a wider filter
+(Choice 2), but the choice must be made explicit and documented.
+
+### Implementation sketch
+
+1. Reuse `app.utils.balance_predicates.balance_contributing_clause`
+   (Commit 2) in `_query_transactions_for_range` for the SQL
+   filter.
+2. Re-apply the same predicate in `_assign_transactions_to_days`
+   (Python loop) so SQL + Python agree.
+3. Tests: pin per-day totals against hand-computed values for a
+   fixture with mixed Projected / Settled / Cancelled / Credit
+   rows; assert the calendar day-total equals the grid
+   period-subtotal (or the documented Choice-2 difference, if the
+   developer picks Choice 2).
+4. Update `_calendar_month.html` Jinja template if the chosen
+   filter changes which entries reach the template (otherwise
+   no template change).
+
+### Why defer
+
+W-065 is a definition-drift issue on a display surface; no
+developer-reported wrong dollar is bound to it (HIGH-02's
+displayed-wrong-dollar evidence is the balance facet, fixed by
+Commit 9).  It requires a product decision (Choice 1 vs Choice 2)
+which is not on the locked E-NN list, so it should not be folded
+into the audit-fix commit chain.
+
+### Acceptance criteria for the eventual PR
+
+- Calendar per-day totals are computed with a documented,
+  named status predicate (no inline status-filter logic in
+  `_assign_transactions_to_days`).
+- The chosen predicate is locked by a test that fails if the
+  filter regresses (e.g. a Settled row toggled to Projected
+  changes the day total).
+- `git grep -nF 'is_deleted.is_(False)' app/services/calendar_service.py`
+  shows the calendar query reuses the shared predicate, not an
+  inline filter.
+- Full pytest suite passes; calendar route tests still green.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
