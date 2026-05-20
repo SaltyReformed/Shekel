@@ -36,10 +36,12 @@ from app.services import (
     balance_resolver,
     growth_engine,
     pay_period_service,
-    paycheck_calculator,
     transfer_recurrence,
 )
-from app.services.investment_projection import build_contribution_timeline, calculate_investment_inputs
+from app.services.investment_projection import (
+    build_contribution_timeline,
+    calculate_investment_inputs,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
