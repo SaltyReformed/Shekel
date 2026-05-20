@@ -21,7 +21,11 @@ from app.models.ref import AccountType
 from app.services.transfer_service import create_transfer
 from app.services import account_service
 
-from tests._test_helpers import freeze_today, select_option_values
+from tests._test_helpers import (
+    freeze_today,
+    insert_origination_event,
+    select_option_values,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +47,40 @@ def _freeze_today_inside_seed_range(monkeypatch):
 
 def _create_loan_account(seed_user, db_session, type_name, name, principal,
                          rate, term, orig_date, payment_day, is_arm=False):
-    """Helper to create a loan account with params for any amortizing type."""
+    """Helper to create a loan account with params for any amortizing type.
+
+    Test contract: the ``principal`` argument is the value the test
+    expects to see displayed as "Current Principal" on the loan
+    card.  Pre-Commit-15 this worked because the dashboard rendered
+    the unmaintained stored ``current_principal`` column verbatim;
+    post-Commit-15 the dashboard reads the resolver's current_balance
+    (E-18) which is derived from :class:`LoanAnchorEvent`, not the
+    stored column.
+
+    To preserve the test contract without rewriting every caller,
+    this helper synthesises TWO events when the
+    ``original_principal``-vs-``current_principal`` gap is non-zero
+    (existing helper sets ``original = principal + 5000``,
+    simulating "$5,000 already paid down before the test starts"):
+
+      * an ORIGINATION event at ``original_principal`` (matches
+        Commit 12's backfill semantics and production's create_params),
+      * a USER_TRUEUP event one day after origination at the lower
+        ``current_principal`` value (represents "the user marked
+        the loan's true current balance as $X today").
+
+    When ``principal == 0`` the gap is the full $5,000, so the
+    trueup at $0 produces a paid-off loan state -- what
+    ``test_refinance_paid_off_loan`` needs.  When ``principal > 0``
+    the trueup at ``principal`` produces a partially-paid loan
+    state -- what ``test_refinance_principal_auto_calculated`` and
+    every other refinance / debt-card test needs.
+    """
+    from datetime import timedelta  # pylint: disable=import-outside-toplevel
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
+    from app.models.loan_anchor_event import LoanAnchorEvent  # pylint: disable=import-outside-toplevel
+
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
         user_id=seed_user["user"].id,
@@ -54,9 +91,10 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
     db_session.add(account)
     db_session.flush()
 
+    original_principal = principal + Decimal("5000.00")
     params = LoanParams(
         account_id=account.id,
-        original_principal=principal + Decimal("5000.00"),
+        original_principal=original_principal,
         current_principal=principal,
         interest_rate=rate,
         term_months=term,
@@ -65,6 +103,25 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
         is_arm=is_arm,
     )
     db_session.add(params)
+    db_session.flush()
+    # Origination LoanAnchorEvent (E-18 / Commit 15): the resolver
+    # requires at least one event per loan.  Production's
+    # ``loan.create_params`` writes the same paired row; tests that
+    # build LoanParams directly must mirror it.
+    insert_origination_event(params)
+    # User-trueup event at the lower current_principal -- preserves
+    # the pre-Commit-15 test contract that ``principal`` matches the
+    # displayed Current Principal.  Dated one day after origination
+    # so the resolver's (anchor_date, created_at) DESC selector
+    # picks this event over the origination event.
+    db_session.add(LoanAnchorEvent(
+        account_id=account.id,
+        anchor_date=orig_date + timedelta(days=1),
+        anchor_balance=principal,
+        source_id=ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.USER_TRUEUP,
+        ),
+    ))
     db_session.commit()
     return account
 
@@ -109,6 +166,8 @@ def _create_other_loan(second_user, db_session, type_name="Auto Loan"):
         payment_day=1,
     )
     db_session.add(params)
+    db_session.flush()
+    insert_origination_event(params)
     db_session.commit()
     return account
 
@@ -2020,6 +2079,8 @@ def _create_loan_account_exact(seed_user, db_session, type_name, name,
         is_arm=is_arm,
     )
     db_session.add(params)
+    db_session.flush()
+    insert_origination_event(params)
     db_session.commit()
     return account
 
@@ -3105,6 +3166,8 @@ def _create_exact_mortgage(seed_user, db_session):
         payment_day=1,
     )
     db_session.add(params)
+    db_session.flush()
+    insert_origination_event(params)
     db_session.commit()
     return account
 

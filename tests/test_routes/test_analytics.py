@@ -629,7 +629,7 @@ class TestYearEndTab:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(LoanParams(
+            lp = LoanParams(
                 account_id=acct.id,
                 original_principal=Decimal("240000.00"),
                 current_principal=Decimal("240000.00"),
@@ -637,7 +637,11 @@ class TestYearEndTab:
                 term_months=360,
                 origination_date=date(2025, 1, 1),
                 payment_day=1,
-            ))
+            )
+            db.session.add(lp)
+            db.session.flush()
+            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            insert_origination_event(lp)
             db.session.commit()
 
             resp = auth_client.get(
@@ -736,7 +740,7 @@ class TestYearEndTab:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(LoanParams(
+            lp = LoanParams(
                 account_id=acct.id,
                 original_principal=Decimal("200000.00"),
                 current_principal=Decimal("200000.00"),
@@ -744,7 +748,11 @@ class TestYearEndTab:
                 term_months=360,
                 origination_date=date(2025, 1, 1),
                 payment_day=1,
-            ))
+            )
+            db.session.add(lp)
+            db.session.flush()
+            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            insert_origination_event(lp)
             db.session.commit()
 
             resp = auth_client.get(

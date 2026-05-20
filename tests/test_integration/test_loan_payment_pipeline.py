@@ -82,6 +82,10 @@ class TestLoanPaymentPipeline:
                 payment_day=1,
             )
             db.session.add(loan_params)
+            db.session.flush()
+            # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
+            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            insert_origination_event(loan_params)
             db.session.commit()
 
             # Step 2: Create recurring transfer via the route.

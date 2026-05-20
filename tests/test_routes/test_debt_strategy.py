@@ -9,13 +9,16 @@ chart data serialization, and navigation link on the accounts dashboard.
 import html as html_mod
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
+from app.enums import LoanAnchorSourceEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.services import account_service
@@ -26,10 +29,16 @@ from app.services import account_service
 
 def _create_debt_account(user, db_session, type_name, name, principal,
                          rate, term, orig_date, payment_day):
-    """Create a debt account with LoanParams for the given user.
+    """Create a debt account with LoanParams + LoanAnchorEvents.
 
-    Sets original_principal = current_principal + 5000 to simulate
-    a partially paid-off loan (matching test_loan.py convention).
+    Sets original_principal = current_principal + 5000 to simulate a
+    partially paid-off loan.  Writes BOTH the origination event and
+    a same-day-after USER_TRUEUP event at ``principal`` so the
+    resolver's current_balance matches the test's intent (mirrors
+    ``test_loan._create_loan_account``; rationale in that helper's
+    docstring).  Without the trueup event the resolver would anchor
+    at original_principal and inflate every debt-strategy balance
+    by $5,000.
     """
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
@@ -41,9 +50,10 @@ def _create_debt_account(user, db_session, type_name, name, principal,
     db_session.add(account)
     db_session.flush()
 
+    original_principal = principal + Decimal("5000.00")
     params = LoanParams(
         account_id=account.id,
-        original_principal=principal + Decimal("5000.00"),
+        original_principal=original_principal,
         current_principal=principal,
         interest_rate=rate,
         term_months=term,
@@ -51,6 +61,23 @@ def _create_debt_account(user, db_session, type_name, name, principal,
         payment_day=payment_day,
     )
     db_session.add(params)
+    db_session.flush()
+    db_session.add(LoanAnchorEvent(
+        account_id=account.id,
+        anchor_date=orig_date,
+        anchor_balance=original_principal,
+        source_id=ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.ORIGINATION,
+        ),
+    ))
+    db_session.add(LoanAnchorEvent(
+        account_id=account.id,
+        anchor_date=orig_date + timedelta(days=1),
+        anchor_balance=principal,
+        source_id=ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.USER_TRUEUP,
+        ),
+    ))
     db_session.commit()
     return account
 
@@ -551,6 +578,26 @@ class TestDebtStrategyMetrics:
             is_arm=True,
         )
         db.session.add(params)
+        db.session.flush()
+        # E-18 / Commit 15: resolver needs origination + trueup
+        # events so its current_balance == $200,000 (matches the
+        # pre-Commit-15 stored current_principal display).
+        db.session.add(LoanAnchorEvent(
+            account_id=arm_acct.id,
+            anchor_date=date(2023, 1, 1),
+            anchor_balance=Decimal("205000.00"),
+            source_id=ref_cache.loan_anchor_source_id(
+                LoanAnchorSourceEnum.ORIGINATION,
+            ),
+        ))
+        db.session.add(LoanAnchorEvent(
+            account_id=arm_acct.id,
+            anchor_date=date(2023, 1, 2),
+            anchor_balance=Decimal("200000.00"),
+            source_id=ref_cache.loan_anchor_source_id(
+                LoanAnchorSourceEnum.USER_TRUEUP,
+            ),
+        ))
         db.session.commit()
 
         resp = auth_client.post("/debt-strategy/calculate", data={

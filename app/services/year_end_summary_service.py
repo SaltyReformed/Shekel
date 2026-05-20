@@ -30,6 +30,7 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
+from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
@@ -45,6 +46,7 @@ from app.services import (
     balance_calculator,
     balance_resolver,
     growth_engine,
+    loan_resolver,
     paycheck_calculator,
 )
 from app.services.investment_projection import (
@@ -1425,12 +1427,11 @@ def _generate_debt_schedules(
 ) -> dict[int, list]:
     """Generate amortization schedules for all debt accounts.
 
-    Uses the shared load_loan_context() for data loading, then
-    generates the full amortization schedule with ARM anchor support.
-
-    Schedules are generated once and shared across mortgage interest,
-    debt progress, and net worth calculations to avoid redundant
-    computation and ensure consistency.
+    Runs the loan resolver (E-18 / Commit 13) for each debt account
+    and returns its :class:`AmortizationRow` schedule.  Same schedule
+    the loan dashboard and /savings debt card consume, so mortgage
+    interest, debt progress, and net worth liability all derive
+    from the single resolver output (E-18 / Commit 15).
 
     Args:
         debt_accounts: Accounts with has_amortization=True.
@@ -1452,38 +1453,16 @@ def _generate_debt_schedules(
             continue
 
         ctx = load_loan_context(account.id, scenario_id, params)
-
-        # For ARM loans, omit original_principal so the engine
-        # re-amortizes from current balance at the current rate.
-        original_for_engine = (
-            None if params.is_arm
-            else params.original_principal
+        anchor_events = (
+            db.session.query(LoanAnchorEvent)
+            .filter_by(account_id=account.id)
+            .all()
         )
-
-        # ARM anchor: snap the schedule to current_principal at today
-        # so forward projections are correct even without historical
-        # rate data.
-        anchor_bal = (
-            Decimal(str(params.current_principal))
-            if params.is_arm else None
+        state = loan_resolver.resolve_loan(
+            params, anchor_events, ctx.payments,
+            ctx.rate_changes, today,
         )
-        anchor_dt = today if params.is_arm else None
-
-        schedule = amortization_engine.generate_schedule(
-            current_principal=params.original_principal,
-            annual_rate=params.interest_rate,
-            remaining_months=params.term_months,
-            origination_date=params.origination_date,
-            payment_day=params.payment_day,
-            original_principal=original_for_engine,
-            term_months=params.term_months,
-            payments=ctx.payments if ctx.payments else None,
-            rate_changes=ctx.rate_changes,
-            anchor_balance=anchor_bal,
-            anchor_date=anchor_dt,
-        )
-
-        schedules[account.id] = schedule
+        schedules[account.id] = state.schedule
 
     return schedules
 

@@ -23,6 +23,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
+from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
@@ -33,11 +34,11 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import (
-    amortization_engine,
     balance_calculator,
     balance_resolver,
     escrow_calculator,
     growth_engine,
+    loan_resolver,
     pay_period_service,
     savings_goal_service,
 )
@@ -46,7 +47,6 @@ from app.services.investment_projection import (
     calculate_investment_inputs,
 )
 from app.services.loan_payment_service import (
-    get_payment_history,
     load_loan_context,
 )
 from app.services.scenario_resolver import get_baseline_scenario
@@ -378,35 +378,43 @@ def _compute_account_projections(
         projected = {}
 
         if acct_loan_params:
-            # Load all context data via the shared loader.
+            # Load context (payments + escrow + rate changes), then
+            # run the loan resolver (E-18 / Commit 13).  The resolver
+            # is the source of truth for current_balance,
+            # monthly_payment, schedule, payoff_date, and
+            # total_interest -- same dollar figures rendered on the
+            # loan card and the year-end net-worth liability.
             scenario_id = params.get("scenario_id")
             loan_ctx = load_loan_context(
                 acct.id, scenario_id, acct_loan_params,
             )
-
-            proj = amortization_engine.get_loan_projection(
-                acct_loan_params,
-                payments=loan_ctx.payments,
-                rate_changes=loan_ctx.rate_changes,
+            anchor_events = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=acct.id)
+                .all()
             )
-            monthly = proj.summary.monthly_payment
-            summary = proj.summary
+            today = date.today()
+            state = loan_resolver.resolve_loan(
+                acct_loan_params, anchor_events, loan_ctx.payments,
+                loan_ctx.rate_changes, today,
+            )
+            monthly = state.monthly_payment
 
-            # Current balance from the projection.  For ARM loans
-            # this is the user-verified anchor; for fixed-rate it is
-            # derived from the schedule.
-            current_bal = proj.current_balance
+            # Current balance from the resolver state.  Replaces the
+            # stored ``LoanParams.current_principal`` read that pre-
+            # E-18 produced the F-008 stored-vs-engine divergence on
+            # this very tile.
+            current_bal = state.current_balance
 
             # Projected balances: find the schedule row at each
             # target date.  Walk backward to find the last row on
             # or before the target month.
-            today = date.today()
             for label, month_offset in [("3 months", 3), ("6 months", 6), ("1 year", 12)]:
                 target_m = today.month + month_offset
                 target_y = today.year + (target_m - 1) // 12
                 target_m = (target_m - 1) % 12 + 1
                 target_dt = date(target_y, target_m, 1)
-                for row in reversed(proj.schedule):
+                for row in reversed(state.schedule):
                     if row.payment_date <= target_dt:
                         projected[label] = row.remaining_balance
                         break
@@ -433,14 +441,31 @@ def _compute_account_projections(
             else:
                 needs_setup = acct_investment_params is None
 
-        # Paid-off determination: replay confirmed-only payments
-        # through the amortization engine to check if the remaining
-        # balance reaches exactly zero.
+        # Paid-off determination: ``state.current_balance`` from the
+        # resolver above answers "what do I owe AS OF TODAY given
+        # confirmed history" -- which correctly excludes settled
+        # payments dated in the future from today's balance.  The
+        # is_paid_off flag asks a different question: "have my
+        # confirmed payments EVER retired this loan?", regardless of
+        # when those payments are dated.  A second resolver call
+        # with ``as_of=date.max`` replays every confirmed payment
+        # forward and answers that question directly.  Additionally
+        # require at least one confirmed payment so a brand-new loan
+        # with a zero anchor balance (degenerate input) does not
+        # render as "paid off" -- preserves the historical
+        # _check_loan_paid_off semantic.
         is_paid_off = False
         if acct_loan_params:
-            is_paid_off = _check_loan_paid_off(
-                acct_loan_params, acct.id, params["scenario_id"],
+            has_confirmed = any(
+                p.is_confirmed for p in loan_ctx.payments
             )
+            if has_confirmed:
+                ever_state = loan_resolver.resolve_loan(
+                    acct_loan_params, anchor_events,
+                    loan_ctx.payments, loan_ctx.rate_changes,
+                    date.max,
+                )
+                is_paid_off = ever_state.current_balance == Decimal("0.00")
 
         ad = {
             "account": acct,
@@ -456,85 +481,11 @@ def _compute_account_projections(
         if acct_loan_params:
             ad["loan_params"] = acct_loan_params
             ad["monthly_payment"] = monthly
-            ad["payoff_date"] = summary.payoff_date
+            ad["payoff_date"] = state.payoff_date
 
         account_data.append(ad)
 
     return account_data
-
-
-def _check_loan_paid_off(
-    loan_params: LoanParams,
-    account_id: int,
-    scenario_id: int | None,
-) -> bool:
-    """Determine if a loan is paid off based on confirmed payments.
-
-    Replays only confirmed (Paid/Settled) payments through the
-    amortization engine and checks whether the remaining balance
-    reaches exactly zero.  Projected payments are excluded -- a loan
-    is "paid off" only when actual payments have retired the balance.
-
-    Rate changes for ARM loans are omitted from the replay.  This is
-    a minor simplification: rate changes affect the interest/principal
-    split within each payment but do not change whether a fixed-amount
-    payment sequence reaches zero balance.
-
-    Args:
-        loan_params: LoanParams model instance for the debt account.
-        account_id: The debt account ID for the payment query.
-        scenario_id: The baseline scenario ID, or None if no scenario
-            exists (returns False immediately).
-
-    Returns:
-        True if confirmed payments bring the remaining balance to
-        exactly Decimal("0.00").
-    """
-    if scenario_id is None:
-        return False
-
-    all_payments = get_payment_history(account_id, scenario_id)
-    confirmed = [p for p in all_payments if p.is_confirmed]
-
-    if not confirmed:
-        return False
-
-    orig_principal = Decimal(str(loan_params.original_principal))
-    rate = Decimal(str(loan_params.interest_rate))
-
-    # For ARM loans, pass original_principal=None to force
-    # re-amortization from current state.
-    is_arm = getattr(loan_params, "is_arm", False)
-    original = None if is_arm else orig_principal
-
-    # Start from origination with full term so past confirmed
-    # payments match the schedule's year-month lookup.  Matches
-    # the get_loan_projection() pattern from d2455e8.
-    schedule = amortization_engine.generate_schedule(
-        orig_principal, rate, loan_params.term_months,
-        origination_date=loan_params.origination_date,
-        payment_day=loan_params.payment_day,
-        original_principal=original,
-        term_months=loan_params.term_months,
-        payments=confirmed,
-    )
-
-    if not schedule:
-        # Empty schedule means current_principal <= 0 or
-        # remaining_months <= 0 -- the engine cannot verify payoff
-        # through payment replay.
-        return False
-
-    # Check the balance at the last CONFIRMED row, not the last row
-    # overall.  The engine fills non-confirmed months with standard
-    # contractual payments that would eventually bring any loan to
-    # zero.  Only a confirmed payment driving the balance to zero
-    # means the user has actually paid off the loan.
-    confirmed_rows = [r for r in schedule if r.is_confirmed]
-    if not confirmed_rows:
-        return False
-
-    return confirmed_rows[-1].remaining_balance == Decimal("0.00")
 
 
 def _project_investment(
@@ -862,11 +813,20 @@ def _compute_debt_summary(
             continue
 
         lp = ad["loan_params"]
-        principal = Decimal(str(lp.current_principal))
+        # Resolver-derived current_balance (E-18 / Commit 15).  Same
+        # dollar figure as the loan card; replaces the previous read
+        # of the non-authoritative ``LoanParams.current_principal``
+        # column that produced F-008's stored-vs-engine divergence.
+        principal = ad["current_balance"] or Decimal("0.00")
 
         if principal <= Decimal("0.00"):
             continue
 
+        # ``LoanParams.interest_rate`` is the BASE rate (the
+        # rate-history layered current rate would require the
+        # resolver's ``_rate_at_date`` and is HIGH-08 territory).
+        # Carried forward so weighted_avg_rate retains its historical
+        # meaning across this commit.
         rate = Decimal(str(lp.interest_rate))
         monthly_pi = ad["monthly_payment"]
 

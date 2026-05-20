@@ -101,7 +101,11 @@
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Current Principal</span>
               <span class="fs-5 fw-bold font-mono text-accent">
-                ${{ "{:,.2f}".format(params.current_principal|float) }}
+                {# E-18 / Commit 15: resolver-derived current_balance,
+                   not the non-authoritative stored LoanParams.current_principal
+                   column.  Same dollar figure as /savings debt card and
+                   the year-end net-worth liability. #}
+                ${{ "{:,.2f}".format(current_principal_display|float) }}
               </span>
             </div>
             <div class="d-flex justify-content-between mb-2" id="interest-rate-display">
@@ -158,8 +162,14 @@
               <div class="row mb-3">
                 <div class="col-6">
                   <label for="current_principal" class="form-label">Current Principal</label>
+                  {# Edit-form pre-population uses the resolver-derived
+                     current_balance so the field starts at the same
+                     value the loan card displays.  Commit 16 replaces
+                     this whole form with the dated-true-up UX (decision
+                     D-C) and writes a LoanAnchorEvent instead of
+                     UPDATEing the column. #}
                   <input type="number" class="form-control" id="current_principal" name="current_principal"
-                         value="{{ "%.2f"|format(params.current_principal|float) }}" step="0.01" min="0">
+                         value="{{ "%.2f"|format(current_principal_display|float) }}" step="0.01" min="0">
                 </div>
                 <div class="col-6">
                   <label for="interest_rate" class="form-label">Interest Rate</label>

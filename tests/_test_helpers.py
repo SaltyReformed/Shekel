@@ -197,3 +197,51 @@ def freeze_today(monkeypatch, target_date, modules=None):
             monkeypatch.setattr(f"{module_path}.datetime", _FrozenDateTime)
         except (AttributeError, TypeError):
             pass
+
+
+def insert_origination_event(loan_params):
+    """Append the origination :class:`LoanAnchorEvent` for a loan.
+
+    Mirrors the production-code pattern in
+    :func:`app.routes.loan.create_params` (E-18 / Commit 15) so test
+    fixtures that build :class:`LoanParams` directly remain
+    compatible with the resolver-routed display surfaces.  The
+    resolver raises ``ValueError`` on an empty anchor-event list, so
+    every fixture that hits the loan dashboard / debt strategy /
+    /savings debt card / year-end net-worth liability MUST call
+    this helper after inserting :class:`LoanParams`.
+
+    Uses ``original_principal`` as the anchor balance and
+    ``origination_date`` as the anchor date, matching both the
+    Commit-12 migration backfill and the production setup-flow
+    insert pattern.
+
+    Args:
+        loan_params: The :class:`LoanParams` ORM instance, already
+            flushed (``loan_params.account_id`` populated).
+
+    Returns:
+        The newly added :class:`LoanAnchorEvent` instance,
+        ``db.session.add()``'d but not committed.  The caller's
+        existing ``db.session.commit()`` carries the event into the
+        same transaction.
+    """
+    # pylint: disable=import-outside-toplevel  -- avoid module-load
+    # circular deps via models package; tests/_test_helpers loads
+    # early enough that an unconditional top-level import would
+    # snowball into ref_cache / Flask app bootstrapping.
+    from app import ref_cache
+    from app.enums import LoanAnchorSourceEnum
+    from app.extensions import db
+    from app.models.loan_anchor_event import LoanAnchorEvent
+
+    event = LoanAnchorEvent(
+        account_id=loan_params.account_id,
+        anchor_date=loan_params.origination_date,
+        anchor_balance=loan_params.original_principal,
+        source_id=ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.ORIGINATION,
+        ),
+    )
+    db.session.add(event)
+    return event

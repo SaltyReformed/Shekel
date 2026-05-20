@@ -21,6 +21,8 @@ from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service
 
+from tests._test_helpers import insert_origination_event
+
 
 def _create_savings_account(seed_user, db_session, name="My Savings"):
     """Helper to create a savings account."""
@@ -130,6 +132,8 @@ class TestDashboardGrouping:
             payment_day=1,
         )
         db.session.add(params)
+        db.session.flush()
+        insert_origination_event(params)
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -160,6 +164,8 @@ class TestDashboardGrouping:
             payment_day=15,
         )
         db.session.add(params)
+        db.session.flush()
+        insert_origination_event(params)
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -190,6 +196,8 @@ class TestDashboardGrouping:
             payment_day=1,
         )
         db.session.add(params)
+        db.session.flush()
+        insert_origination_event(params)
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -371,6 +379,8 @@ class TestAccountHardDelete:
                 payment_day=1,
             )
             db.session.add(params)
+            db.session.flush()
+            insert_origination_event(params)
             db.session.commit()
 
             acct_id = acct.id

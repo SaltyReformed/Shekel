@@ -118,6 +118,10 @@ def _create_mortgage_account_with_params(seed_user):
         payment_day=1,
     )
     db.session.add(params)
+    db.session.flush()
+    # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
+    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    insert_origination_event(params)
     db.session.commit()
     return acct, params
 

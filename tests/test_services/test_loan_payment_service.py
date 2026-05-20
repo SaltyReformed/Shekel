@@ -61,6 +61,13 @@ def _create_loan_account(seed_user):
     )
     db.session.add(params)
     db.session.flush()
+    # E-18 / Commit 15: origination LoanAnchorEvent.  This module
+    # does not exercise the resolver directly (it tests
+    # loan_payment_service which is a pure data-loading shim) but
+    # downstream tests calling load_loan_context + resolver expect
+    # an event-present invariant.
+    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    insert_origination_event(params)
     return account
 
 

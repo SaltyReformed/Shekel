@@ -24,10 +24,11 @@ from app.utils.auth_helpers import require_owner
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.schemas.validation import DebtStrategyCalculateSchema
-from app.services import amortization_engine
+from app.services import loan_resolver
 from app.services.debt_strategy_service import (
     DebtAccount,
     STRATEGY_AVALANCHE,
@@ -35,7 +36,7 @@ from app.services.debt_strategy_service import (
     STRATEGY_SNOWBALL,
     calculate_strategy,
 )
-from app.services.loan_payment_service import get_payment_history
+from app.services.loan_payment_service import load_loan_context
 from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
@@ -58,18 +59,18 @@ def _load_debt_accounts(user_id):
     """Load all active debt accounts with loan parameters for a user.
 
     Queries accounts where the account type has ``has_amortization=True``,
-    loads LoanParams and payment history, computes current real principal
-    (from confirmed payment replay), and builds DebtAccount instances.
+    runs the loan resolver (E-18 / Commit 13) for each, and builds
+    :class:`DebtAccount` instances from the resolver state.  The same
+    ``current_balance`` / ``monthly_payment`` figures appear on the
+    loan card, /savings debt card, and net-worth liability, so the
+    strategy comparison cannot diverge from the per-loan displays
+    (E-18 / Commit 15).
 
-    Accounts without saved LoanParams are silently skipped -- this
-    happens when a user creates a debt account but has not yet filled
-    in the loan details.
-
-    The current real principal is derived by replaying confirmed payments
-    through the amortization engine schedule.  The remaining_balance of
-    the last confirmed row reflects what the borrower actually owes.  If
-    no confirmed payments exist, the stored current_principal from
-    LoanParams is used as the fallback.
+    Accounts without saved :class:`LoanParams` are silently skipped --
+    a user created a debt account but has not yet filled in the loan
+    details.  Accounts with zero resolver-derived balance OR zero
+    resolver-derived monthly payment are also skipped (paid-off or
+    degenerate).
 
     Args:
         user_id: The authenticated user's ID.
@@ -92,6 +93,8 @@ def _load_debt_accounts(user_id):
     )
 
     scenario = get_baseline_scenario(user_id)
+    scenario_id = scenario.id if scenario else None
+    today = date.today()
 
     debt_accounts = []
     has_arm = False
@@ -106,95 +109,46 @@ def _load_debt_accounts(user_id):
             # Account exists but loan details not yet configured.
             continue
 
-        principal = Decimal(str(params.current_principal))
-        rate = Decimal(str(params.interest_rate))
-        remaining = amortization_engine.calculate_remaining_months(
-            params.origination_date, params.term_months,
-        )
-
         if params.is_arm:
             has_arm = True
 
-        # Derive current real principal from confirmed payment replay.
-        if scenario is not None and principal > Decimal("0") and remaining > 0:
-            real_principal = _compute_real_principal(
-                params, scenario.id, principal, rate,
-            )
-        else:
-            real_principal = principal
-
-        # Compute minimum monthly P&I payment.
-        minimum_payment = amortization_engine.calculate_monthly_payment(
-            real_principal, rate, remaining,
+        anchor_events = (
+            db.session.query(LoanAnchorEvent)
+            .filter_by(account_id=account.id)
+            .all()
+        )
+        ctx = load_loan_context(account.id, scenario_id, params)
+        state = loan_resolver.resolve_loan(
+            params, anchor_events, ctx.payments,
+            ctx.rate_changes, today,
         )
 
-        # Skip debts with zero principal or zero payment (fully paid off
-        # or degenerate loan parameters).
-        if real_principal <= Decimal("0") or minimum_payment <= Decimal("0"):
+        # Skip debts with zero principal or zero payment (fully paid
+        # off or degenerate loan parameters).  Resolver-derived
+        # values, so a settled-to-zero loan disappears here even if
+        # the legacy ``LoanParams.current_principal`` column still
+        # carries a non-zero seed.
+        if (
+            state.current_balance <= Decimal("0")
+            or state.monthly_payment <= Decimal("0")
+        ):
             continue
 
+        # DebtAccount.interest_rate carries the BASE rate from
+        # :class:`LoanParams`; the rate-history layered current rate
+        # (resolver-aware) does not flow into the strategy service
+        # because :mod:`debt_strategy_service` assumes a fixed rate
+        # per debt (R-5 limitation documented in that module).
+        # Promoting strategy ARM-awareness is out of scope here.
         debt_accounts.append(DebtAccount(
             account_id=account.id,
             name=account.name,
-            current_principal=real_principal,
-            interest_rate=rate,
-            minimum_payment=minimum_payment,
+            current_principal=state.current_balance,
+            interest_rate=Decimal(str(params.interest_rate)),
+            minimum_payment=state.monthly_payment,
         ))
 
     return debt_accounts, has_arm
-
-
-def _compute_real_principal(params, scenario_id, principal, rate):
-    """Derive real principal by replaying confirmed payments.
-
-    For ARM loans, returns the stored current_principal directly.  The
-    origination-forward replay produces wrong balances when historical
-    rate data is unavailable, and current_principal is the user-verified
-    source of truth.
-
-    For fixed-rate loans, generates a full life-of-loan amortization
-    schedule from origination with actual payment history and returns
-    the remaining_balance of the last confirmed row.  Falls back to the
-    stored current_principal if no confirmed payments exist.
-
-    Args:
-        params: LoanParams model instance.
-        scenario_id: Baseline scenario ID for payment lookup.
-        principal: Decimal current_principal from LoanParams (fallback).
-        rate: Decimal interest_rate from LoanParams.
-
-    Returns:
-        Decimal real principal reflecting confirmed payments.
-    """
-    # ARM loans: current_principal is the user-verified balance.
-    # Replaying from origination without historical rates would
-    # produce a wrong result.
-    if params.is_arm:
-        return principal
-
-    payments = get_payment_history(params.account_id, scenario_id)
-    if not payments:
-        return principal
-
-    orig_principal = Decimal(str(params.original_principal))
-
-    schedule = amortization_engine.generate_schedule(
-        current_principal=orig_principal,
-        annual_rate=rate,
-        remaining_months=params.term_months,
-        origination_date=params.origination_date,
-        payment_day=params.payment_day,
-        original_principal=orig_principal,
-        term_months=params.term_months,
-        payments=payments,
-    )
-
-    # Walk backward to find the last confirmed row.
-    for row in reversed(schedule):
-        if row.is_confirmed:
-            return row.remaining_balance
-
-    return principal
 
 
 def _first_validation_message(exc):

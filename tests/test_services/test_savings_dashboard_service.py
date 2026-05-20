@@ -623,6 +623,7 @@ def _create_small_loan(seed_user, db_session, name="Test Loan",
     db_session.flush()
 
     from app.models.loan_params import LoanParams as LP  # pylint: disable=import-outside-toplevel
+    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
     params = LP(
         account_id=account.id,
         original_principal=principal,
@@ -633,6 +634,10 @@ def _create_small_loan(seed_user, db_session, name="Test Loan",
         payment_day=1,
     )
     db_session.add(params)
+    db_session.flush()
+    # E-18 / Commit 15: origination event so the resolver can
+    # answer "paid off?" by replaying confirmed payments forward.
+    insert_origination_event(params)
     db_session.commit()
     return account
 
@@ -980,6 +985,7 @@ class TestDebtSummary:
             db.session.flush()
 
             from app.models.loan_params import LoanParams as LP
+            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
             lp1 = LP(
                 account_id=mortgage.id,
                 original_principal=Decimal("200000.00"),
@@ -990,6 +996,8 @@ class TestDebtSummary:
                 payment_day=1,
             )
             db.session.add(lp1)
+            db.session.flush()
+            _ioe(lp1)
 
             auto_type = (
                 db.session.query(AccountType)
@@ -1014,6 +1022,8 @@ class TestDebtSummary:
                 payment_day=15,
             )
             db.session.add(lp2)
+            db.session.flush()
+            _ioe(lp2)
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -1177,6 +1187,9 @@ class TestDebtSummary:
                 payment_day=1,
             )
             db.session.add(lp)
+            db.session.flush()
+            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
+            _ioe(lp)
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -1227,6 +1240,9 @@ class TestDebtSummary:
                 payment_day=1,
             )
             db.session.add(lp)
+            db.session.flush()
+            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
+            _ioe(lp)
 
             ec = EscrowComponent(
                 account_id=mortgage.id,

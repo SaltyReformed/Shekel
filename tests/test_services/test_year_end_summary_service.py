@@ -267,6 +267,11 @@ def _create_mortgage_account(user, periods):
         payment_day=1,
     )
     db.session.add(params)
+    db.session.flush()
+    # E-18 / Commit 15: origination LoanAnchorEvent so the resolver
+    # can derive current_balance from the event stream.
+    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    insert_origination_event(params)
     db.session.commit()
 
     return mortgage_acct, params
@@ -633,6 +638,10 @@ class TestMortgageInterest:
             payment_day=1,
         )
         db.session.add(params)
+        db.session.flush()
+        # E-18 / Commit 15: origination LoanAnchorEvent.
+        from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+        insert_origination_event(params)
         db.session.commit()
 
         # Expected: first payment Aug 1 2026.  5 or 6 payments in 2026.

@@ -659,12 +659,17 @@ from the correct balance with the correct payment.
 
 - **Surfaced during:** Commit 14 (`test(loan): settled transfer reduces
   resolved principal (symptom #3)`), this commit.
-- **Status:** not started; the integration test in this commit
-  side-steps the gap by inserting the origination event explicitly.
-  Production new-loan flows must be wired before Commit 15 routes
-  the loan-card display through the resolver, or freshly created
-  loans will hit `loan_resolver.resolve_loan` with an empty
-  ``anchor_events`` list and raise ``ValueError``.
+- **Status:** **resolved by Commit 15.** `app/routes/loan.py:create_params`
+  now writes the origination :class:`LoanAnchorEvent` inline after the
+  :class:`LoanParams` insert, mirroring `account_service.create_account`'s
+  paired-row pattern.  Test fixtures across `tests/test_routes/`,
+  `tests/test_services/`, and `tests/test_integration/` were updated
+  to use `tests._test_helpers.insert_origination_event` after their
+  direct :class:`LoanParams` constructions.  Centralisation into a
+  `loan_service.create_loan` helper (option 2 in the original
+  direction) remains a possible future cleanup if more callers
+  appear; it is not required since the only production write site
+  is now compliant.
 
 ### Problem
 
@@ -740,6 +745,104 @@ loan-card routing until this is fixed.
 - The Commit 14 integration test helper ``_create_mortgage`` is
   updated to call the shared service path so the test exercises
   the production code path rather than duplicating it.
+
+---
+
+## F-10. Engine internals still read `LoanParams.current_principal` / `.interest_rate`
+
+- **Surfaced during:** Commit 15 (`refactor(loan): demote
+  current_principal/interest_rate; route all consumers (E-18)`).
+- **Status:** not started; documented as the explicit Commit-17
+  follow-up.  Three engine-side functions remain after Commit 15
+  routes all display paths through the resolver:
+
+  - `app/services/amortization_engine.py:913` --
+    `get_loan_projection(params, ...)` reads
+    `params.current_principal` / `params.interest_rate`.  Orphaned
+    in production after Commit 15 (zero callers); kept alive by
+    its substantial test surface in
+    `tests/test_services/test_amortization_engine.py`
+    (`TestGetLoanProjection`, `test_get_loan_projection_*`, and
+    several ARM tests).
+  - `app/services/balance_calculator.py:226` --
+    `calculate_balances_with_amortization(...)` reads
+    `loan_params.current_principal`.  Orphaned in production after
+    Commit 8 routed the savings dashboard through `balance_resolver`;
+    kept alive by `tests/test_services/test_balance_calculator_debt.py`.
+  - `app/services/loan_payment_service.py:252` --
+    `compute_contractual_pi(params)` reads
+    `params.current_principal` / `params.interest_rate` to compute
+    the "above-P&I excess" boundary used by
+    `prepare_payments_for_engine`'s escrow subtraction step.  Still
+    actively called by `load_loan_context`, which the resolver
+    consumes transitively for its payment feed.
+
+### Problem
+
+The Commit-15 verification gate is
+``grep -rn "\.current_principal" app/ | grep -v migrations |
+grep -v loan_resolver | grep -v loan_anchor_event`` shows ONLY
+write/seed paths.  The three sites above are reads, not writes, and
+they sit outside the resolver/event modules.  Commit 15's scope
+(per `remediation_plan.md` Section 9 C) explicitly lists only
+`routes/loan.py`, `routes/debt_strategy.py`,
+`services/savings_dashboard_service.py`, and
+`services/year_end_summary_service.py`; the engine internals are
+out of scope.
+
+Pragmatically these reads are no longer display contracts -- they
+are either dead production code (the first two) or internal
+helpers the resolver consumes (the third) -- so they cannot drive
+the symptom-#5 family of bugs Commit 15 fixed.  They violate the
+strict letter of the gate but not its intent.
+
+### Recommended direction
+
+Commit 17 (`fix(loan): unify per-period/interest/payoff figures via
+resolver+round_money (HIGH-08)`) is the natural home:
+
+- **`get_loan_projection`**: delete the function and its
+  `LoanProjection` dataclass; rewrite the
+  `tests/test_services/test_amortization_engine.py` tests that
+  exercise it to drive `loan_resolver.resolve_loan` directly.
+- **`calculate_balances_with_amortization`**: delete the function
+  and the `test_balance_calculator_debt.py` test class.  Production
+  no longer calls it; the canonical balance producer is
+  `balance_resolver`.
+- **`compute_contractual_pi`**: replace the
+  `params.current_principal` read with the resolver's
+  `state.current_balance` at the same call site
+  (`load_loan_context`).  Currently impossible because
+  `load_loan_context` is itself in the resolver's input chain
+  (chicken-and-egg); the fix is to compute the escrow-boundary
+  heuristic from `params.original_principal` (always available,
+  never null) and the BASE rate, which gives the SAME boundary as
+  today for fixed-rate loans and a slightly less precise (but
+  still safe) boundary for ARMs.
+
+### Why defer
+
+Commit 15's charter is "route all loan consumers through the
+resolver and demote the stored columns to nullable seed."  The
+engine-internal reads do not break that charter -- they are not
+display reads -- and rewriting them touches `amortization_engine`,
+`balance_calculator`, and `loan_payment_service`, which are
+explicitly out of Commit 15's Section 9 C scope.  Doing the work
+here would inflate the diff substantially and mix concerns Commit
+17 is purpose-built to address.
+
+### Acceptance criteria for the eventual PR
+
+- `grep -rn "\.current_principal" app/ | grep -v migrations | grep
+  -v loan_resolver | grep -v loan_anchor_event | grep -v models/`
+  is empty (no engine-internal reads remain).
+- The `LoanProjection` dataclass and `get_loan_projection` function
+  are deleted from `amortization_engine.py`.
+- The `calculate_balances_with_amortization` function is deleted
+  from `balance_calculator.py` and `test_balance_calculator_debt.py`.
+- `compute_contractual_pi` computes the escrow boundary from
+  `original_principal` (no `current_principal` read).
+- Targeted + full pytest pass with the same green count.
 
 ---
 
