@@ -59,6 +59,7 @@ from app.services import balance_resolver
 from app.services.balance_resolver import (
     BalanceResult,
     PeriodSubtotal,
+    balance_as_of_date,
     balances_for,
     period_subtotal,
 )
@@ -164,14 +165,20 @@ def _add_entry(
     is_cleared: bool = False,
     is_credit: bool = False,
     description: str = "Purchase",
+    entry_date: _date | None = None,
 ) -> None:
-    """Add a :class:`TransactionEntry` to ``txn`` with the given flags."""
+    """Add a :class:`TransactionEntry` to ``txn`` with the given flags.
+
+    The ``entry_date`` defaults to ``2026-01-15`` to match the
+    pre-existing C5 tests; callers that exercise the E-27
+    entry-date filter pass an explicit date in the relevant window.
+    """
     db_session.add(TransactionEntry(
         transaction_id=txn.id,
         user_id=user_id,
         amount=amount,
         description=description,
-        entry_date=_date(2026, 1, 15),
+        entry_date=entry_date if entry_date is not None else _date(2026, 1, 15),
         is_credit=is_credit,
         is_cleared=is_cleared,
     ))
@@ -769,6 +776,340 @@ class TestPeriodSubtotal:
             assert next_bal - anchor_bal == sub.net == Decimal("-300.00")
 
 
+# ── balance_as_of_date (E-27, Commit 9) ────────────────────────────
+
+
+class TestBalanceAsOfDate:
+    """Producer for "balance as of date D" (E-27, HIGH-02 / W-277).
+
+    Locks the contract that replaces the deleted
+    ``calendar_service._compute_month_end_balance``:
+
+      * the projection runs through the period containing ``as_of``
+        (not the days-stale "last period ending on or before"
+        period the pre-Commit-9 calendar selected);
+      * entries dated AFTER ``as_of`` are excluded from the
+        entries-aware reduction inside the as-of period (a purchase
+        that has not happened yet cannot clear the bank as of that
+        date and must not reduce the reservation);
+      * at a period boundary the result equals the canonical
+        ``balances_for`` value for that period (cross-check that
+        ``balance_as_of_date`` is a strict generalization, not a
+        divergent calculation).
+    """
+
+    # ── C9-1 -----------------------------------------------------------
+
+    def test_calendar_month_end_true_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C9-1: month-end mid-period uses true date, not last-period-end.
+
+        ``seed_periods`` runs biweekly from 2026-01-02; period 1 is
+        Jan 16 -- Jan 29 (ends BEFORE Jan 31), period 2 is Jan 30 --
+        Feb 12 (contains Jan 31).  The pre-Commit-9 calendar selected
+        period 1 (the "last period whose end_date <= last_day of
+        month") and returned the projected end balance of THAT
+        period, missing period 2's contribution.  ``balance_as_of_date``
+        must return the projection through period 2, the period
+        actually containing Jan 31.
+
+        Setup:
+          - anchor 1000.00 on seed_periods[0] (the ``seed_user``
+            factory default; no override needed).
+          - period 0 (anchor): +2000 income, -500 expense.
+          - period 1: +2000 income, -500 expense.
+          - period 2 (contains Jan 31): +2000 income, -500 expense.
+
+        Hand arithmetic (E-25 carry-forward, no entries -> formula
+        collapses to effective_amount):
+          period_0_end = 1000 + 2000 - 500 = 2500
+          period_1_end = 2500 + 2000 - 500 = 4000
+          period_2_end = 4000 + 2000 - 500 = 5500
+
+        ``balance_as_of_date(2026-01-31)`` -> 5500.00 (period 2 end).
+        The pre-Commit-9 path would have stopped at period_1_end
+        (4000.00) -- a $1500 stale shortfall (HIGH-02 / W-277).
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            p0, p1, p2 = seed_periods[0], seed_periods[1], seed_periods[2]
+            # Sanity-check the period layout the assertion relies on:
+            # period 1 ends BEFORE Jan 31 and period 2 contains it.
+            assert p1.end_date == _date(2026, 1, 29)
+            assert p2.start_date == _date(2026, 1, 30)
+            assert p2.end_date == _date(2026, 2, 12)
+
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+            income_type = (
+                db.session.query(TransactionType).filter_by(name="Income").one()
+            )
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            for period in (p0, p1, p2):
+                db.session.add(Transaction(
+                    pay_period_id=period.id,
+                    scenario_id=scenario_id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Paycheck",
+                    transaction_type_id=income_type.id,
+                    estimated_amount=Decimal("2000.00"),
+                ))
+                db.session.add(Transaction(
+                    pay_period_id=period.id,
+                    scenario_id=scenario_id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Rent",
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("500.00"),
+                ))
+            db.session.commit()
+
+            result = balance_as_of_date(
+                account, scenario_id, _date(2026, 1, 31),
+            )
+            # Period 0: 1000 + 2000 - 500 = 2500
+            # Period 1: 2500 + 2000 - 500 = 4000
+            # Period 2: 4000 + 2000 - 500 = 5500  <-- Jan 31 falls here
+            assert result == Decimal("5500.00")
+
+    # ── C9-2 -----------------------------------------------------------
+
+    def test_calendar_entry_aware(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C9-2: entries cleared before ``as_of`` reduce the reservation.
+
+        Setup:
+          - anchor 1000.00 on seed_periods[0].
+          - period 0 has one Projected envelope expense est=500.00
+            with three CLEARED debit entries totalling 462.34, all
+            dated 2026-01-08 (well before any conceivable month-end
+            ``as_of``).
+          - no other transactions.
+
+        Hand arithmetic (E-25 entry-aware reduction, same algebra as
+        the F-009 worked example with the symptom-tuple numbers):
+          cleared_debit = 200.00 + 162.34 + 100.00 = 462.34
+          uncleared_debit = 0
+          sum_credit = 0
+          checking_impact = max(500.00 - 462.34 - 0, 0) = 37.66
+          period_0_end_at_jan31 = 1000.00 - 37.66 = 962.34
+
+        Pre-Commit-9 the calendar would have used the non-entries-
+        aware path (no ``selectinload``) and returned
+        1000.00 - 500.00 = 500.00 -- the F-009 silent-degrade on the
+        calendar surface.  HIGH-02 / W-277.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            anchor_period = seed_periods[0]
+            # Anchor period ends Jan 15; Jan 31 is in a LATER period,
+            # but no transactions live there so the projection carries
+            # the anchor-period balance forward unchanged.  Asserting
+            # on Jan 31 also gives the test the same calendar-flavor
+            # as C9-1 above.
+            txn = _make_projected_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=anchor_period,
+                estimated=Decimal("500.00"),
+            )
+            for amt in (
+                Decimal("200.00"), Decimal("162.34"), Decimal("100.00"),
+            ):
+                _add_entry(
+                    db.session,
+                    txn=txn,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                    is_cleared=True,
+                    entry_date=_date(2026, 1, 8),
+                )
+            db.session.commit()
+
+            result = balance_as_of_date(
+                account, scenario_id, _date(2026, 1, 31),
+            )
+            # 1000.00 - max(500.00 - 462.34, 0) = 1000.00 - 37.66 = 962.34.
+            assert result == Decimal("962.34")
+
+    # ── C9-3 -----------------------------------------------------------
+
+    def test_calendar_equals_resolver_at_period_boundary(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C9-3: at period.end_date, balance_as_of_date == balances_for.
+
+        When ``as_of`` lands exactly on the end_date of a pay period
+        and no entries are dated strictly after that date, the
+        entry-date cut is a no-op and the two producers must agree
+        -- ``balance_as_of_date`` is a strict generalization of
+        ``balances_for`` at the boundary.
+
+        Setup:
+          - anchor 1000.00 on seed_periods[0].
+          - one Projected envelope expense est=500.00 on period 0
+            with two cleared debits totalling 300.00, both dated
+            Jan 5 (before the period boundary).
+          - period 0 ends Jan 15.
+
+        Hand arithmetic:
+          cleared_debit = 200.00 + 100.00 = 300.00
+          impact = max(500.00 - 300.00, 0) = 200.00
+          period_0_end = 1000.00 - 200.00 = 800.00
+
+        Both producers must return 800.00 for as_of = period 0's
+        end_date (Jan 15) and balances_for(...).balances[p0.id].
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            anchor_period = seed_periods[0]
+            assert anchor_period.end_date == _date(2026, 1, 15)
+
+            txn = _make_projected_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=anchor_period,
+                estimated=Decimal("500.00"),
+            )
+            for amt in (Decimal("200.00"), Decimal("100.00")):
+                _add_entry(
+                    db.session,
+                    txn=txn,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                    is_cleared=True,
+                    entry_date=_date(2026, 1, 5),
+                )
+            db.session.commit()
+
+            as_of = anchor_period.end_date
+            via_as_of = balance_as_of_date(account, scenario_id, as_of)
+
+            via_resolver = balances_for(
+                account, scenario_id, [anchor_period],
+            ).balances[anchor_period.id]
+
+            # 1000.00 - max(500.00 - 300.00, 0) = 1000.00 - 200.00 = 800.00.
+            assert via_as_of == Decimal("800.00")
+            assert via_as_of == via_resolver
+
+    # ── C9-4 -----------------------------------------------------------
+
+    def test_calendar_entry_after_date_excluded(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C9-4: an entry dated AFTER ``as_of`` is NOT yet reflected.
+
+        Setup:
+          - anchor 1000.00 on seed_periods[0].
+          - one Projected envelope expense est=500.00 on period 0
+            with two cleared debits, dated as follows:
+              200.00 cleared on Jan 5 (before as_of)
+              250.00 cleared on Jan 20 (AFTER as_of)
+          - ``as_of`` = Jan 10.
+
+        Hand arithmetic with the entry-date cut (entry_date <= Jan 10):
+          cleared_debit (in-window) = 200.00
+          uncleared_debit = 0
+          sum_credit = 0
+          impact = max(500.00 - 200.00, 0) = 300.00
+          balance_at_jan_10 = 1000.00 - 300.00 = 700.00
+
+        WITHOUT the entry-date cut (the wrong behavior the producer
+        must not exhibit) cleared_debit would be 450.00 and the
+        balance would be 1000.00 - 50.00 = 950.00.  The strict
+        inequality between 700.00 (correct) and 950.00 (no-cut)
+        proves the date filter is exercised.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            anchor_period = seed_periods[0]
+
+            txn = _make_projected_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=anchor_period,
+                estimated=Decimal("500.00"),
+            )
+            _add_entry(
+                db.session,
+                txn=txn,
+                user_id=seed_user["user"].id,
+                amount=Decimal("200.00"),
+                is_cleared=True,
+                entry_date=_date(2026, 1, 5),
+            )
+            _add_entry(
+                db.session,
+                txn=txn,
+                user_id=seed_user["user"].id,
+                amount=Decimal("250.00"),
+                is_cleared=True,
+                entry_date=_date(2026, 1, 20),
+            )
+            db.session.commit()
+
+            result = balance_as_of_date(
+                account, scenario_id, _date(2026, 1, 10),
+            )
+            # cleared_debit (entry_date <= Jan 10) = 200.00.
+            # impact = max(500.00 - 200.00, 0) = 300.00.
+            # 1000.00 - 300.00 = 700.00.
+            assert result == Decimal("700.00")
+
+    # ── as_of before anchor -------------------------------------------
+
+    def test_as_of_before_anchor_returns_anchor_balance(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``as_of`` strictly before the anchor period returns the anchor.
+
+        The producer does not project BACKWARD from the anchor
+        (E-19 / E-27 convention).  Requesting a balance before the
+        anchor period returns the anchor balance verbatim
+        (rounded to cents).  ``seed_periods[0]`` starts 2026-01-02;
+        Dec 1 2025 is before any period.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            # The seed_user anchor is 1000.00 on seed_periods[0].
+            result = balance_as_of_date(
+                account, scenario_id, _date(2025, 12, 1),
+            )
+            assert result == Decimal("1000.00")
+
+    # ── Bad input ----------------------------------------------------
+
+    def test_rejects_non_date_as_of(
+        self, app, seed_user, seed_periods,
+    ):
+        """Passing a non-date raises ``TypeError`` (Decimal discipline).
+
+        ``as_of`` is compared against ``PayPeriod.start_date`` (a
+        ``Date``) and a ``datetime`` would silently truncate the
+        time portion.  The producer fails loud at the boundary.
+        """
+        with app.app_context():
+            with pytest.raises(TypeError):
+                balance_as_of_date(
+                    seed_user["account"],
+                    seed_user["scenario"].id,
+                    "2026-01-31",  # str -- not a date
+                )
+
+
 # ── Module surface ─────────────────────────────────────────────────
 
 
@@ -776,5 +1117,6 @@ def test_balance_resolver_exports_producer():
     """The producer names are importable from the module's public surface."""
     assert hasattr(balance_resolver, "balances_for")
     assert hasattr(balance_resolver, "period_subtotal")
+    assert hasattr(balance_resolver, "balance_as_of_date")
     assert hasattr(balance_resolver, "BalanceResult")
     assert hasattr(balance_resolver, "PeriodSubtotal")

@@ -525,9 +525,23 @@ class TestMonthEndBalance:
         """Projected end balance reflects anchor + income - expenses.
 
         Anchor balance = $1000 (seed_user).
-        Period 0 (anchor): +$2000 income, -$500 expense = $2500.
-        Period 1: +$2000 income, -$500 expense = $4000.
-        Both periods end in January, so month-end = $4000.
+        seed_periods are 10 biweekly starting 2026-01-02 so:
+          Period 0: Jan 2 -- Jan 15 (anchor)
+          Period 1: Jan 16 -- Jan 29
+          Period 2: Jan 30 -- Feb 12  (contains Jan 31)
+        Post-Commit-9 (HIGH-02 / W-277): the month-end balance is
+        ``balance_as_of_date(2026-01-31)``, which projects forward
+        through the period CONTAINING Jan 31 (period 2), not the
+        pre-Commit-9 "last period whose end_date <= Jan 31"
+        (period 1).  Period 2 has no transactions here so the
+        projected balance carries forward unchanged from period 1's
+        4000.00, which keeps this assertion valid; the next test
+        proves the producer steps into period 2 when it has data.
+
+        Period 0 (anchor): 1000 + 2000 - 500 = 2500.
+        Period 1:          2500 + 2000 - 500 = 4000.
+        Period 2:          4000 + 0 - 0      = 4000  (no txns)
+        Month-end (Jan 31, falls in period 2): 4000.00.
         """
         with app.app_context():
             p0 = seed_periods[0]
@@ -556,9 +570,74 @@ class TestMonthEndBalance:
                 year=2026,
                 month=1,
             )
-            # Anchor $1000 + $2000 - $500 = $2500 (period 0 end)
-            # $2500 + $2000 - $500 = $4000 (period 1 end)
             assert result.projected_end_balance == Decimal("4000.00")
+
+    def test_month_end_balance_includes_straddling_period(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """C9-1 (calendar surface): month-end mid-period includes that period.
+
+        HIGH-02 / W-277: pre-Commit-9 the calendar selected the last
+        pay period whose ``end_date <= last_day_of_month`` and
+        returned that period's end balance, missing the contribution
+        of the period that straddles the month boundary.
+        Post-Commit-9 the month-end balance flows through
+        ``balance_as_of_date``, which projects through the period
+        CONTAINING the target date.
+
+        seed_periods:
+          Period 1: Jan 16 -- Jan 29
+          Period 2: Jan 30 -- Feb 12  (contains Jan 31)
+
+        Setup loads income/expense in BOTH periods so the
+        pre-Commit-9 path (which would stop after period 1) and the
+        post-Commit-9 path (which includes period 2) produce
+        distinct values; the assertion locks the correct one.
+
+        Hand arithmetic (no entries, formula collapses to
+        effective_amount; statuses are Projected so the
+        balance-contributing predicate includes them):
+          Period 0 (anchor, 1000.00):  1000 + 0 - 0 = 1000
+          Period 1:                    1000 + 1500 - 200 = 2300
+          Period 2:                    2300 + 1500 - 200 = 3600
+
+        Pre-Commit-9 would have returned 2300.00 (period 1 end);
+        post-Commit-9 must return 3600.00.  Re-pinned per
+        HIGH-02 / W-277.
+        """
+        with app.app_context():
+            p1 = seed_periods[1]
+            p2 = seed_periods[2]
+            assert p1.end_date == date(2026, 1, 29)
+            assert p2.start_date == date(2026, 1, 30)
+            assert p2.end_date == date(2026, 2, 12)
+
+            _add_transaction(
+                db.session, seed_user, p1, "Mid-Jan Pay", "1500.00",
+                is_income=True, due_date=date(2026, 1, 16),
+            )
+            _add_transaction(
+                db.session, seed_user, p1, "Mid-Jan Bill", "200.00",
+                due_date=date(2026, 1, 20),
+            )
+            _add_transaction(
+                db.session, seed_user, p2, "Late-Jan Pay", "1500.00",
+                is_income=True, due_date=date(2026, 1, 30),
+            )
+            _add_transaction(
+                db.session, seed_user, p2, "Late-Jan Bill", "200.00",
+                due_date=date(2026, 1, 30),
+            )
+            db.session.commit()
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id,
+                year=2026,
+                month=1,
+            )
+            # 1000 + (1500-200) + (1500-200) = 3600.00.
+            # Pre-Commit-9 returned 2300.00 -- HIGH-02 / W-277.
+            assert result.projected_end_balance == Decimal("3600.00")
 
 
 # ── Infrequency Tests ────────────────────────────────────────────────

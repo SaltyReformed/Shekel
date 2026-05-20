@@ -79,6 +79,8 @@ from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
@@ -504,3 +506,293 @@ def period_subtotal(
         expense=rounded_expense,
         net=rounded_income - rounded_expense,
     )
+
+
+def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
+    """Date-cut variant of the balance-calculator entry-aware reduction (E-27).
+
+    Mirrors :func:`~app.services.balance_calculator._entry_aware_amount`
+    bucket-by-bucket but considers only entries whose ``entry_date`` is
+    on or before ``as_of``.  A purchase that has not happened yet
+    (entry dated after ``as_of``) cannot have cleared the bank as of
+    that date and therefore must not contribute to either bucket --
+    inclusion would reduce the reservation prematurely and ship a
+    wrong balance for the calendar month-end (HIGH-02 / W-277).
+
+    The formula is otherwise identical to the engine helper:
+
+        cleared_debit   = sum(e.amount where
+                              not is_credit and is_cleared
+                              and entry_date <= as_of)
+        uncleared_debit = sum(e.amount where
+                              not is_credit and not is_cleared
+                              and entry_date <= as_of)
+        sum_credit      = sum(e.amount where
+                              is_credit and entry_date <= as_of)
+
+        impact = max(estimated_amount - cleared_debit - sum_credit, uncleared_debit)
+
+    Non-Projected transactions short-circuit to ``effective_amount``
+    (same as the engine helper) because Settled/Cancelled/Credit are
+    already handled correctly by that property: Settled returns
+    actual_amount (the realized hit, by definition dated on or before
+    settlement), and Cancelled/Credit return Decimal("0").
+
+    Args:
+        txn: The :class:`~app.models.transaction.Transaction` to size.
+            ``entries`` must be loaded (the canonical producer always
+            ``selectinload``s them; lazy-load is a safe fallback).
+        as_of: The calendar date that bounds entry inclusion.  Entries
+            with ``entry_date > as_of`` are excluded.
+
+    Returns:
+        ``Decimal`` -- the entries-aware checking impact at ``as_of``.
+    """
+    entries = getattr(txn, "entries", ())
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    if txn.status_id != projected_id:
+        return txn.effective_amount
+
+    cleared_debit = Decimal("0")
+    uncleared_debit = Decimal("0")
+    sum_credit = Decimal("0")
+    any_in_window = False
+    for entry in entries:
+        if entry.entry_date > as_of:
+            continue
+        any_in_window = True
+        if entry.is_credit:
+            sum_credit += entry.amount
+        elif entry.is_cleared:
+            cleared_debit += entry.amount
+        else:
+            uncleared_debit += entry.amount
+
+    if not any_in_window:
+        # No purchase has occurred yet as of ``as_of``; the full
+        # estimated reservation is still pending.  ``effective_amount``
+        # collapses to estimated for an unfilled Projected expense
+        # (actual_amount is unset until the transaction settles), so
+        # this matches the engine helper's empty-entries branch.
+        return txn.effective_amount
+
+    return max(
+        txn.estimated_amount - cleared_debit - sum_credit,
+        uncleared_debit,
+    )
+
+
+def _sum_period_as_of(
+    transactions: list[Transaction],
+    as_of: date,
+) -> tuple[Decimal, Decimal]:
+    """Sum Projected income / expense for the as-of period (E-27).
+
+    Mirrors :func:`~app.services.balance_calculator._sum_all` but
+    routes expense impact through :func:`_entry_aware_amount_dated`
+    so the entry-date cut applies inside the period containing
+    ``as_of``.  Income still uses ``effective_amount`` -- income
+    transactions do not carry entries (entries live on expense
+    envelopes), so the date cut is a no-op for income.
+
+    Transactions are NOT filtered by ``due_date`` here.  ``balance
+    as of date D`` is the projected balance once the period
+    containing D has rolled forward; the date-sensitivity lives in
+    the per-entry reduction, not in transaction inclusion (that is
+    what the plan's "within the period containing as_of apply
+    entry-aware reduction only for entries dated on/before as_of"
+    specifies, and matches the calendar-surface UX where the
+    "End Balance" reflects the period's full settled+projected
+    delta but does not undo a not-yet-occurred purchase).
+
+    Args:
+        transactions: The Projected-gated, entries-loaded transaction
+            list for the period containing ``as_of``.
+        as_of: The calendar date that bounds entry inclusion.
+
+    Returns:
+        ``(income, expense)`` as a ``Decimal`` tuple, both unquantized.
+    """
+    income = Decimal("0.00")
+    expense = Decimal("0.00")
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    for txn in transactions:
+        if txn.status_id != projected_id:
+            continue
+        if txn.is_income:
+            income += txn.effective_amount
+        elif txn.is_expense:
+            expense += _entry_aware_amount_dated(txn, as_of)
+    return income, expense
+
+
+def balance_as_of_date(
+    account: Account,
+    scenario_id: int,
+    as_of: date,
+) -> Decimal:
+    """Project the checking balance as of a calendar date ``as_of`` (E-27).
+
+    The canonical "balance as of date D" producer, introduced to close
+    HIGH-02 / W-277: the calendar month-end "End Balance" used to walk
+    a separate code path that (a) selected the last pay period whose
+    ``end_date <= last_day_of_month`` -- up to ~13 days stale when the
+    period straddled the month boundary -- and (b) issued a transaction
+    query with no ``selectinload(Transaction.entries)``, silently
+    degrading to ``effective_amount`` (the CRIT-01 / F-009 seam on a
+    second surface).  Routing the calendar through this single
+    producer eliminates both defects: the projection runs through the
+    real period containing ``as_of`` (so balances reflect the true
+    date, not a days-stale period boundary), and entries are always
+    loaded by :func:`_load_balance_transactions` (so the entry-aware
+    reduction is unconditional).
+
+    Algorithm:
+
+      1. Resolve the anchor via :func:`resolve_anchor` (E-19 dated
+         SoT).
+      2. Load the user's pay-period set, ordered by ``period_index``.
+      3. Find ``target_period`` -- the latest period whose
+         ``start_date <= as_of``.  If ``as_of`` falls before the
+         anchor period (i.e. requesting a balance the projection
+         cannot reach), return the anchor balance (E-27's
+         "pre-anchor returns anchor" convention; the producer does
+         not project backward).
+      4. Run :func:`~app.services.balance_calculator.calculate_balances`
+         over ``[anchor_period .. target_period - 1]`` (entries
+         eager-loaded via :func:`_load_balance_transactions`).  The
+         result is ``prior_balance`` -- the projected end balance of
+         the period immediately preceding ``target_period``.  When
+         ``target_period == anchor_period`` there is no prior period
+         and ``prior_balance = anchor.balance``.
+      5. Sum ``target_period`` with :func:`_sum_period_as_of`, which
+         routes the entry-aware reduction through
+         :func:`_entry_aware_amount_dated`: entries with
+         ``entry_date > as_of`` are excluded from the cleared /
+         uncleared / credit buckets, so a purchase that has not
+         occurred yet cannot reduce the reservation prematurely.
+      6. Return ``round_money(prior_balance + income - expense)``.
+
+    Cross-checks against :func:`balances_for`:
+
+      * When ``as_of`` is exactly ``target_period.end_date`` and
+        ``target_period`` contains no entries dated after that date,
+        the entry-date cut is a no-op and the result equals
+        ``balances_for(account, scenario_id, periods).balances[target_period.id]``
+        for the same period list -- the calendar-at-period-boundary
+        invariant the test ``test_calendar_equals_resolver_at_period_boundary``
+        locks (C9-3).
+      * When ``as_of`` falls strictly between ``target_period.start_date``
+        and ``target_period.end_date`` (mid-period), the result
+        equals the producer's roll-forward up to the start of
+        ``target_period`` plus the period's Projected net evaluated
+        with the entry-date filter -- NOT the days-stale
+        ``balances_for(...).balances[<earlier-period-id>]`` the
+        deleted ``_compute_month_end_balance`` returned.
+
+    Args:
+        account: The :class:`~app.models.account.Account` to project.
+            Must be attached to ``db.session``; Commit 3 guarantees a
+            resolvable anchor.
+        scenario_id: The scenario id; filters transactions and is
+            forwarded into :func:`resolve_anchor`.
+        as_of: The calendar date to evaluate the balance at.  Passing
+            a ``datetime`` would silently truncate at the database
+            comparison; callers must pass ``date``.
+
+    Returns:
+        ``Decimal`` -- the projected balance at end-of-day ``as_of``,
+        quantized to cents via :func:`~app.utils.money.round_money`.
+
+    Raises:
+        TypeError: When ``as_of`` is not a :class:`datetime.date`.
+    """
+    if not isinstance(as_of, date):
+        raise TypeError(
+            f"balance_as_of_date expects a datetime.date for as_of, "
+            f"got {as_of!r}"
+        )
+
+    anchor = resolve_anchor(account, scenario_id)
+
+    all_periods = (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=account.user_id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
+
+    # ``target_period`` is the latest period whose ``start_date`` is on
+    # or before ``as_of``.  ``as_of`` may fall in a gap between two
+    # periods (unusual but possible for non-contiguous pay schedules);
+    # the latest started period is the right home, matching the
+    # post-deletion ``_compute_month_end_balance`` semantics where the
+    # projection's running balance is the balance "as of the end of
+    # the most recent period that has begun."
+    target_period: PayPeriod | None = None
+    for period in all_periods:
+        if period.start_date <= as_of:
+            target_period = period
+        else:
+            break
+
+    anchor_period = anchor.period
+    if target_period is None or (
+        target_period.period_index < anchor_period.period_index
+    ):
+        # ``as_of`` is before the anchor period; no forward projection
+        # applies.  Return the anchor balance (rounded to cents).
+        return round_money(anchor.balance)
+
+    prior_balance = _project_to_period_before(
+        account, scenario_id, anchor, target_period, all_periods,
+    )
+
+    target_txns = _load_balance_transactions(
+        account, scenario_id, [target_period.id],
+    )
+    income, expense = _sum_period_as_of(target_txns, as_of)
+
+    return round_money(prior_balance + income - expense)
+
+
+def _project_to_period_before(
+    account: Account,
+    scenario_id: int,
+    anchor: AnchorPoint,
+    target_period: PayPeriod,
+    all_periods: list[PayPeriod],
+) -> Decimal:
+    """Return the projected end balance of the period before ``target_period``.
+
+    When ``target_period`` is the anchor period itself the prior
+    balance is simply ``anchor.balance`` (the engine starts here).
+    Otherwise walk
+    :func:`~app.services.balance_calculator.calculate_balances` over
+    ``[anchor_period .. target_period - 1]`` with entries
+    eager-loaded by :func:`_load_balance_transactions`, and return
+    the engine's end balance for the period immediately before
+    ``target_period``.  Used by :func:`balance_as_of_date` to seed
+    the entry-date-cut sum of the target period.
+    """
+    anchor_period = anchor.period
+    if target_period.id == anchor_period.id:
+        return anchor.balance
+
+    prefix_periods = [
+        p for p in all_periods
+        if anchor_period.period_index <= p.period_index < target_period.period_index
+    ]
+    prefix_txns = _load_balance_transactions(
+        account, scenario_id, [p.id for p in prefix_periods],
+    )
+    raw_balances, _ = balance_calculator.calculate_balances(
+        anchor_balance=anchor.balance,
+        anchor_period_id=anchor_period.id,
+        periods=prefix_periods,
+        transactions=prefix_txns,
+    )
+    # The prefix walk always produces an end-balance for its last
+    # period: it starts at the anchor period (so ``running_balance``
+    # is set on iteration 1) and runs through ``prefix_periods[-1]``.
+    return raw_balances[prefix_periods[-1].id]
