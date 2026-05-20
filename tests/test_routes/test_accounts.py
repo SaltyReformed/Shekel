@@ -2473,6 +2473,396 @@ class TestCheckingDetail:
             assert anchor_date_str.encode() in resp.data
 
 
+# ── Commit 7: canonical entries-aware producer routing ─────────────
+#
+# Pre-Commit-7 the /accounts checking detail built its own transaction
+# query without ``selectinload(Transaction.entries)`` (same shape as
+# the savings tile pre-Commit-6) and forked on the NULL-anchor case
+# differently from the grid.  The silent-degrade seam in
+# ``balance_calculator._entry_aware_amount`` (closed at the math layer
+# by Commit 5, structurally closed by the canonical producer in Commit
+# 5) yielded $160.00 on the grid and $114.29 on /accounts for the
+# audit's symptom #1 / #5 tuple.  Commit 7 routes the checking detail
+# through ``balance_resolver.balances_for`` and resolves the anchor via
+# the dated ``AccountAnchorHistory`` SoT, so both divergence axes
+# (entries seam, NULL-anchor fork) close.  The NULL-anchor fork is
+# dead post-Commit-3 and was deleted rather than left unreachable.
+
+
+def _override_account_anchor(db_session, account, pay_period, anchor_balance):
+    """Replace ``account``'s current anchor with the given balance + period.
+
+    Appends a fresh :class:`AccountAnchorHistory` row (latest-wins by
+    ``created_at``) and syncs the cache columns so the resolver's
+    cache-reconciliation log does NOT fire.  Required because the
+    ``seed_user`` factory writes an origination anchor of $1,000
+    against the seed_periods anchor period; the Commit-7 symptom
+    reproductions need $614.29 anchored to today's period.
+
+    Mirrors ``tests/test_services/test_savings_dashboard_service.py``'s
+    ``_override_anchor`` (Commit 6).  Kept private to this module so
+    later moves to a shared fixture remain a refactor rather than a
+    contract change.
+    """
+    history = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=pay_period.id,
+        anchor_balance=anchor_balance,
+        notes="C7 symptom #5 test: anchor override",
+    )
+    db_session.add(history)
+    db_session.flush()
+    account.current_anchor_balance = anchor_balance
+    account.current_anchor_period_id = pay_period.id
+    db_session.commit()
+
+
+def _make_projected_envelope_expense(
+    db_session, *, seed_user, pay_period, account_id, estimated,
+    name="Groceries",
+):
+    """Create a Projected envelope expense + its template in ``pay_period``.
+
+    Mirrors the helper in ``test_savings_dashboard_service.py``.  Uses
+    the seed user's Groceries category so the row matches the symptom
+    #1 / #5 worked example.
+    """
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+
+    projected = db_session.query(Status).filter_by(name="Projected").one()
+    expense_type = (
+        db_session.query(TransactionType).filter_by(name="Expense").one()
+    )
+
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=account_id,
+        category_id=seed_user["categories"]["Groceries"].id,
+        transaction_type_id=expense_type.id,
+        name=name,
+        default_amount=estimated,
+        is_envelope=True,
+    )
+    db_session.add(template)
+    db_session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=pay_period.id,
+        scenario_id=seed_user["scenario"].id,
+        account_id=account_id,
+        status_id=projected.id,
+        name=name,
+        category_id=seed_user["categories"]["Groceries"].id,
+        transaction_type_id=expense_type.id,
+        estimated_amount=estimated,
+    )
+    db_session.add(txn)
+    db_session.flush()
+    return txn
+
+
+def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
+    """Add a CLEARED, DEBIT :class:`TransactionEntry` to ``txn``.
+
+    These are the entries that produce the F-009 / CRIT-01 silent-
+    degrade gap: pre-Commit-5 the entry-aware reduction would not run
+    on consumers that did not eager-load entries, so the cleared
+    amount (already in the anchor) would be implicitly subtracted a
+    second time off the projection.
+    """
+    from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
+
+    db_session.add(TransactionEntry(
+        transaction_id=txn.id,
+        user_id=user_id,
+        amount=amount,
+        description="Cleared purchase",
+        entry_date=date(2026, 1, 15),
+        is_credit=False,
+        is_cleared=True,
+    ))
+    db_session.flush()
+
+
+class TestCheckingDetailCanonicalProducer:
+    """C7: /accounts checking detail routed through balance_resolver.
+
+    Pins the symptom #5 fix: the per-account detail page now produces
+    the same checking balance as the grid and /savings for the same
+    inputs.  Tests track plan IDs C7-1 through C7-3 plus the
+    verification gates listed in the Commit 7 spec.
+    """
+
+    def test_accounts_checking_equals_grid(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """C7-1: /accounts checking detail current balance == grid balance.
+
+        Reproduction of symptom #5 / F-009 worked example
+        (``05_symptoms.md``):
+
+          - Real checking anchor 614.29 on the current pay period.
+          - One Projected envelope expense ``estimated_amount = 500.00``
+            in the same period (so ``_sum_remaining`` applies).
+          - Three CLEARED debit entries 20.00 + 15.71 + 10.00 = 45.71.
+            No credit, no uncleared.
+
+        Hand arithmetic (F-009):
+
+          cleared_debit   = 20.00 + 15.71 + 10.00 = 45.71
+          uncleared_debit = 0
+          sum_credit      = 0
+          checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
+          anchor_period_balance = 614.29 + 0 - 454.29 = 160.00
+
+        Both the grid (already routed in Commit 5) and the /accounts
+        checking detail page (routed by Commit 7) MUST return
+        Decimal("160.00").  Pre-Commit-7 the checking detail page
+        reported the silent-degrade value Decimal("114.29") via the
+        unloaded-entries seam.
+        """
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current_period is not None
+            account = seed_user["account"]
+            _override_account_anchor(
+                db.session, account, current_period, Decimal("614.29"),
+            )
+
+            txn = _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                account_id=account.id,
+                estimated=Decimal("500.00"),
+            )
+            for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
+                _add_cleared_debit_entry(
+                    db.session,
+                    txn=txn,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                )
+            db.session.commit()
+
+            # Grid value via the canonical producer (the grid already
+            # routes through ``balances_for`` post-Commit-5; replaying
+            # it here is "what does the grid show" without a route
+            # round-trip).
+            grid_result = balance_resolver.balances_for(
+                account, seed_user["scenario"].id, seed_periods_today,
+            )
+            grid_current_balance = grid_result.balances[current_period.id]
+
+            # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)
+            #                = 614.29 - 454.29 = 160.00.
+            assert grid_current_balance == Decimal("160.00")
+
+            # Detail-page current balance is rendered via the {:,.2f}
+            # format string at template line 43 (search "{:,.2f}" in
+            # accounts/checking_detail.html).
+            resp = auth_client.get(f"/accounts/{account.id}/checking")
+            assert resp.status_code == 200
+            assert b"$160.00" in resp.data
+            # Pre-Commit-7 the page showed the silent-degrade value.
+            # Asserting its absence locks the regression.
+            assert b"$114.29" not in resp.data
+
+    def test_accounts_anchor_null_fork_removed(self):
+        """C7-2: the dead anchor-NULL fallback fork is deleted from accounts.py.
+
+        Verification gate from the Commit 7 spec.  Post-Commit-3 the
+        anchor columns are NOT NULL with a CHECK constraint, so the
+        legacy ``account.current_anchor_period_id or current_period``
+        substitution is unreachable.  Leaving it in place would be a
+        dead branch (CLAUDE.md rule 1: do it right) and a regression
+        risk if the CHECK is ever loosened again.  This test greps
+        the file to fail loud if the fork is ever reintroduced.
+        """
+        import os  # pylint: disable=import-outside-toplevel
+        import re  # pylint: disable=import-outside-toplevel
+
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "..",
+            "app", "routes", "accounts.py",
+        )
+        with open(path, "r", encoding="utf-8") as fh:
+            src = fh.read()
+
+        # Strip comments before matching: documentation that references
+        # the legacy pattern by name is fine; only live code is forbidden.
+        code_lines = [
+            line for line in src.splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        code = "\n".join(code_lines)
+
+        # The legacy fork had two shapes; both are dead post-Commit-3.
+        assert not re.search(r"current_anchor_period_id\s+or\s+", code), (
+            "anchor-NULL fork (`... or current_period`) found in accounts.py"
+        )
+        assert not re.search(r"current_anchor_balance\s+or\s+", code), (
+            "anchor-NULL fork (`... or 0`) found in accounts.py"
+        )
+
+    def test_accounts_multi_account_each_correct(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """C7-3: two checking accounts with entries each project correctly.
+
+        Pins that the entries-aware reduction applies per-account:
+        account A has cleared entries totaling $45.71 against a $500
+        estimate, account B has cleared entries totaling $100.00
+        against a $300 estimate, both on the current period.
+
+          Account A: 614.29 + 0 - max(500 - 45.71, 0) = 160.00
+          Account B: 1000.00 + 0 - max(300 - 100,    0) = 800.00
+
+        Pre-Commit-7 both pages would have silently degraded to the
+        non-entries-aware projection ($114.29 and $700.00).
+        """
+        with app.app_context():
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current_period is not None
+
+            # Account A: the seed_user account, anchored at 614.29.
+            account_a = seed_user["account"]
+            _override_account_anchor(
+                db.session, account_a, current_period, Decimal("614.29"),
+            )
+
+            # Account B: a second checking account anchored at 1000.00.
+            checking_type = db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one()
+            account_b = account_service.create_account(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Second Checking",
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=current_period.id,
+            )
+            db.session.flush()
+
+            txn_a = _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                account_id=account_a.id,
+                estimated=Decimal("500.00"),
+                name="Groceries A",
+            )
+            for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
+                _add_cleared_debit_entry(
+                    db.session,
+                    txn=txn_a,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                )
+
+            txn_b = _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                account_id=account_b.id,
+                estimated=Decimal("300.00"),
+                name="Groceries B",
+            )
+            _add_cleared_debit_entry(
+                db.session,
+                txn=txn_b,
+                user_id=seed_user["user"].id,
+                amount=Decimal("100.00"),
+            )
+            db.session.commit()
+
+            # F-009 / CRIT-01: each account projects from its own
+            # anchor minus the entries-aware reservation on its own
+            # transactions.  Pre-Commit-7 both pages showed the
+            # non-entries-aware value ($114.29 and $700.00).
+            resp_a = auth_client.get(f"/accounts/{account_a.id}/checking")
+            assert resp_a.status_code == 200
+            assert b"$160.00" in resp_a.data
+            assert b"$114.29" not in resp_a.data
+
+            resp_b = auth_client.get(f"/accounts/{account_b.id}/checking")
+            assert resp_b.status_code == 200
+            # 1000.00 - max(300 - 100, 0) = 1000.00 - 200.00 = 800.00.
+            assert b"$800.00" in resp_b.data
+            assert b"$700.00" not in resp_b.data
+
+    def test_accounts_checking_zero_anchor_renders_projection(
+        self, app, auth_client, db, seed_user,
+    ):
+        """Zero-anchor account shows a populated zero-anchored projection.
+
+        Commit 7 verification gate: an account with anchor balance
+        ``Decimal("0.00")`` (a real zero per E-12, not "missing") must
+        render with a populated period projection -- not blank, not
+        omitted.  Pre-Commit-3 the anchor-NULL fork would have made the
+        page degrade differently from the grid; post-Commit-3 the
+        anchor is non-NULL and post-Commit-7 the producer routes the
+        zero anchor through ``balances_for`` like any other balance.
+
+        Hand arithmetic: no transactions, anchor 0.00, projection is
+        flat 0.00 across every period covered by the anchor period
+        forward.  The current-balance display, the balance-projection
+        table, and the 3-month horizon ($0) must all appear.
+
+        Periods are generated with ``num_periods=10`` starting today,
+        so the anchor sits on period 0 and ``period_index`` 6 (the
+        3-month horizon) is reachable.  ``seed_periods_today`` would
+        anchor today on period 4 and ``4 + 6 = 10`` exceeds the
+        fixture's 10-period window, omitting the horizon -- the
+        explicit ``generate_pay_periods`` here mirrors the other
+        ``TestCheckingDetail`` tests so the horizon is in range.
+        """
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=10,
+            )
+
+            checking_type = db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one()
+            account = account_service.create_account(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Zero Anchor Checking",
+                anchor_balance=Decimal("0.00"),
+                anchor_period_id=periods[0].id,
+            )
+            db.session.flush()
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{account.id}/checking")
+            assert resp.status_code == 200
+            assert b"Zero Anchor Checking" in resp.data
+            # The current-balance display uses the {:,.2f} format
+            # (see checking_detail.html line 43); a real zero anchor
+            # must render as "$0.00", not blank or "--".
+            assert b"$0.00" in resp.data
+            # The 3-month horizon label appears when there is a period
+            # at offset 6 from the current period; the explicit 10-
+            # period setup guarantees one (matches the existing
+            # ``test_checking_detail_handles_short_horizon`` pattern).
+            assert b"3 months" in resp.data
+            # The per-period projection table renders rows for every
+            # period covered (anchor + forward).  Each row uses {:,.2f}
+            # so the zero-anchor flat projection shows "$0.00" in the
+            # balance column at least once beyond the summary card.
+            assert resp.data.count(b"$0.00") >= 2
+
+
 class TestCheckingDashboardLink:
     """Tests for the checking detail link on the savings/accounts dashboard."""
 

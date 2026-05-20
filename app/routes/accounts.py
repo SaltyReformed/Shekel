@@ -11,6 +11,7 @@ from decimal import Decimal
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
@@ -40,6 +41,7 @@ from app.schemas.validation import (
 from app.services import (
     account_service,
     balance_calculator,
+    balance_resolver,
     entry_service,
     pay_period_service,
     transfer_service,
@@ -1277,14 +1279,29 @@ def interest_detail(account_id):
 
     period_ids = [p.id for p in all_periods]
 
-    # Load transactions scoped to this account using the account_id
-    # column.  This includes shadow transactions from transfers, ad-hoc
-    # transactions, and template-generated transactions.  The old
-    # template_account_map approach silently excluded shadow transactions
-    # (template_id=None), causing HYSA projections to miss all transfer
-    # deposits.  Follows the pattern in grid.py lines 87-98.
+    # Resolve the anchor via the canonical date-anchored source of truth
+    # (E-19, Commit 4): the latest ``AccountAnchorHistory`` row wins
+    # over the ``Account.current_anchor_*`` cache so a future cache
+    # divergence cannot show a stale projection.  Post-Commit-3 the
+    # anchor columns are NOT NULL and the resolver never returns
+    # ``None``, so the legacy fallback that substituted the current
+    # period (which papered over the NULL-anchor producer drift in
+    # CRIT-01) is dead code and is deleted here rather than left
+    # unreachable (CLAUDE.md rule 1: do it right, no shortcuts).
+    anchor = balance_resolver.resolve_anchor(account, scenario.id) if scenario else None
+
+    # Load transactions scoped to this account.  ``selectinload`` on
+    # ``Transaction.entries`` closes the silent-degrade seam this route
+    # used to share with /savings (CRIT-01 / F-009): the entries-aware
+    # reduction in ``_entry_aware_amount`` now applies unconditionally,
+    # avoiding the lazy-load N+1 the math-layer fix in Commit 5 would
+    # otherwise incur for this caller.  Interest layering still flows
+    # through ``calculate_balances_with_interest``; MED-01 / Commit 28
+    # collapses the dual interest/no-interest dispatcher into a single
+    # canonical resolver.
     acct_transactions = (
         db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
         .filter(
             Transaction.account_id == account.id,
             Transaction.pay_period_id.in_(period_ids),
@@ -1294,23 +1311,22 @@ def interest_detail(account_id):
         .all()
     ) if scenario and period_ids else []
 
-    anchor_balance = account.current_anchor_balance or Decimal("0.00")
-    anchor_period_id = account.current_anchor_period_id or (
-        current_period.id if current_period else None
-    )
-
     balances = {}
     interest_by_period = {}
-    if anchor_period_id:
+    if anchor is not None:
         balances, interest_by_period = balance_calculator.calculate_balances_with_interest(
-            anchor_balance=anchor_balance,
-            anchor_period_id=anchor_period_id,
+            anchor_balance=anchor.balance,
+            anchor_period_id=anchor.period.id,
             periods=all_periods,
             transactions=acct_transactions,
             interest_params=params,
         )
 
-    current_bal = balances.get(current_period.id) if current_period else anchor_balance
+    current_bal = (
+        balances.get(current_period.id) if current_period else None
+    )
+    if current_bal is None and anchor is not None:
+        current_bal = anchor.balance
 
     # Build period projection data for the template.
     period_data = []
@@ -1394,9 +1410,19 @@ def checking_detail(account_id):
     """Checking account detail page with balance projections.
 
     Shows the current anchor balance and projected balances at
-    3, 6, and 12-month intervals, computed by the same balance
-    calculator the grid uses.  No interest calculations -- APY
-    on checking is negligible.
+    3, 6, and 12-month intervals.  Balances flow through the
+    canonical entries-aware producer (E-25 / Commit 5):
+    ``balance_resolver.balances_for`` owns the transaction query
+    (always ``selectinload``s entries so the entry-aware reduction
+    in ``_entry_aware_amount`` applies unconditionally) and the
+    anchor resolution (dated ``AccountAnchorHistory`` source of
+    truth, never NULL post-Commit-3).  Routing through this single
+    producer is the structural fix for CRIT-01 / symptom #5: pre-
+    fix the same tuple yielded $160.00 on the grid (entries
+    eager-loaded) and $114.29 here (entries unloaded -> silent
+    degrade to ``effective_amount`` -- $45.71 of already-cleared
+    debits double-subtracted off the anchor).  No interest
+    calculations: APY on checking is negligible.
     """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != current_user.id:
@@ -1413,37 +1439,32 @@ def checking_detail(account_id):
 
     scenario = get_baseline_scenario(user_id)
 
-    period_ids = [p.id for p in all_periods]
-
-    # Load transactions scoped to this account.  Includes shadow
-    # transactions from transfers, following the pattern in grid.py
-    # and hysa_detail.
-    acct_transactions = (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.scenario_id == scenario.id,
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    ) if scenario and period_ids else []
-
-    anchor_balance = account.current_anchor_balance or Decimal("0.00")
-    anchor_period_id = account.current_anchor_period_id or (
-        current_period.id if current_period else None
-    )
-
+    # Route balance projection through the canonical entries-aware
+    # producer (E-25, Commit 5).  ``balances_for`` resolves the anchor
+    # via the dated ``AccountAnchorHistory`` SoT (E-19, Commit 4), so
+    # the legacy NULL-anchor fallback (which substituted the current
+    # period when the anchor column was unset) is dead code post-
+    # Commit-3 and is deleted rather than left unreachable
+    # (CLAUDE.md rule 1).  The
+    # ``scenario is None`` and ``no pay periods`` guards are kept --
+    # both are legitimately empty-state inputs (a fixture without a
+    # baseline scenario, a freshly-registered user with no generated
+    # periods) and the template renders cleanly when ``balances`` is
+    # empty.
     balances = {}
-    if anchor_period_id:
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=anchor_balance,
-            anchor_period_id=anchor_period_id,
-            periods=all_periods,
-            transactions=acct_transactions,
+    anchor = None
+    if scenario is not None and all_periods:
+        result = balance_resolver.balances_for(
+            account, scenario.id, all_periods,
         )
+        balances = result.balances
+        anchor = balance_resolver.resolve_anchor(account, scenario.id)
 
-    current_bal = balances.get(current_period.id) if current_period else anchor_balance
+    current_bal = (
+        balances.get(current_period.id) if current_period else None
+    )
+    if current_bal is None and anchor is not None:
+        current_bal = anchor.balance
 
     # Build period projection data for the template.
     period_data = []
@@ -1464,13 +1485,11 @@ def checking_detail(account_id):
                     projected[offset_label] = balances[p.id]
                     break
 
-    # Find the anchor period for display in the template.
-    anchor_period = None
-    if anchor_period_id:
-        for p in all_periods:
-            if p.id == anchor_period_id:
-                anchor_period = p
-                break
+    # The anchor period for the template header.  ``resolve_anchor``
+    # returns the relationship-loaded ``PayPeriod`` directly, so no
+    # additional lookup is needed; ``None`` when the user has no
+    # baseline scenario (the template guards with ``{% if anchor_period %}``).
+    anchor_period = anchor.period if anchor is not None else None
 
     return render_template(
         "accounts/checking_detail.html",
