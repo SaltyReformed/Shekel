@@ -35,6 +35,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import (
     amortization_engine,
     balance_calculator,
+    balance_resolver,
     escrow_calculator,
     growth_engine,
     pay_period_service,
@@ -329,9 +330,20 @@ def _compute_account_projections(
 
         balances = {}
         acct_interest_params = params["interest_params_map"].get(acct.id)
+        scenario_id = params.get("scenario_id")
 
-        if anchor_period_id:
-            if acct_interest_params:
+        if acct_interest_params:
+            # HYSA / interest-bearing path.  Continues to layer interest
+            # on top of the base balance calculation.  Entry-aware
+            # reduction for any envelope expenses on this account is
+            # applied unconditionally by ``_entry_aware_amount`` post-
+            # Commit-5 (the seam was removed at the math layer: an
+            # unloaded ``entries`` relationship now lazy-loads via the
+            # SQLAlchemy descriptor rather than silently degrading to
+            # ``effective_amount``).  MED-01 / Commit 28 will collapse
+            # the dual interest/no-interest dispatcher into the
+            # canonical resolver.
+            if anchor_period_id:
                 balances, _ = balance_calculator.calculate_balances_with_interest(
                     anchor_balance=anchor_balance,
                     anchor_period_id=anchor_period_id,
@@ -339,13 +351,26 @@ def _compute_account_projections(
                     transactions=acct_transactions,
                     interest_params=acct_interest_params,
                 )
-            else:
-                balances, _ = balance_calculator.calculate_balances(
-                    anchor_balance=anchor_balance,
-                    anchor_period_id=anchor_period_id,
-                    periods=all_periods,
-                    transactions=acct_transactions,
-                )
+        elif scenario_id is not None:
+            # Non-interest checking / savings / loan / investment
+            # accounts route through the canonical entries-aware
+            # producer (CRIT-01 / F-009 / E-25).  ``balances_for``
+            # owns its own transaction query with
+            # ``selectinload(Transaction.entries)`` and resolves the
+            # anchor via the dated ``AccountAnchorHistory`` source of
+            # truth, so the per-tile checking balance no longer
+            # silently disagrees with the grid (symptom #1: $160 on
+            # grid vs $114.29 here pre-fix, because /savings did not
+            # eager-load entries and ``_entry_aware_amount`` returned
+            # ``effective_amount`` unchanged).  Loan and investment
+            # accounts still compute a ``balances`` map here, but
+            # ``current_bal`` is overridden below from the
+            # amortization / growth projection; the resolver call is
+            # cheap and uniform.
+            result = balance_resolver.balances_for(
+                acct, scenario_id, all_periods,
+            )
+            balances = result.balances
 
         acct_loan_params = params["loan_params_map"].get(acct.id)
         acct_investment_params = params["investment_params_map"].get(acct.id)

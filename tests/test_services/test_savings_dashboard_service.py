@@ -1382,3 +1382,361 @@ class TestDTI:
             gross_biweekly * Decimal("26") / Decimal("12")
         ).quantize(Decimal("0.01"))
         assert gross_monthly == Decimal("6500.00")
+
+
+# ── Commit 6: canonical entries-aware producer routing ─────────────
+#
+# Pre-Commit-6 the savings dashboard built its own transaction query
+# without ``selectinload(Transaction.entries)`` and called the engine
+# directly.  When an envelope expense had cleared debit entries, the
+# silent-degrade seam in ``balance_calculator._entry_aware_amount``
+# (removed at the math layer by Commit 5) returned
+# ``effective_amount`` unchanged.  Result: the same data shipped
+# $160.00 on the grid and $114.29 on /savings -- symptom #1.  Commit 6
+# routes the savings dashboard through
+# ``balance_resolver.balances_for``, which owns the query and eager-
+# loads entries, so the two surfaces produce byte-identical values
+# by construction.
+
+
+def _override_anchor(db_session, account, pay_period, anchor_balance):
+    """Replace ``account``'s current anchor with the given balance + period.
+
+    Mirrors the helper used in test_balance_resolver.py: appends a fresh
+    :class:`AccountAnchorHistory` row (latest-wins by ``created_at``)
+    and updates the cache columns so the resolver's cache-reconciliation
+    path does NOT fire (cache and history agree).  Required because the
+    ``seed_user`` factory writes an origination anchor of $1,000 against
+    the seed_periods anchor period; tests reproducing symptom #1 need
+    $614.29 on a chosen period.
+
+    Args:
+        db_session: SQLAlchemy session bound to the test database.
+        account: The :class:`~app.models.account.Account` whose anchor
+            should be overridden.
+        pay_period: The :class:`~app.models.pay_period.PayPeriod` the
+            new anchor is anchored against.
+        anchor_balance: The new anchor balance as a Decimal.
+    """
+    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+
+    history = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=pay_period.id,
+        anchor_balance=anchor_balance,
+        notes="C6 symptom-#1 test: anchor override",
+    )
+    db_session.add(history)
+    db_session.flush()
+    account.current_anchor_balance = anchor_balance
+    account.current_anchor_period_id = pay_period.id
+    db_session.commit()
+
+
+def _make_projected_envelope_expense(
+    db_session, *, seed_user, pay_period, estimated, account_id=None,
+    name="Groceries",
+):
+    """Create a Projected envelope expense in ``pay_period``.
+
+    Builds the ``is_envelope=True`` template + Transaction pair that
+    entries attach to.  Uses the user's Groceries category so the row
+    is consistent with the symptom #1 worked example.  ``account_id``
+    defaults to the seed user's checking account; pass an explicit id
+    when the txn should live on an account other than seed_user["account"].
+    """
+    from app.models.ref import Status, TransactionType  # pylint: disable=import-outside-toplevel
+    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+
+    projected = db_session.query(Status).filter_by(name="Projected").one()
+    expense_type = (
+        db_session.query(TransactionType).filter_by(name="Expense").one()
+    )
+    target_account_id = account_id or seed_user["account"].id
+
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=target_account_id,
+        category_id=seed_user["categories"]["Groceries"].id,
+        transaction_type_id=expense_type.id,
+        name=name,
+        default_amount=estimated,
+        is_envelope=True,
+    )
+    db_session.add(template)
+    db_session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=pay_period.id,
+        scenario_id=seed_user["scenario"].id,
+        account_id=target_account_id,
+        status_id=projected.id,
+        name=name,
+        category_id=seed_user["categories"]["Groceries"].id,
+        transaction_type_id=expense_type.id,
+        estimated_amount=estimated,
+    )
+    db_session.add(txn)
+    db_session.flush()
+    return txn
+
+
+def _add_entry(
+    db_session, *, txn, user_id, amount,
+    is_cleared=False, is_credit=False, description="Purchase",
+):
+    """Add a :class:`TransactionEntry` to ``txn`` with the given flags."""
+    from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
+
+    db_session.add(TransactionEntry(
+        transaction_id=txn.id,
+        user_id=user_id,
+        amount=amount,
+        description=description,
+        entry_date=date(2026, 1, 15),
+        is_credit=is_credit,
+        is_cleared=is_cleared,
+    ))
+    db_session.flush()
+
+
+class TestCanonicalProducerRouting:
+    """C6: /savings balances routed through balance_resolver.balances_for.
+
+    The single-source-of-truth ``balances_for`` owns the transaction
+    query (entries eager-loaded) and the anchor resolution
+    (AccountAnchorHistory dated SoT), so the per-tile current balance
+    cannot disagree with the grid for any input.  These tests pin the
+    contract.  Test IDs match remediation_plan.md Commit 6 (C6-1
+    through C6-3).
+    """
+
+    def test_savings_equals_grid_symptom1(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C6-1: /savings checking tile == grid current-period balance.
+
+        Reproduction of symptom #1 (audit 05_symptoms.md):
+
+          - Real checking anchor 614.29 on the current pay period.
+          - One Projected envelope expense ``estimated_amount = 500.00``
+            on the same period (so ``_sum_remaining`` applies).
+          - Three CLEARED debit entries 20.00 + 15.71 + 10.00 = 45.71.
+            No credit entries, no uncleared debits.
+
+        Hand arithmetic (F-009 worked example):
+
+          cleared_debit   = 20.00 + 15.71 + 10.00 = 45.71
+          uncleared_debit = 0
+          sum_credit      = 0
+          checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
+          anchor_period_balance = 614.29 + 0 - 454.29 = 160.00
+
+        Both the grid (already routed through ``balances_for`` in
+        Commit 5) and the savings dashboard (routed in Commit 6) MUST
+        return Decimal("160.00").  Pre-Commit-6, /savings returned
+        Decimal("114.29") via the silent-degrade seam.
+        """
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            # Current period == anchor period: seed_periods_today
+            # places today in period 4 of a 10-period biweekly window.
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current_period is not None
+            _override_anchor(
+                db.session,
+                seed_user["account"],
+                current_period,
+                Decimal("614.29"),
+            )
+
+            txn = _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                estimated=Decimal("500.00"),
+            )
+            for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
+                _add_entry(
+                    db.session,
+                    txn=txn,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                    is_cleared=True,
+                    is_credit=False,
+                )
+            db.session.commit()
+
+            # Grid value: balance_resolver.balances_for is the canonical
+            # producer the grid routes through post-Commit-5.  Replaying
+            # it here is equivalent to "what does the grid show" without
+            # a route round-trip.
+            grid_result = balance_resolver.balances_for(
+                seed_user["account"],
+                seed_user["scenario"].id,
+                seed_periods_today,
+            )
+            grid_current_balance = grid_result.balances[current_period.id]
+
+            # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)
+            #                = 614.29 - 454.29 = 160.00.
+            # Pre-Commit-6 /savings reported 114.29 (entries silently
+            # unloaded; effective_amount returned 500.00 unchanged).
+            assert grid_current_balance == Decimal("160.00")
+
+            # Savings dashboard tile: routed through balances_for by
+            # Commit 6.  Must equal the grid value exactly.
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            checking_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == seed_user["account"].id
+            )
+            assert checking_ad["current_balance"] == Decimal("160.00")
+            assert checking_ad["current_balance"] == grid_current_balance
+
+    def test_savings_hysa_entry_aware(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C6-2: HYSA accounts with cleared entries get the entry-aware reduction.
+
+        HYSA still routes through ``calculate_balances_with_interest``
+        in Commit 6 (the canonical producer does not yet carry an
+        interest variant; MED-01 / Commit 28 collapses the dispatcher).
+        However the Commit-5 seam softening at the math layer makes
+        ``_entry_aware_amount`` lazy-load entries via the SQLAlchemy
+        descriptor instead of silently degrading to ``effective_amount``,
+        so the value is correct regardless.
+
+        Setup mirrors symptom #1 on an HYSA:
+          - HYSA anchor 614.29 on the current period.
+          - One Projected envelope expense est=500.00 on the same period.
+          - Three cleared debit entries summing to 45.71.
+
+        Hand arithmetic (identical formula; interest for one period at
+        the default 4.5%% APY rounds to a few cents and is verified
+        loosely):
+
+          base_balance = 614.29 - max(500 - 45.71 - 0, 0) = 160.00
+          + small positive interest accrual (HYSA is not zero-rate).
+        """
+        from app.models.interest_params import InterestParams  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            hysa_type = (
+                db.session.query(AccountType).filter_by(name="HYSA").one()
+            )
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current_period is not None
+
+            hysa = account_service.create_account(
+                user_id=seed_user["user"].id,
+                account_type_id=hysa_type.id,
+                name="HYSA Entry Test",
+                anchor_balance=Decimal("614.29"),
+                anchor_period_id=current_period.id,
+            )
+            db.session.add(hysa)
+            db.session.flush()
+            db.session.add(InterestParams(account_id=hysa.id))
+            db.session.commit()
+
+            txn = _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                estimated=Decimal("500.00"),
+                account_id=hysa.id,
+                name="HYSA Groceries",
+            )
+            for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
+                _add_entry(
+                    db.session,
+                    txn=txn,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                    is_cleared=True,
+                    is_credit=False,
+                )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            hysa_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == hysa.id
+            )
+
+            # base = 614.29 - max(500 - 45.71 - 0, 0)
+            #     = 614.29 - 454.29 = 160.00 (entry-aware reduction)
+            # plus a small positive interest accrual at 4.5%% APY for
+            # the anchor period.  Pre-Commit-5 the entries were
+            # silently unloaded and the base would have been
+            # 614.29 - 500.00 = 114.29.  We require strictly greater
+            # than 114.29 + interest noise (a 100x margin from the
+            # 45.71 gap) to lock the entry-aware semantics:
+            assert hysa_ad["current_balance"] > Decimal("159.00")
+            assert hysa_ad["current_balance"] < Decimal("161.00")
+
+    def test_savings_no_entries_unchanged(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C6-3: with no entries, the current balance equals effective_amount.
+
+        Assert-unchanged: the regression-safety guarantee that
+        accounts with no envelope entries see byte-identical balances
+        pre- and post-Commit-6.  Verified directly: with an anchor of
+        614.29 and a single Projected $500 expense on the current
+        period and NO entries, the entry-aware formula collapses to
+        ``max(500.00 - 0 - 0, 0) = 500.00``, so the current balance
+        is 614.29 - 500.00 = 114.29.  This is the SAME number /savings
+        would have shown pre-Commit-6 (where entries were silently
+        unloaded and ``effective_amount`` returned the same 500.00).
+
+        Hand arithmetic:
+
+          cleared_debit = 0; uncleared_debit = 0; sum_credit = 0
+          checking_impact = max(500.00 - 0 - 0, 0) = 500.00
+          anchor_period_balance = 614.29 + 0 - 500.00 = 114.29
+        """
+        with app.app_context():
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current_period is not None
+            _override_anchor(
+                db.session,
+                seed_user["account"],
+                current_period,
+                Decimal("614.29"),
+            )
+
+            _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                estimated=Decimal("500.00"),
+            )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            checking_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == seed_user["account"].id
+            )
+            # 614.29 - max(500 - 0 - 0, 0) = 614.29 - 500.00 = 114.29.
+            # Identical to the pre-Commit-6 value for this no-entries
+            # case; the formula reduces to ``effective_amount`` when
+            # the entry buckets are all zero.
+            assert checking_ad["current_balance"] == Decimal("114.29")

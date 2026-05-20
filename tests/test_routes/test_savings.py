@@ -57,12 +57,28 @@ from app.services import account_service
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _create_savings_account(seed_user, name="Savings"):
+def _create_savings_account(
+    seed_user, name="Savings",
+    anchor_balance=Decimal("5000.00"), anchor_period_id=None,
+):
     """Create a savings account for the test user.
 
     Args:
         seed_user: The seed user fixture dict.
         name: Account display name (default "Savings").
+        anchor_balance: Origination anchor balance (default
+            $5,000.00).  Pass an explicit value when the test
+            assertion depends on a non-default anchor; this routes
+            through ``account_service.create_account`` so the dated
+            ``AccountAnchorHistory`` SoT (E-19, Commit 4) and the
+            cache columns agree from t0.  Required by Commit 6:
+            ``balance_resolver.resolve_anchor`` reads history, so
+            mutating only the cache columns after creation no longer
+            propagates to ``/savings``.
+        anchor_period_id: Pay period to anchor the new account
+            against.  ``None`` falls back to
+            ``account_service._resolve_anchor_period_id`` (the
+            user's earliest pay period at create time).
 
     Returns:
         Account: the new savings account.
@@ -72,7 +88,8 @@ def _create_savings_account(seed_user, name="Savings"):
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name=name,
-        anchor_balance=Decimal("5000.00"),
+        anchor_balance=anchor_balance,
+        anchor_period_id=anchor_period_id,
     )
     db.session.add(acct)
     db.session.flush()
@@ -1107,9 +1124,22 @@ class TestSavingsDashboardShadowTransactions:
         from app.services import transfer_service  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            savings = _create_savings_account(seed_user, name="Emergency Fund")
-            savings.current_anchor_period_id = seed_periods[0].id
-            savings.current_anchor_balance = Decimal("3000.00")
+            # Origination anchor written at creation time so the
+            # dated AccountAnchorHistory SoT (E-19 / Commit 4)
+            # matches the test's intended anchor.  Pre-Commit-6
+            # ``savings_dashboard_service`` read ``current_anchor_*``
+            # columns directly; mutating those columns after
+            # creation was enough to override the displayed balance.
+            # Post-Commit-6 the resolver reads from history; the
+            # cache mutation alone is reconciled-against, not honored
+            # (the resolver logs EVT_ANCHOR_CACHE_RECONCILED and
+            # returns the history value).  This is the documented
+            # E-19 SoT shift, not a behavioral regression.
+            savings = _create_savings_account(
+                seed_user, name="Emergency Fund",
+                anchor_balance=Decimal("3000.00"),
+                anchor_period_id=seed_periods[0].id,
+            )
             db.session.flush()
 
             # Transfer categories.
@@ -1153,9 +1183,15 @@ class TestSavingsDashboardShadowTransactions:
         data from another account's transactions.
         """
         with app.app_context():
-            savings = _create_savings_account(seed_user, name="Plain Savings")
-            savings.current_anchor_period_id = seed_periods[0].id
-            savings.current_anchor_balance = Decimal("2000.00")
+            # Origination anchor written at creation time -- see the
+            # explanatory comment in
+            # test_savings_balance_includes_transfer_deposit above
+            # for the E-19 / Commit 6 SoT-shift rationale.
+            savings = _create_savings_account(
+                seed_user, name="Plain Savings",
+                anchor_balance=Decimal("2000.00"),
+                anchor_period_id=seed_periods[0].id,
+            )
             db.session.commit()
 
             resp = auth_client.get("/savings")
