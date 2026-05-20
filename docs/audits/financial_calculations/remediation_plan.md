@@ -142,6 +142,19 @@ These are folded into the relevant commits, not left as audit-vs-code gaps.
 - **R-6. No cross-page balance-equality test exists** (the three audit-mandated greps return zero
   matches; the nearest `test_grid.py` test recomputes its own balance rather than rendering a second
   page). HIGH-01 is real; Commit 11 adds the missing lock.
+- **R-7. Anchor true-up helper extraction (commit `d551f9c`, between Commit 7 and Commit 8).** An
+  unplanned but in-scope pre-Commit-16 cleanup: `inline_anchor_update` and `true_up` in
+  `app/routes/accounts.py` carried byte-identical `try/except StaleDataError + except IntegrityError`
+  blocks wrapping the same conditional `entry_service.clear_entries_for_anchor_true_up` + commit
+  pair, plus the same `is_unique_violation(_ANCHOR_HISTORY_UNIQUE_INDEX)` F-103 / C-22 discriminator.
+  The plan's Commit 16 instruction "Route+schema+template mirror checking true-up" would have
+  written a third inline copy.  Pre-emptively consolidated into
+  `app/services/anchor_service.apply_anchor_true_up` returning an `AnchorTrueUpOutcome` enum
+  (`COMMITTED` / `STALE_CONFLICT` / `DUPLICATE_SAME_DAY`).  No route-level behavior change (all 137
+  `test_accounts.py` tests pass byte-identical).  Eight new pinned helper unit tests close a
+  pre-existing coverage gap (`inline_anchor_update`'s F-103 path had no test).  Commit 16 now
+  EXTENDS the helper for loan-anchor events rather than copying the pattern; see the Commit 16
+  detail in Section 9 for the updated scope.
 
 ---
 
@@ -310,7 +323,7 @@ proved wrong (rule 2, Section 1).
 | 13 | `feat(loan): pure event-derived loan resolver (E-18)` | Consolidates projection/real-principal/payoff; ARM fixed-window honored; hand-computed + stability tests |
 | 14 | `test(loan): settled transfer reduces resolved principal (symptom #3)` | Integration proof confirmed transfers reduce principal on every surface |
 | 15 | `refactor(loan): demote current_principal/interest_rate; route all consumers (E-18)` | Columns nullable seed; loan card/debt-strategy/savings/net-worth via resolver; re-pin tests |
-| 16 | `feat(loan): principal edit becomes dated balance true-up event (E-18 UX)` | Route+schema+template mirror checking true-up; tests |
+| 16 | `feat(loan): principal edit becomes dated balance true-up event (E-18 UX)` | Route+schema+template mirror checking true-up; EXTENDS `anchor_service.apply_anchor_true_up` (R-7) rather than pasting a third try/except copy; tests |
 | 17 | `fix(loan): unify per-period/interest/payoff figures via resolver+round_money (HIGH-08)` | Remaining amortization divergences collapsed |
 | 18 | `fix(tax): enforce SS wage-base cap on calibration path (CRIT-03)` | Thread cumulative YTD wages + ss_wage_base into calibration; hand-computed cap test |
 | 19 | `fix(calibration): server-derive effective rates at confirm (E-20)` | Immutable pay-stub snapshot; schema cross-check; tests |
@@ -1244,21 +1257,36 @@ consistent across account types (DRY in UX too).
 
 ## C. Files modified
 
+- `app/services/anchor_service.py` (MODIFIED, not new -- pre-extracted by R-7, commit `d551f9c`):
+  extend to handle loan anchors.  Two viable shapes -- (a) parameterise `apply_anchor_true_up`
+  with an `account_kind` discriminant + the appropriate unique-index name, or (b) add a sibling
+  `apply_loan_anchor_true_up` that delegates to a private `_apply_true_up_core` helper shared with
+  the checking path.  Either preserves the single try/except shape; choose the one with the
+  smaller call-site surface at commit time.
 - `app/routes/loan.py`: replace the `_PARAM_FIELDS` `current_principal` setattr path (re-grep
-  `:668-674`) with an action that validates and inserts a `user_trueup` `LoanAnchorEvent`
-  (append-only; never UPDATE/DELETE). `interest_rate` edits continue to flow to `RateHistory`
-  (already the rate-change path).
+  `:668-674`) with an action that validates and calls the (extended) `anchor_service` helper.  The
+  helper appends a `user_trueup` `LoanAnchorEvent` (append-only; never UPDATE/DELETE) and returns
+  the same `AnchorTrueUpOutcome` enum the checking routes consume.  `interest_rate` edits continue
+  to flow to `RateHistory` (already the rate-change path).
 - `app/schemas/validation.py`: a Marshmallow schema for the true-up (date required, balance Decimal
   >= 0, date not in the future, not before origination).
 - `app/templates/loan/dashboard.html`: replace the bare principal input with the dated true-up form
   mirroring the checking true-up partial (reuse the existing checking true-up template/markup
   pattern -- do not duplicate).
-- `tests/test_routes/test_loan.py`: true-up route tests.
+- `tests/test_services/test_anchor_service.py`: extend with loan-anchor cases (mirroring the
+  existing eight checking-anchor cases:  COMMITTED, STALE_CONFLICT, DUPLICATE_SAME_DAY,
+  same-day-different-balance, non-F-103 re-raise, plus the unique-index constant pin).
+- `tests/test_routes/test_loan.py`: true-up route tests (UX-level: response shape, template
+  rendering, HX headers).
 
-**D. Implementation approach** Reuse the checking true-up form structure and validation idioms (look
-at the existing `AccountAnchorHistory` true-up route/template and follow the same pattern, IDs not
-strings, CSRF, POST, partial response). The resolver (Commit 13) already consumes the latest event,
-so a new true-up immediately changes every loan surface consistently.
+**D. Implementation approach** EXTEND `anchor_service.apply_anchor_true_up` rather than mirror the
+checking route shape inline (R-7 / commit `d551f9c` did the consolidation pre-emptively so this
+commit lands a third caller without a third inline try/except copy).  Reuse the checking true-up
+form structure and validation idioms (IDs not strings, CSRF, POST, partial response).  The loan
+resolver (Commit 13) already consumes the latest event, so a new true-up immediately changes every
+loan surface consistently.  The C-17 optimistic lock + F-103 / C-22 same-day same-balance
+idempotency on the loan anchor history must match the checking semantics exactly; the helper's
+existing branches are the contract.
 
 ## E. Test cases
 

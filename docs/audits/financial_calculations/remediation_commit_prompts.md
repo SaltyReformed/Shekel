@@ -1478,33 +1478,53 @@ fresh session. Work in the project root on the dev branch.
 
 Required reading -- in full:
 - @docs/audits/financial_calculations/remediation_plan.md (Sections 0-7; Section 2 D-C for
-  the UX rationale; Section 9 "Commit 16" A-H)
+  the UX rationale; Section 3 R-7 for the pre-extracted anchor_service helper this commit
+  EXTENDS rather than copies; Section 9 "Commit 16" A-H)
 - @CLAUDE.md, @docs/coding-standards.md, @docs/testing-standards.md
+- @app/services/anchor_service.py (the canonical helper; you extend it for loan anchors --
+  do NOT paste a third inline try/except block; the checking path's
+  AnchorTrueUpOutcome / COMMITTED / STALE_CONFLICT / DUPLICATE_SAME_DAY contract is the
+  shape your loan path must match)
+- @tests/test_services/test_anchor_service.py (the eight checking-anchor pinned tests are
+  the template you extend with loan-anchor cases)
 - @app/routes/loan.py (current _PARAM_FIELDS / setattr current_principal flow being
   replaced)
-- @app/routes/accounts.py (existing checking true-up route; you mirror its idioms)
+- @app/routes/accounts.py (the inline_anchor_update / true_up routes are the call-site
+  reference -- they wrap anchor_service.apply_anchor_true_up + outcome-switch; you mirror
+  that composition, not the pre-extraction inline try/except shape)
 - @app/templates/loan/dashboard.html (current scalar input)
-- @app/templates/accounts/<the checking true-up partial> (the form pattern to mirror; find
-  it via grep on AccountAnchorHistory in templates and routes)
+- @app/templates/accounts/_anchor_cell.html and grid/_anchor_edit.html (the checking
+  true-up partials; the form markup pattern to mirror)
 - @app/schemas/validation.py (existing validation schemas to mirror; add the LoanAnchor
   schema)
 - @app/models/loan_anchor_event.py (Commit 12)
 
 Objective: replace the scalar "Current Principal" input on /accounts/<id>/loan with a
 dated balance true-up form -- "Record loan balance as of date D, balance X" -- that on
-submit appends a user_trueup LoanAnchorEvent (never UPDATE/DELETE; append-only). Mirror
-the checking AccountAnchorHistory true-up's UI markup and the schema/validation idioms
-(DRY: do not invent a new pattern when one exists). Marshmallow schema rejects
-date_in_future, date < origination_date, and balance < 0. CSRF + POST required.
-interest_rate edits continue to flow through the existing RateHistory path -- this commit
-does not touch that.
+submit appends a user_trueup LoanAnchorEvent (never UPDATE/DELETE; append-only). EXTEND
+app/services/anchor_service.py to handle loan anchors (R-7: the checking path was
+consolidated pre-emptively in commit d551f9c so this commit lands the third caller
+without a third inline copy of the C-17 + F-103/C-22 try/except). Two viable shapes for
+the extension: (a) parameterise apply_anchor_true_up with an account_kind discriminant +
+the appropriate unique-index name, or (b) add a sibling apply_loan_anchor_true_up that
+delegates to a private _apply_true_up_core helper shared with the checking path. Pick the
+one that leaves the smaller call-site surface and matches the existing
+AnchorTrueUpOutcome contract exactly. Mirror the checking AccountAnchorHistory true-up's
+UI markup and the schema/validation idioms (DRY: do not invent a new pattern when one
+exists). Marshmallow schema rejects date_in_future, date < origination_date, and balance
+< 0. CSRF + POST required. interest_rate edits continue to flow through the existing
+RateHistory path -- this commit does not touch that.
 
 Production files this commit touches:
+- app/services/anchor_service.py (EXTEND for loan anchors; preserve the checking path's
+  byte-identical behavior)
 - app/routes/loan.py
 - app/schemas/validation.py (new LoanAnchorTrueupSchema)
 - app/templates/loan/dashboard.html (replace the scalar input with the dated true-up form
   partial)
-- tests/test_routes/test_loan.py
+- tests/test_services/test_anchor_service.py (extend with loan-anchor cases mirroring the
+  eight existing checking-anchor cases)
+- tests/test_routes/test_loan.py (UX-level: response shape, template rendering, HX headers)
 
 Apply these rules (the plan's Section 1 is the authoritative version):
 1. The plan's specification for this commit (Section 9, subsections A through H) is the
