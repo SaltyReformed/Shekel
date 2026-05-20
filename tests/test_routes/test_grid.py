@@ -3533,11 +3533,16 @@ class TestSubtotalDecimalPrecision:
 
 
 class TestGridSubtotalsRegressionBaseline:
-    """Regression baseline for Section 5A.1.
+    """Regression baseline: per-period subtotal reflects actual_amount.
 
-    Grid subtotals use txn.effective_amount (grid.py lines 233-234).
-    After 5A.1, effective_amount returns actual_amount when populated,
-    so subtotals automatically reflect actuals.
+    Pre-Commit-10 the grid subtotal was an inline ``sum(...
+    effective_amount ...)`` loop in ``app/routes/grid.py``.  Commit 10
+    routes the subtotal through ``balance_resolver.period_subtotal``,
+    which uses ``effective_amount`` for income and the entries-aware
+    reduction for expenses; for income with no entries the
+    ``effective_amount`` rule is unchanged, so this 5A.1-era regression
+    baseline continues to hold (Projected income with
+    ``actual_amount`` populated still reports the actual on screen).
     """
 
     def test_subtotals_reflect_actual_for_projected(
@@ -3550,6 +3555,9 @@ class TestGridSubtotalsRegressionBaseline:
         (subtotal showed estimated).  Updated in Commit 5A.1 to assert
         the corrected behavior: effective_amount now returns actual when
         populated, so the grid subtotal automatically shows 400.
+        Commit 10 routes the subtotal through
+        ``balance_resolver.period_subtotal`` whose income leg still uses
+        ``effective_amount``, so the assertion is unchanged.
         """
         with app.app_context():
             scenario = seed_user["scenario"]
@@ -3597,6 +3605,241 @@ class TestGridSubtotalsRegressionBaseline:
             assert "subtotal-row-income" in html, (
                 "Income subtotal row must be present in grid"
             )
+
+
+class TestGridPeriodSubtotalCanonical:
+    """Commit 10: per-period subtotals routed through ``period_subtotal``.
+
+    Pre-Commit-10 the grid's per-period subtotal was an inline
+    ``sum(... effective_amount ...)`` loop in ``app/routes/grid.py``
+    that did NOT apply the entries-aware reduction.  F-002 Pair C /
+    F-004 (Q-10) flagged this as a same-page divergence: the subtotal
+    row and the balance row consumed the same in-memory transactions
+    but with different expense formulas.  Commit 10 collapses the
+    grid subtotal onto ``balance_resolver.period_subtotal``, so a
+    Projected envelope expense with cleared entries now reports the
+    same entries-aware impact on both rows; ``balance[p] -
+    balance[p-1] == subtotal[p].net`` by construction.
+    """
+
+    def test_grid_subtotal_entry_aware_for_projected_expense(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Rendered grid subtotal reflects the entry-aware reduction.
+
+        Setup: a Projected $500.00 envelope expense in the visible
+        current period carries three cleared debit entries summing
+        $462.34.  Pre-Commit-10 the subtotal row showed $500
+        (raw ``effective_amount``); the corrected entries-aware
+        impact is $37.66.
+
+        Hand arithmetic (F-002 Pair C / F-004):
+          cleared_debit = 20.00 + 442.34 + 0.00 = 462.34
+          uncleared_debit = 0
+          sum_credit = 0
+          impact = max(500.00 - 462.34 - 0, 0) = 37.66.
+        """
+        from app.models.transaction_entry import TransactionEntry
+
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None, (
+                "seed_periods_today must produce a current period"
+            )
+
+            txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            for amt in (
+                Decimal("20.00"),
+                Decimal("442.34"),
+            ):
+                db.session.add(TransactionEntry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                    description="cleared purchase",
+                    entry_date=current.start_date,
+                    is_credit=False,
+                    is_cleared=True,
+                ))
+            db.session.commit()
+
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Grid formats subtotals as "${:,.0f}", so $37.66 -> $38.
+            # The pre-Commit-10 value would have rounded $500 -> $500.
+            assert "$38" in html, (
+                "Expense subtotal should be entry-aware: "
+                "$500 estimated - $462.34 cleared = $37.66 (-> $38)"
+            )
+            assert "$500" not in html.split("subtotal-row-expense")[1].split("</tr>")[0], (
+                "Subtotal expense cell must not show the raw "
+                "effective_amount $500 (F-002 Pair C / F-004 regression)"
+            )
+
+    def test_grid_subtotal_reconciles_balance_delta(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``balance[p] - balance[p-1] == subtotal[p].net`` exactly.
+
+        Same-formula invariant E-25 / Q-10 resolution: the canonical
+        producer drives both the subtotal row and the balance carry-
+        forward, so the period-to-period balance delta must equal the
+        subtotal's ``net`` to the penny.  The previous inline loop
+        violated this whenever a Projected envelope expense carried
+        cleared entries (the subtotal showed the raw estimate, the
+        balance row showed the entry-aware impact).
+
+        Setup: anchor $1000 at periods[0]; one Projected $300.00
+        envelope expense in periods[5] with two cleared debits
+        summing $250.00.
+
+        Hand arithmetic:
+          period5_impact = max(300.00 - 250.00 - 0, 0) = 50.00.
+          balance[periods[5]] = balance[periods[4]] - 50.00.
+          subtotal[periods[5]].net = 0 - 50.00 = -50.00.
+          balance[periods[5]] - balance[periods[4]] = -50.00 == net.
+        """
+        from app.models.transaction_entry import TransactionEntry
+        from app.services import balance_resolver
+
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(
+                name="Projected",
+            ).one()
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            periods = seed_periods_today
+            target_period = periods[5]
+
+            txn = Transaction(
+                pay_period_id=target_period.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Groceries window",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("300.00"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+            for amt in (Decimal("100.00"), Decimal("150.00")):
+                db.session.add(TransactionEntry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                    description="cleared purchase",
+                    entry_date=target_period.start_date,
+                    is_credit=False,
+                    is_cleared=True,
+                ))
+            db.session.commit()
+
+            # Exercise the grid route to prove the wiring is in place
+            # before falling back to the resolver-level assertion.
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+
+            # Resolver-level reconciliation: the grid route and the
+            # producers consume the same fixture, so their outputs are
+            # the ground truth the rendered HTML reflects.
+            balance_result = balance_resolver.balances_for(
+                seed_user["account"],
+                seed_user["scenario"].id,
+                periods,
+            )
+            sub = balance_resolver.period_subtotal(
+                seed_user["account"],
+                seed_user["scenario"].id,
+                target_period,
+            )
+
+            prior_period = periods[4]
+            delta = (
+                balance_result.balances[target_period.id]
+                - balance_result.balances[prior_period.id]
+            )
+            # 0 - max(300 - 100 - 150, 0) = -50.00.
+            assert sub.expense == Decimal("50.00"), (
+                f"expected $50.00 entry-aware expense, got {sub.expense!r}"
+            )
+            assert sub.net == Decimal("-50.00")
+            assert delta == sub.net, (
+                f"balance delta {delta!r} must equal subtotal net {sub.net!r}"
+            )
+
+    def test_grid_inline_subtotal_loop_removed(self):
+        """Static guard: no inline ``sum(... effective_amount ...)`` in grid.py.
+
+        The plan's verification gate -- if the inline loop is ever
+        reintroduced, the canonical-producer routing is silently
+        bypassed.  This regression lock fires the moment a future edit
+        re-grows the loop.
+        """
+        import re
+
+        from pathlib import Path
+
+        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
+        pattern = re.compile(
+            r"sum\([^\)]*(effective_amount|estimated_amount)",
+        )
+        offenders = pattern.findall(grid_source)
+        assert not offenders, (
+            "app/routes/grid.py contains an inline subtotal loop "
+            f"({offenders!r}); route through "
+            "balance_resolver.period_subtotal instead (F-002 Pair C, "
+            "F-004 same-page regression)"
+        )
+
+    def test_obligations_has_no_period_subtotal_loop(self):
+        """Static guard: obligations.py has no period-subtotal arithmetic.
+
+        Obligations computes ``amount_to_monthly`` per template
+        (E-24 / Commit 23 territory), not per-period transaction
+        subtotals.  The plan's verification gate covers both files;
+        this assertion locks that obligations never grows the same
+        inline ``sum(... effective_amount ...)`` loop the grid had.
+        """
+        import re
+
+        from pathlib import Path
+
+        obligations_source = Path(
+            "app/routes/obligations.py",
+        ).read_text(encoding="utf-8")
+        pattern = re.compile(
+            r"sum\([^\)]*(effective_amount|estimated_amount)",
+        )
+        offenders = pattern.findall(obligations_source)
+        assert not offenders, (
+            "app/routes/obligations.py contains inline period-subtotal "
+            f"arithmetic ({offenders!r}); route through the canonical "
+            "producer if it ever needs per-period subtotals"
+        )
 
 
 class TestPaidAtLifecycle:

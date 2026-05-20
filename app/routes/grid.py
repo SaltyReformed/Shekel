@@ -272,26 +272,38 @@ def index():
     # instead of the standard single-amount display.
     entry_sums = build_entry_sums_dict(all_transactions)
 
-    # Pre-compute subtotals per period using Decimal arithmetic (H-05).
-    # Only projected transactions are included in subtotals -- settled
-    # and excluded statuses are omitted (matching the grid display rules).
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Per-period subtotals via the canonical entries-aware producer
+    # (E-25 / Commit 10).  Routing the on-screen subtotal row through
+    # ``balance_resolver.period_subtotal`` closes F-002 Pair C / F-004
+    # (Q-10): the same Projected-only, entries-aware formula now
+    # generates both the subtotal row and the balance row, so
+    # ``balances[p] - balances[p-1] == subtotals[p].net`` by
+    # construction.  The pre-Commit-10 inline loop above used raw
+    # ``txn.effective_amount`` and disagreed with the entries-aware
+    # balance row whenever a Projected envelope expense carried
+    # cleared/uncleared/credit entries.  The
+    # ``PeriodSubtotal`` dataclass exposes ``.income``, ``.expense``,
+    # ``.net`` which the grid templates already access by attribute
+    # (``subtotals[period.id].income`` etc., dict and dataclass behave
+    # identically through Jinja's attribute resolution).
     subtotals = {}
     for period in periods:
-        income = Decimal("0")
-        expense = Decimal("0")
-        for txn in txn_by_period.get(period.id, []):
-            if txn.is_deleted or txn.status_id != projected_id:
-                continue
-            if txn.is_income:
-                income += txn.effective_amount
-            elif txn.is_expense:
-                expense += txn.effective_amount
-        subtotals[period.id] = {
-            "income": income,
-            "expense": expense,
-            "net": income - expense,
-        }
+        if account is None:
+            # No-account state -- the grid still renders period
+            # headers but every subtotal cell is zero.  Return a
+            # zero-valued ``PeriodSubtotal`` so the template's
+            # ``.income`` / ``.expense`` / ``.net`` access does not
+            # ``AttributeError`` and the rendered subtotals match the
+            # empty-balance projection above.
+            subtotals[period.id] = balance_resolver.PeriodSubtotal(
+                income=Decimal("0.00"),
+                expense=Decimal("0.00"),
+                net=Decimal("0.00"),
+            )
+        else:
+            subtotals[period.id] = balance_resolver.period_subtotal(
+                account, scenario.id, period,
+            )
 
     # Load ALL categories (including archived) for row key building so
     # transactions with archived categories still render correctly.

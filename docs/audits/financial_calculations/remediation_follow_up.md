@@ -306,4 +306,58 @@ into the audit-fix commit chain.
 
 ---
 
+## F-4. Plan drift: Commit 10's obligations cross-reference is stale
+
+- **Surfaced during:** Commit 10 (`fix(grid): period_subtotal through
+  canonical producer (Q-10, E-25)`).
+- **Status:** documentation-only; the underlying refactor is already
+  scoped as Commit 23 (`refactor(obligations): one monthly-equivalent
+  aggregator (E-24, HIGH-05)`).
+
+### Problem
+
+`remediation_plan.md` Section 9 Commit 10 names
+`app/routes/obligations.py` as a target for routing through
+`balance_resolver.period_subtotal`:
+
+> `app/routes/obligations.py`: the manual subtotal at ~`:331-408`
+> also routed through it (same concept).
+
+The current obligations route does NOT compute a per-period
+transaction subtotal.  It aggregates `amount_to_monthly(...)`
+across `TransactionTemplate` / `TransferTemplate` rows (a monthly-
+equivalent rollup, with no `(account, scenario_id, period)`
+parameter set).  `period_subtotal` is the wrong API for that
+operation: forcing it in would require throwing away the
+template-level recurrence math and re-deriving it from the
+generated transactions, with no semantic gain.
+
+The audit's own structure already separates the two: F-004
+(`period_subtotal`) explicitly cross-links Q-12 for the
+obligations-path subtotal and calls it "out of P3-a balance scope;
+cross-link only" (`03_consistency.md:405-407`).  The obligations
+monthly aggregator is Q-12 / E-24 / Commit 23 territory.
+
+### Recommended direction
+
+Treat the Commit 10 line as a doc-only drift that Commit 23 will
+naturally cover.  No code change is needed to close this entry.
+
+### Acceptance criteria for the eventual doc PR
+
+- `remediation_plan.md` Commit 10 section is corrected to drop the
+  obligations bullet, or Commit 23's section is updated to
+  explicitly reference E-24 instead of period_subtotal.
+- No code under `app/routes/obligations.py` is changed by Commit 10.
+
+### Why defer
+
+The plan's prose is wrong but the actual remediation pipeline
+already routes the work correctly through Commit 23.  Closing
+this entry is a single-paragraph doc edit best folded into the
+final remediation pass (Commit 35 / 37) where other doc-drift
+corrections are batched.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
