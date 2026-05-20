@@ -1159,6 +1159,251 @@ def auth_client(app, db, client, seed_user):
 
 
 @pytest.fixture()
+def seed_cross_page_account(app, db, seed_user):
+    """Factory fixture for the PT-01 cross-page balance equality lock (HIGH-01).
+
+    Returns a callable ``build(anchor_balance, expense_amount, entries)``
+    that materialises one symptom-tuple case shared across every
+    balance-rendering surface (grid, /savings, /accounts checking detail,
+    dashboard, year-end net-worth per-account, calendar).  The fixture
+    realises the structural premise of HIGH-01 -- the developer's worst
+    two symptoms (#1 $160 grid vs $114.29 /savings; #5 /accounts matches
+    nowhere) had zero falsifying tests until this lock landed (Commit 11).
+
+    The realised data shape is invariant across cases:
+
+      * The user's existing seed_user bootstrap pay period is removed and
+        replaced with 24 calendar-monthly periods spanning
+        ``[today.year - 1, today.year + 1]``.  Monthly (not biweekly)
+        periods are chosen deliberately so the anchor period's
+        ``end_date`` IS a calendar month-end -- the C9-3 boundary
+        invariant of :func:`balance_resolver.balance_as_of_date` then
+        guarantees the calendar surface's projected month-end balance
+        equals the resolver's anchor-period balance for the same data.
+        Without that alignment a mid-period month-end would silently make
+        the calendar surface look like a divergence even when the
+        underlying math agrees, defeating the cross-page lock.
+      * The anchor period is the calendar month containing
+        ``date.today()`` (so the dashboard's ``get_current_period`` and
+        the grid's ``get_periods_in_range(current_period.period_index,
+        ...)`` both naturally land on the anchor period without any
+        date-mock plumbing).
+      * The account anchor is overridden -- via a fresh
+        ``AccountAnchorHistory`` row + cache-column update, latest-wins
+        per E-19 -- to the case's ``anchor_balance``.  ``seed_user``'s
+        factory-default $1,000 anchor is irrelevant here.
+      * A single Projected envelope expense in the anchor period with
+        ``estimated_amount = expense_amount`` and the supplied entries
+        list, each entry dated ``anchor_period.start_date`` (so all
+        entries fall on or before any month-end ``as_of`` the calendar
+        surface evaluates).
+
+    The factory returns a context dict keyed:
+
+      * ``user_id``, ``account``, ``account_id``, ``scenario``,
+        ``scenario_id``: identifiers callers pass to every surface.
+      * ``all_periods``, ``anchor_period``: the period list and the
+        chosen anchor period.
+      * ``year``, ``month``: ``anchor_period.start_date.year /
+        .month`` -- the calendar/year-end surfaces consume these.
+
+    The five remediation-plan cases (PT-01 base, zero anchor, negative
+    overdraft, credit-only entries, uncleared-floor) are realised by the
+    test's ``@pytest.mark.parametrize`` block, not baked into the
+    fixture, so a future case can be added in one place without growing
+    a conftest variant.
+
+    Returns:
+        Callable ``(anchor_balance, expense_amount, entries) ->
+        dict``.  Each entry is a 3-tuple ``(amount, is_credit,
+        is_cleared)`` -- amount as ``Decimal`` (from string),
+        booleans as the entries-aware reduction's discriminants.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.models.account import Account, AccountAnchorHistory
+    from app.models.transaction_entry import TransactionEntry
+
+    def _build(
+        anchor_balance: Decimal,
+        expense_amount: Decimal,
+        entries: list[tuple[Decimal, bool, bool]],
+    ) -> dict:
+        user = seed_user["user"]
+        account = seed_user["account"]
+        scenario = seed_user["scenario"]
+
+        # Build 36 calendar-monthly periods spanning today's year +/- 1.
+        # ``period_index`` starts at 1 so they sit cleanly above the
+        # ``seed_user`` bootstrap (index 0, dated 2024-01).  The
+        # bootstrap is left in place rather than deleted via
+        # ``_drop_seed_user_bootstrap``: deleting it cascades the
+        # ``AccountAnchorHistory.pay_period_id`` ondelete=CASCADE and
+        # forces an autoflush UPDATE on the account anchor mid-flush,
+        # which races the just-flushed new pay periods on stricter
+        # autoflush orderings (observed: ``ForeignKeyViolation`` on
+        # ``current_anchor_period_id``).  Keeping the bootstrap is
+        # equivalent for HIGH-01 lock purposes because it is a 2024
+        # pre-anchor period that every surface skips: the resolver
+        # only emits balances from the anchor period forward, the
+        # year-end's pre-target-year period lookup either falls on
+        # one of our 2025 monthly periods or returns the bootstrap
+        # (whose entry in ``balances`` is absent so the
+        # ``balances.get(..., ZERO)`` short-circuit yields the
+        # neutral zero), and the grid / dashboard / /savings /
+        # /accounts surfaces all key off
+        # ``pay_period_service.get_current_period`` which matches
+        # today's calendar-month period, not the 2024 bootstrap.
+        today = date.today()
+        first_year = today.year - 1
+        period_index = 1
+        created = []
+        for year in range(first_year, first_year + 3):
+            for month in range(1, 13):
+                start = date(year, month, 1)
+                # last day of month: subtract one from the first of
+                # next month (December rolls to next year).
+                if month == 12:
+                    next_first = date(year + 1, 1, 1)
+                else:
+                    next_first = date(year, month + 1, 1)
+                end = next_first - timedelta(days=1)
+                period = PayPeriod(
+                    user_id=user.id,
+                    start_date=start,
+                    end_date=end,
+                    period_index=period_index,
+                )
+                db.session.add(period)
+                created.append(period)
+                period_index += 1
+        db.session.commit()
+
+        # The anchor period is the calendar month containing today.
+        # ``today.month`` is 1..12 and the created list contains
+        # months chronologically starting at January of ``first_year``,
+        # so today's month is at index ``12 + (today.month - 1)``.
+        anchor_period = created[12 + (today.month - 1)]
+        assert anchor_period.start_date <= today <= anchor_period.end_date, (
+            f"anchor_period {anchor_period.start_date}..{anchor_period.end_date} "
+            f"does not contain today={today}; fixture invariant broken"
+        )
+
+        # Build the ordered period list every surface consumes via
+        # ``pay_period_service.get_all_periods``.  Includes the 2024
+        # bootstrap at index 0 plus our 36 monthly periods at
+        # indices 1..36; the bootstrap is pre-anchor and benign for
+        # every surface (see the rationale block above).
+        all_periods = (
+            db.session.query(PayPeriod)
+            .filter_by(user_id=user.id)
+            .order_by(PayPeriod.period_index)
+            .all()
+        )
+
+        # Override the anchor balance and matching history row.  The
+        # ``seed_user`` factory already wrote an origination history
+        # row at $1,000 against the bootstrap period; appending a
+        # newer row makes ``resolve_anchor`` (latest-wins by
+        # ``created_at``) return the case's balance instead.  The
+        # cache columns are updated in the same flush so the
+        # resolver's cache-reconciliation path stays quiet (cache ==
+        # latest event), which keeps the test log free of spurious
+        # ``EVT_ANCHOR_CACHE_RECONCILED`` entries.
+        #
+        # Re-fetch ``account`` against the live session because the
+        # earlier ``db.session.commit()`` (after the new period
+        # inserts) expires every object loaded in this session
+        # (``expires_on_commit=True``).  Setting attributes on an
+        # expired instance whose load fixture lives upstream in
+        # ``seed_user`` does not reliably re-mark the row dirty in
+        # every SQLAlchemy ORM mode -- the symptom is a silent
+        # ``EVT_ANCHOR_CACHE_RECONCILED`` log entry on every surface
+        # read because the cache column did not actually move.
+        # Refetching by primary key gives us a known-attached
+        # instance whose attribute assignments are guaranteed to
+        # mark the row dirty for the next flush.
+        account = db.session.get(Account, seed_user["account"].id)
+        history = AccountAnchorHistory(
+            account_id=account.id,
+            pay_period_id=anchor_period.id,
+            anchor_balance=anchor_balance,
+            notes="seed_cross_page_account: HIGH-01 lock anchor override",
+        )
+        db.session.add(history)
+        account.current_anchor_balance = anchor_balance
+        account.current_anchor_period_id = anchor_period.id
+        db.session.flush()
+
+        # Single Projected envelope expense in the anchor period.
+        # ``is_envelope=True`` is what makes the entries-aware
+        # reduction applicable -- a non-envelope template would short-
+        # circuit to ``effective_amount`` regardless of entries.
+        projected_status = (
+            db.session.query(Status).filter_by(name="Projected").one()
+        )
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        groceries_cat = seed_user["categories"]["Groceries"]
+        template = TransactionTemplate(
+            user_id=user.id,
+            account_id=account.id,
+            category_id=groceries_cat.id,
+            transaction_type_id=expense_type.id,
+            name="PT-01 envelope expense",
+            default_amount=expense_amount,
+            is_envelope=True,
+        )
+        db.session.add(template)
+        db.session.flush()
+
+        txn = Transaction(
+            template_id=template.id,
+            pay_period_id=anchor_period.id,
+            scenario_id=scenario.id,
+            account_id=account.id,
+            status_id=projected_status.id,
+            name="PT-01 envelope expense",
+            category_id=groceries_cat.id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=expense_amount,
+        )
+        db.session.add(txn)
+        db.session.flush()
+
+        # Entries all dated on anchor_period.start_date -- a date that
+        # is on or before every month-end ``as_of`` the calendar
+        # surface evaluates, so the E-27 entry-date cut is a no-op
+        # for this fixture and the calendar surface's balance equals
+        # the resolver's anchor-period balance by construction.
+        for amount, is_credit, is_cleared in entries:
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id,
+                user_id=user.id,
+                amount=amount,
+                description="PT-01 entry",
+                entry_date=anchor_period.start_date,
+                is_credit=is_credit,
+                is_cleared=is_cleared,
+            ))
+        db.session.commit()
+
+        return {
+            "user_id": user.id,
+            "account": account,
+            "account_id": account.id,
+            "scenario": scenario,
+            "scenario_id": scenario.id,
+            "all_periods": all_periods,
+            "anchor_period": anchor_period,
+            "year": anchor_period.start_date.year,
+            "month": anchor_period.start_date.month,
+        }
+
+    return _build
+
+
+@pytest.fixture()
 def second_user(app, db):
     """Create a second user for IDOR and cross-user isolation testing.
 
