@@ -2653,6 +2653,388 @@ class TestCalibration:
             assert resp.status_code == 404
 
 
+class TestCalibrationServerDerivedSnapshot:
+    """HIGH-03 / Q-25 / E-20 (audit 2026-05-19): confirm route re-derives
+    the four effective rates server-side from stored actual_* + taxable
+    base; the schema FICA cross-check and the route federal/state
+    cross-check jointly reject tampered or stale rate posts as 422.
+
+    Hand-computed arithmetic for the canonical fixture below (profile
+    has no pre-tax deductions, so taxable == gross == 2884.62, biweekly
+    of a $75,000 annual salary at 26 periods):
+
+      derive_effective_rates inputs:
+        gross   = 2884.62
+        federal = 200.00,   rate = 200.00 / 2884.62 = 0.0693332224
+        state   = 100.00,   rate = 100.00 / 2884.62 = 0.0346666112
+        ss      = 178.85,   rate = 178.85 / 2884.62 = 0.0620012341
+        medicare=  41.83,   rate =  41.83 / 2884.62 = 0.0145010435
+
+      apply_calibration on the same gross + taxable (no cap activity
+      under $176,100 wage base at this salary):
+        federal = 2884.62 * 0.0693332224 = 200.0000 -> 200.00
+        state   = 2884.62 * 0.0346666112 = 100.0000 -> 100.00
+        ss      = capped_social_security(2884.62, 0, fica)
+                = 2884.62 * 0.062 = 178.8464 -> 178.85
+                (calibrated effective_ss_rate stored but not consumed,
+                 CRIT-03 / F-037 fix in apply_calibration)
+        medicare= 2884.62 * 0.0145010435 = 41.8302 -> 41.83
+    """
+
+    _DERIVED_FEDERAL_RATE = Decimal("0.0693332224")
+    _DERIVED_STATE_RATE = Decimal("0.0346666112")
+    _DERIVED_SS_RATE = Decimal("0.0620012341")
+    _DERIVED_MEDICARE_RATE = Decimal("0.0145010435")
+
+    @staticmethod
+    def _canonical_actuals():
+        """Return the canonical actual_* form payload (no rates)."""
+        return {
+            "actual_gross_pay": "2884.62",
+            "actual_federal_tax": "200.00",
+            "actual_state_tax": "100.00",
+            "actual_social_security": "178.85",
+            "actual_medicare": "41.83",
+            "pay_stub_date": "2026-03-14",
+        }
+
+    def _post_confirm(self, auth_client, profile_id, overrides=None):
+        """POST to /salary/<id>/calibrate/confirm with canonical fields.
+
+        ``overrides`` selectively replaces fields (used to inject
+        tampered values).  Defaults are the canonical derived rates
+        that would round-trip cleanly through derive_effective_rates.
+        """
+        payload = dict(self._canonical_actuals())
+        payload["effective_federal_rate"] = str(self._DERIVED_FEDERAL_RATE)
+        payload["effective_state_rate"] = str(self._DERIVED_STATE_RATE)
+        payload["effective_ss_rate"] = str(self._DERIVED_SS_RATE)
+        payload["effective_medicare_rate"] = str(self._DERIVED_MEDICARE_RATE)
+        if overrides:
+            payload.update(overrides)
+        return auth_client.post(
+            f"/salary/{profile_id}/calibrate/confirm",
+            data=payload,
+            follow_redirects=False,
+        )
+
+    def test_confirm_rederives_server_side(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """C19-1: stored rates are the server-derived values, posted ignored.
+
+        Posts rate fields whose last digits are perturbed within the
+        one-cent tolerance (sub-cent of withholding at this taxable
+        base) so the schema FICA cross-check and the route federal/
+        state cross-check both pass.  The DB row must hold the
+        server-derived canonical 10dp values, not the perturbed posted
+        ones -- proving the route re-derives and discards the posted
+        rate fields rather than trusting them for storage.
+
+        Arithmetic (sub-cent perturbations, all within 1c tolerance
+        at taxable=2884.62):
+          posted federal  = 0.0693332300 (derived 0.0693332224;
+                            diff 7.6e-9 * 2884.62 ~= $2.2e-5)
+          posted state    = 0.0346666200 (derived 0.0346666112;
+                            diff 8.8e-9 * 2884.62 ~= $2.5e-5)
+          posted ss       = 0.0620012400 (derived 0.0620012341;
+                            diff 5.9e-9 * 2884.62 ~= $1.7e-5)
+          posted medicare = 0.0145010500 (derived 0.0145010435;
+                            diff 6.5e-9 * 2884.62 ~= $1.9e-5)
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = self._post_confirm(
+                auth_client, profile.id,
+                overrides={
+                    "effective_federal_rate": "0.0693332300",
+                    "effective_state_rate": "0.0346666200",
+                    "effective_ss_rate": "0.0620012400",
+                    "effective_medicare_rate": "0.0145010500",
+                },
+            )
+
+            assert resp.status_code == 302
+            assert (
+                f"/salary/{profile.id}/edit" in resp.headers["Location"]
+            ), (
+                "Successful confirm should redirect to the edit page, "
+                f"got Location={resp.headers.get('Location')}"
+            )
+
+            db.session.expire_all()
+            cal = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).one()
+
+            # Stored values must be the SERVER-derived canonical rates,
+            # not the perturbed posted values (HIGH-03 / E-20).
+            assert cal.effective_federal_rate == self._DERIVED_FEDERAL_RATE
+            assert cal.effective_state_rate == self._DERIVED_STATE_RATE
+            assert cal.effective_ss_rate == self._DERIVED_SS_RATE
+            assert cal.effective_medicare_rate == self._DERIVED_MEDICARE_RATE
+
+    def test_confirm_rejects_inconsistent_pair(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """C19-2: federal rate way off from actual/base -> 422.
+
+        Posts a tampered effective_federal_rate (0.05) against a
+        canonical actual_federal_tax (200.00) on gross 2884.62.
+        Derived federal rate is 0.0693332224; posted 0.05 differs by
+        0.0193332224, times taxable 2884.62 = $55.76 mismatch >> 1c
+        tolerance, so the route returns 422.
+
+        FICA rates are left at their canonical (derived) values so the
+        schema cross-check passes -- this test isolates the federal/
+        state route-layer cross-check.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = self._post_confirm(
+                auth_client, profile.id,
+                overrides={"effective_federal_rate": "0.0500000000"},
+            )
+
+            assert resp.status_code == 422, (
+                f"Tampered federal rate must be rejected as 422, got "
+                f"{resp.status_code}"
+            )
+
+            db.session.expire_all()
+            persisted = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).all()
+            assert persisted == [], (
+                "422 rejection must not persist any calibration row "
+                "(rollback expected)"
+            )
+
+    def test_schema_rejects_inconsistent_fica(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """C19-2 (schema half): tampered FICA rate -> schema fails -> 422.
+
+        Posts effective_ss_rate=0.05 against actual_social_security=
+        178.85 on gross 2884.62.  Schema cross-check computes
+        0.05 * 2884.62 = $144.23; expected $178.85; diff $34.62 >> 1c.
+        Schema raises ValidationError, route returns 422 (the entire
+        confirm form is server-generated; any validation failure is
+        treated as tampering).
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = self._post_confirm(
+                auth_client, profile.id,
+                overrides={"effective_ss_rate": "0.0500000000"},
+            )
+
+            assert resp.status_code == 422, (
+                f"Schema-detected FICA inconsistency must be 422, got "
+                f"{resp.status_code}"
+            )
+
+            db.session.expire_all()
+            assert db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).count() == 0
+
+    def test_snapshot_immutable_on_profile_edit(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """C19-3: editing pre-tax deductions after confirm leaves snapshot intact.
+
+        Confirms calibration with no pre-tax deductions (so the rate
+        snapshot is derived against taxable = gross = 2884.62).  Then
+        adds a $200 pre-tax 401k deduction, which would shift taxable
+        to 2684.62 if the snapshot were re-derived.  The stored
+        effective_federal_rate must remain at the original derivation
+        (0.0693332224 = 200.00 / 2884.62) -- if it were silently
+        recomputed against the new taxable base, it would now equal
+        200.00 / 2684.62 = 0.0744944091.  The audit's
+        stale-on-upstream-edit drift surface (HIGH-03 / Q-25) is
+        closed by storing an immutable pay-stub snapshot.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            resp = self._post_confirm(auth_client, profile.id)
+            assert resp.status_code == 302, (
+                f"Confirm should succeed, got {resp.status_code} "
+                f"location={resp.headers.get('Location')}"
+            )
+
+            db.session.expire_all()
+            cal = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).one()
+            snapshot_federal = cal.effective_federal_rate
+            snapshot_state = cal.effective_state_rate
+            snapshot_ss = cal.effective_ss_rate
+            snapshot_medicare = cal.effective_medicare_rate
+
+            # Pre-tax deduction added AFTER calibration would shift the
+            # taxable divisor from 2884.62 to 2684.62 if the snapshot
+            # were re-derived; the snapshot must not move.
+            pre_tax = db.session.query(DeductionTiming).filter_by(
+                name="pre_tax"
+            ).one()
+            flat_method = db.session.query(CalcMethod).filter_by(
+                name="flat"
+            ).one()
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="401k",
+                amount=Decimal("200.00"),
+                deductions_per_year=26,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            db.session.expire_all()
+            cal_after = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).one()
+
+            # Hand-check that the recomputed rate would have moved if
+            # the snapshot were not immutable: 200/2684.62 = 0.0744944...
+            # which is distinct from the original 200/2884.62 = 0.0693...
+            assert cal_after.effective_federal_rate == snapshot_federal
+            assert cal_after.effective_state_rate == snapshot_state
+            assert cal_after.effective_ss_rate == snapshot_ss
+            assert cal_after.effective_medicare_rate == snapshot_medicare
+            # And concretely: stored rate must NOT be the post-edit
+            # derivation (200.00 / 2684.62 = 0.0744944091).
+            post_edit_rate = (
+                Decimal("200.00") / Decimal("2684.62")
+            ).quantize(Decimal("0.0000000001"))
+            assert cal_after.effective_federal_rate != post_edit_rate
+
+    def test_rate_consistency_invariant(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """C19-4: stored effective_x * base reproduces actual_x to the cent.
+
+        Confirms a calibration via the full preview -> confirm flow.
+        Each stored rate, when multiplied against the base it was
+        derived from (taxable for federal/state, gross for FICA),
+        must equal the stored actual_x to within $0.01 -- the E-20
+        snapshot invariant.
+
+        Hand-computed:
+          federal_rate * taxable   = 0.0693332224 * 2884.62 = 200.0000
+          state_rate   * taxable   = 0.0346666112 * 2884.62 = 100.0000
+          ss_rate      * gross     = 0.0620012341 * 2884.62 = 178.8500
+          medicare_rate* gross     = 0.0145010435 * 2884.62 =  41.8300
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = self._post_confirm(auth_client, profile.id)
+            assert resp.status_code == 302
+
+            db.session.expire_all()
+            cal = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).one()
+
+            gross = cal.actual_gross_pay
+            taxable = gross  # no pre-tax deductions in _create_profile.
+            one_cent = Decimal("0.01")
+
+            assert abs(
+                cal.effective_federal_rate * taxable
+                - cal.actual_federal_tax
+            ) <= one_cent
+            assert abs(
+                cal.effective_state_rate * taxable
+                - cal.actual_state_tax
+            ) <= one_cent
+            assert abs(
+                cal.effective_ss_rate * gross
+                - cal.actual_social_security
+            ) <= one_cent
+            assert abs(
+                cal.effective_medicare_rate * gross
+                - cal.actual_medicare
+            ) <= one_cent
+
+    def test_calibration_then_paycheck_uses_snapshot(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """C19-5: projected paycheck uses snapshot rates + capped statutory SS.
+
+        After confirm, project a paycheck for the current period.  The
+        federal, state, and Medicare lines must equal the stored
+        snapshot rates applied to the live taxable/gross.  The SS
+        line must equal capped_social_security(gross, cumulative,
+        fica_config) -- the statutory IRS path (Commit 18, CRIT-03 /
+        F-037), NOT gross * stored_ss_rate.
+
+        Hand-computed for this period (gross=2884.62, no pre-tax,
+        cumulative=0, fica.ss_rate=0.062, fica.ss_wage_base=176100):
+          federal  = 2884.62 * 0.0693332224 = 200.0000 -> 200.00
+          state    = 2884.62 * 0.0346666112 = 100.0000 -> 100.00
+          ss       = capped(2884.62, 0, fica)
+                   = 2884.62 * 0.062 = 178.8464 -> 178.85
+          medicare = 2884.62 * 0.0145010435 = 41.8302 -> 41.83
+
+        Snapshot effective_ss_rate (0.0620012341) is stored but not
+        consumed by apply_calibration -- the SS line is delegated to
+        capped_social_security so the cap invariant cannot drift
+        between the bracket and calibration paths.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            profile = _create_profile(seed_user)
+            _seed_state_tax(user.id, Decimal("0.0399"))
+            _seed_fica(user.id)
+            db.session.commit()
+
+            resp = self._post_confirm(auth_client, profile.id)
+            assert resp.status_code == 302
+
+            db.session.expire_all()
+            cal = db.session.query(CalibrationOverride).filter_by(
+                salary_profile_id=profile.id,
+            ).one()
+
+            # Re-fetch profile so the joined calibration relationship is
+            # populated for the paycheck calculator.
+            from app.services import (  # pylint: disable=import-outside-toplevel
+                pay_period_service, paycheck_calculator,
+            )
+            from app.services.tax_config_service import (  # pylint: disable=import-outside-toplevel
+                load_tax_configs,
+            )
+            profile = db.session.query(SalaryProfile).filter_by(
+                id=cal.salary_profile_id,
+            ).one()
+            current_period = pay_period_service.get_current_period(user.id)
+            periods = pay_period_service.get_all_periods(user.id)
+            tax_configs = load_tax_configs(user.id, profile)
+            breakdown = paycheck_calculator.calculate_paycheck(
+                profile, current_period, periods, tax_configs,
+                calibration=profile.calibration,
+            )
+
+            # Federal/state/medicare flow through the snapshot rates.
+            assert breakdown.federal_tax == Decimal("200.00")
+            assert breakdown.state_tax == Decimal("100.00")
+            assert breakdown.medicare == Decimal("41.83")
+
+            # SS uses the statutory rate via capped_social_security,
+            # NOT the stored effective_ss_rate.  At this cumulative=0
+            # and ss_wage_base=176100, gross fits fully under the cap
+            # so SS = gross * statutory 0.062.
+            assert breakdown.social_security == Decimal("178.85")
+
+
 # ── Button Placement ──────────────────────────────────────────────
 
 

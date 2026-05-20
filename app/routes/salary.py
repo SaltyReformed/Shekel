@@ -1128,17 +1128,124 @@ def calibrate_preview(profile_id):
 @login_required
 @require_owner
 def calibrate_confirm(profile_id):
-    """Save the calibration override and regenerate transactions."""
+    """Save the calibration override and regenerate transactions.
+
+    HIGH-03 / Q-25 / E-20 (audit 2026-05-19): calibration is an
+    immutable pay-stub-grounded snapshot.  The four ``effective_*_rate``
+    columns are re-derived server-side from the stored ``actual_*``
+    plus the freshly-computed taxable base (gross minus current pre-tax
+    deductions); the rate values posted via hidden form fields are
+    never trusted for storage.  The schema's FICA cross-check
+    (``CalibrationConfirmSchema.validate_fica_rate_consistency``) and
+    the federal/state cross-check below jointly reject tampered or
+    stale two-step submissions as 422 -- a discrepancy between the
+    posted ``actual_*`` and ``effective_*_rate`` fields is a signal of
+    tampering or stale browser state, not a legitimate user error
+    (the confirm form is fully server-generated from the preview).
+
+    The schema's job is to enforce the consistency invariant on the
+    POST itself; the route's job is to ignore the posted rates for
+    storage and to extend the invariant to the federal/state divisor
+    (the profile-derived taxable base, not available at the schema
+    layer).
+    """
     profile = get_or_404(SalaryProfile, profile_id)
     if profile is None:
         abort(404)
 
     errors = _calibration_confirm_schema.validate(request.form)
     if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+        # HIGH-03 / E-20: the confirm form is fully server-generated
+        # from the preview; any validation failure here means tampering
+        # or stale browser state, not legitimate user error.  Return
+        # 422 rather than silently redirecting -- CLAUDE.md rule 4
+        # (never ignore a problem).
+        logger.info(
+            "Rejected calibration confirm for profile %d (tampering or "
+            "stale browser state, errors=%s)",
+            profile_id, sorted(errors.keys()),
+        )
+        abort(422)
 
     data = _calibration_confirm_schema.load(request.form)
+
+    # Re-compute the taxable base from the profile's current pre-tax
+    # deductions, identical to ``calibrate_preview``.  A fresh
+    # computation here is the load-bearing piece of the E-20 immutable-
+    # snapshot invariant: the stored rate is derived against the
+    # snapshot's own ``actual_*`` plus the live taxable base, not
+    # against a posted rate the client could have tampered with or
+    # whose source taxable base could have shifted between preview and
+    # confirm.
+    from decimal import Decimal as D  # pylint: disable=import-outside-toplevel
+    periods = pay_period_service.get_all_periods(current_user.id)
+    current_period = pay_period_service.get_current_period(current_user.id)
+    if current_period:
+        tax_configs = load_tax_configs(current_user.id, profile)
+        preview_breakdown = paycheck_calculator.calculate_paycheck(
+            profile, current_period, periods, tax_configs,
+        )
+        total_pre_tax = preview_breakdown.total_pre_tax
+    else:
+        total_pre_tax = D("0")
+
+    gross = D(str(data["actual_gross_pay"]))
+    taxable = gross - total_pre_tax
+    if taxable <= D("0"):
+        # Profile-state issue (pre-tax deductions exceed gross), not
+        # tampering; redirect to the form so the user can adjust the
+        # profile and re-do the preview.  Mirrors ``calibrate_preview``.
+        flash(
+            "Taxable income (gross minus pre-tax deductions) is zero or "
+            "negative. Cannot derive effective rates.",
+            "danger",
+        )
+        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+
+    try:
+        derived_rates = derive_effective_rates(
+            actual_gross_pay=data["actual_gross_pay"],
+            actual_federal_tax=data["actual_federal_tax"],
+            actual_state_tax=data["actual_state_tax"],
+            actual_social_security=data["actual_social_security"],
+            actual_medicare=data["actual_medicare"],
+            taxable_income=taxable,
+        )
+    except ValidationError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+
+    # Federal/state cross-check (the schema covers FICA where the
+    # divisor is the posted ``actual_gross_pay``; federal/state's
+    # divisor is the live taxable base, only available here).  Tolerate
+    # the same one-cent equivalent that the schema uses for FICA: a
+    # rate mismatch under ``taxable`` smaller than one cent of
+    # withholding is below the precision of the underlying
+    # ``Numeric(12, 10)`` storage and cannot signal real tampering.
+    one_cent = D("0.01")
+    cross_check_failures: list[tuple[str, D, D, D]] = []
+    for posted_key, derived_value in (
+        ("effective_federal_rate", derived_rates.effective_federal_rate),
+        ("effective_state_rate", derived_rates.effective_state_rate),
+    ):
+        posted = D(str(data[posted_key]))
+        diff_dollars = abs(posted - derived_value) * taxable
+        if diff_dollars > one_cent:
+            cross_check_failures.append(
+                (posted_key, posted, derived_value, diff_dollars)
+            )
+    if cross_check_failures:
+        logger.info(
+            "Rejected calibration confirm for profile %d "
+            "(federal/state rate inconsistency, failures=%s)",
+            profile_id,
+            [
+                f"{name} posted={posted} derived={derived} "
+                f"mismatch=${mismatch}"
+                for name, posted, derived, mismatch in cross_check_failures
+            ],
+        )
+        abort(422)
 
     try:
         # Delete any existing calibration for this profile.
@@ -1158,10 +1265,16 @@ def calibrate_confirm(profile_id):
             actual_state_tax=data["actual_state_tax"],
             actual_social_security=data["actual_social_security"],
             actual_medicare=data["actual_medicare"],
-            effective_federal_rate=data["effective_federal_rate"],
-            effective_state_rate=data["effective_state_rate"],
-            effective_ss_rate=data["effective_ss_rate"],
-            effective_medicare_rate=data["effective_medicare_rate"],
+            # E-20: store the SERVER-DERIVED rates, not the posted
+            # ones.  The schema and federal/state cross-checks above
+            # have proven posted == derived within tolerance; storing
+            # the derived value pins the snapshot to the canonical
+            # arithmetic and removes any residual posted-precision
+            # variance from the persisted row.
+            effective_federal_rate=derived_rates.effective_federal_rate,
+            effective_state_rate=derived_rates.effective_state_rate,
+            effective_ss_rate=derived_rates.effective_ss_rate,
+            effective_medicare_rate=derived_rates.effective_medicare_rate,
             pay_stub_date=data["pay_stub_date"],
             notes=data.get("notes"),
             is_active=True,

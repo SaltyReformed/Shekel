@@ -517,6 +517,93 @@ class TestRoundTrip:
         )
 
 
+# ── HIGH-03 / Q-25 / E-20: schema cross-check tolerance ─────────────
+
+
+class TestDeriveRatesSchemaToleranceInvariant:
+    """C19-4 supporting unit test: derive_effective_rates output, when
+    multiplied back against the source base, reproduces the original
+    actual_* values within a one-cent absolute tolerance.
+
+    This is the load-bearing assumption behind the schema FICA
+    cross-check (``CalibrationConfirmSchema.FICA_TOLERANCE``) and the
+    route federal/state cross-check.  At 10-decimal-place rate
+    precision the round-trip is penny-exact for every test in
+    ``TestRoundTrip`` above; this test pins the looser "$0.01"
+    invariant as a regression lock so a future reduction in
+    ``RATE_PLACES`` (or a different rounding mode) below the tolerance
+    floor would fail loud here instead of silently inflating the
+    cross-check's false-rejection rate.
+
+    Hand-computed: $312k high-earner pay stub (CRIT-03 worked example,
+    audit 2026-05-19) -- gross $12,000, taxable $11,300 (after $700
+    pre-tax 401k).  Each derive(actual_x, base) round-trip back through
+    multiplication recovers actual_x to the cent.
+    """
+
+    def test_derive_round_trip_within_one_cent_tolerance(self):
+        """Derived rates * base reproduce actual_* within $0.01."""
+        gross = Decimal("12000.00")
+        taxable = Decimal("11300.00")
+        federal = Decimal("2260.00")
+        state = Decimal("452.00")
+        ss = Decimal("744.00")
+        medicare = Decimal("174.00")
+
+        rates = derive_effective_rates(
+            actual_gross_pay=gross,
+            actual_federal_tax=federal,
+            actual_state_tax=state,
+            actual_social_security=ss,
+            actual_medicare=medicare,
+            taxable_income=taxable,
+        )
+
+        one_cent = Decimal("0.01")
+        # 2260.00 / 11300.00 = 0.2000000000; 0.2000 * 11300 = 2260.00
+        assert abs(rates.effective_federal_rate * taxable - federal) <= one_cent
+        # 452.00 / 11300.00 = 0.0400000000; 0.04 * 11300 = 452.00
+        assert abs(rates.effective_state_rate * taxable - state) <= one_cent
+        # 744.00 / 12000.00 = 0.0620000000; 0.062 * 12000 = 744.00
+        assert abs(rates.effective_ss_rate * gross - ss) <= one_cent
+        # 174.00 / 12000.00 = 0.0145000000; 0.0145 * 12000 = 174.00
+        assert abs(rates.effective_medicare_rate * gross - medicare) <= one_cent
+
+    def test_derive_round_trip_realistic_uneven_division(self):
+        """Pay-stub values that don't divide evenly still round-trip within $0.01.
+
+        $75k salary biweekly with $200 pre-tax 401k.  None of the
+        derivations land on a clean fraction; the round-trip diff is
+        bounded by 10dp precision * base which is sub-cent for every
+        realistic biweekly gross.
+        """
+        gross = Decimal("2884.62")
+        taxable = Decimal("2684.62")
+        federal = Decimal("213.50")
+        state = Decimal("100.25")
+        ss = Decimal("178.85")
+        medicare = Decimal("41.83")
+
+        rates = derive_effective_rates(
+            actual_gross_pay=gross,
+            actual_federal_tax=federal,
+            actual_state_tax=state,
+            actual_social_security=ss,
+            actual_medicare=medicare,
+            taxable_income=taxable,
+        )
+
+        one_cent = Decimal("0.01")
+        # 213.50 / 2684.62 ~= 0.0795194407; * 2684.62 = 213.500 -> within 1c
+        assert abs(rates.effective_federal_rate * taxable - federal) <= one_cent
+        # 100.25 / 2684.62 ~= 0.0373424008; * 2684.62 = 100.250 -> within 1c
+        assert abs(rates.effective_state_rate * taxable - state) <= one_cent
+        # 178.85 / 2884.62 ~= 0.0620012341; * 2884.62 = 178.850 -> within 1c
+        assert abs(rates.effective_ss_rate * gross - ss) <= one_cent
+        # 41.83 / 2884.62 ~= 0.0145010435; * 2884.62 = 41.830 -> within 1c
+        assert abs(rates.effective_medicare_rate * gross - medicare) <= one_cent
+
+
 # ── CRIT-03 / F-037: SS wage-base cap on the calibration path ─────
 
 

@@ -1894,7 +1894,23 @@ class CalibrationConfirmSchema(BaseSchema):
 
     Includes the original pay stub fields plus the derived effective
     rates passed via hidden form fields from the preview page.
+
+    HIGH-03 / Q-25 / E-20 (audit 2026-05-19): the FICA cross-check below
+    enforces that the posted ``effective_ss_rate`` and
+    ``effective_medicare_rate`` pair are arithmetically consistent with
+    the posted ``actual_social_security`` / ``actual_medicare`` /
+    ``actual_gross_pay`` triple within a one-cent equivalent tolerance.
+    The federal and state divisor is the profile-derived taxable base
+    (gross minus current pre-tax deductions), which is not available at
+    the schema layer; the route performs the equivalent federal/state
+    cross-check after computing taxable so the four-rate pair is fully
+    pinned end-to-end.  The cross-check rejects tampered or stale
+    two-step submissions whose stored rate would otherwise multiply
+    against future per-period gross to produce silently wrong
+    withholding -- the failure mode the audit documented under HIGH-03.
     """
+
+    FICA_TOLERANCE = Decimal("0.01")
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -1938,6 +1954,62 @@ class CalibrationConfirmSchema(BaseSchema):
     )
     pay_stub_date = fields.Date(required=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+
+    @validates_schema
+    def validate_fica_rate_consistency(self, data, **kwargs):
+        """Cross-check posted FICA rate pair against posted actual_* pair.
+
+        For each FICA line (Social Security, Medicare), the calibrated
+        effective rate must satisfy ``rate * actual_gross_pay ==
+        actual_<line>`` to within a one-cent absolute tolerance.  This
+        is the schema-layer half of the E-20 immutable-snapshot
+        invariant; the route layer performs the federal/state half once
+        the profile-derived taxable base is available.
+
+        The tolerance is one cent of expected withholding, which covers
+        the worst-case rounding drift from storing the rate to
+        ``Numeric(12, 10)`` (rate precision 1e-10 multiplied by a
+        realistic biweekly gross of <= $10^4 is bounded by $10^{-6},
+        three orders of magnitude under one cent).
+
+        Raises:
+            ValidationError: If either FICA rate is inconsistent with
+                the corresponding actual_* pair.  The error is attached
+                to the offending ``effective_*_rate`` key so the route
+                layer's field-level handler surfaces the right input.
+        """
+        gross = data.get("actual_gross_pay")
+        if gross is None:
+            return
+
+        errors: dict[str, list[str]] = {}
+
+        ss_actual = data.get("actual_social_security")
+        ss_rate = data.get("effective_ss_rate")
+        if ss_actual is not None and ss_rate is not None:
+            derived = ss_rate * gross
+            if abs(derived - ss_actual) > self.FICA_TOLERANCE:
+                errors["effective_ss_rate"] = [
+                    f"effective_ss_rate {ss_rate} is inconsistent with "
+                    f"actual_social_security {ss_actual} on gross "
+                    f"{gross} (expected ~= {ss_actual / gross}, derived "
+                    f"{derived})."
+                ]
+
+        medicare_actual = data.get("actual_medicare")
+        medicare_rate = data.get("effective_medicare_rate")
+        if medicare_actual is not None and medicare_rate is not None:
+            derived = medicare_rate * gross
+            if abs(derived - medicare_actual) > self.FICA_TOLERANCE:
+                errors["effective_medicare_rate"] = [
+                    f"effective_medicare_rate {medicare_rate} is "
+                    f"inconsistent with actual_medicare {medicare_actual} "
+                    f"on gross {gross} (expected ~= "
+                    f"{medicare_actual / gross}, derived {derived})."
+                ]
+
+        if errors:
+            raise ValidationError(errors)
 
 
 # ── Transaction Entry Schemas (Section 9) ────────────────────────
