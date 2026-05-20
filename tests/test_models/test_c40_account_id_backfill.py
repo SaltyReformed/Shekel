@@ -38,6 +38,7 @@ import pytest
 from app.extensions import db as _db
 from app.models.account import Account
 from app.models.ref import AccountType, Status, TransactionType
+from app.services import account_service
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +213,11 @@ class TestBackfillResolution:
         savings_type = (
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("0.00"),
+            anchor_balance=Decimal("0.00"),
         )
         db.session.add(savings)
         db.session.flush()
@@ -291,22 +292,22 @@ class TestBackfillResolution:
         savings_type = (
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("0.00"),
+            anchor_balance=Decimal("0.00"),
         )
         db.session.add(savings)
         db.session.flush()
 
-        # Now delete the seeded Checking.  The seeded
-        # current_anchor_period_id pointing at this account must be
-        # cleared first (FK is ON DELETE SET NULL but explicit is
-        # clearer for readers).
+        # Now delete the seeded Checking.  Re-pin (E-19, Commit 3):
+        # the previous body NULLed ``current_anchor_period_id`` before
+        # the delete, but that column is now NOT NULL.  Deleting the
+        # account directly is correct -- the account's outbound FK to
+        # pay_periods does not require nulling first; pay_periods is
+        # the referenced side, not the referencing side.
         checking = seed_user["account"]
-        checking.current_anchor_period_id = None
-        db.session.flush()
         db.session.delete(checking)
         db.session.flush()
 
@@ -352,11 +353,11 @@ class TestBackfillResolution:
         checking_type = (
             db.session.query(AccountType).filter_by(name="Checking").one()
         )
-        active_checking = Account(
+        active_checking = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=checking_type.id,
             name="Active Checking",
-            current_anchor_balance=Decimal("0.00"),
+            anchor_balance=Decimal("0.00"),
             is_active=True,
         )
         db.session.add(active_checking)
@@ -417,11 +418,11 @@ class TestBackfillResolution:
         savings_type = (
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("0.00"),
+            anchor_balance=Decimal("0.00"),
         )
         db.session.add(savings)
         db.session.flush()

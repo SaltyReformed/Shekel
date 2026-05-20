@@ -87,9 +87,17 @@ class TestOnboardingBanner:
         html = resp.data.decode()
         assert "Budget categories set up" in html
 
-    def test_banner_locks_salary_when_no_periods(self, auth_client, seed_user):
-        """Salary step is locked (not a link) when pay periods don't exist."""
-        resp = auth_client.get("/")
+    def test_banner_locks_salary_when_no_periods(self, bare_auth_client, bare_user):
+        """Salary step is locked (not a link) when pay periods don't exist.
+
+        Re-pin (E-19, Commit 3): ``seed_user`` now creates a bootstrap
+        pay period at fixture time so the account factory has somewhere
+        to anchor; that bootstrap satisfies the banner's "user has
+        periods" check.  This test specifically exercises the
+        no-periods state, so it switches to ``bare_user`` /
+        ``bare_auth_client`` which keep the user period-less.
+        """
+        resp = bare_auth_client.get("/")
         html = resp.data.decode()
         assert "generate pay periods first" in html.lower()
         assert "bi-lock" in html

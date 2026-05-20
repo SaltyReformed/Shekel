@@ -20,6 +20,7 @@ from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.services import balance_calculator
 from app.services.loan_payment_service import get_payment_history
+from app.services import account_service
 
 
 class TestLoanPaymentPipeline:
@@ -60,11 +61,11 @@ class TestLoanPaymentPipeline:
             loan_type = db.session.query(AccountType).filter_by(
                 name="Mortgage",
             ).one()
-            mortgage = Account(
+            mortgage = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=loan_type.id,
                 name="Pipeline Mortgage",
-                current_anchor_balance=Decimal("200000.00"),
+                anchor_balance=Decimal("200000.00"),
             )
             db.session.add(mortgage)
             db.session.flush()

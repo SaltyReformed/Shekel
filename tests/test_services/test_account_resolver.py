@@ -16,6 +16,7 @@ from app.models.account import Account
 from app.models.ref import AccountType
 from app.models.user import UserSettings
 from app.services.account_resolver import resolve_grid_account
+from app.services import account_service
 
 
 class TestResolveGridAccount:
@@ -33,11 +34,11 @@ class TestResolveGridAccount:
         """When default_grid_account_id is set, returns that account."""
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("5000.00"),
+                anchor_balance=Decimal("5000.00"),
             )
             db.session.add(savings)
             db.session.flush()
@@ -55,11 +56,13 @@ class TestResolveGridAccount:
         """When configured account is inactive, falls back to checking."""
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
                 is_active=False,
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(savings)
             db.session.flush()
@@ -77,10 +80,12 @@ class TestResolveGridAccount:
         """override_account_id takes priority over setting."""
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(savings)
             db.session.flush()
@@ -105,6 +110,9 @@ class TestResolveGridAccount:
             from app.models.user import User
             from werkzeug.security import generate_password_hash
 
+            from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
+            from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+
             other_user = User(
                 email="other@test.local",
                 password_hash=generate_password_hash("pass"),
@@ -112,11 +120,23 @@ class TestResolveGridAccount:
             db.session.add(other_user)
             db.session.flush()
 
+            # Bootstrap pay period for the second user so the factory
+            # has somewhere to anchor against.
+            db.session.add(_PayPeriod(
+                user_id=other_user.id,
+                start_date=_date(2024, 1, 5),
+                end_date=_date(2024, 1, 5) + _td(days=13),
+                period_index=0,
+            ))
+            db.session.flush()
+
             checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
-            other_acct = Account(
+            other_acct = account_service.create_account(
                 user_id=other_user.id,
                 account_type_id=checking_type.id,
                 name="Other Checking",
+
+                anchor_balance=Decimal("0"),
             )
             db.session.add(other_acct)
             db.session.commit()
@@ -147,10 +167,12 @@ class TestResolveGridAccount:
             db.session.flush()
 
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(savings)
             db.session.commit()
@@ -165,11 +187,13 @@ class TestResolveGridAccount:
 
             # The seed checking account has sort_order=0.  Create another with sort_order=0
             # but it will have a higher id.
-            checking2 = Account(
+            checking2 = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=checking_type.id,
                 name="Checking 2",
                 sort_order=0,
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(checking2)
             db.session.commit()
@@ -182,11 +206,13 @@ class TestResolveGridAccount:
         """Override with inactive account falls back to checking."""
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            inactive = Account(
+            inactive = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Inactive Savings",
                 is_active=False,
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(inactive)
             db.session.commit()

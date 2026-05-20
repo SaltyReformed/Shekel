@@ -29,6 +29,7 @@ from app.models.ref import (
 from app.services.auth_service import hash_password
 
 import pytest
+from app.services import account_service
 
 from tests._test_helpers import freeze_today
 
@@ -105,6 +106,9 @@ def _create_other_user_profile():
     Returns:
         dict with keys: user, profile.
     """
+    from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+
     other_user = User(
         email="other@shekel.local",
         password_hash=hash_password("otherpass"),
@@ -116,14 +120,25 @@ def _create_other_user_profile():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
+    # Bootstrap pay period (E-19, Commit 3) so the account factory
+    # can resolve an anchor period without raising ValidationError.
+    _bootstrap = _PayPeriod(
+        user_id=other_user.id,
+        start_date=_date(2024, 1, 5),
+        end_date=_date(2024, 1, 5) + _td(days=13),
+        period_index=0,
+    )
+    db.session.add(_bootstrap)
+    db.session.flush()
+
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=other_user.id,
         account_type_id=checking_type.id,
         name="Other Checking",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
+        anchor_period_id=_bootstrap.id,
     )
-    db.session.add(account)
 
     scenario = Scenario(
         user_id=other_user.id,

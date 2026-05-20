@@ -18,6 +18,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -31,11 +32,11 @@ def _create_debt_account(user, db_session, type_name, name, principal,
     a partially paid-off loan (matching test_loan.py convention).
     """
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=loan_type.id,
         name=name,
-        current_anchor_balance=principal,
+        anchor_balance=principal,
     )
     db_session.add(account)
     db_session.flush()
@@ -139,10 +140,12 @@ class TestDebtStrategyDashboard:
         user = seed_user["user"]
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         # Create account without LoanParams.
-        account = Account(
+        account = account_service.create_account(
             user_id=user.id,
             account_type_id=loan_type.id,
             name="No Params Loan",
+        
+            anchor_balance=Decimal("0"),
         )
         db.session.add(account)
         db.session.commit()
@@ -529,11 +532,11 @@ class TestDebtStrategyMetrics:
         """When an ARM loan is present, the R-5 warning is displayed."""
         user = seed_user["user"]
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-        arm_acct = Account(
+        arm_acct = account_service.create_account(
             user_id=user.id,
             account_type_id=loan_type.id,
             name="ARM Mortgage",
-            current_anchor_balance=Decimal("200000.00"),
+            anchor_balance=Decimal("200000.00"),
         )
         db.session.add(arm_acct)
         db.session.flush()

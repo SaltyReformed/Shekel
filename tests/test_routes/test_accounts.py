@@ -22,16 +22,24 @@ from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.services import balance_calculator, pay_period_service
+from app.services import account_service, balance_calculator, pay_period_service
 from app.services.auth_service import hash_password
 
 
 def _create_other_user_account():
     """Create a second user with their own account.
 
+    Pay periods are generated before the account so the canonical
+    account factory (E-19, Commit 3) can resolve / receive an anchor
+    period without raising ``ValidationError``.
+
     Returns:
         dict with keys: user, account.
     """
+    from datetime import date, timedelta  # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+    from app.services import account_service  # pylint: disable=import-outside-toplevel
+
     other_user = User(
         email="other@shekel.local",
         password_hash=hash_password("otherpass"),
@@ -43,14 +51,28 @@ def _create_other_user_account():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
+    # Bootstrap pay period (E-19, Commit 3): the factory needs at
+    # least one period to anchor against.  Dated far before any
+    # test's typical 2026 range so it does not collide with periods
+    # generated later by the test body.
+    bootstrap = PayPeriod(
+        user_id=other_user.id,
+        start_date=date(2024, 1, 5),
+        end_date=date(2024, 1, 18),
+        period_index=0,
+    )
+    db.session.add(bootstrap)
+    db.session.flush()
+
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=other_user.id,
         account_type_id=checking_type.id,
         name="Other Checking",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
+        anchor_period_id=bootstrap.id,
+        notes="_create_other_user_account fixture",
     )
-    db.session.add(account)
     db.session.commit()
 
     return {"user": other_user, "account": account}
@@ -168,11 +190,12 @@ class TestAccountUpdate:
         with app.app_context():
             # Create a second account first.
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            second = Account(
+            second = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("0"),
+                anchor_balance=Decimal("0"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             db.session.add(second)
             db.session.commit()
@@ -264,11 +287,12 @@ class TestAccountArchive:
 
             # Create a second account and an active transfer template.
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("0"),
+                anchor_balance=Decimal("0"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             db.session.add(savings)
             db.session.flush()
@@ -426,7 +450,16 @@ class TestTrueUp:
     """Tests for the grid anchor balance true-up endpoints."""
 
     def test_true_up_updates_balance(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH /accounts/<id>/true-up updates the balance and creates history."""
+        """PATCH /accounts/<id>/true-up updates the balance and creates history.
+
+        Re-pin (E-19, Commit 3): under the post-E-19 canonical
+        account factory, every account already has a fixture-time
+        origination AccountAnchorHistory row before the test fires.
+        The true-up therefore produces a SECOND history row.  The
+        assertion uses ``.order_by(created_at.desc()).first()`` to
+        target the row the true-up just wrote -- the same audit-row
+        the prior assertion claimed via ``.one()``.
+        """
         with app.app_context():
             account_id = seed_user["account"].id
 
@@ -441,11 +474,14 @@ class TestTrueUp:
             acct = db.session.get(Account, account_id)
             assert acct.current_anchor_balance == Decimal("3000.00")
 
-            # Verify audit record was created.
+            # The true-up's history row is the most recent for this
+            # account; the fixture-time origination row is the prior
+            # one and is unaffected by the route call.
             history = (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=account_id)
-                .one()
+                .order_by(AccountAnchorHistory.created_at.desc())
+                .first()
             )
             assert history.anchor_balance == Decimal("3000.00")
 
@@ -531,18 +567,27 @@ class TestTrueUpSameDayDuplicate:
             # Idempotent success: both requests return 200.
             assert r2.status_code == 200
 
-            # Exactly one audit row was added.
+            # Exactly one true-up audit row was added.  Re-pin
+            # (E-19, Commit 3): the factory writes a fixture-time
+            # origination row at $1000.00 (seed_user's seed balance),
+            # so the total count after the double-submit is 2 (one
+            # origination + one true-up), not 1.  The F-103 dedupe
+            # claim is that the true-up balance ($1234.56) only
+            # appears once -- the second submit is suppressed.
             db.session.expire_all()
-            history = (
+            history_at_trueup_balance = (
                 db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=account_id)
+                .filter_by(
+                    account_id=account_id,
+                    anchor_balance=Decimal("1234.56"),
+                )
                 .all()
             )
-            assert len(history) == 1, (
-                f"Expected 1 anchor history row after double-submit, "
-                f"found {len(history)}; F-103 dedupe failed."
+            assert len(history_at_trueup_balance) == 1, (
+                f"Expected 1 anchor history row at the true-up balance "
+                f"after double-submit, found {len(history_at_trueup_balance)}; "
+                "F-103 dedupe failed."
             )
-            assert history[0].anchor_balance == Decimal("1234.56")
 
     def test_same_day_different_balance_creates_two_rows(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -568,20 +613,27 @@ class TestTrueUpSameDayDuplicate:
             assert r1.status_code == 200
             assert r2.status_code == 200
 
+            # Re-pin (E-19, Commit 3): the factory writes a
+            # fixture-time origination row before the test starts.
+            # Filter on the true-up balances ($1000, $1100) to verify
+            # both distinct true-ups produced their own audit row
+            # (which is what F-103 actually asserts).  The fixture's
+            # origination row is at the same $1000 balance as r1,
+            # which is correctly suppressed by the unique index --
+            # only one $1000 row survives, plus the new $1100 row.
             db.session.expire_all()
-            history = (
+            history_balances = {
+                h.anchor_balance for h in
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=account_id)
-                .order_by(AccountAnchorHistory.id)
                 .all()
-            )
-            assert len(history) == 2, (
-                f"Expected 2 anchor history rows after distinct "
-                f"same-day true-ups, found {len(history)}"
-            )
-            assert {h.anchor_balance for h in history} == {
-                Decimal("1000.00"), Decimal("1100.00"),
             }
+            assert history_balances == {
+                Decimal("1000.00"), Decimal("1100.00"),
+            }, (
+                f"Expected exactly the two true-up balances in the "
+                f"history, got {sorted(history_balances)}"
+            )
 
 
 class TestTrueUpClearsEntries:
@@ -775,12 +827,12 @@ class TestTrueUpClearsEntries:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("1000.00"),
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(savings)
             db.session.commit()
@@ -979,11 +1031,12 @@ class TestAccountTypes:
             db.session.add(in_use_type)
             db.session.flush()
 
-            using_account = Account(
+            using_account = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=in_use_type.id,
                 name="Custom Account",
-                current_anchor_balance=Decimal("100.00"),
+                anchor_balance=Decimal("100.00"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             db.session.add(using_account)
             db.session.commit()
@@ -1833,12 +1886,12 @@ class TestInterestDispatch:
         """Interest detail page renders for any has_interest=True type."""
         with app.app_context():
             hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 name="HSA Detail Test",
                 account_type_id=hsa_type.id,
-                current_anchor_balance=500,
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=500,
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1865,12 +1918,12 @@ class TestInterestDispatch:
         """Interest detail auto-creates params if row missing."""
         with app.app_context():
             hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 name="HSA No Params",
                 account_type_id=hsa_type.id,
-                current_anchor_balance=100,
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=100,
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.commit()
@@ -2017,12 +2070,12 @@ class TestWizardBanner:
             hysa_type = db.session.query(AccountType).filter_by(
                 name="HYSA"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=hysa_type.id,
                 name="Banner HYSA",
-                current_anchor_balance=Decimal("5000.00"),
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -2042,12 +2095,12 @@ class TestWizardBanner:
             hysa_type = db.session.query(AccountType).filter_by(
                 name="HYSA"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=hysa_type.id,
                 name="No Banner HYSA",
-                current_anchor_balance=Decimal("5000.00"),
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -2066,12 +2119,12 @@ class TestWizardBanner:
             k401_type = db.session.query(AccountType).filter_by(
                 name="401(k)"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=k401_type.id,
                 name="Banner 401k",
-                current_anchor_balance=Decimal("10000.00"),
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=Decimal("10000.00"),
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -2093,12 +2146,12 @@ class TestWizardBanner:
             k401_type = db.session.query(AccountType).filter_by(
                 name="401(k)"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=k401_type.id,
                 name="No Banner 401k",
-                current_anchor_balance=Decimal("10000.00"),
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=Decimal("10000.00"),
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -2123,12 +2176,12 @@ class TestCheckingDetail:
         from seed_user's account) with the specified anchor balance.
         """
         checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
-        acct = Account(
+        acct = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=checking_type.id,
             name="Detail Checking",
-            current_anchor_balance=Decimal(balance),
-            current_anchor_period_id=periods[0].id,
+            anchor_balance=Decimal(balance),
+            anchor_period_id=periods[0].id,
         )
         db.session.add(acct)
         return acct
@@ -2292,11 +2345,12 @@ class TestCheckingDetail:
         """GET /accounts/<id>/checking returns 404 for non-checking account types."""
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="My Savings",
-                current_anchor_balance=Decimal("1000.00"),
+                anchor_balance=Decimal("1000.00"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             db.session.add(savings)
             db.session.commit()
@@ -2455,12 +2509,12 @@ class TestCheckingDashboardLink:
 
             # Create a savings account.
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="My Savings",
-                current_anchor_balance=Decimal("0"),
-                current_anchor_period_id=periods[0].id,
+                anchor_balance=Decimal("0"),
+                anchor_period_id=periods[0].id,
             )
             db.session.add(savings)
 
@@ -2699,11 +2753,12 @@ class TestAccountConcurrentMutationStaleData:
                 db.session.query(AccountType)
                 .filter_by(name="Checking").one()
             )
-            spare = Account(
+            spare = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=checking_type.id,
                 name="Spare",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             db.session.add(spare)
             db.session.commit()
@@ -3057,11 +3112,12 @@ class TestArchiveAndDeleteStaleData:
             checking_type = (
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
-            spare = Account(
+            spare = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=checking_type.id,
                 name="Archive Target",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
                 is_active=True,
             )
             db.session.add(spare)
@@ -3109,11 +3165,12 @@ class TestArchiveAndDeleteStaleData:
             checking_type = (
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
-            spare = Account(
+            spare = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=checking_type.id,
                 name="Delete Target",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             db.session.add(spare)
             db.session.commit()

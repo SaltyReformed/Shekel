@@ -27,6 +27,7 @@ from app.models.savings_goal import SavingsGoal
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app.services import balance_calculator
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -42,25 +43,39 @@ def _create_other_user():
     db.session.add(other)
     db.session.flush()
 
+
+    # Bootstrap pay period (E-19, Commit 3): the
+    # account_service factory requires the user to have at
+    # least one pay period to anchor against.
+    from datetime import date as _date, timedelta as _td
+    from app.models.pay_period import PayPeriod as _PayPeriod
+    _bootstrap = _PayPeriod(
+        user_id=other.id,
+        start_date=_date(2024, 1, 5),
+        end_date=_date(2024, 1, 5) + _td(days=13),
+        period_index=0,
+    )
+    db.session.add(_bootstrap)
+    db.session.flush()
     settings = UserSettings(user_id=other.id)
     db.session.add(settings)
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
-    account = Account(
+    account = account_service.create_account(
         user_id=other.id,
         account_type_id=checking_type.id,
         name="Other Checking",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
     )
     db.session.add(account)
 
-    savings_account = Account(
+    savings_account = account_service.create_account(
         user_id=other.id,
         account_type_id=savings_type.id,
         name="Other Savings",
-        current_anchor_balance=Decimal("0.00"),
+        anchor_balance=Decimal("0.00"),
     )
     db.session.add(savings_account)
 
@@ -92,11 +107,11 @@ def _create_other_user():
 def _create_savings_account(user_id):
     """Create a savings account for the given user."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=user_id,
         account_type_id=savings_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("0.00"),
+        anchor_balance=Decimal("0.00"),
     )
     db.session.add(acct)
     db.session.flush()

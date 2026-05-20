@@ -21,6 +21,7 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.services import transfer_recurrence
 from app.exceptions import RecurrenceConflict
+from app.services import account_service
 
 
 def _assert_shadows_valid(xfer):
@@ -67,11 +68,11 @@ class TestTransferGeneration:
             .one()
         )
 
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("500.00"),
+            anchor_balance=Decimal("500.00"),
         )
         db.session.add(savings)
         db.session.flush()
@@ -125,11 +126,11 @@ class TestTransferGeneration:
                 .filter_by(name="Savings")
                 .one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("500.00"),
+                anchor_balance=Decimal("500.00"),
             )
             db.session.add(savings)
             db.session.flush()
@@ -224,11 +225,11 @@ class TestTransferRegeneration:
             .one()
         )
 
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("500.00"),
+            anchor_balance=Decimal("500.00"),
         )
         db.session.add(savings)
         db.session.flush()
@@ -375,11 +376,11 @@ class TestTransferResolveConflicts:
             .one()
         )
 
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("500.00"),
+            anchor_balance=Decimal("500.00"),
         )
         db.session.add(savings)
         db.session.flush()
@@ -645,11 +646,11 @@ class TestNegativePaths:
                 .filter_by(name="Savings")
                 .one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings NP",
-                current_anchor_balance=Decimal("500.00"),
+                anchor_balance=Decimal("500.00"),
             )
             db.session.add(savings)
             db.session.flush()
@@ -832,11 +833,11 @@ class TestShadowTransactionCreation:
             name="Savings"
         ).one()
 
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings Shadow",
-            current_anchor_balance=Decimal("500.00"),
+            anchor_balance=Decimal("500.00"),
         )
         db.session.add(savings)
         db.session.flush()
@@ -1033,11 +1034,11 @@ class TestResolveConflictsServiceRouting:
             .one()
         )
 
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings L1",
-            current_anchor_balance=Decimal("500.00"),
+            anchor_balance=Decimal("500.00"),
         )
         db.session.add(savings)
         db.session.flush()

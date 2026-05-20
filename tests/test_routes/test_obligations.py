@@ -17,6 +17,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, RecurrencePattern, TransactionType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -34,11 +35,11 @@ def _get_checking(user):
 def _create_savings_account(user, db_session, name="Test Savings"):
     """Create a savings account for the given user."""
     savings_type = db_session.query(AccountType).filter_by(name="Savings").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=savings_type.id,
         name=name,
-        current_anchor_balance=Decimal("5000.00"),
+        anchor_balance=Decimal("5000.00"),
     )
     db_session.add(account)
     db_session.flush()

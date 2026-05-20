@@ -26,6 +26,7 @@ from app.services.recurrence_engine import (
     _match_annual,
 )
 from app.exceptions import RecurrenceConflict, ValidationError
+from app.services import account_service
 
 # Map human-readable pattern names to RecurrencePatternEnum members for
 # use in FakeRule and test helpers.  Allows tests to construct FakeRule
@@ -1329,11 +1330,11 @@ class TestResolveConflictsShadowGuard:
         savings_type = (
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("0.00"),
+            anchor_balance=Decimal("0.00"),
         )
         db.session.add(savings)
 

@@ -19,6 +19,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app.services import pay_period_service
+from app.services import account_service
 
 from tests._test_helpers import freeze_today
 
@@ -1250,12 +1251,12 @@ class TestAccountScopedGrid:
     def _create_savings_account(self, user, periods):
         """Helper: create a savings account with anchor balance and period."""
         savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-        savings = Account(
+        savings = account_service.create_account(
             user_id=user.id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("5000.00"),
-            current_anchor_period_id=periods[0].id,
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=periods[0].id,
         )
         db.session.add(savings)
         db.session.flush()
@@ -1506,43 +1507,22 @@ class TestAccountScopedGrid:
         # specifically for the row label pattern.
         assert 'class="sticky-col row-label"' not in html or "Rent" not in html.split("EXPENSES")[0].split("INCOME")[-1]
 
-    def test_grid_account_with_no_anchor_balance(
-        self, app, auth_client, seed_user, seed_periods_today
-    ):
-        """An account with NULL anchor balance defaults to $0 for projections."""
-        savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-        savings = Account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="New Savings",
-            current_anchor_balance=None,
-            current_anchor_period_id=seed_periods_today[0].id,
-        )
-        db.session.add(savings)
-        db.session.commit()
-
-        resp = auth_client.get(f"/grid?account_id={savings.id}")
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        assert "New Savings Balance" in html
-
-    def test_grid_account_with_no_anchor_period(
-        self, app, auth_client, seed_user, seed_periods_today
-    ):
-        """An account with NULL anchor period uses current period as fallback."""
-        savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-        savings = Account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="No Anchor Period",
-            current_anchor_balance=Decimal("1000.00"),
-            current_anchor_period_id=None,
-        )
-        db.session.add(savings)
-        db.session.commit()
-
-        resp = auth_client.get(f"/grid?account_id={savings.id}")
-        assert resp.status_code == 200
+    # NOTE: ``test_grid_account_with_no_anchor_balance`` and
+    # ``test_grid_account_with_no_anchor_period`` previously exercised
+    # the NULL-anchor branches of the balance producers.  E-19 / Commit
+    # 3 makes both NULL states unreachable at the storage tier (NOT NULL
+    # + ``ck_accounts_anchor_balance_present``) and at the application
+    # tier (``account_service.create_account`` resolves the period if
+    # omitted and rejects NULL balances).  The scenarios these tests
+    # constructed (``Account(..., current_anchor_balance=None, ...)``
+    # and ``Account(..., current_anchor_period_id=None, ...)``) can no
+    # longer be materialised through any code path -- the constraint
+    # fires at the DB and the factory raises TypeError / ValidationError
+    # respectively.  Coverage of the constraint itself lives in
+    # ``test_models/test_account_anchor_invariant.py::TestModelRejectsNullAnchor``.
+    # Tests deleted (not skipped) because the asserted behaviour does
+    # not exist anymore -- skipping would falsely imply the case is
+    # still meaningful.
 
     # --- Cancelled and deleted transaction edge cases ---
 
@@ -2477,11 +2457,11 @@ class TestTransactionNameRows:
 
             # Create a savings account for the transfer destination.
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings_acct = Account(
+            savings_acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(savings_acct)
             db.session.flush()

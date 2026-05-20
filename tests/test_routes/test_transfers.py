@@ -19,16 +19,17 @@ from app.models.scenario import Scenario
 from app.models.ref import AccountType, RecurrencePattern, Status
 from app.services import transfer_service
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 
 def _create_savings_account(seed_user):
     """Helper: create a second (savings) account for the test user."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(acct)
     db.session.commit()
@@ -103,19 +104,33 @@ def _create_other_user_with_template():
     db.session.add(other_user)
     db.session.flush()
 
+
+    # Bootstrap pay period (E-19, Commit 3): the
+    # account_service factory requires the user to have at
+    # least one pay period to anchor against.
+    from datetime import date as _date, timedelta as _td
+    from app.models.pay_period import PayPeriod as _PayPeriod
+    _bootstrap = _PayPeriod(
+        user_id=other_user.id,
+        start_date=_date(2024, 1, 5),
+        end_date=_date(2024, 1, 5) + _td(days=13),
+        period_index=0,
+    )
+    db.session.add(_bootstrap)
+    db.session.flush()
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
-    checking = Account(
+    checking = account_service.create_account(
         user_id=other_user.id, account_type_id=checking_type.id,
-        name="Other Checking", current_anchor_balance=Decimal("500.00"),
+        name="Other Checking", anchor_balance=Decimal("500.00"),
     )
-    savings = Account(
+    savings = account_service.create_account(
         user_id=other_user.id, account_type_id=savings_type.id,
-        name="Other Savings", current_anchor_balance=Decimal("0"),
+        name="Other Savings", anchor_balance=Decimal("0"),
     )
     db.session.add_all([checking, savings])
 
@@ -936,11 +951,11 @@ def _create_second_user_transfer(second_user_data):
     from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    savings = Account(
+    savings = account_service.create_account(
         user_id=second_user_data["user"].id,
         account_type_id=savings_type.id,
         name="Other Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(savings)
     db.session.flush()

@@ -51,6 +51,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services import savings_goal_service
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -67,11 +68,11 @@ def _create_savings_account(seed_user, name="Savings"):
         Account: the new savings account.
     """
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name=name,
-        current_anchor_balance=Decimal("5000.00"),
+        anchor_balance=Decimal("5000.00"),
     )
     db.session.add(acct)
     db.session.flush()
@@ -111,15 +112,29 @@ def _create_other_user_with_goal():
     db.session.add(other_user)
     db.session.flush()
 
+
+    # Bootstrap pay period (E-19, Commit 3): the
+    # account_service factory requires the user to have at
+    # least one pay period to anchor against.
+    from datetime import date as _date, timedelta as _td
+    from app.models.pay_period import PayPeriod as _PayPeriod
+    _bootstrap = _PayPeriod(
+        user_id=other_user.id,
+        start_date=_date(2024, 1, 5),
+        end_date=_date(2024, 1, 5) + _td(days=13),
+        period_index=0,
+    )
+    db.session.add(_bootstrap)
+    db.session.flush()
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=other_user.id,
         account_type_id=savings_type.id,
         name="Other Savings",
-        current_anchor_balance=Decimal("2000.00"),
+        anchor_balance=Decimal("2000.00"),
     )
     db.session.add(account)
 
@@ -149,12 +164,12 @@ def _create_investment_account_with_params(seed_user, seed_periods):
         (Account, InvestmentParams)
     """
     acct_type = db.session.query(AccountType).filter_by(name="401(k)").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=acct_type.id,
         name="Test 401k",
-        current_anchor_balance=Decimal("50000.00"),
-        current_anchor_period_id=seed_periods[0].id,
+        anchor_balance=Decimal("50000.00"),
+        anchor_period_id=seed_periods[0].id,
     )
     db.session.add(acct)
     db.session.flush()
@@ -178,12 +193,12 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
         (Account, InvestmentParams, SalaryProfile, PaycheckDeduction)
     """
     acct_type = db.session.query(AccountType).filter_by(name="401(k)").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=acct_type.id,
         name="Test 401k Employer",
-        current_anchor_balance=Decimal("50000.00"),
-        current_anchor_period_id=seed_periods[0].id,
+        anchor_balance=Decimal("50000.00"),
+        anchor_period_id=seed_periods[0].id,
     )
     db.session.add(acct)
     db.session.flush()
@@ -469,12 +484,12 @@ class TestDashboard:
 
             # Create 401k with employer flat 5% but NO employee deduction.
             acct_type = db.session.query(AccountType).filter_by(name="401(k)").one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=acct_type.id,
                 name="Employer Only 401k",
-                current_anchor_balance=Decimal("50000.00"),
-                current_anchor_period_id=periods[0].id,
+                anchor_balance=Decimal("50000.00"),
+                anchor_period_id=periods[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -921,11 +936,11 @@ class TestSavingsNegativePaths:
         """POST /savings/goals/<id>/delete for another user's goal is blocked."""
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            other_acct = Account(
+            other_acct = account_service.create_account(
                 user_id=second_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Other Savings",
-                current_anchor_balance=Decimal("2000.00"),
+                anchor_balance=Decimal("2000.00"),
             )
             db.session.add(other_acct)
             db.session.flush()
@@ -1019,12 +1034,12 @@ class TestSavingsDashboardShadowTransactions:
         with app.app_context():
             # Create HYSA account with known anchor balance.
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
-            hysa = Account(
+            hysa = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=hysa_type.id,
                 name="High Yield Savings",
-                current_anchor_balance=Decimal("10000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("10000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(hysa)
             db.session.flush()
@@ -1499,12 +1514,12 @@ class TestSetupRequiredBadge:
             hysa_type = db.session.query(AccountType).filter_by(
                 name="HYSA"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=hysa_type.id,
                 name="Unconfigured HYSA",
-                current_anchor_balance=Decimal("5000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.commit()
@@ -1523,12 +1538,12 @@ class TestSetupRequiredBadge:
             hysa_type = db.session.query(AccountType).filter_by(
                 name="HYSA"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=hysa_type.id,
                 name="Configured HYSA",
-                current_anchor_balance=Decimal("5000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1547,12 +1562,12 @@ class TestSetupRequiredBadge:
             k401_type = db.session.query(AccountType).filter_by(
                 name="401(k)"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=k401_type.id,
                 name="Unconfigured 401k",
-                current_anchor_balance=Decimal("10000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("10000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.commit()
@@ -1569,12 +1584,12 @@ class TestSetupRequiredBadge:
             k401_type = db.session.query(AccountType).filter_by(
                 name="401(k)"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=k401_type.id,
                 name="Configured 401k",
-                current_anchor_balance=Decimal("10000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("10000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1607,12 +1622,12 @@ class TestSetupRequiredBadge:
             k401_type = db.session.query(AccountType).filter_by(
                 name="401(k)"
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=k401_type.id,
                 name="Legacy 401k",
-                current_anchor_balance=Decimal("50000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("50000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.commit()
@@ -1868,11 +1883,11 @@ def _create_small_loan(seed_user, name="Test Loan",
     from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
 
     loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=loan_type.id,
         name=name,
-        current_anchor_balance=principal,
+        anchor_balance=principal,
     )
     db.session.add(account)
     db.session.flush()
@@ -2091,11 +2106,11 @@ class TestAccountArchivalDashboard:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            archived = Account(
+            archived = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Hidden Savings",
-                current_anchor_balance=Decimal("500.00"),
+                anchor_balance=Decimal("500.00"),
                 is_active=False,
             )
             db.session.add(archived)
@@ -2117,11 +2132,13 @@ class TestAccountArchivalDashboard:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            archived = Account(
+            archived = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Old Account",
                 is_active=False,
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(archived)
             db.session.commit()
@@ -2151,11 +2168,11 @@ class TestAccountArchivalDashboard:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            archived = Account(
+            archived = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Closed Savings",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
                 is_active=False,
             )
             db.session.add(archived)
@@ -2178,11 +2195,13 @@ class TestAccountArchivalDashboard:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            archived = Account(
+            archived = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Restore Me",
                 is_active=False,
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(archived)
             db.session.commit()
@@ -2233,11 +2252,11 @@ class TestAccountArchivalDashboard:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            archived = Account(
+            archived = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Old Savings",
-                current_anchor_balance=Decimal("5000.00"),
+                anchor_balance=Decimal("5000.00"),
                 is_active=False,
             )
             db.session.add(archived)
@@ -2259,19 +2278,19 @@ class TestAccountArchivalDashboard:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            active_acct = Account(
+            active_acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Active Savings",
-                current_anchor_balance=Decimal("3000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("3000.00"),
+                anchor_period_id=seed_periods[0].id,
                 is_active=True,
             )
-            archived_acct = Account(
+            archived_acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Archived Savings",
-                current_anchor_balance=Decimal("1000.00"),
+                anchor_balance=Decimal("1000.00"),
                 is_active=False,
             )
             db.session.add_all([active_acct, archived_acct])

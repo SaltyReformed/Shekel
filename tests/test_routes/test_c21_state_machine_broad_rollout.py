@@ -18,6 +18,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
+from app.services import account_service
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -376,12 +377,12 @@ class TestTransferShadowMarkDoneStateMachine:
         savings_type = (
             db_session.query(AccountType).filter_by(name="Savings").one()
         )
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("500.00"),
-            current_anchor_period_id=seed_periods_today[0].id,
+            anchor_balance=Decimal("500.00"),
+            anchor_period_id=seed_periods_today[0].id,
         )
         db_session.add(savings)
         db_session.flush()

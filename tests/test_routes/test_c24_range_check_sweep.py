@@ -56,6 +56,7 @@ from app.models.ref import (
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
+from app.services import account_service
 from app.schemas.validation import (
     DeductionCreateSchema,
     FicaConfigSchema,
@@ -514,11 +515,11 @@ def _insert_account(seed_user, name, type_name):
     acct_type = (
         db.session.query(AccountType).filter_by(name=type_name).one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=acct_type.id,
         name=name,
-        current_anchor_balance=Decimal("0.00"),
+        anchor_balance=Decimal("0.00"),
     )
     db.session.add(account)
     db.session.commit()

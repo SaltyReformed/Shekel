@@ -26,6 +26,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
+from app.services import account_service
 from app.services import (
     balance_calculator,
     carry_forward_service,
@@ -128,11 +129,11 @@ class TestTransferToBalance:
             from app.services import transfer_service
 
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("0"),
+                anchor_balance=Decimal("0"),
             )
             db.session.add(savings)
             db.session.flush()

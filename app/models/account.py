@@ -35,6 +35,15 @@ class Account(TimestampMixin, db.Model):
             "version_id > 0",
             name="ck_accounts_version_id_positive",
         ),
+        # Anchor balance presence (E-19, Commit 3).  Redundant with the
+        # NOT NULL on the column itself, but named so a future schema
+        # audit can match it to the Marshmallow contract by name.  The
+        # canonical balance resolver (Commit 4) relies on this guarantee
+        # to delete the four NULL-anchor forks documented in CRIT-01.
+        db.CheckConstraint(
+            "current_anchor_balance IS NOT NULL",
+            name="ck_accounts_anchor_balance_present",
+        ),
         {"schema": "budget"},
     )
 
@@ -48,9 +57,25 @@ class Account(TimestampMixin, db.Model):
         nullable=False,
     )
     name = db.Column(db.String(100), nullable=False)
-    current_anchor_balance = db.Column(db.Numeric(12, 2))
+    # Anchor columns are the storage-tier half of E-19: the
+    # canonical balance producer (Commit 4) assumes both are non-NULL
+    # on every account row, so CRIT-01's four NULL-anchor forks
+    # (blank/projection/omit) become unreachable.  See migration
+    # cfb15e782f86 for the backfill rule and the rationale.
+    #
+    # FK action note: ``ondelete="SET NULL"`` on
+    # ``current_anchor_period_id`` is preserved from the legacy schema
+    # for atomicity of this commit -- changing it to CASCADE/RESTRICT
+    # is a separate destructive migration.  No application code path
+    # deletes pay periods today (routes/pay_periods.py only generates),
+    # so the latent ``SET NULL`` action vs ``NOT NULL`` column conflict
+    # is unreachable in practice; if a future user-delete or period-
+    # delete path is added, the FK action must be tightened in a
+    # follow-up migration.
+    current_anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
     current_anchor_period_id = db.Column(
         db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
+        nullable=False,
     )
     sort_order = db.Column(
         db.Integer, nullable=False, default=0, server_default=db.text("0"),

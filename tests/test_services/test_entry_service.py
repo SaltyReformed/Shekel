@@ -23,6 +23,7 @@ from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
 from app.enums import RoleEnum
+from app.services import account_service
 
 
 # ── Helper ────────────────────────────────────────────────────────
@@ -213,11 +214,11 @@ class TestCreateEntry:
             checking_type = (
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
-            second_account = Account(
+            second_account = account_service.create_account(
                 user_id=user_id,
                 account_type_id=checking_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("500.00"),
+                anchor_balance=Decimal("500.00"),
             )
             db.session.add(second_account)
             db.session.flush()

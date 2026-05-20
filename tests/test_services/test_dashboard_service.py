@@ -19,6 +19,7 @@ from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.services import dashboard_service
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -257,9 +258,19 @@ class TestAlerts:
     """Tests for the alerts section."""
 
     def test_alert_stale_anchor(self, app, seed_user, seed_periods, db):
-        """Stale anchor alert when last update > staleness threshold."""
+        """Stale anchor alert when last update > staleness threshold.
+
+        Re-pin (E-19, Commit 3): the account_service factory writes
+        a fixture-time origination history row at NOW; the original
+        test pre-supposed an empty history.  Clear it first so the
+        20-days-ago row we add is the LATEST and the staleness check
+        sees the intended state.
+        """
         with app.app_context():
             account = seed_user["account"]
+            db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account.id,
+            ).delete()
             _add_anchor_history(
                 db.session, account, seed_periods[0], "1000.00", days_ago=20,
             )
@@ -337,11 +348,25 @@ class TestAlerts:
             )
             assert neg[0]["severity"] == "danger"
 
-    def test_alert_no_anchor_history(self, app, seed_user, seed_periods):
-        """No anchor history -> stale anchor alert."""
+    def test_alert_no_anchor_history(self, app, db, seed_user, seed_periods):
+        """No anchor history -> stale anchor alert.
+
+        Re-pin (E-19, Commit 3): under the new factory contract every
+        account has an origination history row at fixture time.  The
+        "no anchor history" scenario the test originally asserted is
+        materially impossible in production now; the test still
+        exercises the alert's empty-history fallback path by deleting
+        the origination row before computing the alert.
+        """
         with app.app_context():
+            account = seed_user["account"]
+            db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account.id,
+            ).delete()
+            db.session.commit()
+
             alerts = dashboard_service._compute_alerts(
-                seed_user["account"], seed_user["settings"],
+                account, seed_user["settings"],
                 {}, seed_periods[0], seed_periods,
             )
             stale = [a for a in alerts if a["type"] == "stale_anchor"]
@@ -502,11 +527,11 @@ class TestSavingsGoals:
             savings_type = (
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
-            savings_acct = Account(
+            savings_acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Goal Account",
-                current_anchor_balance=Decimal("2500.00"),
+                anchor_balance=Decimal("2500.00"),
             )
             db.session.add(savings_acct)
             db.session.flush()
@@ -537,11 +562,11 @@ class TestSavingsGoals:
             savings_type = (
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
-            rich_acct = Account(
+            rich_acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Over Goal",
-                current_anchor_balance=Decimal("15000.00"),
+                anchor_balance=Decimal("15000.00"),
             )
             db.session.add(rich_acct)
             db.session.flush()

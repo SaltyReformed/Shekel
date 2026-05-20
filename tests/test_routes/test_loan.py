@@ -19,6 +19,7 @@ from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.ref import AccountType
 from app.services.transfer_service import create_transfer
+from app.services import account_service
 
 from tests._test_helpers import freeze_today, select_option_values
 
@@ -44,11 +45,11 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
                          rate, term, orig_date, payment_day, is_arm=False):
     """Helper to create a loan account with params for any amortizing type."""
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=loan_type.id,
         name=name,
-        current_anchor_balance=principal,
+        anchor_balance=principal,
     )
     db_session.add(account)
     db_session.flush()
@@ -89,11 +90,11 @@ def _create_mortgage(seed_user, db_session, name="My Mortgage"):
 def _create_other_loan(second_user, db_session, type_name="Auto Loan"):
     """Create a loan account owned by the second user."""
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = Account(
+    account = account_service.create_account(
         user_id=second_user["user"].id,
         account_type_id=loan_type.id,
         name="Other Loan",
-        current_anchor_balance=Decimal("15000.00"),
+        anchor_balance=Decimal("15000.00"),
     )
     db_session.add(account)
     db_session.flush()
@@ -129,10 +130,12 @@ class TestLoanDashboard:
     def test_dashboard_setup_when_no_params(self, auth_client, seed_user, db, seed_periods):
         """Dashboard renders setup page when params don't exist yet."""
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
-        account = Account(
+        account = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name="No Params Loan",
+        
+            anchor_balance=Decimal("0"),
         )
         db.session.add(account)
         db.session.commit()
@@ -206,10 +209,12 @@ class TestLoanSetup:
     def test_create_params(self, auth_client, seed_user, db, seed_periods, type_name):
         """POST valid params creates LoanParams record."""
         loan_type = db.session.query(AccountType).filter_by(name=type_name).one()
-        account = Account(
+        account = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name=f"Setup {type_name}",
+        
+            anchor_balance=Decimal("0"),
         )
         db.session.add(account)
         db.session.commit()
@@ -253,10 +258,12 @@ class TestLoanSetup:
     def test_create_params_term_exceeds_type_max(self, auth_client, seed_user, db, seed_periods):
         """Auto loan rejects term > 120 (type-specific max_term_months)."""
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
-        account = Account(
+        account = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name="Term Test Auto",
+        
+            anchor_balance=Decimal("0"),
         )
         db.session.add(account)
         db.session.commit()
@@ -281,10 +288,12 @@ class TestLoanSetup:
     def test_mortgage_allows_long_term(self, auth_client, seed_user, db, seed_periods):
         """Mortgage accepts term=360 (max_term_months=600)."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-        account = Account(
+        account = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name="Long Term Mortgage",
+        
+            anchor_balance=Decimal("0"),
         )
         db.session.add(account)
         db.session.commit()
@@ -1803,11 +1812,11 @@ class TestPaymentBreakdown:
         loan_type = db.session.query(AccountType).filter_by(
             name="Mortgage",
         ).one()
-        account = Account(
+        account = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name="No Params Mortgage",
-            current_anchor_balance=Decimal("200000.00"),
+            anchor_balance=Decimal("200000.00"),
         )
         db.session.add(account)
         db.session.commit()
@@ -1991,11 +2000,11 @@ def _create_loan_account_exact(seed_user, db_session, type_name, name,
                                 is_arm=False):
     """Like _create_loan_account but with explicit original_principal."""
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=loan_type.id,
         name=name,
-        current_anchor_balance=current_principal,
+        anchor_balance=current_principal,
     )
     db_session.add(account)
     db_session.flush()
@@ -2190,11 +2199,11 @@ class TestAmortizationSchedule:
         does not include the dashboard tabs at all.
         """
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-        account = Account(
+        account = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name="No Params Loan",
-            current_anchor_balance=Decimal("200000.00"),
+            anchor_balance=Decimal("200000.00"),
         )
         db.session.add(account)
         db.session.commit()
@@ -2978,10 +2987,12 @@ class TestRecurrenceEndDateUpdate:
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
-        account = Account(
+        account = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name="No Params Loan",
+        
+            anchor_balance=Decimal("0"),
         )
         db.session.add(account)
         db.session.flush()
@@ -3075,11 +3086,11 @@ def _create_exact_mortgage(seed_user, db_session):
     months = 360.
     """
     loan_type = db_session.query(AccountType).filter_by(name="Mortgage").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=loan_type.id,
         name="Exact Test Mortgage",
-        current_anchor_balance=Decimal("200000.00"),
+        anchor_balance=Decimal("200000.00"),
     )
     db_session.add(account)
     db_session.flush()
@@ -3377,11 +3388,11 @@ class TestRefinanceCalculator:
     ):
         """C-5.10-13: Loan with no LoanParams returns 404."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-        acct = Account(
+        acct = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name="No Params Mortgage",
-            current_anchor_balance=Decimal("200000.00"),
+            anchor_balance=Decimal("200000.00"),
         )
         db.session.add(acct)
         db.session.commit()
@@ -3436,11 +3447,11 @@ class TestRefinanceCalculator:
     ):
         """C-5.10-16: Loan without params shows setup page, no Refinance tab."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-        acct = Account(
+        acct = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name="No Params Mortgage",
-            current_anchor_balance=Decimal("200000.00"),
+            anchor_balance=Decimal("200000.00"),
         )
         db.session.add(acct)
         db.session.commit()

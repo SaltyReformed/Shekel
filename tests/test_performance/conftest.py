@@ -15,6 +15,7 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 
 @pytest.fixture()
@@ -34,11 +35,11 @@ def perf_user(app, db):
     checking_type = (
         _db.session.query(AccountType).filter_by(name="Checking").one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Perf Checking",
-        current_anchor_balance=Decimal("5000.00"),
+        anchor_balance=Decimal("5000.00"),
     )
     _db.session.add(account)
 

@@ -23,6 +23,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.ref import Status, TransactionType
 from app.services import balance_calculator
 from app.enums import StatusEnum
+from app.services import account_service
 
 
 class TestEntryAwareBalance:
@@ -1338,10 +1339,12 @@ class TestEntryAwareBalance:
             savings_type = (
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(savings)
             db.session.flush()

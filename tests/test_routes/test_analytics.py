@@ -19,6 +19,7 @@ import pytest
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
+from app.services import account_service
 
 from tests._test_helpers import freeze_today
 
@@ -619,12 +620,12 @@ class TestYearEndTab:
             mortgage_type = db.session.query(AccountType).filter_by(
                 name="Mortgage",
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=mortgage_type.id,
                 name="Mortgage",
-                current_anchor_balance=Decimal("240000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("240000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -686,12 +687,12 @@ class TestYearEndTab:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Emergency Fund",
-                current_anchor_balance=Decimal("0"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("0"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(savings)
             db.session.flush()
@@ -726,12 +727,12 @@ class TestYearEndTab:
             mortgage_type = db.session.query(AccountType).filter_by(
                 name="Mortgage",
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=mortgage_type.id,
                 name="My Mortgage",
-                current_anchor_balance=Decimal("200000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("200000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.flush()

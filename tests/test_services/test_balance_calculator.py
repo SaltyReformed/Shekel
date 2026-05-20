@@ -16,6 +16,7 @@ from app.models.ref import Status, TransactionType
 from app.services import balance_calculator
 from app import ref_cache
 from app.enums import StatusEnum
+from app.services import account_service
 
 
 class TestCalculateBalances:
@@ -2127,11 +2128,11 @@ class TestTransferInvariantsBalanceRegression:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings"
             ).one()
-            savings_acct = Account(
+            savings_acct = account_service.create_account(
                 user_id=user.id,
                 account_type_id=savings_type.id,
                 name="Invariant Savings",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(savings_acct)
             db.session.flush()
@@ -2180,11 +2181,11 @@ class TestTransferInvariantsBalanceRegression:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings"
             ).one()
-            savings_acct = Account(
+            savings_acct = account_service.create_account(
                 user_id=user.id,
                 account_type_id=savings_type.id,
                 name="Amount Test Savings",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(savings_acct)
             db.session.flush()
@@ -2234,11 +2235,11 @@ class TestTransferInvariantsBalanceRegression:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings"
             ).one()
-            savings_acct = Account(
+            savings_acct = account_service.create_account(
                 user_id=user.id,
                 account_type_id=savings_type.id,
                 name="Status Period Savings",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(savings_acct)
             db.session.flush()
@@ -2297,11 +2298,11 @@ class TestTransferInvariantsBalanceRegression:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings"
             ).one()
-            savings_acct = Account(
+            savings_acct = account_service.create_account(
                 user_id=user.id,
                 account_type_id=savings_type.id,
                 name="Balance Check Savings",
-                current_anchor_balance=Decimal("500.00"),
+                anchor_balance=Decimal("500.00"),
             )
             db.session.add(savings_acct)
             db.session.flush()

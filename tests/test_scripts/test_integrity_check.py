@@ -13,6 +13,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User
 from app.services.auth_service import hash_password
+from app.services import account_service
 from scripts.integrity_check import (
     CheckResult,
     check_balance_anomalies,
@@ -76,14 +77,18 @@ class TestReferentialIntegrity:
     def test_fk01_detects_orphaned_account(self, app, db, seed_user):
         """FK-01 detects an account whose user_id references a nonexistent user."""
         # Insert an account with a bogus user_id via raw SQL to bypass FK.
+        # E-19 / Commit 3: current_anchor_period_id is NOT NULL, so
+        # we point the orphan at seed_user's bootstrap period -- the
+        # orphan we're testing is on user_id, not on the anchor.
         db.session.execute(db.text(
             "SET session_replication_role = 'replica'"
         ))
         db.session.execute(db.text("""
             INSERT INTO budget.accounts (user_id, account_type_id, name,
-                                         current_anchor_balance)
-            VALUES (99999, 1, 'Orphaned Account', 100.00)
-        """))
+                                         current_anchor_balance,
+                                         current_anchor_period_id)
+            VALUES (99999, 1, 'Orphaned Account', 100.00, :pid)
+        """), {"pid": seed_user["bootstrap_period"].id})
         db.session.flush()
 
         results = check_referential_integrity(db.session)
@@ -161,9 +166,13 @@ class TestReferentialIntegrity:
         ))
         db.session.execute(db.text("""
             INSERT INTO budget.accounts
-                (user_id, account_type_id, name, current_anchor_balance)
-            VALUES (:uid, 99999, 'Bad Type Account', 100.00)
-        """), {"uid": seed_user["user"].id})
+                (user_id, account_type_id, name, current_anchor_balance,
+                 current_anchor_period_id)
+            VALUES (:uid, 99999, 'Bad Type Account', 100.00, :pid)
+        """), {
+            "uid": seed_user["user"].id,
+            "pid": seed_user["bootstrap_period"].id,
+        })
         db.session.flush()
 
         results = check_referential_integrity(db.session)
@@ -313,17 +322,15 @@ class TestBalanceAnomalies:
         ba01 = next(r for r in results if r.check_id == "BA-01")
         assert ba01.passed
 
-    def test_ba01_detects_balance_without_period(self, app, db, seed_user):
-        """BA-01 flags account with anchor balance but no anchor period."""
-        account = seed_user["account"]
-        # seed_user sets current_anchor_balance=1000 but no anchor period.
-        assert account.current_anchor_balance is not None
-        assert account.current_anchor_period_id is None
-
-        results = check_balance_anomalies(db.session)
-        ba01 = next(r for r in results if r.check_id == "BA-01")
-        assert not ba01.passed
-        assert ba01.detail_count == 1  # 1 account with balance but no anchor period
+    # ``test_ba01_detects_balance_without_period`` deleted (E-19 /
+    # Commit 3): the storage tier (NOT NULL on
+    # ``current_anchor_period_id`` + ``ck_accounts_anchor_balance_present``)
+    # makes the balance-without-period state unreachable, so the BA-01
+    # detection is no longer exercisable through application
+    # constructs.  The BA-01 check itself remains in
+    # ``scripts/integrity_check.py`` as defense-in-depth for raw-SQL
+    # manipulation of the DB; the script's own clean-database test
+    # (``test_clean_database_no_anomalies``) covers the positive case.
 
     def test_ba03_detects_period_gap(self, app, db, seed_user):
         """BA-03 detects a gap in the pay period index sequence."""
@@ -598,6 +605,9 @@ class TestDataConsistency:
         from app.models.scenario import Scenario  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
 
+        from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
+        from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+
         # Create a second user with their own account.
         user2 = User(
             email="user2@shekel.local",
@@ -610,15 +620,26 @@ class TestDataConsistency:
         db.session.add(settings2)
         scenario2 = Scenario(user_id=user2.id, name="Baseline", is_baseline=True)
         db.session.add(scenario2)
+        # Bootstrap pay period for user2 (E-19) so the account
+        # factory has an anchor to assign.
+        _bootstrap2 = _PayPeriod(
+            user_id=user2.id,
+            start_date=_date(2024, 1, 5),
+            end_date=_date(2024, 1, 5) + _td(days=13),
+            period_index=0,
+        )
+        db.session.add(_bootstrap2)
         db.session.flush()
 
         checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
-        account2 = Account(
+        account2 = account_service.create_account(
             user_id=user2.id,
             account_type_id=checking_type.id,
             name="User2 Checking",
+
+            anchor_balance=Decimal("0"),
+            anchor_period_id=_bootstrap2.id,
         )
-        db.session.add(account2)
         db.session.flush()
 
         # Create a salary profile for user 1 with a deduction targeting user 2's account.

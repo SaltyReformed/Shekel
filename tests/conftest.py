@@ -569,7 +569,10 @@ import pytest
 from app import create_app
 from app.extensions import db as _db
 from app.models.user import User, UserSettings
-from app.models.account import Account
+# ``Account`` is intentionally not imported here: every test fixture
+# constructs accounts via ``app.services.account_service.create_account``,
+# the canonical post-E-19 factory.  Tests that need to exercise the
+# storage-tier NOT NULL constraint directly use raw SQL inserts.
 from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
@@ -582,6 +585,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
     AccountType, FilingStatus, RecurrencePattern, Status, TransactionType,
 )
+from app.services import account_service
 from app.services.auth_service import hash_password
 
 
@@ -824,6 +828,87 @@ def client(app, db):
 
 
 @pytest.fixture()
+def bare_user(app, db):
+    """A minimal user fixture: User + UserSettings only.
+
+    No account, no pay periods, no scenario.  Tests that exercise
+    services in isolation (e.g. ``pay_period_service``) and want a
+    clean user state with no pre-existing pay periods use this
+    instead of ``seed_user``, which after E-19 / Commit 3 must seed
+    a bootstrap period so its default account satisfies the NOT NULL
+    anchor columns.
+
+    Returns:
+        dict with keys: user, settings.
+    """
+    global _skip_user_bootstrap_period  # pylint: disable=global-statement
+    user = User(
+        email="bare@shekel.local",
+        password_hash=hash_password("barepass-12345"),
+        display_name="Bare User",
+    )
+    db.session.add(user)
+    # Suppress the bootstrap-period listener so this user is truly
+    # bare; pay_period_service tests rely on starting from zero.
+    _skip_user_bootstrap_period = True
+    try:
+        db.session.flush()
+    finally:
+        _skip_user_bootstrap_period = False
+
+    settings = UserSettings(user_id=user.id)
+    db.session.add(settings)
+    db.session.commit()
+
+    return {"user": user, "settings": settings}
+
+
+@pytest.fixture()
+def bare_auth_client(app, db, client, bare_user):  # pylint: disable=unused-argument
+    """Provide an authenticated test client for the bare user.
+
+    Companion to ``auth_client``: bare_user has no account, no
+    scenario, no categories, and (importantly for pay_period_service
+    tests) no bootstrap pay period.  Use this in tests that need a
+    logged-in session against a user with no pre-existing financial
+    data.
+    """
+    resp = client.post("/login", data={
+        "email": "bare@shekel.local",
+        "password": "barepass-12345",
+    })
+    assert resp.status_code == 302, (
+        f"bare_auth_client login failed with status {resp.status_code}"
+    )
+    return client
+
+
+@pytest.fixture()
+def bare_periods(app, db, bare_user):
+    """Generate 10 pay periods for ``bare_user`` starting 2026-01-02.
+
+    The bare_user-companion to ``seed_periods`` for tests that test
+    the pay-period service contract in isolation: bare_user has no
+    pre-existing periods, so the generated periods take indices
+    0..9, exactly as the pre-Commit-3 ``seed_periods`` did against
+    seed_user.
+
+    Returns:
+        List of PayPeriod objects.
+    """
+    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+    periods = pay_period_service.generate_pay_periods(
+        user_id=bare_user["user"].id,
+        start_date=date(2026, 1, 2),
+        num_periods=10,
+        cadence_days=14,
+    )
+    db.session.commit()
+    return periods
+
+
+@pytest.fixture()
 def seed_user(app, db):
     """Create and return a test user with settings, account, and scenario.
 
@@ -841,16 +926,38 @@ def seed_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
+    # Bootstrap pay period (E-19, Commit 3): every account row has
+    # non-NULL anchor columns post-migration cfb15e782f86, so this
+    # fixture needs at least one period in place before the Checking
+    # account can be created.  Date is an arbitrary Friday well
+    # before any test's typical 2026 range, so the bootstrap stays
+    # out of the way of date-anchored assertions.  The period is
+    # exposed as ``seed_user["bootstrap_period"]`` so tests that
+    # create additional accounts inline can anchor them to it.
+    bootstrap_period = PayPeriod(
+        user_id=user.id,
+        start_date=date(2024, 1, 5),
+        end_date=date(2024, 1, 18),
+        period_index=0,
+    )
+    db.session.add(bootstrap_period)
+    db.session.flush()
+
+    # Default Checking account via the canonical factory.  Tests that
+    # later true-up the anchor produce additional AccountAnchorHistory
+    # rows; the factory's origination row is here from t0 so the
+    # post-Commit-4 resolver reads a consistent event stream.
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Checking",
-        current_anchor_balance=Decimal("1000.00"),
+        anchor_balance=Decimal("1000.00"),
+        anchor_period_id=bootstrap_period.id,
+        notes="seed_user fixture origination",
     )
-    db.session.add(account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -886,14 +993,80 @@ def seed_user(app, db):
         "account": account,
         "scenario": scenario,
         "categories": {c.item_name: c for c in categories},
+        "bootstrap_period": bootstrap_period,
     }
+
+
+def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
+    """Replace ``seed_user``'s bootstrap pay period with the supplied new
+    anchor and renumber the user's remaining periods to start at 0.
+
+    The ``seed_user`` fixture provisions a ``period_index=0`` bootstrap
+    so the account factory has something to anchor against (E-19 /
+    Commit 3 makes that anchor NOT NULL).  Periods fixtures
+    (``seed_periods``, ``seed_periods_today``, etc.) generate the
+    user's "real" pay-period set after the bootstrap; those rows
+    therefore take indices 1..N.  Without cleanup, every existing
+    test that counts user pay periods or asserts ``periods[0].period_index == 0``
+    drifts by 1.
+
+    This helper restores the pre-Commit-3 expectation in one place:
+    (1) repoints the account's anchor (and any matching
+    AccountAnchorHistory row) at the supplied ``new_anchor_period``,
+    (2) deletes the bootstrap (CASCADE removes the bootstrap's
+    history row and any transactions in it -- there should be none
+    at fixture-setup time), (3) renumbers the surviving periods to
+    start at 0.
+
+    Args:
+        db: the SQLAlchemy ``db`` fixture.
+        seed_user: dict returned by the ``seed_user`` fixture.
+        account: the account whose anchor must be repointed.
+        new_anchor_period: the period to anchor the account against
+            after the bootstrap is removed.
+
+    Returns:
+        None.  The mutation is committed before returning so
+        subsequent fixture/test code sees the cleaned state.
+    """
+    bootstrap = seed_user.get("bootstrap_period")
+    if bootstrap is None:
+        return
+    # Re-fetch by id -- the cached object might be stale across the
+    # nested commits below.
+    bootstrap_id = bootstrap.id
+    # Step 1: repoint the account anchor.
+    account.current_anchor_period_id = new_anchor_period.id
+    # Repoint any history rows that referenced the bootstrap so they
+    # survive the cascade-delete (the rows would otherwise be wiped
+    # by the AccountAnchorHistory.pay_period_id CASCADE FK).
+    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+    db.session.query(AccountAnchorHistory).filter_by(
+        account_id=account.id, pay_period_id=bootstrap_id,
+    ).update({"pay_period_id": new_anchor_period.id})
+    db.session.flush()
+    # Step 2: delete the bootstrap row.
+    db.session.query(PayPeriod).filter_by(id=bootstrap_id).delete()
+    db.session.flush()
+    # Step 3: renumber remaining periods to start at 0.
+    db.session.execute(_db.text(
+        "UPDATE budget.pay_periods "
+        "SET period_index = period_index - 1 "
+        "WHERE user_id = :u"
+    ), {"u": seed_user["user"].id})
+    db.session.commit()
+    # Refresh the in-memory period rows the caller will use.
+    db.session.expire_all()
 
 
 @pytest.fixture()
 def seed_periods(app, db, seed_user):
     """Generate 10 pay periods starting from 2026-01-02.
 
-    Also sets the anchor period to the first period.
+    Also sets the anchor period to the first period and removes the
+    ``seed_user`` bootstrap (see ``_drop_seed_user_bootstrap`` for
+    the rationale) so the returned periods occupy indices 0..9 as
+    pre-Commit-3 tests expect.
 
     Returns:
         List of PayPeriod objects.
@@ -908,12 +1081,15 @@ def seed_periods(app, db, seed_user):
     )
     db.session.flush()
 
-    # Set the anchor period.
     account = seed_user["account"]
-    account.current_anchor_period_id = periods[0].id
-    db.session.commit()
-
-    return periods
+    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
+    # Reload periods so callers see the renumbered period_index values.
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=seed_user["user"].id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
 
 
 def _today_relative_start_date():
@@ -956,13 +1132,14 @@ def seed_periods_today(app, db, seed_user):
     )
     db.session.flush()
 
-    # Set the anchor period to the first period so account-level
-    # projections start from a valid period reference.
     account = seed_user["account"]
-    account.current_anchor_period_id = periods[0].id
-    db.session.commit()
-
-    return periods
+    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=seed_user["user"].id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
 
 
 @pytest.fixture()
@@ -1001,16 +1178,28 @@ def second_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
+    # Bootstrap pay period (E-19, Commit 3); see ``seed_user`` for
+    # the rationale.
+    bootstrap_period = PayPeriod(
+        user_id=user.id,
+        start_date=date(2024, 1, 5),
+        end_date=date(2024, 1, 18),
+        period_index=0,
+    )
+    db.session.add(bootstrap_period)
+    db.session.flush()
+
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Other Checking",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
+        anchor_period_id=bootstrap_period.id,
+        notes="second_user fixture origination",
     )
-    db.session.add(account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -1042,6 +1231,7 @@ def second_user(app, db):
         "account": account,
         "scenario": scenario,
         "categories": {c.item_name: c for c in categories},
+        "bootstrap_period": bootstrap_period,
     }
 
 
@@ -1066,10 +1256,13 @@ def seed_periods_52(app, db, seed_user):
     db.session.flush()
 
     account = seed_user["account"]
-    account.current_anchor_period_id = periods[0].id
-    db.session.commit()
-
-    return periods
+    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=seed_user["user"].id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
 
 
 # --- Two-User Isolation Fixtures ------------------------------------------
@@ -1096,16 +1289,28 @@ def seed_second_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
+    # Bootstrap pay period (E-19, Commit 3); see ``seed_user`` for
+    # the rationale.
+    bootstrap_period = PayPeriod(
+        user_id=user.id,
+        start_date=date(2024, 1, 5),
+        end_date=date(2024, 1, 18),
+        period_index=0,
+    )
+    db.session.add(bootstrap_period)
+    db.session.flush()
+
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Checking",
-        current_anchor_balance=Decimal("2000.00"),
+        anchor_balance=Decimal("2000.00"),
+        anchor_period_id=bootstrap_period.id,
+        notes="seed_second_user fixture origination",
     )
-    db.session.add(account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -1140,6 +1345,7 @@ def seed_second_user(app, db):
         "account": account,
         "scenario": scenario,
         "categories": {c.item_name: c for c in categories},
+        "bootstrap_period": bootstrap_period,
     }
 
 
@@ -1163,10 +1369,13 @@ def seed_second_periods(app, db, seed_second_user):
     db.session.flush()
 
     account = seed_second_user["account"]
-    account.current_anchor_period_id = periods[0].id
-    db.session.commit()
-
-    return periods
+    _drop_seed_user_bootstrap(db, seed_second_user, account, periods[0])
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=seed_second_user["user"].id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
 
 
 @pytest.fixture()
@@ -1268,17 +1477,16 @@ def _build_full_user_data(db, seed_user, periods):
     )
     db.session.add(goal)
 
-    # c) Savings account + transfer template.
-    savings_account = Account(
+    # c) Savings account + transfer template via the canonical
+    # factory (E-19, Commit 3).
+    savings_account = account_service.create_account(
         user_id=user.id,
         account_type_id=savings_acct_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
+        anchor_period_id=periods[0].id,
+        notes="_build_full_user_data savings origination",
     )
-    db.session.add(savings_account)
-    db.session.flush()
-
-    savings_account.current_anchor_period_id = periods[0].id
 
     transfer_tpl = TransferTemplate(
         user_id=user.id,
@@ -1429,17 +1637,16 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     )
     db.session.add(goal)
 
-    # c) Savings account + transfer template.
-    savings_account = Account(
+    # c) Savings account + transfer template via the canonical
+    # factory (E-19, Commit 3).
+    savings_account = account_service.create_account(
         user_id=user.id,
         account_type_id=savings_acct_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("300.00"),
+        anchor_balance=Decimal("300.00"),
+        anchor_period_id=periods[0].id,
+        notes="seed_full_second_user_data savings origination",
     )
-    db.session.add(savings_account)
-    db.session.flush()
-
-    savings_account.current_anchor_period_id = periods[0].id
 
     transfer_tpl = TransferTemplate(
         user_id=user.id,

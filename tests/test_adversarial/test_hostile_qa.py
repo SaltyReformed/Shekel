@@ -41,6 +41,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import balance_calculator, carry_forward_service, credit_workflow
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -70,11 +71,11 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
 def _make_savings_account(seed_user):
     """Create a second (savings) account for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
     )
     db.session.add(acct)
     db.session.flush()
@@ -1203,11 +1204,11 @@ class TestCrossResourceIDOR:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            savings_acct2 = Account(
+            savings_acct2 = account_service.create_account(
                 user_id=second_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Other Savings",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(savings_acct2)
             db.session.flush()

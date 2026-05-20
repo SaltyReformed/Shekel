@@ -15,17 +15,18 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
+from app.services import account_service
 
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
                                 name="My 401k", balance="50000.00"):
     """Helper to create an investment/retirement account."""
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=acct_type.id,
         name=name,
-        current_anchor_balance=Decimal(balance),
+        anchor_balance=Decimal(balance),
     )
     db_session.add(account)
     db_session.flush()
@@ -55,11 +56,11 @@ def _create_other_investment(second_user, db_session):
     (no InvestmentParams -- IDOR tests verify none get created).
     """
     acct_type = db_session.query(AccountType).filter_by(name="401(k)").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=second_user["user"].id,
         account_type_id=acct_type.id,
         name="Other 401k",
-        current_anchor_balance=Decimal("10000.00"),
+        anchor_balance=Decimal("10000.00"),
     )
     db_session.add(account)
     db_session.commit()

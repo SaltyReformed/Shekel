@@ -31,6 +31,8 @@ Environment variables (or .env file):
 
 import os
 import sys
+from datetime import date, timedelta
+from decimal import Decimal
 
 
 # Names of the seed-only env vars that must be scrubbed from
@@ -50,10 +52,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app import create_app
 from app.extensions import db
 from app.models.user import User, UserSettings
-from app.models.account import Account
+from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.ref import AccountType
+from app.services import account_service
 from app.services.auth_service import hash_password, DEFAULT_CATEGORIES
 
 
@@ -138,16 +141,36 @@ def seed_user():
     db.session.add(settings)
     print("  + User settings created.")
 
-    # Create checking account.
+    # Bootstrap pay period (E-19, Commit 3).  The accounts.NOT NULL
+    # anchor columns require an existing period to point at; the
+    # operator can later overwrite this via /pay-periods/generate to
+    # match their actual payday cadence.
+    today = date.today()
+    bootstrap_period = PayPeriod(
+        user_id=user.id,
+        start_date=today,
+        end_date=today + timedelta(days=13),
+        period_index=0,
+    )
+    db.session.add(bootstrap_period)
+    db.session.flush()
+    print("  + Bootstrap pay period created (period_index=0).")
+
+    # Create checking account via the canonical factory (E-19):
+    # ``account_service.create_account`` writes both anchor columns
+    # and the matching AccountAnchorHistory row in one call so the
+    # contract is identical to the /accounts route and the signup
+    # path.  Decimal("0.00") is a real value per E-12, not "missing."
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
-    account = Account(
+    account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Checking",
-        current_anchor_balance=0,
+        anchor_balance=Decimal("0.00"),
+        anchor_period_id=bootstrap_period.id,
+        notes="origination (seed_user.py)",
     )
-    db.session.add(account)
-    print("  + Checking account created.")
+    print("  + Checking account created with origination anchor history.")
 
     # Create baseline scenario.
     scenario = Scenario(

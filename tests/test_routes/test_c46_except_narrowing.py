@@ -44,6 +44,7 @@ from app.models.ref import (
 )
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
+from app.services import account_service
 from tests._test_helpers import freeze_today
 from tests.test_routes.test_salary import _create_profile
 
@@ -627,11 +628,11 @@ class TestInvestmentInvalidOperationCatch:
             )
 
             from app.models.account import Account
-            account = Account(
+            account = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=retirement_type.id,
                 name="My 401k",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(account)
             db.session.commit()

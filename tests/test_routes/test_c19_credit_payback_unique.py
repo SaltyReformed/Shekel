@@ -51,6 +51,7 @@ from app.models.user import User, UserSettings
 from app.services import credit_workflow
 from app.services.auth_service import hash_password
 from app.services.entry_credit_workflow import sync_entry_payback
+from app.services import account_service
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +129,8 @@ def _create_concurrent_user(db_session):
     a fresh user via the test session and then have each worker
     open its own app context for its own session.
     """
+    from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
+
     user = User(
         email="c19-concurrent@shekel.local",
         password_hash=hash_password("c19concurrent"),
@@ -138,17 +141,26 @@ def _create_concurrent_user(db_session):
 
     db_session.add(UserSettings(user_id=user.id))
 
+    # Bootstrap pay period (E-19, Commit 3).
+    _bootstrap = PayPeriod(
+        user_id=user.id,
+        start_date=_date(2024, 1, 5),
+        end_date=_date(2024, 1, 5) + _td(days=13),
+        period_index=0,
+    )
+    db_session.add(_bootstrap)
+    db_session.flush()
+
     checking_type = (
         db_session.query(AccountType).filter_by(name="Checking").one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Checking",
-        current_anchor_balance=Decimal("5000.00"),
+        anchor_balance=Decimal("5000.00"),
+        anchor_period_id=_bootstrap.id,
     )
-    db_session.add(account)
-    db_session.flush()
 
     scenario = Scenario(
         user_id=user.id, name="Baseline", is_baseline=True,

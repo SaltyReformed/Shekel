@@ -30,6 +30,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 
 # ---------------------------------------------------------------------------
@@ -131,36 +132,10 @@ def _create_user_with_data(db_session):
     settings = UserSettings(user_id=user.id)
     db_session.add(settings)
 
-    checking_type = (
-        db_session.query(AccountType).filter_by(name="Checking").one()
-    )
-    account = Account(
-        user_id=user.id,
-        account_type_id=checking_type.id,
-        name="Checking",
-        current_anchor_balance=Decimal("5000.00"),
-    )
-    db_session.add(account)
-    db_session.flush()
-
-    scenario = Scenario(
-        user_id=user.id,
-        name="Baseline",
-        is_baseline=True,
-    )
-    db_session.add(scenario)
-
-    category = Category(
-        user_id=user.id,
-        group_name="Home",
-        item_name="Test Expense",
-    )
-    db_session.add(category)
-    db_session.flush()
-
-    # Three periods: past, current (containing today), and future.
+    # Pay periods must exist before the account so the E-19 factory
+    # has an anchor to assign.  Three periods: past, current
+    # (containing today), and future.
     today = date.today()
-    # Align the "current" period so today falls within it.
     current_start = today - timedelta(days=today.weekday())  # Monday this week
     past_period = PayPeriod(
         user_id=user.id,
@@ -177,7 +152,30 @@ def _create_user_with_data(db_session):
     db_session.add_all([past_period, current_period])
     db_session.flush()
 
-    account.current_anchor_period_id = past_period.id
+    checking_type = (
+        db_session.query(AccountType).filter_by(name="Checking").one()
+    )
+    account = account_service.create_account(
+        user_id=user.id,
+        account_type_id=checking_type.id,
+        name="Checking",
+        anchor_balance=Decimal("5000.00"),
+        anchor_period_id=past_period.id,
+    )
+
+    scenario = Scenario(
+        user_id=user.id,
+        name="Baseline",
+        is_baseline=True,
+    )
+    db_session.add(scenario)
+
+    category = Category(
+        user_id=user.id,
+        group_name="Home",
+        item_name="Test Expense",
+    )
+    db_session.add(category)
     db_session.commit()
 
     return {

@@ -8,16 +8,17 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.ref import AccountType
+from app.services import account_service
 
 
 def _create_hysa_account(seed_user, db_session, name="My HYSA"):
     """Helper to create a HYSA account with params."""
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=hysa_type.id,
         name=name,
-        current_anchor_balance=Decimal("10000.00"),
+        anchor_balance=Decimal("10000.00"),
     )
     db_session.add(account)
     db_session.flush()
@@ -34,11 +35,11 @@ def _create_other_hysa(second_user, db_session):
     Builds on the shared second_user fixture. Returns (Account, InterestParams).
     """
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=second_user["user"].id,
         account_type_id=hysa_type.id,
         name="Other HYSA",
-        current_anchor_balance=Decimal("5000.00"),
+        anchor_balance=Decimal("5000.00"),
     )
     db_session.add(account)
     db_session.flush()

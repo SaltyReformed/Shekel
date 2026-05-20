@@ -597,6 +597,7 @@ class TestCarryForward:
 
 # Import at the bottom to avoid circular issues in the test helpers.
 from app.models.transaction_template import TransactionTemplate
+from app.services import account_service
 
 
 class TestNegativePaths:
@@ -827,11 +828,11 @@ class TestNegativePaths:
             savings_type = (
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Test Savings",
-                current_anchor_balance=Decimal("0"),
+                anchor_balance=Decimal("0"),
             )
             db.session.add(savings)
             db.session.flush()

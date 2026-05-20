@@ -49,6 +49,7 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import AccountType
 from app.services import pay_period_service, transfer_service
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -92,11 +93,11 @@ def _add_txn(
 def _create_savings_account(seed_user):
     """Add a Savings account on the seeded user for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="C-27 Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(acct)
     db.session.commit()
@@ -141,17 +142,29 @@ def _seed_second_user_transfer_assets():
     db.session.flush()
     db.session.add(UserSettings(user_id=other.id))
 
+    # Pay periods first (E-19, Commit 3): the account_service factory
+    # requires the user to have at least one pay period to anchor
+    # against before any account row can be created.
+    other_periods = pay_period_service.generate_pay_periods(
+        user_id=other.id,
+        start_date=date(2026, 1, 2),
+        num_periods=2,
+        cadence_days=14,
+    )
+    db.session.flush()
+
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    other_checking = Account(
+    other_checking = account_service.create_account(
         user_id=other.id, account_type_id=checking_type.id,
-        name="Other Cross Checking", current_anchor_balance=Decimal("100.00"),
+        name="Other Cross Checking", anchor_balance=Decimal("100.00"),
+        anchor_period_id=other_periods[0].id,
     )
-    other_savings = Account(
+    other_savings = account_service.create_account(
         user_id=other.id, account_type_id=savings_type.id,
-        name="Other Cross Savings", current_anchor_balance=Decimal("0"),
+        name="Other Cross Savings", anchor_balance=Decimal("0"),
+        anchor_period_id=other_periods[0].id,
     )
-    db.session.add_all([other_checking, other_savings])
 
     other_scenario = Scenario(
         user_id=other.id, name="Baseline", is_baseline=True,
@@ -162,14 +175,6 @@ def _seed_second_user_transfer_assets():
         user_id=other.id, group_name="Home", item_name="Rent",
     )
     db.session.add(other_category)
-    db.session.flush()
-
-    other_periods = pay_period_service.generate_pay_periods(
-        user_id=other.id,
-        start_date=date(2026, 1, 2),
-        num_periods=2,
-        cadence_days=14,
-    )
     db.session.commit()
 
     return {

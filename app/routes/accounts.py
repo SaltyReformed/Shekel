@@ -38,6 +38,7 @@ from app.schemas.validation import (
     InterestParamsUpdateSchema,
 )
 from app.services import (
+    account_service,
     balance_calculator,
     entry_service,
     pay_period_service,
@@ -320,16 +321,29 @@ def create_account():
 
     anchor_balance = Decimal(str(data.pop("anchor_balance", "0") or "0"))
 
-    current_period = pay_period_service.get_current_period(current_user.id)
-
-    account = Account(
-        user_id=current_user.id,
-        current_anchor_balance=anchor_balance,
-        current_anchor_period_id=current_period.id if current_period else None,
-        **data,
-    )
-    db.session.add(account)
-    db.session.flush()
+    # E-19 (Commit 3): the canonical factory in
+    # ``app.services.account_service.create_account`` materializes
+    # the account row AND a matching origination AccountAnchorHistory
+    # row, and resolves the anchor period from the user's pay-period
+    # inventory.  If the user has zero pay periods, the factory
+    # raises ``ValidationError``; this route converts that into a
+    # redirect to ``/pay-periods/generate`` so the user can fix the
+    # missing-periods state and retry.
+    from app.exceptions import ValidationError as _ValidationError  # pylint: disable=import-outside-toplevel
+    try:
+        account = account_service.create_account(
+            user_id=current_user.id,
+            anchor_balance=anchor_balance,
+            notes="origination",
+            **data,
+        )
+    except _ValidationError:
+        flash(
+            "Generate pay periods before creating an account so the "
+            "account balance has a period to anchor against.",
+            "warning",
+        )
+        return redirect(url_for("pay_periods.generate_form"))
 
     # Auto-create type-specific params based on metadata flags.
     account_type = db.session.get(AccountType, account.account_type_id)
