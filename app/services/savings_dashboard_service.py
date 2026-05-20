@@ -39,6 +39,7 @@ from app.services import (
     escrow_calculator,
     growth_engine,
     loan_resolver,
+    obligations_aggregator,
     pay_period_service,
     savings_goal_service,
 )
@@ -50,6 +51,7 @@ from app.services.loan_payment_service import (
     load_loan_context,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +171,7 @@ def compute_dashboard_data(user_id):
         gross_biweekly = params["salary_gross_biweekly"]
         if gross_biweekly > Decimal("0.00"):
             gross_monthly = (
-                gross_biweekly * Decimal("26") / Decimal("12")
+                gross_biweekly * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
             ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
             dti_ratio = (
                 debt_summary["total_monthly_payments"]
@@ -610,8 +612,9 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
     has_salary = net_biweekly_pay > Decimal("0.00")
 
     # Batch-load recurring transfer templates targeting goal accounts
-    # to avoid N+1 queries.  compute_committed_monthly() handles the
-    # per-pattern normalization to monthly equivalents.
+    # to avoid N+1 queries.  obligations_aggregator.committed_monthly
+    # handles per-pattern normalization to monthly equivalents and
+    # applies the shared skip-ONCE / skip-expired filter.
     goal_account_ids = [goal.account_id for goal in goals]
     if goal_account_ids:
         to_account_templates = (
@@ -671,10 +674,13 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
             income_descriptor = None
 
         # Monthly contribution from recurring transfers into this account.
-        # Reuses compute_committed_monthly() for pattern normalization.
+        # Routed through the one canonical aggregator (E-24 / HIGH-05) so
+        # the same skip-ONCE / skip-expired filter applies that the
+        # /obligations page applies; pre-Commit-23 this loop omitted the
+        # expired-rule guard and inflated per-goal floors indefinitely.
         acct_templates = templates_by_account.get(goal.account_id, [])
-        monthly_contribution = savings_goal_service.compute_committed_monthly(
-            [], acct_templates,
+        monthly_contribution = obligations_aggregator.committed_monthly(
+            acct_templates, date.today(),
         )
 
         # Trajectory: projected completion date and pace indicator.
@@ -738,7 +744,9 @@ def _compute_avg_monthly_expenses(
             num_periods = len(recent_periods)
             if num_periods > 0:
                 per_period = total_expenses / num_periods
-                avg_monthly_expenses = per_period * Decimal("26") / Decimal("12")
+                avg_monthly_expenses = (
+                    per_period * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+                )
 
     # Committed monthly floor from active templates.
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
@@ -767,8 +775,14 @@ def _compute_avg_monthly_expenses(
             )
             .all()
         )
-        committed_monthly = savings_goal_service.compute_committed_monthly(
-            active_expense_templates, active_transfer_templates,
+        # Same canonical aggregator the /obligations page uses
+        # (E-24 / HIGH-05). The expired-template filter that was
+        # silently missing pre-Commit-23 now applies here too, so the
+        # emergency-fund baseline no longer inherits an expired
+        # recurring expense or transfer indefinitely.
+        committed_monthly = obligations_aggregator.committed_monthly(
+            list(active_expense_templates) + list(active_transfer_templates),
+            date.today(),
         )
         avg_monthly_expenses = max(avg_monthly_expenses, committed_monthly)
 

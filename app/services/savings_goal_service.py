@@ -10,12 +10,14 @@ import logging
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
+from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
+
 logger = logging.getLogger(__name__)
 
 # Constants for Decimal arithmetic -- avoids constructing these per call.
+# Pay-period and month conversion factors come from app.utils.money so
+# every 26/12 site shares one definition (E-24, HIGH-05).
 _TWO_PLACES = Decimal("0.01")
-_PAY_PERIODS_PER_YEAR = Decimal("26")
-_MONTHS_PER_YEAR = Decimal("12")
 
 
 def resolve_goal_target(
@@ -92,7 +94,7 @@ def resolve_goal_target(
     elif income_unit_id == months_id:
         # Convert biweekly to monthly: 26 pay periods / 12 months.
         # Quantize only the final result, not the intermediate.
-        monthly_net = net_biweekly_pay * _PAY_PERIODS_PER_YEAR / _MONTHS_PER_YEAR
+        monthly_net = net_biweekly_pay * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
         result = multiplier * monthly_net
     else:
         # Unknown unit -- defensive fallback with warning.
@@ -166,11 +168,11 @@ def calculate_savings_metrics(savings_balance, average_monthly_expenses):
 
     return {
         "months_covered": months,
-        "paychecks_covered": (months * Decimal("26") / Decimal("12")).quantize(
-            Decimal("0.1"), rounding=ROUND_HALF_UP
-        ),
-        "years_covered": (months / Decimal("12")).quantize(
-            Decimal("0.1"), rounding=ROUND_HALF_UP
+        "paychecks_covered": (
+            months * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+        ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP),
+        "years_covered": (months / MONTHS_PER_YEAR).quantize(
+            Decimal("0.1"), rounding=ROUND_HALF_UP,
         ),
     }
 
@@ -262,11 +264,11 @@ def amount_to_monthly(
         return None
 
     if pattern_id == every_period_id:
-        return amount * _PAY_PERIODS_PER_YEAR / _MONTHS_PER_YEAR
+        return amount * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
 
     if pattern_id == every_n_id:
         n = Decimal(str(interval_n or 1))
-        return amount * _PAY_PERIODS_PER_YEAR / n / _MONTHS_PER_YEAR
+        return amount * PAY_PERIODS_PER_YEAR / n / MONTHS_PER_YEAR
 
     if pattern_id in (monthly_id, monthly_first_id):
         return amount
@@ -278,54 +280,10 @@ def amount_to_monthly(
         return amount / Decimal("6")
 
     if pattern_id == annual_id:
-        return amount / _MONTHS_PER_YEAR
+        return amount / MONTHS_PER_YEAR
 
     # Unknown pattern.
     return None
-
-
-def compute_committed_monthly(expense_templates, transfer_templates):
-    """Calculate total committed monthly expenses from active templates.
-
-    Sums the monthly-equivalent cost from each template based on its
-    recurrence pattern.  Both expense templates (direct debits from
-    checking) and transfer templates (money leaving checking to other
-    accounts) count toward the committed baseline.
-
-    Uses amount_to_monthly() for individual conversions.
-
-    Args:
-        expense_templates: List of TransactionTemplate objects (expenses
-            on checking).  Must already be filtered to is_active=True.
-        transfer_templates: List of TransferTemplate objects (debits from
-            checking).  Must already be filtered to is_active=True.
-
-    Returns:
-        Decimal -- total committed monthly expense, rounded to 2 decimal
-        places with ROUND_HALF_UP.  Returns Decimal("0.00") if both
-        lists are empty or all templates are skipped.
-    """
-    total = Decimal("0")
-
-    for template in list(expense_templates) + list(transfer_templates):
-        amount = template.default_amount
-        # Skip templates with no amount or zero amount.
-        if amount is None or Decimal(str(amount)) == 0:
-            continue
-        amount = Decimal(str(amount))
-
-        rule = template.recurrence_rule
-        if rule is None:
-            # No recurrence rule -- cannot determine frequency.
-            continue
-
-        monthly = amount_to_monthly(
-            amount, rule.pattern_id, rule.interval_n,
-        )
-        if monthly is not None:
-            total += monthly
-
-    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def calculate_trajectory(

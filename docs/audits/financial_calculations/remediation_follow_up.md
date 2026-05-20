@@ -1049,4 +1049,51 @@ that monkey-patches the predicate to False.
 
 ---
 
+## F-15. Other ``Decimal("12")`` constants (annual-rate / month-elapsed contexts) duplicate ``MONTHS_PER_YEAR``
+
+- **Surfaced during:** Commit 23 (`refactor(obligations): one monthly-
+  equivalent aggregator (E-24, HIGH-05)`).
+- **Status:** not started; out of HIGH-05 scope.
+
+### Problem
+
+Commit 23 collapses the biweekly-to-monthly factor (26/12) into the one
+canonical ``PAY_PERIODS_PER_YEAR`` / ``MONTHS_PER_YEAR`` definition in
+``app/utils/money.py``. HIGH-05 / D6-05's scope is the biweekly-to-
+monthly conversion cluster, so the audit-named four sites
+(``savings_goal_service.py`` once-named, twice-inlined;
+``savings_dashboard_service.py`` twice-inlined;
+``retirement_gap_calculator.py`` once-inlined with bare ``int``) are
+all routed through the canonical constants.
+
+Four additional ``Decimal("12")`` literals remain in
+``app/services/``, all in *rate-periodicity* contexts (annual rate ->
+monthly compounding, months-elapsed -> years for escrow amortization)
+rather than biweekly -> monthly conversion:
+
+```
+app/services/debt_strategy_service.py:33     TWELVE = Decimal("12")
+app/services/escrow_calculator.py:49         months_elapsed / Decimal("12")
+app/services/interest_projection.py:45       MONTHS_IN_YEAR = Decimal("12")
+app/services/loan_resolver.py:378            monthly_rate = rate_at / Decimal("12")
+```
+
+These are semantically "months per year" but in a different
+application context from the biweekly-to-monthly factor (the rate
+contexts only ever divide a yearly rate by 12 to get a monthly
+period; they do not use 26). Strict DRY would point all four at the
+shared ``MONTHS_PER_YEAR``; doing so is a cross-domain refactor
+(loan engine, escrow, interest projection, debt strategy) that
+HIGH-05's scope does not authorize.
+
+### Recommended next step
+
+After the remediation final gate, file a one-commit refactor that
+imports ``MONTHS_PER_YEAR`` at each of the four sites and removes the
+local ``TWELVE`` / ``MONTHS_IN_YEAR`` aliases. Targeted suites:
+``test_loan_resolver*``, ``test_escrow_calculator``,
+``test_interest_projection``, ``test_debt_strategy_service``.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->

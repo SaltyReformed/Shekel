@@ -49,9 +49,8 @@ def _freeze_today_inside_seed_range(monkeypatch):
     freeze_today(monkeypatch, date(2026, 3, 20))
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
-from app.services import savings_goal_service
+from app.services import account_service, obligations_aggregator
 from app.services.auth_service import hash_password
-from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1399,8 +1398,8 @@ class TestEmergencyFundCommittedBaseline:
             )
             db.session.commit()
 
-            result = savings_goal_service.compute_committed_monthly(
-                [tmpl], [],
+            result = obligations_aggregator.committed_monthly(
+                [tmpl], date.today(),
             )
             assert result == Decimal("500.00"), (
                 f"Monthly template should contribute exactly $500, got {result}"
@@ -1430,8 +1429,8 @@ class TestEmergencyFundCommittedBaseline:
             )
             db.session.commit()
 
-            result = savings_goal_service.compute_committed_monthly(
-                [once_tmpl, recurring_tmpl], [],
+            result = obligations_aggregator.committed_monthly(
+                [once_tmpl, recurring_tmpl], date.today(),
             )
             # Only recurring: 100 * 26/12 = 216.67
             expected = (Decimal("100") * Decimal("26") / Decimal("12")).quantize(
@@ -1514,8 +1513,8 @@ class TestEmergencyFundCommittedBaseline:
                 recurrence_rule=mock_rule,
             )
 
-            result = savings_goal_service.compute_committed_monthly(
-                [mock_template], [],
+            result = obligations_aggregator.committed_monthly(
+                [mock_template], date.today(),
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 when template has None amount, got {result}"
@@ -1538,8 +1537,8 @@ class TestEmergencyFundCommittedBaseline:
             )
             db.session.commit()
 
-            result = savings_goal_service.compute_committed_monthly(
-                [tmpl], [],
+            result = obligations_aggregator.committed_monthly(
+                [tmpl], date.today(),
             )
             assert result == Decimal("650.00"), (
                 f"Expected 650.00 for every-2-periods template, got {result}"
@@ -1559,21 +1558,23 @@ class TestEmergencyFundCommittedBaseline:
             )
             db.session.commit()
 
-            result = savings_goal_service.compute_committed_monthly(
-                [tmpl], [],
+            result = obligations_aggregator.committed_monthly(
+                [tmpl], date.today(),
             )
             assert result == Decimal("100.00"), (
                 f"Expected 100.00 for annual template, got {result}"
             )
 
-    def test_compute_committed_monthly_empty_lists(
+    def test_committed_monthly_empty_iterable(
         self, app,
     ):
-        """compute_committed_monthly with empty lists returns zero."""
+        """obligations_aggregator.committed_monthly([], today) returns zero."""
         with app.app_context():
-            result = savings_goal_service.compute_committed_monthly([], [])
+            result = obligations_aggregator.committed_monthly(
+                [], date.today(),
+            )
             assert result == Decimal("0.00"), (
-                f"Expected 0.00 for empty lists, got {result}"
+                f"Expected 0.00 for empty iterable, got {result}"
             )
 
 

@@ -6,7 +6,7 @@ summary totals, IDOR isolation, filtering of inactive/non-recurring
 templates, and section grouping correctness.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 import pytest
@@ -381,6 +381,42 @@ class TestObligationsFiltering:
         resp = auth_client.get("/obligations")
         html = resp.data.decode()
         assert "Inactive Bill" not in html
+
+    def test_expired_templates_excluded(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An EVERY_PERIOD template whose rule.end_date is strictly
+        before today does not appear on /obligations.
+
+        Pre-Commit-23 this filter was applied inline in the three
+        /obligations loops; after Commit 23 it is applied by the
+        single canonical aggregator (E-24 / HIGH-05). The behavior
+        seen at the route is unchanged for this case and is locked
+        here: an expired biweekly $1,500 expense must not render its
+        name and must not contribute $1,500 * 26 / 12 = $3,250.00
+        to the expense subtotal.
+        """
+        user = seed_user["user"]
+        checking = seed_user["account"]
+        category = list(seed_user["categories"].values())[0]
+        rule = _create_rule(user, db.session, "Every Period")
+        rule.end_date = date.today() - timedelta(days=1)
+
+        _create_expense_template(
+            user, db.session, checking, category,
+            "Expired Bill", "1500.00", rule,
+        )
+        db.session.commit()
+
+        resp = auth_client.get("/obligations")
+        html = resp.data.decode()
+        assert "Expired Bill" not in html, (
+            "Expired template must not render on /obligations"
+        )
+        # Hand-computed pre-fix inflated value (1500 * 26 / 12).
+        assert "$3,250.00" not in html, (
+            "Expired template must not contribute to expense subtotal"
+        )
 
     def test_non_recurring_templates_excluded(
         self, auth_client, seed_user, db, seed_periods_today,
