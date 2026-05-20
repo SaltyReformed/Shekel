@@ -469,4 +469,81 @@ in this gap surfaces.
 
 ---
 
+## F-7. Jinja-globals ID exposure list duplicated between `app/__init__.py` and `tests/conftest.py`
+
+- **Surfaced during:** Commit 11 (`test(integration): cross-page balance-
+  equality regression lock (HIGH-01)`), commit `4674e7e`.  The
+  duplication itself predates this commit and carries an inline
+  "out of scope for C-28" rationale (unrelated to the financial-
+  calculations audit C-28 is a different remediation effort and
+  does not own this debt going forward).
+- **Status:** not started; defer until after Commit 37.
+
+### Problem
+
+The ID-derived Jinja global registration list lives in two places
+that must stay byte-identical:
+
+- `app/__init__.py:168-219` -- 40+ `app.jinja_env.globals[...] =
+  ref_cache.<lookup>(...)` lines inside the `create_app` factory.
+- `tests/conftest.py:2086-2124` -- the same 40+ lines inside
+  `_refresh_ref_cache_and_jinja_globals`, which the `db` fixture
+  invokes once per test to re-seat the cache after the per-test
+  drop+reclone (Phase 3b).
+
+A missing entry on the test-side breaks every template that
+references the omitted constant at request time, with a confusing
+Jinja `UndefinedError`; a missing entry on the production side
+breaks the same templates in dev / prod.  The current inline
+docstring in `_refresh_ref_cache_and_jinja_globals` justifies the
+duplication ("`app/__init__.py` runs inside `create_app()` which
+is called once per test session, while this helper runs once per
+test"), but the project's DRY/SOLID rule
+(`feedback_dry_solid_normalized` in user-memory) flags any
+two-source-of-truth pattern as a regression risk.
+
+### Recommended direction
+
+Two options, in order of cost:
+
+- **(a) Extract to a shared function** (cheap).  Move the list of
+  `(name, lookup_callable)` pairs (or a single function that takes
+  an `app` and registers them) into a new helper module, e.g.
+  `app/jinja_globals.py`, and have both `create_app` and the
+  conftest helper import and call it.  Single source of truth;
+  the per-test re-seat still happens but reads from the same list.
+- **(b) Refactor `create_app` so the registration is callable
+  standalone** (more involved).  Extract a
+  `register_ref_id_globals(app)` function inside `app/__init__.py`
+  that both `create_app` and the conftest helper call; the
+  enums import already pulls from `app.enums`.  Same DRY outcome,
+  slightly different layout.
+
+Either way, the acceptance criterion is that adding a new
+``ref.<table>`` enum requires editing exactly one list.
+
+### Why defer
+
+The duplication is a quality / DRY violation, not a correctness
+bug -- both lists are currently in sync (verified this session via
+side-by-side read of `app/__init__.py:169-218` and
+`tests/conftest.py:2088-2124`).  A test would have caught any
+drift the next time a Jinja Undefined surfaced.  Out of scope for
+HIGH-01 (which targets balance-producer correctness, not Jinja
+plumbing); best folded into a focused infrastructure PR after
+Commit 37 alongside any other test-harness DRY items.
+
+### Acceptance criteria for the eventual PR
+
+- `git grep -n "STATUS_PROJECTED.*ref_cache.status_id" app/ tests/`
+  shows exactly one match (the canonical registration site).
+- Both `create_app` and the conftest's
+  `_refresh_ref_cache_and_jinja_globals` route through the shared
+  helper.
+- Full pytest suite passes; in particular, the dev server still
+  renders templates that reference any of the 40+ constants
+  without raising `UndefinedError`.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
