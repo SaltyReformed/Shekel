@@ -655,4 +655,92 @@ from the correct balance with the correct payment.
 
 ---
 
+## F-9. No origination LoanAnchorEvent on new-loan creation
+
+- **Surfaced during:** Commit 14 (`test(loan): settled transfer reduces
+  resolved principal (symptom #3)`), this commit.
+- **Status:** not started; the integration test in this commit
+  side-steps the gap by inserting the origination event explicitly.
+  Production new-loan flows must be wired before Commit 15 routes
+  the loan-card display through the resolver, or freshly created
+  loans will hit `loan_resolver.resolve_loan` with an empty
+  ``anchor_events`` list and raise ``ValueError``.
+
+### Problem
+
+Commit 12 (`feat(loan): append-only loan_anchor_events table +
+backfill (E-18)`) inserts an origination event for every
+:class:`LoanParams` row that exists at migration time.  No
+application code path creates an origination event when a new loan
+is created post-migration:
+
+- `app/services/account_service.create_account` is generic across
+  account types and does not know about :class:`LoanAnchorEvent`.
+- `app/routes/loan.py` has no shared "create-loan" service; the
+  loan dashboard setup form writes :class:`LoanParams` directly and
+  does not append an event.
+- The Commit-12 migration backfill ran once against the existing
+  data set and is not re-run on new inserts.
+
+The Commit-13 resolver explicitly requires a non-empty event list
+(``_select_latest_anchor`` raises ``ValueError`` when ``anchor_events``
+is empty, citing "Commit 12 backfill should have produced an
+origination event for every loan").  Once Commit 15 routes consumers
+through the resolver, the loan card / debt strategy / net-worth
+liability for a freshly created loan will raise instead of rendering.
+
+Verified by ``grep -rn "LoanAnchorEvent" app/routes/ app/services/``
+(empty -- only the resolver module references the class) and by the
+integration tests in
+``tests/test_integration/test_loan_principal_settles.py`` which
+must create the origination event explicitly via the helper
+``_create_mortgage`` (a production code path would need to do the
+same work).
+
+### Recommended direction
+
+Two options:
+
+- **Inline at the existing :class:`LoanParams` insert sites**: each
+  route or service that creates a :class:`LoanParams` row also
+  inserts an origination :class:`LoanAnchorEvent` in the same
+  transaction.  Low touch; matches the pattern of "create the
+  paired row inline" used elsewhere.
+- **Centralize via a new ``loan_service.create_loan`` helper**: one
+  service-level entry point creates :class:`LoanParams` plus the
+  origination event together (mirrors
+  :func:`account_service.create_account` which writes the
+  :class:`Account` plus the origination
+  :class:`AccountAnchorHistory` row).  Higher up-front cost,
+  better DRY when more callers appear.
+
+The second option also slots cleanly into Commit 16 if the same
+service ends up owning user-trueup appends (already extracted into
+``anchor_service.apply_anchor_true_up`` per R-7).
+
+### Why defer
+
+Commit 14 is test-only by charter (test that confirmed transfers
+reduce principal once the resolver is used).  Adding new-loan
+creation logic would mix scopes and obscure the symptom-#3 lock
+this commit installs.  Commit 15 must address the gap before it
+routes the loan card through the resolver, or it must defer the
+loan-card routing until this is fixed.
+
+### Acceptance criteria for the eventual PR
+
+- Every code path that inserts :class:`LoanParams` also inserts an
+  origination :class:`LoanAnchorEvent` in the same transaction
+  (``anchor_date = origination_date``,
+  ``anchor_balance = original_principal``,
+  ``source_id = ORIGINATION``).
+- A new integration test creates a loan via the production route
+  and asserts ``loan_resolver.resolve_loan`` succeeds (does not
+  raise ``ValueError`` for empty anchors).
+- The Commit 14 integration test helper ``_create_mortgage`` is
+  updated to call the shared service path so the test exercises
+  the production code path rather than duplicating it.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
