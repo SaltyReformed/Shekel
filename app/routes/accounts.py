@@ -10,12 +10,10 @@ from decimal import Decimal
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
-from app.utils.db_errors import is_unique_violation
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
@@ -39,22 +37,17 @@ from app.schemas.validation import (
 )
 from app.services import (
     account_service,
+    anchor_service,
     balance_calculator,
     balance_resolver,
     entry_service,
     pay_period_service,
     transfer_service,
 )
+from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
-
-# Name of the partial unique expression index that backstops the
-# anchor-history double-submit fix (F-103 / C-22).  Mirrors the
-# literal in ``app/models/account.py:AccountAnchorHistory.__table_args__``
-# and ``migrations/versions/<C-22 revision>.py``; renaming the index
-# requires a coordinated edit across all three sites.
-_ANCHOR_HISTORY_UNIQUE_INDEX = "uq_anchor_history_account_period_balance_day"
 
 accounts_bp = Blueprint("accounts", __name__)
 
@@ -805,34 +798,52 @@ def inline_anchor_update(account_id):
 
     current_period = pay_period_service.get_current_period(current_user.id)
 
-    account.current_anchor_balance = new_balance
-    if current_period:
-        account.current_anchor_period_id = current_period.id
-        history = AccountAnchorHistory(
-            account_id=account.id,
-            pay_period_id=current_period.id,
-            anchor_balance=new_balance,
+    # Apply the true-up through the canonical helper.  The two paths
+    # converge on the same outcome enum so the response composition
+    # at the bottom of the function is shared.  No-current-period is
+    # the legacy degenerate branch: write the cache column, keep the
+    # existing anchor period assignment, append NO history row (no
+    # period to anchor to), and otherwise run the same conditional
+    # entries reconcile + commit.  Post-Commit-3 every user with an
+    # account has at least one pay period, and post-auto-generation
+    # they have ~2 years of forward periods; this branch fires only
+    # when the user has periods none of which contain today (e.g.
+    # they generated only historical periods).
+    if current_period is None:
+        account.current_anchor_balance = new_balance
+        checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+        try:
+            if account.account_type_id == checking_type_id:
+                entry_service.clear_entries_for_anchor_true_up(current_user.id)
+            db.session.commit()
+            outcome = AnchorTrueUpOutcome.COMMITTED
+        except StaleDataError:
+            db.session.rollback()
+            logger.info(
+                "Stale-data conflict on inline_anchor_update id=%d "
+                "(no-current-period path)", account_id,
+            )
+            outcome = AnchorTrueUpOutcome.STALE_CONFLICT
+    else:
+        # Canonical anchor true-up path: route the mutation, history-
+        # row append, conditional entries reconcile, and commit through
+        # the single authoritative helper so the C-17 optimistic lock
+        # and the F-103 / C-22 same-day same-balance idempotency rules
+        # cannot drift between this endpoint and the grid ``true_up``
+        # endpoint below.  See ``app/services/anchor_service.py`` for
+        # the contract.
+        outcome = anchor_service.apply_anchor_true_up(
+            account=account,
+            new_balance=new_balance,
+            anchor_period=current_period,
+            user_id=current_user.id,
         )
-        db.session.add(history)
 
-    # Reconcile entries on checking true-ups and commit.  See
-    # true_up() for the autoflush ordering rationale -- both
-    # operations live inside the same try/except so a concurrent
-    # version bump surfaces as a 409 partial regardless of which
-    # statement actually triggers the SQLAlchemy flush.
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    try:
-        if account.account_type_id == checking_type_id:
-            entry_service.clear_entries_for_anchor_true_up(current_user.id)
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
+    if outcome is AnchorTrueUpOutcome.STALE_CONFLICT:
         # Re-fetch a fresh, post-conflict copy so the partial renders
-        # the winner's balance, not the loser's stale in-memory value.
+        # the winner's balance, not the loser's rolled-back in-memory
+        # value.
         account = db.session.get(Account, account_id)
-        logger.info(
-            "Stale-data conflict on inline_anchor_update id=%d", account_id,
-        )
         return (
             render_template(
                 "accounts/_anchor_cell.html",
@@ -840,33 +851,24 @@ def inline_anchor_update(account_id):
             ),
             409,
         )
-    except IntegrityError as exc:
-        # Same-day, same-balance double-submit (F-103 / C-22): the
-        # partial unique index ``uq_anchor_history_account_period_balance_day``
-        # rejects the second history INSERT when the user clicks
-        # Save twice in a row.  Roll back, treat as idempotent
-        # success, and re-render the (already-current) balance --
-        # the first request committed the same value the second
-        # request was trying to submit.
-        db.session.rollback()
-        if not is_unique_violation(exc, _ANCHOR_HISTORY_UNIQUE_INDEX):
-            raise
+
+    if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
+        # F-103 idempotent success: the prior request committed the
+        # same value this request was trying to submit.  Re-fetch and
+        # render the (already-current) balance.
         account = db.session.get(Account, account_id)
-        logger.info(
-            "Duplicate same-day anchor history prevented for account %d "
-            "(idempotent success)", account_id,
-        )
         return render_template(
             "accounts/_anchor_cell.html", acct=account, editing=False,
         )
 
+    # COMMITTED: refresh the in-memory account so the rendered partial
+    # shows the row's post-commit state (notably ``updated_at`` which
+    # the audit-trigger refreshes server-side).
     db.session.refresh(account)
-
     logger.info(
         "Inline anchor update: account %d set to $%s",
         account.id, new_balance,
     )
-
     return render_template(
         "accounts/_anchor_cell.html", acct=account, editing=False,
     )
@@ -1117,46 +1119,23 @@ def true_up(account_id):
     if current_period is None:
         return "No current pay period found", 400
 
-    # Update the account.
-    account.current_anchor_balance = new_balance
-    account.current_anchor_period_id = current_period.id
-
-    # Record in history.
-    history = AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=current_period.id,
-        anchor_balance=new_balance,
+    # Canonical anchor true-up path: see ``inline_anchor_update`` and
+    # ``app/services/anchor_service.py`` for the shared rationale.
+    # ``true_up`` differs from the inline endpoint in three places:
+    # (1) the template (``grid/_anchor_edit.html`` and the ``account=``
+    # kwarg rather than ``acct=``), (2) the success response appends
+    # an OOB "as-of" snippet, and (3) the success response carries an
+    # ``HX-Trigger: balanceChanged`` header so other grid cells
+    # recompute.  The outcomes are otherwise byte-equivalent.
+    outcome = anchor_service.apply_anchor_true_up(
+        account=account,
+        new_balance=new_balance,
+        anchor_period=current_period,
+        user_id=current_user.id,
     )
-    db.session.add(history)
 
-    # Reconcile entries (checking only) and commit.  Both
-    # operations are wrapped in the same try/except because
-    # ``clear_entries_for_anchor_true_up`` triggers a session
-    # autoflush before its own bulk UPDATE -- which is where
-    # ``StaleDataError`` is actually raised when a concurrent
-    # commit has bumped ``Account.version_id``.  Catching only
-    # around ``db.session.commit()`` would let the autoflush
-    # error propagate as a 500 instead of the conflict UI.
-    #
-    # Why entries clear on a checking true-up: when the user trues
-    # up the checking anchor they are declaring "my real checking
-    # is now $X" -- every past-dated debit purchase recorded
-    # against a projected transaction is already in that number,
-    # so flipping ``is_cleared = TRUE`` stops the balance
-    # calculator from double-counting them.  Debit purchases
-    # only hit checking, so the reconcile fires only for that
-    # account type.
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    try:
-        if account.account_type_id == checking_type_id:
-            entry_service.clear_entries_for_anchor_true_up(current_user.id)
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
+    if outcome is AnchorTrueUpOutcome.STALE_CONFLICT:
         account = db.session.get(Account, account_id)
-        logger.info(
-            "Stale-data conflict on true_up id=%d", account_id,
-        )
         return (
             render_template(
                 "grid/_anchor_edit.html",
@@ -1164,21 +1143,13 @@ def true_up(account_id):
             ),
             409,
         )
-    except IntegrityError as exc:
-        # Same-day, same-balance double-submit (F-103 / C-22): the
-        # partial unique index ``uq_anchor_history_account_period_balance_day``
-        # rejects the second history INSERT when the user clicks
-        # Save twice in a row.  Roll back and treat as idempotent
-        # success.  See the matching handler in
-        # ``inline_anchor_update`` for the rationale.
-        db.session.rollback()
-        if not is_unique_violation(exc, _ANCHOR_HISTORY_UNIQUE_INDEX):
-            raise
+
+    if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
+        # F-103 idempotent success: matches the success response shape
+        # (OOB swap + HX-Trigger) so the grid behaves consistently
+        # whether the second click landed before or after the first
+        # commit.
         account = db.session.get(Account, account_id)
-        logger.info(
-            "Duplicate same-day anchor history prevented for account %d "
-            "(idempotent success)", account_id,
-        )
         html = render_template(
             "grid/_anchor_edit.html", account=account, editing=False,
         )
