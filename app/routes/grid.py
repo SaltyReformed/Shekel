@@ -7,7 +7,7 @@ for inline editing, balance refresh, and carry forward.
 """
 
 import logging
-from collections import namedtuple
+from collections import OrderedDict, namedtuple
 from datetime import date
 from decimal import Decimal
 
@@ -24,7 +24,7 @@ from app.models.category import Category
 from app.models.ref import Status, TransactionType
 from app.enums import StatusEnum
 from app import ref_cache
-from app.services import balance_calculator, pay_period_service
+from app.services import balance_resolver, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
 from app.services.scenario_resolver import get_baseline_scenario
@@ -233,19 +233,34 @@ def index():
         .all()
     )
 
-    # Calculate balances.  Shadow transactions (from transfers) are
-    # already in all_transactions -- no separate Transfer query needed.
-    anchor_balance = account.current_anchor_balance if account else Decimal("0.00")
-    anchor_period_id = account.current_anchor_period_id if account else (
-        current_period.id
+    # Calculate balances via the canonical entries-aware producer
+    # (E-25 / Commit 5).  The producer owns its own query (it always
+    # ``selectinload``s entries so the entry-aware reduction applies
+    # unconditionally), which is the structural fix for CRIT-01 /
+    # F-009.  The grid additionally keeps its own ``all_transactions``
+    # query above for display purposes -- it needs the ``template``
+    # eager-load for row-key generation and the same entries for
+    # ``entry_sums`` / cell rendering, neither of which is in
+    # ``balances_for``'s remit.  The double-query cost is a one-extra
+    # SELECT trade for the seam-removal guarantee.
+    anchor_balance = (
+        account.current_anchor_balance if account else Decimal("0.00")
     )
 
-    balances, stale_anchor_warning = balance_calculator.calculate_balances(
-        anchor_balance=anchor_balance,
-        anchor_period_id=anchor_period_id,
-        periods=all_periods,
-        transactions=all_transactions,
-    )
+    if account is not None:
+        balance_result = balance_resolver.balances_for(
+            account, scenario.id, all_periods,
+        )
+        balances = balance_result.balances
+        stale_anchor_warning = balance_result.stale_anchor_warning
+    else:
+        # No-account edge case: no anchor exists to project from.
+        # Post-Commit-3 every user with an account row has a
+        # resolvable anchor; the user-with-zero-accounts state lands
+        # here and gets an empty balance map (the grid template
+        # renders empty cells cleanly).
+        balances = OrderedDict()
+        stale_anchor_warning = False
 
     # Group transactions by period and then by category group for display.
     txn_by_period = {}
@@ -425,30 +440,17 @@ def balance_row():
     periods = pay_period_service.get_periods_in_range(user_id, start_index, num_periods)
     all_periods = pay_period_service.get_all_periods(user_id)
 
-    period_ids = [p.id for p in all_periods]
-    txn_filters = [
-        Transaction.pay_period_id.in_(period_ids),
-        Transaction.scenario_id == scenario.id,
-        Transaction.is_deleted.is_(False),
-    ]
-    if account:
-        txn_filters.append(Transaction.account_id == account.id)
-    all_transactions = (
-        db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
-        .filter(*txn_filters)
-        .all()
-    )
-
-    anchor_balance = account.current_anchor_balance if account else Decimal("0.00")
-    anchor_period_id = account.current_anchor_period_id if account else current_period.id
-
-    balances, _ = balance_calculator.calculate_balances(
-        anchor_balance=anchor_balance,
-        anchor_period_id=anchor_period_id,
-        periods=all_periods,
-        transactions=all_transactions,
-    )
+    # Balances via the canonical entries-aware producer (E-25 / Commit 5).
+    # The producer owns the transaction query, so this HTMX partial no
+    # longer needs its own ``selectinload(entries)`` query: that
+    # responsibility moved into ``balance_resolver.balances_for``.
+    if account is not None:
+        balance_result = balance_resolver.balances_for(
+            account, scenario.id, all_periods,
+        )
+        balances = balance_result.balances
+    else:
+        balances = OrderedDict()
 
     low_balance_threshold = (
         current_user.settings.low_balance_threshold

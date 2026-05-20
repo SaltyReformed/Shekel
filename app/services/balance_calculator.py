@@ -292,10 +292,10 @@ def calculate_balances_with_amortization(
 def _entry_aware_amount(txn):
     """Compute the checking-balance impact for a single expense transaction.
 
-    For projected expenses with eagerly loaded entries (via selectinload),
-    the formula partitions debit entries into cleared and uncleared
-    buckets, then holds back only the portion of the budget that has not
-    yet been reconciled with the anchor:
+    For projected expenses with entries (loaded eagerly or
+    lazy-loaded on demand), the formula partitions debit entries into
+    cleared and uncleared buckets, then holds back only the portion
+    of the budget that has not yet been reconciled with the anchor:
 
         cleared_debit   = sum(entries where not is_credit and     is_cleared)
         uncleared_debit = sum(entries where not is_credit and not is_cleared)
@@ -305,9 +305,6 @@ def _entry_aware_amount(txn):
             estimated_amount - cleared_debit - sum_credit,
             uncleared_debit,
         )
-
-    For all other cases (no entries loaded, entries empty, non-projected
-    status): returns effective_amount unchanged.
 
     Semantics:
       - A cleared debit is already reflected in the checking anchor
@@ -322,9 +319,8 @@ def _entry_aware_amount(txn):
         reservation.
       - With every is_cleared = FALSE (the default for new entries),
         cleared_debit = 0 and the formula reduces to
-        max(estimated - sum_credit, uncleared_debit), which is the
-        original pre-fix behavior from scope doc section 4.2.  This is
-        why the fix is backward compatible.
+        max(estimated - sum_credit, uncleared_debit), which matches
+        the pre-cleared-flag behavior from scope doc section 4.2.
 
     Example (the user's grocery bug):
       est = 500, three cleared debit purchases summing to 462.34.
@@ -332,28 +328,56 @@ def _entry_aware_amount(txn):
       remaining budget to hold back now that the anchor reflects the
       first three purchases.
 
-    This function NEVER triggers a lazy load.  It checks __dict__
-    directly to determine if entries were eagerly loaded (via
-    selectinload).  When entries are not loaded, it falls back to
-    effective_amount -- the standard behavior for all services that
-    do not selectinload entries.  Also safe for non-ORM objects
-    (e.g. test fakes) where 'entries' is simply absent.
+    Seam removed (Commit 5 / CRIT-01 / F-009 / E-25): the pre-Commit-5
+    implementation guarded the entry formula behind an
+    eager-load presence check on the relationship (the ``entries``
+    key in the SQLAlchemy instance dict), and returned
+    ``txn.effective_amount`` whenever that check missed.  That
+    silently degraded to the non-entries-aware value whenever the
+    consuming query had not issued
+    ``selectinload(Transaction.entries)``.  Symptom #1 ($160 on grid
+    vs $114.29 on /savings for the same data) is exactly that seam in
+    production: the grid eager-loaded entries and computed the
+    reduction; /savings did not and got back ``estimated_amount``
+    unchanged.  E-25's correction makes the canonical producer
+    ``app.services.balance_resolver.balances_for`` always
+    eager-load entries, so this function never sees an unloaded
+    relationship from a routed caller.  The remaining
+    ``getattr(txn, "entries", ())`` access below covers two safe
+    cases:
+
+      * **Not-yet-routed ORM callers** (savings/accounts/calendar/
+        year-end/investment/retirement, fixed in Commits 6-9): the
+        SQLAlchemy descriptor lazy-loads the relationship.  The
+        caller now gets the CORRECT entries-aware value with one
+        extra SELECT per transaction (acceptable for the transition;
+        the producer routing eliminates the extra query).
+      * **Non-ORM test fakes** with no ``entries`` attribute:
+        ``getattr`` returns the default ``()``, the empty-entries
+        early return fires, and the function returns
+        ``effective_amount`` -- the same behavior pre-Commit-5 had
+        for test fakes.
+
+    What is no longer possible: the same Projected envelope expense
+    yielding two different values for two different consumers based
+    purely on whether their query happened to ``selectinload``.
 
     Args:
-        txn: A Transaction object with entries optionally eager-loaded
-             via selectinload.
+        txn: A Transaction object.  The ``entries`` relationship may
+            be eager-loaded (canonical producer), unloaded
+            (transitional caller; lazy-loads on demand), or absent
+            (test fake).
 
     Returns:
-        Decimal -- the amount this transaction contributes to checking balance.
+        Decimal -- the amount this transaction contributes to checking
+        balance.
     """
-    # Check if entries were eagerly loaded without triggering a lazy load.
-    # For SQLAlchemy models, unloaded lazy='select' relationships are NOT
-    # in __dict__ until accessed; selectinload populates them eagerly.
-    # For non-ORM objects (e.g. test fakes), 'entries' is absent.
-    if 'entries' not in txn.__dict__:
-        return txn.effective_amount
-
-    entries = txn.__dict__['entries']
+    # ``getattr`` with a default of ``()`` handles both unloaded ORM
+    # relationships (descriptor lazy-loads via the session) and
+    # non-ORM fakes (no attribute defined).  The empty-tuple default
+    # passes the falsy check below, mirroring the original empty-list
+    # short-circuit and keeping non-ORM tests stable.
+    entries = getattr(txn, "entries", ())
     if not entries:
         return txn.effective_amount
 

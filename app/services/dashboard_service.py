@@ -24,7 +24,7 @@ from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_calculator, pay_period_service
+from app.services import balance_resolver, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.scenario_resolver import get_baseline_scenario
@@ -675,34 +675,32 @@ def _compute_balances(
     periods: list[PayPeriod],
     scenario: Scenario,
 ) -> dict[int, Decimal] | None:
-    """Run the balance calculator for the default account.
+    """Run the canonical balance producer for the default account.
 
-    Returns the period_id -> Decimal balance mapping, or None if
-    the anchor is not set.
+    Routes through :func:`app.services.balance_resolver.balances_for`
+    (E-25 / Commit 5).  The producer owns its own
+    ``selectinload(Transaction.entries)`` query, so this helper no
+    longer assembles one of its own: the entries-aware reduction is
+    applied unconditionally regardless of how this function is
+    invoked, which is the structural fix for CRIT-01 / F-009 /
+    symptom #1.  The pre-Commit-5 dashboard already eager-loaded
+    entries, so the returned values are byte-identical to the
+    pre-routing computation -- this routing change is regression-safe
+    for the dashboard's pinned tests.
+
+    Returns the period_id -> Decimal balance mapping, or None if no
+    periods were supplied.  Post-Commit-3 every account has a
+    resolvable anchor, so the historical ``current_anchor_period_id
+    is None`` guard is no longer needed; the producer raises
+    ``RuntimeError`` if the invariant ever regresses.
     """
-    if not periods or account.current_anchor_period_id is None:
+    if not periods:
         return None
 
-    period_ids = [p.id for p in periods]
-    txns = (
-        db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.scenario_id == scenario.id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
+    balance_result = balance_resolver.balances_for(
+        account, scenario.id, periods,
     )
-
-    balances, _ = balance_calculator.calculate_balances(
-        account.current_anchor_balance,
-        account.current_anchor_period_id,
-        periods,
-        txns,
-    )
-    return dict(balances)
+    return dict(balance_result.balances)
 
 
 def _empty_dashboard(has_default_account: bool = True) -> dict:
