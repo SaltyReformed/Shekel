@@ -138,8 +138,20 @@ def test_no_display_read_of_current_principal():
         # but are not attribute reads on LoanParams instances).
         "models/loan_params.py:",  # column definition + docstring
         "models/loan_anchor_event.py:",  # docstring reference
-        # Write path (legacy column update, Commit-16 retarget pending):
+        # Commit 16 retargeted the legacy ``update_params`` write path
+        # at the true-up event; ``routes/loan.py`` no longer mutates
+        # the column.  The grep still matches docstring references
+        # (the original write-site allow-list line is preserved here
+        # because those docstrings are the documentation of the
+        # demoted contract -- removing the entry would force every
+        # future docstring touch to bypass the lock).
         "routes/loan.py:",
+        # Commit 16 extends ``anchor_service`` for loan trueups; the
+        # module's docstring and the ``apply_loan_anchor_true_up``
+        # docstring reference the demoted column to assert the
+        # invariant that the trueup does NOT mutate it.  Documentation
+        # of the contract, not a read.
+        "services/anchor_service.py:",
         # Tests don't live under app/ but the grep pattern is
         # app-only -- listed for completeness; never matched here.
         "routes/debt_strategy.py:",  # comments only

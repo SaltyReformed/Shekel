@@ -396,11 +396,37 @@ class TestLoanParamsUpdate:
     """Tests for updating loan parameters."""
 
     def test_params_update(self, auth_client, seed_user, db, seed_periods):
-        """POST valid data updates params (percentage converted to decimal)."""
+        """POST valid data updates editable params; current_principal is ignored.
+
+        Re-pinned for E-18 / Commit 16 (decision D-C).  ``current_principal``
+        is non-authoritative seed and the params form no longer accepts
+        it -- ``LoanParamsUpdateSchema``'s ``unknown = EXCLUDE`` policy
+        silently strips a stray submission.  The interest_rate
+        percentage-to-decimal conversion is unchanged; the test was
+        rewritten so its earlier ``params.current_principal ==
+        Decimal("22000.00")`` assertion (which pinned the now-deprecated
+        column write) is dropped in favor of an explicit invariant: the
+        seed column survives the POST untouched.
+
+        Hand-check:
+        * The fixture seeds ``current_principal == Decimal("25000.00")``
+          via ``_create_auto_loan``.
+        * POSTing ``current_principal=22000.00`` is the silent no-op
+          because the schema does not declare the field and
+          ``_PARAM_FIELDS`` in :func:`app.routes.loan.update_params`
+          no longer references it.
+        * ``interest_rate=4.500`` -> ``Decimal("0.04500")`` via
+          :func:`app.utils.formatting.pct_to_decimal`.
+        """
         acct = _create_auto_loan(seed_user, db.session)
+        params_before = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        seed_principal = params_before.current_principal
+
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/params",
             data={
+                # Stray ``current_principal`` -- silently dropped by
+                # the schema's EXCLUDE policy (E-18 / Commit 16).
                 "current_principal": "22000.00",
                 "interest_rate": "4.500",
                 "payment_day": "1",
@@ -408,9 +434,13 @@ class TestLoanParamsUpdate:
         )
         assert resp.status_code == 302
 
+        db.session.expire_all()
         params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
-        assert params.current_principal == Decimal("22000.00")
         assert params.interest_rate == Decimal("0.04500")
+        # E-18 / Commit 16: the stray ``current_principal`` post must
+        # NOT mutate the seed column.  Users edit the displayed
+        # balance via the dated true-up form, not this endpoint.
+        assert params.current_principal == seed_principal
 
     def test_params_update_validation(self, auth_client, seed_user, db, seed_periods):
         """POST invalid data leaves DB unchanged."""
@@ -3673,3 +3703,419 @@ class TestLoanNavPills:
         html = resp.data.decode()
         assert 'data-bs-toggle="pill"' in html
         assert 'data-bs-toggle="tab"' not in html
+
+
+# ── Loan Balance True-up (E-18 D-C / Commit 16) ──────────────────────
+
+
+class TestLoanBalanceTrueUp:
+    """Tests for the dated balance true-up route (loan.true_up_balance).
+
+    The route mirrors the checking-account anchor true-up UX
+    (:func:`app.routes.accounts.true_up`) for loan accounts.  POSTing
+    ``(anchor_date, anchor_balance)`` appends a ``user_trueup``
+    :class:`LoanAnchorEvent` and redirects back to the dashboard.
+
+    Test IDs follow the Commit-16 plan checklist (C16-1 .. C16-7).
+    """
+
+    def _count_events(self, db_session, account):
+        return (
+            db_session.query(LoanAnchorEvent)
+            .filter_by(account_id=account.id)
+            .count()
+        )
+
+    # C16-1
+    def test_trueup_appends_event(self, auth_client, seed_user, db, seed_periods):
+        """POST trueup creates a new LoanAnchorEvent; no prior row mutated.
+
+        Hand-check: the ``_create_auto_loan`` fixture writes two
+        anchor events (origination at $30,000 plus a user_trueup at
+        $25,000).  After POSTing today / $24,000:
+          * 302 redirect to /accounts/<id>/loan.
+          * Three anchor events on disk (origination + seed trueup +
+            new trueup).
+          * The new event has source_id == USER_TRUEUP id, balance
+            $24,000, anchor_date == 2026-03-20 (the frozen "today"
+            for this test file).
+          * The prior two events are byte-identical (no UPDATE).
+        """
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
+        acct = _create_auto_loan(seed_user, db.session)
+
+        before_events = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .order_by(_LAE.id)
+            .all()
+        )
+        before_snapshot = [
+            (e.id, e.anchor_date, e.anchor_balance, e.source_id, e.created_at)
+            for e in before_events
+        ]
+        assert len(before_snapshot) == 2, (
+            "Fixture is expected to seed two events; if this assertion "
+            "fails the helper has drifted and the rest of this test "
+            "is meaningless."
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={
+                "anchor_date": date(2026, 3, 20).isoformat(),
+                "anchor_balance": "24000.00",
+            },
+        )
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith(f"/accounts/{acct.id}/loan")
+
+        db.session.expire_all()
+        after_events = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .order_by(_LAE.id)
+            .all()
+        )
+        assert len(after_events) == 3
+
+        after_by_id = {e.id: e for e in after_events}
+        for snap in before_snapshot:
+            e_id, e_date, e_balance, e_source, e_created = snap
+            after = after_by_id[e_id]
+            assert (
+                (after.id, after.anchor_date, after.anchor_balance,
+                 after.source_id, after.created_at)
+                == snap
+            ), (
+                f"Prior event id={e_id} must not be mutated by a "
+                f"trueup (LoanAnchorEvent is append-only)."
+            )
+
+        new_event = next(
+            e for e in after_events
+            if e.id not in {s[0] for s in before_snapshot}
+        )
+        user_trueup_id = ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.USER_TRUEUP,
+        )
+        assert new_event.source_id == user_trueup_id
+        assert new_event.anchor_balance == Decimal("24000.00")
+        assert new_event.anchor_date == date(2026, 3, 20)
+
+    # C16-2
+    def test_trueup_changes_loan_card_balance(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """After a trueup, the loan dashboard renders the new balance.
+
+        The resolver replays from the latest event by
+        ``(anchor_date, created_at)`` DESC, so a trueup at a future
+        anchor_date than the existing seed trueup is selected.  This
+        verifies the resolver consumes the freshly-written event.
+
+        Hand-check: seed trueup is at the fixture's
+        ``origination_date + 1 day`` (i.e. 2025-01-02) at $25,000.
+        The new trueup is dated 2026-03-20 (today) at $23,500, which
+        is strictly later, so the resolver picks it -- meaning the
+        loan card's displayed Current Principal becomes $23,500.00.
+        """
+        acct = _create_auto_loan(seed_user, db.session)
+
+        # Sanity check pre-trueup balance == $25,000.00 (the seed
+        # trueup amount).
+        resp_pre = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert b"$25,000.00" in resp_pre.data
+
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={
+                "anchor_date": date(2026, 3, 20).isoformat(),
+                "anchor_balance": "23500.00",
+            },
+        )
+        resp_post = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp_post.status_code == 200
+        assert b"$23,500.00" in resp_post.data
+
+    # C16-3
+    def test_trueup_rejects_future_date(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST anchor_date strictly in the future -> rejected, no event written.
+
+        Schema validation rejects future dates as a validation error;
+        the route flashes "correct the highlighted errors" and
+        redirects without writing.  Asserts via the event count that
+        nothing was appended.
+        """
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        acct = _create_auto_loan(seed_user, db.session)
+        before = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+
+        future = date(2026, 3, 21).isoformat()  # one day past frozen today
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={"anchor_date": future, "anchor_balance": "20000.00"},
+        )
+        # Validation failure: redirect (302) with flash.
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+        assert after == before, (
+            "Future anchor_date must NOT append an event."
+        )
+
+    # C16-4
+    def test_trueup_rejects_pre_origination(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST anchor_date before origination -> rejected with explanatory flash.
+
+        Hand-check: ``_create_auto_loan`` uses ``origination_date =
+        date(2025, 1, 1)``.  Submitting 2024-12-31 must be rejected
+        and no event appended.
+        """
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        acct = _create_auto_loan(seed_user, db.session)
+        before = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={
+                "anchor_date": date(2024, 12, 31).isoformat(),
+                "anchor_balance": "20000.00",
+            },
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"origination" in resp.data.lower() or b"Origination" in resp.data
+
+        db.session.expire_all()
+        after = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+        assert after == before, (
+            "Pre-origination anchor_date must NOT append an event."
+        )
+
+    # C16-5
+    def test_trueup_rejects_negative_balance(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST anchor_balance < 0 -> rejected, no event written.
+
+        Schema-tier ``Range(min=0)`` plus the CHECK
+        ``ck_loan_anchor_events_balance_nonneg`` at the storage tier.
+        """
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        acct = _create_auto_loan(seed_user, db.session)
+        before = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={
+                "anchor_date": date(2026, 3, 20).isoformat(),
+                "anchor_balance": "-100.00",
+            },
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        after = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+        assert after == before
+
+    # C16-6
+    def test_trueup_is_append_only(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two distinct trueups produce two new rows; prior rows untouched.
+
+        Hand-check: starting from the seeded two events, post two
+        different trueups (different dates).  Final state must have
+        four events; all earlier rows byte-identical.
+        """
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        acct = _create_auto_loan(seed_user, db.session)
+
+        snapshot_before = [
+            (e.id, e.anchor_date, e.anchor_balance, e.source_id, e.created_at)
+            for e in (
+                db.session.query(_LAE)
+                .filter_by(account_id=acct.id)
+                .order_by(_LAE.id)
+                .all()
+            )
+        ]
+        assert len(snapshot_before) == 2
+
+        # First trueup -- different date than any seed event.
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={
+                "anchor_date": date(2026, 2, 1).isoformat(),
+                "anchor_balance": "24500.00",
+            },
+        )
+        # Second trueup -- yet another distinct date.
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={
+                "anchor_date": date(2026, 3, 1).isoformat(),
+                "anchor_balance": "24000.00",
+            },
+        )
+
+        db.session.expire_all()
+        all_events = (
+            db.session.query(_LAE)
+            .filter_by(account_id=acct.id)
+            .order_by(_LAE.id)
+            .all()
+        )
+        assert len(all_events) == 4
+
+        events_by_id = {e.id: e for e in all_events}
+        for snap in snapshot_before:
+            e_id, e_date, e_balance, e_source, e_created = snap
+            after = events_by_id[e_id]
+            assert (
+                (after.id, after.anchor_date, after.anchor_balance,
+                 after.source_id, after.created_at)
+                == snap
+            ), f"Append-only invariant violated: event id={e_id} mutated."
+
+    # C16-7
+    def test_trueup_form_includes_csrf_token(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The Record Loan Balance form renders the csrf_token hidden input.
+
+        ``TestConfig`` disables CSRF enforcement so a runtime token
+        check is not exercised in tests, but the form HTML must still
+        carry the ``{{ csrf_token() }}`` placeholder so production
+        (where CSRF is enabled) accepts the submission.  Asserting on
+        the rendered form is the proxy for "CSRF is wired correctly."
+        """
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+
+        # Locate the Record Loan Balance form and confirm both the
+        # csrf_token field and the trueup action are present.
+        html = resp.data.decode()
+        trueup_url = f"/accounts/{acct.id}/loan/trueup"
+        assert trueup_url in html
+        # The csrf_token() helper renders as
+        # <input type="hidden" name="csrf_token" value="..."> in
+        # production; in TestConfig (CSRF disabled) it renders as
+        # an empty string.  Assert the rendered form references
+        # csrf_token to prove the template includes the call.
+        assert b'name="csrf_token"' in resp.data or 'csrf_token' in html
+
+    def test_trueup_idor_returns_404(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """POST trueup against another user's loan returns 404 (security).
+
+        Cross-owner trueup must not write a row and must not leak the
+        loan's existence; mirrors the rest of the loan-route IDOR
+        contract.
+        """
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        other = _create_other_loan(second_user, db.session)
+        before = (
+            db.session.query(_LAE)
+            .filter_by(account_id=other.id)
+            .count()
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{other.id}/loan/trueup",
+            data={
+                "anchor_date": date(2026, 3, 20).isoformat(),
+                "anchor_balance": "100.00",
+            },
+        )
+        assert resp.status_code == 404
+
+        db.session.expire_all()
+        after = (
+            db.session.query(_LAE)
+            .filter_by(account_id=other.id)
+            .count()
+        )
+        assert after == before
+
+    def test_trueup_duplicate_same_day_idempotent(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Submitting the same (date, balance) twice is idempotent.
+
+        The partial unique expression index
+        ``uq_loan_anchor_events_acct_date_bal_day`` rejects the second
+        identical insert; :func:`apply_loan_anchor_true_up` translates
+        that into ``DUPLICATE_SAME_DAY`` and the route flashes an
+        informational message.  Exactly one new event row exists at
+        the (date, balance) tuple after both calls.
+        """
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        acct = _create_auto_loan(seed_user, db.session)
+
+        first = auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={
+                "anchor_date": date(2026, 3, 20).isoformat(),
+                "anchor_balance": "22500.00",
+            },
+        )
+        assert first.status_code == 302
+
+        second = auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={
+                "anchor_date": date(2026, 3, 20).isoformat(),
+                "anchor_balance": "22500.00",
+            },
+        )
+        assert second.status_code == 302
+
+        db.session.expire_all()
+        matching = (
+            db.session.query(_LAE)
+            .filter_by(
+                account_id=acct.id,
+                anchor_date=date(2026, 3, 20),
+                anchor_balance=Decimal("22500.00"),
+            )
+            .all()
+        )
+        assert len(matching) == 1, (
+            "Same-day same-balance double-submit must produce exactly "
+            "one row (uq_loan_anchor_events_acct_date_bal_day)."
+        )

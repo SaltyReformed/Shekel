@@ -157,20 +157,16 @@
             <h6 class="mb-0"><i class="bi bi-gear"></i> Loan Parameters</h6>
           </div>
           <div class="card-body">
+            {# E-18 / Commit 16 (decision D-C): the "Current Principal"
+               input was removed from this form.  The column is now
+               non-authoritative seed and the displayed current
+               balance is the resolver's output.  Users edit the
+               balance by appending a dated LoanAnchorEvent via the
+               "Record Loan Balance" form below.  Mirrors the
+               checking-account anchor true-up UX. #}
             <form method="POST" action="{{ url_for('loan.update_params', account_id=account.id) }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <div class="row mb-3">
-                <div class="col-6">
-                  <label for="current_principal" class="form-label">Current Principal</label>
-                  {# Edit-form pre-population uses the resolver-derived
-                     current_balance so the field starts at the same
-                     value the loan card displays.  Commit 16 replaces
-                     this whole form with the dated-true-up UX (decision
-                     D-C) and writes a LoanAnchorEvent instead of
-                     UPDATEing the column. #}
-                  <input type="number" class="form-control" id="current_principal" name="current_principal"
-                         value="{{ "%.2f"|format(current_principal_display|float) }}" step="0.01" min="0">
-                </div>
                 <div class="col-6">
                   <label for="interest_rate" class="form-label">Interest Rate</label>
                   <div class="input-group">
@@ -178,6 +174,11 @@
                            value="{{ "%.3f"|format(params.interest_rate|float * 100) }}" step="0.001" min="0" max="100">
                     <span class="input-group-text">%</span>
                   </div>
+                </div>
+                <div class="col-6">
+                  <label for="payment_day" class="form-label">Payment Day</label>
+                  <input type="number" class="form-control" id="payment_day" name="payment_day"
+                         value="{{ params.payment_day }}" min="1" max="31">
                 </div>
               </div>
               <div class="row mb-3">
@@ -188,16 +189,11 @@
                          max="{{ account_type.max_term_months or 600 }}">
                 </div>
                 <div class="col-6">
-                  <label for="payment_day" class="form-label">Payment Day</label>
-                  <input type="number" class="form-control" id="payment_day" name="payment_day"
-                         value="{{ params.payment_day }}" min="1" max="31">
-                </div>
-              </div>
-              <div class="mb-3">
-                <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="is_arm" name="is_arm"
-                         {% if params.is_arm %}checked{% endif %} value="true">
-                  <label class="form-check-label" for="is_arm">Adjustable Rate (ARM)</label>
+                  <div class="form-check mt-4 pt-2">
+                    <input class="form-check-input" type="checkbox" id="is_arm" name="is_arm"
+                           {% if params.is_arm %}checked{% endif %} value="true">
+                    <label class="form-check-label" for="is_arm">Adjustable Rate (ARM)</label>
+                  </div>
                 </div>
               </div>
               <button type="submit" class="btn btn-primary btn-sm">
@@ -206,6 +202,57 @@
             </form>
           </div>
         </div>
+      </div>
+    </div>
+
+    {# --- Record Loan Balance (dated true-up) --- #}
+    {# E-18 / Commit 16 (decision D-C).  Mirrors the checking-account
+       anchor true-up UX so the mental model is consistent across
+       account types: the user asserts "the lender reports my
+       balance is $X as of date D" and the resolver replays
+       confirmed payments forward from that event.  The table is
+       structurally append-only -- a correction is expressed as
+       another append, never an edit. #}
+    <div class="card mb-4" id="record-loan-balance">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-pencil-square"></i> Record Loan Balance</h6>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          When the lender reports a balance that differs from the
+          projected value, record it here as a dated true-up.
+          The amortization schedule and current principal will
+          replay forward from this date.
+        </p>
+        <form method="POST" action="{{ url_for('loan.true_up_balance', account_id=account.id) }}"
+              class="row g-2 align-items-end">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="col-md-4">
+            <label for="anchor_date" class="form-label">As of Date</label>
+            <input type="date" class="form-control form-control-sm"
+                   id="anchor_date" name="anchor_date"
+                   min="{{ params.origination_date.isoformat() }}"
+                   max="{{ today_iso }}"
+                   value="{{ today_iso }}"
+                   required>
+          </div>
+          <div class="col-md-4">
+            <label for="anchor_balance" class="form-label">Balance</label>
+            <div class="input-group input-group-sm">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control"
+                     id="anchor_balance" name="anchor_balance"
+                     step="0.01" min="0"
+                     value="{{ "%.2f"|format(current_principal_display|float) }}"
+                     required>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <button type="submit" class="btn btn-primary btn-sm">
+              <i class="bi bi-check-lg"></i> Record Balance
+            </button>
+          </div>
+        </form>
       </div>
     </div>
 

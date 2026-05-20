@@ -1454,8 +1454,16 @@ class LoanParamsCreateSchema(BaseSchema):
 class LoanParamsUpdateSchema(BaseSchema):
     """Validates POST data for updating loan parameters.
 
-    All fields optional (partial update).  original_principal and
-    origination_date are omitted -- not updatable after initial setup.
+    All fields optional (partial update).  ``original_principal`` and
+    ``origination_date`` are omitted -- not updatable after initial
+    setup.  ``current_principal`` is omitted (E-18 / Commit 16): the
+    column is non-authoritative seed and the displayed current
+    balance is the loan resolver's output.  Users edit the balance
+    by appending a :class:`LoanAnchorEvent` via the dated true-up
+    form (validated by :class:`LoanAnchorTrueupSchema` below), not by
+    POSTing this schema.  Stray ``current_principal`` form fields
+    submitted by a stale client are silently excluded by
+    :class:`BaseSchema`'s ``unknown = EXCLUDE`` policy and ignored.
     """
 
     @pre_load
@@ -1463,13 +1471,70 @@ class LoanParamsUpdateSchema(BaseSchema):
         """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
-    current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
     interest_rate = fields.Decimal(places=5, as_string=True, validate=validate.Range(min=0, max=100))
     term_months = fields.Integer(validate=validate.Range(min=1, max=600))
     payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
     is_arm = fields.Boolean()
     arm_first_adjustment_months = fields.Integer(allow_none=True)
     arm_adjustment_interval_months = fields.Integer(allow_none=True)
+
+
+class LoanAnchorTrueupSchema(BaseSchema):
+    """Validates POST data for the loan dashboard balance true-up form.
+
+    Records a dated loan-balance assertion (E-18 decision D-C / Commit
+    16) by appending a ``user_trueup`` :class:`LoanAnchorEvent`.  The
+    resolver replays confirmed payments forward from this event to
+    derive every loan-touching display, so a trueup is the user's way
+    of saying "as of date D, the lender reports my balance is $X."
+
+    Schema-tier validation:
+
+    * ``anchor_date`` is required and must not be in the future --
+      a trueup is a historical assertion; "the lender will say X
+      next month" is not meaningful.
+    * ``anchor_balance`` is required and must be ``>= 0`` -- a
+      negative loan balance is not a real-world state.  The
+      ``ck_loan_anchor_events_balance_nonneg`` CHECK at the storage
+      tier backstops this if a future caller bypasses the schema.
+
+    The pre-origination check (``anchor_date >= params.origination_date``)
+    is enforced by the route, not the schema, because the schema does
+    not have access to the loan's origination date.  Routing the
+    check through the route layer keeps the schema standalone and
+    keeps :class:`LoanParams` out of the schemas module's import
+    graph.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
+        return {k: v for k, v in data.items() if v != ""}
+
+    anchor_date = fields.Date(required=True)
+    anchor_balance = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=Decimal("0")),
+    )
+
+    @validates_schema
+    def validate_not_future(self, data, **kwargs):
+        """Reject ``anchor_date`` strictly after today.
+
+        Imported inline -- the module loads at app construction time
+        and ``date.today()`` evaluated at import time would freeze
+        the "today" floor at gunicorn boot, defeating the validator
+        for any request after the boot day.  Resolving ``today``
+        per-request keeps the floor live.
+        """
+        from datetime import date as _date  # pylint: disable=import-outside-toplevel
+        anchor_date = data.get("anchor_date")
+        if anchor_date is not None and anchor_date > _date.today():
+            raise ValidationError(
+                {"anchor_date": [
+                    "Anchor date cannot be in the future."
+                ]}
+            )
 
 
 class RateChangeSchema(BaseSchema):

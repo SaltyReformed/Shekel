@@ -22,8 +22,12 @@ import pytest
 from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 
+from app import ref_cache
+from app.enums import LoanAnchorSourceEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.models.loan_anchor_event import LoanAnchorEvent
+from app.models.loan_params import LoanParams
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -31,8 +35,10 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import account_service, anchor_service, pay_period_service
 from app.services.anchor_service import (
     ANCHOR_HISTORY_UNIQUE_INDEX,
+    LOAN_ANCHOR_EVENT_UNIQUE_INDEX,
     AnchorTrueUpOutcome,
     apply_anchor_true_up,
+    apply_loan_anchor_true_up,
 )
 
 
@@ -575,3 +581,321 @@ class TestApplyAnchorTrueUpModuleContract:
         assert members == {
             "COMMITTED", "STALE_CONFLICT", "DUPLICATE_SAME_DAY",
         }
+
+
+# ── Loan Anchor Trueup ────────────────────────────────────────────────
+
+
+def _make_loan_account(seed_user, name="Helper Loan",
+                       original_principal="20000.00",
+                       interest_rate="0.05000",
+                       term_months=60,
+                       origination_date=None):
+    """Create a fresh Auto Loan account + LoanParams + origination event.
+
+    Builds the minimal loan inventory the loan-anchor true-up tests
+    need: an account, a :class:`LoanParams` row, and an origination
+    :class:`LoanAnchorEvent`.  Mirrors the production setup in
+    :func:`app.routes.loan.create_params` so the same anchor-event
+    invariants the resolver relies on are satisfied.
+
+    Returns the Account ORM instance.
+    """
+    if origination_date is None:
+        origination_date = date.today() - timedelta(days=365)
+
+    auto_type = db.session.query(AccountType).filter_by(
+        name="Auto Loan",
+    ).one()
+    account = account_service.create_account(
+        user_id=seed_user["user"].id,
+        account_type_id=auto_type.id,
+        name=name,
+        anchor_balance=Decimal(original_principal),
+    )
+    db.session.flush()
+
+    params = LoanParams(
+        account_id=account.id,
+        original_principal=Decimal(original_principal),
+        current_principal=Decimal(original_principal),
+        interest_rate=Decimal(interest_rate),
+        term_months=term_months,
+        origination_date=origination_date,
+        payment_day=1,
+    )
+    db.session.add(params)
+    db.session.flush()
+
+    db.session.add(LoanAnchorEvent(
+        account_id=account.id,
+        anchor_date=origination_date,
+        anchor_balance=Decimal(original_principal),
+        source_id=ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.ORIGINATION,
+        ),
+    ))
+    db.session.commit()
+    return account
+
+
+class TestApplyLoanAnchorTrueUpCommitted:
+    """COMMITTED outcome: helper appends an event and commits."""
+
+    def test_commits_appends_new_event_without_mutating_prior(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Helper writes a single new user_trueup event; prior rows untouched.
+
+        Hand-check: fixture seeds exactly one origination event at
+        $20,000 dated 365 days ago.  After
+        :func:`apply_loan_anchor_true_up` with anchor $18,500 dated
+        today:
+          * Outcome is COMMITTED.
+          * Total event count is 2 (origination + new trueup).
+          * The new event has ``source_id`` == USER_TRUEUP id, the
+            posted balance, and the posted date.
+          * The origination event is byte-identical (no UPDATE).
+            Compared by primary key + every persisted column to
+            prove append-only semantics.
+          * :class:`LoanParams.current_principal` is unchanged
+            (the column is non-authoritative seed; the trueup writes
+            an event, not the column).
+        """
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            db.session.commit()
+
+            origination = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=account.id)
+                .one()
+            )
+            orig_snapshot = (
+                origination.id,
+                origination.anchor_date,
+                origination.anchor_balance,
+                origination.source_id,
+                origination.created_at,
+            )
+            params_before = (
+                db.session.query(LoanParams)
+                .filter_by(account_id=account.id)
+                .one()
+            )
+            seed_principal = params_before.current_principal
+
+            outcome = apply_loan_anchor_true_up(
+                account=account,
+                anchor_balance=Decimal("18500.00"),
+                anchor_date=date.today(),
+            )
+
+            assert outcome is AnchorTrueUpOutcome.COMMITTED
+
+            db.session.expire_all()
+            events = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=account.id)
+                .order_by(LoanAnchorEvent.id)
+                .all()
+            )
+            assert len(events) == 2, (
+                "Trueup must append exactly one new event."
+            )
+
+            origination_after = next(e for e in events if e.id == orig_snapshot[0])
+            after_snapshot = (
+                origination_after.id,
+                origination_after.anchor_date,
+                origination_after.anchor_balance,
+                origination_after.source_id,
+                origination_after.created_at,
+            )
+            assert after_snapshot == orig_snapshot, (
+                "Prior origination event must NOT be mutated by a "
+                "trueup (LoanAnchorEvent is structurally append-only)."
+            )
+
+            trueup = next(e for e in events if e.id != orig_snapshot[0])
+            user_trueup_source_id = ref_cache.loan_anchor_source_id(
+                LoanAnchorSourceEnum.USER_TRUEUP,
+            )
+            assert trueup.source_id == user_trueup_source_id
+            assert trueup.anchor_balance == Decimal("18500.00")
+            assert trueup.anchor_date == date.today()
+
+            # :class:`LoanParams.current_principal` is non-authoritative
+            # seed (E-18) -- the trueup must NOT mutate it.
+            params_after = (
+                db.session.query(LoanParams)
+                .filter_by(account_id=account.id)
+                .one()
+            )
+            assert params_after.current_principal == seed_principal
+
+
+class TestApplyLoanAnchorTrueUpDuplicateSameDay:
+    """DUPLICATE_SAME_DAY: same (date, balance) on the same UTC day -> idempotent."""
+
+    def test_double_call_same_balance_returns_duplicate_same_day(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Two identical trueups produce exactly one new event row.
+
+        Hand-check: :func:`apply_loan_anchor_true_up` called twice
+        with the same ``(date, balance)`` on the same UTC day
+        returns ``COMMITTED`` then ``DUPLICATE_SAME_DAY``, and the
+        event log shows exactly one trueup row (plus the
+        origination).
+        """
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            today = date.today()
+
+            outcome_first = apply_loan_anchor_true_up(
+                account=account,
+                anchor_balance=Decimal("17000.00"),
+                anchor_date=today,
+            )
+            assert outcome_first is AnchorTrueUpOutcome.COMMITTED
+
+            outcome_second = apply_loan_anchor_true_up(
+                account=account,
+                anchor_balance=Decimal("17000.00"),
+                anchor_date=today,
+            )
+            assert outcome_second is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
+
+            db.session.expire_all()
+            trueups = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(
+                    account_id=account.id,
+                    anchor_balance=Decimal("17000.00"),
+                    anchor_date=today,
+                )
+                .all()
+            )
+            assert len(trueups) == 1, (
+                "Same-day same-balance double-submit must produce "
+                "exactly one row (uq_loan_anchor_events_acct_date_bal_day)."
+            )
+
+    def test_same_day_different_balance_both_commit(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Same-day trueups with different balances both succeed.
+
+        The unique index covers ``anchor_balance`` as well as
+        ``anchor_date``, so a legitimate same-day correction (the
+        user noticed an error and re-trued at a different amount)
+        MUST NOT be blocked.  Both calls return ``COMMITTED``; the
+        resolver's (anchor_date, created_at) DESC ordering naturally
+        picks the later one for display.
+        """
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            today = date.today()
+
+            outcome_a = apply_loan_anchor_true_up(
+                account=account,
+                anchor_balance=Decimal("17000.00"),
+                anchor_date=today,
+            )
+            outcome_b = apply_loan_anchor_true_up(
+                account=account,
+                anchor_balance=Decimal("16500.00"),
+                anchor_date=today,
+            )
+            assert outcome_a is AnchorTrueUpOutcome.COMMITTED
+            assert outcome_b is AnchorTrueUpOutcome.COMMITTED
+
+            db.session.expire_all()
+            balances = {
+                row.anchor_balance for row in
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=account.id)
+                .all()
+            }
+            assert Decimal("17000.00") in balances
+            assert Decimal("16500.00") in balances
+
+
+class TestApplyLoanAnchorTrueUpReraisesUnknownIntegrityError:
+    """Unknown ``IntegrityError`` re-raises (no silent same-day swallowing)."""
+
+    def test_non_duplicate_integrity_error_is_reraised(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A different constraint failure must NOT be treated as idempotent.
+
+        Engineers the case by patching ``is_unique_violation`` (the
+        helper's discriminator) to return False -- the helper sees an
+        IntegrityError but cannot confirm it is the same-day uniqueness
+        violation, so it must re-raise.  Pins the "don't silently
+        swallow IntegrityError" contract independent of which
+        constraint the engine fired.
+        """
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            today = date.today()
+
+            outcome_first = apply_loan_anchor_true_up(
+                account=account,
+                anchor_balance=Decimal("19000.00"),
+                anchor_date=today,
+            )
+            assert outcome_first is AnchorTrueUpOutcome.COMMITTED
+
+            with patch(
+                "app.services.anchor_service.is_unique_violation",
+                return_value=False,
+            ):
+                with pytest.raises(IntegrityError):
+                    apply_loan_anchor_true_up(
+                        account=account,
+                        anchor_balance=Decimal("19000.00"),
+                        anchor_date=today,
+                    )
+
+            # Session is clean after the re-raise (the helper rolled
+            # back before raising, so subsequent work is unimpeded).
+            db.session.rollback()
+            trueups_at_balance = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(
+                    account_id=account.id,
+                    anchor_balance=Decimal("19000.00"),
+                )
+                .all()
+            )
+            assert len(trueups_at_balance) == 1, (
+                "First trueup row survives; the re-raised "
+                "IntegrityError rolled back the second attempt."
+            )
+
+
+class TestApplyLoanAnchorTrueUpModuleContract:
+    """Pins the public surface of the loan-anchor helper."""
+
+    def test_loan_unique_index_constant_matches_model(self, app):
+        """The exported constant must match the live index name.
+
+        Three sites must agree: the model
+        (:class:`LoanAnchorEvent.__table_args__`), the
+        loan_anchor_events migration, and the helper (this module).
+        A drift in any one would break the same-day catch silently --
+        the IntegrityError would no longer be recognised and the
+        helper would re-raise instead of returning
+        ``DUPLICATE_SAME_DAY``.
+        """
+        with app.app_context():
+            assert LOAN_ANCHOR_EVENT_UNIQUE_INDEX == (
+                "uq_loan_anchor_events_acct_date_bal_day"
+            )
+            index_names = {
+                idx.name for idx in LoanAnchorEvent.__table_args__
+                if hasattr(idx, "name")
+            }
+            assert LOAN_ANCHOR_EVENT_UNIQUE_INDEX in index_names
