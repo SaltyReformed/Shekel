@@ -30,6 +30,7 @@ from app.enums import (
     DeductionTimingEnum,
     GoalModeEnum,
     IncomeUnitEnum,
+    LoanAnchorSourceEnum,
     RecurrencePatternEnum,
     RoleEnum,
     StatusEnum,
@@ -49,6 +50,7 @@ _tax_type_map = {}             # TaxTypeEnum member -> int (database PK)
 _goal_mode_map = {}            # GoalModeEnum member -> int (database PK)
 _income_unit_map = {}          # IncomeUnitEnum member -> int (database PK)
 _role_map = {}                 # RoleEnum member -> int (database PK)
+_loan_anchor_source_map = {}   # LoanAnchorSourceEnum member -> int (database PK)
 _acct_type_meta = {}           # int (acct_type PK) -> dict with icon_class, max_term_months
 _initialized = False
 
@@ -77,6 +79,7 @@ def init(db_session):
         DeductionTiming,
         GoalMode,
         IncomeUnit,
+        LoanAnchorSource,
         RecurrencePattern,
         Status,
         TaxType,
@@ -88,7 +91,7 @@ def init(db_session):
     global _acct_category_map, _recurrence_pattern_map  # pylint: disable=global-statement
     global _deduction_timing_map, _calc_method_map, _tax_type_map  # pylint: disable=global-statement
     global _goal_mode_map, _income_unit_map  # pylint: disable=global-statement
-    global _role_map, _acct_type_meta, _initialized  # pylint: disable=global-statement
+    global _role_map, _loan_anchor_source_map, _acct_type_meta, _initialized  # pylint: disable=global-statement
 
     # Clear any prior state (supports re-initialization in tests).
     _status_map = {}
@@ -102,6 +105,7 @@ def init(db_session):
     _goal_mode_map = {}
     _income_unit_map = {}
     _role_map = {}
+    _loan_anchor_source_map = {}
     _acct_type_meta = {}
 
     # Build name -> id lookup from the database.  ``account_types``
@@ -129,6 +133,10 @@ def init(db_session):
     goal_mode_rows = {row.name: row.id for row in db_session.query(GoalMode).all()}
     income_unit_rows = {row.name: row.id for row in db_session.query(IncomeUnit).all()}
     role_rows = {row.name: row.id for row in db_session.query(UserRole).all()}
+    loan_anchor_source_rows = {
+        row.name: row.id
+        for row in db_session.query(LoanAnchorSource).all()
+    }
 
     # Map each enum member to its database ID, collecting any misses.
     missing = []
@@ -209,6 +217,15 @@ def init(db_session):
             missing.append(f"UserRole.{member.name} (expected name={member.value!r})")
         else:
             _role_map[member] = db_id
+
+    for member in LoanAnchorSourceEnum:
+        db_id = loan_anchor_source_rows.get(member.value)
+        if db_id is None:
+            missing.append(
+                f"LoanAnchorSource.{member.name} (expected name={member.value!r})"
+            )
+        else:
+            _loan_anchor_source_map[member] = db_id
 
     if missing:
         raise RuntimeError(
@@ -462,3 +479,27 @@ def role_id(member):
     if not _initialized:
         raise RuntimeError("ref_cache not initialized -- call init() first.")
     return _role_map[member]
+
+
+def loan_anchor_source_id(member):
+    """Return the integer primary key for a LoanAnchorSourceEnum member.
+
+    Used by the loan-anchor-event writer (Commit 12 backfill, Commit 16
+    true-up flow) and the loan resolver (Commit 13) to compare against
+    ``budget.loan_anchor_events.source_id`` without ever reading the
+    string ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: A ``LoanAnchorSourceEnum`` member
+                (e.g. ``LoanAnchorSourceEnum.ORIGINATION``).
+
+    Returns:
+        int -- the ``ref.loan_anchor_sources.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid LoanAnchorSourceEnum member.
+    """
+    if not _initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
+    return _loan_anchor_source_map[member]

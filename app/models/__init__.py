@@ -16,6 +16,7 @@ from app.models.ref import (
     FilingStatus,
     GoalMode,
     IncomeUnit,
+    LoanAnchorSource,
     RaiseType,
     RecurrencePattern,
     Status,
@@ -41,6 +42,7 @@ from app.models.transfer import Transfer
 from app.models.savings_goal import SavingsGoal
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
+from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.investment_params import InvestmentParams
 

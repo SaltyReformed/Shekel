@@ -74,6 +74,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("budget", "escrow_components"),
     ("budget", "interest_params"),
     ("budget", "investment_params"),
+    ("budget", "loan_anchor_events"),
     ("budget", "loan_params"),
     ("budget", "pay_periods"),
     ("budget", "rate_history"),
@@ -280,21 +281,51 @@ def _trigger_sql_for_table(schema: str, table: str) -> Iterable[str]:
     so a re-execution leaves the trigger pinned to the same definition
     as the latest deploy.
 
+    The CREATE TRIGGER is wrapped in a ``DO $$ ... IF EXISTS ...``
+    guard against ``pg_class`` so this function is safe to call on a
+    database where the target table does not yet exist.  Migration
+    replay from scratch hits this path: the rebuild migration
+    (``a5be2a99ea14``) calls ``apply_audit_infrastructure`` against
+    the CURRENT in-code ``AUDITED_TABLES`` list, which may reference
+    tables created by LATER migrations in the chain (Commit 12 /
+    ``budget.loan_anchor_events`` was the first such case).  Without
+    the guard, replay would fail with ``relation does not exist`` at
+    the rebuild step.  The later migration that actually creates the
+    target table attaches the trigger explicitly via its own DROP +
+    CREATE pair, so the end-of-chain state still has a trigger
+    per audited table.
+
+    The companion DROP is already guarded by ``IF EXISTS`` against the
+    trigger (Postgres tolerates a missing schema/table on the DROP);
+    the CREATE is the only statement that needs the existence wrap.
+
     Args:
         schema: PostgreSQL schema (e.g. ``"budget"``).
         table:  Table name (e.g. ``"transactions"``).
 
     Yields:
-        Two SQL statements: a guarded DROP and a CREATE.  Trigger name
-        is fixed at ``audit_<table>`` to keep enumeration via
-        ``pg_trigger.tgname LIKE 'audit_%'`` simple.
+        Two SQL statements: a guarded DROP and a guarded CREATE.
+        Trigger name is fixed at ``audit_<table>`` to keep enumeration
+        via ``pg_trigger.tgname LIKE 'audit_%'`` simple.
     """
     trigger_name = f"audit_{table}"
     yield f"DROP TRIGGER IF EXISTS {trigger_name} ON {schema}.{table}"
+    # ``IF EXISTS`` guard via the ``pg_class``/``pg_namespace`` system
+    # catalogues.  The CREATE TRIGGER fires only when the target table
+    # is materialised; on a fresh-DB migration replay where a later
+    # migration owns the table creation, this step quietly no-ops and
+    # the owning migration attaches its own trigger.
     yield (
-        f"CREATE TRIGGER {trigger_name} "
-        f"AFTER INSERT OR UPDATE OR DELETE ON {schema}.{table} "
-        "FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func()"
+        "DO $$ BEGIN "
+        "IF EXISTS ("
+        "  SELECT 1 FROM pg_class c "
+        "  JOIN pg_namespace n ON n.oid = c.relnamespace "
+        f"  WHERE n.nspname = '{schema}' AND c.relname = '{table}'"
+        ") THEN "
+        f"  CREATE TRIGGER {trigger_name} "
+        f"  AFTER INSERT OR UPDATE OR DELETE ON {schema}.{table} "
+        "    FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func(); "
+        "END IF; END $$"
     )
 
 

@@ -98,6 +98,13 @@ _REF_TABLE_SEEDS = (
     ("GoalMode", ["Fixed", "Income-Relative"]),
     ("IncomeUnit", ["Paychecks", "Months"]),
     ("UserRole", ["owner", "companion"]),
+    # ``LoanAnchorSource`` -- the provenance tag carried by every row
+    # in ``budget.loan_anchor_events`` (CRIT-02 / E-18 / Commit 12).
+    # ``origination`` is materialised once per loan from the immutable
+    # LoanParams fields; ``user_trueup`` is appended by the dashboard
+    # balance-edit flow (Commit 16).  Same idempotent upsert semantics
+    # as the other reference tables.
+    ("LoanAnchorSource", ["origination", "user_trueup"]),
 )
 
 
