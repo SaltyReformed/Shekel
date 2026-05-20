@@ -360,4 +360,113 @@ corrections are batched.
 
 ---
 
+## F-5. Dead `_skip_user_bootstrap_period` global flag in `tests/conftest.py`
+
+- **Surfaced during:** Commit 11 (`test(integration): cross-page balance-
+  equality regression lock (HIGH-01)`), commit `4674e7e`.
+- **Status:** not started; trivial cleanup, can be folded into any
+  conftest-touching commit.
+
+### Problem
+
+`tests/conftest.py:844` declares `global _skip_user_bootstrap_period`
+and the `bare_user` fixture toggles it (`:853` -> True, `:857` -> False)
+around its `db.session.flush()`, but a project-wide grep
+(`grep -rn '_skip_user_bootstrap_period' /home/josh/projects/Shekel/`)
+returns matches only inside that one fixture; no `event.listens_for`
+or other listener consumes the flag.  Reading the flag's role: it
+was intended to suppress an `after_insert` listener on `User` that
+inserts a bootstrap pay period via `auth_service.create_user`-style
+machinery, so `bare_user` could yield a truly bare user (no period,
+no account anchor) for `pay_period_service` tests.  The bootstrap
+period is now inserted inline in the `bare_user` body itself rather
+than through a listener, so the flag has no reader.
+
+### Recommended direction
+
+Delete the `global` declaration and both assignments; verify the
+`bare_user` fixture still yields the bare-user-with-no-period state
+the dependent tests expect.
+
+### Why defer
+
+Dead code in a test fixture; zero functional impact.  Out of scope
+for HIGH-01 (no financial-calculation correctness signal), and the
+removal needs a targeted run of every test that consumes `bare_user`
+to confirm no implicit dependency.
+
+---
+
+## F-6. Cross-page balance lock readers could parse rendered HTML directly
+
+- **Surfaced during:** Commit 11 (`test(integration): cross-page balance-
+  equality regression lock (HIGH-01)`), commit `4674e7e`.
+- **Status:** not started; defer until after Commit 37.
+
+### Problem
+
+In `tests/test_integration/test_cross_page_balance_equality.py`, the
+grid and /accounts-checking surface readers (`_grid_value`,
+`_accounts_checking_value`) replicate the
+`balance_resolver.balances_for(...)` call that the routes make
+internally, rather than driving the route via `auth_client.get(...)`
+and parsing the rendered HTML for the displayed Decimal.  Both
+routes are exercised at the route level for status 200, but the
+Decimal extraction itself goes through the producer, so a
+hypothetical regression that bypasses `balance_resolver` in the
+route handler (e.g. someone re-introduces a hand-rolled balance
+loop in `app/routes/grid.py` and forgets to delete the
+`balance_resolver.balances_for(...)` call that the test reader
+re-runs) would not be caught by the equality assertion.
+
+The four other surface readers (dashboard, /savings, year-end,
+calendar) DO call the surface's public service function, so they
+catch divergence between the route's exposed value and the
+canonical producer.  The grid and /accounts paths are the
+remaining gap.
+
+### Recommended direction
+
+Two options, in order of cost:
+
+- **(a) Static lock on the route source** (cheap).  Add a grep-
+  style guard in `tests/test_routes/test_grid.py` and
+  `tests/test_routes/test_accounts.py` that fails when the route's
+  balance-computation block contains anything other than a
+  `balance_resolver.balances_for(...)` call -- modeled on the
+  existing `test_grid_inline_subtotal_loop_removed`
+  (`tests/test_routes/test_grid.py:3794`).
+- **(b) HTML parsing in the cross-page readers** (more authentic
+  but fragile).  Replace `_grid_value` and `_accounts_checking_value`
+  with HTML scans of the route response: grid renders
+  `${:,.0f}` in `app/templates/grid/_balance_row.html:26`; the
+  checking-detail template renders the same.  HTML parsing across
+  these specific templates needs a robust regex anchored to the
+  enclosing class (`.balance-row-summary`, the period cell index)
+  to avoid false matches.
+
+### Why defer
+
+The current readers achieve the HIGH-01 lock's stated goal -- catch
+math-layer divergence (CRIT-01 / F-009 / symptom #1, #5) -- and the
+route plumbing is guarded by the status-200 assertion plus the
+existing `test_grid_inline_subtotal_loop_removed` static lock.  A
+hypothetical route-handler bypass of `balance_resolver` is a
+narrower regression than the math-layer one HIGH-01 closes, and
+strengthening the readers is gold-plating relative to that scope.
+Option (a) above is the lower-risk follow-up if a real regression
+in this gap surfaces.
+
+### Acceptance criteria for the eventual PR
+
+- Either the grid and /accounts-checking route handlers carry a
+  static-grep guard equivalent to
+  `test_grid_inline_subtotal_loop_removed`, OR
+- `_grid_value` and `_accounts_checking_value` parse the rendered
+  HTML for the balance Decimal and assert the test still bites
+  for the symptom-tuple data.
+- Full pytest suite passes.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
