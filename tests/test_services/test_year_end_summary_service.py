@@ -2129,3 +2129,272 @@ class TestIntegration:
         # Verify net worth delta is consistent.
         nw = result["net_worth"]
         assert nw["delta"] == nw["dec31"] - nw["jan1"]
+
+
+# ── C8: Net worth uses the canonical entries-aware producer ───────
+#
+# Pre-Commit-8, ``_get_account_balance_map`` ran the checking branch
+# through ``balance_calculator.calculate_balances`` with a transaction
+# query that did NOT ``selectinload(Transaction.entries)``.  When a
+# checking account had a Projected envelope expense with cleared debit
+# entries, the silent-degrade seam in ``_entry_aware_amount`` (closed
+# at the math layer in Commit 5 by lazy-loading, structurally closed
+# here by routing through the canonical producer) returned
+# ``effective_amount`` unchanged.  Result: the same data shipped
+# $160.00 on the grid and $114.29 on the net-worth aggregate -- the
+# audit's symptom #5 facet on net worth.  Commit 8 routes the
+# checking-style branch through ``balance_resolver.balances_for`` so
+# the figure cannot disagree with the grid for the same inputs.
+
+
+def _override_account_anchor_year_end(db_session, account, pay_period, anchor_balance):
+    """Replace ``account``'s current anchor with the given balance + period.
+
+    Mirrors ``_override_anchor`` in test_savings_dashboard_service.py
+    and ``_override_account_anchor`` in test_accounts.py: appends a
+    fresh :class:`AccountAnchorHistory` row (latest-wins by
+    ``created_at``) and syncs the cache columns so the resolver's
+    cache-reconciliation log does NOT fire (cache and history agree).
+    Required because ``seed_user`` writes its origination anchor of
+    $1,000 against the seed_user bootstrap period; the Commit 8
+    symptom reproduction needs $614.29 on a chosen period inside the
+    target tax year.
+    """
+    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+
+    history = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=pay_period.id,
+        anchor_balance=anchor_balance,
+        notes="C8 symptom-#5 net-worth test: anchor override",
+    )
+    db_session.add(history)
+    db_session.flush()
+    account.current_anchor_balance = anchor_balance
+    account.current_anchor_period_id = pay_period.id
+    db_session.commit()
+
+
+def _add_envelope_expense_with_cleared_entries(
+    db_session, *, user_id, account, scenario, period, category,
+    estimated, cleared_amounts,
+):
+    """Create a Projected envelope expense with the given cleared debit entries.
+
+    Builds the ``is_envelope=True`` template + Transaction pair that
+    entries attach to, then attaches one CLEARED debit
+    :class:`TransactionEntry` per amount in ``cleared_amounts``.  These
+    are the entries that produce the F-009 / CRIT-01 silent-degrade
+    gap: pre-Commit-5 the entry-aware reduction would not run on
+    consumers that did not eager-load entries, so the cleared amount
+    (already in the anchor) would be implicitly subtracted a second
+    time off the projection.
+    """
+    from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
+    template = TransactionTemplate(
+        user_id=user_id,
+        account_id=account.id,
+        category_id=category.id,
+        transaction_type_id=expense_type_id,
+        name="Groceries",
+        default_amount=estimated,
+        is_envelope=True,
+    )
+    db_session.add(template)
+    db_session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=period.id,
+        scenario_id=scenario.id,
+        account_id=account.id,
+        status_id=projected_id,
+        name="Groceries",
+        category_id=category.id,
+        transaction_type_id=expense_type_id,
+        estimated_amount=estimated,
+    )
+    db_session.add(txn)
+    db_session.flush()
+
+    for amt in cleared_amounts:
+        db_session.add(TransactionEntry(
+            transaction_id=txn.id,
+            user_id=user_id,
+            amount=amt,
+            description="Cleared purchase",
+            entry_date=date(2026, 5, 15),
+            is_credit=False,
+            is_cleared=True,
+        ))
+    db_session.flush()
+    return txn
+
+
+class TestNetWorthEntryAware:
+    """C8-1: net-worth aggregate routes through canonical entries-aware producer.
+
+    Pins the symptom #5 (net-worth facet) fix: the year-end net-worth
+    section now reads the same checking balance as the grid and
+    /savings for the same inputs.  See remediation_plan.md Commit 8 +
+    audit finding R-1 (the silent-degrade balance seam had more
+    consumers than CRIT-01 enumerated, including the year-end summary).
+    """
+
+    def test_networth_balance_entry_aware(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C8-1: monthly net-worth value uses the entries-aware reduction.
+
+        Reproduction of symptom #5 / F-009 worked example on the
+        net-worth aggregate (``05_symptoms.md:1437-1481``):
+
+          - Real checking anchor 614.29 on a period inside YEAR (2026).
+          - One Projected envelope expense
+            ``estimated_amount = 500.00`` in the same period (so
+            ``_sum_remaining`` applies for the anchor period and
+            ``_sum_all`` for any post-anchor periods, both via
+            ``_entry_aware_amount``).
+          - Three CLEARED debit entries 20.00 + 15.71 + 10.00 = 45.71.
+            No credit entries, no uncleared debits.
+
+        Hand arithmetic (CRIT-01 / F-009 / R-1):
+
+          cleared_debit   = 20.00 + 15.71 + 10.00 = 45.71
+          uncleared_debit = 0
+          sum_credit      = 0
+          checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
+          anchor_period_balance = 614.29 + 0 - 454.29 = 160.00
+
+        With checking as the only account, the May 2026 net-worth
+        value (which reads from period index 9 ending 2026-05-22, the
+        most recent period ending on or before 2026-05-31) MUST equal
+        Decimal("160.00") -- byte-identical to the grid via
+        ``balance_resolver.balances_for``.  Pre-Commit-8 the value
+        was Decimal("114.29") (= 614.29 - 500.00) via the silent-
+        degrade seam.
+        """
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+
+        user = seed_user["user"]
+        account = seed_user["account"]
+        scenario = seed_user["scenario"]
+        # seed_periods produces 10 biweekly periods starting 2026-01-02;
+        # the last period (index 9) ends 2026-05-22, inside YEAR=2026
+        # and the May-2026 month-end bucket.
+        anchor_period = seed_periods[9]
+        _override_account_anchor_year_end(
+            db.session, account, anchor_period, Decimal("614.29"),
+        )
+
+        _add_envelope_expense_with_cleared_entries(
+            db.session,
+            user_id=user.id,
+            account=account,
+            scenario=scenario,
+            period=anchor_period,
+            category=seed_user["categories"]["Groceries"],
+            estimated=Decimal("500.00"),
+            cleared_amounts=(
+                Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
+            ),
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+
+        # Net worth bucket for May (month=5).  Net worth at May 2026
+        # reads the last period ending on or before 2026-05-31, which
+        # is period 9 ending 2026-05-22 -- where we anchored.
+        may_value = next(
+            v for v in result["net_worth"]["monthly_values"]
+            if v["month"] == 5
+        )
+
+        # CRIT-01 / F-009 / R-1: 614.29 - max(500 - 45.71 - 0, 0)
+        #                       = 614.29 - 454.29 = 160.00.
+        # Pre-Commit-8 the net-worth aggregate reported 114.29 because
+        # the underlying query did not selectinload(Transaction.entries)
+        # and the math-layer seam (closed in Commit 5) was the only
+        # safety net -- routing through balances_for makes the
+        # entries-aware reduction structural.
+        assert may_value["balance"] == Decimal("160.00")
+
+        # And cross-check: the grid value (canonical producer) for
+        # the same period MUST equal the net-worth value -- that is
+        # the contract Commit 8 locks for the symptom #5 net-worth
+        # facet.
+        grid_result = balance_resolver.balances_for(
+            account, scenario.id, seed_periods,
+        )
+        assert grid_result.balances[anchor_period.id] == Decimal("160.00")
+        assert grid_result.balances[anchor_period.id] == may_value["balance"]
+
+
+def test_no_external_calculate_balances_callers():
+    """C8-5: no external callers of plain ``calculate_balances`` remain.
+
+    The Commit 8 verification gate from
+    ``remediation_plan.md``: after this commit, the only call sites of
+    ``balance_calculator.calculate_balances`` (the plain entries-aware
+    engine, not the ``_with_interest`` variant which Commit 28 will
+    collapse) outside the engine module itself live in
+    ``balance_resolver`` (and after Commit 13, ``loan_resolver``).  The
+    seam-bearing engine therefore has no external live caller.
+
+    The interest variant ``calculate_balances_with_interest`` is
+    explicitly out of scope here -- it routes through the same
+    math-layer entry-aware reduction (post-Commit-5 lazy-load) and
+    will be collapsed into the canonical resolver by MED-01 / Commit
+    28.  The calendar service's plain ``calculate_balances`` caller
+    is the explicit target of Commit 9 (HIGH-02) and remains the only
+    expected exception at this point in the rollout.
+    """
+    import re  # pylint: disable=import-outside-toplevel
+    import subprocess  # pylint: disable=import-outside-toplevel
+
+    out = subprocess.run(
+        [
+            "git", "grep", "-n", "balance_calculator.calculate_balances",
+            "--", "app/routes/", "app/services/",
+        ],
+        capture_output=True, text=True, check=True,
+    ).stdout
+
+    # Strip out (a) the resolver, (b) the loan resolver if/when it
+    # lands, (c) the engine module itself, and (d) the ``_with_interest``
+    # callers that this commit explicitly leaves for MED-01 / Commit 28.
+    forbidden = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        path = line.split(":", 1)[0]
+        if "balance_resolver" in path:
+            continue
+        if "loan_resolver" in path:
+            continue
+        if path.endswith("balance_calculator.py"):
+            continue
+        # The interest variant uses a different call site
+        # (``calculate_balances_with_interest``) and is intentionally
+        # left alone by this commit (see module docstring above).
+        if re.search(r"calculate_balances_with_interest", line):
+            continue
+        # Calendar service is the explicit target of Commit 9 (HIGH-02)
+        # and remains the only expected residual plain-``calculate_balances``
+        # external caller at this point in the rollout.  Once Commit 9
+        # lands, this allowance should be removed.
+        if "app/services/calendar_service.py" in path:
+            continue
+        forbidden.append(line)
+
+    assert not forbidden, (
+        "Commit 8 verification gate failed -- found external callers "
+        "of balance_calculator.calculate_balances outside the canonical "
+        "producer / engine module:\n  " + "\n  ".join(forbidden)
+    )

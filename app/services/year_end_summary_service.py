@@ -43,6 +43,7 @@ from app.models.transfer import Transfer
 from app.services import (
     amortization_engine,
     balance_calculator,
+    balance_resolver,
     growth_engine,
     paycheck_calculator,
 )
@@ -1569,7 +1570,6 @@ def _build_investment_balance_map(
     investment_params: InvestmentParams,
     scenario: Scenario,
     periods: list,
-    base_args: dict,
     ctx: dict,
 ) -> OrderedDict:
     """Build period_id -> balance map using the growth engine.
@@ -1578,8 +1578,8 @@ def _build_investment_balance_map(
 
     - **Pre-anchor periods**: reverse growth engine projection backward
       from the anchor balance.
-    - **Anchor period**: base balance calculator (anchor + remaining
-      transactions).
+    - **Anchor period**: canonical entries-aware producer (anchor +
+      remaining transactions).
     - **Post-anchor periods**: forward growth engine projection from
       the anchor balance.
 
@@ -1588,18 +1588,22 @@ def _build_investment_balance_map(
         investment_params: InvestmentParams for the account.
         scenario: Baseline scenario.
         periods: All user pay periods.
-        base_args: Pre-built dict with anchor_balance, anchor_period_id,
-            periods, and transactions for calculate_balances().
         ctx: Common data dict with deductions_by_account,
             salary_gross_biweekly, year_period_ids.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance.
     """
-    # Base balances: anchor + transactions (no growth).  This gives
-    # accurate values at the anchor period and handles settled
-    # transactions correctly.
-    base_balances, _ = balance_calculator.calculate_balances(**base_args)
+    # Base balances from the canonical entries-aware producer (E-25 /
+    # CRIT-01 / F-009 / R-1: Commit 8).  ``balances_for`` owns the
+    # transaction query with ``selectinload(Transaction.entries)``,
+    # resolves the anchor via the dated ``AccountAnchorHistory`` SoT,
+    # and routes through the same engine math as the grid -- so the
+    # base balance feeding the growth projection here is identical to
+    # the figure rendered on the grid and other surfaces.
+    base_balances = balance_resolver.balances_for(
+        account, scenario.id, periods,
+    ).balances
 
     anchor_pid = account.current_anchor_period_id
     anchor_balance = base_balances.get(anchor_pid, ZERO)
@@ -2068,6 +2072,8 @@ def _get_account_balance_map(
     acct_type = account.account_type
 
     # Amortizing loan accounts: use pre-generated schedule when available.
+    # Routed through the loan-side resolver in Commit 15; this commit
+    # only handles checking-style reads.
     if (acct_type and acct_type.has_amortization
             and debt_schedules and account.id in debt_schedules):
         params = (
@@ -2080,37 +2086,43 @@ def _get_account_balance_map(
             debt_schedules[account.id], periods, original,
         )
 
-    period_ids = [p.id for p in periods]
-
-    transactions = (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.scenario_id == scenario.id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    )
-
-    anchor_balance = account.current_anchor_balance or ZERO
-    base_args = {
-        "anchor_balance": anchor_balance,
-        "anchor_period_id": account.current_anchor_period_id,
-        "periods": periods,
-        "transactions": transactions,
-    }
-
-    # Interest-bearing accounts (HYSA, Money Market, CD, HSA).
+    # Interest-bearing accounts (HYSA, Money Market, CD, HSA).  The
+    # math-layer silent-degrade seam in
+    # ``balance_calculator._entry_aware_amount`` was closed in Commit 5
+    # (entries lazy-load via the SQLAlchemy descriptor instead of
+    # short-circuiting to ``effective_amount``), so the entries-aware
+    # reduction applies here even without ``selectinload``.  MED-01 /
+    # Commit 28 will collapse the dual interest/no-interest dispatcher
+    # into the canonical resolver; routing through ``balances_for``
+    # cannot happen earlier because the resolver does not yet layer
+    # interest.
     if (acct_type and acct_type.has_interest
             and hasattr(account, "interest_params")
             and account.interest_params):
+        period_ids = [p.id for p in periods]
+        transactions = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.account_id == account.id,
+                Transaction.scenario_id == scenario.id,
+                Transaction.pay_period_id.in_(period_ids),
+                Transaction.is_deleted.is_(False),
+            )
+            .all()
+        )
+        anchor_balance = account.current_anchor_balance or ZERO
         balances, _ = balance_calculator.calculate_balances_with_interest(
-            **base_args, interest_params=account.interest_params,
+            anchor_balance=anchor_balance,
+            anchor_period_id=account.current_anchor_period_id,
+            periods=periods,
+            transactions=transactions,
+            interest_params=account.interest_params,
         )
         return balances
 
     # Investment accounts: use growth engine when context is available.
+    # The base balance feeding the projection now comes from the
+    # canonical entries-aware producer (E-25 / CRIT-01 / R-1).
     if (ctx is not None
             and acct_type
             and getattr(acct_type, "has_parameters", False)
@@ -2119,13 +2131,18 @@ def _get_account_balance_map(
         inv_params = ctx["investment_params_map"].get(account.id)
         if inv_params:
             return _build_investment_balance_map(
-                account, inv_params, scenario, periods,
-                base_args, ctx,
+                account, inv_params, scenario, periods, ctx,
             )
 
-    # Standard checking/savings (and any unmatched types).
-    balances, _ = balance_calculator.calculate_balances(**base_args)
-    return balances
+    # Standard checking/savings (and any unmatched types) route through
+    # the canonical entries-aware producer (E-25 / CRIT-01 / F-009 /
+    # R-1: Commit 8).  ``balances_for`` owns the transaction query with
+    # ``selectinload(Transaction.entries)`` and resolves the anchor via
+    # the dated ``AccountAnchorHistory`` SoT, so the net-worth aggregate
+    # cannot disagree with the grid for the same input.
+    return balance_resolver.balances_for(
+        account, scenario.id, periods,
+    ).balances
 
 
 def _get_month_end_periods(

@@ -33,7 +33,7 @@ from app.schemas.validation import (
     InvestmentParamsUpdateSchema,
 )
 from app.services import (
-    balance_calculator,
+    balance_resolver,
     growth_engine,
     pay_period_service,
     paycheck_calculator,
@@ -78,38 +78,25 @@ def dashboard(account_id):
     all_periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
 
-    # Compute current balance by running ALL account transactions
-    # (including shadow transactions from transfers) through the balance
-    # calculator.  Using the raw anchor_balance would miss transfer
-    # deposits, understating the balance by the total of all missed
-    # contributions.  Follows the grid.py account-scoped query pattern.
+    # Compute current balance via the canonical entries-aware producer
+    # (E-25 / CRIT-01 / F-009 / R-1: Commit 8).  ``balances_for`` owns
+    # the transaction query with ``selectinload(Transaction.entries)``
+    # so shadow income from transfers is included and any envelope
+    # expenses on this account get the correct entries-aware reduction
+    # -- the silent-degrade seam that produced symptom #1 on
+    # ``/investment`` is structurally closed by routing here.  The
+    # resolver also reads the dated ``AccountAnchorHistory`` SoT, so
+    # the investment dashboard's "current balance" tile cannot disagree
+    # with the grid for the same account/scenario/period.
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
-    anchor_period_id = account.current_anchor_period_id or (
-        current_period.id if current_period else None
-    )
 
     scenario = get_baseline_scenario(current_user.id)
 
-    period_ids = [p.id for p in all_periods]
-    acct_transactions = (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.scenario_id == scenario.id,
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    ) if scenario and period_ids else []
-
     balances = {}
-    if anchor_period_id and scenario:
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=anchor_balance,
-            anchor_period_id=anchor_period_id,
-            periods=all_periods,
-            transactions=acct_transactions,
-        )
+    if scenario and account.current_anchor_period_id is not None:
+        balances = balance_resolver.balances_for(
+            account, scenario.id, all_periods,
+        ).balances
 
     # Current balance includes shadow transactions (transfer deposits).
     current_balance = (
@@ -400,8 +387,13 @@ def growth_chart(account_id):
     horizon_years = request.args.get("horizon_years", type=int, default=2)
     horizon_years = max(1, min(horizon_years, 40))
 
-    # Compute current balance from transactions (including shadow
-    # deposits from transfers), not just the raw anchor.
+    # Compute current balance via the canonical entries-aware producer
+    # (E-25 / CRIT-01 / F-009 / R-1: Commit 8).  Same routing pattern
+    # as ``dashboard()`` above -- the seed for the growth-chart
+    # projection must equal the grid's checking-style balance for the
+    # current period; pre-Commit-8 this path silently degraded to
+    # ``effective_amount`` for any envelope expense on the account
+    # because the query did not ``selectinload(Transaction.entries)``.
     anchor_bal = account.current_anchor_balance or Decimal("0.00")
     anchor_pid = account.current_anchor_period_id
 
@@ -411,23 +403,9 @@ def growth_chart(account_id):
 
     current_balance = anchor_bal
     if chart_scenario and real_periods and anchor_pid:
-        real_period_ids = [p.id for p in real_periods]
-        chart_txns = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.account_id == account_id,
-                Transaction.pay_period_id.in_(real_period_ids),
-                Transaction.scenario_id == chart_scenario.id,
-                Transaction.is_deleted.is_(False),
-            )
-            .all()
-        )
-        chart_bals, _ = balance_calculator.calculate_balances(
-            anchor_balance=anchor_bal,
-            anchor_period_id=anchor_pid,
-            periods=real_periods,
-            transactions=chart_txns,
-        )
+        chart_bals = balance_resolver.balances_for(
+            account, chart_scenario.id, real_periods,
+        ).balances
         if cur_period and cur_period.id in chart_bals:
             current_balance = chart_bals[cur_period.id]
 

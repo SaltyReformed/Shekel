@@ -29,7 +29,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import (
-    balance_calculator,
+    balance_resolver,
     growth_engine,
     pay_period_service,
     paycheck_calculator,
@@ -397,32 +397,22 @@ def _project_retirement_accounts(
             end_date=planned_retirement_date,
         )
 
-    # Compute actual current balances via balance calculator.
+    # Compute actual current balances via the canonical entries-aware
+    # producer (E-25 / CRIT-01 / F-009 / R-1: Commit 8).
+    # ``balances_for`` owns the transaction query (entries eager-loaded)
+    # and resolves the anchor via the dated ``AccountAnchorHistory``
+    # SoT, so each retirement / investment account's "current balance"
+    # input to the gap calculation matches the figure rendered on the
+    # grid and the /investment dashboard for the same inputs.
     scenario = get_baseline_scenario(user_id)
     acct_balance_map = {}
     if scenario and period_ids:
         for acct in accounts:
             anchor = acct.current_anchor_balance or Decimal("0")
-            anchor_pid = acct.current_anchor_period_id or (
-                current_period.id if current_period else None
-            )
-            if anchor_pid:
-                acct_txns = (
-                    db.session.query(Transaction)
-                    .filter(
-                        Transaction.account_id == acct.id,
-                        Transaction.pay_period_id.in_(period_ids),
-                        Transaction.scenario_id == scenario.id,
-                        Transaction.is_deleted.is_(False),
-                    )
-                    .all()
-                )
-                bals, _ = balance_calculator.calculate_balances(
-                    anchor_balance=anchor,
-                    anchor_period_id=anchor_pid,
-                    periods=all_periods,
-                    transactions=acct_txns,
-                )
+            if acct.current_anchor_period_id is not None:
+                bals = balance_resolver.balances_for(
+                    acct, scenario.id, all_periods,
+                ).balances
                 acct_balance_map[acct.id] = (
                     bals.get(current_period.id, anchor)
                     if current_period else anchor

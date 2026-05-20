@@ -1297,3 +1297,255 @@ class TestWhatIfContributionCalculator:
         assert len(committed) > 100, (
             f"10-year horizon should have 100+ periods, got {len(committed)}"
         )
+
+
+# ── C8: investment dashboard / growth chart routed through producer ─
+#
+# Pre-Commit-8 the dashboard() and growth_chart() handlers each built
+# their own per-account transaction query and called
+# ``balance_calculator.calculate_balances`` directly with no
+# ``selectinload(Transaction.entries)``.  The math-layer silent-degrade
+# seam (closed in Commit 5) was the only safety net.  When an
+# investment account had a Projected expense with cleared debit
+# entries (an unusual but valid configuration; the contract is that
+# the resolver applies the entries-aware reduction unconditionally
+# regardless of account type), the route silently returned
+# ``effective_amount``.  Commit 8 routes both handlers through
+# ``balance_resolver.balances_for`` so the figure matches the grid and
+# every other surface for the same inputs.
+
+
+def _add_envelope_expense_with_cleared_entries_inv(
+    db_session, *, user_id, account, scenario, period, category_id,
+    estimated, cleared_amounts,
+):
+    """Create a Projected envelope expense with cleared debit entries.
+
+    Same shape as the helper used in the savings / accounts / year-end
+    C8 tests; copied here so this file stays standalone.  These are
+    the entries that produce the F-009 / CRIT-01 silent-degrade gap
+    when the consuming query forgets to ``selectinload(entries)``.
+    """
+    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+    from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
+    template = TransactionTemplate(
+        user_id=user_id,
+        account_id=account.id,
+        category_id=category_id,
+        transaction_type_id=expense_type_id,
+        name="Investment-side expense",
+        default_amount=estimated,
+        is_envelope=True,
+    )
+    db_session.add(template)
+    db_session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=period.id,
+        scenario_id=scenario.id,
+        account_id=account.id,
+        status_id=projected_id,
+        name="Investment-side expense",
+        category_id=category_id,
+        transaction_type_id=expense_type_id,
+        estimated_amount=estimated,
+    )
+    db_session.add(txn)
+    db_session.flush()
+
+    for amt in cleared_amounts:
+        db_session.add(TransactionEntry(
+            transaction_id=txn.id,
+            user_id=user_id,
+            amount=amt,
+            description="Cleared purchase",
+            entry_date=date(2026, 5, 15),
+            is_credit=False,
+            is_cleared=True,
+        ))
+    db_session.flush()
+    return txn
+
+
+class TestInvestmentEntryAwareRouting:
+    """C8-2 / C8-3: /investment dashboard + growth chart use canonical producer.
+
+    Pins the R-1 finding: pre-Commit-8 the two investment handlers
+    each had bare ``calculate_balances`` calls with no
+    ``selectinload(Transaction.entries)``.  Routing both through
+    ``balance_resolver.balances_for`` (which owns the eager-load and
+    the anchor resolution) makes the entries-aware reduction
+    structural for these routes.
+    """
+
+    def test_investment_holdings_entry_aware(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C8-2: dashboard current_balance == canonical producer value.
+
+        Reproduction of the symptom on /investment:
+
+          - Investment account anchor 50,000.00 on the current period.
+          - One Projected envelope expense on the same account in the
+            same period, ``estimated_amount = 500.00``.
+          - Three CLEARED debit entries summing 45.71 (20 + 15.71 + 10).
+
+        Hand arithmetic (CRIT-01 / F-009 / R-1):
+
+          cleared_debit   = 45.71
+          uncleared_debit = 0
+          sum_credit      = 0
+          checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
+          current_balance = 50,000.00 + 0 - 454.29 = 49,545.71
+
+        The route renders this number formatted with ``{:,.2f}`` so
+        the byte string ``$49,545.71`` (or the bare ``49,545.71``
+        inside the page) MUST appear in the response.  Pre-Commit-8
+        the route reported ``49,500.00`` (= 50,000 - 500) via the
+        silent-degrade seam.  We also assert byte-equality with the
+        canonical producer's value so the contract is locked beyond
+        the rendered string.
+        """
+        from app.services import balance_resolver, pay_period_service  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            current_period = pay_period_service.get_current_period(user.id)
+            assert current_period is not None
+
+            # ``account_service.create_account`` (via the helper) anchors
+            # the new account against the user's current pay period and
+            # writes the matching ``AccountAnchorHistory`` row, so no
+            # explicit override is needed -- the resolver reads the
+            # factory's history row directly.
+            acct = _create_investment_account(
+                seed_user, db.session,
+                type_name="401(k)", name="Test 401k",
+                balance="50000.00",
+            )
+            assert acct.current_anchor_period_id == current_period.id
+            _create_investment_params(db.session, acct.id)
+            _add_envelope_expense_with_cleared_entries_inv(
+                db.session,
+                user_id=user.id,
+                account=acct,
+                scenario=scenario,
+                period=current_period,
+                category_id=seed_user["categories"]["Groceries"].id,
+                estimated=Decimal("500.00"),
+                cleared_amounts=(
+                    Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
+                ),
+            )
+            db.session.commit()
+
+            # Canonical producer value: 50,000 - max(500 - 45.71 - 0, 0)
+            #                         = 50,000 - 454.29 = 49,545.71.
+            producer = balance_resolver.balances_for(
+                acct, scenario.id, seed_periods_today,
+            )
+            assert producer.balances[current_period.id] == Decimal("49545.71")
+
+            resp = auth_client.get(f"/accounts/{acct.id}/investment")
+            assert resp.status_code == 200
+            # The rendered current-balance tile carries the comma-
+            # formatted Decimal.  Pre-Commit-8 it would render
+            # 49,500.00 (silent degrade).  Asserting both presence of
+            # the correct value AND absence of the pre-fix value
+            # locks the regression in both directions.
+            assert b"49,545.71" in resp.data
+            assert b"49,500.00" not in resp.data
+
+    def test_investment_growth_chart_entry_aware(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C8-3: growth_chart() seeds the projection from the entries-aware balance.
+
+        Same setup as C8-2.  The growth-chart route projects a
+        synthetic period series forward from ``current_balance`` --
+        if that seed is wrong, the entire chart series is wrong.  The
+        first chart point (``data-balances[0]``) is the seed period's
+        end balance from the growth engine; with ``periodic_contribution
+        = 0`` (no deductions, no recurring transfers) and only the
+        post-anchor projection from 49,545.71, the first chart point
+        ends very close to the seed (subject to one biweekly's worth
+        of compounding at 7% annual = ~0.27%, ~$133 on $49,545.71).
+
+        Pre-Commit-8 the seed was 49,500.00 via the silent-degrade
+        seam, so the first chart point would land near $49,633 instead
+        of near $49,679.  We assert the chart's first point sits in
+        a tight band around the entry-aware seed -- the band is wide
+        enough to absorb the growth engine's contribution / employer-
+        match math but narrow enough to reject the pre-fix value.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+            current_period = pay_period_service.get_current_period(user.id)
+            assert current_period is not None
+
+            # ``account_service.create_account`` (via the helper) anchors
+            # the new account against the user's current pay period and
+            # writes the matching ``AccountAnchorHistory`` row, so no
+            # explicit override is needed -- the resolver reads the
+            # factory's history row directly.
+            acct = _create_investment_account(
+                seed_user, db.session,
+                type_name="401(k)", name="Test 401k",
+                balance="50000.00",
+            )
+            assert acct.current_anchor_period_id == current_period.id
+            _create_investment_params(db.session, acct.id)
+            _add_envelope_expense_with_cleared_entries_inv(
+                db.session,
+                user_id=user.id,
+                account=acct,
+                scenario=scenario,
+                period=current_period,
+                category_id=seed_user["categories"]["Groceries"].id,
+                estimated=Decimal("500.00"),
+                cleared_amounts=(
+                    Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
+                ),
+            )
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/accounts/{acct.id}/investment/growth-chart?horizon_years=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            balances = _extract_data_attr(resp.data, "balances")
+            assert balances is not None and len(balances) > 0
+
+            # First chart point sits within roughly one biweekly's
+            # compounding of the entries-aware seed 49,545.71.  At 7%
+            # annual return that is ~ 49,545.71 * 0.07 / 26 ~ $133 per
+            # biweekly period; the engine actually returns about
+            # $49,665 for this configuration (no contributions, no
+            # employer match, one period of compounding plus a small
+            # adjustment for the contribution-limit math).  The
+            # pre-fix seed 49,500.00 with the same compounding lands
+            # near $49,619 -- about $46 lower, which is the difference
+            # between the two seeds carried forward.  The assertion
+            # band [49,640, 49,800] strictly contains the entries-
+            # aware first point and strictly excludes the pre-fix
+            # value.
+            first_point = Decimal(balances[0])
+            assert first_point >= Decimal("49640.00"), (
+                f"First chart point {first_point} below the entries-"
+                "aware lower bound; pre-Commit-8 silent-degrade "
+                "regression suspected (pre-fix value lands near "
+                "$49,619)."
+            )
+            assert first_point <= Decimal("49800.00")
+
