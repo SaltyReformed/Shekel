@@ -56,6 +56,7 @@ from app.services.investment_projection import (
 from app.services.loan_payment_service import load_loan_context
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
@@ -615,9 +616,11 @@ def _finalize_entry_breakdown(bd: dict) -> None:
     """Compute derived debit_total and avg_entry on a breakdown dict.
 
     Mutates the dict in place.  Called after all entry rows have been
-    accumulated.  avg_entry uses Decimal division with explicit
-    quantize so the result has exactly two decimal places without any
-    float rounding artifacts.
+    accumulated.  avg_entry is a monetary average (dollars per entry)
+    so it is rounded through :func:`app.utils.money.round_money`,
+    the project's centralized ROUND_HALF_UP cent boundary (E-26 /
+    HIGH-04).  ``debit_total`` is pre-rounded subtraction of two
+    already-rounded sums, so no further rounding is needed.
 
     Args:
         bd: Running aggregate dict produced by _accumulate_entry_row.
@@ -626,9 +629,7 @@ def _finalize_entry_breakdown(bd: dict) -> None:
     bd["debit_total"] = entry_total - bd["credit_total"]
     count = bd["entry_count"]
     bd["avg_entry"] = (
-        (entry_total / Decimal(count)).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP,
-        )
+        round_money(entry_total / Decimal(count))
         if count > 0 else ZERO
     )
 
@@ -1994,9 +1995,7 @@ def _load_salary_gross_biweekly(
         return ZERO
 
     ppy = profile.pay_periods_per_year or 26
-    return (profile.annual_salary / ppy).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP,
-    )
+    return round_money(profile.annual_salary / ppy)
 
 
 def _get_settled_status_ids() -> list[int]:

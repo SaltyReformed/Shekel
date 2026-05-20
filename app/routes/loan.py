@@ -57,6 +57,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.db_errors import is_unique_violation
 from app.utils.formatting import pct_to_decimal
 from app.utils.log_events import BUSINESS, EVT_LOAN_RECURRENCE_END_DATE_UPDATED, log_event
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
@@ -1264,9 +1265,14 @@ def payoff_calculate(account_id):
         committed_interest = sum(
             (r.interest for r in committed_schedule), Decimal("0.00"),
         )
-        committed_interest_saved = (
-            original_interest - committed_interest
-        ).quantize(Decimal("0.01"))
+        # Route through round_money so the half-cent boundary follows
+        # the project default ROUND_HALF_UP -- the bare .quantize call
+        # this replaces fell back to Python's ROUND_HALF_EVEN
+        # (banker's), the F-017..F-023 / HIGH-08 divergence axis the
+        # remediation closes (E-26).
+        committed_interest_saved = round_money(
+            original_interest - committed_interest,
+        )
 
         return render_template(
             "loan/_payoff_results.html",
