@@ -26,7 +26,6 @@ from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
-from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
@@ -1388,9 +1387,10 @@ def update_interest_params(account_id):
         db.session.add(params)
 
     if "apy" in data:
-        # Convert percentage input (e.g. 4.5 → 0.045) for storage.
-        from decimal import Decimal as D
-        params.apy = D(str(data["apy"])) / D("100")
+        # Convert percentage input (e.g. 4.5 -> 0.045) for storage.
+        # ``Decimal`` is constructed from a string per coding standards
+        # to avoid float intermediate-step precision drift.
+        params.apy = Decimal(str(data["apy"])) / Decimal("100")
     if "compounding_frequency" in data:
         params.compounding_frequency = data["compounding_frequency"]
 
