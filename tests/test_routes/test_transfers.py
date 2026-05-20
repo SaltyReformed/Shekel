@@ -1856,6 +1856,78 @@ class TestTransferTemplateHardDelete:
             db.session.refresh(template)
             assert template.is_active is False
 
+    def test_hard_delete_transfer_template_received_blocked(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C21-6: A transfer template with a RECEIVED transfer is archived, not deleted.
+
+        Mirror of the transaction-template CRIT-05 fix proof.  The
+        pre-fix predicate enumerated ``[DONE, SETTLED]`` and silently
+        omitted ``RECEIVED``; ``RECEIVED`` carries ``is_settled=True``
+        in ``ref_seeds.py`` so the post-fix
+        ``transfer_template_has_paid_history`` -- now filtering on
+        ``Status.is_settled`` -- correctly returns True for a
+        RECEIVED transfer and the route archives instead of
+        physically destroying the transfer plus its shadow pair.
+        Verifies the predicate fix end-to-end at the route layer.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+
+            received_status = db.session.query(Status).filter_by(name="Received").one()
+            xfer_received = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("250.00"),
+                status_id=received_status.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transfer_template_id=template.id,
+                name="Monthly Savings",
+            )
+            db.session.commit()
+
+            template_id = template.id
+            xfer_id = xfer_received.id
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"archived instead" in resp.data
+            # The archive-fallback flash contains "cannot be permanently
+            # deleted" so the broad substring check is unsafe; assert
+            # the literal success-flash text never fired instead.
+            assert (
+                b"Recurring transfer 'Monthly Savings' permanently deleted"
+                not in resp.data
+            )
+
+            # Template archived, not deleted.
+            db.session.refresh(template)
+            assert template.is_active is False
+            assert db.session.get(TransferTemplate, template_id) is not None
+
+            # RECEIVED transfer preserved with original amount.  Hand-
+            # verified: $250.00 stays exactly $250.00 (Decimal from
+            # string per coding standards).
+            surviving = db.session.get(Transfer, xfer_id)
+            assert surviving is not None
+            assert surviving.status_id == received_status.id
+            assert surviving.is_deleted is False
+            assert surviving.amount == Decimal("250.00")
+
+            # Both shadows survive untouched (transfer invariant 1: a
+            # transfer always has exactly two linked shadows).
+            shadow_count = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id,
+            ).count()
+            assert shadow_count == 2
+
     def test_hard_delete_preserves_shadow_invariant(
         self, app, auth_client, seed_user, seed_periods_today,
     ):

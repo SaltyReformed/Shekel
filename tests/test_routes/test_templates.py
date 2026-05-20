@@ -1292,6 +1292,193 @@ class TestTemplateHardDelete:
             # Other user's template still exists.
             assert db.session.get(TransactionTemplate, other_id) is not None
 
+    def test_hard_delete_template_received_income_blocked(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C21-1: An income template with a RECEIVED paycheck is archived, not deleted.
+
+        End-to-end proof of the CRIT-05 fix.  Pre-fix:
+        ``template_has_paid_history`` enumerated ``[DONE, SETTLED]``
+        by ID and silently omitted ``RECEIVED`` -- the status every
+        income paycheck is given on mark-done
+        (``transactions.py:534-535``: ``if txn.is_income: status_id =
+        ref_cache.status_id(StatusEnum.RECEIVED)``).  The guard fell
+        through and the route at ``templates.py:615-618`` then
+        permanently destroyed the paycheck while flashing "permanently
+        deleted."  Post-fix the predicate filters on
+        ``Status.is_settled`` (RECEIVED carries
+        ``is_settled=True``), the guard fires correctly, and the
+        archive-fallback runs.  Assertions cover all three observable
+        post-conditions: template archived (not deleted), RECEIVED
+        paycheck still present and untouched, and the flash text
+        accurately says "archived instead" rather than the misleading
+        "permanently deleted."
+        """
+        with app.app_context():
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            received_status = db.session.query(Status).filter_by(name="Received").one()
+            salary_cat = seed_user["categories"]["Salary"]
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=salary_cat.id,
+                transaction_type_id=income_type.id,
+                name="Biweekly Paycheck",
+                default_amount=Decimal("2000.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            paycheck = Transaction(
+                template_id=template.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=salary_cat.id,
+                transaction_type_id=income_type.id,
+                name="Biweekly Paycheck",
+                estimated_amount=Decimal("2000.00"),
+                actual_amount=Decimal("2000.00"),
+                status_id=received_status.id,
+            )
+            db.session.add(paycheck)
+            db.session.commit()
+
+            template_id = template.id
+            paycheck_id = paycheck.id
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"archived instead" in resp.data
+            # C21-8: the success "permanently deleted" flash must NOT
+            # have fired.  The archive-fallback's own message
+            # legitimately contains the substring "permanently deleted"
+            # ("cannot be permanently deleted"), so check the literal
+            # success-flash format instead.  Pre-fix the route would
+            # have rendered exactly this success string while destroying
+            # the paycheck.
+            assert (
+                b"Recurring transaction 'Biweekly Paycheck' permanently deleted"
+                not in resp.data
+            )
+
+            # Template archived, not deleted.
+            db.session.refresh(template)
+            assert template.is_active is False
+            assert db.session.get(TransactionTemplate, template_id) is not None
+
+            # RECEIVED paycheck preserved with original amount and status.
+            refreshed = db.session.get(Transaction, paycheck_id)
+            assert refreshed is not None
+            assert refreshed.status_id == received_status.id
+            assert refreshed.is_deleted is False
+            # Hand-verified: original actual_amount of $2000.00 is intact
+            # (Decimal from string per coding standards).
+            assert refreshed.actual_amount == Decimal("2000.00")
+
+    def test_hard_delete_template_bulk_delete_skips_settled_rows(
+        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """C21-5: Even if the predicate is bypassed, the bulk delete spares settled rows.
+
+        Defense in depth (CRIT-05 / E-22): the predicate fix above
+        catches every settled status, but the destructive route is
+        constrained additionally to ``Status.is_settled = False`` rows
+        so a future regression of the predicate, a race window between
+        the guard and the delete, or a different caller that bypasses
+        the guard cannot physically destroy settled financial history.
+        This test forces the bypass scenario by monkey-patching
+        ``template_has_paid_history`` to return False even when a
+        RECEIVED row exists, then asserts the post-condition: the
+        settled row is still present after the route returns.
+
+        ``Transaction.template_id`` is a FK with ``ON DELETE SET NULL``
+        (``app/models/transaction.py:132-134``), so the surviving
+        RECEIVED row has its ``template_id`` cleared but its financial
+        data -- amount, status, period -- is intact.  The financial
+        history that CRIT-05 was destroying is preserved.
+        """
+        with app.app_context():
+            # Mix: one Projected + one RECEIVED on the same income template.
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            received_status = db.session.query(Status).filter_by(name="Received").one()
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+            salary_cat = seed_user["categories"]["Salary"]
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=salary_cat.id,
+                transaction_type_id=income_type.id,
+                name="Paycheck Bypass Scenario",
+                default_amount=Decimal("1500.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            received_paycheck = Transaction(
+                template_id=template.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=salary_cat.id,
+                transaction_type_id=income_type.id,
+                name="Past Paycheck",
+                estimated_amount=Decimal("1500.00"),
+                actual_amount=Decimal("1500.00"),
+                status_id=received_status.id,
+            )
+            projected_paycheck = Transaction(
+                template_id=template.id,
+                pay_period_id=seed_periods_today[1].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=salary_cat.id,
+                transaction_type_id=income_type.id,
+                name="Future Paycheck",
+                estimated_amount=Decimal("1500.00"),
+                status_id=projected_status.id,
+            )
+            db.session.add_all([received_paycheck, projected_paycheck])
+            db.session.commit()
+
+            template_id = template.id
+            received_id = received_paycheck.id
+            projected_id = projected_paycheck.id
+
+            # Force the bypass: predicate lies and says "no history."
+            # The defense-in-depth filter inside the route is what must
+            # save the RECEIVED row.
+            monkeypatch.setattr(
+                "app.routes.templates.archive_helpers.template_has_paid_history",
+                lambda _template_id: False,
+            )
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            # Settled row SURVIVES.  Its template_id is now NULL (FK
+            # ON DELETE SET NULL) because the template itself was
+            # deleted, but the financial data is intact.
+            surviving = db.session.get(Transaction, received_id)
+            assert surviving is not None
+            assert surviving.status_id == received_status.id
+            assert surviving.is_deleted is False
+            assert surviving.actual_amount == Decimal("1500.00")
+
+            # Non-settled (Projected) row was deleted by the route, as intended.
+            assert db.session.get(Transaction, projected_id) is None
+
+            # Template itself was deleted (the bypass path completed).
+            assert db.session.get(TransactionTemplate, template_id) is None
+
     def test_list_separates_active_and_archived(self, app, auth_client, seed_user):
         """C-5A.5-15: List page shows active and archived in separate sections."""
         with app.app_context():

@@ -22,7 +22,7 @@ from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.transaction import Transaction
-from app.models.ref import RecurrencePattern, TransactionType
+from app.models.ref import RecurrencePattern, Status, TransactionType
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
 from app.utils import archive_helpers
@@ -559,20 +559,28 @@ def unarchive_template(template_id):
 @require_owner
 @fresh_login_required()
 def hard_delete_template(template_id):
-    """Permanently delete a transaction template if it has no payment history.
+    """Permanently delete a transaction template if it has no settled history.
 
     Two-path logic:
-      1. If the template has Paid or Settled transactions, permanent deletion
-         is blocked.  The template is archived instead (if not already) and the
-         user is warned.
-      2. If no payment history exists, all linked transactions are deleted
-         first (to avoid FK constraint violations), then the template itself
-         is permanently removed.
+      1. If the template has any settled transaction (Paid, Received, or
+         Settled -- anything with ``Status.is_settled = True``), permanent
+         deletion is blocked.  The template is archived instead (if not
+         already) and the user is warned.
+      2. If no settled history exists, all linked NON-SETTLED transactions
+         are deleted first, then the template itself is permanently
+         removed.  ``Transaction.template_id`` is a FK with ON DELETE SET
+         NULL, so any rows that survive the filtered delete keep their
+         financial data intact with a NULL template_id rather than
+         cascading away.
 
-    Transactions are deleted before the template because
-    Transaction.template_id is a FK with ON DELETE SET NULL -- deleting the
-    template first would orphan transaction rows with NULL template_id
-    instead of removing them cleanly.
+    Defense in depth (CRIT-05 / E-22): the bulk delete is constrained to
+    non-settled rows via the semantic ``Status.is_settled`` boolean.
+    Even if the guard predicate above regresses, is bypassed, or races a
+    concurrent mark-done that lands between the guard check and the
+    delete, settled financial history (Paid, Received, Settled) cannot
+    be physically destroyed by this route.  The pre-fix code enumerated
+    ``[DONE, SETTLED]`` and silently omitted RECEIVED, then bulk-deleted
+    unconditionally -- the irreversible data-loss path CRIT-05 documents.
     """
     template = get_or_404(TransactionTemplate, template_id)
     if template is None:
@@ -608,13 +616,20 @@ def hard_delete_template(template_id):
                 )
         return redirect(url_for("templates.list_templates"))
 
-    # No history -- safe to permanently delete.
-    # Delete all linked transactions first, then the template.  Only
-    # Projected transactions should remain (history check passed), but
-    # delete unconditionally for safety.
+    # No settled history -- safe to permanently delete.  Restrict the
+    # bulk delete to non-settled rows via ``Status.is_settled`` so a
+    # race-window mark-done (or any future caller that bypasses the
+    # guard above) cannot destroy real Paid/Received/Settled history.
+    # The FK ON DELETE SET NULL on ``Transaction.template_id`` means
+    # any row that survives this filter keeps its financial data with
+    # a null template_id rather than being cascaded away.
     template_name = template.name
+    settled_status_ids = db.session.query(Status.id).filter(
+        Status.is_settled.is_(True)
+    ).scalar_subquery()
     db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
+        Transaction.status_id.notin_(settled_status_ids),
     ).delete(synchronize_session="fetch")
 
     db.session.delete(template)

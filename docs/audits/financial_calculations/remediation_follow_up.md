@@ -988,4 +988,65 @@ explaining why silent-clamp-to-zero is acceptable.
 
 ---
 
+## F-14. Defense-in-depth filter on `hard_delete_transfer_template` bulk delete
+
+- **Surfaced during:** Commit 21 (`fix(templates): semantic is_settled
+  hard-delete guard (E-22, CRIT-05)`).
+- **Status:** not started; predicate fix (Commit 21) already closes
+  the active data-loss path.
+
+### Problem
+
+`app/routes/transfers.py:666-673` unconditionally iterates every
+linked transfer and calls
+`transfer_service.delete_transfer(..., soft=False)`.  Commit 21
+fixed the predicate `transfer_template_has_paid_history` to filter
+on `Status.is_settled`, so the guard at `:624` now correctly catches
+RECEIVED-status transfers and the destructive branch is unreachable
+on the happy path.  However, the parallel route in
+`app/routes/templates.py:hard_delete_template` received the
+additional defense-in-depth treatment Commit 21 spec'd
+(`Transaction.status_id.notin_(settled_status_ids)` on the bulk
+delete) while the transfer-template route did not.  A future
+regression of the predicate, a race window between the guard and
+the loop, or a different caller that bypasses the guard could still
+permanently destroy settled transfers and their shadow pairs.
+
+### Why deferred
+
+The Commit 21 plan in
+`docs/audits/financial_calculations/remediation_plan.md` Section 9
+explicitly scopes the defense-in-depth filter to
+`hard_delete_template` (templates.py).  Extending the same pattern
+to `hard_delete_transfer_template` adds value but exceeds the
+plan's stated scope, and the predicate fix alone already neutralises
+the active CRIT-05 data-loss path through both routes.
+
+### Suggested implementation
+
+Mirror the templates.py shape: build a `settled_status_ids`
+scalar-subquery from `Status.is_settled.is_(True)`, partition the
+linked transfers into settled vs non-settled lists, skip
+`transfer_service.delete_transfer` for the settled list (surviving
+transfers retain their `transfer_template_id`, which is FK ON
+DELETE SET NULL, so they survive as detached settled rows when the
+template is removed), and pin the behavior with a route-level test
+that monkey-patches the predicate to False.
+
+### Acceptance criteria
+
+- `hard_delete_transfer_template`'s bulk-delete loop skips any
+  transfer whose status carries `is_settled=True`.
+- New route test (mirror of
+  `test_hard_delete_template_bulk_delete_skips_settled_rows`)
+  monkey-patches `transfer_template_has_paid_history` to False,
+  posts the hard-delete, asserts the settled transfer plus its two
+  shadows survive with original amounts/statuses.
+- The shadow invariant test
+  (`test_hard_delete_preserves_shadow_invariant`) continues to pass
+  unchanged -- the filtered loop preserves invariants 1-5 for the
+  rows it touches.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
