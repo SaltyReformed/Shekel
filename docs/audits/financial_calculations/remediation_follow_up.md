@@ -546,4 +546,113 @@ Commit 37 alongside any other test-harness DRY items.
 
 ---
 
+## F-8. Engine anchor-reset clobbers the contractual payment for fixed-rate loans
+
+- **Surfaced during:** Commit 13 (`feat(loan): pure event-derived loan
+  resolver (E-18)`), this commit.
+- **Status:** not started; defer until after Commit 37.  Currently
+  unreachable.
+
+### Problem
+
+`app/services/amortization_engine.generate_schedule` honors the
+``anchor_balance`` / ``anchor_date`` parameters by snapping the
+running balance and unconditionally re-computing
+``monthly_payment`` at the snap:
+
+```python
+if (anchor_balance is not None and anchor_date is not None
+        and not anchor_applied and pay_date > anchor_date):
+    balance = anchor_balance
+    anchor_applied = True
+    months_left = max_months - month_num + 1
+    monthly_payment = calculate_monthly_payment(
+        balance, current_annual_rate, months_left,
+    )
+```
+
+This is correct for ARM loans (``using_contractual`` is False, so
+``max_months = remaining_months``), where re-amortization at the
+anchor is the intended behavior.
+
+For fixed-rate loans (``using_contractual`` is True), the recompute
+is structurally wrong: ``max_months = remaining_months + term_months``
+(a generous upper bound for the early-payoff case), so
+``months_left`` at the anchor reset is roughly ``2 * term_months``,
+which drives ``calculate_monthly_payment`` to produce a payment
+about half the correct contractual amount.  Every subsequent row in
+the schedule then uses that wrong payment, and the projected
+balances drift accordingly.
+
+### Why this is unreachable today
+
+Every production call site that passes ``anchor_balance`` /
+``anchor_date`` (Commit-13 resolver included) explicitly skips the
+anchor when the loan is fixed-rate -- see
+`app/routes/loan.py:476-489` (``floor_anchor_bal``) and the
+analogous "is_arm guards" elsewhere.  Commit 13's resolver mirrors
+the same pattern by passing ``anchor_balance=None`` for fixed-rate
+loans, so the buggy branch stays dormant.
+
+The gap surfaces only when a user records a dated balance trueup
+(D-C, Commit 16) on a fixed-rate loan whose anchor balance diverges
+from the engine's from-origination projection -- e.g. a borrower
+who prepaid principal.  In that case:
+
+- The resolver-derived ``current_balance`` is correct because
+  ``_replay_balance_from_anchor`` operates on the primary data
+  (anchor + confirmed payments) without depending on the engine.
+- The resolver-derived ``monthly_payment`` is correct because
+  the fixed-rate branch returns the contractual payment
+  unconditionally.
+- The resolver-returned ``schedule`` (for display) would have
+  post-anchor rows projected from the wrong payment if the
+  resolver passed the anchor to the engine.
+
+Commit 13 avoids the bug by passing ``anchor_balance=None`` for
+fixed-rate, so post-anchor rows for the fixed-rate trueup case use
+the from-origination projection (slightly off from reality in
+trueup-corrected balance terms, but correct in P&I-split terms).
+
+### Fix
+
+Gate the payment recompute on ``not using_contractual``:
+
+```python
+if (anchor_balance is not None and anchor_date is not None
+        and not anchor_applied and pay_date > anchor_date):
+    balance = anchor_balance
+    anchor_applied = True
+    if not using_contractual:
+        months_left = max_months - month_num + 1
+        monthly_payment = calculate_monthly_payment(
+            balance, current_annual_rate, months_left,
+        )
+```
+
+This is a two-line targeted change with full backward
+compatibility for current callers (none of which exercise the
+buggy combination) and no behavior change for ARM loans.  After
+the fix, the resolver can pass the anchor universally and the
+schedule's post-trueup rows for fixed-rate loans will project
+from the correct balance with the correct payment.
+
+### Acceptance criteria for the eventual PR
+
+- `app/services/amortization_engine.py`: anchor reset gated on
+  ``not using_contractual`` (or equivalent).
+- A new engine test: with anchor at origination,
+  ``original_principal`` set, no rate changes, the produced
+  ``monthly_payment`` for every row equals
+  ``calculate_monthly_payment(original_principal, rate, term)``.
+- The Commit 13 resolver gains a fixed-rate trueup pathway:
+  ``engine_anchor_balance`` / ``engine_anchor_date`` are set for
+  both ARM and fixed-rate.
+- A new resolver test: fixed-rate loan with mid-loan user_trueup
+  whose balance diverges from the engine's projection; the
+  schedule's post-trueup rows project from the trueup balance,
+  not from the from-origination projection.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
