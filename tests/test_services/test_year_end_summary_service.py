@@ -1389,6 +1389,49 @@ class TestDebtProgress:
         result = compute_year_end_summary(seed_user["user"].id, YEAR)
         assert result["debt_progress"] == []
 
+    def test_debt_progress_byte_identical_after_dispatcher_extraction(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C19-2 / F-21: year-end debt-progress is byte-identical to
+        the pre-Commit-19 values after extracting the shared
+        :func:`compute_loan_period_balance_map` dispatcher.
+
+        Commit 19 moved the period-end-keyed walk verbatim from a
+        local ``_schedule_to_period_balance_map`` into
+        ``account_projection.compute_loan_period_balance_map`` and
+        wired the year-end net-worth liability column through it
+        (debt-progress itself stays on the date-keyed
+        ``_balance_from_schedule_at_date`` helper -- different
+        question, different lookup shape).  This sibling lock asserts
+        the published debt-progress totals did not drift across the
+        extraction: ``test_debt_progress_uses_amortization`` already
+        pins the same values, this test names the F-21 contract
+        explicitly so a future regression on the shared dispatcher's
+        period-end-keyed semantic surfaces with a clear breadcrumb.
+
+        Hand-pinned values reproduced from
+        ``test_debt_progress_uses_amortization``:
+
+          jan1_balance == $237,547.74 (balance after Dec 2025 payment
+          on a $240,000, 6.5%, 360-month mortgage originated
+          2025-01-01).
+          dec31_balance == $234,701.02 (balance after Dec 2026
+          payment).
+          principal_paid == $2,846.72 (jan1 - dec31).
+        """
+        user = seed_user["user"]
+        periods = seed_periods
+        _create_mortgage_account(user, periods)
+
+        result = compute_year_end_summary(user.id, YEAR)
+        debt = result["debt_progress"]
+        assert len(debt) == 1
+        entry = debt[0]
+
+        assert entry["jan1_balance"] == Decimal("237547.74")
+        assert entry["dec31_balance"] == Decimal("234701.02")
+        assert entry["principal_paid"] == Decimal("2846.72")
+
     def test_mortgage_interest_with_prepared_payments(
         self, app, db, seed_user, seed_periods,
     ):

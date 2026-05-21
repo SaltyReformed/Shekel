@@ -40,7 +40,6 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.services import (
-    amortization_engine,
     balance_calculator,
     balance_resolver,
     growth_engine,
@@ -51,6 +50,7 @@ from app.services import (
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
+    compute_loan_period_balance_map,
 )
 from app.services.investment_projection import (
     adapt_deductions,
@@ -1581,49 +1581,6 @@ def _balance_from_schedule_at_date(
     return best_balance
 
 
-def _schedule_to_period_balance_map(
-    schedule: list,
-    periods: list,
-    original_principal: Decimal,
-) -> dict:
-    """Map amortization schedule balances to pay period IDs.
-
-    For each pay period, finds the last schedule row whose
-    payment_date is on or before the period's end_date.  Returns the
-    remaining_balance from that row.  Periods before the first payment
-    use original_principal.
-
-    Args:
-        schedule: List of AmortizationRow sorted chronologically.
-        periods: List of PayPeriod objects sorted by period_index.
-        original_principal: Balance before any payments.
-
-    Returns:
-        OrderedDict mapping period_id to Decimal balance.
-    """
-    balances = OrderedDict()
-
-    if not schedule:
-        for period in periods:
-            balances[period.id] = original_principal
-        return balances
-
-    # Pre-sort schedule by payment_date (should already be sorted).
-    sorted_schedule = sorted(schedule, key=lambda r: r.payment_date)
-
-    for period in periods:
-        # Find the last schedule row on or before this period's end_date.
-        bal = original_principal
-        for row in sorted_schedule:
-            if row.payment_date <= period.end_date:
-                bal = row.remaining_balance
-            else:
-                break
-        balances[period.id] = bal
-
-    return balances
-
-
 def _build_investment_balance_map(
     account: Account,
     investment_params: InvestmentParams,
@@ -2139,7 +2096,11 @@ def _get_account_balance_map(
             .first()
         )
         original = params.original_principal if params else ZERO
-        return _schedule_to_period_balance_map(
+        # F-21 / Commit 19: route through the shared
+        # ``compute_loan_period_balance_map`` so the year-end
+        # liability column and the savings-dashboard loan card
+        # consume the same period-end-keyed balance derivation.
+        return compute_loan_period_balance_map(
             debt_schedules[account.id], periods, original,
         )
 

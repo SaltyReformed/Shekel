@@ -46,6 +46,8 @@ from app.services import (
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
+    compute_loan_period_balance_map,
+    find_period_containing_date,
 )
 from app.services.investment_projection import adapt_deductions
 from app.services.loan_payment_service import (
@@ -451,18 +453,35 @@ def _compute_account_projections(
             # this very tile.
             current_bal = state.current_balance
 
-            # Projected balances: find the schedule row at each
-            # target date.  Walk backward to find the last row on
-            # or before the target month.
-            for label, month_offset in [("3 months", 3), ("6 months", 6), ("1 year", 12)]:
+            # Projected balances at 3 / 6 / 12-month horizons.
+            # F-21 / Commit 19: route through the shared
+            # ``compute_loan_period_balance_map`` so the dashboard's
+            # projected balances agree to the cent with the year-end
+            # net-worth liability and debt-progress sections (both
+            # consumers now read the same period-end-keyed map).
+            # Pre-F-21 this site ran a parallel target-month-first
+            # walk over ``state.schedule`` that answered a slightly
+            # different question and produced cents-precise drift
+            # across the two surfaces; see ``F-21`` in
+            # ``docs/audits/financial_calculations/remediation_follow_up.md``
+            # and ``account_projection.compute_loan_period_balance_map``
+            # for the locked semantic.
+            balance_map = compute_loan_period_balance_map(
+                state.schedule, all_periods,
+                acct_loan_params.original_principal,
+            )
+            for label, month_offset in [
+                ("3 months", 3), ("6 months", 6), ("1 year", 12),
+            ]:
                 target_m = today.month + month_offset
                 target_y = today.year + (target_m - 1) // 12
                 target_m = (target_m - 1) % 12 + 1
                 target_dt = date(target_y, target_m, 1)
-                for row in reversed(state.schedule):
-                    if row.payment_date <= target_dt:
-                        projected[label] = row.remaining_balance
-                        break
+                target_period = find_period_containing_date(
+                    all_periods, target_dt,
+                )
+                if target_period is not None and target_period.id in balance_map:
+                    projected[label] = balance_map[target_period.id]
         elif acct_investment_params and current_period:
             projected = _project_investment(
                 acct, acct_investment_params, params, all_shadow_income,

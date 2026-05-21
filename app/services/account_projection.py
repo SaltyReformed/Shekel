@@ -20,6 +20,9 @@ worries with :mod:`app.ref_cache` while preserving the IDs-for-logic
 standard (``docs/coding-standards.md:174-178``).
 """
 
+from collections import OrderedDict
+from datetime import date
+from decimal import Decimal
 from enum import Enum
 
 from app.enums import AcctTypeEnum
@@ -137,3 +140,107 @@ def is_payroll_deduction_funded(
         for t in _PAYROLL_DEDUCTION_FUNDED_TYPES
     }
     return account_type_id in funded_ids
+
+
+def compute_loan_period_balance_map(
+    schedule: list,
+    periods: list,
+    original_principal: Decimal,
+) -> "OrderedDict[int, Decimal]":
+    """Map an amortization schedule to per-period remaining balances.
+
+    For each ``PayPeriod`` in *periods*, returns the
+    :attr:`~app.services.amortization_engine.AmortizationRow.remaining_balance`
+    from the last schedule row whose ``payment_date`` is on or before
+    ``period.end_date``.  Periods entirely before the first scheduled
+    payment return *original_principal*.
+
+    Period-end-keyed is the project's canonical loan-balance
+    derivation as of F-21 / Commit 19 of
+    ``remediation_follow_up_plan.md`` -- it answers "what does the
+    borrower owe AFTER the payment due in this period?"  Pre-F-21,
+    the savings dashboard ran a parallel target-month-first walk over
+    ``state.schedule`` (last row on-or-before
+    ``date(target_year, target_month, 1)``) which answered the
+    slightly different question "what is owed BEFORE any payment due
+    on or after the target month start?" and produced cents-precise
+    drift between the savings 3 / 6 / 12-month projected balances and
+    the year-end net-worth liability / debt-progress sections.  Both
+    consumers now route through this dispatcher.
+
+    Body is the verbatim move (with rename) of
+    ``year_end_summary_service._schedule_to_period_balance_map``
+    pre-Commit-19; that function is deleted.
+
+    Args:
+        schedule: List of
+            :class:`~app.services.amortization_engine.AmortizationRow`
+            sorted chronologically.  Empty schedules return
+            *original_principal* for every period.
+        periods: List of :class:`~app.models.pay_period.PayPeriod`
+            objects.  Order does not matter; the map keys by
+            ``period.id``.
+        original_principal: Balance before any scheduled payment.
+
+    Returns:
+        ``OrderedDict`` mapping ``period.id`` to ``Decimal``
+        remaining balance.
+    """
+    balances: "OrderedDict[int, Decimal]" = OrderedDict()
+
+    if not schedule:
+        for period in periods:
+            balances[period.id] = original_principal
+        return balances
+
+    # Defensive sort -- the resolver emits chronological schedules,
+    # but a future caller might assemble one differently.
+    sorted_schedule = sorted(schedule, key=lambda r: r.payment_date)
+
+    for period in periods:
+        bal = original_principal
+        for row in sorted_schedule:
+            if row.payment_date <= period.end_date:
+                bal = row.remaining_balance
+            else:
+                break
+        balances[period.id] = bal
+
+    return balances
+
+
+def find_period_containing_date(periods: list, target: date):
+    """Return the pay period whose interval contains *target*.
+
+    A period "contains" *target* when
+    ``period.start_date <= target <= period.end_date``.  When no
+    period contains *target* (the date falls in a gap or beyond the
+    user's generated horizon), falls back to the latest period whose
+    ``end_date`` is on or before *target*; if none exists either,
+    returns ``None``.
+
+    The fallback is the same shape the year-end summary's
+    :func:`_find_period_on_or_before_date` uses -- it preserves the
+    period-end-keyed semantic when a target date sits just past the
+    last generated period (the user's last known balance at the
+    horizon is the natural answer).
+
+    Args:
+        periods: List of :class:`~app.models.pay_period.PayPeriod`
+            objects.
+        target: The date to locate.
+
+    Returns:
+        The matching :class:`~app.models.pay_period.PayPeriod`, or
+        ``None`` when no period precedes *target*.
+    """
+    containing = None
+    fallback = None
+    for period in periods:
+        if period.start_date <= target <= period.end_date:
+            if containing is None or period.period_index > containing.period_index:
+                containing = period
+        elif period.end_date < target:
+            if fallback is None or period.period_index > fallback.period_index:
+                fallback = period
+    return containing if containing is not None else fallback
