@@ -30,20 +30,16 @@ load-bearing assert-unchanged gate.
 """
 
 import logging
-from collections import namedtuple
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy.orm import joinedload
-
 from app import ref_cache
-from app.enums import AcctTypeEnum, TxnTypeEnum
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.user import UserSettings
 from app.services import (
@@ -54,67 +50,23 @@ from app.services import (
 )
 from app.services.account_projection import is_payroll_deduction_funded
 from app.services.investment_projection import (
+    adapt_deductions,
     build_contribution_timeline,
-    calculate_investment_inputs,
+)
+from app.services.projection_inputs import (
+    build_investment_projection_inputs,
+    load_active_deductions_for_account,
+    load_shadow_income_contributions_for_account,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
 
 TWO_PLACES = Decimal("0.01")
-_DEFAULT_PAY_PERIODS_PER_YEAR = 26
 _FALLBACK_HORIZON_YEARS = 10
 
 
-# Lightweight adapter struct used by :func:`calculate_investment_inputs`
-# and :func:`build_contribution_timeline`.  The pre-Commit-28 route
-# bodies built equivalent objects via ``type("D", (), {...})()`` ad-hoc
-# class construction (S6-07's duck-typing pattern); a declared
-# :func:`namedtuple` is the same plain-data DTO discipline applied to
-# the contribution-side feed, with the additional benefit of carrying
-# field names that pylint and IDEs can introspect.
-_AdaptedDeduction = namedtuple(
-    "_AdaptedDeduction",
-    ("amount", "calc_method_id", "annual_salary", "pay_periods_per_year"),
-)
-
-
 # ── Shared loaders ─────────────────────────────────────────────────
-
-
-def _adapt_deductions(deductions: list) -> list[_AdaptedDeduction]:
-    """Flatten ORM PaycheckDeduction rows to the shape the engines accept.
-
-    :func:`investment_projection.calculate_investment_inputs` and
-    :func:`investment_projection.build_contribution_timeline` only
-    require five attributes per deduction (amount, calc_method_id,
-    annual_salary, pay_periods_per_year).  Pre-Commit-28 the dashboard
-    and growth-chart routes each built a list of anonymous
-    ``type("D", ...)`` objects with the identical five fields;
-    centralising the conversion here removes that duplication and
-    swaps the duck-typed construction for a typed namedtuple.
-
-    Args:
-        deductions: A list of :class:`PaycheckDeduction` rows whose
-            ``salary_profile`` relationship is loaded.
-
-    Returns:
-        A list of :class:`_AdaptedDeduction` namedtuples ready for
-        ``calculate_investment_inputs`` / ``build_contribution_timeline``.
-    """
-    adapted = []
-    for ded in deductions:
-        profile = ded.salary_profile
-        adapted.append(_AdaptedDeduction(
-            amount=ded.amount,
-            calc_method_id=ded.calc_method_id,
-            annual_salary=profile.annual_salary,
-            pay_periods_per_year=(
-                profile.pay_periods_per_year
-                or _DEFAULT_PAY_PERIODS_PER_YEAR
-            ),
-        ))
-    return adapted
 
 
 def _load_active_salary_profile(user_id: int) -> SalaryProfile | None:
@@ -123,65 +75,6 @@ def _load_active_salary_profile(user_id: int) -> SalaryProfile | None:
         db.session.query(SalaryProfile)
         .filter_by(user_id=user_id, is_active=True)
         .first()
-    )
-
-
-def _salary_gross_biweekly(user_id: int) -> Decimal:
-    """Return the raise-aware gross biweekly pay for the active profile.
-
-    Delegates to :func:`income_service.get_current_gross_biweekly`
-    (F-20 / MED-06 / F-032) so the value is the paycheck engine's
-    per-period gross, not the off-engine
-    ``annual_salary / pay_periods_per_year`` recompute that silently
-    dropped any applicable :class:`SalaryRaise` row pre-Commit-17.
-    Falls back to ``Decimal("0")`` when no active profile exists or
-    no pay period covers today -- the engines treat that as "no
-    salary context", matching the pre-Commit-28 route default.
-    """
-    return income_service.get_current_gross_biweekly(user_id)
-
-
-def _load_deductions_for_account(user_id: int, account_id: int) -> list[PaycheckDeduction]:
-    """Return active paycheck deductions targeting *account_id*."""
-    return (
-        db.session.query(PaycheckDeduction)
-        .join(SalaryProfile)
-        .filter(
-            SalaryProfile.user_id == user_id,
-            SalaryProfile.is_active.is_(True),
-            PaycheckDeduction.target_account_id == account_id,
-            PaycheckDeduction.is_active.is_(True),
-        )
-        .all()
-    )
-
-
-def _load_shadow_income_contributions(
-    account_id: int, period_ids: list[int],
-) -> list[Transaction]:
-    """Return shadow-income contribution transactions into *account_id*.
-
-    Filters to transfer-shadow income rows in the supplied period
-    window so :func:`calculate_investment_inputs` can derive the
-    correct YTD contribution total and the contribution timeline
-    can layer historical receipts.  Returns an empty list when
-    ``period_ids`` is empty so callers do not issue an ``IN ()``
-    query against PostgreSQL.
-    """
-    if not period_ids:
-        return []
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    return (
-        db.session.query(Transaction)
-        .options(joinedload(Transaction.status))
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
     )
 
 
@@ -243,23 +136,21 @@ def _projection_inputs_for_account(
         struct.
     """
     active_profile = _load_active_salary_profile(user_id)
-    salary_gross_biweekly = _salary_gross_biweekly(user_id)
-    deductions = _load_deductions_for_account(user_id, account_id)
-    adapted_deductions = _adapt_deductions(deductions)
+    # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
+    # off-engine ``annual_salary / pay_periods_per_year`` recompute that
+    # silently dropped any applicable ``SalaryRaise`` row pre-Commit-17.
+    salary_gross_biweekly = income_service.get_current_gross_biweekly(user_id)
+    deductions = load_active_deductions_for_account(user_id, account_id)
+    adapted_deductions = adapt_deductions(deductions)
 
     period_ids = [p.id for p in all_periods]
-    acct_contributions = _load_shadow_income_contributions(
+    acct_contributions = load_shadow_income_contributions_for_account(
         account_id, period_ids,
     )
 
-    inputs = calculate_investment_inputs(
-        account_id=account_id,
-        investment_params=investment_params,
-        deductions=adapted_deductions,
-        all_contributions=acct_contributions,
-        all_periods=all_periods,
-        current_period=current_period,
-        salary_gross_biweekly=salary_gross_biweekly,
+    inputs = build_investment_projection_inputs(
+        account_id, investment_params, adapted_deductions, acct_contributions,
+        all_periods, current_period, salary_gross_biweekly,
     )
     return (
         inputs, adapted_deductions, acct_contributions,

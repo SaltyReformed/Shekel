@@ -18,15 +18,13 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, TxnTypeEnum
+from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import (
     balance_resolver,
@@ -37,9 +35,11 @@ from app.services import (
     pension_calculator,
     retirement_gap_calculator,
 )
-from app.services.investment_projection import (
-    adapt_deductions,
-    calculate_investment_inputs,
+from app.services.investment_projection import adapt_deductions
+from app.services.projection_inputs import (
+    build_investment_projection_inputs,
+    load_active_deductions_for_accounts,
+    load_shadow_income_contributions_for_accounts,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -442,38 +442,17 @@ def _project_retirement_accounts(
     account_ids = [a.id for a in accounts]
     period_ids = [p.id for p in all_periods]
 
-    # Batch-load paycheck deductions.
-    deductions_by_account = {}
-    if account_ids:
-        inv_deductions = (
-            db.session.query(PaycheckDeduction)
-            .join(SalaryProfile)
-            .filter(
-                SalaryProfile.user_id == user_id,
-                SalaryProfile.is_active.is_(True),
-                PaycheckDeduction.target_account_id.in_(account_ids),
-                PaycheckDeduction.is_active.is_(True),
-            )
-            .all()
-        )
-        for ded in inv_deductions:
-            deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
+    # F-22 / Commit 18: shared deduction batch loader; replaces the
+    # filter-shape duplicate that previously lived inline here and in
+    # savings_dashboard_service / year_end_summary_service.
+    deductions_by_account = load_active_deductions_for_accounts(
+        user_id, account_ids,
+    )
 
-    # Batch-load shadow income contributions.
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    all_acct_contributions = []
-    if account_ids and period_ids:
-        all_acct_contributions = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.account_id.in_(account_ids),
-                Transaction.transfer_id.isnot(None),
-                Transaction.transaction_type_id == income_type_id,
-                Transaction.pay_period_id.in_(period_ids),
-                Transaction.is_deleted.is_(False),
-            )
-            .all()
-        )
+    # F-22 / Commit 18: shared batch shadow-income loader.
+    all_acct_contributions = load_shadow_income_contributions_for_accounts(
+        account_ids, period_ids,
+    )
 
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not
     # the off-engine ``annual_salary / pay_periods_per_year`` recompute
@@ -550,14 +529,9 @@ def _project_retirement_accounts(
                 if t.account_id == acct.id
             ]
 
-            inputs = calculate_investment_inputs(
-                account_id=acct.id,
-                investment_params=params,
-                deductions=adapted_deductions,
-                all_contributions=acct_contributions,
-                all_periods=all_periods,
-                current_period=current_period,
-                salary_gross_biweekly=salary_gross_biweekly,
+            inputs = build_investment_projection_inputs(
+                acct.id, params, adapted_deductions, acct_contributions,
+                all_periods, current_period, salary_gross_biweekly,
             )
 
             annual_return = (

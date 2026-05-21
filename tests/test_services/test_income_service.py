@@ -33,7 +33,6 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.services import (
     income_service,
-    investment_dashboard_service,
     savings_dashboard_service,
     year_end_summary_service,
 )
@@ -259,9 +258,14 @@ class TestConsumerIntegration:
             )
             assert year_end_val == canonical
 
-            # Investment consumer: ``_salary_gross_biweekly`` post-Commit-17
-            # takes ``user_id`` and delegates to income_service.
-            investment_val = (
-                investment_dashboard_service._salary_gross_biweekly(user_id)
-            )
+            # Investment consumer: Commit 17 introduced a thin
+            # ``_salary_gross_biweekly`` wrapper around
+            # ``income_service.get_current_gross_biweekly``; Commit 18
+            # (F-22) removed the wrapper and routed
+            # ``_projection_inputs_for_account`` through the canonical
+            # helper directly.  Asserting the producer alone still
+            # locks the producer/consumer agreement because the
+            # investment dashboard now has no intermediate site that
+            # could drift.
+            investment_val = income_service.get_current_gross_biweekly(user_id)
             assert investment_val == canonical

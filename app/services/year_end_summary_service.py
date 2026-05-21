@@ -33,7 +33,6 @@ from app.models.investment_params import InvestmentParams
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -56,9 +55,12 @@ from app.services.account_projection import (
 from app.services.investment_projection import (
     adapt_deductions,
     build_contribution_timeline,
-    calculate_investment_inputs,
 )
 from app.services.loan_payment_service import load_loan_context
+from app.services.projection_inputs import (
+    build_investment_projection_inputs,
+    load_active_deductions_for_accounts,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import balance_excluded_status_ids
 from app.services.tax_config_service import load_tax_configs
@@ -1173,14 +1175,10 @@ def _project_investment_for_year(
     ) if year_period_ids else []
 
     # Compute periodic contribution and employer params.
-    inputs = calculate_investment_inputs(
-        account_id=account.id,
-        investment_params=investment_params,
-        deductions=adapted_deductions,
-        all_contributions=acct_contributions,
-        all_periods=all_periods,
-        current_period=year_periods[0],
-        salary_gross_biweekly=salary_gross_biweekly,
+    # F-22 / Commit 18: shared kwargs-splat helper.
+    inputs = build_investment_projection_inputs(
+        account.id, investment_params, adapted_deductions, acct_contributions,
+        all_periods, year_periods[0], salary_gross_biweekly,
     )
 
     # Determine anchor position relative to the year.
@@ -1725,14 +1723,10 @@ def _build_investment_balance_map(
     ) if post_period_ids else []
 
     current_period = post_anchor[0] if post_anchor else pre_anchor[-1]
-    inputs = calculate_investment_inputs(
-        account_id=account.id,
-        investment_params=investment_params,
-        deductions=adapted_deductions,
-        all_contributions=acct_contributions,
-        all_periods=periods,
-        current_period=current_period,
-        salary_gross_biweekly=salary_gross_biweekly,
+    # F-22 / Commit 18: shared kwargs-splat helper.
+    inputs = build_investment_projection_inputs(
+        account.id, investment_params, adapted_deductions, acct_contributions,
+        periods, current_period, salary_gross_biweekly,
     )
 
     # Forward projection for post-anchor periods.
@@ -2020,8 +2014,12 @@ def _load_deductions_by_account(
     has the SalaryProfile eagerly loaded for access to annual_salary
     and pay_periods_per_year.
 
-    Follows the batch-loading pattern from
-    savings_dashboard_service._load_account_params().
+    F-22 / Commit 18: delegates to the shared
+    :func:`load_active_deductions_for_accounts` so the filter shape
+    is defined once across the four consumer services.  The
+    investment-account selection (parameters but neither interest nor
+    amortization) stays here because it is the year-end aggregation's
+    business rule, not a property of the deduction query.
 
     Args:
         accounts: List of Account objects.
@@ -2037,25 +2035,7 @@ def _load_deductions_by_account(
         and not a.account_type.has_interest
         and not a.account_type.has_amortization
     ]
-    if not inv_ids:
-        return {}
-
-    deductions = (
-        db.session.query(PaycheckDeduction)
-        .join(PaycheckDeduction.salary_profile)
-        .filter(
-            PaycheckDeduction.target_account_id.in_(inv_ids),
-            PaycheckDeduction.is_active.is_(True),
-            SalaryProfile.user_id == user_id,
-            SalaryProfile.is_active.is_(True),
-        )
-        .all()
-    )
-
-    by_account: dict[int, list] = {}
-    for ded in deductions:
-        by_account.setdefault(ded.target_account_id, []).append(ded)
-    return by_account
+    return load_active_deductions_for_accounts(user_id, inv_ids)
 
 
 def _load_salary_gross_biweekly(

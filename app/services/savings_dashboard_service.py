@@ -26,7 +26,6 @@ from app.models.investment_params import InvestmentParams
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
-from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
@@ -48,12 +47,13 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.investment_projection import (
-    adapt_deductions,
-    calculate_investment_inputs,
-)
+from app.services.investment_projection import adapt_deductions
 from app.services.loan_payment_service import (
     load_loan_context,
+)
+from app.services.projection_inputs import (
+    build_investment_projection_inputs,
+    load_active_deductions_for_accounts,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import balance_excluded_status_ids
@@ -285,22 +285,12 @@ def _load_account_params(user_id, accounts):
         ).all():
             investment_params_map[ip.account_id] = ip
 
-    deductions_by_account = {}
-    if investment_params_map:
-        inv_account_ids = list(investment_params_map.keys())
-        inv_deductions = (
-            db.session.query(PaycheckDeduction)
-            .join(SalaryProfile)
-            .filter(
-                SalaryProfile.user_id == user_id,
-                SalaryProfile.is_active.is_(True),
-                PaycheckDeduction.target_account_id.in_(inv_account_ids),
-                PaycheckDeduction.is_active.is_(True),
-            )
-            .all()
-        )
-        for ded in inv_deductions:
-            deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
+    # F-22 / Commit 18: shared deduction batch loader; replaces the
+    # filter-shape duplicate that previously lived inline here and in
+    # retirement_dashboard_service / year_end_summary_service.
+    deductions_by_account = load_active_deductions_for_accounts(
+        user_id, list(investment_params_map.keys()),
+    ) if investment_params_map else {}
 
     # F-20 / MED-06 / F-032: raise-aware gross-biweekly from the
     # paycheck engine, not the off-engine
@@ -560,14 +550,9 @@ def _project_investment(
         if t.account_id == acct.id
     ]
 
-    inputs = calculate_investment_inputs(
-        account_id=acct.id,
-        investment_params=investment_params,
-        deductions=adapted_deductions,
-        all_contributions=acct_contributions,
-        all_periods=all_periods,
-        current_period=current_period,
-        salary_gross_biweekly=params["salary_gross_biweekly"],
+    inputs = build_investment_projection_inputs(
+        acct.id, investment_params, adapted_deductions, acct_contributions,
+        all_periods, current_period, params["salary_gross_biweekly"],
     )
 
     future_periods = [
