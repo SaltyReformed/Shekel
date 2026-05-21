@@ -212,9 +212,16 @@ class UserSettings(TimestampMixin, db.Model):
             name="ck_user_settings_valid_safe_withdrawal",
         ),
         # F-077 / C-24: Estimated effective tax rate during
-        # retirement (NULL = unset, fall back to current bracket-
-        # based estimate).  Same percent-to-decimal convention as
-        # ``safe_withdrawal_rate``.
+        # retirement.  NULL = no retirement-tax adjustment applied
+        # -- ``retirement_gap_calculator.calculate_gap`` skips the
+        # after-tax block entirely when ``estimated_tax_rate`` is
+        # None (`:76`, `:110`), so the projection reports gross
+        # pension income; no bracket-based fallback exists.  A-26 /
+        # LOW-05: the prior comment promised a fallback that the
+        # code does not implement; the documented contract now
+        # matches the code (whether a bracket fallback SHOULD be
+        # built is a carried product question, not a defect).  Same
+        # percent-to-decimal convention as ``safe_withdrawal_rate``.
         db.CheckConstraint(
             "estimated_retirement_tax_rate IS NULL OR "
             "(estimated_retirement_tax_rate >= 0 AND "

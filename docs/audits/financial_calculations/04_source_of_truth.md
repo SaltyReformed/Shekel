@@ -2106,7 +2106,7 @@ auditable.
 | budget.loan_params.interest_rate | Numeric(7,5) | **UNCLEAR** | dual role: fixed-authoritative vs ARM denormalized RateHistory mirror; effective-date-unaware write | **Q-23** |
 | budget.rate_history.interest_rate | Numeric(7,5) | AUTHORITATIVE | append-only event input; authority not honored by scalar display sites | -- |
 | budget.escrow_components.annual_amount | Numeric(12,2) | AUTHORITATIVE | user input, immutable post-create, schema/DB CHECK aligned; consumer defects only | -- |
-| budget.escrow_components.inflation_rate | Numeric(5,4) | AUTHORITATIVE (implicit) | user-input EscrowComponent rate; covered 04:1307-1308 but no standalone class line (D2 nit) | -- |
+| budget.escrow_components.inflation_rate | Numeric(5,4) | AUTHORITATIVE | user-input EscrowComponent inflation rate; CHECK `inflation_rate IS NULL OR (0..1)` (`loan_features.py:111-115`); no second producer, no drift surface (LOW-04 D2-nit promoted to a standalone classification line) | -- |
 | budget.interest_params.apy | Numeric(7,5) | AUTHORITATIVE | primary input, no counterpart; write-path silent-default 4.5% hazard | -- (Q-24 #2) |
 | budget.investment_params.assumed_annual_return | Numeric(7,5) | AUTHORITATIVE | primary input; float Python default violation; 0-vs-None read hazard | -- (Q-24 #2, F-042) |
 | budget.investment_params.annual_contribution_limit | Numeric(12,2) | AUTHORITATIVE | input; tri-consumer 0/None divergence | -- (Q-24 #3) |
