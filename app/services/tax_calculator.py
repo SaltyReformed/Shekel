@@ -209,31 +209,6 @@ def _apply_marginal_brackets(taxable_income, brackets):
     return total_tax.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
-# ── Legacy wrapper ────────────────────────────────────────────────
-
-
-def calculate_federal_tax(annual_gross, bracket_set):
-    """Calculate annual federal income tax using marginal brackets.
-
-    Legacy interface retained for backward compatibility.  Equivalent to
-    running the Percentage Method with a single annual period and no
-    W-4 adjustments, then returning the annual (not per-period) result.
-
-    Args:
-        annual_gross:  Total annual gross income (Decimal).
-        bracket_set:   A TaxBracketSet with loaded `brackets` and
-                       `standard_deduction`.
-
-    Returns:
-        Decimal -- annual federal tax owed.
-    """
-    if bracket_set is None:
-        return ZERO
-
-    taxable = Decimal(str(annual_gross)) - Decimal(str(bracket_set.standard_deduction))
-    return _apply_marginal_brackets(taxable, bracket_set.brackets)
-
-
 # ── State Tax ─────────────────────────────────────────────────────
 
 

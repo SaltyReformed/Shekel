@@ -13,7 +13,6 @@ from decimal import Decimal
 
 from app.services.tax_calculator import (
     calculate_federal_withholding,
-    calculate_federal_tax,
     calculate_state_tax,
     calculate_fica,
     capped_social_security,
@@ -540,28 +539,6 @@ class TestDependentCredits:
         )
 
 
-# ── Test: Legacy calculate_federal_tax wrapper ─────────────────────
-
-
-class TestLegacyWrapper:
-    """Backward compatibility with the original calculate_federal_tax."""
-
-    def test_returns_annual_tax(self, single_bracket_set):
-        """Legacy function returns the full annual amount."""
-        result = calculate_federal_tax(Decimal("60000"), single_bracket_set)
-        # $60k - $15k = $45k taxable
-        # $10k*0.10 + $30k*0.12 + $5k*0.22 = $5,700
-        assert result == Decimal("5700.00")
-
-    def test_none_bracket_set_returns_zero(self):
-        result = calculate_federal_tax(Decimal("60000"), None)
-        assert result == Decimal("0")
-
-    def test_below_deduction_returns_zero(self, single_bracket_set):
-        result = calculate_federal_tax(Decimal("10000"), single_bracket_set)
-        assert result == Decimal("0")
-
-
 # ── Test: _apply_marginal_brackets (internal helper) ───────────────
 
 
@@ -611,8 +588,11 @@ class TestAnnualConsistency:
             pay_periods=26,
             bracket_set=single_bracket_set,
         )
-        annual_tax = calculate_federal_tax(
-            annual_salary, single_bracket_set
+        # Annual tax via the live engine: subtract std deduction then
+        # apply marginal brackets directly (LOW-01: legacy wrapper deleted).
+        taxable_annual = annual_salary - single_bracket_set.standard_deduction
+        annual_tax = _apply_marginal_brackets(
+            taxable_annual, single_bracket_set.brackets
         )
         assert per_period == Decimal("371.54"), (
             f"Per-period withholding: expected 371.54, "
@@ -651,8 +631,11 @@ class TestAnnualConsistency:
             pay_periods=1,
             bracket_set=single_bracket_set,
         )
-        annual_tax = calculate_federal_tax(
-            annual_salary, single_bracket_set
+        # Annual tax via the live engine: subtract std deduction then
+        # apply marginal brackets directly (LOW-01: legacy wrapper deleted).
+        taxable_annual = annual_salary - single_bracket_set.standard_deduction
+        annual_tax = _apply_marginal_brackets(
+            taxable_annual, single_bracket_set.brackets
         )
         assert per_period == Decimal("9660.00"), (
             f"Annual withholding: expected 9660.00, "
