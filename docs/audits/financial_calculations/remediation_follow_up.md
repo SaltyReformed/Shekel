@@ -310,9 +310,12 @@ into the audit-fix commit chain.
 
 - **Surfaced during:** Commit 10 (`fix(grid): period_subtotal through
   canonical producer (Q-10, E-25)`).
-- **Status:** documentation-only; the underlying refactor is already
-  scoped as Commit 23 (`refactor(obligations): one monthly-equivalent
-  aggregator (E-24, HIGH-05)`).
+- **Status:** resolved by Commit 1 of `remediation_follow_up_plan.md`,
+  doc-only correction. The Commit 10 "Files modified" list no longer
+  names `app/routes/obligations.py`, the now-orphaned C10-4 test row
+  has been dropped, and a clarifying trailing note points readers to
+  Commit 23 (E-24 / HIGH-05) for the obligations monthly-equivalent
+  aggregator. The body below is preserved for traceability.
 
 ### Problem
 

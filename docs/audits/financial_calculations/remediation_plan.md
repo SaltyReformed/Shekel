@@ -908,9 +908,14 @@ not a grid-only detail.
 - `app/services/balance_resolver.py`: `period_subtotal(account, scenario_id, period) -> Decimal`
   using the same entry-aware reduction and shared status predicate.
 - `app/routes/grid.py`: replace the inline subtotal loop with `period_subtotal(...)`.
-- `app/routes/obligations.py`: the manual subtotal at ~`:331-408` also routed through it (same
-  concept).
 - `tests/test_routes/test_grid.py`: re-pin subtotal assertions; add the same-page relationship test.
+
+Note: obligations monthly-equivalent aggregation is Commit 23 (E-24 / HIGH-05), not
+`period_subtotal`. The `/obligations` route sums `amount_to_monthly(...)` across
+`TransactionTemplate` / `TransferTemplate` rows (a monthly-equivalent rollup with no
+`(account, scenario_id, period)` parameter set), so the canonical producer for that surface
+is `obligations_aggregator.committed_monthly`, not `balance_resolver.period_subtotal`. F-4
+documents the original plan-prose drift.
 
 **D. Implementation approach** Q-10 resolution recorded in the commit body: subtotal is the
 entry-aware sum of Projected items for the period, identical formula to the balance delta, so
@@ -924,7 +929,6 @@ loop (no dead duplicate).
 | C10-1 | test_subtotal_entry_aware | Projected $500, cleared $462.34 | `period_subtotal` | `Decimal("37.66")` (entry-aware), not 500.00 | New |
 | C10-2 | test_subtotal_reconciles_balance_delta | grid fixture | `balance[p]-balance[p-1]` vs `subtotal[p].net` | exactly equal | New |
 | C10-3 | test_grid_inline_loop_removed | grep | no inline `sum(... effective_amount ...)` in grid.py | passes | New |
-| C10-4 | test_obligations_subtotal_shared | obligations page | uses period_subtotal | identical formula | New |
 
 Re-pinned tests (F-002/F-004): grid subtotal assertions updated from raw-effective to entry-aware
 with finding-citing comments.
