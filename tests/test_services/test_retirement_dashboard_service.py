@@ -666,6 +666,121 @@ class TestWeightedReturnZeroIsAValue:
                 "denominator (CRIT-04 / F-042 / PA-04)."
             )
 
+    def test_c4_1_zero_balance_account_included_at_weight_zero(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """F-11: zero-balance account is included in the loop at weight 0.
+
+        Pins the upstream ``proj.get("current_balance", ...)`` contract
+        that Commit 4 / F-11 unlocked.  Pre-fix the trailing ``or
+        Decimal("0")`` was truthiness on a Decimal, so a real zero
+        balance was indistinguishable from a missing key.  The new
+        explicit ``is None`` guard preserves a real zero (contributes
+        weight 0 to the denominator) and only fires when the upstream
+        contract drifts to return ``None``.
+
+        Setup:
+
+          - Account A: $0.00 anchor, ``InvestmentParams`` with
+            ``assumed_annual_return = Decimal("0.07000")`` (zero
+            balance, non-zero rate).
+          - Account B: $100,000.00 anchor, ``InvestmentParams`` with
+            ``assumed_annual_return = Decimal("0.05000")``.
+
+        Hand arithmetic (F-11):
+
+          weighted_return = 0 * 0.07000 + 100,000 * 0.05000
+                          = 0 + 5,000
+                          = 5,000
+          total_balance   = 0 + 100,000 = 100,000
+          current_return  = (5,000 / 100,000) * 100
+                          = 0.05 * 100
+                          = Decimal("5.00")
+
+        If a future refactor causes ``proj.get("current_balance", ...)``
+        to skip the zero-balance account, ``total_balance`` would
+        collapse to ``$100,000`` with a numerator of ``$5,000`` -- still
+        ``5.00`` accidentally.  The stronger lock is in
+        ``test_c4_1_zero_balance_account_increments_total_balance``
+        below, which asserts the zero-balance account contributes its
+        ``$0.00`` weight to the loop (i.e. the loop iterated it).
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            _seed_active_salary_profile(db.session, user, scenario)
+
+            acct_zero = _make_retirement_account(
+                user, "F-11 zero-bal", Decimal("0.00"),
+            )
+            acct_funded = _make_retirement_account(
+                user, "F-11 funded", Decimal("100000.00"),
+            )
+            db.session.add(InvestmentParams(
+                account_id=acct_zero.id,
+                assumed_annual_return=Decimal("0.07000"),
+                employer_contribution_type="none",
+            ))
+            db.session.add(InvestmentParams(
+                account_id=acct_funded.id,
+                assumed_annual_return=Decimal("0.05000"),
+                employer_contribution_type="none",
+            ))
+            db.session.commit()
+
+            data = retirement_dashboard_service.compute_gap_data(user.id)
+            slider = retirement_dashboard_service.compute_slider_defaults(data)
+
+            # (0*0.07 + 100,000*0.05) / (0 + 100,000) * 100 = 5.00.
+            assert slider["current_return"] == Decimal("5.00"), (
+                "Zero-balance account was skipped by the truthiness "
+                "guard the F-11 fix removed (or upstream proj.get "
+                "contract drifted)."
+            )
+
+    def test_c4_1_zero_balance_account_increments_total_balance(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """F-11: ``compute_gap_data`` exposes both projections so the
+        upstream ``proj`` dict carries ``current_balance = Decimal("0")``
+        for a real zero-balance account.
+
+        This is the strict version of the F-11 contract: the loop in
+        ``compute_slider_defaults`` consumes ``proj["current_balance"]``
+        (via ``proj.get("current_balance", acct.current_anchor_balance)``)
+        and the producer ``_project_retirement_accounts`` must therefore
+        emit a Decimal-zero (not omit the account, not emit ``None``).
+        If a future refactor drops the zero-balance account from the
+        projections list, the truthiness regression returns to the same
+        latent hazard the F-11 fix removed.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            _seed_active_salary_profile(db.session, user, scenario)
+
+            acct_zero = _make_retirement_account(
+                user, "F-11 contract zero", Decimal("0.00"),
+            )
+            db.session.add(InvestmentParams(
+                account_id=acct_zero.id,
+                assumed_annual_return=Decimal("0.07000"),
+                employer_contribution_type="none",
+            ))
+            db.session.commit()
+
+            data = retirement_dashboard_service.compute_gap_data(user.id)
+            projections = data["retirement_account_projections"]
+            target = next(
+                p for p in projections if p["account"].id == acct_zero.id
+            )
+            assert target["current_balance"] == Decimal("0.00"), (
+                "Upstream proj.get contract drifted: a real zero-balance "
+                "retirement account must emit Decimal('0.00'), not None "
+                "or a missing key (F-11)."
+            )
+            assert isinstance(target["current_balance"], Decimal)
+
     def test_none_params_excluded_zero_return_included(
         self, app, db, seed_user, seed_periods_today,
     ):

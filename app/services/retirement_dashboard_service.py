@@ -256,9 +256,15 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         if swr_override is not None
         else _resolve_swr_fraction(settings)
     )
+    # F-12 sibling: ``settings`` is a SQLAlchemy ``UserSettings`` row;
+    # use explicit ``is not None`` (post-CRIT-04 convention).  The
+    # ``settings.estimated_retirement_tax_rate`` truthiness on the
+    # second conjunct is the LOW-05 / CRIT-04 carry-open (build vs do
+    # not build a bracket-based fallback for a stored zero tax rate)
+    # and is intentionally NOT changed here.
     tax_rate = (
         Decimal(str(settings.estimated_retirement_tax_rate))
-        if settings and settings.estimated_retirement_tax_rate
+        if settings is not None and settings.estimated_retirement_tax_rate
         else None
     )
 
@@ -382,7 +388,14 @@ def compute_slider_defaults(data):
         # entirely (two $100k accounts at 0% and 7% reported 7.00%
         # instead of the true blended 3.50%).
         if params is not None and params.assumed_annual_return is not None:
-            bal = proj.get("current_balance", acct.current_anchor_balance) or Decimal("0")
+            # F-11 / CRIT-04 / E-12: explicit ``is None`` guard, not
+            # truthiness on a Decimal.  A stored zero balance is a real
+            # zero (Account A at $0.00 contributes weight 0 to the
+            # denominator); only the upstream-contract escape hatch
+            # ``proj.get`` returning ``None`` triggers the fallback.
+            bal = proj.get("current_balance", acct.current_anchor_balance)
+            if bal is None:
+                bal = Decimal("0")
             total_balance += bal
             weighted_return += bal * params.assumed_annual_return
     if total_balance > 0:
@@ -469,9 +482,14 @@ def _project_retirement_accounts(
     # grid and the /investment dashboard for the same inputs.
     scenario = get_baseline_scenario(user_id)
     acct_balance_map = {}
-    if scenario and period_ids:
+    # F-12 sibling: ``scenario`` is a SQLAlchemy ``Scenario`` row;
+    # use explicit ``is not None`` (post-CRIT-04 convention).
+    # ``Account.current_anchor_balance`` is ``NOT NULL`` so no
+    # ``or Decimal("0")`` fallback is needed here -- the prior
+    # truthiness was dead defence on a stored zero.
+    if scenario is not None and period_ids:
         for acct in accounts:
-            anchor = acct.current_anchor_balance or Decimal("0")
+            anchor = acct.current_anchor_balance
             if acct.current_anchor_period_id is not None:
                 bals = balance_resolver.balances_for(
                     acct, scenario.id, all_periods,
@@ -492,7 +510,7 @@ def _project_retirement_accounts(
             .first()
         )
         balance = acct_balance_map.get(
-            acct.id, acct.current_anchor_balance or Decimal("0")
+            acct.id, acct.current_anchor_balance,
         )
         projected_balance = balance
         effective_return = None
@@ -504,7 +522,7 @@ def _project_retirement_accounts(
                 if p.period_index >= current_period.period_index
             ]
 
-        if params and projection_periods:
+        if params is not None and projection_periods:
             acct_deductions = deductions_by_account.get(acct.id, [])
             adapted_deductions = adapt_deductions(acct_deductions)
 
