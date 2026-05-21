@@ -10,6 +10,8 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -4122,3 +4124,135 @@ class TestLoanBalanceTrueUp:
             "Same-day same-balance double-submit must produce exactly "
             "one row (uq_loan_anchor_events_acct_date_bal_day)."
         )
+
+
+class TestLoanParamsInterestRateUpperBoundCheck:
+    """Storage-tier guard for ``ck_loan_params_interest_rate_upper`` (F-18).
+
+    The Marshmallow ``LoanParamsCreateSchema`` already pins the
+    application tier at ``Range(0, 1)`` (HIGH-06 / Commit 24).  These
+    tests verify the parallel storage-tier CHECK introduced in Commit
+    13 of the follow-up remediation: a raw-SQL INSERT that bypasses
+    the schema must be rejected by PostgreSQL with the named CHECK
+    constraint visible in the error.  Boundary value 1.0 succeeds;
+    NULL succeeds (the E-18 / Commit 15 nullable demotion is
+    preserved).
+    """
+
+    @staticmethod
+    def _make_loan_account(seed_user, db_session):
+        """Create a loan Account row without LoanParams.
+
+        ``LoanParams.account_id`` is UNIQUE so each raw-SQL INSERT
+        below targets a fresh account to keep the tests independent.
+        """
+        loan_type = db_session.query(AccountType).filter_by(
+            name="Auto Loan",
+        ).one()
+        acct = account_service.create_account(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="F-18 Raw-SQL Test Loan",
+            anchor_balance=Decimal("10000.00"),
+        )
+        db_session.add(acct)
+        db_session.commit()
+        return acct
+
+    @staticmethod
+    def _insert_loan_params_raw(account_id, interest_rate):
+        """Issue a raw-SQL INSERT into ``budget.loan_params``.
+
+        Bypasses the Marshmallow schema so the CHECK constraint is
+        the only remaining guard.  ``interest_rate`` may be ``None``
+        to test the nullable path.  Caller asserts whether
+        ``IntegrityError`` surfaces on flush/commit.
+        """
+        db.session.execute(
+            sa.text(
+                "INSERT INTO budget.loan_params ("
+                "account_id, original_principal, current_principal, "
+                "interest_rate, term_months, origination_date, "
+                "payment_day, is_arm) VALUES ("
+                ":account_id, :orig, :curr, :rate, :term, :orig_date, "
+                ":pay_day, FALSE)"
+            ),
+            {
+                "account_id": account_id,
+                "orig": Decimal("15000.00"),
+                "curr": Decimal("10000.00"),
+                "rate": interest_rate,
+                "term": 60,
+                "orig_date": date(2025, 1, 1),
+                "pay_day": 15,
+            },
+        )
+
+    # C13-1
+    def test_raw_insert_rate_above_one_rejected(
+        self, seed_user, db, seed_periods,
+    ):
+        """Raw-SQL INSERT with ``interest_rate = 9.5`` raises IntegrityError.
+
+        Hand-check: ``9.5 > 1`` violates the new CHECK
+        ``ck_loan_params_interest_rate_upper``.  The application tier
+        is bypassed (raw SQL), so the storage tier must be the
+        rejecting layer.  The exception text mentions the constraint
+        name so production operators can correlate the error to the
+        guard.
+        """
+        acct = self._make_loan_account(seed_user, db.session)
+
+        with pytest.raises(IntegrityError) as exc_info:
+            self._insert_loan_params_raw(acct.id, Decimal("9.5"))
+            db.session.flush()
+        assert "ck_loan_params_interest_rate_upper" in str(exc_info.value)
+        db.session.rollback()
+
+    # C13-2
+    def test_raw_insert_rate_at_one_boundary_succeeds(
+        self, seed_user, db, seed_periods,
+    ):
+        """``interest_rate = 1.0`` is the inclusive upper bound and admitted.
+
+        Hand-check: ``1.0 <= 1`` satisfies the CHECK.  The boundary
+        match the sibling ``ck_interest_params_valid_apy`` semantic
+        (closed unit interval) and the Marshmallow ``Range(0, 1)``'s
+        inclusive default.
+        """
+        acct = self._make_loan_account(seed_user, db.session)
+
+        self._insert_loan_params_raw(acct.id, Decimal("1.0"))
+        db.session.commit()
+
+        params = (
+            db.session.query(LoanParams)
+            .filter_by(account_id=acct.id)
+            .one()
+        )
+        assert params.interest_rate == Decimal("1.00000")
+
+    # C13-3
+    def test_raw_insert_rate_null_succeeds(
+        self, seed_user, db, seed_periods,
+    ):
+        """``interest_rate = NULL`` is admitted (E-18 demotion preserved).
+
+        Hand-check: ``IS NULL OR interest_rate <= 1`` short-circuits
+        TRUE for NULL inputs.  PostgreSQL would already admit NULL
+        under a bare ``interest_rate <= 1`` (NULL booleans evaluate
+        UNKNOWN under CHECK), but the explicit ``IS NULL OR ...``
+        documents the intent and matches the sibling
+        ``ck_escrow_components_valid_inflation_rate`` shape.
+        """
+        acct = self._make_loan_account(seed_user, db.session)
+
+        self._insert_loan_params_raw(acct.id, None)
+        db.session.commit()
+
+        params = (
+            db.session.query(LoanParams)
+            .filter_by(account_id=acct.id)
+            .one()
+        )
+        assert params.interest_rate is None

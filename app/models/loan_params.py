@@ -64,6 +64,20 @@ class LoanParams(TimestampMixin, db.Model):
             "interest_rate >= 0",
             name="ck_loan_params_interest_rate",
         ),
+        # F-18 / Commit 13: storage-tier upper bound mirrors the
+        # Marshmallow ``Range(0, 1)`` on ``LoanParamsCreateSchema``
+        # (HIGH-06 / Commit 24).  ``interest_rate`` is persisted as a
+        # decimal fraction (e.g. ``0.06500`` for 6.5%), so the unit
+        # interval is the natural domain.  ``IS NULL OR ...`` preserves
+        # the E-18 / Commit 15 demotion that made the column nullable:
+        # PostgreSQL treats NULL as "unknown" under boolean predicates,
+        # but writing the guard explicitly documents the intent and
+        # keeps the constraint trivially comparable with the sibling
+        # ``escrow_components.inflation_rate`` shape.
+        db.CheckConstraint(
+            "interest_rate IS NULL OR interest_rate <= 1",
+            name="ck_loan_params_interest_rate_upper",
+        ),
         db.CheckConstraint(
             "term_months > 0",
             name="ck_loan_params_term_months",
