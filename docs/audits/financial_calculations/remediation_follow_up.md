@@ -206,7 +206,16 @@ removal do not interleave.
 
 - **Surfaced during:** Commit 9 (`fix(calendar): month-end balance via
   canonical balance-as-of-date (E-27)`), commit `9871bf7`.
-- **Status:** not started; defer until after Commit 37.
+- **Status:** resolved by Commit 10 of the follow-up plan.
+  ``_query_transactions_for_range`` now applies
+  ``balance_contributing_clause()`` in its SQL filter and
+  ``_assign_transactions_to_days`` re-applies
+  ``is_balance_contributing(txn)`` in the Python loop, locking the
+  Choice-2 semantic (Projected + Settled, excludes Credit and
+  Cancelled).  Calendar day cells intentionally diverge from the
+  grid's Projected-only period subtotal.  Pinned by the
+  ``TestBalanceContributingPredicate`` C10-1 through C10-4 tests in
+  ``tests/test_services/test_calendar_service.py``.
 
 ### Problem
 

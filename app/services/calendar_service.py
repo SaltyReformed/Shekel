@@ -30,6 +30,10 @@ from app.services.account_resolver import resolve_analytics_account
 from app.services.balance_resolver import balance_as_of_date
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import (
+    balance_contributing_clause,
+    is_balance_contributing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +212,17 @@ def _query_transactions_for_range(
 
     Eager-loads category, status, template -> recurrence_rule, and
     pay_period to prevent N+1 queries downstream.
+
+    Per F-3 / HIGH-02 / W-065, the row-set is constrained by
+    :func:`~app.utils.balance_predicates.balance_contributing_clause`
+    (``is_deleted=False AND status_id NOT IN (Credit, Cancelled)``)
+    rather than the prior inline ``is_deleted=False``-only gate.  This
+    is the locked Choice-2 semantic from
+    ``remediation_follow_up_plan.md`` Section 2: calendar day cells
+    display realized payments at their settled date, so the predicate
+    is "balance-contributing" (Projected + Settled, excludes Credit and
+    Cancelled) -- intentionally wider than the grid period subtotal's
+    Projected-only predicate.  The two surfaces diverge by design.
     """
     overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]
@@ -225,7 +240,7 @@ def _query_transactions_for_range(
         .filter(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
-            Transaction.is_deleted.is_(False),
+            balance_contributing_clause(),
             or_(
                 Transaction.due_date.between(first_day, last_day),
                 Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(
@@ -278,6 +293,18 @@ def _assign_transactions_to_days(
     Returns the day_map, total_income, and total_expenses for the
     target month.  Deduplicates by transaction ID to prevent
     double-counting when periods overlap month boundaries.
+
+    Per F-3 / W-065, every transaction is re-checked against
+    :func:`~app.utils.balance_predicates.is_balance_contributing`
+    before being assigned to a day.  This is the belt-and-suspenders
+    half of the locked Choice-2 predicate: the SQL filter in
+    :func:`_query_transactions_for_range` already constrains the row
+    set, but reapplying the Python predicate here ensures a future
+    regression that drops the SQL filter alone (or routes a different
+    query into this helper) cannot leak Cancelled / Credit rows into
+    the day-cell display.  ``is_balance_contributing`` is generated
+    from the same ``ref_cache`` accessors as the SQL clause so the
+    two predicates cannot disagree.
     """
     threshold = Decimal(str(large_threshold))
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
@@ -289,6 +316,8 @@ def _assign_transactions_to_days(
 
     for txn in transactions:
         if txn.id in seen_ids:
+            continue
+        if not is_balance_contributing(txn):
             continue
         display_day = _get_display_day(txn, month, year)
         if display_day is None:
