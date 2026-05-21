@@ -37,7 +37,7 @@ import calendar
 from datetime import date as date_cls
 from decimal import Decimal
 
-from app.utils.money import round_money
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 ZERO = Decimal("0.00")
 # Actual/actual day count, evaluated per projection window.  See module
@@ -45,7 +45,6 @@ ZERO = Decimal("0.00")
 # windows" for the full rationale (MED-05 / PA-06).
 DAYS_IN_YEAR_NON_LEAP = Decimal("365")
 DAYS_IN_YEAR_LEAP = Decimal("366")
-MONTHS_IN_YEAR = Decimal("12")
 QUARTERS_IN_YEAR = Decimal("4")
 
 
@@ -122,7 +121,7 @@ def calculate_interest(
         daily_rate = apy / days_in_year
         interest = balance * ((1 + daily_rate) ** period_days - 1)
     elif compounding_frequency == "monthly":
-        monthly_rate = apy / MONTHS_IN_YEAR
+        monthly_rate = apy / MONTHS_PER_YEAR
         days_in_month = Decimal(
             str(calendar.monthrange(period_start.year, period_start.month)[1])
         )

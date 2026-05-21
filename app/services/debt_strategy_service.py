@@ -26,11 +26,10 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.utils.money import round_money
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 # Constants for Decimal arithmetic -- avoids constructing these per call.
 ZERO = Decimal("0.00")
-TWELVE = Decimal("12")
 DEFAULT_MAX_HORIZON_MONTHS = 600
 
 # Strategy name constants -- used by the route layer for form values.
@@ -417,7 +416,7 @@ def _accrue_interest(
         if balances[i] <= ZERO:
             continue
         interest = round_money(
-            balances[i] * debt.interest_rate / TWELVE,
+            balances[i] * debt.interest_rate / MONTHS_PER_YEAR,
         )
         balances[i] += interest
         interest_totals[i] += interest

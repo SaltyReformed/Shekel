@@ -79,7 +79,7 @@ from app.services.amortization_engine import (
     calculate_remaining_months,
     generate_schedule,
 )
-from app.utils.money import round_money
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 ZERO_MONEY = Decimal("0.00")
 
@@ -375,7 +375,7 @@ def _replay_balance_from_anchor(
         # Mirror that here so a confirmed payment on a zero-rate
         # loan is treated as pure principal reduction.
         if rate_at > 0:
-            monthly_rate = rate_at / Decimal("12")
+            monthly_rate = rate_at / MONTHS_PER_YEAR
             interest = round_money(balance * monthly_rate)
         else:
             interest = ZERO_MONEY

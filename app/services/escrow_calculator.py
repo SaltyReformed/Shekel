@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.utils.money import MONTHS_PER_YEAR
+
 TWO_PLACES = Decimal("0.01")
 
 
@@ -115,7 +117,7 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
                     + (as_of_date.month - created.month)
                 )
                 years_elapsed = max(
-                    months_elapsed / Decimal("12"), Decimal("0")
+                    months_elapsed / MONTHS_PER_YEAR, Decimal("0")
                 )
                 if years_elapsed > 0:
                     annual = annual * (1 + rate) ** years_elapsed
