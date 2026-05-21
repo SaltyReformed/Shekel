@@ -5,12 +5,33 @@ Stores type-specific parameters for investment and retirement accounts
 (401k, Roth 401k, Traditional IRA, Roth IRA, brokerage).
 """
 
+from decimal import Decimal
+
 from app.extensions import db
 from app.models.mixins import TimestampMixin
 
 
 class InvestmentParams(TimestampMixin, db.Model):
-    """Parameters for an investment or retirement account."""
+    """Parameters for an investment or retirement account.
+
+    ``annual_contribution_limit`` semantics (E-12 / HIGH-06 / Commit
+    24): the column is nullable.  A ``NULL`` value means "no annual
+    contribution cap configured" (e.g. a brokerage account); the
+    investment dashboard's contribution-limit card is hidden, the
+    growth engine projects without capping, and the suggested
+    transfer amount falls to the ``Decimal("500.00")`` UX default.
+    A stored ``Decimal("0")`` is a distinct, meaningful state: "the
+    user explicitly capped contributions at zero this year" -- the
+    dashboard's limit card renders ``$0`` (100% used at any positive
+    YTD), the growth engine caps every period's contribution to
+    ``min(x, 0) = 0``, and the suggested transfer amount is ``$0``
+    (no contribution within the cap).  Reads use ``is not None``
+    everywhere so the zero state behaves consistently across the
+    card, the transfer-default, the chart, and the year-end
+    summary; pre-fix the three dashboard read sites used Python
+    truthiness, conflating ``0`` with ``None`` in three different
+    ways.
+    """
 
     __tablename__ = "investment_params"
     __table_args__ = (
@@ -77,8 +98,17 @@ class InvestmentParams(TimestampMixin, db.Model):
         nullable=False,
         unique=True,
     )
+    # E-11 / HIGH-06 (Commit 24): Python-side ``default`` is a
+    # ``Decimal`` constructed from a string per coding-standards
+    # rule "Construct Decimals from strings; ``Decimal(0.1)``
+    # introduces float imprecision."  Pre-fix this was the literal
+    # ``0.07000`` (a Python ``float``); PostgreSQL re-quantised on
+    # store so the persisted value was unaffected, but ORM code
+    # paths that read ``Column.default.arg`` saw a float and
+    # propagated the imprecision.  The ``server_default`` is the
+    # storage-tier counterpart and was already a string.
     assumed_annual_return = db.Column(
-        db.Numeric(7, 5), nullable=False, default=0.07000,
+        db.Numeric(7, 5), nullable=False, default=Decimal("0.07000"),
         server_default=db.text("0.07000"),
     )
     annual_contribution_limit = db.Column(db.Numeric(12, 2), nullable=True)

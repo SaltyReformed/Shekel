@@ -55,7 +55,6 @@ from app.services.loan_payment_service import (
 from app.services.loan_resolver import LoanState
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.db_errors import is_unique_violation
-from app.utils.formatting import pct_to_decimal
 from app.utils.log_events import BUSINESS, EVT_LOAN_RECURRENCE_END_DATE_UPDATED, log_event
 from app.utils.money import round_money
 
@@ -772,9 +771,11 @@ def create_params(account_id):
             "loan/setup.html", account=account, account_type=account_type,
         )
 
-    # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
-    if "interest_rate" in data:
-        data["interest_rate"] = pct_to_decimal(data["interest_rate"])
+    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load`` already
+    # divides the form percent by 100, so ``data["interest_rate"]``
+    # is already the storage-domain fraction.  The DB CHECK
+    # ``interest_rate >= 0`` (combined with the schema's
+    # ``Range(0, 1)``) enforces the same bounds.
 
     params = LoanParams(account_id=account.id, **data)
     db.session.add(params)
@@ -836,9 +837,9 @@ def update_params(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
-    if "interest_rate" in data:
-        data["interest_rate"] = pct_to_decimal(data["interest_rate"])
+    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load`` already
+    # converted the form percent to the storage-domain fraction, so
+    # ``data["interest_rate"]`` is stored verbatim.
 
     # E-18 / Commit 16, decision D-C: ``current_principal`` is no
     # longer editable through the params form.  The column is
@@ -994,8 +995,8 @@ def add_rate_change(account_id):
 
     data = _rate_schema.load(request.form)
 
-    # Convert percentage input (e.g. 6.5) to decimal (0.065) for storage.
-    data["interest_rate"] = pct_to_decimal(data["interest_rate"])
+    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load`` already
+    # converted the form percent to the storage-domain fraction.
 
     entry = RateHistory(
         account_id=account.id,
@@ -1073,9 +1074,10 @@ def add_escrow(account_id):
 
     data = _escrow_schema.load(request.form)
 
-    # Convert percentage input (e.g. 3 -> 0.03) for storage.
-    if data.get("inflation_rate") is not None:
-        data["inflation_rate"] = pct_to_decimal(data["inflation_rate"])
+    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load``
+    # converted the form percent to the storage-domain fraction
+    # before validation, so ``data["inflation_rate"]`` is stored
+    # verbatim.
 
     # Check for duplicate name.
     existing = (
@@ -1398,8 +1400,10 @@ def refinance_calculate(account_id):
     else:
         refi_principal = current_real_principal + closing_costs
 
-    # Convert rate from percentage (form input) to decimal (engine).
-    refi_rate = pct_to_decimal(data["new_rate"])
+    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load``
+    # already divided the form percent by 100, so ``data["new_rate"]``
+    # is the storage-domain decimal fraction the engine consumes.
+    refi_rate = data["new_rate"]
     refi_term = data["new_term_months"]
 
     # Compute refinance monthly P&I.

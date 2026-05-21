@@ -342,10 +342,20 @@ def create_account():
     # Auto-create type-specific params based on metadata flags.
     account_type = db.session.get(AccountType, account.account_type_id)
 
-    # Interest-bearing types: auto-create InterestParams with sensible defaults.
+    # Interest-bearing types: auto-create InterestParams with an
+    # explicit ``apy=0`` sentinel (E-12: zero is a value, not
+    # missing; HIGH-06 / Commit 24 removed the dangerous
+    # ``server_default="0.04500"`` that previously materialised a
+    # silent 4.5% rate on any row whose ``apy`` was not explicitly
+    # written).  The user is redirected to the interest-detail setup
+    # page below and must enter a real APY there; until they do,
+    # ``calculate_interest`` short-circuits on ``apy <= 0`` and no
+    # ghost interest is projected.
     if account_type and account_type.has_interest:
         if not db.session.query(InterestParams).filter_by(account_id=account.id).first():
-            db.session.add(InterestParams(account_id=account.id))
+            db.session.add(InterestParams(
+                account_id=account.id, apy=Decimal("0"),
+            ))
 
     # Investment/retirement: auto-create InvestmentParams with sensible defaults.
     # Predicate: parameterized types that are not interest-bearing and not
@@ -1237,7 +1247,12 @@ def interest_detail(account_id):
     )
     if not params:
         # Auto-create params if missing (shouldn't happen normally).
-        params = InterestParams(account_id=account.id)
+        # Same E-12 / HIGH-06 zero-sentinel rationale as the create
+        # path in :func:`create_account`: explicit ``apy=0`` instead
+        # of relying on a column ``server_default`` that would
+        # otherwise silently project 4.5% interest the user never
+        # configured.
+        params = InterestParams(account_id=account.id, apy=Decimal("0"))
         db.session.add(params)
         db.session.commit()
 
@@ -1354,14 +1369,38 @@ def update_interest_params(account_id):
         .first()
     )
     if not params:
+        # HIGH-06 / Commit 24: a first-save that omits ``apy`` would
+        # pre-fix have silently materialised the column
+        # ``server_default="0.04500"`` (4.5% rate the user never
+        # configured).  The defaults are gone (see
+        # :class:`~app.models.interest_params.InterestParams`); a
+        # first save that omits ``apy`` is now an explicit user
+        # error -- flash and redirect instead of constructing a row
+        # that would fail ``NotNullViolation`` at commit.  The
+        # account-create flow auto-creates the row with
+        # ``apy=Decimal("0")`` so this branch only fires when an
+        # InterestParams row was somehow lost (data loss, manual
+        # delete) and the user is reconfiguring; requiring an
+        # explicit ``apy`` keeps the failure visible.
+        if "apy" not in data:
+            flash(
+                "An APY value is required when configuring "
+                "interest parameters for the first time.",
+                "danger",
+            )
+            return redirect(
+                url_for("accounts.interest_detail", account_id=account_id),
+            )
         params = InterestParams(account_id=account.id)
         db.session.add(params)
 
     if "apy" in data:
-        # Convert percentage input (e.g. 4.5 -> 0.045) for storage.
-        # ``Decimal`` is constructed from a string per coding standards
-        # to avoid float intermediate-step precision drift.
-        params.apy = Decimal(str(data["apy"])) / Decimal("100")
+        # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load``
+        # already divided the form's user-facing percent by 100, so
+        # ``data["apy"]`` is the storage-domain decimal fraction the
+        # DB CHECK ``apy >= 0 AND apy <= 1`` enforces.  The route
+        # stores it verbatim; no second divide.
+        params.apy = data["apy"]
     if "compounding_frequency" in data:
         params.compounding_frequency = data["compounding_frequency"]
 

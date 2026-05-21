@@ -1629,7 +1629,11 @@ class TestSetupRequiredBadge:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id))
+            # HIGH-06 / Commit 24: ``apy`` is NOT NULL with no
+            # server_default; supply an explicit value.
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),
+            ))
             db.session.commit()
 
             resp = auth_client.get("/savings")

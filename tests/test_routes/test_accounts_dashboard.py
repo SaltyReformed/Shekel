@@ -50,7 +50,10 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA"):
     db_session.add(account)
     db_session.flush()
 
-    params = InterestParams(account_id=account.id)
+    # HIGH-06 / Commit 24: ``apy`` NOT NULL with no server_default.
+    params = InterestParams(
+        account_id=account.id, apy=Decimal("0.04500"),
+    )
     db_session.add(params)
     db_session.commit()
     return account

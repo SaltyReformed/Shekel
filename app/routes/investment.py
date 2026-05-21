@@ -216,14 +216,32 @@ def dashboard(account_id):
             )
 
     # Contribution limit info.
+    #
+    # E-12 / HIGH-06 (Commit 24): the predicate is ``is not None``,
+    # not Python truthiness.  A stored ``Decimal("0")`` is a
+    # meaningful state ("user explicitly capped contributions at
+    # zero this year") -- the card renders ``$0`` with 100% used at
+    # any positive YTD, matching the growth engine's
+    # ``min(period_contribution, 0) = 0`` semantics.  The
+    # docstring on :class:`~app.models.investment_params.InvestmentParams`
+    # is the source of truth for the column's zero-vs-NULL
+    # semantics; ``None`` continues to mean "no cap configured" and
+    # hides the card.
     limit_info = None
-    if params and params.annual_contribution_limit:
+    if params and params.annual_contribution_limit is not None:
+        limit = params.annual_contribution_limit
+        if limit > 0:
+            pct = min(100, int(ytd_contributions / limit * 100))
+        elif ytd_contributions > 0:
+            # Cap is zero, contributions exist -> 100% used (over).
+            pct = 100
+        else:
+            # Cap and YTD both zero -> 0% used.
+            pct = 0
         limit_info = {
-            "limit": params.annual_contribution_limit,
+            "limit": limit,
             "ytd": ytd_contributions,
-            "pct": min(100, int(
-                ytd_contributions / params.annual_contribution_limit * 100
-            )) if params.annual_contribution_limit > 0 else 0,
+            "pct": pct,
         }
 
     # Get period labels for chart (date strings).
@@ -291,7 +309,14 @@ def dashboard(account_id):
         else:
             # Transfer-path: compute suggested amount and load
             # eligible source accounts.
-            if params.annual_contribution_limit:
+            #
+            # E-12 / HIGH-06 (Commit 24): same ``is not None``
+            # convention as the limit card above.  A stored zero
+            # cap produces a zero suggestion (no contribution
+            # within the cap), not the legacy $500 fallback that
+            # truthiness conflated with the "no cap configured"
+            # state.
+            if params.annual_contribution_limit is not None:
                 remaining = ytd_contributions or Decimal("0")
                 today_date = date.today()
                 remaining_periods = sum(
@@ -639,15 +664,32 @@ def create_contribution_transfer(account_id):
         transfer_amount = data["amount"]
     else:
         # Compute suggested amount from annual limit and remaining periods.
+        #
+        # E-12 / HIGH-06 (Commit 24): ``is not None``, not
+        # truthiness.  A stored zero cap means "no contributions
+        # allowed this year" -- with no user-supplied amount we
+        # refuse to create the transfer rather than fall back to
+        # the pre-fix $500 default (which silently overrode the
+        # user's explicit zero cap).  ``None`` continues to mean
+        # "no cap configured" and falls to the $500 UX default.
         inv_params = (
             db.session.query(InvestmentParams)
             .filter_by(account_id=account_id)
             .first()
         )
-        if inv_params and inv_params.annual_contribution_limit:
-            transfer_amount = (
-                inv_params.annual_contribution_limit / 26
-            ).quantize(TWO_PLACES)
+        if inv_params and inv_params.annual_contribution_limit is not None:
+            limit = inv_params.annual_contribution_limit
+            if limit == Decimal("0"):
+                flash(
+                    "Annual contribution limit is $0. Set a positive "
+                    "limit before creating a recurring transfer, or "
+                    "supply an explicit amount.",
+                    "warning",
+                )
+                return redirect(
+                    url_for("investment.dashboard", account_id=account_id),
+                )
+            transfer_amount = (limit / 26).quantize(TWO_PLACES)
         else:
             transfer_amount = Decimal("500.00")
 

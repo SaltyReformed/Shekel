@@ -1662,7 +1662,10 @@ class TestCanonicalProducerRouting:
             )
             db.session.add(hysa)
             db.session.flush()
-            db.session.add(InterestParams(account_id=hysa.id))
+            # HIGH-06 / Commit 24: ``apy`` NOT NULL, no server_default.
+            db.session.add(InterestParams(
+                account_id=hysa.id, apy=Decimal("0.04500"),
+            ))
             db.session.commit()
 
             txn = _make_projected_envelope_expense(

@@ -1096,4 +1096,155 @@ local ``TWELVE`` / ``MONTHS_IN_YEAR`` aliases. Targeted suites:
 
 ---
 
+## F-16. `app/utils/formatting.pct_to_decimal` is now an unused helper
+
+- **Surfaced during:** Commit 24 (`fix(schema): reconcile Marshmallow
+  domains with DB CHECK (E-28, HIGH-06)`).
+- **Status:** not started; deletion is out of HIGH-06 scope.
+
+### Problem
+
+Commit 24 moved every "percent input -> stored fraction" conversion
+from the route layer into the Marshmallow schema's ``@pre_load``
+hook.  The schemas now divide by 100 themselves before the
+``Range`` validator runs, so the production routes
+(`accounts.update_interest_params`, `loan.create_loan_params`,
+`loan.update_params`, `loan.add_rate_change`, `loan.add_escrow`,
+`loan.refinance`, `settings.update`) no longer call
+``app.utils.formatting.pct_to_decimal`` and the import was removed
+from ``app/routes/loan.py``.
+
+A repo-wide grep shows the function has no remaining production
+callers and is referenced only by two pre-Commit-24 comments in
+``app/models/loan_features.py`` (factually outdated -- they
+describe the route-layer conversion that no longer happens; the
+comments were rewritten in Commit 24 to cite the schema-layer
+conversion) and by a one-line docstring reference in a single
+``tests/test_routes/test_loan.py::test_params_update`` test
+(describes the historical conversion site for context).
+
+### Recommended next step
+
+A small follow-up commit deletes ``app/utils/formatting.py`` (or
+narrows it to whatever else lives there in the future), removes
+the now-stale test docstring sentence, and confirms no
+``pct_to_decimal`` import remains anywhere in the repo.  Out of
+scope for HIGH-06 because the file deletion is unrelated to the
+domain-reconciliation defect.
+
+### File / line surfaced
+
+- `app/utils/formatting.py:12` -- the function definition.
+
+---
+
+## F-17. Investment-params and pension-profile percent conversions still happen at the route layer, not schema @pre_load
+
+- **Surfaced during:** Commit 24 (`fix(schema): reconcile Marshmallow
+  domains with DB CHECK (E-28, HIGH-06)`).
+- **Status:** not started; consistency-only refactor.
+
+### Problem
+
+Commit 24 standardised the percent-to-fraction conversion at the
+**schema** ``@pre_load`` boundary for every rate / threshold
+schema HIGH-06 named (InterestParams, LoanParams, RateChange,
+Refinance, EscrowComponent, UserSettings).  Two pre-existing
+schemas reach the same end-state (schema validates the fraction,
+DB CHECK accepts the same fraction) but do so by having the route
+convert *before* invoking the schema:
+
+  - ``app/routes/investment.py:_convert_percentage_inputs`` --
+    rewrites the form payload in place before
+    ``schema.load`` / ``schema.validate`` for
+    ``InvestmentParamsCreateSchema`` /
+    ``InvestmentParamsUpdateSchema``.
+  - ``app/routes/retirement.py`` -- three sites at
+    ``:118``, ``:214``, ``:351`` divide ``benefit_multiplier`` /
+    SWR slider / generic-form-field by ``Decimal("100")`` before
+    ``schema.load``.
+
+Both routes work correctly today; the schemas validate fractions
+in line with the DB CHECK.  The inconsistency is purely stylistic:
+adding ``_PERCENT_FIELDS`` + the shared
+``_normalize_percent_fields`` helper to those two schemas would
+collapse all rate-conversion logic at the schema boundary, the
+route would stop manipulating the form payload, and the
+docstring in ``app/schemas/validation.py`` could drop its
+"Two pre-existing schemas..." carve-out.
+
+### Recommended next step
+
+A small follow-up commit:
+
+1. Adds ``_PERCENT_FIELDS`` + ``normalize_inputs`` to
+   ``InvestmentParamsCreateSchema`` /
+   ``InvestmentParamsUpdateSchema`` matching the Commit-24
+   pattern.
+2. Removes ``_convert_percentage_inputs`` from
+   ``app/routes/investment.py``.
+3. Same for the retirement-route conversion sites; the
+   ``PensionProfileCreateSchema`` /
+   ``PensionProfileUpdateSchema`` /
+   ``RetirementSettingsSchema`` gain the same ``@pre_load``
+   helper.
+4. Drops the carve-out paragraph in
+   ``app/schemas/validation.py`` so the convention is universal.
+
+Targeted suites: ``test_schemas/test_c24_domain_reconciliation.py``
+(unchanged), ``test_routes/test_investment.py``,
+``test_routes/test_retirement.py``.
+
+### File / line surfaced
+
+- `app/routes/investment.py:766-784` -- ``_convert_percentage_inputs``.
+- `app/routes/retirement.py:118`, `:214`, `:314`, `:318`, `:351`.
+
+---
+
+## F-18. `loan_params.interest_rate` has no upper-bound CHECK
+
+- **Surfaced during:** Commit 24 (`fix(schema): reconcile Marshmallow
+  domains with DB CHECK (E-28, HIGH-06)`).
+- **Status:** not started; destructive migration would be required.
+
+### Problem
+
+Re-grep during Commit 24 verification surfaced an asymmetry in the
+storage-tier CHECKs across the three "rate" tables:
+
+```
+app/models/interest_params.py:33-36   apy            >= 0 AND <= 1
+app/models/loan_features.py:44-47     rate_history   >= 0 AND <= 1
+app/models/loan_params.py:63-66       loan_params    >= 0          (no upper)
+app/models/investment_params.py:21-24 assumed_return >= -1 AND <= 1
+app/models/loan_features.py:111-114   escrow infl.   IS NULL OR
+                                                     (>= 0 AND <= 1)
+```
+
+``loan_params.interest_rate`` accepts any non-negative storage
+value; a raw-SQL writer or a future regression could commit a
+post-conversion fraction of e.g. ``Decimal("9.5")`` (a 950% APR)
+without storage-tier rejection.  The Marshmallow schema's new
+``Range(0, 1)`` (Commit 24) and the route-tier validation pin the
+upper bound at the application tier, but the DB tier is the
+load-bearing belt-and-suspenders for raw-SQL writers.
+
+### Recommended next step
+
+A destructive migration adds ``ck_loan_params_interest_rate_upper``
+= ``interest_rate IS NULL OR interest_rate <= 1`` (the NULL
+admission preserves the E-18 / Commit 15 demotion).  Requires
+explicit developer approval per the coding-standards rule for
+constraint additions; the migration carries a ``Review:`` line
+and a working downgrade (which is trivial -- drop the new CHECK).
+Targeted suites: ``test_routes/test_loan.py``,
+``test_schemas/test_c24_*``.
+
+### File / line surfaced
+
+- `app/models/loan_params.py:63-66` -- the asymmetric CHECK.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->

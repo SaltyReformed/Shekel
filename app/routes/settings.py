@@ -6,7 +6,6 @@ Settings dashboard consolidating all configuration sections.
 """
 
 import logging
-from decimal import Decimal
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -208,10 +207,11 @@ def update():
         settings.grid_default_periods = data["grid_default_periods"]
 
     if "default_inflation_rate" in data and data["default_inflation_rate"] is not None:
-        # User enters percentage (e.g. 3 for 3%); store as decimal fraction.
-        settings.default_inflation_rate = (
-            Decimal(str(data["default_inflation_rate"])) / Decimal("100")
-        )
+        # E-28 / HIGH-06 (Commit 24): ``UserSettingsSchema``'s
+        # ``@pre_load`` already divided the form percent by 100, so
+        # ``data["default_inflation_rate"]`` is the storage-domain
+        # decimal fraction the DB CHECK ``[0, 1]`` enforces.
+        settings.default_inflation_rate = data["default_inflation_rate"]
 
     if "low_balance_threshold" in data and data["low_balance_threshold"] is not None:
         settings.low_balance_threshold = data["low_balance_threshold"]
@@ -220,10 +220,14 @@ def update():
         settings.large_transaction_threshold = data["large_transaction_threshold"]
 
     if "trend_alert_threshold" in data and data["trend_alert_threshold"] is not None:
-        # User enters integer percentage (e.g. 15 for 15%); store as decimal fraction.
-        settings.trend_alert_threshold = (
-            Decimal(str(data["trend_alert_threshold"])) / Decimal("100")
-        )
+        # E-28 / HIGH-06 / PA-01 (Commit 24): same schema-level
+        # conversion as ``default_inflation_rate`` above.  Pre-fix
+        # the schema required ``Integer Range(1, 100)`` while the DB
+        # accepted ``[0, 1]`` (nominal-domain mismatch); the storage
+        # column is ``Numeric(5, 4)`` so the route accepts the
+        # post-conversion ``Decimal`` verbatim.  Zero is now a valid
+        # "alert disabled" state per E-12 "zero is a value".
+        settings.trend_alert_threshold = data["trend_alert_threshold"]
 
     if "anchor_staleness_days" in data and data["anchor_staleness_days"] is not None:
         settings.anchor_staleness_days = data["anchor_staleness_days"]

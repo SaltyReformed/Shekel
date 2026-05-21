@@ -35,7 +35,15 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA", anchor_period_id
     db_session.add(account)
     db_session.flush()
 
-    params = InterestParams(account_id=account.id)
+    # HIGH-06 / Commit 24: ``apy`` is NOT NULL and no longer carries
+    # ``server_default="0.04500"``; the production auto-create path
+    # (``app/routes/accounts.py``) supplies an explicit
+    # ``Decimal("0")`` sentinel so a first-save flow cannot
+    # silently materialise the legacy 4.5% rate.  Test fixtures
+    # mirror the production convention.
+    params = InterestParams(
+        account_id=account.id, apy=Decimal("0.04500"),
+    )
     db_session.add(params)
     db_session.commit()
     return account, params
@@ -56,7 +64,15 @@ def _create_other_hysa(second_user, db_session):
     db_session.add(account)
     db_session.flush()
 
-    params = InterestParams(account_id=account.id)
+    # HIGH-06 / Commit 24: ``apy`` is NOT NULL and no longer carries
+    # ``server_default="0.04500"``; the production auto-create path
+    # (``app/routes/accounts.py``) supplies an explicit
+    # ``Decimal("0")`` sentinel so a first-save flow cannot
+    # silently materialise the legacy 4.5% rate.  Test fixtures
+    # mirror the production convention.
+    params = InterestParams(
+        account_id=account.id, apy=Decimal("0.04500"),
+    )
     db_session.add(params)
     db_session.commit()
     return account, params
@@ -274,7 +290,24 @@ class TestCreateHysaAccount:
     """Creating a HYSA account auto-creates InterestParams."""
 
     def test_create_hysa_account_auto_params(self, auth_client, seed_user, db, seed_periods_today):
-        """POST to create account with HYSA type → auto-creates InterestParams."""
+        """POST to create account with HYSA type auto-creates InterestParams
+        with an explicit zero-APY sentinel (HIGH-06 / Commit 24).
+
+        Re-pinned (rule 2 exception; HIGH-06 / E-12 "zero is a value,
+        not missing"): pre-fix the assertion was
+        ``params.apy == Decimal("0.04500")`` because the column
+        carried ``server_default="0.04500"`` and the auto-create
+        path emitted no Python-side ``apy`` assignment -- so a
+        first-time HYSA silently materialised a 4.5% rate the user
+        never configured.  Post-fix the auto-create supplies
+        ``apy=Decimal("0")`` and ``calculate_interest`` short-
+        circuits on ``apy <= 0`` so the account projects zero
+        interest until the user enters a real rate via the
+        interest-detail form.  ``compounding_frequency`` is still
+        provided by the column ``server_default="daily"`` (the
+        choice of cadence is not a financial hazard if the rate is
+        zero, so the default is retained).
+        """
         hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
 
         resp = auth_client.post(
@@ -291,7 +324,8 @@ class TestCreateHysaAccount:
         params = db.session.query(InterestParams).filter_by(account_id=account.id).first()
         assert params is not None, "InterestParams were not auto-created"
         assert params.account_id == account.id
-        assert params.apy == Decimal("0.04500")
+        # HIGH-06 / Commit 24 re-pin: explicit zero sentinel.
+        assert params.apy == Decimal("0.00000")
         assert params.compounding_frequency == "daily"
 
 

@@ -34,10 +34,12 @@ class RateHistory(CreatedAtMixin, db.Model):
             "account_id", "effective_date",
             name="uq_rate_history_account_effective_date",
         ),
-        # F-077 / C-24: ``interest_rate`` is persisted as a decimal
-        # fraction (e.g. ``0.04500`` for 4.5%) by the loan-rate-
-        # change route, which calls ``pct_to_decimal`` on the
-        # user-entered percent before INSERT.  The CHECK pins
+        # F-077 / C-24 (HIGH-06 / Commit 24 reconciliation):
+        # ``interest_rate`` is persisted as a decimal fraction (e.g.
+        # ``0.04500`` for 4.5%).  The rate-change route's schema
+        # (``RateChangeSchema``) divides the user-facing percent by
+        # 100 in its ``@pre_load`` (E-28), so the route stores the
+        # already-converted fraction directly.  The CHECK pins
         # storage to the closed unit interval so a future writer
         # that forgets the conversion is rejected at the database
         # tier rather than silently storing 4.5 as "450%".
@@ -104,10 +106,12 @@ class EscrowComponent(TimestampMixin, db.Model):
             "annual_amount >= 0",
             name="ck_escrow_components_nonneg_annual_amount",
         ),
-        # F-077 / C-24: ``inflation_rate`` is nullable (NULL = no
-        # escalation) and persisted as a decimal fraction by the
-        # escrow route's ``pct_to_decimal`` conversion.  CHECK pins
-        # storage to ``[0, 1]`` when present.
+        # F-077 / C-24 (HIGH-06 / Commit 24 reconciliation):
+        # ``inflation_rate`` is nullable (NULL = no escalation) and
+        # persisted as a decimal fraction.  ``EscrowComponentSchema``'s
+        # ``@pre_load`` converts the form percent to fraction (E-28)
+        # so the route stores the converted value directly.  CHECK
+        # pins storage to ``[0, 1]`` when present.
         db.CheckConstraint(
             "inflation_rate IS NULL OR "
             "(inflation_rate >= 0 AND inflation_rate <= 1)",

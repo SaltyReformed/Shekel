@@ -1895,7 +1895,7 @@ class TestInterestDispatch:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id))
+            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest")
@@ -2079,7 +2079,7 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id))
+            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest?setup=1")
@@ -2104,7 +2104,7 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id))
+            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest")
