@@ -1928,6 +1928,131 @@ class TestTransferTemplateHardDelete:
             ).count()
             assert shadow_count == 2
 
+    def test_hard_delete_transfer_template_bulk_delete_skips_settled_rows(
+        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """C8-1: Even if the predicate is bypassed, the bulk delete spares settled transfers.
+
+        Defense in depth (F-14, mirror of CRIT-05 / E-22): commit C-21
+        of the main remediation already fixed
+        ``transfer_template_has_paid_history`` to filter on
+        ``Status.is_settled`` so the guard at the route's entry
+        catches every settled status.  This commit adds the second
+        layer: the bulk-delete loop itself filters on
+        ``Transaction.status_id.notin_(settled_status_ids)`` so a
+        future regression of the predicate, a race window between
+        the guard and the delete, or a different caller that bypasses
+        the guard cannot physically destroy settled transfers plus
+        their shadow pairs.  This test forces the bypass scenario by
+        monkey-patching ``transfer_template_has_paid_history`` to
+        return False even when a RECEIVED transfer exists, then
+        asserts the post-conditions: the settled transfer plus its
+        two shadows survive intact while the Projected transfer is
+        deleted as intended.
+
+        ``Transfer.transfer_template_id`` is a FK with ``ON DELETE
+        SET NULL`` (``app/models/transfer.py``) so the surviving
+        Received transfer has its ``transfer_template_id`` cleared
+        but its financial data -- amount, status, period -- is
+        intact.  Both linked shadow transactions ride along: they
+        reference ``transfer_id`` (NOT NULL), so the transfer's
+        survival guarantees their survival.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+
+            received_status = db.session.query(Status).filter_by(name="Received").one()
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+
+            # RECEIVED transfer in period 0 (must survive).
+            xfer_received = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("250.00"),
+                status_id=received_status.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transfer_template_id=template.id,
+                name="Past Transfer",
+            )
+            # PROJECTED transfer in period 1 (must be deleted).
+            xfer_projected = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods_today[1].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("250.00"),
+                status_id=projected_status.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transfer_template_id=template.id,
+                name="Future Transfer",
+            )
+            db.session.commit()
+
+            template_id = template.id
+            received_id = xfer_received.id
+            projected_id = xfer_projected.id
+            received_shadow_ids = [
+                row.id for row in db.session.query(Transaction).filter_by(
+                    transfer_id=received_id,
+                ).all()
+            ]
+            assert len(received_shadow_ids) == 2
+
+            # Force the bypass: predicate lies and says "no history."
+            # The defense-in-depth filter inside the route is what must
+            # save the Received transfer plus its two shadows.
+            monkeypatch.setattr(
+                "app.routes.transfers.archive_helpers.transfer_template_has_paid_history",
+                lambda _template_id: False,
+            )
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            # Settled (Received) transfer SURVIVES with original
+            # amount and status; FK SET NULL clears transfer_template_id.
+            surviving = db.session.get(Transfer, received_id)
+            assert surviving is not None
+            assert surviving.status_id == received_status.id
+            assert surviving.is_deleted is False
+            # Hand-verified: original $250.00 stays exactly $250.00
+            # (Decimal from string per coding standards).
+            assert surviving.amount == Decimal("250.00")
+            assert surviving.transfer_template_id is None
+
+            # Both shadows of the Received transfer survive untouched
+            # (transfer invariant 1: a transfer always has exactly two
+            # linked shadows).
+            surviving_shadows = db.session.query(Transaction).filter_by(
+                transfer_id=received_id,
+            ).all()
+            assert len(surviving_shadows) == 2
+            for shadow in surviving_shadows:
+                assert shadow.is_deleted is False
+                assert shadow.status_id == received_status.id
+                assert shadow.estimated_amount == Decimal("250.00")
+            assert {s.id for s in surviving_shadows} == set(received_shadow_ids)
+
+            # Non-settled (Projected) transfer was deleted by the
+            # bulk loop, as intended -- the defense-in-depth filter is
+            # additive, not a wholesale block.
+            assert db.session.get(Transfer, projected_id) is None
+            orphaned_projected_shadows = db.session.query(Transaction).filter_by(
+                transfer_id=projected_id,
+            ).count()
+            assert orphaned_projected_shadows == 0
+
+            # Template itself was deleted (the bypass path completed).
+            assert db.session.get(TransferTemplate, template_id) is None
+
     def test_hard_delete_preserves_shadow_invariant(
         self, app, auth_client, seed_user, seed_periods_today,
     ):

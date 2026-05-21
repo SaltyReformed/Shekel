@@ -618,9 +618,20 @@ def hard_delete_transfer_template(template_id):
       - History exists (Paid/Settled transfers): permanent deletion is
         blocked.  Template is archived instead (if not already) and the
         user is warned.
-      - No history: all linked transfers are hard-deleted through the
+      - No history: linked transfers are hard-deleted through the
         transfer service (which CASCADE-deletes shadows), then the
         template itself is permanently removed.
+
+    Defense in depth (F-14): the bulk delete is constrained to non-
+    settled transfers via the semantic ``Status.is_settled`` boolean,
+    mirroring the ``templates.py::hard_delete_template`` shape added
+    after CRIT-05.  Even if the guard predicate above regresses, is
+    bypassed, or races a concurrent mark-done that lands between the
+    guard check and the loop, settled transfers (Paid, Received,
+    Settled) and their two-shadow pairs cannot be physically destroyed
+    by this route.  Survivors retain their ``transfer_template_id``;
+    the column's FK is ``ON DELETE SET NULL`` so they become detached
+    settled history when the parent template is removed.
     """
     template = get_or_404(TransferTemplate, template_id)
     if template is None:
@@ -664,18 +675,37 @@ def hard_delete_transfer_template(template_id):
                 )
         return redirect(url_for("transfers.list_transfer_templates"))
 
-    # No history -- safe to permanently delete.
-    # Delete ALL linked transfers through the transfer service so that
-    # shadow transactions are CASCADE-deleted (invariants 1, 2, 4).
-    # transfer_service.delete_transfer flushes but does not commit,
-    # so all deletions are atomic within a single DB transaction.
+    # No history -- safe to permanently delete linked transfers through
+    # the transfer service so that shadow transactions are CASCADE-
+    # deleted (invariants 1, 2, 4).  ``transfer_service.delete_transfer``
+    # flushes but does not commit, so all deletions are atomic within a
+    # single DB transaction.
+    #
+    # Defense in depth (F-14 / commit C-21 mirror): the bulk delete is
+    # additionally constrained to ``Status.is_settled = False`` rows via
+    # the semantic ``Status.is_settled`` boolean -- the same shape
+    # ``templates.py::hard_delete_template`` applies after CRIT-05.
+    # Even if ``transfer_template_has_paid_history`` regresses, is
+    # bypassed, or races a concurrent mark-done that lands between the
+    # guard check and the loop below, settled transfers (Paid,
+    # Received, Settled) and their two-shadow pairs cannot be
+    # physically destroyed by this route.  Survivors retain their
+    # ``transfer_template_id``; the column's FK is ``ON DELETE SET
+    # NULL`` (see ``app/models/transfer.py``) so they become detached
+    # settled history when the parent template is removed below.
     template_name = template.name
-    all_transfers = (
+    settled_status_ids = db.session.query(Status.id).filter(
+        Status.is_settled.is_(True)
+    ).scalar_subquery()
+    deletable_transfers = (
         db.session.query(Transfer)
-        .filter(Transfer.transfer_template_id == template.id)
+        .filter(
+            Transfer.transfer_template_id == template.id,
+            Transfer.status_id.notin_(settled_status_ids),
+        )
         .all()
     )
-    for xfer in all_transfers:
+    for xfer in deletable_transfers:
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=False)
 
     db.session.delete(template)

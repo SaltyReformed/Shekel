@@ -1012,8 +1012,13 @@ explaining why silent-clamp-to-zero is acceptable.
 
 - **Surfaced during:** Commit 21 (`fix(templates): semantic is_settled
   hard-delete guard (E-22, CRIT-05)`).
-- **Status:** not started; predicate fix (Commit 21) already closes
-  the active data-loss path.
+- **Status:** resolved by Commit 8 of the follow-up plan.  The bulk-
+  delete loop in ``app/routes/transfers.py::hard_delete_transfer_template``
+  now filters on ``Transaction.status_id.notin_(settled_status_ids)``
+  via a scalar subquery against ``Status.is_settled.is_(True)``,
+  mirroring the ``templates.py::hard_delete_template`` shape added
+  after CRIT-05.  Pinned by
+  ``test_hard_delete_transfer_template_bulk_delete_skips_settled_rows``.
 
 ### Problem
 
