@@ -1607,4 +1607,83 @@ have the template/Jinja consume the Decimal directly.  Eliminate the
 
 ---
 
+## F-24. Duplicated recurrence-rule construction and stale-conflict handlers between `templates.py` and `transfers.py`
+
+- **Surfaced during:** Commit 8 of the follow-up plan (F-14 defense-
+  in-depth filter on `hard_delete_transfer_template`).
+- **Status:** not started; baseline pylint `duplicate-code` finding
+  predates the audit chain.
+
+### Problem
+
+`pylint app/routes/transfers.py app/routes/templates.py
+--enable=duplicate-code` reports three duplicated blocks between the
+transaction-template and transfer-template CRUD routes:
+
+1. **Recurrence-rule construction in the *create* paths**
+   (`templates.py:191-201` vs `transfers.py:169-179`) -- the
+   `start_period_id` / `end_date` pop, pattern lookup, `interval_n` /
+   `offset_periods` derivation, and `RecurrenceRule(...)` instantiation
+   are identical except for the absence of `due_day_of_month` on the
+   transfer side.
+2. **Recurrence-rule construction in the *update* paths**
+   (`templates.py:353-362` vs `transfers.py:362-371`) -- the
+   `else: rule = RecurrenceRule(...)` block when the existing template
+   has no rule.
+3. **`RecurrenceConflict` + `StaleDataError` flash handlers**
+   (`templates.py:429-442` vs `transfers.py:434-447`) -- identical
+   conflict-message formatting plus the rollback + flash + redirect
+   shape on stale data.
+
+Each pair has one route-specific axis -- the `due_day_of_month` field
+on `RecurrenceRule` is populated only from `TemplateCreate/Update`
+schemas, and the redirect URLs differ -- so a literal extraction is
+not a one-liner.
+
+### Why deferred
+
+The duplication is stylistic, not behavioural: every pair processes
+validated Marshmallow output identically, and the rule shape is
+enforced by `RecurrenceRule` itself.  Extracting now would touch all
+four CRUD entry points (`create_template`, `update_template`,
+`create_transfer_template`, `update_transfer_template`) and require a
+sweep across the template + transfer-template route test suites for
+no behavioural delta.  Commit 8's F-14 scope is the
+`hard_delete_transfer_template` bulk-delete filter; adding the
+extraction here would exceed the plan's stated commit boundary.
+
+### Suggested implementation
+
+Two-helper extraction in a new `app/routes/_recurrence_form_helpers.py`
+(or fold into `app/services/recurrence_engine.py` if a service-layer
+home fits the existing module shape):
+
+- `build_recurrence_rule_from_form(data, user_id) -> RecurrenceRule |
+  None` -- consumes the validated Marshmallow payload, pops the
+  recurrence fields, returns a fresh `RecurrenceRule` or `None` when
+  no pattern was selected.  The `due_day_of_month` axis is handled by
+  the helper reading the key only when present in `data` (Marshmallow
+  `EXCLUDE` means the transfer payload simply omits it).
+- `handle_stale_conflict(*, logger, route_id, edit_endpoint, **redirect_kwargs)`
+  -- the shared StaleDataError + IntegrityError rollback + flash +
+  redirect pattern.  Takes a `redirect_endpoint` keyword so each route
+  controls its own destination.
+
+The `RecurrenceConflict` flash message is identical between the two
+routes and can become a module-level format string consumed by both.
+
+### Acceptance criteria
+
+- `pylint app/routes/transfers.py app/routes/templates.py
+  --enable=duplicate-code` returns no `R0801` messages for the three
+  pairs above.
+- All existing template + transfer-template CRUD tests pass unchanged
+  (the extraction is byte-equivalent at the wire level).
+- New unit tests for the helpers in
+  `tests/test_routes/test_recurrence_form_helpers.py` or equivalent,
+  pinning the no-pattern, every-N-periods, and stale-conflict
+  redirect branches.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
