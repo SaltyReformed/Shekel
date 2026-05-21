@@ -14,9 +14,9 @@ fixed by CRIT-01 / F-009 cannot reappear here.  The F-6 static
 guard in :mod:`tests.test_routes.test_accounts` pins this contract
 by asserting that ``balance_resolver.balances_for`` appears in the
 file and the bare entries-blind producer
-``balance_calculator.calculate_balances`` does not.  When the split
-in Commit 21 moved ``checking_detail`` into this module, the F-6
-guard's file-path reference was updated to point here.
+``calculate_balances`` (in ``balance_calculator``) does not.  When
+the split in Commit 21 moved ``checking_detail`` into this module,
+the F-6 guard's file-path reference was updated to point here.
 """
 
 import logging
