@@ -54,6 +54,7 @@ from app.services.account_projection import (
 )
 from app.services.investment_projection import (
     adapt_deductions,
+    build_contribution_timeline,
     calculate_investment_inputs,
 )
 from app.services.loan_payment_service import load_loan_context
@@ -1218,6 +1219,17 @@ def _project_investment_for_year(
             balances, year, 1, all_periods,
         )
 
+    # F-19: feed a per-period contribution timeline so a lump-sum
+    # settled transfer (e.g. an end-of-year 401(k) contribution) lands
+    # in the period it actually occurred in, not averaged across every
+    # period as ``calculate_investment_inputs`` Step 2 would do.  This
+    # mirrors the shape the investment dashboard route already uses.
+    contributions = build_contribution_timeline(
+        deductions=adapted_deductions,
+        contribution_transactions=acct_contributions,
+        periods=year_periods,
+    )
+
     # Forward-project the full year from the (now correct) Jan 1 balance.
     projection = growth_engine.project_balance(
         current_balance=jan1_bal,
@@ -1227,6 +1239,7 @@ def _project_investment_for_year(
         employer_params=inputs.employer_params,
         annual_contribution_limit=inputs.annual_contribution_limit,
         ytd_contributions_start=ZERO,
+        contributions=contributions,
     )
 
     if not projection:

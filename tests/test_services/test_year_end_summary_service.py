@@ -1670,6 +1670,209 @@ class TestSavingsProgress:
             assert "total_contributions" in entry
 
 
+# ── F-19 Lump-Sum Contribution Timeline Tests ────────────────────
+
+
+class TestSavingsProgressLumpSum:
+    """F-19 / Commit 16: year-end investment projection via timeline.
+
+    Pre-fix, ``_project_investment_for_year`` consumed the averaged
+    ``periodic_contribution`` from ``calculate_investment_inputs``,
+    which treated a single lump-sum settled transfer as a per-period
+    amount (Step 2 averaging at ``investment_projection.py:142-161``).
+    Post-fix, it builds a per-period contribution timeline via
+    ``build_contribution_timeline`` and feeds it to
+    ``growth_engine.project_balance`` -- mirroring the shape the
+    investment dashboard already uses.
+    """
+
+    def test_lump_sum_employer_match_caps_per_period(
+        self, app, db, seed_full_user_data,
+    ):
+        """C16-1: lump-sum + recurring respects the per-period cap.
+
+        Fixture
+        -------
+        - 10 biweekly pay periods (all in 2026 per ``seed_periods``).
+        - 401(k) account with anchor balance $10,000, 7% assumed
+          annual return, employer match 50% of employee contribution
+          up to 6% of gross.
+        - ``annual_contribution_limit = $23,000`` so the cap actually
+          bites once the lump sum lands.
+        - Salary profile gross overridden to $100,000 annual
+          (``gross_biweekly = 100000 / 26 = 3846.15``).
+        - One recurring $1,500 flat pre-tax 401(k) deduction.
+        - One settled $23,300 lump-sum transfer landing in period 9
+          (the last period of the 10-period window).
+
+        Hand-computed expected
+        ----------------------
+        ``matchable_salary = quantize(3846.15 * 0.06, HALF_UP) = 230.77``
+        Periods 0-8 (recurring only): contribution=1500, cap is the
+        contribution-limit remaining (>=1500 every period because
+        9 * 1500 = 13500 < 23000), so capped=1500.  Employer match
+        per period = quantize(min(1500, 230.77) * 0.50, HALF_UP) =
+        quantize(115.385, HALF_UP) = 115.39.
+        Period 9 (lump-sum + recurring via timeline = 1500 + 23300 =
+        24800): ytd before = 13500, remaining = 9500, capped = 9500.
+        Employer match = quantize(min(9500, 230.77) * 0.50, HALF_UP)
+        = 115.39.
+        Total employer = 10 * 115.39 = 1153.90.
+
+        Pre-fix would compute ``periodic_contribution = 1500 +
+        23300/1 = 24800`` from Step 2 averaging and feed it as a flat
+        per-period amount.  Period 0 caps at 23000 (consumes the
+        entire annual limit on day one) so employer match = 115.39;
+        periods 1-9 cap at 0 so employer match = 0.  Pre-fix total
+        would be 115.39 -- an order of magnitude understated, and
+        the lump sum lands in the wrong period.
+
+        ``total_contributions`` is the sum of shadow income
+        transactions (``_sum_shadow_income``) -- only the $23,300
+        lump-sum transfer counts; the paycheck deduction is not a
+        transfer, so it contributes 0.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        account = data["account"]
+        scenario = data["scenario"]
+        salary_profile = data["salary_profile"]
+        periods = data["periods"]
+
+        # F-19 / C16-1: $100k salary -> gross_biweekly = 100000/26 =
+        # 3846.15 quantized (banker's rounding, but the digit after
+        # .15 is 3 so the result is the same in any mode).
+        salary_profile.annual_salary = Decimal("100000.00")
+
+        inv_acct, inv_params = _create_investment_account(
+            user, periods,
+            employer_type="match",
+            match_pct=Decimal("0.5000"),
+            match_cap_pct=Decimal("0.0600"),
+        )
+        # Cap so the per-period contribution-limit guard actually
+        # bites once the lump sum is added.
+        inv_params.annual_contribution_limit = Decimal("23000.00")
+
+        # Recurring pre-tax flat 401(k) deduction targeting this
+        # account: $1,500/period.
+        flat_method = (
+            db.session.query(CalcMethod)
+            .filter_by(name="flat").one()
+        )
+        pre_tax_timing = (
+            db.session.query(DeductionTiming)
+            .filter_by(name="pre_tax").one()
+        )
+        ded = PaycheckDeduction(
+            salary_profile_id=salary_profile.id,
+            target_account_id=inv_acct.id,
+            name="401k Contribution",
+            amount=Decimal("1500.00"),
+            calc_method_id=flat_method.id,
+            deduction_timing_id=pre_tax_timing.id,
+            is_active=True,
+        )
+        db.session.add(ded)
+
+        # One settled lump-sum transfer of $23,300 landing in the
+        # last seeded period (period 9).
+        _create_transfer_with_shadows(
+            user, account, inv_acct, scenario, periods[9],
+            "Year-end 401k contribution", Decimal("23300.00"),
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+
+        # Hand-computed: 10 periods * 115.39 employer match each.
+        assert entry["employer_contributions"] == Decimal("1153.90")
+        # Only the lump-sum transfer is shadow income; the deduction
+        # path is not a transfer and does not count here.
+        assert entry["total_contributions"] == Decimal("23300.00")
+        # Growth and end-balance sanity checks (exact growth depends
+        # on the Decimal ** non-integer exponent context and is not
+        # hand-pinned, but it must be strictly positive and
+        # dec31 > jan1 because contributions land every period).
+        assert entry["investment_growth"] > ZERO
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+
+    def test_recurring_only_byte_identical_post_fix(
+        self, app, db, seed_full_user_data,
+    ):
+        """C16-2: recurring-only path is byte-identical pre vs post.
+
+        Fixture is the C16-1 setup minus the lump-sum transfer.
+        With only the $1,500/period recurring deduction:
+        - 10 * 1500 = 15000 total employee contributions <= 23000
+          annual limit, so the cap never bites.
+        - Each period: capped=1500, employer match = quantize(min(
+          1500, 230.77) * 0.50, HALF_UP) = 115.39.
+        - Total employer = 10 * 115.39 = 1153.90 (same as C16-1).
+
+        Pre-fix would compute periodic_contribution = 1500 (no
+        transfers -> Step 2 averaging adds nothing) and feed it as
+        the per-period amount, producing exactly the same per-period
+        values as the post-fix timeline (Path 1 deductions emit one
+        $1500 record per period; Path 2 contributes nothing).  This
+        is the byte-identical case the fix preserves.
+
+        ``total_contributions`` is 0 because there are no shadow
+        income transactions.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        salary_profile = data["salary_profile"]
+        periods = data["periods"]
+
+        salary_profile.annual_salary = Decimal("100000.00")
+
+        inv_acct, inv_params = _create_investment_account(
+            user, periods,
+            employer_type="match",
+            match_pct=Decimal("0.5000"),
+            match_cap_pct=Decimal("0.0600"),
+        )
+        inv_params.annual_contribution_limit = Decimal("23000.00")
+
+        flat_method = (
+            db.session.query(CalcMethod)
+            .filter_by(name="flat").one()
+        )
+        pre_tax_timing = (
+            db.session.query(DeductionTiming)
+            .filter_by(name="pre_tax").one()
+        )
+        ded = PaycheckDeduction(
+            salary_profile_id=salary_profile.id,
+            target_account_id=inv_acct.id,
+            name="401k Contribution",
+            amount=Decimal("1500.00"),
+            calc_method_id=flat_method.id,
+            deduction_timing_id=pre_tax_timing.id,
+            is_active=True,
+        )
+        db.session.add(ded)
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+
+        # Hand-computed: 10 periods * 115.39 employer match each.
+        assert entry["employer_contributions"] == Decimal("1153.90")
+        # No shadow income transfers -> total_contributions = 0.
+        assert entry["total_contributions"] == ZERO
+        assert entry["investment_growth"] > ZERO
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+
+
 # ── Pre-Anchor Savings Progress Tests ────────────────────────────
 
 
