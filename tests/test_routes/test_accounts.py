@@ -4458,3 +4458,30 @@ class TestAccountTypeMultiTenantOwnership:
         """
         from app.audit_infrastructure import AUDITED_TABLES  # pylint: disable=import-outside-toplevel
         assert ("ref", "account_types") in AUDITED_TABLES
+
+
+class TestAccountsBlueprintReExport:
+    """C1-2: pin the F-25 ``accounts_bp`` re-export contract.
+
+    Post-F-25 the blueprint declaration lives in
+    :mod:`app.routes.accounts._bp` so the package <-> submodule
+    import round-trip no longer trips pylint's ``R0401`` cyclic-
+    import detector.  ``app/__init__.py`` and any other consumer
+    that historically did ``from app.routes.accounts import
+    accounts_bp`` continues to resolve because the package init
+    re-exports the symbol.  A future cleanup that drops the
+    re-export would silently break the factory-time blueprint
+    registration; this test pins the contract so the regression
+    surfaces at the unit-test layer rather than at app boot.
+    """
+
+    def test_package_reexports_same_blueprint_instance(self):
+        """The package-level ``accounts_bp`` is the leaf-module instance.
+
+        ``is`` rather than ``==`` -- a copy of the blueprint would
+        register a parallel set of routes against the app and the
+        URL surface would silently diverge.
+        """
+        from app.routes.accounts import accounts_bp as package_bp  # pylint: disable=import-outside-toplevel
+        from app.routes.accounts._bp import accounts_bp as leaf_bp  # pylint: disable=import-outside-toplevel
+        assert package_bp is leaf_bp

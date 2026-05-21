@@ -39,7 +39,7 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
-from app.routes.accounts import accounts_bp
+from app.routes.accounts._bp import accounts_bp
 from app.services import (
     account_service,
     entry_service,

@@ -33,7 +33,7 @@ from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
-from app.routes.accounts import accounts_bp
+from app.routes.accounts._bp import accounts_bp
 from app.services import anchor_service, entry_service, pay_period_service
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema

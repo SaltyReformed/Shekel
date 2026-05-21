@@ -32,7 +32,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.transaction import Transaction
-from app.routes.accounts import accounts_bp
+from app.routes.accounts._bp import accounts_bp
 from app.services import balance_calculator, balance_resolver, pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.account_validation import _interest_params_schema

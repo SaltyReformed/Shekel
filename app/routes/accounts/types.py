@@ -23,7 +23,7 @@ from flask_login import current_user, login_required
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
-from app.routes.accounts import accounts_bp
+from app.routes.accounts._bp import accounts_bp
 from app.utils.account_validation import (
     _owned_account_type,
     _type_create_schema,

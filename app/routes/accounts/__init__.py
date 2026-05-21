@@ -6,15 +6,20 @@ package of per-sub-domain modules.  Commit 21 of the financial-
 calculation audit follow-up remediation (F-1).
 
 Direction: Option A (single blueprint, file-split by import).  One
-``accounts_bp`` blueprint is declared here; the per-sub-domain
-modules (``crud``, ``anchor``, ``types``, ``detail``) import the
-blueprint and register their decorators against it.  Every URL is
-preserved verbatim from the pre-split file; no ``url_for`` call site
-needed an edit and ``app/__init__.py`` continues to import
-``accounts_bp`` from this package by the same name.
+``accounts_bp`` blueprint is shared across every sub-module; the
+declaration lives in :mod:`app.routes.accounts._bp` (F-25 fix; see
+that module's docstring for why the blueprint moved out of this init).
+The per-sub-domain modules (``crud``, ``anchor``, ``types``,
+``detail``) import the blueprint from ``_bp`` and register their
+decorators against it.  Every URL is preserved verbatim from the
+pre-split file; no ``url_for`` call site needed an edit and
+``app/__init__.py`` continues to import ``accounts_bp`` from this
+package by the same name (re-exported below).
 
 Module map:
 
+* :mod:`app.routes.accounts._bp` -- ``accounts_bp`` blueprint
+  declaration (leaf module; F-25 cycle-break).
 * :mod:`app.routes.accounts.crud` -- Account CRUD endpoints
   (``list_accounts``, ``new_account``, ``create_account``,
   ``edit_account``, ``update_account``, ``archive_account``,
@@ -35,15 +40,13 @@ same instance, preserving the pre-split "one schema constructed at
 module load" behaviour.
 """
 
-from flask import Blueprint
-
-# The blueprint is declared without a ``url_prefix`` because every
-# route decorator in the sub-modules carries the ``/accounts``
-# prefix explicitly (preserved verbatim from the pre-split file).
-# Adding ``url_prefix="/accounts"`` here would require stripping
-# every decorator's ``/accounts`` prefix in lockstep -- a behavioural
-# change the F-1 acceptance criteria explicitly forbids.
-accounts_bp = Blueprint("accounts", __name__)
+# Re-export ``accounts_bp`` from the leaf declaration module so
+# consumers that ``from app.routes.accounts import accounts_bp``
+# (notably ``app/__init__.py`` at factory-time) continue to resolve
+# without an edit.  Pre-F-25 the blueprint was declared inline here;
+# moving it to ``_bp`` was the smallest cycle-break that preserved
+# the public package surface.
+from app.routes.accounts._bp import accounts_bp
 
 
 # Import sub-modules for the side effect of registering their route
@@ -55,3 +58,6 @@ from app.routes.accounts import crud  # noqa: F401, E402  pylint: disable=wrong-
 from app.routes.accounts import anchor  # noqa: F401, E402  pylint: disable=wrong-import-position
 from app.routes.accounts import types  # noqa: F401, E402  pylint: disable=wrong-import-position
 from app.routes.accounts import detail  # noqa: F401, E402  pylint: disable=wrong-import-position
+
+
+__all__ = ["accounts_bp"]
