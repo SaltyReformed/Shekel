@@ -64,7 +64,7 @@ def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
         if hasattr(comp, "is_active") and not comp.is_active:
             continue
         annual = Decimal(str(comp.annual_amount))
-        monthly = (annual / 12).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        monthly = (annual / MONTHS_PER_YEAR).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
         if getattr(comp, "inflation_rate", None) is not None:
             inflation = Decimal(str(comp.inflation_rate))
             inflation_pct = inflation * Decimal("100")
@@ -122,7 +122,7 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
                 if years_elapsed > 0:
                     annual = annual * (1 + rate) ** years_elapsed
 
-        monthly = annual / 12
+        monthly = annual / MONTHS_PER_YEAR
         total += monthly
 
     return total.quantize(TWO_PLACES, ROUND_HALF_UP)
