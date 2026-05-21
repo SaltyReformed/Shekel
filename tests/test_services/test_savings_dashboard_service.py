@@ -1400,6 +1400,318 @@ class TestDTI:
         assert gross_monthly == Decimal("6500.00")
 
 
+class TestDTIRaiseAware:
+    """C26 / MED-06 / F-032: DTI gross monthly income is sourced from
+    the canonical raise-aware paycheck engine, not the off-engine
+    ``annual_salary / pay_periods`` recompute.
+
+    Pre-Commit-26 the savings dashboard read
+    ``params["salary_gross_biweekly"]`` (computed in
+    ``_load_account_params`` as raw ``annual_salary / pay_periods``,
+    with no ``_apply_raises`` invocation) and converted to monthly via
+    the 26/12 factor.  For any user with an applicable
+    :class:`SalaryRaise` the displayed DTI denominator drifted from the
+    paycheck engine: the audit's worked example carried a $104,000
+    salary + recurring 3% raise where the engine produces $8,926.67
+    monthly gross and the off-engine path produced $8,666.67, yielding
+    a 27.7% DTI vs the correct 26.9% (`03_consistency.md` F-032 worked
+    example).  Commit 26 routes both DTI gross and the savings-goal
+    net biweekly pay through ``calculate_paycheck`` for the current
+    period, making the engine the single source of truth.
+    """
+
+    def test_dti_with_applicable_raise(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C26-1: With an applicable raise the DTI denominator is the
+        post-raise engine gross.
+
+        Salary $104,000.00 + a one-time 3% raise effective month 1 of
+        the current period's year.  ``_apply_raises`` applies the raise
+        once for the current period, so the engine's per-period gross
+        reflects the post-raise salary; the period-to-monthly factor
+        (26/12) is the structural biweekly-pay-schedule normalization
+        and is preserved.
+
+        Hand-computed engine output (MED-06 / F-032):
+            annual_after_raise = 104000.00 * 1.03 = 107120.00
+            gross_biweekly     = 107120.00 / 26   = 4120.0000 -> $4,120.00
+                                 (ROUND_HALF_UP via paycheck_calculator)
+            gross_monthly      = 4120.00 * 26 / 12 = 8926.6666...
+                                                   -> $8,926.67 ROUND_HALF_UP
+
+        Pre-Commit-26 (off-engine, no raise applied) would have produced:
+            biweekly = 104000.00 / 26 = $4,000.00
+            monthly  = 4000.00 * 26 / 12 = $8,666.67
+        The $260.00/mo gap is the F-032 drift the fix closes.
+
+        DTI ratio uses the engine-derived ``total_monthly_payments``
+        (verified by sibling debt-summary tests) over the new
+        denominator, quantized to one decimal place.
+        """
+        from decimal import ROUND_HALF_UP  # pylint: disable=import-outside-toplevel
+        from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
+        from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI Raise Salary",
+                annual_salary=Decimal("104000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            db.session.flush()
+
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current is not None, (
+                "seed_periods must cover today so the engine has a "
+                "current period to compute against"
+            )
+
+            merit = (
+                db.session.query(RaiseType).filter_by(name="merit").one()
+            )
+            db.session.add(SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=merit.id,
+                percentage=Decimal("0.0300"),
+                effective_month=1,
+                effective_year=current.start_date.year,
+                is_recurring=False,
+            ))
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+
+            # MED-06 / F-032: engine-derived gross_monthly is $8,926.67.
+            # Off-engine pre-fix value was $8,666.67 (raise dropped);
+            # see class docstring for the arithmetic.
+            assert ds["gross_monthly_income"] == Decimal("8926.67")
+
+            # DTI ratio is recomputed against the corrected denominator.
+            # total_monthly_payments is the engine-derived monthly P&I
+            # from _create_small_loan ($1,000 @ 5% for 24mo); we
+            # consume it as an input here so the test pins behaviour
+            # without re-deriving the amortization engine's output.
+            expected_dti = (
+                ds["total_monthly_payments"] / Decimal("8926.67")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            assert ds["dti_ratio"] == expected_dti
+
+    def test_dti_no_raise_unchanged(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C26-2: Without any raise, DTI gross matches the historical
+        value (no regression for the raise-free majority).
+
+        Engine output for a flat $78,000 salary, no raises:
+            annual_salary  = $78,000.00
+            gross_biweekly = 78000.00 / 26 = 3000.0000 -> $3,000.00
+            gross_monthly  = 3000.00 * 26 / 12 = $6,500.00
+
+        This is byte-identical to the pre-Commit-26 off-engine path for
+        the no-raise case (the only F-032 divergence axis is the raise
+        omission and the A-01 banker's-default rounding -- neither
+        bites on this salary), so the fix is provably a no-op for the
+        majority case where no scheduled raise applies.
+        """
+        from decimal import ROUND_HALF_UP  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI No-Raise Salary",
+                annual_salary=Decimal("78000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds["gross_monthly_income"] == Decimal("6500.00")
+            # DTI ratio matches the pre-fix calculation (no regression).
+            expected_dti = (
+                ds["total_monthly_payments"] / Decimal("6500.00")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            assert ds["dti_ratio"] == expected_dti
+
+    def test_dti_uses_paycheck_producer_no_flat_factor(self):
+        """C26-3: Verification gate that the DTI block does not reach
+        the off-engine ``salary_gross_biweekly`` raw recompute.
+
+        Checks two regression guards on
+        ``app/services/savings_dashboard_service.py``:
+
+        1. ``compute_dashboard_data`` reads
+           ``current_breakdown.gross_biweekly`` (the engine-derived
+           value introduced by Commit 26) and does NOT subscript
+           ``params`` with the ``"salary_gross_biweekly"`` key (the
+           off-engine value still used by the investment-projection
+           path -- F-20 follow-up).
+        2. No bare ``Decimal("26") / Decimal("12")`` literal remains
+           anywhere in the file: the biweekly-to-monthly factor lives
+           in ``app/utils/money.py`` as
+           ``PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR`` per E-24 /
+           HIGH-05 / Commit 23.
+
+        Guard 1 is implemented as an AST scan rather than a substring
+        check so docstrings or comments that mention the off-engine
+        key for historical / explanatory reasons do not trip the
+        assertion -- only an actual subscript expression that READS
+        the value does.
+        """
+        import ast  # pylint: disable=import-outside-toplevel
+        import inspect  # pylint: disable=import-outside-toplevel
+        from app.services import savings_dashboard_service as svc  # pylint: disable=import-outside-toplevel
+
+        # Guard 1a: positive lock -- the engine breakdown attribute is
+        # read in compute_dashboard_data.
+        source = inspect.getsource(svc.compute_dashboard_data)
+        assert "current_breakdown.gross_biweekly" in source, (
+            "DTI block must read gross_biweekly from the paycheck "
+            "engine breakdown (MED-06 / F-032)."
+        )
+
+        # Guard 1b: negative lock -- no Subscript node in
+        # compute_dashboard_data reads ``params["salary_gross_biweekly"]``.
+        tree = ast.parse(inspect.getsource(svc))
+        target_fn = None
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.FunctionDef)
+                    and node.name == "compute_dashboard_data"):
+                target_fn = node
+                break
+        assert target_fn is not None, (
+            "compute_dashboard_data not found in module source"
+        )
+        for node in ast.walk(target_fn):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "params"
+                and isinstance(node.slice, ast.Constant)
+                and node.slice.value == "salary_gross_biweekly"
+            ):
+                raise AssertionError(
+                    "compute_dashboard_data must not read the "
+                    "off-engine params['salary_gross_biweekly'] "
+                    "value for DTI (MED-06 / F-032)."
+                )
+
+        # Guard 2: module-wide -- no bare 26/12 literal remains.
+        file_source = inspect.getsource(svc)
+        assert 'Decimal("26") / Decimal("12")' not in file_source, (
+            "biweekly-to-monthly factor must use named constants "
+            "PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR (E-24 / HIGH-05)."
+        )
+
+    def test_dti_label_band_correct_with_raise(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C26-4: For a borderline DTI fixture, the band reflects the
+        engine-derived gross, not the off-engine recompute.
+
+        Hand-construction (annotated below) yields a case where the
+        pre-Commit-26 path would have labelled the DTI 'moderate' and
+        the post-Commit-26 path labels it 'healthy' against the
+        documented bands:
+
+            < 36%  -> healthy
+            36-43% -> moderate
+            > 43%  -> high
+
+        Salary $50,000 + a one-time 3% raise effective month 1 of the
+        current year (applies once in the current period):
+            annual_after_raise = 50000.00 * 1.03 = 51500.00
+            gross_biweekly     = 51500.00 / 26   = 1980.7692... -> $1,980.77
+            gross_monthly      = 1980.77 * 26 / 12 = 4291.6683...
+                                                   -> $4,291.67 ROUND_HALF_UP
+            36% band floor (engine)  = 4291.67 * 0.36 = $1,545.00
+
+        Pre-Commit-26 off-engine would have been:
+            biweekly = 50000 / 26 = $1,923.08
+            monthly  = 1923.08 * 26 / 12 = $4,166.67
+            36% band floor (off-engine) = 4166.67 * 0.36 = $1,500.00
+
+        For ``total_monthly_payments`` between $1,500.00 and $1,545.00
+        the band flips: off-engine labels 'moderate', engine labels
+        'healthy'.  This test asserts the band corresponds to the
+        engine-derived ratio.  ``_create_small_loan`` produces a P&I
+        well below $1,500 so we exercise the deep-healthy case here;
+        the band assertion is the structural lock -- the ratio is
+        bounded below 36% by the engine denominator, so a regression
+        that reverts to the off-engine $4,166.67 denominator would
+        still label 'healthy' for THIS fixture (the band crossing only
+        bites at larger debt loads), but C26-1 above pins the
+        denominator exactly so the band-flip regression cannot hide.
+        """
+        from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
+        from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI Band Raise Salary",
+                annual_salary=Decimal("50000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            db.session.flush()
+
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current is not None
+
+            merit = (
+                db.session.query(RaiseType).filter_by(name="merit").one()
+            )
+            db.session.add(SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=merit.id,
+                percentage=Decimal("0.0300"),
+                effective_month=1,
+                effective_year=current.start_date.year,
+                is_recurring=False,
+            ))
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            # Engine-derived gross_monthly (see class + test docstring).
+            assert ds["gross_monthly_income"] == Decimal("4291.67")
+            # Small loan P&I is well under 36% of $4,291.67, so the
+            # band is 'healthy' under the engine denominator.
+            assert ds["dti_label"] == "healthy"
+            # And the ratio is strictly less than 36 (boundary check).
+            assert ds["dti_ratio"] < Decimal("36.0")
+
+
 # ── Commit 6: canonical entries-aware producer routing ─────────────
 #
 # Pre-Commit-6 the savings dashboard built its own transaction query

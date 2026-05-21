@@ -1329,4 +1329,100 @@ history.
 
 ---
 
+## F-20. Investment / retirement / year-end / route consumers still read off-engine ``salary_gross_biweekly``
+
+- **Surfaced during:** Commit 26 (`fix(savings): DTI gross from
+  raise-aware paycheck producer (MED-06)`).
+- **Status:** not started; deliberately out of MED-06 scope.
+
+### Problem
+
+Commit 26 routes the savings-dashboard DTI denominator through the
+canonical raise-aware paycheck engine (``calculate_paycheck`` ->
+``PaycheckBreakdown.gross_biweekly``).  Five sibling call sites read
+the same off-engine ``annual_salary / pay_periods`` quantity
+(``_apply_raises`` not invoked, bare ``.quantize(Decimal("0.01"))`` =
+banker's-default rounding -- the A-01 / F-032 drift pattern) and
+remain unmigrated:
+
+```
+app/services/savings_dashboard_service.py:290-297  -- _load_account_params
+                                                     (the producer)
+app/services/savings_dashboard_service.py:544      -- investment-projection
+                                                     consumer
+app/routes/investment.py:110-117, :169             -- /investment dashboard
+app/routes/investment.py:467-474, :523             -- /investment growth-chart
+app/services/retirement_dashboard_service.py:429-432, :505
+app/services/year_end_summary_service.py:1970+ (``_load_salary_gross_biweekly``)
+  consumed at :186, :1065, :1114, :1608, :1644
+```
+
+Each of these is the same shape: ``Decimal(str(profile.annual_salary))
+/ (profile.pay_periods_per_year or 26)`` quantized at 2dp with no
+explicit ``rounding=`` mode.  For any user with an applicable
+``SalaryRaise`` the value diverges from the paycheck engine's per-
+period gross, and the employer-match / investment-projection /
+retirement-gap / year-end-employer figures that consume it drift by
+the same factor as the audit's F-032 worked example
+($107,120 vs $104,000 = ~2.99% understatement).
+
+The MED-06 finding scope is specifically "DTI gross denominator on
+``/savings``"; the audit notes the duplication at
+``02_concepts.md:1419-1436`` (Pair D = pension calculator, "cross-link
+only -- it feeds ``pension_benefit_*``, owned by P3-d2; NOT
+re-verdicted here") but treats the investment / retirement / year-end
+consumers as adjacent territory.  Commit 26's brief explicitly says
+"Stay in scope" -- these sites are flagged here, not folded in.
+
+### Recommended direction
+
+Two options, in order of cost:
+
+1. **Lift the engine call to one service** (``income_service`` or
+   similar).  Every consumer that wants the raise-aware per-period
+   gross calls one canonical function that wraps
+   ``calculate_paycheck``.  ``_load_account_params``'s
+   ``salary_gross_biweekly`` field can then either be removed
+   (callers fetch via the service directly) or backfilled from the
+   service so the off-engine recompute disappears entirely.
+2. **Local migration per consumer.**  Each consumer adopts the
+   ``_get_current_paycheck_breakdown`` pattern from Commit 26
+   in-place.  Lower abstraction cost, higher repetition.
+
+Option 1 is preferred because the consumer count is large enough that
+the wrapping helper amortises (six current call sites; one centralised
+boundary).  It also fits the "one income producer" principle that
+MED-06 establishes for the DTI path.
+
+### Why defer
+
+Commit 26's charter is the DTI denominator (the F-032 finding's
+governed pair).  The investment / retirement / year-end consumers
+each have their own employer-match / contribution-limit / gap-funding
+math that interacts with raises differently from a DTI ratio; folding
+all five into one commit would multiply the test surface and obscure
+the F-032 fix.  Each consumer is also distinct enough that a single
+migration cannot blindly substitute the engine value (the year-end
+``ctx`` shape and the retirement weighted-return path have their own
+contracts), so the work is better done as a focused refactor after
+the remediation final gate.
+
+### Acceptance criteria for the eventual PR
+
+- Every off-engine ``salary_gross_biweekly`` site reads from a single
+  shared engine helper (option 1) or a per-consumer engine call
+  (option 2).  No bare
+  ``Decimal(str(profile.annual_salary)) / profile.pay_periods_per_year``
+  pattern remains in ``app/services/`` or ``app/routes/`` outside
+  ``_load_account_params`` itself (which may keep the symbol if the
+  helper is named-renamed and the value comes from the engine).
+- Targeted suites: ``test_investment.py``, ``test_retirement.py``,
+  ``test_year_end_summary_service.py``,
+  ``test_retirement_dashboard_service.py`` -- each gains a raise-
+  applicable fixture asserting the engine-derived value drives the
+  consumer's downstream math.
+- Full pytest suite passes; pylint clean.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->

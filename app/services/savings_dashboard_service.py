@@ -51,7 +51,7 @@ from app.services.loan_payment_service import (
     load_loan_context,
 )
 from app.services.scenario_resolver import get_baseline_scenario
-from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
+from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +128,24 @@ def compute_dashboard_data(user_id):
         current_period, params,
     )
 
-    # ── Net biweekly pay (for income-relative goals) ─────────
-    net_biweekly_pay = _get_net_biweekly_pay(user_id, all_periods, current_period)
+    # ── Canonical paycheck breakdown (MED-06 / F-032) ──────────
+    # One income producer feeds every income-derived figure on the
+    # page: the income-relative-goal trajectory's net biweekly pay AND
+    # the DTI denominator's gross monthly income.  Pre-Commit-26 the
+    # DTI path took ``params["salary_gross_biweekly"]`` (the off-engine
+    # raw ``annual_salary / pay_periods`` recompute) and silently dropped
+    # any applicable ``SalaryRaise`` rows, so a user with a 3% recurring
+    # raise saw a DTI computed against a denominator ~$260/mo too low
+    # (audit worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
+    # Routing both consumers through ``calculate_paycheck`` for the
+    # current period makes the engine the single source of truth.
+    current_breakdown = _get_current_paycheck_breakdown(
+        user_id, all_periods, current_period,
+    )
+    net_biweekly_pay = (
+        current_breakdown.net_pay if current_breakdown is not None
+        else Decimal("0.00")
+    )
 
     # ── Savings goals ───────────────────────────────────────────
     goal_data = _compute_goal_progress(
@@ -168,11 +184,26 @@ def compute_dashboard_data(user_id):
         account_data, params["escrow_map"],
     )
     if debt_summary is not None:
-        gross_biweekly = params["salary_gross_biweekly"]
+        # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine
+        # output for the current period (``calculate_paycheck`` ->
+        # ``PaycheckBreakdown.gross_biweekly``), NOT the off-engine
+        # ``annual_salary / pay_periods`` recompute the DTI block read
+        # pre-Commit-26.  The biweekly -> monthly conversion factor
+        # (``PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR``) is preserved
+        # because once the per-period gross is engine-correct, the
+        # period-to-monthly normalization is a structural property of
+        # the 26-period pay schedule (Shekel is a biweekly app), not a
+        # raise-dropping shortcut -- this is a "genuine flat conversion"
+        # in the sense Commit 26 calls out, applied to an engine-derived
+        # input.  See ``app/utils/money.py`` for the constants.
+        gross_biweekly = (
+            current_breakdown.gross_biweekly if current_breakdown is not None
+            else Decimal("0.00")
+        )
         if gross_biweekly > Decimal("0.00"):
-            gross_monthly = (
+            gross_monthly = round_money(
                 gross_biweekly * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-            ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+            )
             dti_ratio = (
                 debt_summary["total_monthly_payments"]
                 / gross_monthly * Decimal("100")
@@ -543,22 +574,37 @@ def _project_investment(
     return projected
 
 
-def _get_net_biweekly_pay(user_id, all_periods, current_period):
-    """Load the user's current net biweekly pay from the paycheck calculator.
+def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
+    """Compute the canonical paycheck breakdown for the current period.
 
-    Returns Decimal("0.00") if no active salary profile exists or if
-    there is no current period.
+    The single income producer this module uses for any engine-derived
+    income figure (MED-06 / F-032).  Both consumers -- the savings-goal
+    trajectory's net biweekly pay and the DTI denominator's gross
+    monthly income -- route through this helper so the page cannot
+    silently disagree with the paycheck engine on the same period.
+    Pre-Commit-26 the DTI denominator read the off-engine
+    ``annual_salary / pay_periods`` recompute, which dropped applicable
+    ``SalaryRaise`` rows; the engine applies raises period-by-period
+    via ``_apply_raises`` and is therefore the only correct source for
+    a raise-aware monthly gross.
 
     Args:
         user_id: Integer ID of the current user.
-        all_periods: All pay periods for the user.
-        current_period: The current PayPeriod, or None.
+        all_periods: All pay periods for the user (passed through to
+            the paycheck engine for 3rd-paycheck detection and the
+            FICA SS wage-base cap's cumulative-wage tracking).
+        current_period: The current :class:`PayPeriod`, or ``None``.
 
     Returns:
-        Decimal -- net biweekly pay, or Decimal("0.00") if unavailable.
+        :class:`PaycheckBreakdown` for the current period under the
+        user's active salary profile, or ``None`` if ``current_period``
+        is ``None`` or no active profile exists.  Callers treat
+        ``None`` as "no income data on the page" rather than as a zero
+        amount, since absence of an income source is structurally
+        different from a real zero (E-12).
     """
     if current_period is None:
-        return Decimal("0.00")
+        return None
 
     profile = (
         db.session.query(SalaryProfile)
@@ -566,16 +612,15 @@ def _get_net_biweekly_pay(user_id, all_periods, current_period):
         .first()
     )
     if profile is None:
-        return Decimal("0.00")
+        return None
 
     from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
     from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
 
     tax_configs = load_tax_configs(user_id, profile)
-    breakdown = paycheck_calculator.calculate_paycheck(
+    return paycheck_calculator.calculate_paycheck(
         profile, current_period, all_periods, tax_configs,
     )
-    return breakdown.net_pay
 
 
 def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay):
