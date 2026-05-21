@@ -19,7 +19,8 @@ Cross-references:
 
 - **Surfaced during:** Commit 7 (`fix(accounts): route /accounts checking
   detail through canonical producer (E-25)`), commit `6c09ae8`.
-- **Status:** not started; defer until after Commit 37.
+- **Status:** resolved by Commit 21 of `remediation_follow_up_plan.md`
+  (`refactor(routes): split accounts.py into per-sub-domain modules (F-1)`).
 
 ### Problem
 
@@ -430,7 +431,12 @@ to confirm no implicit dependency.
 
 - **Surfaced during:** Commit 11 (`test(integration): cross-page balance-
   equality regression lock (HIGH-01)`), commit `4674e7e`.
-- **Status:** not started; defer until after Commit 37.
+- **Status:** resolved by Commit 20 of `remediation_follow_up_plan.md`
+  (`test(routes): static guard against bypass of balance_resolver in
+  grid/accounts (F-6)`).  Static greps now live in
+  `tests/test_routes/test_grid.py::TestGridPeriodSubtotalCanonical::test_grid_balance_computation_routed_through_resolver`
+  and
+  `tests/test_routes/test_accounts.py::TestCheckingDetailCanonicalProducer::test_accounts_checking_balance_routed_through_resolver`.
 
 ### Problem
 
@@ -588,8 +594,13 @@ Commit 37 alongside any other test-harness DRY items.
 
 - **Surfaced during:** Commit 13 (`feat(loan): pure event-derived loan
   resolver (E-18)`), this commit.
-- **Status:** not started; defer until after Commit 37.  Currently
-  unreachable.
+- **Status:** resolved by Commit 14 of `remediation_follow_up_plan.md`
+  (`fix(engine): gate anchor-reset payment recompute on not
+  using_contractual (F-8)`).  The anchor-reset block in
+  ``amortization_engine.generate_schedule`` now skips the
+  ``calculate_monthly_payment`` recompute when ``using_contractual`` is
+  true, preserving the contractual P&I for fixed-rate loans through
+  the anchor.
 
 ### Problem
 
@@ -790,9 +801,19 @@ loan-card routing until this is fixed.
 
 - **Surfaced during:** Commit 15 (`refactor(loan): demote
   current_principal/interest_rate; route all consumers (E-18)`).
-- **Status:** not started; documented as the explicit Commit-17
-  follow-up.  Three engine-side functions remain after Commit 15
-  routes all display paths through the resolver:
+- **Status:** resolved by Commit 15 of `remediation_follow_up_plan.md`
+  (`refactor(loan): delete dead get_loan_projection /
+  calculate_balances_with_amortization (F-10)`).  Both dead functions
+  (and the ``LoanProjection`` dataclass) were deleted from
+  ``app/services/amortization_engine.py`` and
+  ``app/services/balance_calculator.py``; ``compute_contractual_pi``
+  was rewritten to read ``original_principal`` and the base
+  ``interest_rate`` (both required by the Marshmallow schema and never
+  NULL in practice).  The historical state below is preserved for
+  traceability.
+
+  Three engine-side functions remained after Commit 15 of the main
+  remediation routed all display paths through the resolver:
 
   - `app/services/amortization_engine.py:913` --
     `get_loan_projection(params, ...)` reads
@@ -888,8 +909,10 @@ here would inflate the diff substantially and mix concerns Commit
 
 - **Surfaced during:** Commit 20 (`fix(retirement): zero is a value not
   missing (E-12, CRIT-04)`).
-- **Status:** not started; pick up alongside any future MED-02 sweep of
-  inline truthiness on financial values.
+- **Status:** resolved by Commit 4 of `remediation_follow_up_plan.md`
+  (`refactor(retirement): replace truthiness on financial values (F-11,
+  F-12)`).  The trailing ``or Decimal("0")`` is gone; the site now uses
+  an explicit ``is None`` guard.
 
 ### Problem
 
@@ -935,7 +958,11 @@ upstream (verified empirically today but not statically enforced).
 
 - **Surfaced during:** Commit 20 (`fix(retirement): zero is a value not
   missing (E-12, CRIT-04)`).
-- **Status:** not started; pick up alongside F-11.
+- **Status:** resolved by Commit 4 of `remediation_follow_up_plan.md`
+  (`refactor(retirement): replace truthiness on financial values (F-11,
+  F-12)`).  The gate is now
+  ``if params is not None and projection_periods:`` -- matches the
+  post-Commit-20 convention used elsewhere in the file.
 
 ### Problem
 
@@ -1099,7 +1126,14 @@ that monkey-patches the predicate to False.
 
 - **Surfaced during:** Commit 23 (`refactor(obligations): one monthly-
   equivalent aggregator (E-24, HIGH-05)`).
-- **Status:** not started; out of HIGH-05 scope.
+- **Status:** resolved by Commit 5 of `remediation_follow_up_plan.md`
+  (`refactor(services): use canonical MONTHS_PER_YEAR constant
+  (F-15)`).  The four service-tier sites now import and use
+  ``MONTHS_PER_YEAR`` from ``app.utils.money``; the local ``TWELVE`` /
+  ``MONTHS_IN_YEAR`` aliases are deleted.  A follow-up commit
+  (`refactor(escrow): route bare-int /12 monthly divisions through
+  MONTHS_PER_YEAR`) routed the remaining bare-``int`` ``/ 12``
+  divisions in the escrow path through the same constant.
 
 ### Problem
 
@@ -1194,7 +1228,13 @@ domain-reconciliation defect.
 
 - **Surfaced during:** Commit 24 (`fix(schema): reconcile Marshmallow
   domains with DB CHECK (E-28, HIGH-06)`).
-- **Status:** not started; consistency-only refactor.
+- **Status:** resolved by Commit 12 of `remediation_follow_up_plan.md`
+  (`refactor(schemas): unify percent conversion at @pre_load for
+  investment + pension (F-17)`).  Investment + pension + retirement-
+  settings schemas now own the percent-to-fraction conversion via
+  ``@pre_load``; the route-layer ``_convert_percentage_inputs`` helper
+  and the three inline ``Decimal("100")`` divisions in
+  ``app/routes/retirement.py`` are gone.
 
 ### Problem
 
@@ -1258,7 +1298,15 @@ Targeted suites: ``test_schemas/test_c24_domain_reconciliation.py``
 
 - **Surfaced during:** Commit 24 (`fix(schema): reconcile Marshmallow
   domains with DB CHECK (E-28, HIGH-06)`).
-- **Status:** not started; destructive migration would be required.
+- **Status:** resolved by Commit 13 of `remediation_follow_up_plan.md`
+  (`fix(schema): add upper-bound CHECK on loan_params.interest_rate
+  (F-18)`).  Destructive migration ``c66a9a7fda5a`` adds
+  ``ck_loan_params_interest_rate_upper`` (``interest_rate IS NULL OR
+  interest_rate <= 1``) with an upgrade-time pre-check that raises if
+  any existing row would violate the new bound; the matching
+  ``__table_args__`` constraint lives on ``LoanParams``.  Migration
+  round-trip (upgrade -> downgrade -> upgrade) verified clean at gate
+  time.
 
 ### Problem
 
@@ -1303,9 +1351,14 @@ Targeted suites: ``test_routes/test_loan.py``,
 
 - **Surfaced during:** Commit 25 (`fix(investment): unify employer-match
   across card/chart/year-end (HIGH-07)`).
-- **Status:** not started; affects the year-end employer / growth-total
-  for the lump-sum-plus-recurring contribution mix, but not HIGH-07's
-  card fix (which is correct).
+- **Status:** resolved by Commit 16 of `remediation_follow_up_plan.md`
+  (`fix(year-end): investment projection via contribution timeline
+  (F-19)`).  Locked direction Option 1:
+  ``_project_investment_for_year`` now calls
+  ``build_contribution_timeline`` over the year's pay periods and
+  passes the per-period map to ``growth_engine.project_balance``,
+  mirroring the dashboard route's already-correct shape.
+  ``calculate_investment_inputs`` itself is unchanged.
 
 ### Problem
 
@@ -1385,7 +1438,13 @@ history.
 
 - **Surfaced during:** Commit 26 (`fix(savings): DTI gross from
   raise-aware paycheck producer (MED-06)`).
-- **Status:** not started; deliberately out of MED-06 scope.
+- **Status:** resolved by Commit 17 of `remediation_follow_up_plan.md`
+  (`refactor(income): canonical raise-aware gross-biweekly helper
+  (F-20)`).  Locked direction Option 1: every consumer reads the
+  raise-aware per-period gross from one canonical helper that wraps
+  the paycheck engine; the off-engine
+  ``Decimal(str(profile.annual_salary)) / pay_periods`` pattern is
+  removed from the listed call sites.
 
 ### Problem
 
@@ -1481,7 +1540,15 @@ the remediation final gate.
 
 - **Surfaced during:** Commit 28 (`refactor(investment): extract
   dashboard service; collapse dispatcher; DTO (MED-01)`).
-- **Status:** not started; defer until after Commit 37.
+- **Status:** resolved by Commit 19 of `remediation_follow_up_plan.md`
+  (`refactor(loan): unify period-balance dispatcher; period-end-keyed
+  canonical (F-21)`).  Locked canonical: period-end-keyed (year-end
+  semantic).  ``account_projection.compute_loan_period_balance_map``
+  is the single producer; both
+  ``savings_dashboard_service._compute_account_projections`` and
+  ``year_end_summary_service._get_account_balance_map`` consume it.
+  Savings-dashboard 3/6/12-month projected balances re-pinned with
+  hand-computed period-end arithmetic.
 
 ### Problem
 
@@ -1536,7 +1603,14 @@ consumers through one `compute_loan_period_balance_map` shared in
 
 - **Surfaced during:** Commit 28 (`refactor(investment): extract
   dashboard service; collapse dispatcher; DTO (MED-01)`).
-- **Status:** not started; defer until after Commit 37.
+- **Status:** resolved by Commit 18 of `remediation_follow_up_plan.md`
+  (`refactor(investment): extract shared deduction-loader +
+  projection-inputs helpers (F-22)`).  Both duplicates are gone:
+  ``investment_projection.load_active_deductions_for_account`` and
+  ``build_investment_projection_inputs`` are consumed by the three
+  dashboard services.  Gate-time
+  ``pylint --disable=all --enable=R0801`` over the trio scores
+  10.00/10 (no remaining duplicate-code matches for F-22's targets).
 
 ### Problem
 
@@ -1592,8 +1666,12 @@ Two options:
 
 - **Surfaced during:** Commit 30 (`fix(dashboard): entry-tracked bill row
   single disclosed base (E-21, MED-03)`).
-- **Status:** not started; in scope of Commit 31 (MED-04 -- move money
-  math out of Jinja/JS into services) and intentionally deferred there.
+- **Status:** resolved by Commit 9 of `remediation_follow_up_plan.md`
+  (`fix(companion): move entry pct derivation to service helper
+  (F-23)`).  ``entry_service.pct_complete`` is the canonical helper
+  (Decimal in, Decimal out, clamped to ``[0, 100]``); the route's
+  ``float(Decimal_expression)`` cast at ``app/routes/companion.py``
+  is gone.
 
 ### Problem
 
@@ -1704,6 +1782,75 @@ routes and can become a module-level format string consumed by both.
   `tests/test_routes/test_recurrence_form_helpers.py` or equivalent,
   pinning the no-pattern, every-N-periods, and stale-conflict
   redirect branches.
+
+---
+
+## F-25. Pylint R0401 cyclic-import warnings in the split `app/routes/accounts` package
+
+- **Surfaced during:** Commit 22 of the follow-up plan
+  (`chore(release): follow-up final gate`), gate-time pylint run after
+  Commit 21 split the historical monolithic `app/routes/accounts.py`
+  into a per-sub-domain package.
+- **Status:** not started; accepted technical debt unless / until the
+  blueprint layout is redesigned.
+
+### Problem
+
+`pylint app/ --fail-on=E,F` reports four `R0401 Cyclic import`
+warnings rooted at `app/utils/account_validation.py:1`:
+
+```
+app/utils/account_validation.py:1:0: R0401: Cyclic import
+  (app.routes.accounts -> app.routes.accounts.detail)
+app/utils/account_validation.py:1:0: R0401: Cyclic import
+  (app.routes.accounts -> app.routes.accounts.crud)
+app/utils/account_validation.py:1:0: R0401: Cyclic import
+  (app.routes.accounts -> app.routes.accounts.anchor)
+app/utils/account_validation.py:1:0: R0401: Cyclic import
+  (app.routes.accounts -> app.routes.accounts.types)
+```
+
+These flow from the Flask blueprint split landed in Commit 21
+(F-1).  The package's `__init__.py` instantiates `accounts_bp` and
+imports each sub-module for the side-effect of registering its
+route decorators; each sub-module imports `accounts_bp` (and
+shared helpers from `app.utils.account_validation`) from the
+package, which pylint traces back to the package init and reports
+as cyclic.
+
+The cycle is real but benign at runtime: the sub-module imports
+resolve cleanly because each one only reads `accounts_bp` after the
+package init has already created it.  Score impact is zero
+(`9.57/10 (previous run: 9.57/10, +0.00)` at gate time); no E/F
+messages; only refactor warnings.
+
+### Recommended direction
+
+Two options, in order of cost:
+
+- **(a) Accept the warning** (status quo).  Standard Flask blueprint
+  splits with shared validation helpers tend to produce this shape;
+  refactoring it away costs more than the warning is worth.
+- **(b) Move `accounts_bp` declaration to a dedicated module**
+  (e.g. `app/routes/accounts/_bp.py`) and have both `__init__.py`
+  and every sub-module import the blueprint from there.  Eliminates
+  the package -> submodule -> package round-trip pylint flags as
+  cyclic.  Mechanical refactor across the five files.
+
+### Why defer
+
+Behaviourally a no-op; no E/F messages; the score baseline is
+unaffected.  The split itself (Commit 21) is otherwise clean.
+Accepting the warning is the pragmatic choice unless a future
+refactor in this package would benefit from breaking the cycle.
+
+### Acceptance criteria for the eventual PR
+
+- `pylint app/ --fail-on=E,F` reports zero `R0401` matches rooted in
+  `app/routes/accounts/` or `app/utils/account_validation.py`.
+- Every sub-module still registers its decorators against the
+  shared `accounts_bp` blueprint.
+- The full pytest suite passes with no test edits.
 
 ---
 
