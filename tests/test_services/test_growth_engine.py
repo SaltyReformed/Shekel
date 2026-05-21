@@ -14,6 +14,7 @@ from app.services.growth_engine import (
     ContributionRecord,
     ProjectedBalance,
     calculate_employer_contribution,
+    cap_contribution_at_limit,
     generate_projection_periods,
     project_balance,
     reverse_project_balance,
@@ -113,6 +114,209 @@ class TestEmployerContribution:
 
     def test_none_params_returns_zero(self):
         assert calculate_employer_contribution(None, Decimal("200")) == ZERO
+
+
+# ── Tests: cap_contribution_at_limit (HIGH-07) ──────────────────
+
+
+class TestCapContributionAtLimit:
+    """Shared helper that caps a per-period contribution at the remaining
+    annual limit.  HIGH-07 / F-043 / F-055: the engine's per-period loop
+    and the investment dashboard's per-period employer card both call
+    this so the card, chart, and year-end summary agree on one number.
+    """
+
+    def test_no_limit_returns_amount(self):
+        """``None`` annual limit means brokerage-style uncapped."""
+        # 1500 (no cap) -> 1500
+        assert (
+            cap_contribution_at_limit(Decimal("1500"), None, Decimal("0"))
+            == Decimal("1500")
+        )
+
+    def test_no_limit_negative_clamped_to_zero(self):
+        """Negative contributions always clamp to zero, limit or not."""
+        # max(-5, 0) = 0
+        assert (
+            cap_contribution_at_limit(Decimal("-5"), None, Decimal("0"))
+            == ZERO
+        )
+
+    def test_well_below_limit_returns_amount(self):
+        """Limit non-binding: helper returns the contribution unchanged."""
+        # remaining = max(23000 - 5000, 0) = 18000; min(1000, 18000) = 1000
+        assert (
+            cap_contribution_at_limit(
+                Decimal("1000"),
+                Decimal("23000"),
+                Decimal("5000"),
+            )
+            == Decimal("1000")
+        )
+
+    def test_limit_binding_returns_remaining(self):
+        """Limit binds: capped to ``annual_limit - ytd``.
+
+        HIGH-07 / F-043 worked example: annual_limit 23000, ytd 22800,
+        remaining = 200; proposed contribution 1500 -> cap to 200.
+        """
+        # remaining = max(23000 - 22800, 0) = 200; min(1500, 200) = 200
+        assert (
+            cap_contribution_at_limit(
+                Decimal("1500"),
+                Decimal("23000"),
+                Decimal("22800"),
+            )
+            == Decimal("200")
+        )
+
+    def test_ytd_exceeds_limit_returns_zero(self):
+        """Already over the limit: remaining clamped to zero."""
+        # remaining = max(23000 - 24000, 0) = 0; min(1500, 0) = 0
+        assert (
+            cap_contribution_at_limit(
+                Decimal("1500"),
+                Decimal("23000"),
+                Decimal("24000"),
+            )
+            == ZERO
+        )
+
+    def test_zero_limit_returns_zero(self):
+        """Stored zero cap means "no contributions allowed this year"
+        (E-12: zero is a value, not missing)."""
+        # remaining = max(0 - 0, 0) = 0; min(500, 0) = 0
+        assert (
+            cap_contribution_at_limit(
+                Decimal("500"),
+                Decimal("0"),
+                Decimal("0"),
+            )
+            == ZERO
+        )
+
+    def test_three_surface_equality_at_binding_limit(self, biweekly_periods):
+        """HIGH-07: card / chart / year-end employer match agree when the
+        annual contribution limit binds.
+
+        Worked example from F-043:
+          annual_limit = 23000, ytd_start = 22800, remaining = 200.
+          periodic_contribution proposed = 1500 (uncapped employee).
+          match 50% up to 6% of biweekly gross 8000:
+            matchable_salary = 8000 * 0.06 = 480.
+
+        Pre-fix card (uncapped employee feeds the matcher):
+          matched = min(1500, 480) = 480; employer = 480 * 0.5 = 240.
+        Engine-internal cap (chart and year-end):
+          capped = min(1500, 200) = 200;
+          matched = min(200, 480) = 200; employer = 200 * 0.5 = 100.
+
+        Post-fix card calls the same helper as the engine, so all three
+        surfaces read 100.
+        """
+        employer_params = {
+            "type": "match",
+            "match_percentage": Decimal("0.5"),
+            "match_cap_percentage": Decimal("0.06"),
+            "gross_biweekly": Decimal("8000"),
+        }
+        periodic = Decimal("1500")
+        annual_limit = Decimal("23000")
+        ytd_start = Decimal("22800")
+
+        # Surface A -- card: helper + sole producer.
+        capped = cap_contribution_at_limit(periodic, annual_limit, ytd_start)
+        card_employer = calculate_employer_contribution(employer_params, capped)
+
+        # Surface B -- chart's first-period employer line (engine internal cap).
+        chart_projection = project_balance(
+            current_balance=Decimal("100000"),
+            assumed_annual_return=Decimal("0"),
+            periods=biweekly_periods[:1],
+            periodic_contribution=periodic,
+            employer_params=employer_params,
+            annual_contribution_limit=annual_limit,
+            ytd_contributions_start=ytd_start,
+        )
+        chart_employer = chart_projection[0].employer_contribution
+
+        # Surface C -- year-end per-period employer total (single binding
+        # period in the year: only the first period contributes since the
+        # rest are capped to zero).
+        year_periods = biweekly_periods
+        year_projection = project_balance(
+            current_balance=Decimal("100000"),
+            assumed_annual_return=Decimal("0"),
+            periods=year_periods,
+            periodic_contribution=periodic,
+            employer_params=employer_params,
+            annual_contribution_limit=annual_limit,
+            ytd_contributions_start=ytd_start,
+        )
+        year_first_employer = year_projection[0].employer_contribution
+        # Subsequent periods hit the now-zero remaining limit: capped to 0,
+        # match on 0 is 0.
+        for pb in year_projection[1:]:
+            assert pb.employer_contribution == ZERO
+
+        # All three surfaces agree -- the divergence is closed.
+        assert card_employer == Decimal("100.00")
+        assert chart_employer == Decimal("100.00")
+        assert year_first_employer == Decimal("100.00")
+        assert card_employer == chart_employer == year_first_employer
+
+    def test_below_limit_no_regression(self, biweekly_periods):
+        """HIGH-07 regression guard: well below limit, the helper does
+        not alter the contribution and the employer match is unchanged.
+
+        annual_limit 23000, ytd_start 0, periodic 200, match 100% to 6%
+        of gross 2500 (matchable_salary = 150):
+          capped = min(200, 23000) = 200;
+          matched = min(200, 150) = 150; employer = 150 * 1.0 = 150.
+        """
+        employer_params = {
+            "type": "match",
+            "match_percentage": Decimal("1.0"),
+            "match_cap_percentage": Decimal("0.06"),
+            "gross_biweekly": Decimal("2500"),
+        }
+        capped = cap_contribution_at_limit(
+            Decimal("200"), Decimal("23000"), Decimal("0"),
+        )
+        card_employer = calculate_employer_contribution(employer_params, capped)
+        chart_projection = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=biweekly_periods[:1],
+            periodic_contribution=Decimal("200"),
+            employer_params=employer_params,
+            annual_contribution_limit=Decimal("23000"),
+            ytd_contributions_start=Decimal("0"),
+        )
+        assert capped == Decimal("200")
+        assert card_employer == Decimal("150.00")
+        assert chart_projection[0].employer_contribution == Decimal("150.00")
+
+    def test_engine_loop_uses_helper(self):
+        """``project_balance`` per-period cap routes through the helper.
+
+        Single inputs (annual_limit=7000, ytd_start=5000, periodic 1000):
+        engine first-period cap must equal the helper's output.
+        """
+        # remaining = max(7000 - 5000, 0) = 2000; min(1000, 2000) = 1000
+        period = FakePeriod(date(2026, 6, 4), date(2026, 6, 17), 1)
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0"),
+            periods=[period],
+            periodic_contribution=Decimal("1000"),
+            annual_contribution_limit=Decimal("7000"),
+            ytd_contributions_start=Decimal("5000"),
+        )
+        helper_value = cap_contribution_at_limit(
+            Decimal("1000"), Decimal("7000"), Decimal("5000"),
+        )
+        assert result[0].contribution == helper_value == Decimal("1000")
 
 
 # ── Tests: project_balance ──────────────────────────────────────

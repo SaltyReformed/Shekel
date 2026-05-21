@@ -88,6 +88,48 @@ class ContributionRecord:
             )
 
 
+def cap_contribution_at_limit(
+    contribution: Decimal,
+    annual_contribution_limit: Decimal | None,
+    ytd_contributions: Decimal,
+) -> Decimal:
+    """Cap a per-period employee contribution at the remaining annual limit.
+
+    Mirrors the cap step in :func:`project_balance`'s per-period loop so
+    callers that need a single point-in-time snapshot of the capped
+    contribution (e.g. the investment dashboard's "Employer contribution
+    per period" card; HIGH-07 / F-043 / F-055) produce the byte-identical
+    value the engine would apply for the same period.  The capped value
+    is what must be fed to :func:`calculate_employer_contribution` so the
+    card, the chart, and the year-end summary all read one number.
+
+    Args:
+        contribution:               Decimal employee contribution proposed
+                                    for the period.  Negatives are
+                                    clamped to zero.
+        annual_contribution_limit:  Decimal annual cap, or ``None`` for
+                                    accounts with no IRS limit (e.g.
+                                    Brokerage).  ``None`` means
+                                    "uncapped"; a stored ``Decimal("0")``
+                                    means "no contributions allowed this
+                                    year" (E-12: zero is a value, not
+                                    missing).
+        ytd_contributions:          Decimal contributions already made in
+                                    the current year.
+
+    Returns:
+        Decimal contribution capped at ``max(annual_limit - ytd, 0)``
+        when a limit is set, else ``max(contribution, 0)``.
+    """
+    contribution = Decimal(str(contribution))
+    if annual_contribution_limit is None:
+        return max(contribution, ZERO)
+    annual_contribution_limit = Decimal(str(annual_contribution_limit))
+    ytd_contributions = Decimal(str(ytd_contributions))
+    remaining_limit = max(annual_contribution_limit - ytd_contributions, ZERO)
+    return max(min(contribution, remaining_limit), ZERO)
+
+
 def calculate_employer_contribution(employer_params, employee_contribution):
     """Calculate the employer contribution for a single pay period.
 
@@ -254,12 +296,16 @@ def project_balance(
             period_contrib_amount = periodic_contribution
             period_is_confirmed = False
 
-        # Step 2: Cap contribution at remaining limit.
-        if remaining_limit is not None:
-            contribution = min(period_contrib_amount, remaining_limit)
-        else:
-            contribution = period_contrib_amount
-        contribution = max(contribution, ZERO)
+        # Step 2: Cap contribution at remaining annual limit via the
+        # shared helper.  HIGH-07 / F-043 / F-055: the same helper is
+        # called from the investment dashboard's per-period employer
+        # card so the card, this chart's employer line, and
+        # year_summary_employer_total agree on one capped contribution.
+        contribution = cap_contribution_at_limit(
+            period_contrib_amount,
+            annual_contribution_limit,
+            ytd_contributions,
+        )
 
         # Step 3: Employer contribution.
         employer_contribution = calculate_employer_contribution(

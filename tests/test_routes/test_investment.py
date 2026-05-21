@@ -1549,3 +1549,189 @@ class TestInvestmentEntryAwareRouting:
             )
             assert first_point <= Decimal("49800.00")
 
+
+class TestEmployerMatchCapped:
+    """C25 / HIGH-07 / F-043 / F-055: dashboard "Employer Per Period" card
+    feeds the limit-capped employee contribution into
+    ``calculate_employer_contribution`` so it matches the growth chart's
+    employer line and the year-end ``year_summary_employer_total``.
+
+    Pre-fix the card passed the UNCAPPED ``periodic_contribution`` to the
+    matcher (``investment.py:183 -> 187-189``), so near the annual limit
+    a match-type employer overstated the card per-period match relative
+    to the chart and year-end (F-043 worked example: $240 vs $100).
+    """
+
+    def _make_settled_shadow_income(
+        self, seed_user, to_account, period, amount, db_session,
+    ):
+        """Seed a Settled transfer into the investment account.
+
+        Uses the canonical ``transfer_service.create_transfer`` -- the
+        only sanctioned path for budget.transfers rows -- with a
+        ``Received`` status whose ``excludes_from_balance = False`` so
+        the route's YTD aggregation (``calculate_investment_inputs``
+        Step 4) counts the resulting shadow income.
+        """
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+        received_id = ref_cache.status_id(StatusEnum.RECEIVED)
+        cat = seed_user["categories"]["Groceries"]
+        xfer = transfer_service.create_transfer(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=to_account.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=received_id,
+            category_id=cat.id,
+            name="YTD seed",
+        )
+        db_session.commit()
+        return xfer
+
+    def test_card_uses_capped_contribution_at_binding_limit(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C25-1: card per-period employer match equals the chart/year-end
+        capped value when the annual limit binds.
+
+        Setup (F-043 worked example, scaled to fit a deduction):
+
+          annual_contribution_limit = $23,500
+          YTD shadow income contributed in past period of current year
+            = $23,300  -> remaining = $200
+          gross_biweekly                                 = $8,000
+          (annual_salary = 8000 * 26 = $208,000)
+          match: 50% up to 6% of gross
+            matchable_salary = 8000 * 0.06           = $480.00
+          deduction (employee contribution per period) = $1,500
+
+        Pre-fix card (UNCAPPED $1,500 fed to the matcher):
+          matched  = min(1500, 480)                  = 480
+          employer = 480 * 0.50                      = $240.00
+
+        Post-fix card (CAPPED at remaining limit before matcher):
+          capped   = min(1500, max(23500 - 23300, 0)) = 200
+          matched  = min(200, 480)                   = 200
+          employer = 200 * 0.50                      = $100.00
+
+        The card now reads $100.00; the pre-fix string $240.00 must
+        not appear in the response.
+        """
+        # 401(k) account; create_account anchors at the current period.
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="401(k)",
+            name="HIGH-07 401k", balance="10000.00",
+        )
+        _create_investment_params(
+            db.session, acct.id,
+            assumed_annual_return=Decimal("0.00000"),
+            annual_contribution_limit=Decimal("23500.00"),
+            contribution_limit_year=2026,
+            employer_contribution_type="match",
+            employer_match_percentage=Decimal("0.5000"),
+            employer_match_cap_percentage=Decimal("0.0600"),
+        )
+
+        # Salary profile: annual 208000 -> gross_biweekly 8000.
+        filing = db.session.query(FilingStatus).filter_by(name="single").one()
+        profile = SalaryProfile(
+            user_id=seed_user["user"].id,
+            scenario_id=seed_user["scenario"].id,
+            filing_status_id=filing.id,
+            name="Day Job",
+            annual_salary=Decimal("208000.00"),
+            state_code="NC",
+            is_active=True,
+        )
+        db.session.add(profile)
+        db.session.flush()
+
+        # Deduction $1500/period -> uncapped periodic_contribution = 1500.
+        _create_deduction(db.session, profile.id, acct.id, "1500.00")
+        db.session.commit()
+
+        # YTD seed: $23,300 settled shadow income in a past period
+        # within the current year.  seed_periods_today[0] is ~56 days
+        # before today (period 4 = current), so for any test date this
+        # year it lands in the same calendar year as today.
+        self._make_settled_shadow_income(
+            seed_user, acct, seed_periods_today[0],
+            Decimal("23300.00"), db.session,
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # Post-fix capped employer match.
+        assert "$100.00" in html, (
+            "Card did not render the capped employer match of $100.00 "
+            "(HIGH-07/F-043).  Card site may still be bypassing "
+            "cap_contribution_at_limit before calling "
+            "calculate_employer_contribution."
+        )
+        # Pre-fix uncapped value must NOT appear: locks the fix in both
+        # directions.  Use a regex-safe assertion -- the value must not
+        # appear anywhere in the rendered HTML.
+        assert "$240.00" not in html, (
+            "Pre-fix uncapped employer match $240.00 detected; the "
+            "cap_contribution_at_limit fix has regressed."
+        )
+
+    def test_card_unchanged_when_well_below_limit(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C25-3: well below limit, the card value is unchanged (regression
+        guard).
+
+        Same fixture as the binding-limit test but with no YTD seed:
+        remaining = max(23500 - 0, 0) = 23500;
+        capped = min(1500, 23500) = 1500 (cap does not bind);
+        matched = min(1500, 480) = 480;
+        employer = 480 * 0.50 = $240.00.
+
+        The capped helper returns 1500 (the full periodic) so the card
+        produces the same byte-identical $240.00 it always did.
+        """
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="401(k)",
+            name="HIGH-07 below-limit", balance="10000.00",
+        )
+        _create_investment_params(
+            db.session, acct.id,
+            assumed_annual_return=Decimal("0.00000"),
+            annual_contribution_limit=Decimal("23500.00"),
+            contribution_limit_year=2026,
+            employer_contribution_type="match",
+            employer_match_percentage=Decimal("0.5000"),
+            employer_match_cap_percentage=Decimal("0.0600"),
+        )
+        filing = db.session.query(FilingStatus).filter_by(name="single").one()
+        profile = SalaryProfile(
+            user_id=seed_user["user"].id,
+            scenario_id=seed_user["scenario"].id,
+            filing_status_id=filing.id,
+            name="Day Job",
+            annual_salary=Decimal("208000.00"),
+            state_code="NC",
+            is_active=True,
+        )
+        db.session.add(profile)
+        db.session.flush()
+        _create_deduction(db.session, profile.id, acct.id, "1500.00")
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # No YTD: cap does not bind; full match (matchable=480) applies.
+        assert "$240.00" in html, (
+            "Below-limit card regressed: expected $240.00 employer per "
+            "period.  cap_contribution_at_limit may be incorrectly "
+            "clamping below the limit."
+        )

@@ -1247,4 +1247,86 @@ Targeted suites: ``test_routes/test_loan.py``,
 
 ---
 
+## F-19. `calculate_investment_inputs` Step 2 treats lump-sum transfers as periodic
+
+- **Surfaced during:** Commit 25 (`fix(investment): unify employer-match
+  across card/chart/year-end (HIGH-07)`).
+- **Status:** not started; affects the year-end employer / growth-total
+  for the lump-sum-plus-recurring contribution mix, but not HIGH-07's
+  card fix (which is correct).
+
+### Problem
+
+`app/services/investment_projection.py:142-161`
+(`calculate_investment_inputs` Step 2 -- "Transfer-based contributions
+(average per period)") computes:
+
+```python
+total_contrib                = sum(t.estimated_amount for t in active_contributions)
+num_periods_with_contrib     = len(set(t.pay_period_id for t in ...))
+periodic_contribution       += total_contrib / num_periods_with_contrib
+```
+
+For a user with ONE large one-time settled transfer (e.g. an end-of-year
+lump-sum contribution of $23,300 to a 401(k)) plus a recurring $1,500
+deduction, this returns:
+
+```
+periodic_contribution = 1500 + 23300 / 1 = 24800   # wrong as a "per period" amount
+```
+
+The lump sum is treated as a typical periodic contribution.  The
+investment dashboard route partially compensates by passing a
+`contributions` timeline built from `build_contribution_timeline` to
+`growth_engine.project_balance` -- the engine then uses the real
+per-period amount from the timeline, not the inflated
+`periodic_contribution` fallback.
+
+The year-end `_project_investment_for_year`
+(`app/services/year_end_summary_service.py:1031-1174`) does NOT pass
+`contributions`; it passes `periodic_contribution` as the per-period
+amount for every year period.  For the lump-sum-plus-recurring fixture
+that means every period in the year is projected with a $24,800
+employee contribution (immediately capped by the annual limit), which
+overstates the employer match in early periods and badly distorts
+`investment_growth` for the year.
+
+This is distinct from HIGH-07 (which was specifically the dashboard
+card bypassing the cap).  HIGH-07's three-surface equality holds for
+the deduction-only and recurring-transfer cases (the cases the audit
+focused on); the lump-sum case is a Step 2 modelling bug that predates
+HIGH-07.
+
+### Recommended next step
+
+Two options to discuss with the developer (this is the kind of design
+choice CLAUDE.md rule 8 calls out):
+
+1. **Year-end uses the contribution timeline.**  Refactor
+   `_project_investment_for_year` to call `build_contribution_timeline`
+   over the year's pay periods and pass it to `project_balance` (same
+   shape the dashboard route already uses).  No change to
+   `calculate_investment_inputs`.  Lowest scope; preserves the
+   existing dashboard semantics.
+2. **`calculate_investment_inputs` returns a typed-by-source breakdown.**
+   Separate the deduction-driven recurring component from the
+   transfer-based component, expose both, and let consumers pick.
+   Higher scope; more honest about what the value represents but
+   touches every caller.
+
+Option 1 is the lower-risk fix and aligns year-end with the dashboard
+chart.  Either way, add a fixture (one lump-sum settled transfer +
+one recurring deduction) and lock the year-end employer/growth totals
+to hand-computed values that respect the per-period contribution
+history.
+
+### File / line surfaced
+
+- `app/services/investment_projection.py:142-161` -- Step 2 averaging.
+- `app/services/year_end_summary_service.py:1107-1163` --
+  `_project_investment_for_year` consumes the averaged value as a
+  per-period amount.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->

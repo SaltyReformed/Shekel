@@ -171,12 +171,26 @@ def dashboard(account_id):
 
     periodic_contribution = inputs.periodic_contribution
     employer_params = inputs.employer_params
+    ytd_contributions = inputs.ytd_contributions
+
+    # HIGH-07 / F-043 / F-055: feed the limit-capped contribution to
+    # ``calculate_employer_contribution`` so the per-period employer
+    # card matches the growth chart's employer line and the year-end
+    # ``year_summary_employer_total`` -- all three surfaces now read the
+    # same capped value (the engine's per-period loop already caps via
+    # ``cap_contribution_at_limit``).  When the annual limit binds the
+    # card no longer overstates the match (worked example: card $240 vs
+    # chart/year-end $100 collapses to one capped value).
+    capped_contribution_this_period = growth_engine.cap_contribution_at_limit(
+        periodic_contribution,
+        inputs.annual_contribution_limit,
+        ytd_contributions,
+    )
     employer_contribution_per_period = Decimal("0")
     if employer_params:
         employer_contribution_per_period = growth_engine.calculate_employer_contribution(
-            employer_params, periodic_contribution
+            employer_params, capped_contribution_this_period
         )
-    ytd_contributions = inputs.ytd_contributions
 
     # Build per-period contribution timeline from deductions and transfers.
     contributions = build_contribution_timeline(
