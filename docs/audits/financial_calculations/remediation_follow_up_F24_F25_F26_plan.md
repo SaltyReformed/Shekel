@@ -1,13 +1,23 @@
-# Financial-Calculation Follow-up Remediation Plan -- F-24 and F-25
+# Financial-Calculation Follow-up Remediation Plan -- F-24, F-25, and F-26
 
-Implementation plan that closes the two remaining NOT_DONE items in
+Implementation plan that closes three NOT_DONE items in
 `remediation_follow_up.md` after the first follow-up chain
-(`remediation_follow_up_plan.md` Commits 1-22) landed. Authored
-2026-05-21 against the post-gate `dev` branch.
+(`remediation_follow_up_plan.md` Commits 1-22) landed.  F-24 and
+F-25 were authored 2026-05-21 against the post-gate `dev` branch;
+F-26 (the residual templates / transfers R0801 duplicates that the
+F-24 helper extraction did not address) was added the same day
+after gate-time pylint surfaced six additional pairs outside
+F-24's scope.  F-26's scope is itself partitioned: pairs 1 and 2
+(stale-form check, RecurrenceConflict flash) close cleanly via
+two new helpers in the existing F-24 module; pairs 3 through 6
+(list-rendering shapes, hard-delete archive-fallback body
+wrapping) are explicitly deferred per Section 9 because each one
+needs its own design discussion that does not fit the F-26
+commit's scope.
 
 Cross-references:
 
-- Source entries: `remediation_follow_up.md::F-24`, `::F-25`
+- Source entries: `remediation_follow_up.md::F-24`, `::F-25`, `::F-26`
 - First follow-up plan: `remediation_follow_up_plan.md`
 - Shared execution rules: `remediation_follow_up_common.md`
 - Main remediation plan: `remediation_plan.md`
@@ -22,16 +32,22 @@ The first follow-up plan (`remediation_follow_up_plan.md` Commits 1-22)
 closed every audit-time NOT_DONE / PARTIAL item except F-24 (templates
 / transfers route-layer duplication, surfaced during the first plan's
 Commit 8) and F-25 (pylint R0401 cyclic-import warnings introduced by
-the Commit-21 accounts-package split). Both are quality / structural
-refactors with no financial-calculation correctness signal -- they fix
-pylint warnings that score 0/baseline-impact today but represent latent
-hazards that the project's DRY/SOLID standards say must be closed.
+the Commit-21 accounts-package split).  F-26 (the residual templates /
+transfers R0801 duplicates beyond F-24's scope) was discovered at the
+gate-time pylint run for this plan's Commit 2 and recorded the same
+day (commit `b7d4258`); the F-26 entry's six pairs are listed in
+`remediation_follow_up.md::F-26`.  All three findings are quality /
+structural refactors with no financial-calculation correctness signal
+-- they fix pylint warnings that score 0/baseline-impact today but
+represent latent hazards that the project's DRY/SOLID standards say
+must be closed.
 
-Verification of the documented state of both findings against the live
-codebase produced the scope additions in Section 3. Both findings'
-write-ups in `remediation_follow_up.md` understate the true surface
-slightly; the additions are folded into the commit specifications
-rather than re-litigated as new F-N entries.
+Verification of the documented state of each finding against the
+live codebase produced the scope additions in Section 3.  F-24's and
+F-26's write-ups in `remediation_follow_up.md` understate the true
+surface slightly; F-24's addition is folded into Commit 2's
+specification, F-26's partition is captured in Section 2 and Section
+9 because pairs 3-6 are deliberately deferred rather than absorbed.
 
 The same constraints that governed the first follow-up plan apply
 here:
@@ -60,16 +76,22 @@ ceiling. The additions that follow are specific to this plan:
 1. **Run commits in order.** Section 6 records dependencies; F-25
    lands first because it is a single-package restructure with zero
    test edits, then F-24 because it is a wider multi-file extraction
-   that benefits from a clean tree to diff against.
+   that benefits from a clean tree to diff against, then F-26
+   because its two new helpers extend the F-24 helper module and
+   must land against the post-F-24 shape.
 2. **Re-grep cited lines first.** Numbers below are accurate at
-   authoring time (2026-05-21, head `a0782f7`). They will drift as
+   authoring time.  F-24 / F-25 numbers were captured against head
+   `a0782f7` (2026-05-21); F-26 numbers are captured against head
+   `b7d4258` (the F-26 doc entry, 2026-05-21).  They will drift as
    the chain lands -- re-grep before editing.
-3. **Refactors must be byte-equivalent at the wire level.** Neither
-   commit changes route behaviour; the acceptance criterion is "every
-   existing template + transfer-template CRUD test passes unchanged"
-   plus "pylint warnings F-24 / F-25 cite are gone." A test that
-   fails after either commit indicates the refactor introduced a
-   semantic drift, not a stale assertion.
+3. **Refactors must be byte-equivalent at the wire level.** None of
+   the three commits changes route behaviour; the acceptance
+   criterion is "every existing template + transfer-template CRUD
+   test passes unchanged" plus "pylint warnings F-24 / F-25 / F-26
+   cite are gone (with the partition-aware caveat documented in
+   Section 2 for F-26 pairs 3-6)."  A test that fails after any of
+   the three commits indicates the refactor introduced a semantic
+   drift, not a stale assertion.
 4. **Targeted pytest during edits; pylint `app/ --fail-on=E,F` clean;
    full pytest as the per-commit final gate** -- via
    `./scripts/test.sh`. Pylint must show **no new R0401 / R0801
@@ -101,14 +123,19 @@ execution.
 | **F-24 scope** | Helpers close every R0801 pair currently flagged across `app/routes/templates.py` and `app/routes/transfers.py`, not only the three pairs the F-24 write-up names | Verification surfaced 9 distinct R0801 matches between the two files. Six of them are variations of the `try: db.session.commit() except StaleDataError: rollback + log + flash + redirect` shape across archive / unarchive / hard-delete routes. Leaving them in place would mean the second helper (`handle_stale_conflict`) gets defined for two callers and used by only one of them -- a half-finished extraction the common rules explicitly forbid ("No half-finished implementations either"). |
 | **`due_day_of_month` asymmetry** | Helper accepts an `include_due_day_of_month: bool` keyword, defaulting `False` | The `due_day_of_month` field is populated only from `TransactionTemplate` create/update schemas; the transfer-template schemas do not have it. The original duplication carried this asymmetry implicitly (transfers.py simply did not pop the key). The keyword makes the asymmetry explicit and self-documenting at every call site. |
 | **F-24 helper return shape** | `build_recurrence_rule_from_form` returns `RecurrenceRule \| None`; `handle_stale_conflict` returns a Flask `Response` (the redirect) | Returning the response keeps the route's control flow identical to the pre-extraction shape (the route does `return handle_stale_conflict(...)`); the developer reading the route sees the same redirect-on-error pattern. An exception-based design (`raise StaleConflictRedirect(...)`) was considered and rejected as control-flow obfuscation for a one-line caller. |
+| **F-26 fix shape** | Two new helpers (`handle_stale_form_conflict`, `handle_recurrence_conflict`) added to the existing `app/routes/_recurrence_form_helpers.py` module | Both helpers share scope (templates / transfers CRUD route boundary) and Flask coupling (`flash`, `redirect`, `url_for`) with F-24's two helpers; one route-internal helper module keeps the surface compact and the four helpers discoverable together.  Creating a sibling module per helper category would fragment cohesion for no readability gain. |
+| **F-26 partition** | Implement pairs 1 (stale-form check) and 2 (RecurrenceConflict flash); explicitly defer pairs 3, 4, 5 (list-rendering shapes) and 6 (hard-delete archive-fallback body wrapping) | Pairs 1 and 2 share F-24's "small Flask-aware helper with route-specific kwargs" shape and close with low blast radius.  Pairs 3-5 need a list-rendering helper or class-based view -- different abstraction, more invasive.  Pair 6 needs a shared archive helper that takes a model-specific soft-delete callable -- design discussion warranted (the templates side soft-deletes via a bare `db.session.query(...).update(...)`; the transfers side delegates per-row to `transfer_service.delete_transfer` to maintain shadow invariants).  Bundling all six into one commit would mix three distinct design questions; the deferral keeps the F-26 commit focused. |
+| **F-26 helper return shapes** | `handle_stale_form_conflict` returns a Flask `Response` (mirror of `handle_stale_conflict`); `handle_recurrence_conflict` returns `None` (just logs and flashes; caller continues executing) | The two pairs have structurally different post-condition shapes.  Stale-form is an early-return guard (the route cannot proceed; redirect immediately), exactly the F-24 `handle_stale_conflict` shape.  RecurrenceConflict is a Phase-1 "auto-keep overrides" advisory: the route logs the conflict, flashes a warning, then continues with the commit.  Returning a Response for the second helper would change route behaviour (would early-return where the existing code falls through), violating the byte-equivalence acceptance. |
 
 ---
 
 ## 3. Scope additions surfaced during verification
 
-Re-verifying each finding against the live code uncovered one scope
-addition; folded into the plan rather than logged as a new F-N entry
-because it is the same DRY violation F-24 already names.
+Re-verifying each finding against the live code uncovered two scope
+additions.  R-FU-3 is folded into F-24's commit because it is the
+same DRY violation F-24 already names; R-FU-4 is its own follow-up
+entry (F-26) because the additional pairs span design questions
+F-24 cannot answer.
 
 - **R-FU-3 (F-24 surface is wider than the entry documents).** The
   F-24 write-up names three R0801 pairs:
@@ -128,12 +155,25 @@ because it is the same DRY violation F-24 already names.
   closes them as a single sweep so the helper does not get extracted
   and left half-applied.
 
+- **R-FU-4 (additional R0801 pairs surfaced post-F-24).** Gate-time
+  pylint after F-24 landed (head `70b473a`) showed six additional
+  R0801 pairs between `templates.py` and `transfers.py` that were
+  never in F-24's scope.  Captured as F-26 in commit `b7d4258`
+  (`remediation_follow_up.md`).  The six pairs partition into three
+  shapes: F-24-mirror helpers close pairs 1 (stale-form check) and
+  2 (RecurrenceConflict flash); pairs 3-5 (list-rendering shapes)
+  and pair 6 (hard-delete archive-fallback body wrapping) each
+  need their own design discussion and are deferred per Section 9.
+  Commit 3 implements pairs 1 and 2; the gate (Commit 4) verifies
+  both closed pairs are gone from pylint while explicitly tolerating
+  the four deferred pairs remaining.
+
 ---
 
 ## 4. Verification status table
 
-Result of re-grepping every claim in the F-24 and F-25 entries
-against the current `dev` branch.
+Result of re-grepping every claim in the F-24, F-25, and F-26
+entries against the current `dev` branch.
 
 | Item | Claim re-verified | Drift found? | Maps to commit |
 |---|---|---|---|
@@ -143,20 +183,25 @@ against the current `dev` branch.
 | F-25 -- "four R0401 cyclic-import warnings rooted at `app/utils/account_validation.py:1`" | YES (`app.routes.accounts -> {crud, detail, anchor, types}` each cited once) | None | C1 |
 | F-25 -- "package -> submodule -> package round-trip is the cycle" | YES (`__init__.py:54-57` imports submodules; each submodule imports `accounts_bp` from the package) | None | C1 |
 | F-25 -- "`accounts_bp` has no `url_prefix` for behavioural reasons" | YES (decorators carry `/accounts` verbatim; preserving that is an F-1 acceptance criterion) | None (constraint must be preserved through the refactor) | C1 |
+| F-26 -- "stale-form check (pair 1) is byte-identical apart from the route id and the redirect endpoint" | YES (`templates.py:319-339` vs `transfers.py:338-355`; both log submitted vs current counters before the flash + redirect) | None | C3 |
+| F-26 -- "RecurrenceConflict flash (pair 2) carries identical copy apart from the noun" | YES (`templates.py:418-431` vs `transfers.py:430-443`; auto-keep-overrides Phase-1 advisory shape) | None | C3 |
+| F-26 -- "list-rendering pairs 3-5 need a different abstraction" | YES (the partition logic is shared but the render-template path and per-model query shape diverge) | None | deferred (Section 9) |
+| F-26 -- "hard-delete archive-fallback body wrapping (pair 6) needs model-specific soft-delete callable" | YES (templates side: bare ORM update; transfers side: per-row service delegation for shadow invariants) | None | deferred (Section 9) |
 
 ---
 
 ## 5. Commit checklist
 
-Two implementation commits plus a final gate. Each row is one git
-commit; messages use `<type>(<scope>): <what>` per Definition of
-Done.
+Three implementation commits plus a final gate.  Each row is one
+git commit; messages use `<type>(<scope>): <what>` per Definition
+of Done.
 
 | # | Commit message | Closes |
 |---|---|---|
 | 1 | `refactor(routes): move accounts_bp to dedicated module to break import cycle (F-25)` | F-25 |
 | 2 | `refactor(routes): extract recurrence-rule and stale-conflict helpers for templates/transfers (F-24)` | F-24 |
-| 3 | `chore(release): F-24/F-25 follow-up final gate` | -- |
+| 3 | `refactor(routes): extract stale-form and recurrence-conflict helpers for templates/transfers (F-26 partial)` | F-26 (pairs 1-2) |
+| 4 | `chore(release): F-24/F-25/F-26 follow-up final gate` | -- |
 
 ---
 
@@ -165,19 +210,28 @@ Done.
 ```text
 Independent (no cross-commit dependencies):
   1 F-25 accounts package restructure
+
+Sequential (each commit extends the prior surface):
   2 F-24 templates/transfers helper extraction
+  3 F-26 stale-form + recurrence-conflict helpers
+    (depends on Commit 2 -- extends the F-24 module)
 
 Final gate:
-  3 full suite + pylint + R0401 / R0801 verification
+  4 full suite + pylint + R0401 / R0801 verification
+    (checks F-25, F-24, F-26 acceptance and the deferred F-26
+     pairs 3-6 still surface as known-tolerated)
 ```
 
 Ordering rationale: F-25 first because it is a single-package
-mechanical refactor with no test edits and no behavioural surface --
-a clean warm-up. F-24 second because it is the multi-file extraction
-with new helpers and the new helper-unit tests. The final gate runs
-both verification suites together. F-25 and F-24 do not share any
-files, so they could be re-ordered without conflicts; the chosen
-order is reviewer-attention optimisation, not technical necessity.
+mechanical refactor with no test edits and no behavioural surface
+-- a clean warm-up.  F-24 second because it is the multi-file
+extraction with new helpers and the new helper-unit tests; it
+creates `app/routes/_recurrence_form_helpers.py` which Commit 3
+extends.  F-26 third because its two helpers are additive to the
+F-24 module and the F-26 call-site refactor touches the same
+update routes F-24 just refactored -- landing them in lockstep
+keeps the diffs reviewable separately.  The final gate runs all
+three verification suites together.
 
 ---
 
@@ -712,23 +766,275 @@ its pre-extraction body).
 
 ---
 
-### Commit 3 -- F-24 / F-25 follow-up final gate
+### Commit 3 -- Extract stale-form and recurrence-conflict helpers for templates/transfers (F-26 partial)
 
-**A. Commit message** `chore(release): F-24/F-25 follow-up final gate`
+**A. Commit message** `refactor(routes): extract stale-form and recurrence-conflict helpers for templates/transfers (F-26 partial)`
 
-**B. Problem statement** Acceptance gate for the F-24 / F-25
-follow-up. Confirms both commits landed cleanly, the full suite is
-green, pylint is clean and the targeted R0401 / R0801 warnings are
-gone, and the documented status of both findings is updated. No
-code changes.
+**B. Problem statement** F-24's gate (Commit 2 above) surfaced six
+additional R0801 pairs between `templates.py` and `transfers.py`
+that F-24's helpers did not close because they were never in
+F-24's scope.  Captured as F-26 in commit `b7d4258`.  Of the six,
+two pairs share the structural shape F-24's `handle_stale_conflict`
+addresses and close cleanly with two sibling helpers:
+
+- **Pair 1 -- Stale-form check (optimistic-locking version_id
+  mismatch).** `templates.py:[319:339]` vs
+  `transfers.py:[338:355]`.  The
+  `if submitted_version is not None and submitted_version !=
+  template.version_id: ... logger.info(... flash(... redirect(...)`
+  block is byte-identical apart from the route id, the noun, and
+  the redirect endpoint.  Closes with a
+  `handle_stale_form_conflict` helper mirroring the
+  `handle_stale_conflict` shape; logs both the submitted and
+  current counters so post-mortem analysis can reconstruct the
+  race (the original code did this verbatim).
+- **Pair 2 -- RecurrenceConflict logger.warning + flash.**
+  `templates.py:[418:431]` vs `transfers.py:[430:443]`.  The
+  Phase-1 auto-keep-overrides advisory carries identical copy
+  apart from the noun.  Closes with a `handle_recurrence_conflict`
+  helper that logs the override / delete counts and flashes the
+  canonical "kept as-is" message with the route-specific noun.
+  Returns `None` (not `Response`) because the caller continues
+  executing after the flash; this differs from `handle_stale_*`
+  helpers which early-return.
+
+Pairs 3 through 6 are deferred per Section 9 because each one
+needs its own design discussion (list-rendering pairs need a
+different abstraction; hard-delete archive-fallback needs a
+model-specific soft-delete callable).
+
+**C. Files modified**
+
+- `app/routes/_recurrence_form_helpers.py` -- add two helpers:
+  - `handle_stale_form_conflict(*, logger, log_label, log_id,
+    submitted, current, flash_message, redirect_endpoint,
+    redirect_endpoint_kwargs=None) -> Response`
+  - `handle_recurrence_conflict(*, logger, noun, conflict) -> None`
+  Plus an `_RECURRENCE_CONFLICT_FLASH` module-level template for
+  the canonical "Note: N overridden and M deleted entries were
+  kept as-is." string.
+- `app/routes/templates.py::update_template` -- replace the inline
+  version_id mismatch block (around the `submitted_version` pop)
+  with `return handle_stale_form_conflict(...)`; replace the
+  inline `except RecurrenceConflict as conflict: logger.warning +
+  flash` block with `handle_recurrence_conflict(...)`.
+- `app/routes/transfers.py::update_transfer_template` -- same two
+  replacements with `noun="recurring transfer"` and the matching
+  redirect endpoint.
+- `tests/test_routes/test_recurrence_form_helpers.py` -- add
+  helper unit tests for both new helpers covering the happy
+  path, the noun substitution, and (for `handle_stale_form_conflict`)
+  the log message including both submitted and current counters.
+
+**D. Implementation approach**
+
+1. Read the cited pre-existing blocks in
+   `app/routes/templates.py:319-339` and `:418-431`, and
+   `app/routes/transfers.py:338-355` and `:430-443`, in full.
+   Confirm the bodies match the pylint output (each line is what
+   the helper will replace).
+2. Read the existing F-24 helper module
+   `app/routes/_recurrence_form_helpers.py` end-to-end to confirm
+   the module's import style, naming conventions, and the
+   STALE_*_MESSAGE template pattern.  Mirror the same style for
+   the two new helpers.
+3. Add to `_recurrence_form_helpers.py`:
+   ```python
+   _RECURRENCE_CONFLICT_FLASH: str = (
+       "Note: {overridden_count} overridden and "
+       "{deleted_count} deleted entries were kept as-is."
+   )
+
+   def handle_stale_form_conflict(
+       *,
+       logger: logging.Logger,
+       log_label: str,
+       log_id: int,
+       submitted: int,
+       current: int,
+       flash_message: str,
+       redirect_endpoint: str,
+       redirect_endpoint_kwargs: dict[str, Any] | None = None,
+   ) -> Response:
+       """Optimistic-locking pre-flush form-side conflict handler.
+
+       Mirror of :func:`handle_stale_conflict` for the
+       ``submitted_version != template.version_id`` branch that
+       fires before the commit attempt.  Logs both counters so
+       post-mortem analysis can reconstruct the race; flashes the
+       caller-supplied message; redirects.  Does NOT roll back
+       the session because no DB write has been attempted yet at
+       the call site.
+       """
+       logger.info(
+           "Stale-form conflict on %s id=%d "
+           "(submitted=%d, current=%d)",
+           log_label, log_id, submitted, current,
+       )
+       flash(flash_message, "warning")
+       return redirect(url_for(
+           redirect_endpoint, **(redirect_endpoint_kwargs or {}),
+       ))
+
+
+   def handle_recurrence_conflict(
+       *,
+       logger: logging.Logger,
+       noun: str,
+       conflict: "RecurrenceConflict",  # forward ref to avoid
+                                        # cyclic import
+   ) -> None:
+       """Auto-keep-overrides Phase-1 advisory handler.
+
+       Logs the override / delete counts and flashes the canonical
+       "kept as-is" notice with the route-specific noun.  Returns
+       ``None`` -- the caller continues executing (the helper is
+       advisory, not control-flow), exactly the pre-extraction
+       behaviour.
+       """
+       logger.warning(
+           "Recurrence conflict for %s %d: %d overridden, %d deleted",
+           noun, conflict.template_id,
+           len(conflict.overridden), len(conflict.deleted),
+       )
+       flash(
+           _RECURRENCE_CONFLICT_FLASH.format(
+               overridden_count=len(conflict.overridden),
+               deleted_count=len(conflict.deleted),
+           ),
+           "warning",
+       )
+   ```
+   (Adjust the `conflict.template_id` access to whatever attribute
+   :class:`app.exceptions.RecurrenceConflict` actually exposes;
+   if it does not carry a template id, drop that field and let
+   the caller pass `log_id` explicitly via a keyword.  Re-read
+   the exception class before writing the helper body.)
+4. Refactor `app/routes/templates.py::update_template` at the
+   `submitted_version` pop:
+   ```python
+   submitted_version = data.pop("version_id", None)
+   if (submitted_version is not None
+           and submitted_version != template.version_id):
+       return handle_stale_form_conflict(
+           logger=logger,
+           log_label="update_template",
+           log_id=template_id,
+           submitted=submitted_version,
+           current=template.version_id,
+           flash_message=STALE_EDITING_MESSAGE.format(
+               noun="recurring transaction",
+           ),
+           redirect_endpoint="templates.edit_template",
+           redirect_endpoint_kwargs={"template_id": template_id},
+       )
+   ```
+5. Refactor the `except RecurrenceConflict` block:
+   ```python
+   except RecurrenceConflict as conflict:
+       handle_recurrence_conflict(
+           logger=logger,
+           noun="recurring transaction",
+           conflict=conflict,
+       )
+   ```
+6. Mirror in `app/routes/transfers.py::update_transfer_template`
+   with `noun="recurring transfer"`, the matching redirect
+   endpoint, and the same call-site shape.
+7. Add unit tests in
+   `tests/test_routes/test_recurrence_form_helpers.py` for both
+   helpers; pin the log message format and the flash wording.
+   Use the same "real endpoint name, no app.add_url_rule"
+   pattern Commit 2's tests established (the session-scoped
+   `app` fixture is frozen by the time these tests run).
+
+**E. Test cases**
+
+The two pairs being closed have integration coverage via the
+existing `tests/test_routes/test_templates.py` and
+`tests/test_routes/test_transfers.py` update-route tests; new
+unit tests pin helper-internal contracts.
+
+- C3-1 `handle_stale_form_conflict` logs at INFO with both
+  submitted and current counters present in the message, flashes
+  the caller-supplied string, and returns a 302 Response.
+- C3-2 `handle_recurrence_conflict` logs at WARNING with the
+  noun and counts in the message, flashes the canonical
+  formatted string with the substituted counts, and returns
+  `None`.
+- C3-3 the existing `test_update_template_stale_version_mismatch`
+  / `test_update_transfer_template_stale_version_mismatch`
+  integration tests pass unchanged (the refactor is byte-
+  equivalent at the wire level).
+- C3-4 the existing
+  `test_update_template_recurrence_conflict_auto_keep` /
+  transfer-side analogue (read tests/test_routes/test_templates.py
+  and test_transfers.py to confirm the exact name) pass
+  unchanged.
+- C3-5 `pylint --disable=all --enable=R0801 app/routes/templates.py
+  app/routes/transfers.py` shows no matches for F-26 pairs 1 and
+  2.  Pairs 3-6 may still appear; they are deferred per Section
+  9.
+
+**F. Manual verification steps**
+
+1. `grep -nF "handle_stale_form_conflict" app/routes/` returns
+   matches in `templates.py`, `transfers.py`, and the helper
+   module; two call sites total (one per update route).
+2. `grep -nF "handle_recurrence_conflict" app/routes/` returns
+   matches in the same three files; two call sites total.
+3. `grep -nF "_RECURRENCE_CONFLICT_FLASH" app/` returns one match
+   (the helper module).
+4. `grep -nE "submitted_version is not None and submitted_version
+   != template.version_id" app/routes/templates.py
+   app/routes/transfers.py` returns one match per file -- each
+   followed by the `return handle_stale_form_conflict(...)`
+   call.
+5. Start the dev server.  Open a transaction template's edit form
+   in two browser tabs.  Save the first.  Save the second --
+   the canonical stale-form flash should appear and the user is
+   redirected back to the edit form.  Repeat for a transfer
+   template.
+
+**G. Downstream effects** Future templates / transfers update
+routes (or any other route that needs the optimistic-locking
+form-side guard or the RecurrenceConflict advisory) inherit two
+well-tested helpers.  The two flash-template strings are
+centralised at the helper module so a future copy edit lives in
+one place.
+
+**H. Rollback notes** `git revert`.  Both helpers are additive
+to the F-24 module; the inlined bodies can be restored verbatim
+from history per route.  No schema change, no behavioural change
+at the wire level; rollback is safe at any point.
+
+---
+
+### Commit 4 -- F-24 / F-25 / F-26 follow-up final gate
+
+**A. Commit message** `chore(release): F-24/F-25/F-26 follow-up final gate`
+
+**B. Problem statement** Acceptance gate for the F-24 / F-25 /
+F-26 follow-up.  Confirms all three implementation commits landed
+cleanly, the full suite is green, pylint is clean and the
+targeted R0401 / R0801 warnings each commit closes are gone, and
+the documented status of all three findings is updated (F-26's
+status records the partition: pairs 1-2 closed, pairs 3-6
+deferred per Section 9).  No code changes.
 
 **C. Files modified**
 
 - `docs/audits/financial_calculations/remediation_follow_up.md` --
-  update F-24 and F-25 `**Status:**` lines from
-  "**Status:** not started" to
-  "**Status:** resolved by Commit N of
-  `remediation_follow_up_F24_F25_plan.md`" (one line per item).
+  update three `**Status:**` lines:
+  - F-24: "resolved by Commit 2 of
+    `remediation_follow_up_F24_F25_F26_plan.md`."
+  - F-25: "resolved by Commit 1 of
+    `remediation_follow_up_F24_F25_F26_plan.md`."
+  - F-26: "partially resolved by Commit 3 of
+    `remediation_follow_up_F24_F25_F26_plan.md` (pairs 1 and 2,
+    the stale-form check and RecurrenceConflict flash); pairs
+    3-6 (list-rendering shapes, hard-delete archive-fallback
+    body wrapping) explicitly deferred per Section 9."
 
 **D. Implementation approach (gate checklist -- all must pass before this commit)**
 
@@ -736,39 +1042,54 @@ Per `remediation_follow_up_common.md` "Apply these rules (every
 commit)" plus the additions in this plan's Section 1:
 
 1. `python scripts/build_test_template.py` -- NOT required (no
-   migration in this plan), but run it anyway if `app/ref_seeds.py`
-   or `app/audit_infrastructure.py` was touched. Confirm by
-   `git log --name-only origin/dev..HEAD` showing neither file.
+   migration in this plan), but run it anyway if
+   `app/ref_seeds.py` or `app/audit_infrastructure.py` was
+   touched.  Confirm by `git log --name-only origin/dev..HEAD`
+   showing neither file.
 2. `./scripts/test.sh` -- ends in `N passed`, zero
-   failed/errors/xfailed. Capture the final summary line and
-   include it in the commit body and section E of the work summary.
+   failed/errors/xfailed.  Capture the final summary line and
+   include it in the commit body and section E of the work
+   summary.
 3. `pylint app/ --fail-on=E,F` -- clean, no new warnings vs the
-   post-Commit-22 (head `a0782f7`) baseline (`9.57/10`). The
+   post-Commit-22 (head `a0782f7`) baseline (`9.57/10`).  The
    targeted R0401 and R0801 warnings are gone:
    - `pylint --disable=all --enable=R0401 app/` shows no matches
      rooted in `app/routes/accounts/` or
-     `app/utils/account_validation.py`.
+     `app/utils/account_validation.py` (F-25 acceptance).
    - `pylint --disable=all --enable=R0801 app/routes/templates.py
-     app/routes/transfers.py` shows no matches for any of the nine
-     pre-extraction pairs (the existing-rule mutation branch may
-     still show; that is acceptable per Section 2).
+     app/routes/transfers.py` shows no matches for any of:
+     - The nine F-24 pre-extraction pairs (the existing-rule
+       mutation branch may still show -- accepted per Section
+       2).
+     - The two F-26 pairs Commit 3 closed (stale-form check,
+       RecurrenceConflict flash).
+     Pylint MAY still report R0801 for the four F-26 pairs
+     deferred per Section 9 (list-rendering pairs 3-5, hard-
+     delete archive-fallback pair 6) and for the new helper-
+     call-site duplicates from F-24 (the inherent trade-off of
+     shared helpers across two routes).  The gate explicitly
+     tolerates these.
 4. No migrations -- step skipped.
-5. The existing static guards from prior chains (cross-page balance
-   lock, ARM-window stability lock, F-6 grid/accounts guards, C8-5
-   static guard) all green. The C8-5 guard is the most relevant
-   here because Commit 1 of this plan touches the accounts
-   package; verify
+5. The existing static guards from prior chains (cross-page
+   balance lock, ARM-window stability lock, F-6 grid/accounts
+   guards, C8-5 static guard) all green.  The C8-5 guard is
+   the most relevant here because Commit 1 of this plan touches
+   the accounts package; verify
    `tests/test_services/test_year_end_summary_service.py::test_no_external_calculate_balances_callers`
-   still passes after the package restructure.
-6. Sweep `remediation_follow_up.md`: change F-24's and F-25's
-   `**Status:**` lines from "not started" to "resolved by Commit N
-   of `remediation_follow_up_F24_F25_plan.md`."
-7. `git status` shows only the docs file changed (this commit is
-   gate + bookkeeping).
+   still passes after the package restructure.  The new helper
+   unit tests in
+   `tests/test_routes/test_recurrence_form_helpers.py` -- both
+   the F-24 set and the F-26 additions -- are green.
+6. Sweep `remediation_follow_up.md`: update F-24, F-25, and
+   F-26 `**Status:**` lines per Section C above.  F-26's status
+   records the partition explicitly (pairs 1-2 closed; pairs
+   3-6 deferred).
+7. `git status` shows only the docs file changed (this commit
+   is gate + bookkeeping).
 
-**E. Test cases** The entire suite is the test case. Acceptance:
-full green suite, clean pylint with the targeted warnings gone, the
-documented status of F-24 and F-25 updated.
+**E. Test cases** The entire suite is the test case.  Acceptance:
+full green suite, clean pylint with the targeted warnings gone,
+the documented status of F-24, F-25, and F-26 updated.
 
 **F. Manual verification steps**
 
@@ -777,47 +1098,72 @@ documented status of F-24 and F-25 updated.
      anchor, edit an account, create / delete an account type
      (F-25 acceptance).
    - Create a recurring transaction template; edit it; archive /
-     unarchive / hard-delete it. Same flow for a transfer template
-     (F-24 acceptance, every helper call site exercised).
-2. Confirm `remediation_follow_up.md` shows F-24 and F-25 as
-   resolved.
+     unarchive / hard-delete it.  Same flow for a transfer
+     template (F-24 acceptance, every helper call site
+     exercised).
+   - Open a transaction template's edit form in two browser
+     tabs; save the first; save the second -- the canonical
+     stale-form flash should appear and the user redirects back
+     to the edit form (F-26 pair 1 acceptance).
+2. Confirm `remediation_follow_up.md` shows F-24, F-25, and
+   F-26 with their post-gate statuses.  F-26's status explicitly
+   names the four deferred pairs so future readers know the
+   entry is partial-closed by design.
 
-**G. Downstream effects** Both follow-up entries are closed. The
-project's pylint output no longer carries the four R0401 cyclic-
-import warnings or the nine R0801 templates/transfers duplicates;
-genuine future regressions in either area surface as new offenders
-rather than as additions to known-accepted noise.
+**G. Downstream effects** All three follow-up entries are
+closed (F-26 partially per Section 9).  The project's pylint
+output no longer carries the four R0401 cyclic-import warnings,
+the nine R0801 templates/transfers F-24 duplicates, or the two
+F-26 duplicates Commit 3 closed; genuine future regressions in
+any of those areas surface as new offenders rather than as
+additions to known-accepted noise.  Four F-26 R0801 pairs (3-6)
+remain as known-tolerated debt, named in Section 9 with
+acceptance criteria for the eventual cleanup PR.
 
-**H. Rollback notes** No code change in this commit; revert only
-the docs file if any step in the gate fails on rebuild.
+**H. Rollback notes** No code change in this commit; revert
+only the docs file if any step in the gate fails on rebuild.
 
 ---
 
 ## 8. End-to-end verification (no user-visible symptoms)
 
-Neither F-24 nor F-25 fixes a user-visible defect. Both close pylint
-warnings that the main remediation chain accepted as known-tolerated
-at the time. The verification surface is therefore:
+None of F-24, F-25, or F-26 fixes a user-visible defect.  All
+three close pylint warnings that the main remediation chain
+accepted as known-tolerated at the time.  The verification surface
+is therefore:
 
 1. **Pylint targeted warnings gone.** The four R0401 in
-   `accounts/` are no longer reported; the nine R0801 between
-   templates.py and transfers.py for the three F-24-named pairs
-   plus the six wider stale-conflict variations are no longer
-   reported.
-2. **Pylint score baseline preserved or improved.** The post-Commit-
-   22 baseline is `9.57/10`. Either commit may bump the score
-   marginally; neither should drop it.
+   `accounts/` are no longer reported (F-25); the nine R0801
+   between templates.py and transfers.py for the three F-24-named
+   pairs plus the six wider stale-conflict variations are no
+   longer reported (F-24); the two F-26 pairs Commit 3 closed
+   (stale-form check, RecurrenceConflict flash) are no longer
+   reported.  The four deferred F-26 pairs (3-6) and the new
+   helper-call-site duplicates from F-24 / F-26 are explicitly
+   tolerated by the gate per Commit 4 D-3 and Section 9.
+2. **Pylint score baseline preserved or improved.** The post-
+   Commit-22 baseline is `9.57/10`.  Any of the three
+   implementation commits may bump the score marginally; none
+   should drop it.  F-24 already lifted the baseline to `9.58`;
+   Commit 3 (F-26) is expected to hold or improve from there.
 3. **Behaviour unchanged.** Every existing route test
    (`tests/test_routes/test_accounts.py`,
    `tests/test_routes/test_templates.py`,
    `tests/test_routes/test_transfers.py`) passes without
-   modification; this is the load-bearing assertion that the
-   refactor is byte-equivalent at the wire level.
+   modification; this is the load-bearing assertion that all
+   three refactors are byte-equivalent at the wire level.  The
+   pre-existing
+   `test_update_template_stale_version_mismatch` and
+   `test_update_transfer_template_stale_version_mismatch`
+   integration tests in particular cover the F-26 pair 1
+   refactor; their continued green is C3-3 acceptance.
 4. **New helper-unit tests pass.** Commit 2's
    `tests/test_routes/test_recurrence_form_helpers.py` pins both
-   helpers' internal contracts so future edits to either helper
-   surface failures at the unit-test layer rather than as
-   integration drift.
+   F-24 helpers' internal contracts; Commit 3 adds two more
+   test classes to the same file pinning the F-26 helpers
+   (`handle_stale_form_conflict` and `handle_recurrence_conflict`).
+   Future edits to any of the four helpers surface failures at
+   the unit-test layer rather than as integration drift.
 
 ---
 
@@ -837,12 +1183,42 @@ any of them later.
   abstraction value, just one more indirection. Acceptable as-is;
   Section 2 explicitly records the choice.
 
+- **F-26 pairs 3-5 (list-rendering shapes).**
+  `templates.py:[133:147]` vs `transfers.py:[105:112]`;
+  `templates.py:[251:257]` vs `transfers.py:[106:112]`;
+  `templates.py:[141:147]` vs `transfers.py:[753:759]`.  The
+  "load active + archived templates, partition into two lists,
+  render the list page" pattern repeats with one route-specific
+  axis (model class) plus a different render-template path per
+  caller.  Closing all three would require a list-rendering
+  helper or a class-based view -- a different abstraction than
+  the four small Flask-aware helpers F-24 and F-26 establish.
+  Not worth the design discussion or the blast radius for the
+  templates / transfers pair alone; revisit if a third CRUD
+  module (e.g. a future scheduled-action templates) joins the
+  pattern.
+
+- **F-26 pair 6 (hard-delete archive-fallback body wrapping).**
+  `templates.py:[577:587]` vs `transfers.py:[629:640]`.  F-24
+  closed the inner `try/except StaleDataError` via
+  `handle_stale_conflict`, but the surrounding "`if template.is_active:
+  template.is_active = False; <soft-delete projected rows via
+  model-specific query>; try: db.session.commit() ...`" structure
+  remains duplicated.  Closing it would require a shared archive
+  helper that takes a model-specific soft-delete callable -- the
+  templates side soft-deletes via a bare `db.session.query(...).update(...)`,
+  the transfers side delegates per-row to
+  `transfer_service.delete_transfer` to maintain shadow invariants.
+  Design discussion warranted before any extraction.  Deferred
+  with an acceptance criterion in `remediation_follow_up.md::F-26`
+  for the eventual cleanup PR.
+
 - **Other R0801 across `app/routes/`.** A whole-repo R0801 run may
   surface duplicates outside templates/transfers (e.g. the FK-
   ownership check loops in transfers.py and the accounts package).
-  Out of scope for F-24, which names templates/transfers specifically.
-  If a future audit finds equivalent duplications elsewhere, they
-  warrant their own follow-up entry.
+  Out of scope for F-24 and F-26, both of which name templates/transfers
+  specifically.  If a future audit finds equivalent duplications
+  elsewhere, they warrant their own follow-up entry.
 
 - **`accounts_bp` rename or splitting into per-sub-domain
   blueprints.** Commit 21 (F-1) explicitly locked Option A
@@ -867,23 +1243,32 @@ follow-up commit.
 ## 10. Notes on executing this plan
 
 - Run commits in order; Section 6's order is reviewer-attention
-  optimisation, not technical necessity, but landing F-25 first
-  keeps the F-24 diff focused on the helper extraction without
-  noise from the accounts-package restructure.
+  optimisation for F-25 vs F-24 (no technical dependency), but
+  Commit 3 has a real dependency on Commit 2 (extends the F-24
+  helper module).  Landing F-25 first keeps the F-24 diff focused
+  on the helper extraction without noise from the accounts-
+  package restructure; landing F-26 after F-24 means the F-26
+  call-site refactor touches the post-F-24 shape of the update
+  routes, avoiding a rebase.
 - Every commit: re-grep cited lines first, targeted tests during,
-  `pylint app/ --fail-on=E,F` plus the targeted R0401 / R0801 runs,
-  then the full suite as the per-commit final gate and the plan-
-  final gate (Commit 3).
-- Neither commit modifies tests to make them pass. If any existing
-  test fails after either commit, the refactor introduced a
-  semantic drift -- the code is wrong, not the test.
-- No migrations; no destructive changes; both commits are pure
-  refactors with additive helper modules.
-- This plan is a remediation plan only. No code is changed by
-  producing it. Execution happens in separate sessions, one commit
-  (or small group) per session, suite green before moving on.
-- After Commit 3 lands, both F-24 and F-25 are closed and
-  `remediation_follow_up.md` carries no "not started" entries
-  (the existing F-N entries that were closed by the first follow-up
-  plan stay marked resolved; the new F-25 entry will be marked
-  resolved by this plan's Commit 1).
+  `pylint app/ --fail-on=E,F` plus the targeted R0401 / R0801
+  runs, then the full suite as the per-commit final gate and the
+  plan-final gate (Commit 4).
+- None of the three implementation commits modifies tests to make
+  them pass.  If any existing test fails after any commit, the
+  refactor introduced a semantic drift -- the code is wrong, not
+  the test.
+- No migrations; no destructive changes; all three commits are
+  pure refactors with additive helper modules.
+- This plan is a remediation plan only.  No code is changed by
+  producing it.  Execution happens in separate sessions, one
+  commit (or small group) per session, suite green before moving
+  on.
+- After Commit 4 lands, F-24, F-25 are fully closed and F-26 is
+  partially closed (pairs 1-2 closed by Commit 3; pairs 3-6
+  explicitly deferred per Section 9 with acceptance criteria
+  recorded in `remediation_follow_up.md::F-26` for the eventual
+  cleanup PR).  The existing F-N entries that were closed by the
+  first follow-up plan stay marked resolved; F-24, F-25, and
+  F-26 entries are marked resolved (or partially resolved)
+  by this plan's Commits 2, 1, and 3 respectively.
