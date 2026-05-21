@@ -181,6 +181,52 @@ class TestPensionCRUD:
         assert pension.name == "LGERS"
         assert pension.benefit_multiplier == Decimal("0.01850")
 
+    def test_create_pension_percent_normalized_by_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C12-2 (F-17 / Commit 12): pension-create schema's @pre_load
+        converts ``benefit_multiplier`` percent input to its fraction
+        equivalent.  Arithmetic: 2.5 / 100 = 0.025 (stored at the
+        column's ``Numeric(7, 5)`` precision as ``0.02500``).
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "C12-2 Pension",
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "2.5",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        })
+        assert resp.status_code == 302
+        pension = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id, name="C12-2 Pension",
+        ).one()
+        # Hand-computed: 2.5 / 100 = 0.025.
+        assert pension.benefit_multiplier == Decimal("0.02500")
+
+    def test_update_pension_percent_normalized_by_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-17 / Commit 12: pension-update schema's @pre_load converts
+        ``benefit_multiplier`` percent input to its fraction equivalent
+        on the update path too.  Arithmetic: 3.5 / 100 = 0.035.
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": pension.name,
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "3.5",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        })
+        assert resp.status_code == 302
+        db.session.refresh(pension)
+        # Hand-computed: 3.5 / 100 = 0.035.
+        assert pension.benefit_multiplier == Decimal("0.03500")
+
     def test_edit_pension_form(self, auth_client, seed_user, db, seed_periods_today):
         """GET edit form returns 200 with pre-populated pension data."""
         pension = _create_pension(seed_user, db.session)
@@ -391,6 +437,27 @@ class TestRetirementSettings:
         assert settings.safe_withdrawal_rate == Decimal("0.0400")
         assert settings.planned_retirement_date == date(2055, 1, 1)
         assert settings.estimated_retirement_tax_rate == Decimal("0.2000")
+
+    def test_update_settings_percent_normalized_by_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C12-3 (F-17 / Commit 12): retirement-settings schema's
+        @pre_load converts both percent fields to fractions before the
+        route persists.  Arithmetic: 4 / 100 = 0.04 (stored as
+        ``0.0400``); 22 / 100 = 0.22 (stored as ``0.2200``).
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "4",
+            "estimated_retirement_tax_rate": "22",
+        })
+        assert resp.status_code == 302
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        # Hand-computed: 4 / 100 = 0.04.
+        assert settings.safe_withdrawal_rate == Decimal("0.0400")
+        # Hand-computed: 22 / 100 = 0.22.
+        assert settings.estimated_retirement_tax_rate == Decimal("0.2200")
 
     def test_update_settings_partial(
         self, auth_client, seed_user, db, seed_periods_today,

@@ -163,6 +163,39 @@ class TestInvestmentParams:
         ).first()
         assert params.assumed_annual_return == Decimal("0.08000")
 
+    def test_update_params_percent_normalized_by_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C12-1 (F-17 / Commit 12): investment-params update schema's
+        @pre_load converts every declared percent field to its
+        fraction equivalent before the route persists.  Arithmetic:
+        7.5 / 100 = 0.075 (stored as ``0.07500`` in the
+        ``Numeric(7, 5)`` column).
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        _create_investment_params(db.session, acct.id)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/params",
+            data={
+                "assumed_annual_return": "7.5",
+                "annual_contribution_limit": "23500",
+                "contribution_limit_year": "2026",
+                "employer_contribution_type": "match",
+                "employer_match_percentage": "100",
+                "employer_match_cap_percentage": "6",
+            },
+        )
+        assert resp.status_code == 302
+        params = db.session.query(InvestmentParams).filter_by(
+            account_id=acct.id,
+        ).one()
+        # Hand-computed: 7.5 / 100 = 0.075.
+        assert params.assumed_annual_return == Decimal("0.07500")
+        # Hand-computed: 100 / 100 = 1.00.
+        assert params.employer_match_percentage == Decimal("1.0000")
+        # Hand-computed: 6 / 100 = 0.06.
+        assert params.employer_match_cap_percentage == Decimal("0.0600")
+
     def test_create_params_with_employer_match(self, auth_client, seed_user, db, seed_periods_today):
         """POST with employer match config."""
         acct = _create_investment_account(seed_user, db.session)

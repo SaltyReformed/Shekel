@@ -14,7 +14,7 @@ service would not collapse a duplication root.
 """
 
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -279,15 +279,15 @@ def update_params(account_id):
         .first()
     )
 
-    # Convert percentage inputs from form (e.g. 7 -> 0.07) before validation.
-    form_data = _convert_percentage_inputs(request.form)
-
+    # Percent-to-fraction conversion is owned by the schemas' @pre_load
+    # (F-17 / Commit 12 of the follow-up plan): the route forwards the
+    # raw form payload and reads back the loaded fraction directly.
     if params:
-        errors = _update_schema.validate(form_data)
+        errors = _update_schema.validate(request.form)
         if errors:
             flash("Please correct the highlighted errors and try again.", "danger")
             return redirect(url_for("investment.dashboard", account_id=account_id))
-        data = _update_schema.load(form_data)
+        data = _update_schema.load(request.form)
         param_fields = {
             "assumed_annual_return", "annual_contribution_limit",
             "contribution_limit_year", "employer_contribution_type",
@@ -299,11 +299,11 @@ def update_params(account_id):
                 setattr(params, field_name, value)
         flash("Investment parameters updated.", "success")
     else:
-        errors = _create_schema.validate(form_data)
+        errors = _create_schema.validate(request.form)
         if errors:
             flash("Please correct the highlighted errors and try again.", "danger")
             return redirect(url_for("investment.dashboard", account_id=account_id))
-        data = _create_schema.load(form_data)
+        data = _create_schema.load(request.form)
         params = InvestmentParams(account_id=account_id, **data)
         db.session.add(params)
         flash("Investment parameters created.", "success")
@@ -314,24 +314,3 @@ def update_params(account_id):
         current_user.id, account_id,
     )
     return redirect(url_for("investment.dashboard", account_id=account_id))
-
-
-def _convert_percentage_inputs(form):
-    """Convert percentage form inputs (e.g. 7 -> 0.07) to decimal values."""
-    data = dict(form)
-    pct_fields = [
-        "assumed_annual_return", "employer_flat_percentage",
-        "employer_match_percentage", "employer_match_cap_percentage",
-    ]
-    for field in pct_fields:
-        if field in data and data[field]:
-            try:
-                data[field] = str(Decimal(data[field]) / Decimal("100"))
-            except InvalidOperation:
-                # Narrow catch (C-46 / F-145): a non-numeric string
-                # (e.g. "abc") raises ``decimal.InvalidOperation``.
-                # Leave the raw value in place so the Marshmallow
-                # schema rejects it with a field-level "Not a valid
-                # number." message rather than a silent normalisation.
-                pass
-    return data
