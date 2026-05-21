@@ -816,6 +816,55 @@ class TestNegativePaths:
             # Rollback the failed transaction so subsequent tests can use the session.
             db.session.rollback()
 
+    def test_max_amount_overflow_rejected_by_db(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Commit 32 / MED-07 / PA-25: amounts past Numeric(12,2) max are rejected.
+
+        Input: Template with default_amount=10_000_000_000.00 (11 integer
+        digits, exceeds the column's Numeric(12,2) capacity of
+        9,999,999,999.99).
+        Expected: DataError (NumericValueOutOfRange) -- the column cannot
+        represent the value, so PostgreSQL rejects the INSERT before the
+        recurrence engine ever sees it.
+        Why: closes the PA-25 transfer-recurrence boundary gap recorded in
+        07_test_gaps slice-4 concept-6.  The complementary zero-amount,
+        self-transfer, and negative-amount boundaries already have pinned
+        rejection tests; max-amount overflow did not.
+        """
+        from sqlalchemy.exc import DataError as SADataError
+
+        with app.app_context():
+            with pytest.raises(SADataError):
+                self._make_template_with_rule(
+                    seed_user, "Every Period",
+                    default_amount=Decimal("10000000000.00"),
+                )
+            db.session.rollback()
+
+    def test_at_max_amount_accepted_by_db(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Commit 32 / MED-07 / PA-25: Numeric(12,2) max is accepted.
+
+        Input: Template with default_amount=9_999_999_999.99 (the largest
+        value the column can store -- 10 integer digits + 2 decimal
+        places).
+        Expected: the row inserts and persists the exact Decimal back.
+        Pairs with test_max_amount_overflow_rejected_by_db to define the
+        boundary precisely (max value accepted, max+1 cent rejected).
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "Every Period",
+                default_amount=Decimal("9999999999.99"),
+            )
+            db.session.flush()
+            db.session.refresh(template)
+            assert template.default_amount == Decimal("9999999999.99"), (
+                f"Expected 9999999999.99, got {template.default_amount}"
+            )
+
 
 # ── Shadow Transaction Verification Tests ──────────────────────────
 

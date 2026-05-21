@@ -587,7 +587,16 @@ class TestProjectBalance:
         assert result[2].ytd_contributions == Decimal("1500")
 
     def test_period_days_affect_growth(self):
-        """Longer periods produce more growth."""
+        """Longer periods produce more growth.
+
+        Hand calculation (Commit 32 / MED-07 pinning of directional check):
+          short: (1/8 - 1/2) = 6 days
+            return = (1.07)^(6/365) - 1; growth = 10000 * return
+            quantized HALF_UP -> 11.13
+          long:  (1/29 - 1/2) = 27 days
+            return = (1.07)^(27/365) - 1; growth = 10000 * return
+            quantized HALF_UP -> 50.17
+        """
         short = [FakePeriod(date(2026, 1, 2), date(2026, 1, 8), 1)]
         long = [FakePeriod(date(2026, 1, 2), date(2026, 1, 29), 1)]
 
@@ -597,7 +606,12 @@ class TestProjectBalance:
         long_result = project_balance(
             Decimal("10000"), Decimal("0.07"), long,
         )
-        assert long_result[0].growth > short_result[0].growth
+        assert short_result[0].growth == Decimal("11.13"), (
+            f"Expected 11.13, got {short_result[0].growth}"
+        )
+        assert long_result[0].growth == Decimal("50.17"), (
+            f"Expected 50.17, got {long_result[0].growth}"
+        )
 
 
 class TestGenerateProjectionPeriods:

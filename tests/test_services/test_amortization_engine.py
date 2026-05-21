@@ -1465,8 +1465,14 @@ class TestPaymentAwareSchedule:
         )
         # Month 1: payment record exists, extra_monthly NOT added.
         assert schedule[0].extra_payment == Decimal("0.00")
-        # Month 2: no payment record, extra_monthly IS applied.
-        assert schedule[1].extra_payment > Decimal("0.00")
+        # Month 2 (Commit 32 / MED-07 pinning of directional check):
+        # extra = min(extra_monthly, balance - principal_portion).
+        # Balance is ~$249,774 entering month 2, principal_portion is
+        # ~$226, so the cap is far above the $500 extra_monthly.
+        # The schedule must record extra_payment == 500.00 verbatim.
+        assert schedule[1].extra_payment == Decimal("500.00"), (
+            f"Expected 500.00, got {schedule[1].extra_payment}"
+        )
 
     # ── Summary and projection passthrough ────────────────────────
 

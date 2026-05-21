@@ -785,6 +785,68 @@ class TestDeductionCalculation:
                                        _timing_id("pre_tax"), _pct_id(), False)
         assert len(result) == 0
 
+    # ── Commit 32 / MED-07 / PA-22: pct-of-zero-gross boundary ────
+
+    def test_percentage_pre_tax_of_zero_gross_is_zero(self):
+        """Percentage pre-tax deduction with gross_biweekly=0 yields 0.
+
+        Pinning the PA-22 edge that 07_test_gaps Slice-3 / Concept 7 / 8
+        flag as UNTESTED: a percentage deduction applied to a zero
+        biweekly gross must produce a Decimal("0.00") line, never a
+        negative or undefined value.  The amount is
+            gross_biweekly * pct -> 0 * 0.06 = 0
+        quantized HALF_UP to 0.00.  Asserting the exact edge value rather
+        than just `len(result) == 1` proves the edge BEHAVIOR
+        (testing-standards.md "Edge Case Tests").
+        """
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[
+                FakeDeduction(name="401k", amount="0.06",
+                              calc_method="percentage",
+                              deduction_timing="pre_tax"),
+            ],
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result = _calculate_deductions(
+            profile, period, [period], Decimal("0.00"),
+            _timing_id("pre_tax"), _pct_id(), False,
+        )
+        assert len(result) == 1
+        assert result[0].name == "401k"
+        assert result[0].amount == Decimal("0.00"), (
+            f"Expected 0.00, got {result[0].amount}"
+        )
+
+    def test_percentage_post_tax_of_zero_gross_is_zero(self):
+        """Percentage post-tax deduction with gross_biweekly=0 yields 0.
+
+        Mirror of test_percentage_pre_tax_of_zero_gross_is_zero for the
+        post-tax timing.  Both timings share the same parameterized
+        producer (F-038/F-039 AGREE), so this is the post-side edge
+        proof.  amount = 0 * 0.04 = 0, quantized HALF_UP to 0.00.
+        """
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[
+                FakeDeduction(name="Roth", amount="0.04",
+                              calc_method="percentage",
+                              deduction_timing="post_tax"),
+            ],
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result = _calculate_deductions(
+            profile, period, [period], Decimal("0.00"),
+            _timing_id("post_tax"), _pct_id(), False,
+        )
+        assert len(result) == 1
+        assert result[0].name == "Roth"
+        assert result[0].amount == Decimal("0.00"), (
+            f"Expected 0.00, got {result[0].amount}"
+        )
+
 
 class TestThirdPaycheckDetection:
     """Tests for _is_third_paycheck()."""

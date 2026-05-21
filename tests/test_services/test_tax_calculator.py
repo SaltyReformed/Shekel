@@ -185,7 +185,15 @@ class TestPositiveTaxScenario:
         assert with_extra == base + Decimal("50.00")
 
     def test_additional_income_increases_tax(self, single_bracket_set):
-        """W-4 Step 4(a) additional income raises withholding."""
+        """W-4 Step 4(a) additional income raises withholding.
+
+        Hand calculation (Commit 32 / MED-07 pinning of directional check):
+          annual_income  = 2307.69 * 26 + 10000 = 69999.94
+          taxable        = 69999.94 - 15000     = 54999.94
+          brackets tax   = 10000*0.10 + 30000*0.12 + 14999.94*0.22
+                         = 1000 + 3600 + 3299.9868 = 7899.9868
+          per period     = 7899.9868 / 26 = 303.84564... -> 303.85 (HALF_UP)
+        """
         base = calculate_federal_withholding(
             gross_pay=Decimal("2307.69"),
             pay_periods=26,
@@ -197,10 +205,22 @@ class TestPositiveTaxScenario:
             bracket_set=single_bracket_set,
             additional_income=Decimal("10000"),
         )
-        assert with_additional > base
+        assert base == Decimal("219.23")
+        assert with_additional == Decimal("303.85"), (
+            f"Expected 303.85, got {with_additional}"
+        )
 
     def test_additional_deductions_reduce_tax(self, single_bracket_set):
-        """W-4 Step 4(b) additional deductions lower withholding."""
+        """W-4 Step 4(b) additional deductions lower withholding.
+
+        Hand calculation (Commit 32 / MED-07 pinning of directional check):
+          annual_income  = 2307.69 * 26 = 59999.94
+          adjusted       = 59999.94 - 5000 = 54999.94
+          taxable        = 54999.94 - 15000 = 39999.94
+          brackets tax   = 10000*0.10 + 29999.94*0.12
+                         = 1000 + 3599.9928 = 4599.9928
+          per period     = 4599.9928 / 26 = 176.92281... -> 176.92 (HALF_UP)
+        """
         base = calculate_federal_withholding(
             gross_pay=Decimal("2307.69"),
             pay_periods=26,
@@ -212,10 +232,22 @@ class TestPositiveTaxScenario:
             bracket_set=single_bracket_set,
             additional_deductions=Decimal("5000"),
         )
-        assert with_deductions < base
+        assert base == Decimal("219.23")
+        assert with_deductions == Decimal("176.92"), (
+            f"Expected 176.92, got {with_deductions}"
+        )
 
     def test_pre_tax_deductions_reduce_tax(self, single_bracket_set):
-        """Annualized pre-tax deductions (retirement, etc.) lower withholding."""
+        """Annualized pre-tax deductions (retirement, etc.) lower withholding.
+
+        Hand calculation (Commit 32 / MED-07 pinning of directional check):
+          annual_income  = 2307.69 * 26 = 59999.94
+          adjusted       = 59999.94 - 6000 = 53999.94
+          taxable        = 53999.94 - 15000 = 38999.94
+          brackets tax   = 10000*0.10 + 28999.94*0.12
+                         = 1000 + 3479.9928 = 4479.9928
+          per period     = 4479.9928 / 26 = 172.30742... -> 172.31 (HALF_UP)
+        """
         base = calculate_federal_withholding(
             gross_pay=Decimal("2307.69"),
             pay_periods=26,
@@ -227,7 +259,10 @@ class TestPositiveTaxScenario:
             bracket_set=single_bracket_set,
             pre_tax_deductions=Decimal("6000"),
         )
-        assert with_pretax < base
+        assert base == Decimal("219.23")
+        assert with_pretax == Decimal("172.31"), (
+            f"Expected 172.31, got {with_pretax}"
+        )
 
 
 # ── Test 3: High Income (Multiple Brackets) ───────────────────────
