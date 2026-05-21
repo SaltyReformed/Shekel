@@ -1854,4 +1854,118 @@ refactor in this package would benefit from breaking the cycle.
 
 ---
 
+## F-26. Residual R0801 duplicates between `templates.py` and `transfers.py` beyond F-24's scope
+
+- **Surfaced during:** Commit 2 of `remediation_follow_up_F24_F25_plan.md`
+  (`refactor(routes): extract recurrence-rule and stale-conflict
+  helpers for templates/transfers (F-24)`), gate-time
+  `pylint --disable=all --enable=R0801` run.
+- **Status:** not started; accepted technical debt unless / until a
+  follow-up commit extracts the remaining shared shapes.
+
+### Problem
+
+F-24's two helpers
+(`build_recurrence_rule_from_form`, `handle_stale_conflict`) closed
+the 9 R0801 pairs the F-24 entry named, but
+`pylint --disable=all --enable=R0801 app/routes/templates.py
+app/routes/transfers.py` still reports six additional pairs that
+were never in F-24's scope.  Listed here so a future cleanup has a
+single entry to plan against rather than rediscovering them via
+pylint output:
+
+1. **Stale-form check (optimistic-locking version_id mismatch)**
+   in the update routes.
+   `templates.py:[319:339]` vs `transfers.py:[338:355]` -- the
+   `if submitted_version is not None and submitted_version !=
+   template.version_id: ... logger.info(... flash(... redirect(...)`
+   block is byte-identical apart from the route id and the
+   redirect endpoint.  Sibling to the F-24
+   `handle_stale_conflict` extraction; a
+   `handle_stale_form_conflict` helper would close this pair the
+   same way.
+2. **RecurrenceConflict logger.warning + flash** in the update
+   routes.  `templates.py:[418:431]` vs `transfers.py:[430:443]`.
+   The auto-keep-overrides Phase-1 flash carries identical copy
+   apart from the noun ("transaction" vs "transfer"); a
+   `handle_recurrence_conflict(noun, conflict)` helper would
+   close it.
+3. **List-template rendering blocks.**
+   `templates.py:[133:147]` vs `transfers.py:[105:112]` -- the
+   "load active + archived templates, partition into two lists,
+   render the list page" pattern repeats with one route-specific
+   axis (model class).  Less obvious cleanup; the partition
+   logic could become a small helper but the render template
+   path differs.
+4. **List-template rendering variant.**
+   `templates.py:[251:257]` vs `transfers.py:[106:112]` -- same
+   shape as (3) but for the variant where the form-template GET
+   shares the lookup body.
+5. **List-template rendering variant 2.**
+   `templates.py:[141:147]` vs `transfers.py:[753:759]` -- same
+   shape again, exposed by the per-template instance routes that
+   re-query the same lists for the edit view.
+6. **Hard-delete archive-fallback bodies.**
+   `templates.py:[577:587]` vs `transfers.py:[629:640]` -- F-24's
+   `handle_stale_conflict` collapsed the inner `try/except` but
+   the surrounding "`if template.is_active: template.is_active =
+   False; <soft-delete projected rows via model-specific query>;
+   try: db.session.commit() ...`" structure remains duplicated
+   because the soft-delete query is model-specific
+   (`Transaction` vs `Transfer` with shadow-aware service
+   delegation).  Closing this would require lifting the
+   soft-delete loop into a shared archive helper, which has
+   non-trivial design implications.
+
+### Why deferred
+
+None of the six pairs are in the F-24 scope and each one is its
+own design question (especially the list-rendering pairs, which
+need a different abstraction than the recurrence / stale-conflict
+extractions F-24 used).  Pylint score at the F-24 gate landed at
+9.58/10 (+0.01 vs the post-F-25 baseline 9.57/10), so the
+residual duplicates do not regress the score.
+
+### Recommended direction
+
+Two helpers cover (1) and (2) cheaply:
+
+```python
+def handle_stale_form_conflict(*, logger, log_label, log_id,
+                                submitted, current, flash_message,
+                                redirect_endpoint,
+                                redirect_endpoint_kwargs=None):
+    """Optimistic-locking form-side conflict.
+
+    Mirror of :func:`handle_stale_conflict` but for the pre-flush
+    version_id mismatch path.  Logs both the submitted and current
+    counters so post-mortem analysis can reconstruct the race.
+    """
+
+def handle_recurrence_conflict(*, logger, noun, conflict):
+    """RecurrenceConflict auto-keep-overrides Phase-1 handler.
+
+    Logs the override / delete counts and flashes the canonical
+    "kept as-is" message with the route-specific noun.
+    """
+```
+
+(3)-(5) need a list-rendering helper or a class-based view; not
+worth the complexity for templates / transfers alone.
+
+(6) needs a shared archive helper that takes a model-specific
+soft-delete callable; design discussion warranted.
+
+### Acceptance criteria for the eventual PR
+
+- `pylint --disable=all --enable=R0801 app/routes/templates.py
+  app/routes/transfers.py` reports zero matches for the six pairs
+  named above.
+- Existing templates / transfers CRUD route tests pass unchanged.
+- New helper unit tests pin the stale-form-conflict and
+  recurrence-conflict shapes (mirror of the F-24
+  `tests/test_routes/test_recurrence_form_helpers.py` patterns).
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
