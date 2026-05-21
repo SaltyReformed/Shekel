@@ -2674,7 +2674,7 @@ class TestCheckingDetailCanonicalProducer:
             assert b"$114.29" not in resp.data
 
     def test_accounts_anchor_null_fork_removed(self):
-        """C7-2: the dead anchor-NULL fallback fork is deleted from accounts.py.
+        """C7-2: the dead anchor-NULL fallback fork is deleted from accounts.
 
         Verification gate from the Commit 7 spec.  Post-Commit-3 the
         anchor columns are NOT NULL with a CHECK constraint, so the
@@ -2682,33 +2682,52 @@ class TestCheckingDetailCanonicalProducer:
         substitution is unreachable.  Leaving it in place would be a
         dead branch (CLAUDE.md rule 1: do it right) and a regression
         risk if the CHECK is ever loosened again.  This test greps
-        the file to fail loud if the fork is ever reintroduced.
+        every module in the accounts route package to fail loud if
+        the fork is ever reintroduced.
+
+        File-path note: Commit 21 of the follow-up remediation (F-1)
+        split the monolithic ``app/routes/accounts.py`` into a per-
+        sub-domain package.  The anchor-related routes now live in
+        ``app/routes/accounts/crud.py``,
+        ``app/routes/accounts/anchor.py``, and
+        ``app/routes/accounts/detail.py``; the guard sweeps all of
+        them so a regression in any sub-module trips this lock.
         """
         import os  # pylint: disable=import-outside-toplevel
         import re  # pylint: disable=import-outside-toplevel
 
-        path = os.path.join(
+        package_dir = os.path.join(
             os.path.dirname(__file__), "..", "..",
-            "app", "routes", "accounts.py",
+            "app", "routes", "accounts",
         )
-        with open(path, "r", encoding="utf-8") as fh:
-            src = fh.read()
+        sources = []
+        for name in sorted(os.listdir(package_dir)):
+            if not name.endswith(".py"):
+                continue
+            with open(
+                os.path.join(package_dir, name), "r", encoding="utf-8",
+            ) as fh:
+                sources.append((name, fh.read()))
 
-        # Strip comments before matching: documentation that references
-        # the legacy pattern by name is fine; only live code is forbidden.
-        code_lines = [
-            line for line in src.splitlines()
-            if not line.lstrip().startswith("#")
-        ]
-        code = "\n".join(code_lines)
+        for name, src in sources:
+            # Strip comments before matching: documentation that
+            # references the legacy pattern by name is fine; only live
+            # code is forbidden.
+            code_lines = [
+                line for line in src.splitlines()
+                if not line.lstrip().startswith("#")
+            ]
+            code = "\n".join(code_lines)
 
-        # The legacy fork had two shapes; both are dead post-Commit-3.
-        assert not re.search(r"current_anchor_period_id\s+or\s+", code), (
-            "anchor-NULL fork (`... or current_period`) found in accounts.py"
-        )
-        assert not re.search(r"current_anchor_balance\s+or\s+", code), (
-            "anchor-NULL fork (`... or 0`) found in accounts.py"
-        )
+            # The legacy fork had two shapes; both are dead post-Commit-3.
+            assert not re.search(r"current_anchor_period_id\s+or\s+", code), (
+                f"anchor-NULL fork (`... or current_period`) found in "
+                f"app/routes/accounts/{name}"
+            )
+            assert not re.search(r"current_anchor_balance\s+or\s+", code), (
+                f"anchor-NULL fork (`... or 0`) found in "
+                f"app/routes/accounts/{name}"
+            )
 
     def test_accounts_multi_account_each_correct(
         self, app, auth_client, db, seed_user, seed_periods_today,
@@ -2880,9 +2899,9 @@ class TestCheckingDetailCanonicalProducer:
 
         Two assertions:
           1. ``balance_resolver.balances_for`` must still appear in
-             the accounts route file (positive: the E-25 / Commit 5 +
-             Commit 7 canonical-producer wiring on ``checking_detail``
-             is intact).
+             the accounts detail-route file (positive: the E-25 /
+             Commit 5 + Commit 7 canonical-producer wiring on
+             ``checking_detail`` is intact).
           2. ``balance_calculator.calculate_balances(`` (the bare
              entries-blind producer) must NOT appear in the file.
              ``calculate_balances_with_interest(`` is a distinct
@@ -2890,14 +2909,20 @@ class TestCheckingDetailCanonicalProducer:
              ``interest_detail`` route and will not match this
              anti-pattern because the open-paren anchors the substring
              to the bare function name.
+
+        File path note: Commit 21 of the follow-up remediation (F-1)
+        split the monolithic ``app/routes/accounts.py`` into a per-
+        sub-domain package; ``checking_detail`` and
+        ``interest_detail`` now live in ``app/routes/accounts/detail.py``.
+        The static guard reads that file directly.
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
         accounts_source = Path(
-            "app/routes/accounts.py",
+            "app/routes/accounts/detail.py",
         ).read_text(encoding="utf-8")
         assert "balance_resolver.balances_for" in accounts_source, (
-            "app/routes/accounts.py no longer calls "
+            "app/routes/accounts/detail.py no longer calls "
             "``balance_resolver.balances_for`` -- regression on the "
             "E-25 / Commit 5 + Commit 7 canonical-producer contract.  "
             "Route the checking-detail balance computation through "
@@ -2905,7 +2930,7 @@ class TestCheckingDetailCanonicalProducer:
             "the bare entries-blind producer."
         )
         assert "balance_calculator.calculate_balances(" not in accounts_source, (
-            "app/routes/accounts.py imports the bare entries-blind "
+            "app/routes/accounts/detail.py imports the bare entries-blind "
             "``balance_calculator.calculate_balances`` -- this bypasses "
             "the entries-aware reduction (F-009 / CRIT-01 fix).  Use "
             "``balance_resolver.balances_for`` instead.  Note: "
