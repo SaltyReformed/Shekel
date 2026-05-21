@@ -45,6 +45,7 @@ from app.services import (
     balance_calculator,
     balance_resolver,
     growth_engine,
+    income_service,
     loan_resolver,
     paycheck_calculator,
 )
@@ -2063,29 +2064,30 @@ def _load_salary_gross_biweekly(
 ) -> Decimal:
     """Load the user's gross biweekly pay from their active salary profile.
 
-    Returns Decimal("0") if no active salary profile exists.
+    Thin delegator over :func:`income_service.get_current_gross_biweekly`
+    so the year-end summary's salary-derived inputs (employer-match
+    cap basis, investment-projection contribution feed) agree with the
+    paycheck engine.  Pre-Commit-17 this read
+    ``profile.annual_salary / pay_periods_per_year`` directly, which
+    silently dropped any applicable ``SalaryRaise`` row -- the audit's
+    F-20 / MED-06 / F-032 defect.
+
+    Returns ``Decimal("0")`` if no active salary profile exists in the
+    given scenario or no pay period covers today.
 
     Args:
         user_id: User ID.
-        scenario: Baseline scenario.
+        scenario: Baseline scenario.  Year-end aggregates within one
+            scenario, so the profile filter scopes by
+            ``scenario.id`` -- ``income_service`` accepts the optional
+            ``scenario_id`` keyword for this.
 
     Returns:
         Decimal gross biweekly pay.
     """
-    profile = (
-        db.session.query(SalaryProfile)
-        .filter(
-            SalaryProfile.user_id == user_id,
-            SalaryProfile.scenario_id == scenario.id,
-            SalaryProfile.is_active.is_(True),
-        )
-        .first()
+    return income_service.get_current_gross_biweekly(
+        user_id, scenario_id=scenario.id,
     )
-    if profile is None:
-        return ZERO
-
-    ppy = profile.pay_periods_per_year or 26
-    return round_money(profile.annual_salary / ppy)
 
 
 def _get_settled_status_ids() -> list[int]:

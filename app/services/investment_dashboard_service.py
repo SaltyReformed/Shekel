@@ -49,6 +49,7 @@ from app.models.user import UserSettings
 from app.services import (
     balance_resolver,
     growth_engine,
+    income_service,
     pay_period_service,
 )
 from app.services.account_projection import is_payroll_deduction_funded
@@ -125,22 +126,19 @@ def _load_active_salary_profile(user_id: int) -> SalaryProfile | None:
     )
 
 
-def _salary_gross_biweekly(profile: SalaryProfile | None) -> Decimal:
-    """Return the gross biweekly pay for an active salary profile.
+def _salary_gross_biweekly(user_id: int) -> Decimal:
+    """Return the raise-aware gross biweekly pay for the active profile.
 
-    Falls back to ``Decimal("0")`` when no active profile exists --
-    the engines treat that as "no salary context", which matches the
-    pre-Commit-28 route default.
+    Delegates to :func:`income_service.get_current_gross_biweekly`
+    (F-20 / MED-06 / F-032) so the value is the paycheck engine's
+    per-period gross, not the off-engine
+    ``annual_salary / pay_periods_per_year`` recompute that silently
+    dropped any applicable :class:`SalaryRaise` row pre-Commit-17.
+    Falls back to ``Decimal("0")`` when no active profile exists or
+    no pay period covers today -- the engines treat that as "no
+    salary context", matching the pre-Commit-28 route default.
     """
-    if profile is None:
-        return Decimal("0")
-    return (
-        Decimal(str(profile.annual_salary))
-        / (
-            profile.pay_periods_per_year
-            or _DEFAULT_PAY_PERIODS_PER_YEAR
-        )
-    ).quantize(TWO_PLACES)
+    return income_service.get_current_gross_biweekly(user_id)
 
 
 def _load_deductions_for_account(user_id: int, account_id: int) -> list[PaycheckDeduction]:
@@ -245,7 +243,7 @@ def _projection_inputs_for_account(
         struct.
     """
     active_profile = _load_active_salary_profile(user_id)
-    salary_gross_biweekly = _salary_gross_biweekly(active_profile)
+    salary_gross_biweekly = _salary_gross_biweekly(user_id)
     deductions = _load_deductions_for_account(user_id, account_id)
     adapted_deductions = _adapt_deductions(deductions)
 

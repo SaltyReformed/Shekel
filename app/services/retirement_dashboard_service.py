@@ -31,6 +31,7 @@ from app.models.user import UserSettings
 from app.services import (
     balance_resolver,
     growth_engine,
+    income_service,
     pay_period_service,
     paycheck_calculator,
     pension_calculator,
@@ -171,15 +172,23 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
     net_biweekly = Decimal("0")
+    # F-20 / MED-06 / F-032: the raise-aware engine gross from this
+    # same breakdown is consumed at the gap-comparison block below
+    # so the page agrees with the paycheck engine for the current
+    # period on BOTH net (effective-take-home math) and gross
+    # (effective-take-home-rate denominator).  Pre-Commit-17 the
+    # gross side was an off-engine ``annual_salary / pay_periods``
+    # recompute that silently dropped any applicable SalaryRaise.
+    current_breakdown = None
     if salary_profiles:
         profile = salary_profiles[0]
         if current_period:
             from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
             tax_configs = load_tax_configs(user_id, profile)
-            breakdown = paycheck_calculator.calculate_paycheck(
+            current_breakdown = paycheck_calculator.calculate_paycheck(
                 profile, current_period, all_periods, tax_configs,
             )
-            net_biweekly = breakdown.net_pay
+            net_biweekly = current_breakdown.net_pay
 
     # ── Load retirement/investment accounts ──────────────────────
     retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
@@ -225,10 +234,19 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     gap_net_biweekly = net_biweekly
     if salary_profiles and planned_retirement_date and net_biweekly > 0:
         profile = salary_profiles[0]
+        # F-20 / MED-06 / F-032: ``current_breakdown.gross_biweekly`` is
+        # the paycheck-engine value the ``net_biweekly`` line above
+        # already paid for; reusing it here avoids re-running the
+        # engine for an identical result and locks the
+        # effective-take-home-rate denominator to the same per-period
+        # gross the engine reports.  Pre-Commit-17 this site recomputed
+        # ``annual_salary / pay_periods_per_year`` directly, which
+        # silently dropped any applicable ``SalaryRaise`` row.
         current_gross_biweekly = (
-            Decimal(str(profile.annual_salary))
-            / (profile.pay_periods_per_year or 26)
-        ).quantize(Decimal("0.01"))
+            current_breakdown.gross_biweekly
+            if current_breakdown is not None
+            else Decimal("0.00")
+        )
         if current_gross_biweekly > 0:
             effective_take_home_rate = net_biweekly / current_gross_biweekly
             if salary_by_year is None:
@@ -457,13 +475,14 @@ def _project_retirement_accounts(
             .all()
         )
 
-    salary_gross_biweekly = Decimal("0")
-    if salary_profiles:
-        profile = salary_profiles[0]
-        salary_gross_biweekly = (
-            Decimal(str(profile.annual_salary))
-            / (profile.pay_periods_per_year or 26)
-        ).quantize(Decimal("0.01"))
+    # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not
+    # the off-engine ``annual_salary / pay_periods_per_year`` recompute
+    # that silently dropped any applicable ``SalaryRaise`` row.  The
+    # value feeds ``calculate_investment_inputs`` as the basis for the
+    # employer-match cap; under-stating it under-stated the match.
+    salary_gross_biweekly = income_service.get_current_gross_biweekly(
+        user_id,
+    )
 
     # Synthetic projection periods to retirement date.
     synthetic_periods = []

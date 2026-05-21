@@ -38,6 +38,7 @@ from app.services import (
     balance_resolver,
     escrow_calculator,
     growth_engine,
+    income_service,
     loan_resolver,
     obligations_aggregator,
     pay_period_service,
@@ -301,17 +302,16 @@ def _load_account_params(user_id, accounts):
         for ded in inv_deductions:
             deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
 
-    salary_gross_biweekly = Decimal("0")
-    active_profile = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=user_id, is_active=True)
-        .first()
+    # F-20 / MED-06 / F-032: raise-aware gross-biweekly from the
+    # paycheck engine, not the off-engine
+    # ``annual_salary / pay_periods_per_year`` recompute which silently
+    # dropped any applicable SalaryRaise row.  ``income_service`` wraps
+    # ``calculate_paycheck`` so this producer agrees with the engine
+    # value the DTI denominator (and every other income-derived
+    # surface) consumes downstream.
+    salary_gross_biweekly = income_service.get_current_gross_biweekly(
+        user_id,
     )
-    if active_profile:
-        salary_gross_biweekly = (
-            Decimal(str(active_profile.annual_salary))
-            / (active_profile.pay_periods_per_year or 26)
-        ).quantize(Decimal("0.01"))
 
     loan_params_map = {}
     loan_account_ids = [a.id for a in accounts if a.account_type_id in amort_type_ids]
