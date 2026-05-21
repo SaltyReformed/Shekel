@@ -17,7 +17,7 @@ Architecture:
 
 import logging
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -53,6 +53,13 @@ logger = logging.getLogger(__name__)
 
 # Fields that can be updated on an entry via update_entry().
 _UPDATABLE_FIELDS = frozenset({"amount", "description", "entry_date", "is_credit"})
+
+# Quantisation + bounds for ``pct_complete``.  Mirrors the constants
+# in ``app.services.dashboard_service`` so the two surfaces that feed
+# progress-bar widths share one numeric contract.
+_TWO_PLACES = Decimal("0.01")
+_ZERO = Decimal("0")
+_HUNDRED = Decimal("100")
 
 
 def _update_actual_if_paid(txn: Transaction) -> None:
@@ -464,6 +471,48 @@ def compute_remaining(
     """
     total_spent = sum((e.amount for e in entries), Decimal("0"))
     return estimated_amount - total_spent
+
+
+def pct_complete(total: Decimal, target: Decimal) -> Decimal:
+    """Compute percent complete, clamped to [0, 100].
+
+    Feeds the entry-tracking progress-bar widths on the companion
+    transaction card (and any other surface that needs an entry
+    aggregate as a percentage of its declared budget base).  Returns a
+    Decimal so money math never crosses the Decimal/float boundary at
+    the route layer (MED-04 / E-16): the companion route used to
+    ``float(total / estimated * Decimal("100"))`` inline, which violated
+    the "money math is service-layer Decimal, not route-layer float"
+    standard.  Mirrors the shape of
+    :func:`app.services.dashboard_service._safe_pct_complete` so the
+    dashboard and companion surfaces share one numeric contract.
+
+    The two-decimal-place result is safe to render as-is in CSS width
+    values: ``data-progress-pct="55.50"`` is parsed by
+    ``app/static/js/progress_bar.js`` via ``parseFloat`` before being
+    applied as an inline width, and CSS itself accepts the decimal
+    notation in ``%`` values.
+
+    Args:
+        total: Sum of entries against the budgeted line.
+        target: Budgeted estimated amount.  If <= 0 the function
+            returns ``Decimal("0")`` rather than dividing by zero or
+            producing a misleading negative percentage.
+
+    Returns:
+        Decimal in [0, 100] quantised to two decimal places when the
+        guard does not fire; ``Decimal("0")`` when ``target <= 0``.
+    """
+    if target <= _ZERO:
+        return _ZERO
+    pct = (total / target * _HUNDRED).quantize(
+        _TWO_PLACES, rounding=ROUND_HALF_UP,
+    )
+    if pct > _HUNDRED:
+        return Decimal("100.00")
+    if pct < _ZERO:
+        return _ZERO
+    return pct
 
 
 def compute_actual_from_entries(

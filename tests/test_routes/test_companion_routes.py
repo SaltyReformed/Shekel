@@ -669,6 +669,48 @@ class TestEntryDataInHTML:
         assert "$20 over" in html
         assert "text-danger" in html
 
+    def test_progress_bar_pct_rendered_as_decimal_string(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """C9-4 (F-23 / MED-04 / E-16): the rendered ``data-progress-pct``
+        attribute carries the Decimal-quantised percentage produced by
+        :func:`entry_service.pct_complete`, not the legacy
+        ``float(Decimal_expr)`` value the companion route used to compute
+        inline.
+
+        Hand arithmetic: total = $55.50, target = $100.00.
+        55.50 / 100.00 * 100 = 55.50; quantise(0.01) = Decimal("55.50").
+        The attribute appears verbatim because Jinja's
+        ``[ed.pct, 100]|min`` filter returns the smaller of the Decimal
+        and 100 (still Decimal("55.50") here), and Decimal's __str__
+        renders the canonical "55.50".
+        """
+        template = _make_template(
+            seed_user, companion_visible=True, track=True, name="Groceries",
+        )
+        txn = _make_txn(
+            seed_user, seed_periods_today[0], template,
+            name="Groceries", amount=Decimal("100.00"),
+        )
+        db.session.add(TransactionEntry(
+            transaction_id=txn.id, user_id=seed_user["user"].id,
+            amount=Decimal("55.50"), description="Kroger",
+            entry_date=date(2026, 1, 5),
+        ))
+        db.session.commit()
+
+        comp = _login_companion(app)
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # The progress-bar width is driven by data-progress-pct; the
+        # Decimal-quantised value is rendered as-is.
+        assert 'data-progress-pct="55.50"' in html
+        # The aria-valuenow companion uses int() on the Decimal -- locks
+        # that the Decimal pct survives the template's |int filter
+        # without producing scientific notation or other surprise forms.
+        assert 'aria-valuenow="55"' in html
+
 
 # ── Empty States ─────────────────────────────────────────────────────
 
