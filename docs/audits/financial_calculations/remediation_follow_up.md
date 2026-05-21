@@ -485,12 +485,21 @@ in this gap surfaces.
   "out of scope for C-28" rationale (unrelated to the financial-
   calculations audit C-28 is a different remediation effort and
   does not own this debt going forward).
-- **Status:** not started; defer until after Commit 37.
+- **Status:** resolved by Commit 6 of the follow-up plan
+  (`refactor(tests): extract Jinja-globals registration helper +
+  sync missing entries (F-7)`).  Plan-time verification additionally
+  showed the conftest list was missing eight entries
+  (`TIMING_PRE_TAX`, `TIMING_POST_TAX`, `CALC_PERCENTAGE`,
+  `CALC_FLAT`, `GOAL_MODE_FIXED`, `GOAL_MODE_INCOME_RELATIVE`,
+  `INCOME_UNIT_PAYCHECKS`, `INCOME_UNIT_MONTHS`); the extraction
+  closed both the DRY violation and the drift in one commit.  The
+  rest of this entry is kept for historical traceability of the
+  pre-fix state.
 
 ### Problem
 
-The ID-derived Jinja global registration list lives in two places
-that must stay byte-identical:
+The ID-derived Jinja global registration list lived in two places
+that were intended to stay byte-identical:
 
 - `app/__init__.py:168-219` -- 40+ `app.jinja_env.globals[...] =
   ref_cache.<lookup>(...)` lines inside the `create_app` factory.
