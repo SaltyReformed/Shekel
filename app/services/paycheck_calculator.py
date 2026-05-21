@@ -6,41 +6,58 @@ salary profile including raises, deductions, and taxes.
 
 All functions are pure (no DB access) -- data is passed in as arguments.
 
-Biweekly rounding residue -- accepted simplification
-----------------------------------------------------
+Biweekly rounding residue -- reconciled to the annual aggregate
+---------------------------------------------------------------
 
-``gross_biweekly`` is computed as ``annual_salary / pay_periods_per_year``
-quantised to two decimal places with ``ROUND_HALF_UP``.  Because $0.01
-is the smallest representable currency unit and most annual salaries
-do not divide evenly by 26 (or 24 / 12), the sum of the quantised
-biweekly checks does not always match the input annual salary
-exactly.  At 26 pay periods the residue is bounded by 26 * $0.005 =
-$0.13 per year (rounding direction depends on the salary's tail).
+``gross_biweekly`` is computed by dividing the (post-raise) annual
+salary by ``pay_periods_per_year`` and reconciling the per-cycle
+rounding residue back into the annual aggregate so the sum of all
+periods sharing the same effective annual salary in the same calendar
+year equals their share of that annual salary exactly (audit MED-05 /
+PA-07).
 
-Examples:
+Algorithm.  Within a reconciliation group -- the set of periods in one
+calendar year that share one post-raise annual salary -- the per-period
+floor is ``(annual / pay_periods_per_year)`` rounded *down* to the
+cent.  The cumulative residue is ``annual * group_size /
+pay_periods_per_year - floor * group_size``, expressed in whole cents.
+The earliest ``residue_cents`` periods of the group (sorted by start
+date) each receive ``floor + $0.01``; the remaining periods receive
+``floor``.  The distribution is deterministic and reproducible across
+invocations, and the per-period values differ from each other by at
+most one cent.
 
-- $50,000 / 26 = $1,923.0769... -> $1,923.08 * 26 = $50,000.08
-  (+$0.08 over the year).
-- $75,000 / 26 = $2,884.6153... -> $2,884.62 * 26 = $75,000.12
-  (+$0.12 over the year).
-- $100,000 / 26 = $3,846.1538... -> $3,846.15 * 26 = $99,999.90
-  ($-0.10 under the year).
+Examples (assuming all 26 periods in one year, one salary):
 
-This residue mirrors how real US payroll systems (ADP, Paychex,
-Gusto, Workday) issue biweekly paychecks: each pay stub is rounded to
-the cent, and W-2 box 1 is the sum of the rounded checks rather than
-the contract salary.  Distributing the residue across the 26 checks
-(or absorbing it into one "true-up" check) would diverge from
-real-payroll behaviour and break user reconciliation against actual
-deposits, so F-127 of the 2026-04-15 security audit classified this
-as an accepted simplification.  The error is bounded, signed in a
-predictable direction by the salary's fractional cent, and
-self-cancelling against future inflation-adjusted salaries.
+- $50,000 / 26 -> floor $1,923.07, residue 18 cents -> 18 periods at
+  $1,923.08 + 8 periods at $1,923.07 = $50,000.00 exact.
+- $75,000 / 26 -> floor $2,884.61, residue 14 cents -> 14 periods at
+  $2,884.62 + 12 periods at $2,884.61 = $75,000.00 exact.
+- $100,000 / 26 -> floor $3,846.15, residue 10 cents -> 10 periods at
+  $3,846.16 + 16 periods at $3,846.15 = $100,000.00 exact.
+
+Partial-context fallback.  When the supplied ``all_periods`` does not
+cover the full pay-period year for the period's salary group (e.g. a
+single-period call in a route preview, or a test fixture that supplies
+one period at a time), the reconciliation cannot anchor against a
+complete annual figure and the helper falls back to
+``ROUND_HALF_UP`` quantisation -- the historical per-period semantics.
+The fallback prevents a partial sample from being mis-reconciled as
+though it were a full year.
+
+This reconciliation matches the canonical W-2 box 1 expectation -- the
+sum of pay stubs equals the contract annual salary exactly -- and
+removes the silent ~$0.10/year drift documented in audit prior PA-07.
+The previous fallback contract (each stub is the half-up quantised
+value, with the residue carried into the year-end aggregate) was
+classified in 2026-04-15's audit as F-127 "accepted simplification";
+MED-05 / PA-07 supersedes F-127 with this exact-reconciliation
+contract.
 """
 
 import logging
 from dataclasses import dataclass, field
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
 from app.services import tax_calculator
 from app.services.calibration_service import apply_calibration
@@ -49,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 TWO_PLACES = Decimal("0.01")
+ONE_CENT = Decimal("0.01")
 
 
 @dataclass
@@ -94,12 +112,15 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     """Calculate a single paycheck for a given period.
 
     The gross biweekly amount is computed by dividing the (post-raise)
-    annual salary by ``pay_periods_per_year`` and quantising to two
-    decimal places.  This is the canonical real-payroll behaviour and
-    leaves a bounded year-end residue (~$0.13 max, signed by the
-    salary's fractional cent); see the module docstring section
-    "Biweekly rounding residue -- accepted simplification" for the
-    full rationale (F-127).
+    annual salary by ``pay_periods_per_year``; the per-cycle
+    quantisation residue is reconciled back into the annual aggregate
+    so the sum of the year's grosses for a single salary segment
+    equals that salary exactly (audit MED-05 / PA-07, supersedes
+    F-127).  See the module docstring section "Biweekly rounding
+    residue -- reconciled to the annual aggregate" for the algorithm,
+    including the partial-context fallback for callers that supply
+    fewer than ``pay_periods_per_year`` periods (route previews,
+    isolated test fixtures).
 
     Args:
         profile:      SalaryProfile with loaded raises and deductions.
@@ -125,13 +146,15 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     annual_salary = _apply_raises(profile, period)
     raise_event = _get_raise_event(profile, period)
 
-    # Step 2: Gross biweekly.  Quantising here is the source of the
-    # ~$0.13/year rounding residue documented at the module level
-    # (F-127, 2026-04-15 audit); mirrors real-payroll behaviour and
-    # is intentional rather than a defect.
+    # Step 2: Gross biweekly.  Residue from the per-cycle quantisation
+    # is reconciled back into the annual aggregate (MED-05 / PA-07);
+    # see the module docstring "Biweekly rounding residue -- reconciled
+    # to the annual aggregate" for the algorithm and the partial-context
+    # fallback.
     pay_periods_per_year = profile.pay_periods_per_year or 26
-    gross_biweekly = (annual_salary / pay_periods_per_year).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP
+    gross_biweekly = _gross_biweekly_for_period(
+        annual_salary, period, all_periods, profile,
+        pay_periods_per_year,
     )
 
     # Step 3: Detect 3rd paycheck
@@ -279,6 +302,117 @@ def project_salary(profile, periods, tax_configs, *, calibration=None):
 
 
 # ── Private Helpers ────────────────────────────────────────────────
+
+
+def _gross_biweekly_for_period(
+    annual_salary, period, all_periods, profile, pay_periods_per_year,
+):
+    """Return the per-period gross with the biweekly residue reconciled.
+
+    Within a "reconciliation group" -- the set of periods in
+    ``all_periods`` that share both ``period``'s calendar year and the
+    same post-raise annual salary -- the helper distributes the
+    quantisation residue so the group's grosses sum to its exact share
+    of the annual salary (audit MED-05 / PA-07).  See the module
+    docstring "Biweekly rounding residue -- reconciled to the annual
+    aggregate" for the algorithm.
+
+    When ``all_periods`` does not cover a full pay-period year for the
+    group (e.g. fewer than ``pay_periods_per_year`` periods total in
+    that year), the helper falls back to ``ROUND_HALF_UP`` so a
+    partial-sample call does not mis-distribute a residue computed
+    against an incomplete denominator.  Single-period callers (route
+    previews, isolated test fixtures) therefore retain the historical
+    per-period semantics.
+
+    Args:
+        annual_salary: The post-raise annual salary for ``period``,
+            as returned by :func:`_apply_raises`.  Constructed from a
+            Decimal upstream; the helper does not re-coerce.
+        period: The :class:`PayPeriod` whose gross is being computed.
+        all_periods: Every :class:`PayPeriod` known to the calling
+            ``calculate_paycheck`` invocation.  Periods outside
+            ``period.start_date.year`` are ignored.
+        profile: The :class:`SalaryProfile`; consulted only for
+            ``_apply_raises`` so the group boundary respects mid-year
+            raise events.
+        pay_periods_per_year: The full-year denominator (typically 26).
+
+    Returns:
+        Decimal -- the period's gross, equal to either ``floor`` or
+        ``floor + $0.01`` where ``floor = (annual / pay_periods_per_year)``
+        rounded down to the cent.  Earlier periods in the group (by
+        ``start_date``) receive the ``+$0.01`` adjustment when the
+        group's residue is positive.
+    """
+    pay_periods_dec = Decimal(str(pay_periods_per_year))
+    period_year = period.start_date.year
+
+    # Restrict to the same calendar year, then to the same effective
+    # annual salary (i.e. the same post-raise segment).  Sort by
+    # start_date so the distribution is deterministic and reproducible
+    # across invocations.
+    same_year = [
+        p for p in all_periods
+        if p.start_date.year == period_year
+    ]
+    group = sorted(
+        (
+            p for p in same_year
+            if _apply_raises(profile, p) == annual_salary
+        ),
+        key=lambda p: p.start_date,
+    )
+
+    # Partial-context fallback: when the supplied year does not cover
+    # the full pay-period year, the residue would be computed against
+    # an incomplete denominator.  Retain the historical per-period
+    # half-up semantics so single-period callers (route previews,
+    # isolated tests) are unaffected by the reconciliation contract.
+    if len(same_year) < pay_periods_per_year:
+        return (annual_salary / pay_periods_dec).quantize(
+            TWO_PLACES, rounding=ROUND_HALF_UP
+        )
+
+    floor_value = (annual_salary / pay_periods_dec).quantize(
+        TWO_PLACES, rounding=ROUND_DOWN
+    )
+
+    # The group's exact share of the annual salary at full precision is
+    # ``annual_salary * group_size / pay_periods_per_year``.  The
+    # residue is the cents that need to be added on top of
+    # ``floor_value * group_size`` to reach that share.  Quantising
+    # the share to the cent here is safe: ``floor_value`` is already at
+    # cent precision, so any sub-cent fraction in the exact share is
+    # below the rounding boundary the residue distribution targets.
+    group_size = len(group)
+    group_size_dec = Decimal(group_size)
+    exact_share = (
+        annual_salary * group_size_dec / pay_periods_dec
+    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    residue = exact_share - floor_value * group_size_dec
+    residue_cents = int((residue / ONE_CENT).to_integral_value(
+        rounding=ROUND_HALF_UP
+    ))
+
+    # ``residue_cents`` is non-negative by construction (floor rounded
+    # the share down; quantising the share never decreases it below
+    # ``floor * group_size``).  Distribute to the earliest periods in
+    # group order.
+    if residue_cents <= 0:
+        return floor_value
+
+    try:
+        idx = group.index(period)
+    except ValueError:
+        # ``period`` is not in ``all_periods`` (defensive: real callers
+        # always include it).  Fall back to the floor value so the
+        # caller still receives a deterministic Decimal.
+        return floor_value
+
+    if idx < residue_cents:
+        return floor_value + ONE_CENT
+    return floor_value
 
 
 def _apply_raises(profile, period):
@@ -506,8 +640,14 @@ def _get_cumulative_wages(profile, period, all_periods):
             break
 
         salary = _apply_raises(profile, p)
-        gross = (salary / pay_periods_per_year).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
+        # Reuse the same reconciliation contract as ``calculate_paycheck``
+        # so prior-period grosses summed here match the per-period
+        # ``gross_biweekly`` exactly.  Without this, the FICA cap path
+        # would compare a half-up cumulative to reconciled per-period
+        # grosses and shift the cap-crossing period by one cent in edge
+        # cases (MED-05 / PA-07).
+        gross = _gross_biweekly_for_period(
+            salary, p, all_periods, profile, pay_periods_per_year,
         )
         cumulative += gross
 

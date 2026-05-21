@@ -4,46 +4,79 @@ Shekel Budget App -- Interest Projection Service
 Pure function that calculates projected interest earned on a HYSA
 account during a pay period.  No database access, no side effects.
 
-Day-count convention -- accepted simplification
------------------------------------------------
+Day-count convention -- actual/actual for leap-day-crossing windows
+-------------------------------------------------------------------
 
-This module hardcodes a 365-day year (``DAYS_IN_YEAR``) for the daily
-compounding formula regardless of whether the period falls in a leap
-year.  US retail banks use the actual/365 convention industry-wide;
-leap years are handled identically (366 actual days against a 365-day
-divisor), which overstates daily interest by approximately 1/365
-(~0.27%) for periods that cross February 29.
+The daily compounding formula divides the APY by the actual number of
+days in the projection year.  For a projection window that contains a
+Feb 29 (a leap day) the divisor is 366; otherwise the divisor is 365.
+The window-aware switch closes the residual error documented under the
+prior accepted-simplification path (audit MED-05 / PA-06): a 14-day
+window crossing the leap day used to overstate daily interest by
+approximately 1/365 (~0.27%, ~$0.47 per $100,000 at 4.5% APY for the
+14-day window, ~$0.25 per $100,000 across a full leap year) because
+actual 366 days were divided by a fixed 365-day denominator.
 
-At Shekel-realistic balances and rates the absolute error is small --
-~$1.23 per $100,000 at 4.5% APY for a 14-day period crossing the leap
-day, ~$0.25/year per $100,000 across a full leap year.  The error has
-been classified as an accepted simplification in the 2026-04-15
-security audit (F-126).  Switching to actual-day-count would require:
+The leap-day check uses the half-open interval ``[period_start,
+period_end)`` so a window that ends exactly on Feb 29 does not count as
+crossing it (period_end is the open boundary the rest of this module
+already treats as exclusive in its ``(period_end - period_start).days``
+computation).  Windows entirely within a leap year that do not cross
+Feb 29 (e.g. a Feb 15-Feb 28 window in 2028) keep the 365-day divisor:
+the daily-rate error vanishes when the window does not include the
+extra calendar day, so the actual/actual switch is calibrated to the
+window's content rather than its enclosing year.
 
-- threading the leap-year flag into every monthly/quarterly branch
-  (they already use actual days for the *period numerator*, so the
-  denominator inconsistency is daily-specific), and
-- diverging from the convention every brokerage and HYSA statement the
-  user will reconcile against, which would make the projection look
-  "wrong" against ground truth even though the math was technically
-  more precise.
-
-The trade is intentional.  Callers that need leap-year-exact accrual
-(rare; reserved for closed-out historical periods, not projection) must
-compute interest outside this module.
+Monthly and quarterly compounding are unaffected.  Both already use
+calendar-correct day counts for the period numerator (``calendar.
+monthrange`` for monthly, computed quarter length for quarterly);
+neither passes through the 365-day divisor that this fix replaces.
 """
 
 import calendar
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import date as date_cls
+from decimal import Decimal
+
+from app.utils.money import round_money
 
 ZERO = Decimal("0.00")
-# US bank convention: actual/365 day count.  In leap years this
-# overstates daily interest by ~0.27% (~$1.23 per $100K at 4.5% APY).
-# Acceptable approximation for projection purposes.  See the module
-# docstring for the full rationale (F-126).
-DAYS_IN_YEAR = Decimal("365")
+# Actual/actual day count, evaluated per projection window.  See module
+# docstring "Day-count convention -- actual/actual for leap-day-crossing
+# windows" for the full rationale (MED-05 / PA-06).
+DAYS_IN_YEAR_NON_LEAP = Decimal("365")
+DAYS_IN_YEAR_LEAP = Decimal("366")
 MONTHS_IN_YEAR = Decimal("12")
 QUARTERS_IN_YEAR = Decimal("4")
+
+
+def _days_in_year_for_window(period_start, period_end):
+    """Return 366 if ``[period_start, period_end)`` contains a Feb 29, else 365.
+
+    Iterates years touched by the half-open window and asks
+    ``calendar.isleap`` for each.  When the window straddles a year
+    boundary (e.g. Dec 25 -> Jan 8) and only one of the two years has a
+    Feb 29 inside the window, that single calendar year's leap day is
+    enough to trigger 366; this matches the actual day count of the
+    window itself, which is what the daily-rate divisor needs.
+
+    Args:
+        period_start: inclusive start date of the projection window.
+        period_end: exclusive end date of the projection window
+            (matches the rest of this module's ``(period_end -
+            period_start).days`` convention).
+
+    Returns:
+        :data:`DAYS_IN_YEAR_LEAP` (366) when at least one Feb 29 falls
+        within ``[period_start, period_end)``, otherwise
+        :data:`DAYS_IN_YEAR_NON_LEAP` (365).
+    """
+    for year in range(period_start.year, period_end.year + 1):
+        if not calendar.isleap(year):
+            continue
+        leap_day = date_cls(year, 2, 29)
+        if period_start <= leap_day < period_end:
+            return DAYS_IN_YEAR_LEAP
+    return DAYS_IN_YEAR_NON_LEAP
 
 
 def calculate_interest(
@@ -55,13 +88,12 @@ def calculate_interest(
 ):
     """Calculate projected interest earned during a pay period.
 
-    Daily compounding uses the actual/365 day-count convention -- the
-    365-day divisor is fixed regardless of whether the period falls in
-    a leap year.  See the module docstring ("Day-count convention --
-    accepted simplification") for the full rationale and the maximum
-    error envelope; in short, the per-leap-year overstatement is
-    ~$0.25 per $100,000 at 4.5% APY, accepted in F-126 to keep the
-    projection consistent with retail-bank statements.
+    Daily compounding uses an actual/actual day count: the divisor is
+    366 when the projection window contains Feb 29 and 365 otherwise.
+    See the module docstring ("Day-count convention -- actual/actual
+    for leap-day-crossing windows") for the rationale and the residual
+    error this closes (MED-05 / PA-06).  Monthly and quarterly
+    compounding are unaffected.
 
     Args:
         balance: Account balance after all transactions/transfers for the period.
@@ -71,11 +103,11 @@ def calculate_interest(
         period_end: End date of the pay period.
 
     Returns:
-        Decimal interest earned, rounded to 2 decimal places
-        (``ROUND_HALF_UP``).  Returns :data:`ZERO` for non-positive
-        balances, non-positive APY, inverted ``period_start`` /
-        ``period_end`` ordering, or an unrecognised
-        ``compounding_frequency``.
+        Decimal interest earned, rounded to 2 decimal places via
+        :func:`app.utils.money.round_money` (``ROUND_HALF_UP``).
+        Returns :data:`ZERO` for non-positive balances, non-positive
+        APY, inverted ``period_start`` / ``period_end`` ordering, or an
+        unrecognised ``compounding_frequency``.
     """
     balance = Decimal(str(balance))
     apy = Decimal(str(apy))
@@ -86,7 +118,8 @@ def calculate_interest(
     period_days = Decimal(str((period_end - period_start).days))
 
     if compounding_frequency == "daily":
-        daily_rate = apy / DAYS_IN_YEAR
+        days_in_year = _days_in_year_for_window(period_start, period_end)
+        daily_rate = apy / days_in_year
         interest = balance * ((1 + daily_rate) ** period_days - 1)
     elif compounding_frequency == "monthly":
         monthly_rate = apy / MONTHS_IN_YEAR
@@ -98,7 +131,6 @@ def calculate_interest(
         quarterly_rate = apy / QUARTERS_IN_YEAR
         # Calculate actual quarter length from the period's start date
         # instead of using a hardcoded 91-day approximation (L-05).
-        from datetime import date as date_cls  # pylint: disable=import-outside-toplevel
         q_start_month = ((period_start.month - 1) // 3) * 3 + 1
         q_start = date_cls(period_start.year, q_start_month, 1)
         next_q_month = q_start_month + 3
@@ -111,4 +143,4 @@ def calculate_interest(
     else:
         return ZERO
 
-    return interest.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return round_money(interest)
