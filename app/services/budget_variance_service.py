@@ -18,14 +18,13 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
-from app import ref_cache
-from app.enums import StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.account_resolver import resolve_analytics_account
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import balance_excluded_status_ids
 
 logger = logging.getLogger(__name__)
 
@@ -204,10 +203,11 @@ def _get_transactions_for_window(  # pylint: disable=too-many-arguments,too-many
         return [], None
 
     # Status IDs that exclude from balance (Credit, Cancelled).
-    excluded_status_ids = [
-        ref_cache.status_id(StatusEnum.CREDIT),
-        ref_cache.status_id(StatusEnum.CANCELLED),
-    ]
+    # Routed through the centralized
+    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02) so the
+    # exclusion set is defined once rather than independently
+    # re-derived here AND in ``year_end_summary_service``.
+    excluded_status_ids = balance_excluded_status_ids()
 
     if window_type == "pay_period":
         return _query_by_period(
@@ -232,7 +232,7 @@ def _query_by_period(
     account_id: int,
     scenario_id: int,
     period_id: int,
-    excluded_status_ids: list[int],
+    excluded_status_ids: frozenset[int],
 ) -> tuple[list[Transaction], PayPeriod | None]:
     """Query transactions for a specific pay period.
 
@@ -264,7 +264,7 @@ def _query_by_date_range(  # pylint: disable=too-many-arguments,too-many-positio
     user_id: int,
     first_day: date,
     last_day: date,
-    excluded_status_ids: list[int],
+    excluded_status_ids: frozenset[int],
 ) -> list[Transaction]:
     """Query transactions attributed to a date range via due_date.
 

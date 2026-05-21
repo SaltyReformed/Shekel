@@ -22,12 +22,11 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.category import Category
 from app.models.ref import Status, TransactionType
-from app.enums import StatusEnum
-from app import ref_cache
 from app.services import balance_resolver, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import is_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +100,6 @@ def _build_row_keys(transactions, categories, is_income_section):
         (group_name, item_name, txn_name).  Deterministic across calls
         with the same data.
     """
-    cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
-
     # Index categories by ID for O(1) lookup.
     cat_by_id = {c.id: c for c in categories}
 
@@ -113,8 +110,12 @@ def _build_row_keys(transactions, categories, is_income_section):
     row_keys = []
 
     for txn in transactions:
-        # Skip deleted and cancelled transactions.
-        if txn.is_deleted or txn.status_id == cancelled_id:
+        # Skip deleted and cancelled transactions.  Routed through
+        # the centralized ``is_cancelled`` predicate (D6-09 /
+        # MED-02) so the Python row-key collector and the Jinja
+        # ``!= STATUS_CANCELLED`` row guards in ``grid.html`` /
+        # ``_mobile_grid.html`` share one definition of the rule.
+        if txn.is_deleted or is_cancelled(txn):
             continue
 
         # Filter by income/expense.

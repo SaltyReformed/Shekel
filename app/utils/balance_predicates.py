@@ -49,8 +49,19 @@ Commits 5 and 10 of the financial-calculation remediation route the
 canonical balance and period-subtotal producers through these helpers;
 Commit 29 finishes routing the residual inline Python skips, the
 remaining SQLAlchemy filters, and the Jinja-template predicates through
-them. This commit is behavior-preserving -- it introduces the predicate
-and locks its semantics; no existing call site is rewired here.
+them, and extends this module with the per-status equality predicates
+and SQL clause builders the residual sites consume:
+
+- ``is_projected``, ``is_credit``, ``is_cancelled``, ``is_done`` --
+  Python equality predicates for the four statuses the call sites
+  branch on. ``is_projected`` was introduced in Commit 2; Commit 29
+  adds the rest so every per-status equality check in business logic
+  routes through one cached-ID source.
+- ``is_projected_clause(model_class)`` -- the SQL form of
+  ``is_projected``, parameterised on the model class so both
+  ``Transaction`` queries (dashboard, entries, carry-forward,
+  templates) and ``Transfer`` queries (transfer-template archive /
+  unarchive / hard-delete) share one definition.
 
 Per E-15 / CLAUDE.md rule 4 ("IDs for logic, strings for display only"),
 every predicate in this module is implemented over the semantic boolean
@@ -96,6 +107,41 @@ def balance_excluded_status_ids() -> frozenset[int]:
     })
 
 
+def status_contributes_to_balance(txn) -> bool:
+    """Return True iff *txn*'s status alone permits balance contribution.
+
+    The status-only half of :func:`is_balance_contributing`: returns
+    ``False`` for an ``excludes_from_balance=True`` status
+    (``Credit``, ``Cancelled``) and ``True`` for every other status,
+    *without* consulting ``txn.is_deleted``.  Sized for callers that
+    have already pre-filtered deleted rows upstream (the
+    investment-projection Python iteration sites consume already-
+    SQL-filtered shadow contribution transactions) and whose duck-
+    typed test fakes therefore do not carry an ``is_deleted``
+    attribute.
+
+    ``is_balance_contributing`` is defined as
+    ``not txn.is_deleted and status_contributes_to_balance(txn)`` so
+    the two predicates can never disagree about the status-only half
+    of the rule.
+
+    Args:
+        txn: any object with a ``status`` attribute that, when not
+            ``None``, carries an ``excludes_from_balance`` boolean.
+            ``Transaction`` and the ``FakeContribTransaction`` test
+            duck-types both satisfy this; ``is_deleted`` is NOT
+            consulted.
+
+    Returns:
+        ``True`` if the status row's ``excludes_from_balance`` is
+        ``False`` (or the status is ``None`` -- treated as
+        contributing, matching the
+        :attr:`Transaction.effective_amount` fallback); ``False`` if
+        the status carries ``excludes_from_balance=True``.
+    """
+    return not (txn.status is not None and txn.status.excludes_from_balance)
+
+
 def is_balance_contributing(txn: Transaction) -> bool:
     """Return True iff *txn* contributes its effective amount to a balance.
 
@@ -131,7 +177,7 @@ def is_balance_contributing(txn: Transaction) -> bool:
     """
     if txn.is_deleted:
         return False
-    return not (txn.status is not None and txn.status.excludes_from_balance)
+    return status_contributes_to_balance(txn)
 
 
 def is_projected(txn: Transaction) -> bool:
@@ -160,6 +206,129 @@ def is_projected(txn: Transaction) -> bool:
             reference cache has not been initialized.
     """
     return txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+
+
+def is_credit(txn: Transaction) -> bool:
+    """Return True iff *txn*'s status is ``Credit``.
+
+    Centralizes the inline ``status_id == credit_id`` /
+    ``status_id != credit_id`` comparisons in
+    ``credit_workflow.py`` (mark-as-credit idempotency check;
+    unmark-credit precondition guard) and ``entry_service.py``
+    (block entries on credit-status transactions). Pure status
+    equality, does not consider ``is_deleted``.
+
+    Args:
+        txn: a ``Transaction`` instance with ``status_id`` populated.
+
+    Returns:
+        ``True`` if ``txn.status_id`` equals the cached integer ID for
+        ``StatusEnum.CREDIT``; ``False`` for every other status.
+
+    Raises:
+        RuntimeError: propagated from ``ref_cache.status_id`` if the
+            reference cache has not been initialized.
+    """
+    return txn.status_id == ref_cache.status_id(StatusEnum.CREDIT)
+
+
+def is_cancelled(txn: Transaction) -> bool:
+    """Return True iff *txn*'s status is ``Cancelled``.
+
+    Centralizes the inline ``status_id == cancelled_id`` comparisons
+    in ``app/routes/grid.py`` (skip-cancelled row-key collection,
+    mirroring the templates' ``!= STATUS_CANCELLED`` guards in
+    ``grid.html``, ``_mobile_grid.html``) and ``entry_service.py``
+    (block entries on cancelled-status transactions). Pure status
+    equality, does not consider ``is_deleted``.
+
+    Note that this predicate is intentionally narrower than
+    ``is_balance_contributing``: a ``Credit`` transaction is excluded
+    from balance contribution but is NOT cancelled, and the grid
+    still renders the Credit row (with strike-through styling)
+    whereas a Cancelled row is omitted from the row-key set.
+
+    Args:
+        txn: a ``Transaction`` instance with ``status_id`` populated.
+
+    Returns:
+        ``True`` if ``txn.status_id`` equals the cached integer ID for
+        ``StatusEnum.CANCELLED``; ``False`` for every other status.
+
+    Raises:
+        RuntimeError: propagated from ``ref_cache.status_id`` if the
+            reference cache has not been initialized.
+    """
+    return txn.status_id == ref_cache.status_id(StatusEnum.CANCELLED)
+
+
+def is_done(txn: Transaction) -> bool:
+    """Return True iff *txn*'s status is ``Paid`` (``StatusEnum.DONE``).
+
+    Centralizes the inline ``status_id == done_id`` comparison in
+    ``entry_service._update_actual_if_paid`` (recompute
+    ``actual_amount`` from entries when the parent transaction is
+    already Paid). Pure status equality, does not consider
+    ``is_deleted``.
+
+    Note on the name: ``StatusEnum.DONE`` is the enum member; the
+    ref-table row carries display name "Paid" and ``is_settled=True``.
+    The predicate is named ``is_done`` to match the enum identifier
+    so a future renaming of the enum surfaces in this helper as well.
+
+    Args:
+        txn: a ``Transaction`` instance with ``status_id`` populated.
+
+    Returns:
+        ``True`` if ``txn.status_id`` equals the cached integer ID for
+        ``StatusEnum.DONE``; ``False`` for every other status.
+
+    Raises:
+        RuntimeError: propagated from ``ref_cache.status_id`` if the
+            reference cache has not been initialized.
+    """
+    return txn.status_id == ref_cache.status_id(StatusEnum.DONE)
+
+
+def is_projected_clause(model_class):
+    """Return a SQLAlchemy boolean clause matching ``Projected``.
+
+    Centralizes the eleven SQLAlchemy filter sites that previously
+    each bound ``projected_id = ref_cache.status_id(StatusEnum.
+    PROJECTED)`` locally and wrote ``Model.status_id == projected_id``
+    inline (D6-09 (ii); five in ``app/routes`` for the template /
+    transfer archive workflow and the entries auto-clear, six in
+    ``app/services`` for the dashboard / entries / carry-forward
+    queries). After this commit those sites all read
+    ``is_projected_clause(Transaction)`` /
+    ``is_projected_clause(Transfer)`` so the rule "what does a
+    Projected filter look like in SQL" is defined once.
+
+    The clause is intentionally polymorphic over the model class
+    because ``Transaction`` and ``Transfer`` both carry an FK named
+    ``status_id`` against ``ref.statuses.id`` and the D6-09 (ii)
+    register covers both. Other models with a different status
+    column shape would need their own helper; passing one in here
+    is a usage error caught by the missing-attribute ``AttributeError``
+    at filter-build time.
+
+    Args:
+        model_class: ``app.models.transaction.Transaction`` or
+            ``app.models.transfer.Transfer``. Any other class with a
+            ``status_id`` column attribute also works (the helper is
+            structurally typed) but the two listed are the only
+            current callers.
+
+    Returns:
+        A SQLAlchemy boolean expression equivalent to
+        ``model_class.status_id == <PROJECTED.id>`` suitable for
+        ``query.filter(...)``.
+
+    Raises:
+        RuntimeError: propagated from ``ref_cache.status_id`` if the
+            reference cache has not been initialized.
+    """
+    return model_class.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
 
 
 def balance_contributing_clause():

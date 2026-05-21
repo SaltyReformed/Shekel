@@ -40,6 +40,7 @@ from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
 from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
+from app.utils.balance_predicates import is_projected_clause
 from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
@@ -485,13 +486,16 @@ def archive_transfer_template(template_id):
 
     template.is_active = False
 
-    # Find projected, non-deleted transfers to soft-delete.
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Find projected, non-deleted transfers to soft-delete.  Routed
+    # through the centralized ``is_projected_clause`` (D6-09 / MED-02)
+    # parameterised on ``Transfer`` so the rule "what does a
+    # Projected filter look like in SQL" is shared with the
+    # Transaction filter sites.
     transfers_to_delete = (
         db.session.query(Transfer)
         .filter(
             Transfer.transfer_template_id == template.id,
-            Transfer.status_id == projected_id,
+            is_projected_clause(Transfer),
             Transfer.is_deleted.is_(False),
         )
         .all()
@@ -540,13 +544,14 @@ def unarchive_transfer_template(template_id):
 
     template.is_active = True
 
-    # Find soft-deleted projected transfers to restore.
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Find soft-deleted projected transfers to restore.  Routed
+    # through ``is_projected_clause(Transfer)`` (D6-09 / MED-02);
+    # see ``archive_transfer_template`` above.
     transfers_to_restore = (
         db.session.query(Transfer)
         .filter(
             Transfer.transfer_template_id == template.id,
-            Transfer.status_id == projected_id,
+            is_projected_clause(Transfer),
             Transfer.is_deleted.is_(True),
         )
         .all()
@@ -631,12 +636,13 @@ def hard_delete_transfer_template(template_id):
             template.is_active = False
             # Soft-delete projected transfers via the service (same as
             # archive_transfer_template) to maintain shadow invariants.
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            # Routed through ``is_projected_clause(Transfer)``
+            # (D6-09 / MED-02); see ``archive_transfer_template`` above.
             transfers_to_delete = (
                 db.session.query(Transfer)
                 .filter(
                     Transfer.transfer_template_id == template.id,
-                    Transfer.status_id == projected_id,
+                    is_projected_clause(Transfer),
                     Transfer.is_deleted.is_(False),
                 )
                 .all()

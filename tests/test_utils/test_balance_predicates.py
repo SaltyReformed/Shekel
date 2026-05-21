@@ -41,7 +41,11 @@ from app.utils.balance_predicates import (
     balance_contributing_clause,
     balance_excluded_status_ids,
     is_balance_contributing,
+    is_cancelled,
+    is_credit,
+    is_done,
     is_projected,
+    is_projected_clause,
 )
 
 
@@ -373,3 +377,457 @@ class TestIsProjected:
                 StatusEnum.PROJECTED, is_deleted=True,
             )
             assert is_projected(txn) is True
+
+
+class TestIsCredit:
+    """Pins ``is_credit`` (Commit 29 / MED-02 residual).
+
+    Centralizes the inline ``status_id == credit_id`` /
+    ``status_id != credit_id`` comparisons in ``credit_workflow.py``
+    (mark-as-credit idempotency check; unmark-credit precondition
+    guard) and ``entry_service.create_entry`` (block entries on
+    credit-status transactions). The contract mirrors
+    ``is_projected``: pure status equality, ``is_deleted`` irrelevant.
+    """
+
+    def test_is_credit_true_for_credit_txn(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A txn with ``status_id == Credit.id`` returns ``True``."""
+        with app.app_context():
+            txn = _make_txn(db, seed_user, seed_periods, StatusEnum.CREDIT)
+            assert is_credit(txn) is True
+
+    def test_is_credit_false_for_non_credit_txn(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A txn with any other status returns ``False``.
+
+        Iterates every non-Credit ``StatusEnum`` member so a future
+        new status added to the enum cannot silently be classified as
+        Credit by omission.
+        """
+        with app.app_context():
+            for member in StatusEnum:
+                if member is StatusEnum.CREDIT:
+                    continue
+                txn = _make_txn(db, seed_user, seed_periods, member)
+                assert is_credit(txn) is False, (
+                    f"is_credit returned True for {member.name}"
+                )
+
+    def test_is_credit_ignores_is_deleted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``is_credit`` is pure status equality; ``is_deleted`` is
+        irrelevant.
+
+        The credit_workflow idempotency guards call this on the
+        post-lock locked row whose ``is_deleted`` state is not
+        consulted; pinning that the predicate honors that contract.
+        """
+        with app.app_context():
+            txn = _make_txn(
+                db, seed_user, seed_periods,
+                StatusEnum.CREDIT, is_deleted=True,
+            )
+            assert is_credit(txn) is True
+
+
+class TestIsCancelled:
+    """Pins ``is_cancelled`` (Commit 29 / MED-02 residual).
+
+    Centralizes the inline ``status_id == cancelled_id`` comparisons
+    in ``app/routes/grid.py`` (skip-cancelled row-key collection,
+    mirroring the templates' ``!= STATUS_CANCELLED`` guards) and
+    ``entry_service.create_entry`` (block entries on
+    cancelled-status transactions). Narrower than
+    ``is_balance_contributing``: ``Credit`` is excluded from balance
+    but is NOT cancelled, and the grid still renders the Credit row.
+    """
+
+    def test_is_cancelled_true_for_cancelled_txn(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A txn with ``status_id == Cancelled.id`` returns ``True``."""
+        with app.app_context():
+            txn = _make_txn(
+                db, seed_user, seed_periods, StatusEnum.CANCELLED,
+            )
+            assert is_cancelled(txn) is True
+
+    def test_is_cancelled_false_for_non_cancelled_txn(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A txn with any other status returns ``False`` -- including
+        ``Credit`` (which shares ``excludes_from_balance=True`` with
+        Cancelled but is rendered with strike-through, not omitted).
+        """
+        with app.app_context():
+            for member in StatusEnum:
+                if member is StatusEnum.CANCELLED:
+                    continue
+                txn = _make_txn(db, seed_user, seed_periods, member)
+                assert is_cancelled(txn) is False, (
+                    f"is_cancelled returned True for {member.name}"
+                )
+
+    def test_is_cancelled_narrower_than_balance_contributing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A ``Credit`` txn is NOT cancelled, but IS excluded from
+        balance.
+
+        Pins the documented contract: ``is_cancelled`` and
+        ``is_balance_contributing`` are independent predicates with
+        different membership sets. The grid uses ``is_cancelled`` to
+        omit only Cancelled rows; ``is_balance_contributing`` excludes
+        both Cancelled AND Credit from numeric balance contribution.
+        """
+        with app.app_context():
+            credit_txn = _make_txn(
+                db, seed_user, seed_periods, StatusEnum.CREDIT,
+            )
+            assert is_cancelled(credit_txn) is False
+            assert is_balance_contributing(credit_txn) is False
+
+
+class TestIsDone:
+    """Pins ``is_done`` (Commit 29 / MED-02 residual).
+
+    Centralizes the inline ``status_id == done_id`` comparison in
+    ``entry_service._update_actual_if_paid`` (recompute
+    ``actual_amount`` from entries when the parent transaction is
+    already Paid). ``StatusEnum.DONE`` is the Python enum identifier;
+    the ref-table row carries display name "Paid".
+    """
+
+    def test_is_done_true_for_paid_txn(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A txn with ``status_id == DONE.id`` (display "Paid")
+        returns ``True``."""
+        with app.app_context():
+            txn = _make_txn(db, seed_user, seed_periods, StatusEnum.DONE)
+            assert is_done(txn) is True
+
+    def test_is_done_false_for_non_paid_txn(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A txn with any other status returns ``False``.
+
+        Includes ``Settled``, which is also ``is_settled=True`` but
+        a distinct ref-table row; ``is_done`` is narrow status
+        equality and must not collapse the two.
+        """
+        with app.app_context():
+            for member in StatusEnum:
+                if member is StatusEnum.DONE:
+                    continue
+                txn = _make_txn(db, seed_user, seed_periods, member)
+                assert is_done(txn) is False, (
+                    f"is_done returned True for {member.name}"
+                )
+
+
+class TestIsProjectedClause:
+    """Pins ``is_projected_clause`` (Commit 29 / MED-02 residual).
+
+    The eleven SQLAlchemy filter sites that previously each wrote
+    ``Model.status_id == projected_id`` inline now consume this
+    parameterised helper. The parity test below seeds Projected and
+    non-Projected rows of both ``Transaction`` and ``Transfer`` and
+    asserts the clause returns exactly the Projected ID set in each
+    case -- the load-bearing guarantee that the SQL form classifies
+    rows identically to the Python ``is_projected`` predicate.
+    """
+
+    def test_clause_returns_only_projected_transactions(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Seeded mix of Transaction rows: filter via
+        ``is_projected_clause(Transaction)`` returns only the
+        Projected IDs.
+
+        Seeded matrix: one transaction per StatusEnum member (6
+        rows). Expected: the clause selects exactly the Projected
+        row.
+        """
+        with app.app_context():
+            txns_by_status = {
+                member: _make_txn(db, seed_user, seed_periods, member)
+                for member in StatusEnum
+            }
+            seeded_ids = {t.id for t in txns_by_status.values()}
+
+            projected_ids = {
+                row.id for row in (
+                    db.session.query(Transaction.id)
+                    .filter(Transaction.id.in_(seeded_ids))
+                    .filter(is_projected_clause(Transaction))
+                    .all()
+                )
+            }
+
+            assert projected_ids == {
+                txns_by_status[StatusEnum.PROJECTED].id,
+            }, (
+                "is_projected_clause(Transaction) selected a "
+                "different set than {Projected}"
+            )
+
+    def test_clause_matches_python_is_projected(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The SQL clause classifies the same rows as the Python
+        predicate.
+
+        Seeded mix as above; asserts the ID set returned by the
+        ORM filter equals the ID set produced by iterating in
+        Python with ``is_projected``. Mirrors the C2-6 parity test
+        for ``balance_contributing_clause`` against
+        ``is_balance_contributing``; required because nothing else
+        enforces that the SQL form and the Python form classify
+        identically.
+        """
+        with app.app_context():
+            txns = [
+                _make_txn(db, seed_user, seed_periods, member)
+                for member in StatusEnum
+            ]
+            seeded_ids = {t.id for t in txns}
+
+            python_projected = {t.id for t in txns if is_projected(t)}
+            sql_projected = {
+                row.id for row in (
+                    db.session.query(Transaction.id)
+                    .filter(Transaction.id.in_(seeded_ids))
+                    .filter(is_projected_clause(Transaction))
+                    .all()
+                )
+            }
+
+            assert python_projected == sql_projected, (
+                "is_projected_clause and is_projected disagree -- "
+                "balance_predicates.py has drifted; the SQL filter "
+                "sites and the Python predicate sites will silently "
+                "classify Projected rows differently."
+            )
+
+
+class TestCreditCancelledSingleDefinition:
+    """Pin C29-4: the ``[Credit, Cancelled]`` exclusion set is defined
+    in exactly one place.
+
+    Pre-Commit-29 the set was independently re-derived in
+    ``budget_variance_service`` (inline ``excluded_status_ids =
+    [CREDIT, CANCELLED]``) and in ``year_end_summary_service``
+    (``_get_excluded_status_ids()`` helper of identical body), plus
+    reproduced as ``Status.excludes_from_balance.is_(False)`` filters
+    in five SQL sites and ``not t.status.excludes_from_balance``
+    Python checks in three sites. Commit 29 collapses all of them
+    onto ``balance_excluded_status_ids()`` from this module. This
+    test mechanically asserts that property by greppingthe app/
+    tree.
+    """
+
+    def test_no_competing_credit_cancelled_helper(self):
+        """No other module defines a helper that returns the
+        ``[Credit, Cancelled]`` ID list.
+
+        Greps for the ``_get_excluded_status_ids`` name (the
+        pre-Commit-29 duplicated helper in
+        ``year_end_summary_service``) plus the inline list-literal
+        pattern ``[ref_cache.status_id(StatusEnum.CREDIT)``. Either
+        match outside ``balance_predicates.py`` would be a
+        regression: a future contributor would have re-introduced
+        the duplication MED-02 fixes.
+        """
+        app_root = Path(__file__).resolve().parents[2] / "app"
+        offenders: list[str] = []
+        for py_path in app_root.rglob("*.py"):
+            if py_path.name == "balance_predicates.py":
+                continue
+            source = py_path.read_text(encoding="utf-8")
+            if "_get_excluded_status_ids" in source:
+                offenders.append(
+                    f"{py_path.relative_to(app_root)}: defines "
+                    "_get_excluded_status_ids (pre-Commit-29 dup)"
+                )
+            # The inline list literal whose first element binds the
+            # CREDIT status id is the structural form of the
+            # pre-Commit-29 ``excluded_status_ids = [CREDIT,
+            # CANCELLED]`` reproduction.  Detected by the substring
+            # "StatusEnum.CREDIT)," appearing in a list-literal
+            # context (the trailing comma differentiates it from a
+            # bare ``ref_cache.status_id(StatusEnum.CREDIT)`` access).
+            if (
+                "ref_cache.status_id(StatusEnum.CREDIT),"
+                in source.replace(" ", "").replace("\n", "")
+            ):
+                offenders.append(
+                    f"{py_path.relative_to(app_root)}: inline "
+                    "[CREDIT, CANCELLED] list literal "
+                    "(pre-Commit-29 dup)"
+                )
+        assert not offenders, (
+            "The [Credit, Cancelled] exclusion set is re-derived "
+            "outside balance_predicates.py. Route through "
+            "balance_excluded_status_ids() instead. Offenders: "
+            + "; ".join(offenders)
+        )
+
+
+class TestNoInlineStatusBusinessLogic:
+    """Pin C29-1: business-logic per-status equality lives only in
+    ``balance_predicates.py``.
+
+    The audit's D6-09 (i) and D6-09 (ii) registers covered three
+    inline forms of the per-status equality comparison: Python
+    ``status_id != projected_id`` skips, Python ``status_id ==
+    credit_id`` / ``cancelled_id`` / ``done_id`` state-machine
+    gates, and SQLAlchemy ``Model.status_id == projected_id`` filter
+    sites. Commit 29 routes every one of them through the helpers
+    in this module. This test mechanically asserts that no
+    business-logic file rebuilds the same comparison inline.
+
+    The grep accepts a small whitelist of file:pattern pairs that
+    are NOT D6-09 instances (relational invariant checks, JOIN
+    conditions, two-field display selections). Any new match
+    outside that whitelist fails the test.
+    """
+
+    # File-level allowlist of `status_id == ` / `status_id != ` sites
+    # that are NOT the D6-09 pattern: two-field invariant checks,
+    # SQL JOIN ON clauses, and form-render ``selected if`` two-field
+    # comparisons.  Each entry is (relative-path, substring-of-line)
+    # so a future change that adds a NEW inline comparison in any
+    # listed file is still caught.
+    _ALLOWED_NON_D609_SITES = (
+        # transfer_service: relational integrity (shadow status must
+        # match parent), comparing two model fields not a constant.
+        ("services/transfer_service.py",
+         "shadow.status_id != xfer.status_id"),
+        # archive_helpers: SQL JOIN ON clauses on the status FK.
+        ("utils/archive_helpers.py",
+         "Transaction.status_id == Status.id"),
+        ("utils/archive_helpers.py",
+         "Transfer.status_id == Status.id"),
+    )
+
+    def test_no_inline_status_equality_outside_predicate_module(self):
+        """Every business-logic ``status_id == X`` /
+        ``status_id != X`` in ``app/`` is either (a) inside
+        ``balance_predicates.py``, (b) on the documented allowlist
+        of non-D6-09 patterns, or (c) a Jinja template using the
+        ID-based ``STATUS_*`` globals.
+
+        Walks every ``.py`` and ``.html`` file under ``app/`` and
+        classifies each ``status_id ==`` / ``status_id !=`` line.
+        Any unclassified hit is a regression (a new D6-09 inline
+        comparison snuck in past the helper).
+        """
+        app_root = Path(__file__).resolve().parents[2] / "app"
+        violations: list[str] = []
+
+        for path in app_root.rglob("*.py"):
+            rel = str(path.relative_to(app_root))
+            if rel == "utils/balance_predicates.py":
+                continue
+            for lineno, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1,
+            ):
+                if (
+                    "status_id ==" not in line
+                    and "status_id !=" not in line
+                ):
+                    continue
+                # Ignore comment lines -- pure documentation.
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                # Ignore the allowlist of non-D6-09 patterns.
+                if any(
+                    rel == allowed_rel and allowed_substr in line
+                    for allowed_rel, allowed_substr in (
+                        self._ALLOWED_NON_D609_SITES
+                    )
+                ):
+                    continue
+                violations.append(f"{rel}:{lineno}: {stripped}")
+
+        # Templates: a comparison against ``status.name`` (the
+        # audit's name-string violation) is the structural form
+        # ``status.name ==`` or ``status.name !=``.  Output
+        # expressions like ``{{ t.status.name }}`` in an aria-label
+        # are display uses (the comparison would be inside an
+        # adjacent ``{% if %}`` block on the same line, which the
+        # substring check would still catch).
+        for path in app_root.rglob("*.html"):
+            rel = str(path.relative_to(app_root))
+            source = path.read_text(encoding="utf-8")
+            collapsed = source.replace(" ", "")
+            if (
+                "status.name==" in collapsed
+                or "status.name!=" in collapsed
+            ):
+                violations.append(
+                    f"{rel}: Jinja compares status.name "
+                    "(E-15 violation)"
+                )
+
+        assert not violations, (
+            "Inline business-logic status comparisons found outside "
+            "the centralized predicate module. Route through "
+            "is_projected / is_credit / is_cancelled / is_done / "
+            "is_projected_clause from app/utils/balance_predicates.py. "
+            "Offenders: " + "; ".join(violations)
+        )
+
+
+class TestJinjaUsesIdsNotNames:
+    """Pin C29-2: Jinja templates use IDs in conditionals, never
+    ``status.name``.
+
+    The audit's D6-09 (iv) and CLAUDE.md rule 4 ("IDs for logic,
+    strings for display only") both require that Jinja conditional
+    branches consume the ID-based ``STATUS_*`` globals set in
+    ``app/__init__.py``, with the display string reserved for
+    aria-labels and badges.
+
+    This test parses every ``.html`` template and asserts that no
+    ``{% if %}`` / ``{% elif %}`` / ``{% set %}`` line contains
+    ``status.name`` on the comparison side. Display uses
+    (``{{ status.name }}`` in aria-label / title / badge body) are
+    allowed -- those are output, not control flow.
+    """
+
+    def test_no_status_name_in_template_conditionals(self):
+        """Every Jinja conditional that touches a status compares
+        IDs, not display strings."""
+        app_root = Path(__file__).resolve().parents[2] / "app"
+        violations: list[str] = []
+        for path in app_root.rglob("*.html"):
+            rel = str(path.relative_to(app_root))
+            for lineno, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1,
+            ):
+                # ``status.name`` in a control-flow tag (``{% if``
+                # / ``{% elif`` / ``{% set ... = ... %}``) means the
+                # template is comparing against the display string,
+                # which E-15 forbids.  Bare ``{{ status.name }}``
+                # output expressions are display labels and allowed.
+                if "status.name" not in line:
+                    continue
+                if (
+                    ("{% if" in line and "==" in line)
+                    or ("{% elif" in line and "==" in line)
+                    or ("{% set" in line and "==" in line)
+                ):
+                    violations.append(f"{rel}:{lineno}: {line.strip()}")
+        assert not violations, (
+            "Jinja template conditional compares against "
+            "``status.name`` (E-15 / CLAUDE.md rule 4 violation). "
+            "Use the ID-based ``STATUS_*`` Jinja globals instead. "
+            "Offenders: " + "; ".join(violations)
+        )

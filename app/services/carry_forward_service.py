@@ -46,11 +46,10 @@ import logging
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app import ref_cache
-from app.enums import StatusEnum
 from app.services import transfer_service
 from app.services.entry_service import compute_actual_from_entries
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.balance_predicates import is_projected_clause
 from app.utils.log_events import BUSINESS, EVT_CARRY_FORWARD, log_event
 
 logger = logging.getLogger(__name__)
@@ -253,14 +252,16 @@ def _build_carry_forward_context(source_period_id, target_period_id,
             discrete_txns=[],
         )
 
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
+    # Routed through ``is_projected_clause`` (D6-09 / MED-02) so the
+    # source-period projected-only query, the discrete-template bulk
+    # UPDATE, and the discrete-adhoc bulk UPDATE below share one
+    # definition of the rule with every other Projected SQL filter.
     projected_txns = (
         db.session.query(Transaction)
         .filter(
             Transaction.pay_period_id == source_period_id,
             Transaction.scenario_id == scenario_id,
-            Transaction.status_id == projected_id,
+            is_projected_clause(Transaction),
             Transaction.is_deleted.is_(False),
         )
         .all()
@@ -345,8 +346,6 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
 
     count = 0
 
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
     # The discrete and envelope branches both run inside a no_autoflush
     # block so a partially-mutated row (is_override flipped, pay_period
     # not yet flipped, etc.) cannot trigger an autoflush mid-iteration
@@ -358,20 +357,21 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     with db.session.no_autoflush:
         # ── Discrete branch ────────────────────────────────────────
         # Conditional bulk UPDATE rather than per-row ORM mutation.
-        # The ``status_id == projected`` predicate in the WHERE clause
-        # closes the F-049 race: between the SELECT in
-        # ``_build_carry_forward_context`` and the flush, a concurrent
-        # ``mark_done`` (or ``mark_credit`` / ``cancel``) request can
-        # transition a row out of Projected, and a per-row
-        # ``setattr(...)`` followed by a flush would carry a settled
-        # row into the target period -- erasing the user's prior
-        # status decision.  The bulk UPDATE atomically re-checks the
-        # status as a SQL precondition, so race-loser rows are
-        # silently left in place (still Paid, still in the source
-        # period, untouched by this batch) and the count reflects
-        # only the rows that actually moved.  Audit reference:
+        # The Projected predicate in the WHERE clause closes the F-049
+        # race: between the SELECT in ``_build_carry_forward_context``
+        # and the flush, a concurrent ``mark_done`` (or ``mark_credit``
+        # / ``cancel``) request can transition a row out of Projected,
+        # and a per-row ``setattr(...)`` followed by a flush would
+        # carry a settled row into the target period -- erasing the
+        # user's prior status decision.  The bulk UPDATE atomically
+        # re-checks the status as a SQL precondition, so race-loser
+        # rows are silently left in place (still Paid, still in the
+        # source period, untouched by this batch) and the count
+        # reflects only the rows that actually moved.  Audit reference:
         # F-049 / commit C-22 of the 2026-04-15 security remediation
-        # plan.
+        # plan.  Routed through the centralized ``is_projected_clause``
+        # (D6-09 / MED-02) so this re-check shares one definition with
+        # the source-period SELECT above.
         #
         # Two passes are required because template-linked rows must
         # flip ``is_override = TRUE`` as part of the same SQL UPDATE
@@ -407,7 +407,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
                     db.session.query(Transaction)
                     .filter(
                         Transaction.id.in_(template_ids),
-                        Transaction.status_id == projected_id,
+                        is_projected_clause(Transaction),
                         Transaction.is_deleted.is_(False),
                     )
                     .update(
@@ -425,7 +425,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
                     db.session.query(Transaction)
                     .filter(
                         Transaction.id.in_(adhoc_ids),
-                        Transaction.status_id == projected_id,
+                        is_projected_clause(Transaction),
                         Transaction.is_deleted.is_(False),
                     )
                     .update(

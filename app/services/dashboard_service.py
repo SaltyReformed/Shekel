@@ -28,6 +28,7 @@ from app.services import balance_resolver, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import is_projected_clause
 
 logger = logging.getLogger(__name__)
 
@@ -123,12 +124,15 @@ def _get_upcoming_bills(
     if next_period is not None:
         period_ids.append(next_period.id)
 
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
     # selectinload(entries) + joinedload(template) avoid N+1 lookups
     # when the template checks is_envelope and the helper below
     # iterates entries for progress computation.
+    # The Projected filter routes through the centralized
+    # ``is_projected_clause`` (D6-09 / MED-02) so every SQL filter
+    # over Projected shares one definition with the Python
+    # ``is_projected`` predicate.
     txns = (
         db.session.query(Transaction)
         .options(
@@ -142,7 +146,7 @@ def _get_upcoming_bills(
             Transaction.scenario_id == scenario_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),
-            Transaction.status_id == projected_id,
+            is_projected_clause(Transaction),
             Transaction.transaction_type_id == expense_type_id,
         )
         .all()

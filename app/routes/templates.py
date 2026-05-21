@@ -24,11 +24,12 @@ from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.ref import RecurrencePattern, Status, TransactionType
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
+from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import recurrence_engine, pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import is_projected_clause
 from app.exceptions import RecurrenceConflict
 
 logger = logging.getLogger(__name__)
@@ -472,10 +473,12 @@ def archive_template(template_id):
     template.is_active = False
 
     # Soft-delete projected transactions for this template.
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Centralized ``is_projected_clause`` (D6-09 / MED-02) so the
+    # archive-template, unarchive-template, and hard-delete-fallback
+    # filters in this module share one definition.
     deleted_count = db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
-        Transaction.status_id == projected_id,
+        is_projected_clause(Transaction),
         Transaction.is_deleted.is_(False),
     ).update({"is_deleted": True}, synchronize_session="fetch")
 
@@ -515,11 +518,11 @@ def unarchive_template(template_id):
 
     template.is_active = True
 
-    # Restore soft-deleted projected transactions.
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Restore soft-deleted projected transactions.  Routed through
+    # ``is_projected_clause`` (D6-09 / MED-02); see ``archive_template``.
     restored_count = db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
-        Transaction.status_id == projected_id,
+        is_projected_clause(Transaction),
         Transaction.is_deleted.is_(True),
     ).update({"is_deleted": False}, synchronize_session="fetch")
 
@@ -594,11 +597,12 @@ def hard_delete_template(template_id):
         )
         if template.is_active:
             template.is_active = False
-            # Soft-delete projected transactions (same logic as archive_template).
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            # Soft-delete projected transactions (same logic as
+            # archive_template).  Routed through ``is_projected_clause``
+            # (D6-09 / MED-02); see ``archive_template`` above.
             db.session.query(Transaction).filter(
                 Transaction.template_id == template.id,
-                Transaction.status_id == projected_id,
+                is_projected_clause(Transaction),
                 Transaction.is_deleted.is_(False),
             ).update({"is_deleted": True}, synchronize_session="fetch")
             try:

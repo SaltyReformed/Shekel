@@ -127,6 +127,17 @@ def calculate_investment_inputs(
 
     from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import CalcMethodEnum  # pylint: disable=import-outside-toplevel
+    # Routed through the centralized ``status_contributes_to_balance``
+    # helper (D6-09 / MED-02) so the "is this contribution counted"
+    # rule shares one definition with the SQL filters in
+    # ``year_end_summary_service`` / ``savings_dashboard_service`` and
+    # the Python ``is_balance_contributing`` predicate.  The
+    # status-only variant is required because the caller passes in
+    # already-deleted-filtered rows whose duck-typed test fakes
+    # (``FakeContribTransaction``) deliberately omit ``is_deleted``.
+    # Lazy import matches this module's no-top-level-app-imports
+    # convention.
+    from app.utils.balance_predicates import status_contributes_to_balance  # pylint: disable=import-outside-toplevel
 
     pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
 
@@ -147,7 +158,7 @@ def calculate_investment_inputs(
     if all_contributions:
         active_contributions = [
             t for t in all_contributions
-            if not t.status.excludes_from_balance
+            if status_contributes_to_balance(t)
         ]
         total_contrib = sum(
             Decimal(str(t.estimated_amount)) for t in active_contributions
@@ -183,7 +194,7 @@ def calculate_investment_inputs(
         }
         for t in all_contributions:
             if (t.pay_period_id in ytd_period_ids
-                    and not t.status.excludes_from_balance):
+                    and status_contributes_to_balance(t)):
                 ytd_contributions += Decimal(str(t.estimated_amount))
 
     # Step 5: Annual contribution limit.
@@ -238,6 +249,10 @@ def build_contribution_timeline(
     from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import CalcMethodEnum  # pylint: disable=import-outside-toplevel
     from app.services.growth_engine import ContributionRecord  # pylint: disable=import-outside-toplevel
+    # Centralized ``status_contributes_to_balance`` helper
+    # (D6-09 / MED-02); see ``calculate_investment_inputs`` above
+    # for why the status-only variant is the right primitive here.
+    from app.utils.balance_predicates import status_contributes_to_balance  # pylint: disable=import-outside-toplevel
 
     records = []
     today = date.today()
@@ -265,7 +280,7 @@ def build_contribution_timeline(
     for txn in contribution_transactions:
         # Skip cancelled/credit transactions that do not represent
         # actual contributions (same filter as loan_payment_service).
-        if txn.status.excludes_from_balance:
+        if not status_contributes_to_balance(txn):
             continue
         period = period_by_id.get(txn.pay_period_id)
         if period is None:

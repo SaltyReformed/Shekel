@@ -34,7 +34,6 @@ from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import Status
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -59,6 +58,7 @@ from app.services.investment_projection import (
 )
 from app.services.loan_payment_service import load_loan_context
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import balance_excluded_status_ids
 from app.services.tax_config_service import load_tax_configs
 from app.utils.money import round_money
 
@@ -672,7 +672,10 @@ def _compute_transfers_summary(
     if not period_ids:
         return []
 
-    excluded_ids = _get_excluded_status_ids()
+    # Routed through the centralized ``balance_excluded_status_ids``
+    # accessor (D6-09 / MED-02) so the Credit / Cancelled exclusion
+    # set is defined exactly once across the codebase.
+    excluded_ids = balance_excluded_status_ids()
 
     transfers = (
         db.session.query(Transfer)
@@ -1057,9 +1060,15 @@ def _sum_shadow_income(
 
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
+    # Status filter routes through the centralized
+    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02): one
+    # exclusion-set definition shared with every other
+    # ``[CREDIT, CANCELLED]`` filter in the codebase.  Filtering by
+    # ``Transaction.status_id`` lets the query drop the ``Status``
+    # join entirely; the audit-trigger row count is unchanged and
+    # the SQL is one INNER JOIN shorter.
     shadow_txns = (
         db.session.query(Transaction)
-        .join(Transaction.status)
         .filter(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
@@ -1067,7 +1076,7 @@ def _sum_shadow_income(
             Transaction.transfer_id.isnot(None),
             Transaction.transaction_type_id == income_type_id,
             Transaction.is_deleted.is_(False),
-            Status.excludes_from_balance.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
         )
         .all()
     )
@@ -1134,10 +1143,17 @@ def _project_investment_for_year(
     adapted_deductions = adapt_deductions(acct_deductions)
 
     # Shadow income transactions in the year for contribution history.
+    # Status filter routes through ``balance_excluded_status_ids``
+    # (D6-09 / MED-02); see ``_compute_account_contributions`` above.
+    # ``joinedload(Transaction.status)`` is retained so downstream
+    # consumers (``investment_projection.calculate_investment_inputs``)
+    # can read ``txn.status.is_settled`` /
+    # ``txn.status.excludes_from_balance`` without an N+1; the
+    # explicit INNER JOIN is dropped because the
+    # ``Transaction.status_id`` filter no longer needs it.
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     acct_contributions = (
         db.session.query(Transaction)
-        .join(Transaction.status)
         .options(
             joinedload(Transaction.status),
             joinedload(Transaction.pay_period),
@@ -1149,7 +1165,7 @@ def _project_investment_for_year(
             Transaction.transfer_id.isnot(None),
             Transaction.transaction_type_id == income_type_id,
             Transaction.is_deleted.is_(False),
-            Status.excludes_from_balance.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
         )
         .all()
     ) if year_period_ids else []
@@ -1671,11 +1687,13 @@ def _build_investment_balance_map(
     adapted_deductions = adapt_deductions(acct_deductions)
 
     # Shadow income transactions for contribution history.
+    # Status filter routes through ``balance_excluded_status_ids``
+    # (D6-09 / MED-02); see ``_compute_account_contributions``
+    # earlier in this module.
     post_period_ids = [p.id for p in post_anchor]
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     acct_contributions = (
         db.session.query(Transaction)
-        .join(Transaction.status)
         .options(
             joinedload(Transaction.status),
             joinedload(Transaction.pay_period),
@@ -1687,7 +1705,7 @@ def _build_investment_balance_map(
             Transaction.transfer_id.isnot(None),
             Transaction.transaction_type_id == income_type_id,
             Transaction.is_deleted.is_(False),
-            Status.excludes_from_balance.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
         )
         .all()
     ) if post_period_ids else []
@@ -2063,14 +2081,6 @@ def _get_settled_status_ids() -> list[int]:
         ref_cache.status_id(StatusEnum.DONE),
         ref_cache.status_id(StatusEnum.RECEIVED),
         ref_cache.status_id(StatusEnum.SETTLED),
-    ]
-
-
-def _get_excluded_status_ids() -> list[int]:
-    """Return status IDs that should be excluded from summaries."""
-    return [
-        ref_cache.status_id(StatusEnum.CREDIT),
-        ref_cache.status_id(StatusEnum.CANCELLED),
     ]
 
 

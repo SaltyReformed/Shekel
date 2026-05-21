@@ -25,11 +25,12 @@ from collections import OrderedDict
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.services.interest_projection import calculate_interest
+from app.utils.balance_predicates import (
+    is_projected,
+    status_contributes_to_balance,
+)
 
 logger = logging.getLogger(__name__)
-
-from app import ref_cache
-from app.enums import StatusEnum
 
 
 def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
@@ -260,8 +261,17 @@ def calculate_balances_with_amortization(
         period_txns = txn_by_period.get(period.id, [])
         total_payment_in = Decimal("0.00")
         for txn in period_txns:
-            # Cancelled transactions do not represent loan payments.
-            if txn.status and txn.status.excludes_from_balance:
+            # Cancelled / Credit transactions do not represent loan
+            # payments. Routed through the centralized predicate
+            # (D6-09 / MED-02): the rule "is this row contributing"
+            # lives in one place so the loan-payment classifier and
+            # every other balance-contribution gate cannot drift
+            # apart.  The status-only variant is required because
+            # this function's docstring contract pre-filters deleted
+            # rows upstream and existing test fakes
+            # (``types.SimpleNamespace`` constructs without
+            # ``is_deleted``) rely on that contract.
+            if not status_contributes_to_balance(txn):
                 continue
             # Shadow income transactions in this account are loan payments.
             # effective_amount prefers actual over estimated (Decimal).
@@ -384,9 +394,12 @@ def _entry_aware_amount(txn):
     # Only apply the entry formula to projected transactions.
     # Settled, cancelled, and credit statuses are already handled
     # correctly by effective_amount (returns 0 for excluded statuses,
-    # actual_amount for settled statuses).
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    if txn.status_id != projected_id:
+    # actual_amount for settled statuses).  Routed through the
+    # centralized ``is_projected`` predicate (D6-09 / MED-02) so
+    # this entry-formula gate cannot drift from the other
+    # Projected-only filters in this module and in the balance
+    # resolver.
+    if not is_projected(txn):
         return txn.effective_amount
 
     # Three-bucket partition: cleared debit, uncleared debit, credit.
@@ -427,12 +440,14 @@ def _sum_remaining(transactions):
     income = Decimal("0.00")
     expenses = Decimal("0.00")
 
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
     for txn in transactions:
         # Only projected items remain to be settled -- everything else
         # is either already in the anchor or excluded from balance.
-        if txn.status_id != projected_id:
+        # Routed through the centralized ``is_projected`` predicate
+        # (D6-09 / MED-02) so the anchor-period Projected filter
+        # shares one definition with ``_sum_all`` and
+        # ``_entry_aware_amount`` below.
+        if not is_projected(txn):
             continue
 
         if txn.is_income:
@@ -460,11 +475,13 @@ def _sum_all(transactions):
     income = Decimal("0.00")
     expenses = Decimal("0.00")
 
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
     for txn in transactions:
         # Only projected items affect the projected balance.
-        if txn.status_id != projected_id:
+        # Routed through the centralized ``is_projected`` predicate
+        # (D6-09 / MED-02) so the post-anchor Projected filter
+        # shares one definition with ``_sum_remaining`` above and
+        # ``_entry_aware_amount``.
+        if not is_projected(txn):
             continue
 
         if txn.is_income:

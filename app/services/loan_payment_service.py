@@ -39,10 +39,10 @@ from app.extensions import db
 from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
-from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.services import amortization_engine, escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
+from app.utils.balance_predicates import balance_excluded_status_ids
 
 logger = logging.getLogger(__name__)
 
@@ -191,9 +191,18 @@ def get_payment_history(
 
     # Query shadow income transactions with eager-loaded status and
     # pay_period to avoid N+1 queries when iterating results.
+    # Status filter routes through the centralized
+    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02): the
+    # exclusion-set definition lives in one place.  The
+    # ``join(Transaction.pay_period)`` is retained because the
+    # subsequent ``order_by(PayPeriod.start_date)`` requires the
+    # PayPeriod alias to be in scope; ``join(Transaction.status)``
+    # is dropped because the ``Transaction.status_id`` filter no
+    # longer needs it.  ``joinedload(Transaction.status)`` still
+    # eager-loads the status row for the downstream ``is_settled``
+    # consumer.
     txns = (
         db.session.query(Transaction)
-        .join(Transaction.status)
         .join(Transaction.pay_period)
         .options(
             joinedload(Transaction.status),
@@ -207,7 +216,7 @@ def get_payment_history(
             Transaction.is_deleted.is_(False),
             # Exclude statuses that do not represent real payments
             # (Cancelled, Credit).  These have excludes_from_balance=True.
-            Status.excludes_from_balance.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
         )
         .order_by(PayPeriod.start_date)
         .all()

@@ -79,14 +79,15 @@ from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
-from app import ref_cache
-from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import balance_calculator
-from app.utils.balance_predicates import balance_contributing_clause
+from app.utils.balance_predicates import (
+    balance_contributing_clause,
+    is_projected,
+)
 from app.utils.log_events import (
     BUSINESS,
     EVT_ANCHOR_CACHE_RECONCILED,
@@ -549,8 +550,13 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
         ``Decimal`` -- the entries-aware checking impact at ``as_of``.
     """
     entries = getattr(txn, "entries", ())
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    if txn.status_id != projected_id:
+    # Non-Projected statuses short-circuit through ``effective_amount``
+    # (Settled returns ``actual_amount``; Cancelled / Credit return zero
+    # via ``excludes_from_balance``).  Routed through the centralized
+    # ``is_projected`` predicate (D6-09 / MED-02) so this entry-formula
+    # gate shares one definition with the engine helper and the
+    # ``_sum_*`` loops in ``balance_calculator``.
+    if not is_projected(txn):
         return txn.effective_amount
 
     cleared_debit = Decimal("0")
@@ -615,9 +621,11 @@ def _sum_period_as_of(
     """
     income = Decimal("0.00")
     expense = Decimal("0.00")
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     for txn in transactions:
-        if txn.status_id != projected_id:
+        # Centralized ``is_projected`` predicate (D6-09 / MED-02);
+        # mirrors ``balance_calculator._sum_all`` exactly so the
+        # date-cut path classifies non-Projected rows identically.
+        if not is_projected(txn):
             continue
         if txn.is_income:
             income += txn.effective_amount

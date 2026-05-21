@@ -27,7 +27,7 @@ from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import AccountType, Status
+from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
@@ -55,6 +55,7 @@ from app.services.loan_payment_service import (
     load_loan_context,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import balance_excluded_status_ids
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
@@ -106,10 +107,19 @@ def compute_dashboard_data(user_id):
         .all()
     ) if scenario and period_ids else []
 
+    # Status filter routes through the centralized
+    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02) so the
+    # Credit / Cancelled exclusion is defined exactly once across the
+    # codebase.  ``joinedload(Transaction.status)`` is retained so
+    # downstream Python iteration in
+    # ``investment_projection.calculate_investment_inputs`` can read
+    # ``txn.status.excludes_from_balance`` /
+    # ``txn.status.is_settled`` without an N+1; the explicit INNER
+    # JOIN is dropped because the ``Transaction.status_id`` filter no
+    # longer needs it.
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     all_shadow_income = (
         db.session.query(Transaction)
-        .join(Transaction.status)
         .options(joinedload(Transaction.status))
         .filter(
             Transaction.transfer_id.isnot(None),
@@ -117,7 +127,7 @@ def compute_dashboard_data(user_id):
             Transaction.pay_period_id.in_(period_ids),
             Transaction.scenario_id == scenario.id,
             Transaction.is_deleted.is_(False),
-            Status.excludes_from_balance.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
         )
         .all()
     ) if scenario and period_ids else []

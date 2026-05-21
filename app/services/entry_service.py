@@ -25,9 +25,20 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum
+from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services.entry_credit_workflow import sync_entry_payback
+from app.utils.balance_predicates import (
+    is_cancelled,
+    is_done,
+    is_projected_clause,
+)
+# ``is_credit`` from balance_predicates collides with the
+# ``is_credit: bool`` keyword argument on this module's
+# ``create_entry`` / ``update_entry`` functions.  Aliasing the
+# predicate keeps both the helper accessible and the public
+# function signatures stable.
+from app.utils.balance_predicates import is_credit as txn_is_credit
 from app.utils.log_events import (
     BUSINESS,
     EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP,
@@ -65,8 +76,10 @@ def _update_actual_if_paid(txn: Transaction) -> None:
     Args:
         txn: The parent Transaction object.
     """
-    done_id = ref_cache.status_id(StatusEnum.DONE)
-    if txn.status_id == done_id and txn.entries:
+    # Centralized ``is_done`` predicate (D6-09 / MED-02) so the
+    # actual-recompute trigger shares one definition with every
+    # other per-status equality check in the project.
+    if is_done(txn) and txn.entries:
         txn.actual_amount = compute_actual_from_entries(txn.entries)
 
 
@@ -168,13 +181,15 @@ def create_entry(
     # CANCELLED is excluded from balance -- adding entries makes no sense.
     # CREDIT is blocked for entry-capable templates (OQ-10) -- credit
     # handling happens at the entry level, not the transaction level.
-    cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
-    credit_id = ref_cache.status_id(StatusEnum.CREDIT)
-    if txn.status_id == cancelled_id:
+    # Routed through the centralized per-status predicates
+    # (D6-09 / MED-02) so the two guards share one definition with
+    # every other ``status == cancelled`` / ``status == credit``
+    # comparison in the project.
+    if is_cancelled(txn):
         raise ValidationError(
             "Cannot add entries to a cancelled transaction."
         )
-    if txn.status_id == credit_id:
+    if txn_is_credit(txn):
         raise ValidationError(
             "Cannot add entries to a transaction with Credit status. "
             "Entry-capable transactions handle credit at the entry level."
@@ -504,12 +519,14 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
     Returns:
         int -- number of entry rows updated.
     """
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     today = date.today()
 
     # Synchronize_session='fetch' because later code in the same request
     # (e.g. balance calculator rendering the grid) may hold refs to the
     # affected entry rows and needs to see the updated flag.
+    # The Projected filter is routed through the centralized
+    # ``is_projected_clause`` (D6-09 / MED-02) so every SQL filter
+    # over Projected shares one definition.
     updated = (
         db.session.query(TransactionEntry)
         .filter(
@@ -521,7 +538,7 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
                 .filter(
                     PayPeriod.user_id == owner_id,
                     Transaction.is_deleted.is_(False),
-                    Transaction.status_id == projected_id,
+                    is_projected_clause(Transaction),
                 )
             ),
         )
