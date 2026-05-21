@@ -5,9 +5,12 @@ Tests the auto-generation of transfers from templates with recurrence
 rules, state machine behavior, regeneration, and conflict resolution.
 """
 
-import pytest
+import logging
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
+
+import pytest
 
 from app.extensions import db
 from app.models.category import Category
@@ -22,6 +25,7 @@ from app.enums import StatusEnum
 from app.services import transfer_recurrence
 from app.exceptions import RecurrenceConflict
 from app.services import account_service
+from app.utils.log_events import EVT_TRANSFER_HARD_DELETED
 
 
 def _assert_shadows_valid(xfer):
@@ -1331,3 +1335,262 @@ class TestResolveConflictsServiceRouting:
                     assert s.is_deleted is False
                     assert s.is_override is False
                     assert s.estimated_amount == Decimal("250.00")
+
+
+class _LogCapture:
+    """Capture log records emitted by ``logger_name`` with propagation off.
+
+    Mirrors the helper in ``tests/test_services/test_service_log_events.py``;
+    duplicated here rather than imported so the Commit 34 test class has
+    no cross-file dependency on another test module's private helper.
+    """
+
+    def __init__(self, logger_name: str, level: int = logging.DEBUG) -> None:
+        self._logger = logging.getLogger(logger_name)
+        self._level = level
+        self.records: list[logging.LogRecord] = []
+        self._handler = logging.Handler()
+        self._handler.emit = lambda record: self.records.append(record)
+        self._prior_level: int | None = None
+        self._prior_propagate: bool | None = None
+
+    def __enter__(self) -> "_LogCapture":
+        self._prior_level = self._logger.level
+        self._prior_propagate = self._logger.propagate
+        self._logger.addHandler(self._handler)
+        self._logger.setLevel(self._level)
+        self._logger.propagate = False
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._logger.removeHandler(self._handler)
+        self._logger.setLevel(self._prior_level)
+        self._logger.propagate = self._prior_propagate
+
+    def find_all(self, event_name: str) -> list[logging.LogRecord]:
+        """Return every captured record whose ``event`` field matches."""
+        return [
+            r for r in self.records
+            if getattr(r, "event", None) == event_name
+        ]
+
+
+class TestRegenerateDeletionRoutedThroughService:
+    """Commit 34 / LOW-02 / B6-03 -- regen deletes must use the canonical
+    transfer_service.delete_transfer path so the orphan-verification
+    self-check runs and one EVT_TRANSFER_HARD_DELETED audit event is
+    emitted per deleted transfer.  Shadow-pair atomicity is unchanged
+    (FK CASCADE already protected it), so this commit asserts forensic
+    completeness, not arithmetic correctness.
+    """
+
+    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+        """Helper: create a savings account + recurrence rule + transfer template."""
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name=pattern_name)
+            .one()
+        )
+        savings_type = (
+            db.session.query(AccountType)
+            .filter_by(name="Savings")
+            .one()
+        )
+        savings = account_service.create_account(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="Savings C34",
+            anchor_balance=Decimal("500.00"),
+        )
+        db.session.add(savings)
+        db.session.flush()
+
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=pattern.id,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            offset_periods=rule_kwargs.get("offset_periods", 0),
+            day_of_month=rule_kwargs.get("day_of_month"),
+            month_of_year=rule_kwargs.get("month_of_year"),
+        )
+        db.session.add(rule)
+        db.session.flush()
+
+        template = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            recurrence_rule_id=rule.id,
+            name="Commit 34 Transfer",
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        db.session.refresh(template)
+        return template
+
+    def test_regen_delete_emits_one_hard_delete_event_per_deletion(
+        self, app, db, seed_user, seed_periods
+    ):
+        """C34-1: every transfer regenerate-deletes emits exactly one
+        ``EVT_TRANSFER_HARD_DELETED`` record on the
+        ``app.services.transfer_service`` logger -- proof the bare
+        ``db.session.delete(xfer)`` shortcut is gone and the canonical
+        service path is the writer.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, "Every Period")
+
+            created = transfer_recurrence.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            deleted_ids = {xfer.id for xfer in created}
+            assert len(deleted_ids) == 10, (
+                "Setup expected 10 transfers to delete on regen; got "
+                f"{len(deleted_ids)}."
+            )
+
+            template.default_amount = Decimal("200.00")
+            db.session.flush()
+
+            with _LogCapture("app.services.transfer_service") as cap:
+                new_created = transfer_recurrence.regenerate_for_template(
+                    template, seed_periods, seed_user["scenario"].id,
+                )
+                db.session.flush()
+
+            hard_delete_records = cap.find_all(EVT_TRANSFER_HARD_DELETED)
+            assert len(hard_delete_records) == len(deleted_ids), (
+                f"Expected {len(deleted_ids)} {EVT_TRANSFER_HARD_DELETED} "
+                f"events (one per deleted transfer); observed "
+                f"{len(hard_delete_records)}."
+            )
+
+            observed_transfer_ids = {r.transfer_id for r in hard_delete_records}
+            assert observed_transfer_ids == deleted_ids
+
+            for record in hard_delete_records:
+                assert record.levelno == logging.INFO
+                assert record.user_id == seed_user["user"].id
+                # orphan_count is the service's self-check result (see C34-2).
+                assert record.orphan_count == 0
+
+            # Sanity: regen still produced the replacement transfers.
+            assert len(new_created) == 10
+            for xfer in new_created:
+                assert xfer.amount == Decimal("200.00")
+                assert xfer.id not in deleted_ids
+
+    def test_regen_delete_runs_orphan_verification(
+        self, app, db, seed_user, seed_periods
+    ):
+        """C34-2: the service path runs the orphan-verification
+        self-check (``query(Transaction).filter_by(transfer_id=...).count()``)
+        and surfaces the result on the audit event.  An ``orphan_count``
+        attribute on every hard-delete record proves the check ran;
+        ``== 0`` proves the FK CASCADE behaved as expected.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, "Every Period")
+            transfer_recurrence.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            template.default_amount = Decimal("175.00")
+            db.session.flush()
+
+            with _LogCapture("app.services.transfer_service") as cap:
+                transfer_recurrence.regenerate_for_template(
+                    template, seed_periods, seed_user["scenario"].id,
+                )
+                db.session.flush()
+
+            hard_delete_records = cap.find_all(EVT_TRANSFER_HARD_DELETED)
+            assert hard_delete_records, (
+                "Orphan check missing: no EVT_TRANSFER_HARD_DELETED "
+                "records were emitted by the canonical service path."
+            )
+            for record in hard_delete_records:
+                assert hasattr(record, "orphan_count"), (
+                    "EVT_TRANSFER_HARD_DELETED record missing "
+                    "orphan_count -- the service's self-check did not run."
+                )
+                assert record.orphan_count == 0, (
+                    "FK CASCADE failed to remove shadows: orphan_count "
+                    f"= {record.orphan_count} (expected 0)."
+                )
+
+    def test_regen_delete_leaves_no_orphan_shadows(
+        self, app, db, seed_user, seed_periods
+    ):
+        """C34-3: shadow-pair atomicity is unchanged.  Both shadows of
+        every regenerate-deleted transfer are gone (FK CASCADE), and no
+        ``transactions.transfer_id`` points at a missing transfer.
+        Locks the no-balance-drift property the commit promises.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, "Every Period")
+            created = transfer_recurrence.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            pre_shadow_ids: list[int] = []
+            for xfer in created:
+                shadows = (
+                    db.session.query(Transaction)
+                    .filter_by(transfer_id=xfer.id)
+                    .all()
+                )
+                assert len(shadows) == 2
+                pre_shadow_ids.extend(s.id for s in shadows)
+
+            template.default_amount = Decimal("225.00")
+            db.session.flush()
+            transfer_recurrence.regenerate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.commit()
+            db.session.expire_all()
+
+            for sid in pre_shadow_ids:
+                assert db.session.get(Transaction, sid) is None, (
+                    f"Shadow {sid} survived regen -- FK CASCADE failed."
+                )
+
+            # No live shadow may reference a missing transfer.
+            live_shadows = (
+                db.session.query(Transaction)
+                .filter(Transaction.transfer_id.isnot(None))
+                .all()
+            )
+            for shadow in live_shadows:
+                parent = db.session.get(Transfer, shadow.transfer_id)
+                assert parent is not None, (
+                    f"Orphaned shadow {shadow.id} -> missing "
+                    f"transfer {shadow.transfer_id}."
+                )
+
+    def test_transfer_recurrence_module_has_no_bare_delete(self):
+        """C34-4: lock the structural fix -- the source of
+        ``app/services/transfer_recurrence.py`` must contain no bare
+        ``db.session.delete(xfer)`` (or ``db.session.delete(transfer)``).
+        Pins Transfer Invariant 4 literally: every deletion writer-path
+        into ``budget.transfers`` is ``transfer_service.delete_transfer``.
+        """
+        module_path = (
+            Path(__file__).resolve().parents[2]
+            / "app" / "services" / "transfer_recurrence.py"
+        )
+        source = module_path.read_text(encoding="utf-8")
+        assert "db.session.delete(xfer)" not in source, (
+            "Found db.session.delete(xfer) in transfer_recurrence.py -- "
+            "regen must route through transfer_service.delete_transfer "
+            "(B6-03 / LOW-02 / Transfer Invariant 4)."
+        )
+        assert "db.session.delete(transfer)" not in source, (
+            "Found db.session.delete(transfer) in transfer_recurrence.py "
+            "-- regen must route through transfer_service.delete_transfer."
+        )
