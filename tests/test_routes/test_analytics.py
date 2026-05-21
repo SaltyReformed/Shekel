@@ -406,6 +406,94 @@ class TestCalendarTab:
             assert resp.status_code == 302
             assert "/analytics" in resp.headers["Location"]
 
+    def test_calendar_tab_404_when_account_unresolvable(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """C11-1 (route): unresolvable analytics account returns 404.
+
+        F-2 / Commit 11: pre-remediation the route silently rendered a
+        zeroed calendar.  After the contract change, the route maps
+        ``CalendarAccountNotResolvableError`` to a 404 ("404 for both
+        'not found' and 'not yours'").  Monkeypatching the resolver
+        is the deterministic way to simulate the upstream defect
+        without coupling the test to user/account fixture deletion.
+        """
+        from app.services import calendar_service as cs
+        monkeypatch.setattr(
+            cs, "resolve_analytics_account",
+            lambda _user_id, _account_id: None,
+        )
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+    def test_calendar_tab_404_when_scenario_unresolvable(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """C11-2 (route): unresolvable baseline scenario returns 404."""
+        from app.services import calendar_service as cs
+        monkeypatch.setattr(
+            cs, "get_baseline_scenario",
+            lambda _user_id: None,
+        )
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+    def test_calendar_tab_year_view_404_when_account_unresolvable(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """C11-1 (route, year view): year-view path also 404s."""
+        from app.services import calendar_service as cs
+        monkeypatch.setattr(
+            cs, "resolve_analytics_account",
+            lambda _user_id, _account_id: None,
+        )
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?view=year",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+    def test_calendar_tab_csv_404_when_scenario_unresolvable(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """C11-1/C11-2 (route, CSV branch): CSV path also 404s."""
+        from app.services import calendar_service as cs
+        monkeypatch.setattr(
+            cs, "get_baseline_scenario",
+            lambda _user_id: None,
+        )
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?format=csv&view=month"
+                "&year=2026&month=1",
+            )
+            assert resp.status_code == 404
+
+    def test_calendar_tab_200_when_resolvable(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C11-3 (route): valid account + scenario renders the calendar.
+
+        Locks the happy path so future regressions of the exception
+        handler (e.g. raising too eagerly) fail loud.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"calendar-grid" in resp.data
+
 
 class TestYearEndTab:
     """Tests for GET /analytics/year-end HTMX partial endpoint."""

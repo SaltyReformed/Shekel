@@ -31,6 +31,7 @@ from app.services import (
     spending_trend_service,
     year_end_summary_service,
 )
+from app.services.calendar_service import CalendarAccountNotResolvableError
 
 analytics_bp = Blueprint("analytics", __name__)
 
@@ -144,28 +145,40 @@ def calendar_tab():
 
     # CSV export -- before HTMX guard.
     if request.args.get("format") == "csv":
-        if view == "year":
-            data = calendar_service.get_year_overview(
-                user_id=current_user.id, year=year,
-                account_id=account_id, large_threshold=threshold,
-            )
-            csv_str = csv_export_service.export_calendar_csv(data, "year")
-            fname = f"calendar_{year}_year.csv"
-        else:
-            data = calendar_service.get_month_detail(
-                user_id=current_user.id, year=year, month=month,
-                account_id=account_id, large_threshold=threshold,
-            )
-            csv_str = csv_export_service.export_calendar_csv(data, "month")
-            fname = f"calendar_{year}_{month:02d}.csv"
+        try:
+            if view == "year":
+                data = calendar_service.get_year_overview(
+                    user_id=current_user.id, year=year,
+                    account_id=account_id, large_threshold=threshold,
+                )
+                csv_str = csv_export_service.export_calendar_csv(data, "year")
+                fname = f"calendar_{year}_year.csv"
+            else:
+                data = calendar_service.get_month_detail(
+                    user_id=current_user.id, year=year, month=month,
+                    account_id=account_id, large_threshold=threshold,
+                )
+                csv_str = csv_export_service.export_calendar_csv(data, "month")
+                fname = f"calendar_{year}_{month:02d}.csv"
+        except CalendarAccountNotResolvableError:
+            # F-2: missing analytics account / baseline scenario is an
+            # upstream defect after the Commit 3-8 anchor remediation;
+            # surface a 404 instead of masking it behind a zeroed CSV.
+            abort(404)
         return _csv_response(csv_str, fname)
 
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
 
-    if view == "year":
-        return _render_year_view(year, account_id, threshold)
-    return _render_month_view(year, month, account_id, threshold, today)
+    try:
+        if view == "year":
+            return _render_year_view(year, account_id, threshold)
+        return _render_month_view(year, month, account_id, threshold, today)
+    except CalendarAccountNotResolvableError:
+        # F-2: same contract as the CSV branch above -- 404 matches the
+        # project security rule ("404 for both 'not found' and 'not
+        # yours'", app/utils/auth_helpers.py).
+        abort(404)
 
 
 @analytics_bp.route("/analytics/year-end")

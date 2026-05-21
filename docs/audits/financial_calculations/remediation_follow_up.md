@@ -130,7 +130,19 @@ Quoted here so the split planner knows what conflicts with what:
 
 - **Surfaced during:** Commit 9 (`fix(calendar): month-end balance via
   canonical balance-as-of-date (E-27)`), commit `9871bf7`.
-- **Status:** not started; defer until after Commit 37.
+- **Status:** resolved by Commit 11 of the follow-up plan.
+  ``app/services/calendar_service.py`` now defines
+  ``CalendarAccountNotResolvableError(LookupError)`` and raises it from
+  ``get_month_detail`` / ``get_year_overview`` when
+  ``resolve_analytics_account`` or ``get_baseline_scenario`` returns
+  ``None``.  ``_empty_month`` and ``_empty_year`` are deleted (no
+  remaining caller).  ``app/routes/analytics.py::calendar_tab`` catches
+  the exception around the CSV branch and the HTMX render branch and
+  ``abort(404)``s, matching the project security rule "404 for both
+  'not found' and 'not yours'".  Pinned by
+  ``TestUnresolvableAccountOrScenario`` (service level) and the
+  ``test_calendar_tab_404_*`` / ``test_calendar_tab_200_when_resolvable``
+  cases in ``tests/test_routes/test_analytics.py::TestCalendarTab``.
 
 ### Problem
 

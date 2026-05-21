@@ -37,6 +37,27 @@ from app.utils.balance_predicates import (
 
 logger = logging.getLogger(__name__)
 
+
+class CalendarAccountNotResolvableError(LookupError):
+    """Raised when the calendar cannot resolve a backing account or scenario.
+
+    After Commits 3-8 of the main remediation locked the E-19 / CRIT-01
+    invariant ("anchor is never NULL; ``resolve_anchor`` raises or
+    returns a valid ``AnchorPoint``"), an ``account is None`` /
+    ``scenario is None`` outcome from
+    :func:`~app.services.account_resolver.resolve_analytics_account` or
+    :func:`~app.services.scenario_resolver.get_baseline_scenario`
+    indicates an *upstream* defect (deleted analytics account, missing
+    baseline scenario), not a normal "empty calendar" state.  Pre-F-2
+    the service silently substituted a zeroed :class:`MonthSummary` /
+    :class:`YearOverview`, which masked the upstream bug behind a
+    ``$0.00`` calendar shown to the user with no error.  Raising
+    instead lets the route layer answer with the project-standard 404
+    ("404 for both 'not found' and 'not yours'", see
+    :mod:`app.utils.auth_helpers`).
+    """
+
+
 # Recurrence patterns considered "infrequent" -- less frequent than monthly.
 _INFREQUENT_PATTERNS = frozenset({
     RecurrencePatternEnum.QUARTERLY,
@@ -117,11 +138,17 @@ def get_month_detail(
     """
     account = resolve_analytics_account(user_id, account_id)
     if account is None:
-        return _empty_month(year, month)
+        raise CalendarAccountNotResolvableError(
+            f"Analytics account not resolvable for user_id={user_id} "
+            f"account_id={account_id} year={year} month={month}",
+        )
 
     scenario = get_baseline_scenario(user_id)
     if scenario is None:
-        return _empty_month(year, month)
+        raise CalendarAccountNotResolvableError(
+            f"Baseline scenario not resolvable for user_id={user_id} "
+            f"year={year} month={month}",
+        )
 
     first_day = date(year, month, 1)
     last_day = date(year, month, calendar.monthrange(year, month)[1])
@@ -159,11 +186,17 @@ def get_year_overview(
     """
     account = resolve_analytics_account(user_id, account_id)
     if account is None:
-        return _empty_year(year)
+        raise CalendarAccountNotResolvableError(
+            f"Analytics account not resolvable for user_id={user_id} "
+            f"account_id={account_id} year={year}",
+        )
 
     scenario = get_baseline_scenario(user_id)
     if scenario is None:
-        return _empty_year(year)
+        raise CalendarAccountNotResolvableError(
+            f"Baseline scenario not resolvable for user_id={user_id} "
+            f"year={year}",
+        )
 
     first_day = date(year, 1, 1)
     last_day = date(year, 12, 31)
@@ -498,30 +531,3 @@ def _compute_month_end_balance(
     """
     last_day = date(year, month, calendar.monthrange(year, month)[1])
     return balance_as_of_date(account, scenario.id, last_day)
-
-
-def _empty_month(year: int, month: int) -> MonthSummary:
-    """Return a MonthSummary with zero totals and empty collections."""
-    return MonthSummary(
-        year=year,
-        month=month,
-        total_income=Decimal("0"),
-        total_expenses=Decimal("0"),
-        net=Decimal("0"),
-        projected_end_balance=Decimal("0"),
-        is_third_paycheck_month=False,
-        large_transactions=[],
-        day_entries={},
-        paycheck_days=[],
-    )
-
-
-def _empty_year(year: int) -> YearOverview:
-    """Return a YearOverview with 12 empty MonthSummaries."""
-    return YearOverview(
-        year=year,
-        months=[_empty_month(year, m) for m in range(1, 13)],
-        annual_income=Decimal("0"),
-        annual_expenses=Decimal("0"),
-        annual_net=Decimal("0"),
-    )

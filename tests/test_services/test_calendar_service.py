@@ -17,9 +17,12 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+import pytest
+
 from app.services import calendar_service
 from app.services.balance_resolver import period_subtotal
 from app.services.calendar_service import (
+    CalendarAccountNotResolvableError,
     _detect_third_paycheck_months,
     _is_infrequent,
 )
@@ -1242,3 +1245,82 @@ class TestBalanceContributingPredicate:
             # The entry-count contract above is the load-bearing
             # regression lock.
             assert regressed.total_expenses == Decimal("700.00")
+
+
+# ── Anchor-None contract (F-2 / Commit 11) ──────────────────────────
+
+
+class TestUnresolvableAccountOrScenario:
+    """Tests for the F-2 / Commit 11 contract.
+
+    After Commits 3-8 of the main remediation locked the E-19 /
+    CRIT-01 invariant, the calendar service must raise
+    :class:`CalendarAccountNotResolvableError` when
+    :func:`resolve_analytics_account` or
+    :func:`get_baseline_scenario` returns ``None`` -- the pre-F-2
+    behaviour of silently substituting a zeroed
+    :class:`MonthSummary` / :class:`YearOverview` masked the
+    upstream defect behind a ``$0.00`` calendar.
+    """
+
+    def test_month_detail_raises_when_account_unresolvable(
+        self, app, seed_user, db, monkeypatch,
+    ):
+        """C11-1 (service): None account -> CalendarAccountNotResolvableError."""
+        with app.app_context():
+            monkeypatch.setattr(
+                calendar_service, "resolve_analytics_account",
+                lambda _user_id, _account_id: None,
+            )
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_month_detail(
+                    user_id=seed_user["user"].id,
+                    year=2026,
+                    month=1,
+                )
+
+    def test_month_detail_raises_when_scenario_unresolvable(
+        self, app, seed_user, db, monkeypatch,
+    ):
+        """C11-2 (service): None baseline scenario -> error."""
+        with app.app_context():
+            monkeypatch.setattr(
+                calendar_service, "get_baseline_scenario",
+                lambda _user_id: None,
+            )
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_month_detail(
+                    user_id=seed_user["user"].id,
+                    year=2026,
+                    month=1,
+                )
+
+    def test_year_overview_raises_when_account_unresolvable(
+        self, app, seed_user, db, monkeypatch,
+    ):
+        """C11-1 (service, year view): None account -> error."""
+        with app.app_context():
+            monkeypatch.setattr(
+                calendar_service, "resolve_analytics_account",
+                lambda _user_id, _account_id: None,
+            )
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_year_overview(
+                    user_id=seed_user["user"].id,
+                    year=2026,
+                )
+
+    def test_year_overview_raises_when_scenario_unresolvable(
+        self, app, seed_user, db, monkeypatch,
+    ):
+        """C11-2 (service, year view): None scenario -> error."""
+        with app.app_context():
+            monkeypatch.setattr(
+                calendar_service, "get_baseline_scenario",
+                lambda _user_id: None,
+            )
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_year_overview(
+                    user_id=seed_user["user"].id,
+                    year=2026,
+                )
