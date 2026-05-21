@@ -861,12 +861,96 @@ class LoanProjection:
     current_balance: Decimal = Decimal("0.00")
 
 
+@dataclass(frozen=True)
+class LoanInputs:
+    """Declared plain-data DTO consumed by :func:`get_loan_projection`.
+
+    Mirrors the :class:`PaymentRecord` / :class:`RateChangeRecord`
+    pattern (S6-07 / MED-01): the engine depends on a declared
+    plain-data contract instead of duck-typing the ``LoanParams``
+    model's attribute shape.  Any caller that has a LoanParams-like
+    object can convert via :meth:`from_params`; tests construct
+    instances directly.
+
+    The seven fields are exactly what the engine reads -- the same set
+    W-005 enumerated as the closed attribute surface
+    (``00_priors.md:398``).  ``is_arm`` carries its default so legacy
+    fixtures that did not set it (relying on ``getattr(params,
+    "is_arm", False)``) keep their behavior verbatim.
+
+    Attributes:
+        origination_date: First payment-cycle anchor; the engine
+            advances one month from here to compute the first
+            payment date.
+        term_months: Original loan term in months; the engine uses
+            this to derive the contractual monthly payment for
+            fixed-rate loans.
+        original_principal: Loan principal at origination; the seed
+            balance the engine projects forward from.  Must be
+            positive.
+        current_principal: User-verified balance today (the loan-
+            anchor scalar pre-resolver, still used as the ARM anchor
+            value).  May be zero for a paid-off loan but the engine
+            treats <= 0 as "no schedule" and returns empty.
+        interest_rate: Annual rate as a Decimal (e.g.
+            ``Decimal("0.065")`` for 6.5%).  Zero-rate loans
+            amortize as ``principal / n`` per
+            :func:`calculate_monthly_payment`.
+        payment_day: Day of month payments are due (1-31, clamped to
+            the month's max day by the engine).
+        is_arm: True for adjustable-rate loans; switches the engine
+            from contractual-payment to re-amortizing-from-current-
+            principal mode and pins the schedule to the current
+            balance as the anchor.
+    """
+
+    origination_date: date
+    term_months: int
+    original_principal: Decimal
+    current_principal: Decimal
+    interest_rate: Decimal
+    payment_day: int
+    is_arm: bool = False
+
+    @classmethod
+    def from_params(cls, params) -> "LoanInputs":
+        """Build a :class:`LoanInputs` from a LoanParams-like object.
+
+        Adapter for the small number of in-tree callers that already
+        hold a :class:`~app.models.loan_params.LoanParams` model
+        instance.  Normalises every monetary / rate field through
+        ``Decimal(str(...))`` (the project's "construct Decimals from
+        strings" standard, ``docs/coding-standards.md:14-15``) and
+        defaults ``is_arm`` to ``False`` for legacy callers that
+        relied on the previous ``getattr(params, "is_arm", False)``
+        behaviour.
+
+        Args:
+            params: An object exposing ``origination_date``,
+                ``term_months``, ``original_principal``,
+                ``current_principal``, ``interest_rate``,
+                ``payment_day``, and optionally ``is_arm``.
+
+        Returns:
+            A fully-typed, frozen :class:`LoanInputs` instance.
+        """
+        return cls(
+            origination_date=params.origination_date,
+            term_months=params.term_months,
+            original_principal=Decimal(str(params.original_principal)),
+            current_principal=Decimal(str(params.current_principal)),
+            interest_rate=Decimal(str(params.interest_rate)),
+            payment_day=params.payment_day,
+            is_arm=bool(getattr(params, "is_arm", False)),
+        )
+
+
 def get_loan_projection(
-    params,
+    inputs: LoanInputs,
     schedule_start=None,  # pylint: disable=unused-argument  # kept for callers
-    payments=None,
-    rate_changes=None,
-):
+    payments: list[PaymentRecord] | None = None,
+    rate_changes: list[RateChangeRecord] | None = None,
+) -> LoanProjection:
     """Compute remaining months, summary, and schedule for a loan in one call.
 
     Generates the full life-of-loan schedule from ``origination_date``
@@ -891,29 +975,31 @@ def get_loan_projection(
     schedule via _derive_summary_metrics.
 
     Args:
-        params: An object with ``origination_date``, ``term_months``,
-                ``original_principal``, ``current_principal``,
-                ``interest_rate``, ``payment_day``, and optionally
-                ``is_arm`` attributes (e.g. a LoanParams model instance).
+        inputs: A frozen :class:`LoanInputs` DTO carrying the seven
+            engine-relevant fields.  S6-07 / MED-01: the engine now
+            depends on this declared contract instead of duck-typing
+            a model.  Callers holding a :class:`LoanParams` model
+            instance use :meth:`LoanInputs.from_params` to adapt.
         schedule_start: Unused.  Retained for backward compatibility.
-        payments: Optional list of PaymentRecord instances passed
-                  through to generate_schedule().
-        rate_changes: Optional list of RateChangeRecord instances
-                      passed through for ARM rate adjustment support.
+        payments: Optional list of :class:`PaymentRecord` instances
+            passed through to :func:`generate_schedule`.
+        rate_changes: Optional list of :class:`RateChangeRecord`
+            instances passed through for ARM rate-adjustment
+            support.
 
     Returns:
         LoanProjection with remaining_months, summary, schedule, and
         current_balance.
     """
     remaining = calculate_remaining_months(
-        params.origination_date, params.term_months,
+        inputs.origination_date, inputs.term_months,
     )
 
-    orig_principal = Decimal(str(params.original_principal))
-    current_principal = Decimal(str(params.current_principal))
-    rate = Decimal(str(params.interest_rate))
+    orig_principal = inputs.original_principal
+    current_principal = inputs.current_principal
+    rate = inputs.interest_rate
 
-    is_arm = getattr(params, "is_arm", False)
+    is_arm = inputs.is_arm
     # For fixed-rate loans, pass original_principal so the engine uses
     # the contractual payment.  For ARM, pass None to force
     # re-amortization at the current rate.
@@ -930,11 +1016,11 @@ def get_loan_projection(
     # running balance at the first month after today; for fixed-rate
     # loans anchor_balance/anchor_date are None (no-op).
     schedule = generate_schedule(
-        orig_principal, rate, params.term_months,
-        origination_date=params.origination_date,
-        payment_day=params.payment_day,
+        orig_principal, rate, inputs.term_months,
+        origination_date=inputs.origination_date,
+        payment_day=inputs.payment_day,
         original_principal=original,
-        term_months=params.term_months,
+        term_months=inputs.term_months,
         payments=payments,
         rate_changes=rate_changes,
         anchor_balance=anchor_bal,
@@ -943,7 +1029,7 @@ def get_loan_projection(
 
     # Derive summary metrics from the single schedule.
     total_interest, payoff_date = _derive_summary_metrics(
-        schedule, params.origination_date,
+        schedule, inputs.origination_date,
     )
 
     # Monthly payment: the amount the borrower pays each month.
@@ -955,7 +1041,7 @@ def get_loan_projection(
     else:
         # Fixed-rate: contractual payment from original terms.
         monthly_payment = calculate_monthly_payment(
-            orig_principal, rate, params.term_months,
+            orig_principal, rate, inputs.term_months,
         )
 
     summary = AmortizationSummary(

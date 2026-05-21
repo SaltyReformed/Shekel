@@ -10,6 +10,7 @@ import pytest
 from app.services.amortization_engine import (
     AmortizationRow,
     AmortizationSummary,
+    LoanInputs,
     LoanProjection,
     PaymentRecord,
     RateChangeRecord,
@@ -529,14 +530,14 @@ class TestGetLoanProjection:
 
     def test_returns_projection_dataclass(self):
         """get_loan_projection returns a LoanProjection with all fields."""
-        params = type("P", (), {
-            "origination_date": date(2025, 1, 1),
-            "term_months": 60,
-            "original_principal": Decimal("25000.00"),
-            "current_principal": Decimal("25000.00"),
-            "interest_rate": Decimal("0.05000"),
-            "payment_day": 15,
-        })()
+        params = LoanInputs(
+            origination_date=date(2025, 1, 1),
+            term_months=60,
+            original_principal=Decimal("25000.00"),
+            current_principal=Decimal("25000.00"),
+            interest_rate=Decimal("0.05000"),
+            payment_day=15,
+        )
 
         proj = get_loan_projection(params)
         assert isinstance(proj, LoanProjection)
@@ -555,14 +556,14 @@ class TestGetLoanProjection:
         total_interest is the life-of-loan total (not zero).
         remaining_months is 0 because the term has fully elapsed.
         """
-        params = type("P", (), {
-            "origination_date": date(2015, 1, 1),
-            "term_months": 60,
-            "original_principal": Decimal("25000.00"),
-            "current_principal": Decimal("25000.00"),
-            "interest_rate": Decimal("0.05000"),
-            "payment_day": 15,
-        })()
+        params = LoanInputs(
+            origination_date=date(2015, 1, 1),
+            term_months=60,
+            original_principal=Decimal("25000.00"),
+            current_principal=Decimal("25000.00"),
+            interest_rate=Decimal("0.05000"),
+            payment_day=15,
+        )
 
         proj = get_loan_projection(params)
         assert proj.remaining_months == 0
@@ -582,14 +583,14 @@ class TestGetLoanProjection:
         remaining should show ~$536.87/mo (the contractual payment), not
         ~$1,663 (re-amortizing $18k over 11 remaining months).
         """
-        params = type("P", (), {
-            "origination_date": date(2021, 2, 1),
-            "term_months": 72,
-            "original_principal": Decimal("35000.00"),
-            "current_principal": Decimal("18000.00"),
-            "interest_rate": Decimal("0.03250"),
-            "payment_day": 1,
-        })()
+        params = LoanInputs(
+            origination_date=date(2021, 2, 1),
+            term_months=72,
+            original_principal=Decimal("35000.00"),
+            current_principal=Decimal("18000.00"),
+            interest_rate=Decimal("0.03250"),
+            payment_day=1,
+        )
 
         # Contractual payment: amortize(35000, 0.0325, 72).
         expected = calculate_monthly_payment(
@@ -724,14 +725,14 @@ class TestAmortizationEngineRegression:
         from origination_date using original_principal and term_months.
         Replicate that exact behavior for a valid cross-check.
         """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.MONTHS,
-            "original_principal": self.PRINCIPAL,
-            "current_principal": self.PRINCIPAL,
-            "interest_rate": self.RATE,
-            "payment_day": self.PAYMENT_DAY,
-        })()
+        params = LoanInputs(
+            origination_date=self.ORIGINATION,
+            term_months=self.MONTHS,
+            original_principal=self.PRINCIPAL,
+            current_principal=self.PRINCIPAL,
+            interest_rate=self.RATE,
+            payment_day=self.PAYMENT_DAY,
+        )
 
         projection = get_loan_projection(params)
 
@@ -1505,14 +1506,14 @@ class TestPaymentAwareSchedule:
         payment date.
         """
         schedule_start = date(2026, 1, 1)
-        params = type("P", (), {
-            "origination_date": schedule_start,
-            "term_months": self.MONTHS,
-            "original_principal": self.PRINCIPAL,
-            "current_principal": self.PRINCIPAL,
-            "interest_rate": self.RATE,
-            "payment_day": self.PAYMENT_DAY,
-        })()
+        params = LoanInputs(
+            origination_date=schedule_start,
+            term_months=self.MONTHS,
+            original_principal=self.PRINCIPAL,
+            current_principal=self.PRINCIPAL,
+            interest_rate=self.RATE,
+            payment_day=self.PAYMENT_DAY,
+        )
 
         # The schedule starts at Feb 2026 (month after schedule_start).
         # Place a large lump-sum payment in Feb 2026 (month 1).
@@ -1993,14 +1994,14 @@ class TestARMRateChangeSchedule:
         the fixed-rate projection.
         """
         schedule_start = date(2024, 1, 1)
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.MONTHS,
-            "original_principal": self.PRINCIPAL,
-            "current_principal": self.PRINCIPAL,
-            "interest_rate": self.RATE,
-            "payment_day": self.PAYMENT_DAY,
-        })()
+        params = LoanInputs(
+            origination_date=self.ORIGINATION,
+            term_months=self.MONTHS,
+            original_principal=self.PRINCIPAL,
+            current_principal=self.PRINCIPAL,
+            interest_rate=self.RATE,
+            payment_day=self.PAYMENT_DAY,
+        )
         rate_changes = [
             RateChangeRecord(date(2025, 2, 1), Decimal("0.07")),
         ]
@@ -2777,15 +2778,15 @@ class TestARMContractualPaymentBug:
 
         Tests the engine-level defense: rate_changes disables contractual.
         """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.TERM_MONTHS,
-            "original_principal": self.ORIGINAL_PRINCIPAL,
-            "current_principal": self.CURRENT_PRINCIPAL,
-            "interest_rate": self.CURRENT_RATE,
-            "payment_day": self.PAYMENT_DAY,
-            "is_arm": True,
-        })()
+        params = LoanInputs(
+            origination_date=self.ORIGINATION,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            current_principal=self.CURRENT_PRINCIPAL,
+            interest_rate=self.CURRENT_RATE,
+            payment_day=self.PAYMENT_DAY,
+            is_arm=True,
+        )
 
         proj = get_loan_projection(
             params,
@@ -2821,15 +2822,15 @@ class TestARMContractualPaymentBug:
         M(original_principal, current_rate, term_months) instead of
         M(current_principal, current_rate, remaining_months).
         """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.TERM_MONTHS,
-            "original_principal": self.ORIGINAL_PRINCIPAL,
-            "current_principal": self.CURRENT_PRINCIPAL,
-            "interest_rate": self.CURRENT_RATE,
-            "payment_day": self.PAYMENT_DAY,
-            "is_arm": True,
-        })()
+        params = LoanInputs(
+            origination_date=self.ORIGINATION,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            current_principal=self.CURRENT_PRINCIPAL,
+            interest_rate=self.CURRENT_RATE,
+            payment_day=self.PAYMENT_DAY,
+            is_arm=True,
+        )
 
         # No rate_changes -- simulating a new ARM with no history.
         proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
@@ -2860,15 +2861,15 @@ class TestARMContractualPaymentBug:
         This confirms is_arm is the controlling flag, not the principal
         delta or rate value.
         """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.TERM_MONTHS,
-            "original_principal": self.ORIGINAL_PRINCIPAL,
-            "current_principal": self.CURRENT_PRINCIPAL,
-            "interest_rate": self.CURRENT_RATE,
-            "payment_day": self.PAYMENT_DAY,
-            "is_arm": False,
-        })()
+        params = LoanInputs(
+            origination_date=self.ORIGINATION,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            current_principal=self.CURRENT_PRINCIPAL,
+            interest_rate=self.CURRENT_RATE,
+            payment_day=self.PAYMENT_DAY,
+            is_arm=False,
+        )
 
         proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
 
@@ -2887,14 +2888,14 @@ class TestARMContractualPaymentBug:
         Backward compatibility: older params objects or test stubs without
         is_arm should not break -- they get the contractual path.
         """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.TERM_MONTHS,
-            "original_principal": self.ORIGINAL_PRINCIPAL,
-            "current_principal": self.CURRENT_PRINCIPAL,
-            "interest_rate": self.CURRENT_RATE,
-            "payment_day": self.PAYMENT_DAY,
-        })()
+        params = LoanInputs(
+            origination_date=self.ORIGINATION,
+            term_months=self.TERM_MONTHS,
+            original_principal=self.ORIGINAL_PRINCIPAL,
+            current_principal=self.CURRENT_PRINCIPAL,
+            interest_rate=self.CURRENT_RATE,
+            payment_day=self.PAYMENT_DAY,
+        )
 
         proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
 
@@ -3025,15 +3026,15 @@ class TestARMContractualPaymentBug:
         path_b_expected = calculate_monthly_payment(
             current_principal, rate, remaining_today,
         )
-        params = type("P", (), {
-            "origination_date": origination,
-            "term_months": term,
-            "original_principal": original_principal,
-            "current_principal": current_principal,
-            "interest_rate": rate,
-            "payment_day": 1,
-            "is_arm": True,
-        })()
+        params = LoanInputs(
+            origination_date=origination,
+            term_months=term,
+            original_principal=original_principal,
+            current_principal=current_principal,
+            interest_rate=rate,
+            payment_day=1,
+            is_arm=True,
+        )
         proj = get_loan_projection(
             params,
             schedule_start=origination,

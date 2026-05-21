@@ -49,6 +49,10 @@ from app.services import (
     loan_resolver,
     paycheck_calculator,
 )
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.investment_projection import (
     adapt_deductions,
     calculate_investment_inputs,
@@ -201,7 +205,12 @@ def _build_summary(
         user_id: The authenticated user's ID.
         year: The target calendar year.
         scenario: The user's baseline scenario.
-        ctx: Common data from _load_common_data.
+        ctx: Common data from :func:`_load_common_data`.  This is the
+            sanctioned W-052 load-once bag and stays whole at this
+            top-level assembly site -- the assembler legitimately
+            reads 8 of 11 keys.  MED-01 / S6-06 narrowing happens
+            below: each section helper now declares the specific
+            fields it depends on instead of taking the opaque bag.
 
     Returns:
         Fully assembled year-end summary dict.
@@ -229,14 +238,21 @@ def _build_summary(
         ),
         "net_worth": _compute_net_worth(
             year, ctx["accounts"], ctx["all_periods"], scenario,
-            debt_schedules=debt_schedules, ctx=ctx,
+            debt_schedules=debt_schedules,
+            investment_params_map=ctx["investment_params_map"],
+            deductions_by_account=ctx["deductions_by_account"],
+            salary_gross_biweekly=ctx["salary_gross_biweekly"],
         ),
         "debt_progress": _compute_debt_progress(
             year, ctx["debt_accounts"], debt_schedules,
         ),
         "savings_progress": _compute_savings_progress(
             ctx["savings_accounts"], ctx["year_period_ids"],
-            scenario.id, ctx["all_periods"], year, scenario, ctx,
+            scenario.id, ctx["all_periods"], year, scenario,
+            investment_params_map=ctx["investment_params_map"],
+            interest_params_map=ctx["interest_params_map"],
+            deductions_by_account=ctx["deductions_by_account"],
+            salary_gross_biweekly=ctx["salary_gross_biweekly"],
         ),
         "payment_timeliness": _compute_payment_timeliness(
             user_id, year, ctx["year_period_ids"], scenario.id,
@@ -696,7 +712,10 @@ def _compute_net_worth(
     all_periods: list,
     scenario: Scenario,
     debt_schedules: dict[int, list] | None = None,
-    ctx: dict | None = None,
+    *,
+    investment_params_map: dict | None = None,
+    deductions_by_account: dict | None = None,
+    salary_gross_biweekly: Decimal | None = None,
 ) -> dict:
     """Compute net worth at 12 monthly endpoints for the year.
 
@@ -706,8 +725,8 @@ def _compute_net_worth(
 
     Uses the balance calculator for checking/savings, interest
     calculator for HYSA-type accounts, amortization schedule for loan
-    accounts, and growth engine for investment accounts (when ctx is
-    provided with investment params).
+    accounts, and growth engine for investment accounts (when the
+    investment-params / deductions / salary trio is supplied).
 
     Args:
         year: Target calendar year.
@@ -717,8 +736,16 @@ def _compute_net_worth(
         debt_schedules: Optional account_id -> list[AmortizationRow]
             mapping.  When provided, debt account balances are derived
             from the amortization schedule.
-        ctx: Optional common data dict.  When provided, investment
-            account balances include growth engine projections.
+        investment_params_map: MED-01 / S6-06: narrow replacement for
+            the previous opaque-ctx parameter -- the only investment-
+            side field this helper actually needs.  ``None`` skips the
+            growth-engine projection (investments are returned at
+            their canonical resolver balance).
+        deductions_by_account: Pay-deduction map keyed by account id,
+            forwarded to :func:`_build_investment_balance_map` for the
+            growth engine's contribution inputs.
+        salary_gross_biweekly: The active salary profile's biweekly
+            gross, forwarded for the same reason.
 
     Returns:
         dict with monthly_values (list of 12 {month, month_name,
@@ -729,7 +756,10 @@ def _compute_net_worth(
 
     month_end_periods = _get_month_end_periods(year, all_periods)
     account_data = _build_account_data(
-        accounts, scenario, all_periods, debt_schedules, ctx=ctx,
+        accounts, scenario, all_periods, debt_schedules,
+        investment_params_map=investment_params_map,
+        deductions_by_account=deductions_by_account,
+        salary_gross_biweekly=salary_gross_biweekly,
     )
 
     jan1_period = _find_period_before_date(date(year, 1, 1), all_periods)
@@ -756,7 +786,10 @@ def _build_account_data(
     scenario: Scenario,
     all_periods: list,
     debt_schedules: dict[int, list] | None = None,
-    ctx: dict | None = None,
+    *,
+    investment_params_map: dict | None = None,
+    deductions_by_account: dict | None = None,
+    salary_gross_biweekly: Decimal | None = None,
 ) -> list[dict]:
     """Build balance maps for all accounts with liability flags.
 
@@ -766,8 +799,14 @@ def _build_account_data(
         all_periods: All user pay periods.
         debt_schedules: Optional account_id -> list[AmortizationRow]
             mapping for debt accounts.
-        ctx: Optional common data dict.  When provided, investment
-            account balances include growth engine projections.
+        investment_params_map: MED-01 / S6-06: explicit replacement
+            for the previous opaque-ctx parameter -- this helper now
+            declares the exact dependency it forwards to
+            :func:`_get_account_balance_map`.
+        deductions_by_account: Forwarded to
+            :func:`_get_account_balance_map` for the investment-side
+            growth projection.
+        salary_gross_biweekly: Forwarded for the same reason.
 
     Returns:
         List of dicts with 'balances' and 'is_liability' keys.
@@ -777,7 +816,10 @@ def _build_account_data(
     for account in accounts:
         balances = _get_account_balance_map(
             account, scenario, all_periods,
-            debt_schedules=debt_schedules, ctx=ctx,
+            debt_schedules=debt_schedules,
+            investment_params_map=investment_params_map,
+            deductions_by_account=deductions_by_account,
+            salary_gross_biweekly=salary_gross_biweekly,
         )
         if balances is None:
             continue
@@ -895,7 +937,11 @@ def _compute_savings_progress(
     all_periods: list,
     year: int,
     scenario: Scenario,
-    ctx: dict,
+    *,
+    investment_params_map: dict,
+    interest_params_map: dict,
+    deductions_by_account: dict,
+    salary_gross_biweekly: Decimal,
 ) -> list[dict]:
     """Compute balance growth, contributions, and returns for savings accounts.
 
@@ -913,9 +959,14 @@ def _compute_savings_progress(
         all_periods: All user pay periods.
         year: Target calendar year.
         scenario: Baseline scenario.
-        ctx: Common data dict containing investment_params_map,
-            interest_params_map, deductions_by_account, and
-            salary_gross_biweekly.
+        investment_params_map: MED-01 / S6-06: explicit narrow
+            replacement for the previous 11-key ``ctx`` opaque bag.
+            Maps account_id -> InvestmentParams.
+        interest_params_map: account_id -> InterestParams.
+        deductions_by_account: account_id -> PaycheckDeduction list,
+            forwarded to :func:`_project_investment_for_year`.
+        salary_gross_biweekly: Active salary profile gross biweekly,
+            forwarded for the same reason.
 
     Returns:
         List of dicts: [{account_name, account_id, jan1_balance,
@@ -924,9 +975,6 @@ def _compute_savings_progress(
     """
     if not savings_accounts:
         return []
-
-    investment_params_map = ctx["investment_params_map"]
-    interest_params_map = ctx["interest_params_map"]
 
     result = []
     for account in savings_accounts:
@@ -941,7 +989,9 @@ def _compute_savings_progress(
             jan1_bal, dec31_bal, employer_total, growth_total = (
                 _project_investment_for_year(
                     account, inv_params, all_periods, year,
-                    scenario, ctx, period_ids, scenario_id,
+                    scenario, period_ids, scenario_id,
+                    deductions_by_account=deductions_by_account,
+                    salary_gross_biweekly=salary_gross_biweekly,
                 )
             )
         elif int_params:
@@ -1034,9 +1084,11 @@ def _project_investment_for_year(
     all_periods: list,
     year: int,
     scenario: Scenario,
-    ctx: dict,
     year_period_ids: list[int],
     scenario_id: int,
+    *,
+    deductions_by_account: dict,
+    salary_gross_biweekly: Decimal,
 ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     """Project investment account balance through the target year.
 
@@ -1052,18 +1104,17 @@ def _project_investment_for_year(
         all_periods: All user pay periods.
         year: Target calendar year.
         scenario: Baseline scenario.
-        ctx: Common data dict with deductions_by_account and
-            salary_gross_biweekly.
         year_period_ids: Pay period IDs in the target year.
         scenario_id: Baseline scenario ID.
+        deductions_by_account: MED-01 / S6-06: explicit narrow
+            replacement for the previous 11-key ``ctx`` opaque bag.
+            Account-id -> PaycheckDeduction list.
+        salary_gross_biweekly: Active salary profile gross biweekly.
 
     Returns:
         Tuple of (jan1_balance, dec31_balance, employer_contributions,
         investment_growth).
     """
-    deductions_by_account = ctx["deductions_by_account"]
-    salary_gross_biweekly = ctx["salary_gross_biweekly"]
-
     # Get base balance from the balance calculator (anchor + transactions).
     balances = _get_account_balance_map(account, scenario, all_periods)
 
@@ -1550,7 +1601,9 @@ def _build_investment_balance_map(
     investment_params: InvestmentParams,
     scenario: Scenario,
     periods: list,
-    ctx: dict,
+    *,
+    deductions_by_account: dict,
+    salary_gross_biweekly: Decimal,
 ) -> OrderedDict:
     """Build period_id -> balance map using the growth engine.
 
@@ -1568,8 +1621,13 @@ def _build_investment_balance_map(
         investment_params: InvestmentParams for the account.
         scenario: Baseline scenario.
         periods: All user pay periods.
-        ctx: Common data dict with deductions_by_account,
-            salary_gross_biweekly, year_period_ids.
+        deductions_by_account: MED-01 / S6-06: explicit narrow
+            replacement for the previous 11-key ``ctx`` opaque bag.
+            Account-id -> :class:`PaycheckDeduction` list mapping
+            used to derive the contribution feed.
+        salary_gross_biweekly: The active salary profile's biweekly
+            gross, used by
+            :func:`calculate_investment_inputs`.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance.
@@ -1604,8 +1662,9 @@ def _build_investment_balance_map(
         return base_balances
 
     # Adapt paycheck deductions and compute projection inputs.
-    deductions_by_account = ctx["deductions_by_account"]
-    salary_gross_biweekly = ctx["salary_gross_biweekly"]
+    # Pre-Commit-28 this helper read both keys off a whole 11-key
+    # ``ctx`` (S6-06 in ``06_dry_solid.md``); they are now explicit
+    # parameters declared in the signature.
     scenario_id = scenario.id
 
     acct_deductions = deductions_by_account.get(account.id, [])
@@ -2020,7 +2079,10 @@ def _get_account_balance_map(
     scenario: Scenario,
     periods: list,
     debt_schedules: dict[int, list] | None = None,
-    ctx: dict | None = None,
+    *,
+    investment_params_map: dict | None = None,
+    deductions_by_account: dict | None = None,
+    salary_gross_biweekly: Decimal | None = None,
 ) -> dict | None:
     """Compute period_id -> balance mapping for one account.
 
@@ -2037,8 +2099,13 @@ def _get_account_balance_map(
         debt_schedules: Optional account_id -> list[AmortizationRow]
             mapping.  When provided and the account is a debt account,
             balances are derived from the amortization schedule.
-        ctx: Optional common data dict.  When provided, investment
-            account balances include growth engine projections.
+        investment_params_map: MED-01 / S6-06: replaces the previous
+            ``ctx`` bag.  When ``None`` (or the account has no row in
+            the map) the investment branch falls through to the
+            canonical balance resolver.
+        deductions_by_account: Payroll-deduction map forwarded to the
+            investment-balance-map builder.
+        salary_gross_biweekly: Forwarded for the same reason.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None
@@ -2047,12 +2114,19 @@ def _get_account_balance_map(
     if account.current_anchor_period_id is None:
         return None
 
-    acct_type = account.account_type
+    # MED-01 / S6-03: single flag-driven classifier replaces the
+    # divergent branch ladders that used to express the same
+    # taxonomy two different ways here and in
+    # ``savings_dashboard_service._compute_account_projections``.
+    # Adding a new parameterised type now requires extending
+    # :class:`AccountProjectionKind` in one place, not patching two
+    # branch ladders with different keying conventions.
+    kind = classify_account(account)
 
     # Amortizing loan accounts: use pre-generated schedule when available.
     # Routed through the loan-side resolver in Commit 15; this commit
     # only handles checking-style reads.
-    if (acct_type and acct_type.has_amortization
+    if (kind is AccountProjectionKind.AMORTIZING
             and debt_schedules and account.id in debt_schedules):
         params = (
             db.session.query(LoanParams)
@@ -2069,12 +2143,8 @@ def _get_account_balance_map(
     # ``balance_calculator._entry_aware_amount`` was closed in Commit 5
     # (entries lazy-load via the SQLAlchemy descriptor instead of
     # short-circuiting to ``effective_amount``), so the entries-aware
-    # reduction applies here even without ``selectinload``.  MED-01 /
-    # Commit 28 will collapse the dual interest/no-interest dispatcher
-    # into the canonical resolver; routing through ``balances_for``
-    # cannot happen earlier because the resolver does not yet layer
-    # interest.
-    if (acct_type and acct_type.has_interest
+    # reduction applies here even without ``selectinload``.
+    if (kind is AccountProjectionKind.INTEREST
             and hasattr(account, "interest_params")
             and account.interest_params):
         period_ids = [p.id for p in periods]
@@ -2098,18 +2168,22 @@ def _get_account_balance_map(
         )
         return balances
 
-    # Investment accounts: use growth engine when context is available.
-    # The base balance feeding the projection now comes from the
-    # canonical entries-aware producer (E-25 / CRIT-01 / R-1).
-    if (ctx is not None
-            and acct_type
-            and getattr(acct_type, "has_parameters", False)
-            and not acct_type.has_interest
-            and not acct_type.has_amortization):
-        inv_params = ctx["investment_params_map"].get(account.id)
+    # Investment accounts: use growth engine when the projection
+    # inputs are available.  The base balance feeding the projection
+    # comes from the canonical entries-aware producer (E-25 / CRIT-01
+    # / R-1).
+    if (kind is AccountProjectionKind.INVESTMENT
+            and investment_params_map is not None):
+        inv_params = investment_params_map.get(account.id)
         if inv_params:
             return _build_investment_balance_map(
-                account, inv_params, scenario, periods, ctx,
+                account, inv_params, scenario, periods,
+                deductions_by_account=deductions_by_account or {},
+                salary_gross_biweekly=(
+                    salary_gross_biweekly
+                    if salary_gross_biweekly is not None
+                    else ZERO
+                ),
             )
 
     # Standard checking/savings (and any unmatched types) route through

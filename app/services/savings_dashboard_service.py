@@ -43,6 +43,10 @@ from app.services import (
     pay_period_service,
     savings_goal_service,
 )
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.investment_projection import (
     adapt_deductions,
     calculate_investment_inputs,
@@ -365,7 +369,17 @@ def _compute_account_projections(
         acct_interest_params = params["interest_params_map"].get(acct.id)
         scenario_id = params.get("scenario_id")
 
-        if acct_interest_params:
+        # MED-01 / S6-03: one flag-driven classifier shared with the
+        # year-end summary's ``_get_account_balance_map``.  The
+        # ``interest_params`` row presence still guards the interest
+        # path so an account that flags ``has_interest=True`` but
+        # has no params row falls through to the canonical resolver
+        # (the pre-Commit-28 behavior the param-map-presence check
+        # delivered as a happy accident; the classifier preserves
+        # it explicitly).
+        kind = classify_account(acct)
+
+        if kind is AccountProjectionKind.INTEREST and acct_interest_params:
             # HYSA / interest-bearing path.  Continues to layer interest
             # on top of the base balance calculation.  Entry-aware
             # reduction for any envelope expenses on this account is
@@ -373,9 +387,7 @@ def _compute_account_projections(
             # Commit-5 (the seam was removed at the math layer: an
             # unloaded ``entries`` relationship now lazy-loads via the
             # SQLAlchemy descriptor rather than silently degrading to
-            # ``effective_amount``).  MED-01 / Commit 28 will collapse
-            # the dual interest/no-interest dispatcher into the
-            # canonical resolver.
+            # ``effective_amount``).
             if anchor_period_id:
                 balances, _ = balance_calculator.calculate_balances_with_interest(
                     anchor_balance=anchor_balance,
@@ -465,13 +477,17 @@ def _compute_account_projections(
                             projected[offset_label] = balances[p.id]
                             break
 
+        # MED-01 / S6-03: the third partial copy of the per-account-
+        # type ladder used to live here.  Routed through the shared
+        # classifier so the "needs setup" predicate consults the same
+        # one taxonomy the projection dispatcher above does.
         needs_setup = False
         if acct.account_type and acct.account_type.has_parameters:
-            if acct.account_type.has_interest:
+            if kind is AccountProjectionKind.INTEREST:
                 needs_setup = acct_interest_params is None
-            elif acct.account_type.has_amortization:
+            elif kind is AccountProjectionKind.AMORTIZING:
                 needs_setup = acct_loan_params is None
-            else:
+            elif kind is AccountProjectionKind.INVESTMENT:
                 needs_setup = acct_investment_params is None
 
         # Paid-off determination: ``state.current_balance`` from the

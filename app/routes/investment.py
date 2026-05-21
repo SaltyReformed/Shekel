@@ -1,48 +1,44 @@
 """
 Shekel Budget App -- Investment & Retirement Account Routes
 
-Dashboard for investment/retirement accounts with compound growth
-projection, contribution tracking, and employer contribution display.
+Thin HTTP layer for the investment / retirement dashboard, the HTMX
+growth-chart fragment, the recurring-contribution-transfer creator,
+and the investment-parameters POST handler.  The dashboard and
+growth-chart data-assembly was extracted to
+:mod:`app.services.investment_dashboard_service` in Commit 28
+(MED-01 / S6-01): the route now matches the established
+``savings.py`` thin-delegator shape.  The two POST handlers stay
+here because they own HTTP-side validation, flash + redirect flows,
+and the transactional unit-of-work boundary -- moving them to a
+service would not collapse a duplication root.
 """
 
 import logging
-from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-
-from app.utils.auth_helpers import get_or_404, require_owner
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import joinedload
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, RecurrencePatternEnum, TxnTypeEnum
+from app.enums import RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
-from app.models.user import UserSettings
 from app.schemas.validation import (
     InvestmentContributionTransferSchema,
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
 )
 from app.services import (
-    balance_resolver,
-    growth_engine,
+    investment_dashboard_service,
     pay_period_service,
     transfer_recurrence,
 )
-from app.services.investment_projection import (
-    build_contribution_timeline,
-    calculate_investment_inputs,
-)
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.auth_helpers import get_or_404, require_owner
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +48,9 @@ _create_schema = InvestmentParamsCreateSchema()
 _update_schema = InvestmentParamsUpdateSchema()
 _transfer_schema = InvestmentContributionTransferSchema()
 
-# Account types where contributions come from paycheck deductions
-# (employer-sponsored plans) vs. bank transfers (individual accounts).
-# No metadata flag exists on ref.account_types for this distinction,
-# so we check specific types.  If new employer-plan types are added,
-# update this set.
-_DEDUCTION_PATH_TYPES = frozenset([AcctTypeEnum.K401, AcctTypeEnum.ROTH_401K])
-
 TWO_PLACES = Decimal("0.01")
+_DEFAULT_SUGGESTED_AMOUNT = Decimal("500.00")
+_PAY_PERIODS_PER_YEAR = 26
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment")
@@ -71,321 +62,14 @@ def dashboard(account_id):
     if account is None:
         abort(404)
 
-    params = (
-        db.session.query(InvestmentParams)
-        .filter_by(account_id=account_id)
-        .first()
+    ctx = investment_dashboard_service.compute_dashboard_data(
+        current_user.id, account,
     )
-
-    all_periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
-
-    # Compute current balance via the canonical entries-aware producer
-    # (E-25 / CRIT-01 / F-009 / R-1: Commit 8).  ``balances_for`` owns
-    # the transaction query with ``selectinload(Transaction.entries)``
-    # so shadow income from transfers is included and any envelope
-    # expenses on this account get the correct entries-aware reduction
-    # -- the silent-degrade seam that produced symptom #1 on
-    # ``/investment`` is structurally closed by routing here.  The
-    # resolver also reads the dated ``AccountAnchorHistory`` SoT, so
-    # the investment dashboard's "current balance" tile cannot disagree
-    # with the grid for the same account/scenario/period.
-    anchor_balance = account.current_anchor_balance or Decimal("0.00")
-
-    scenario = get_baseline_scenario(current_user.id)
-
-    balances = {}
-    if scenario and account.current_anchor_period_id is not None:
-        balances = balance_resolver.balances_for(
-            account, scenario.id, all_periods,
-        ).balances
-
-    # Current balance includes shadow transactions (transfer deposits).
-    current_balance = (
-        balances.get(current_period.id, anchor_balance)
-        if current_period else anchor_balance
+    ctx["salary_profile_url"] = _resolve_salary_profile_url(
+        ctx.pop("_salary_profile_action", None),
+        ctx.pop("_active_profile_id", None),
     )
-
-    # Load active salary profile for employer contribution gross calculation.
-    salary_gross_biweekly = Decimal("0")
-    active_profile = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .first()
-    )
-    if active_profile:
-        salary_gross_biweekly = (
-            Decimal(str(active_profile.annual_salary))
-            / (active_profile.pay_periods_per_year or 26)
-        ).quantize(Decimal("0.01"))
-
-    # Find paycheck deductions targeting this account.
-    deductions = (
-        db.session.query(PaycheckDeduction)
-        .join(SalaryProfile)
-        .filter(
-            SalaryProfile.user_id == current_user.id,
-            SalaryProfile.is_active.is_(True),
-            PaycheckDeduction.target_account_id == account_id,
-            PaycheckDeduction.is_active.is_(True),
-        )
-        .all()
-    )
-
-    # Adapt deductions for the shared helper.
-    adapted_deductions = []
-    for ded in deductions:
-        profile = ded.salary_profile
-        adapted_deductions.append(type("D", (), {
-            "amount": ded.amount,
-            "calc_method_id": ded.calc_method_id,
-            "annual_salary": profile.annual_salary,
-            "pay_periods_per_year": profile.pay_periods_per_year or 26,
-        })())
-
-    # Load shadow income transactions in this account (contributions via transfers).
-    period_ids = [p.id for p in all_periods]
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    acct_contributions = (
-        db.session.query(Transaction)
-        .options(joinedload(Transaction.status))
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    ) if period_ids else []
-
-    inputs = calculate_investment_inputs(
-        account_id=account_id,
-        investment_params=params,
-        deductions=adapted_deductions,
-        all_contributions=acct_contributions,
-        all_periods=all_periods,
-        current_period=current_period,
-        salary_gross_biweekly=salary_gross_biweekly,
-    )
-
-    periodic_contribution = inputs.periodic_contribution
-    employer_params = inputs.employer_params
-    ytd_contributions = inputs.ytd_contributions
-
-    # HIGH-07 / F-043 / F-055: feed the limit-capped contribution to
-    # ``calculate_employer_contribution`` so the per-period employer
-    # card matches the growth chart's employer line and the year-end
-    # ``year_summary_employer_total`` -- all three surfaces now read the
-    # same capped value (the engine's per-period loop already caps via
-    # ``cap_contribution_at_limit``).  When the annual limit binds the
-    # card no longer overstates the match (worked example: card $240 vs
-    # chart/year-end $100 collapses to one capped value).
-    capped_contribution_this_period = growth_engine.cap_contribution_at_limit(
-        periodic_contribution,
-        inputs.annual_contribution_limit,
-        ytd_contributions,
-    )
-    employer_contribution_per_period = Decimal("0")
-    if employer_params:
-        employer_contribution_per_period = growth_engine.calculate_employer_contribution(
-            employer_params, capped_contribution_this_period
-        )
-
-    # Build per-period contribution timeline from deductions and transfers.
-    contributions = build_contribution_timeline(
-        deductions=adapted_deductions,
-        contribution_transactions=acct_contributions,
-        periods=all_periods,
-    )
-
-    # Project balances forward.
-    projection = []
-    chart_labels = []
-    chart_balances = []
-    chart_contributions = []
-
-    if params and current_period:
-        future_periods = [
-            p for p in all_periods if p.period_index >= current_period.period_index
-        ]
-        projection = growth_engine.project_balance(
-            current_balance=current_balance,
-            assumed_annual_return=params.assumed_annual_return,
-            periods=future_periods,
-            periodic_contribution=periodic_contribution,
-            employer_params=employer_params,
-            annual_contribution_limit=params.annual_contribution_limit,
-            ytd_contributions_start=ytd_contributions,
-            contributions=contributions,
-        )
-
-        cumulative_contrib = Decimal("0")
-        for pb in projection:
-            chart_labels.append(pb.period_id)
-            chart_balances.append(str(pb.end_balance.quantize(Decimal("0.01"))))
-            cumulative_contrib += pb.contribution + pb.employer_contribution
-            chart_contributions.append(
-                str((current_balance + cumulative_contrib).quantize(Decimal("0.01")))
-            )
-
-    # Contribution limit info.
-    #
-    # E-12 / HIGH-06 (Commit 24): the predicate is ``is not None``,
-    # not Python truthiness.  A stored ``Decimal("0")`` is a
-    # meaningful state ("user explicitly capped contributions at
-    # zero this year") -- the card renders ``$0`` with 100% used at
-    # any positive YTD, matching the growth engine's
-    # ``min(period_contribution, 0) = 0`` semantics.  The
-    # docstring on :class:`~app.models.investment_params.InvestmentParams`
-    # is the source of truth for the column's zero-vs-NULL
-    # semantics; ``None`` continues to mean "no cap configured" and
-    # hides the card.
-    limit_info = None
-    if params and params.annual_contribution_limit is not None:
-        limit = params.annual_contribution_limit
-        if limit > 0:
-            pct = min(100, int(ytd_contributions / limit * 100))
-        elif ytd_contributions > 0:
-            # Cap is zero, contributions exist -> 100% used (over).
-            pct = 100
-        else:
-            # Cap and YTD both zero -> 0% used.
-            pct = 0
-        limit_info = {
-            "limit": limit,
-            "ytd": ytd_contributions,
-            "pct": pct,
-        }
-
-    # Get period labels for chart (date strings).
-    period_map = {p.id: p for p in all_periods}
-    chart_date_labels = []
-    for pid in chart_labels:
-        p = period_map.get(pid)
-        if p:
-            chart_date_labels.append(p.start_date.strftime("%b %Y"))
-
-    # Default horizon for the growth chart slider.
-    settings = (
-        db.session.query(UserSettings)
-        .filter_by(user_id=current_user.id)
-        .first()
-    )
-    if settings and settings.planned_retirement_date:
-        default_horizon = max(1, (settings.planned_retirement_date.year - date.today().year))
-    elif all_periods:
-        last_period = all_periods[-1]
-        default_horizon = max(1, (last_period.end_date.year - date.today().year) + 1)
-    else:
-        default_horizon = 10
-
-    # Contribution setup prompt: show when params exist but no
-    # contribution mechanism (recurring transfer or deduction) is linked.
-    show_contribution_prompt = False
-    is_deduction_path = False
-    source_accounts = []
-    default_source_id = None
-    suggested_amount = Decimal("0")
-    salary_profile_url = None
-
-    if params:
-        has_linked_deduction = bool(deductions)
-        has_recurring_transfer = (
-            db.session.query(TransferTemplate)
-            .filter(
-                TransferTemplate.user_id == current_user.id,
-                TransferTemplate.to_account_id == account.id,
-                TransferTemplate.is_active.is_(True),
-                TransferTemplate.recurrence_rule_id.isnot(None),
-            )
-            .first()
-        ) is not None
-
-        show_contribution_prompt = (
-            not has_linked_deduction and not has_recurring_transfer
-        )
-
-    if show_contribution_prompt:
-        is_deduction_path = account.account_type_id in {
-            ref_cache.acct_type_id(t) for t in _DEDUCTION_PATH_TYPES
-        }
-
-        if is_deduction_path:
-            # Link to the active salary profile edit page for
-            # deduction configuration.
-            if active_profile:
-                salary_profile_url = url_for(
-                    "salary.edit_profile", profile_id=active_profile.id,
-                )
-            else:
-                salary_profile_url = url_for("salary.list_profiles")
-        else:
-            # Transfer-path: compute suggested amount and load
-            # eligible source accounts.
-            #
-            # E-12 / HIGH-06 (Commit 24): same ``is not None``
-            # convention as the limit card above.  A stored zero
-            # cap produces a zero suggestion (no contribution
-            # within the cap), not the legacy $500 fallback that
-            # truthiness conflated with the "no cap configured"
-            # state.
-            if params.annual_contribution_limit is not None:
-                remaining = ytd_contributions or Decimal("0")
-                today_date = date.today()
-                remaining_periods = sum(
-                    1 for p in all_periods
-                    if p.start_date.year == today_date.year
-                    and p.start_date >= today_date
-                )
-                remaining_limit = max(
-                    params.annual_contribution_limit - remaining,
-                    Decimal("0"),
-                )
-                suggested_amount = (
-                    remaining_limit / max(remaining_periods, 1)
-                ).quantize(TWO_PLACES)
-            else:
-                # No IRS limit (e.g. Brokerage) -- no default amount.
-                suggested_amount = Decimal("0")
-
-            source_accounts = (
-                db.session.query(Account)
-                .filter(
-                    Account.user_id == current_user.id,
-                    Account.is_active.is_(True),
-                    Account.id != account.id,
-                )
-                .order_by(Account.sort_order, Account.name)
-                .all()
-            )
-            checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-            for acct in source_accounts:
-                if acct.account_type_id == checking_type_id:
-                    default_source_id = acct.id
-                    break
-
-    return render_template(
-        "investment/dashboard.html",
-        account=account,
-        params=params,
-        current_balance=current_balance,
-        periodic_contribution=periodic_contribution,
-        employer_contribution_per_period=employer_contribution_per_period,
-        employer_params=employer_params,
-        limit_info=limit_info,
-        projection=projection,
-        chart_labels=chart_date_labels,
-        chart_balances=chart_balances,
-        chart_contributions=chart_contributions,
-        default_horizon=default_horizon,
-        show_contribution_prompt=show_contribution_prompt,
-        is_deduction_path=is_deduction_path,
-        source_accounts=source_accounts,
-        default_source_id=default_source_id,
-        suggested_amount=suggested_amount,
-        salary_profile_url=salary_profile_url,
-    )
+    return render_template("investment/dashboard.html", **ctx)
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment/growth-chart")
@@ -394,16 +78,10 @@ def dashboard(account_id):
 def growth_chart(account_id):
     """HTMX fragment: growth projection chart with adjustable horizon.
 
-    Accepts optional what_if_contribution query parameter to overlay
+    Accepts optional ``what_if_contribution`` query parameter to overlay
     a hypothetical contribution scenario.  When provided, returns a
     dual-dataset chart (committed vs. what-if) and a comparison card
     showing the balance difference at the projection horizon.
-
-    The what-if projection uses contributions=None with a flat
-    periodic_contribution equal to the what-if amount.  Employer match
-    is automatically recalculated by the engine's per-period loop.
-    Annual contribution limits are enforced identically to the
-    committed projection.
 
     Invalid or negative what-if values degrade gracefully to the
     single-line chart.  Zero is a valid what-if (growth-only scenario).
@@ -415,214 +93,33 @@ def growth_chart(account_id):
     if account is None or account.user_id != current_user.id:
         return "", 404
 
-    params = (
-        db.session.query(InvestmentParams)
-        .filter_by(account_id=account_id)
-        .first()
-    )
-    empty = {"chart_labels": [], "chart_balances": [], "chart_contributions": []}
-
-    if not params:
-        return render_template("investment/_growth_chart.html", **empty)
-
     horizon_years = request.args.get("horizon_years", type=int, default=2)
-    horizon_years = max(1, min(horizon_years, 40))
-
-    # Compute current balance via the canonical entries-aware producer
-    # (E-25 / CRIT-01 / F-009 / R-1: Commit 8).  Same routing pattern
-    # as ``dashboard()`` above -- the seed for the growth-chart
-    # projection must equal the grid's checking-style balance for the
-    # current period; pre-Commit-8 this path silently degraded to
-    # ``effective_amount`` for any envelope expense on the account
-    # because the query did not ``selectinload(Transaction.entries)``.
-    anchor_bal = account.current_anchor_balance or Decimal("0.00")
-    anchor_pid = account.current_anchor_period_id
-
-    real_periods = pay_period_service.get_all_periods(current_user.id)
-    cur_period = pay_period_service.get_current_period(current_user.id)
-    chart_scenario = get_baseline_scenario(current_user.id)
-
-    current_balance = anchor_bal
-    if chart_scenario and real_periods and anchor_pid:
-        chart_bals = balance_resolver.balances_for(
-            account, chart_scenario.id, real_periods,
-        ).balances
-        if cur_period and cur_period.id in chart_bals:
-            current_balance = chart_bals[cur_period.id]
-
-    # Generate synthetic future periods for the requested horizon.
-    end_date = date.today() + timedelta(days=horizon_years * 365)
-    periods = growth_engine.generate_projection_periods(
-        start_date=date.today(),
-        end_date=end_date,
-    )
-
-    if not periods:
-        return render_template("investment/_growth_chart.html", **empty)
-
-    # Load contribution inputs.
-    all_periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
-
-    salary_gross_biweekly = Decimal("0")
-    active_profile = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .first()
-    )
-    if active_profile:
-        salary_gross_biweekly = (
-            Decimal(str(active_profile.annual_salary))
-            / (active_profile.pay_periods_per_year or 26)
-        ).quantize(Decimal("0.01"))
-
-    deductions = (
-        db.session.query(PaycheckDeduction)
-        .join(SalaryProfile)
-        .filter(
-            SalaryProfile.user_id == current_user.id,
-            SalaryProfile.is_active.is_(True),
-            PaycheckDeduction.target_account_id == account_id,
-            PaycheckDeduction.is_active.is_(True),
-        )
-        .all()
-    )
-
-    adapted_deductions = []
-    for ded in deductions:
-        profile = ded.salary_profile
-        adapted_deductions.append(type("D", (), {
-            "amount": ded.amount,
-            "calc_method_id": ded.calc_method_id,
-            "annual_salary": profile.annual_salary,
-            "pay_periods_per_year": profile.pay_periods_per_year or 26,
-        })())
-
-    period_ids = [p.id for p in all_periods]
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    acct_contributions = (
-        db.session.query(Transaction)
-        .options(joinedload(Transaction.status))
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    ) if period_ids else []
-
-    inputs = calculate_investment_inputs(
-        account_id=account_id,
-        investment_params=params,
-        deductions=adapted_deductions,
-        all_contributions=acct_contributions,
-        all_periods=all_periods,
-        current_period=current_period,
-        salary_gross_biweekly=salary_gross_biweekly,
-    )
-
-    # Build per-period contribution timeline from deductions and transfers.
-    contributions = build_contribution_timeline(
-        deductions=adapted_deductions,
-        contribution_transactions=acct_contributions,
-        periods=all_periods,
-    )
-
-    projection = growth_engine.project_balance(
-        current_balance=current_balance,
-        assumed_annual_return=params.assumed_annual_return,
-        periods=periods,
-        periodic_contribution=inputs.periodic_contribution,
-        employer_params=inputs.employer_params,
-        annual_contribution_limit=params.annual_contribution_limit,
-        ytd_contributions_start=inputs.ytd_contributions,
-        contributions=contributions,
-    )
-
-    period_map = {p.id: p for p in periods}
-    chart_labels = []
-    chart_balances = []
-    chart_contributions = []
-    cumulative_contrib = Decimal("0")
-
-    for pb in projection:
-        p = period_map.get(pb.period_id)
-        if p:
-            chart_labels.append(p.start_date.strftime("%b %Y"))
-        chart_balances.append(str(pb.end_balance.quantize(Decimal("0.01"))))
-        cumulative_contrib += pb.contribution + pb.employer_contribution
-        chart_contributions.append(
-            str((current_balance + cumulative_contrib).quantize(Decimal("0.01")))
-        )
-
-    # --- What-If Contribution Calculator ---
-    # Parse optional what-if amount from query parameters.  Invalid
-    # or negative values degrade gracefully to single-line chart.
-    # Zero is valid (growth-only scenario: "what if I stop contributing?").
-    what_if_amount = None
     what_if_raw = request.args.get("what_if_contribution", type=str)
-    if what_if_raw:
-        try:
-            what_if_amount = Decimal(what_if_raw)
-        except (InvalidOperation, ValueError):
-            what_if_amount = None
-        else:
-            if what_if_amount < Decimal("0"):
-                what_if_amount = None
 
-    what_if_balances = []
-    comparison = None
-
-    if what_if_amount is not None and periods:
-        # What-if projection: flat contribution at hypothetical rate.
-        # contributions=None means the engine uses periodic_contribution
-        # for every period.  Employer match is recalculated automatically
-        # because the engine passes each period's contribution to
-        # calculate_employer_contribution().  Same employer_params work
-        # unchanged -- they contain match percentages and gross salary,
-        # not the employee amount.
-        what_if_projection = growth_engine.project_balance(
-            current_balance=current_balance,
-            assumed_annual_return=params.assumed_annual_return,
-            periods=periods,
-            periodic_contribution=what_if_amount,
-            employer_params=inputs.employer_params,
-            annual_contribution_limit=params.annual_contribution_limit,
-            ytd_contributions_start=inputs.ytd_contributions,
-            contributions=None,
-        )
-
-        for pb in what_if_projection:
-            what_if_balances.append(
-                str(pb.end_balance.quantize(Decimal("0.01")))
-            )
-
-        # Comparison card: committed end vs. what-if end.
-        if projection and what_if_projection:
-            committed_end = projection[-1].end_balance.quantize(TWO_PLACES)
-            whatif_end = what_if_projection[-1].end_balance.quantize(
-                TWO_PLACES,
-            )
-            difference = (whatif_end - committed_end).quantize(TWO_PLACES)
-            comparison = {
-                "committed_end": committed_end,
-                "whatif_end": whatif_end,
-                "difference": difference,
-                "is_positive": difference > Decimal("0"),
-                "is_zero": difference == Decimal("0"),
-            }
-
-    return render_template(
-        "investment/_growth_chart.html",
-        chart_labels=chart_labels,
-        chart_balances=chart_balances,
-        chart_contributions=chart_contributions,
-        what_if_balances=what_if_balances,
-        what_if_amount=what_if_amount,
-        comparison=comparison,
+    ctx = investment_dashboard_service.compute_growth_chart_data(
+        current_user.id, account, horizon_years, what_if_raw,
     )
+    return render_template("investment/_growth_chart.html", **ctx)
+
+
+def _resolve_salary_profile_url(action: str | None, profile_id: int | None):
+    """Map service-side action hints to a flask URL string.
+
+    The investment dashboard service does not import flask (boundary
+    rule); it returns an action discriminator instead of a URL.
+    Three states (mirroring the pre-Commit-28 inline route logic):
+
+    * ``action == "edit"`` and ``profile_id is not None`` ->
+      ``url_for("salary.edit_profile", profile_id=...)``.
+    * ``action == "list"`` -> ``url_for("salary.list_profiles")``.
+    * Otherwise (no contribution prompt or transfer path) ->
+      ``None``, matching the pre-extraction default.
+    """
+    if action == "edit" and profile_id is not None:
+        return url_for("salary.edit_profile", profile_id=profile_id)
+    if action == "list":
+        return url_for("salary.list_profiles")
+    return None
 
 
 @investment_bp.route(
@@ -703,9 +200,9 @@ def create_contribution_transfer(account_id):
                 return redirect(
                     url_for("investment.dashboard", account_id=account_id),
                 )
-            transfer_amount = (limit / 26).quantize(TWO_PLACES)
+            transfer_amount = (limit / _PAY_PERIODS_PER_YEAR).quantize(TWO_PLACES)
         else:
-            transfer_amount = Decimal("500.00")
+            transfer_amount = _DEFAULT_SUGGESTED_AMOUNT
 
     # Create every-period recurrence rule (biweekly, matching paycheck).
     every_period_id = ref_cache.recurrence_pattern_id(
@@ -782,7 +279,7 @@ def update_params(account_id):
         .first()
     )
 
-    # Convert percentage inputs from form (e.g. 7 → 0.07) before validation.
+    # Convert percentage inputs from form (e.g. 7 -> 0.07) before validation.
     form_data = _convert_percentage_inputs(request.form)
 
     if params:
@@ -791,14 +288,14 @@ def update_params(account_id):
             flash("Please correct the highlighted errors and try again.", "danger")
             return redirect(url_for("investment.dashboard", account_id=account_id))
         data = _update_schema.load(form_data)
-        _PARAM_FIELDS = {
+        param_fields = {
             "assumed_annual_return", "annual_contribution_limit",
             "contribution_limit_year", "employer_contribution_type",
             "employer_flat_percentage", "employer_match_percentage",
             "employer_match_cap_percentage",
         }
         for field_name, value in data.items():
-            if field_name in _PARAM_FIELDS:
+            if field_name in param_fields:
                 setattr(params, field_name, value)
         flash("Investment parameters updated.", "success")
     else:
@@ -820,7 +317,7 @@ def update_params(account_id):
 
 
 def _convert_percentage_inputs(form):
-    """Convert percentage form inputs (e.g. 7 → 0.07) to decimal values."""
+    """Convert percentage form inputs (e.g. 7 -> 0.07) to decimal values."""
     data = dict(form)
     pct_fields = [
         "assumed_annual_return", "employer_flat_percentage",

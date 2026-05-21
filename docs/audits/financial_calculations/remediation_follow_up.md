@@ -1425,4 +1425,115 @@ the remediation final gate.
 
 ---
 
+## F-21. Unify savings-dashboard loan projection through a single balance-map dispatcher
+
+- **Surfaced during:** Commit 28 (`refactor(investment): extract
+  dashboard service; collapse dispatcher; DTO (MED-01)`).
+- **Status:** not started; defer until after Commit 37.
+
+### Problem
+
+S6-03 in `06_dry_solid.md` flags the dual per-account-type dispatcher
+(`savings_dashboard_service._compute_account_projections` vs
+`year_end_summary_service._get_account_balance_map`).  Commit 28
+collapsed the *classification* step into one
+`account_projection.classify_account` shared by both consumers, but
+did NOT fully unify the loan-path balance derivation: the savings
+dashboard still walks `state.schedule` to find rows on-or-before
+`date(target_y, target_m, 1)` for the 3 / 6 / 12-month projected
+balances (`savings_dashboard_service.py:445-453`), while the year-end
+summary's debt path reads from `debt_schedules` via
+`_schedule_to_period_balance_map` keyed on `period.end_date`.
+
+These two derivations answer slightly different questions and produce
+different cents-precise values for the same loan + same horizon, so
+unifying them through one balance-map dispatcher would change one of
+the two displayed numbers.  Commit 28's verification gate is "outputs
+byte-identical to before this commit", so the unification was
+deferred.
+
+### Resolution sketch
+
+Decide (with the developer) whether the savings-dashboard loan
+projection should adopt the year-end period-end-keyed semantic, or
+whether the year-end derivation should adopt the target-month-first
+semantic.  Either direction is a behavioral change (the displayed
+numbers move).  Once the canonical semantic is chosen, route both
+consumers through one `compute_loan_period_balance_map` shared in
+`account_projection.py`.
+
+### Acceptance criteria for the eventual PR
+
+- One `compute_loan_period_balance_map` (or equivalent) producing the
+  `period_id -> remaining_balance` map for an amortising account,
+  consumed by both the savings-dashboard loan card and the year-end
+  net-worth liability + debt-progress sections.
+- `savings_dashboard_service._compute_account_projections` loan
+  branch reads from the shared dispatcher; the
+  `for label, month_offset in [...]` reverse walk over
+  `state.schedule` is gone.
+- Targeted suites
+  (`test_services/test_savings_dashboard_service.py`,
+  `test_services/test_year_end_summary_service.py`) are updated to
+  pin the chosen canonical balance for at least one fixture loan at
+  one target horizon, with the hand-computed arithmetic in a comment.
+
+---
+
+## F-22. Extract shared deduction-loader and projection-inputs helpers across investment surfaces
+
+- **Surfaced during:** Commit 28 (`refactor(investment): extract
+  dashboard service; collapse dispatcher; DTO (MED-01)`).
+- **Status:** not started; defer until after Commit 37.
+
+### Problem
+
+After extracting `investment_dashboard_service.py` (S6-01), pylint
+flags two R0801 (similar-lines) duplicates:
+
+1. The active-paycheck-deduction filter query duplicates
+   `investment_dashboard_service._load_deductions_for_account` against
+   `retirement_dashboard_service.py:399-404` (same filter shape:
+   `SalaryProfile.user_id == user_id`, `is_active.is_(True)`, ...).
+2. The `calculate_investment_inputs(...)` kwargs splat duplicates
+   between `investment_dashboard_service.py:254-263` and
+   `savings_dashboard_service.py:554-559` (same six keyword
+   arguments).
+
+Both are inherent to the engine API shape rather than a logic
+duplication, but consolidating either would shave the duplicate-code
+warning and centralise the engine-input contract.
+
+### Resolution sketch
+
+Two options:
+
+- **Option A.** Move the active-deduction filter into a small helper
+  in `app/services/account_projection.py` (or a sibling module),
+  consumed by `investment_dashboard_service` and
+  `retirement_dashboard_service` -- closes the (1) duplicate.
+- **Option B.** Introduce a shared `build_investment_projection_inputs`
+  helper in `app/services/investment_projection.py` (the natural
+  home, since it already owns `calculate_investment_inputs`) that
+  takes (account_id, params, user_id, all_periods, current_period)
+  and returns the engine-ready `InvestmentInputs` plus the adapted
+  deductions / shadow-income lists.  This closes both (1) and (2) at
+  the cost of one larger touch.
+
+### Acceptance criteria for the eventual PR
+
+- The R0801 duplicate-code findings comparing
+  `investment_dashboard_service` to
+  `retirement_dashboard_service` / `savings_dashboard_service` are
+  gone (pylint output verifies).
+- Each surface still has its own thin orchestrator that calls the
+  shared helper -- the helper does not absorb dashboard-specific
+  display logic (which would re-create a fan-in monolith).
+- Outputs unchanged across `test_routes/test_investment.py`,
+  `test_routes/test_retirement.py`,
+  `test_services/test_savings_dashboard_service.py`,
+  `test_services/test_year_end_summary_service.py`.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->
