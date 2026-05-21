@@ -94,13 +94,28 @@ back to the stored value for fixed-rate loans with no payment
 history, both of which would erase the divergence signal this
 backfill depends on.  Instead, the migration ships a small
 :func:`_replay_from_origination` helper that runs the same engine
-(:mod:`app.services.amortization_engine`) with payments from the
-existing :func:`app.services.loan_payment_service.get_payment_history`
-shadow-income feed.  The helper applies uniformly to ARM and fixed-
-rate loans; the ARM-as-trueup classification falls out of the
-divergence rule rather than a special case.  Once the loan resolver
-lands in Commit 13, future backfill or migration code should
-delegate to that resolver instead of recomputing the replay here.
+(:mod:`app.services.amortization_engine`) with a payment list built
+inline from raw SQL against ``budget.transactions``.  The helper
+applies uniformly to ARM and fixed-rate loans; the ARM-as-trueup
+classification falls out of the divergence rule rather than a special
+case.  Once the loan resolver lands in Commit 13, future backfill or
+migration code should delegate to that resolver instead of
+recomputing the replay here.
+
+**Self-contained dependency policy.** This migration intentionally
+imports only :mod:`app.services.amortization_engine` -- a pure-math
+module with no schema reads, no ORM models, no ``ref_cache`` calls,
+and no Flask coupling.  Everything else (loan enumeration, scenario
+lookup, shadow-income payment history) goes through raw SQL.  The
+original draft of this migration imported
+:mod:`app.services.loan_payment_service` and :mod:`app.models.*`,
+which produced a circular bootstrap deadlock: ``ref_cache.init()``
+needed ``ref.loan_anchor_sources`` (a table this migration creates),
+and ``loan_payment_service.get_payment_history()`` needed
+``ref_cache.txn_type_id(INCOME)`` to run.  Migrations must not
+depend on application services -- they live forever, run at
+fragile lifecycle moments, and must survive aggressive refactors
+in app code.
 
 Downgrade drops the trigger, drops the table, and drops the ref
 table.  Reversible because the backfill is reproducible from
@@ -165,7 +180,66 @@ _BACKFILL_ORIGINATION_SQL = (
 )
 
 
-def _replay_from_origination(loan_params, scenario_id):
+# Raw SQL for shadow-income payment history on a debt account.  Mirrors
+# the ORM query in ``app.services.loan_payment_service.get_payment_history``
+# but joins ref tables directly so the migration does not depend on
+# ``ref_cache`` (which is itself bootstrapping when this migration runs)
+# or on the application service (which lives above the migration layer
+# and may be refactored or removed).  String-name lookups on
+# ``ref.transaction_types`` and ``ref.statuses`` are acceptable inside
+# migrations -- the "IDs for logic, strings for display only" rule
+# applies to application code, not to schema-bootstrap migrations
+# which run below the ref-cache layer.  Both rows have been seeded
+# since the initial migration.
+_PAYMENT_HISTORY_SQL = (
+    "SELECT pp.start_date AS payment_date, "
+    "       COALESCE(t.actual_amount, t.estimated_amount) AS amount, "
+    "       s.is_settled AS is_confirmed "
+    "  FROM budget.transactions t "
+    "  JOIN budget.pay_periods pp ON pp.id = t.pay_period_id "
+    "  JOIN ref.statuses s ON s.id = t.status_id "
+    "  JOIN ref.transaction_types tt ON tt.id = t.transaction_type_id "
+    " WHERE t.account_id = :acct "
+    "   AND t.scenario_id = :scen "
+    "   AND t.transfer_id IS NOT NULL "
+    "   AND tt.name = 'Income' "
+    "   AND t.is_deleted = FALSE "
+    "   AND s.excludes_from_balance = FALSE "
+    " ORDER BY pp.start_date"
+)
+
+
+# Raw SQL for enumerating every loan account.  Selects the LoanParams
+# columns the replay needs plus the user_id from the joined account.
+# Reproduces the ORM-side filter (``account_type.has_amortization``)
+# inline so the migration sees the same loan set the application
+# would.
+_LOAN_ENUMERATION_SQL = (
+    "SELECT lp.account_id, lp.original_principal, lp.interest_rate, "
+    "       lp.term_months, lp.origination_date, lp.payment_day, "
+    "       lp.current_principal, lp.is_arm, a.user_id "
+    "  FROM budget.loan_params lp "
+    "  JOIN budget.accounts a ON a.id = lp.account_id "
+    "  JOIN ref.account_types t ON t.id = a.account_type_id "
+    " WHERE t.has_amortization = TRUE "
+    " ORDER BY lp.account_id"
+)
+
+
+# Raw SQL for the user's baseline scenario id.  Returns ``None`` for
+# a user with no baseline scenario (e.g. a brand-new account with no
+# budget set up yet), in which case the payment list is empty.
+_BASELINE_SCENARIO_SQL = (
+    "SELECT id FROM budget.scenarios "
+    " WHERE user_id = :u AND is_baseline = TRUE "
+    " LIMIT 1"
+)
+
+
+def _replay_from_origination(
+    connection, account_id, scenario_id, original_principal,
+    interest_rate, term_months, origination_date, payment_day,
+):
     """Replay confirmed payments through the amortization engine.
 
     Runs the full life-of-loan schedule from
@@ -185,11 +259,23 @@ def _replay_from_origination(loan_params, scenario_id):
     delegate to it; this helper is intentionally local so Commit 12
     does not depend on code that does not yet exist.
 
+    All loan attributes are passed as primitives rather than via
+    an ORM ``LoanParams`` instance so the migration does not need
+    to import :mod:`app.models.loan_params` -- migrations must
+    not depend on app code that may be refactored beneath them.
+
     Args:
-        loan_params: ORM ``LoanParams`` instance.
+        connection: SQLAlchemy bind from ``op.get_bind()`` for the
+            payment-history SQL query.
+        account_id: Debt account id for the payment lookup.
         scenario_id: Baseline scenario ID for the payment lookup.
             ``None`` means no payments are loaded (e.g. a brand-new
             user with no scenario yet).
+        original_principal: Decimal-coercible loan original principal.
+        interest_rate: Decimal-coercible annual interest rate.
+        term_months: Integer loan term in months.
+        origination_date: ``date`` the loan originated.
+        payment_day: Day-of-month the payment is due (1-31).
 
     Returns:
         Decimal: from-origination balance after replaying confirmed
@@ -197,17 +283,31 @@ def _replay_from_origination(loan_params, scenario_id):
         the engine).
     """
     # pylint: disable=import-outside-toplevel
+    # ``amortization_engine`` is the one app import this migration
+    # keeps -- it is pure math (no ORM, no ref_cache, no Flask) so
+    # it is safe for migration-time use.  A future rename or removal
+    # would surface immediately on the next migration replay; that
+    # is acceptable because the replay would fail loud, not silently.
     from app.services import amortization_engine
-    from app.services.loan_payment_service import get_payment_history
 
-    orig_principal = Decimal(str(loan_params.original_principal))
-    rate = Decimal(str(loan_params.interest_rate))
+    orig_principal = Decimal(str(original_principal))
+    rate = Decimal(str(interest_rate))
 
-    payments = (
-        get_payment_history(loan_params.account_id, scenario_id)
-        if scenario_id is not None
-        else []
-    )
+    if scenario_id is None:
+        payments = []
+    else:
+        payment_rows = connection.execute(
+            sa.text(_PAYMENT_HISTORY_SQL),
+            {"acct": account_id, "scen": scenario_id},
+        ).fetchall()
+        payments = [
+            amortization_engine.PaymentRecord(
+                payment_date=row.payment_date,
+                amount=Decimal(str(row.amount)),
+                is_confirmed=row.is_confirmed,
+            )
+            for row in payment_rows
+        ]
 
     if not payments:
         return orig_principal
@@ -215,11 +315,11 @@ def _replay_from_origination(loan_params, scenario_id):
     schedule = amortization_engine.generate_schedule(
         current_principal=orig_principal,
         annual_rate=rate,
-        remaining_months=loan_params.term_months,
-        origination_date=loan_params.origination_date,
-        payment_day=loan_params.payment_day,
+        remaining_months=term_months,
+        origination_date=origination_date,
+        payment_day=payment_day,
         original_principal=orig_principal,
-        term_months=loan_params.term_months,
+        term_months=term_months,
         payments=payments,
     )
 
@@ -255,6 +355,10 @@ def _backfill_trueup_events(connection):
     INSERT is skipped.  Re-running the migration after a partial
     earlier run will not create duplicates.
 
+    Uses raw SQL (no ORM ``Session``, no application models) so the
+    migration is self-contained.  See module docstring "Self-contained
+    dependency policy" for the rationale.
+
     Args:
         connection: SQLAlchemy bind from ``op.get_bind()``.
 
@@ -265,95 +369,78 @@ def _backfill_trueup_events(connection):
         diverged from stored).  Returned for the migration's own
         diagnostic logging and for test introspection.
     """
-    # pylint: disable=import-outside-toplevel
-    from app.models.loan_params import LoanParams
-    from app.models.scenario import Scenario
-    from sqlalchemy.orm import Session
-
     today = date.today()
     inserted = []
 
-    # The migration runs inside Alembic's own transaction; binding a
-    # Session to ``connection`` reuses that transaction so ORM
-    # operations roll back with the migration on error.
-    session = Session(bind=connection)
-    try:
-        trueup_source_id = connection.execute(sa.text(
-            "SELECT id FROM ref.loan_anchor_sources WHERE name = 'user_trueup'"
-        )).scalar()
+    trueup_source_id = connection.execute(sa.text(
+        "SELECT id FROM ref.loan_anchor_sources WHERE name = 'user_trueup'"
+    )).scalar()
 
-        # Walk every loan account.  ``LoanParams.account_id`` carries
-        # the user join via Account; we iterate the params rows and
-        # look up the user's baseline scenario for the payment feed.
-        params_rows = (
-            session.query(LoanParams)
-            .order_by(LoanParams.account_id)
-            .all()
+    # Walk every loan account via raw SQL.  ``has_amortization`` filter
+    # mirrors the ORM-side semantics used by the production loan
+    # resolver in Commit 13.
+    loan_rows = connection.execute(sa.text(_LOAN_ENUMERATION_SQL)).fetchall()
+
+    for loan in loan_rows:
+        scenario_id = connection.execute(
+            sa.text(_BASELINE_SCENARIO_SQL), {"u": loan.user_id},
+        ).scalar()
+
+        stored = Decimal(str(loan.current_principal))
+
+        replay_balance = _replay_from_origination(
+            connection=connection,
+            account_id=loan.account_id,
+            scenario_id=scenario_id,
+            original_principal=loan.original_principal,
+            interest_rate=loan.interest_rate,
+            term_months=loan.term_months,
+            origination_date=loan.origination_date,
+            payment_day=loan.payment_day,
         )
 
-        for params in params_rows:
-            account = params.account  # eagerly resolves via FK
-            user_id = account.user_id
-
-            baseline = (
-                session.query(Scenario)
-                .filter_by(user_id=user_id, is_baseline=True)
-                .first()
-            )
-            scenario_id = baseline.id if baseline is not None else None
-
-            stored = Decimal(str(params.current_principal))
-
-            if params.is_arm:
-                replay_balance = _replay_from_origination(params, scenario_id)
-                if replay_balance == stored:
-                    # The rare ARM whose stored value happens to
-                    # match the from-origination replay (e.g. brand-
-                    # new ARM at origination with no payments and
-                    # current == original).  Origination event alone
-                    # suffices; no trueup needed.
-                    continue
-                reason = "arm"
-            else:
-                replay_balance = _replay_from_origination(params, scenario_id)
-                if replay_balance == stored:
-                    continue
-                reason = "fixed_divergence"
-
-            # Same-day duplicate guard: the unique functional index
-            # rejects literal duplicates but allows the same account
-            # to receive two different trueups on the same day.  This
-            # guard prevents a re-run from doubling the trueup row
-            # for an account whose stored value has not changed.
-            already = connection.execute(sa.text(
-                "SELECT 1 FROM budget.loan_anchor_events "
-                " WHERE account_id = :a "
-                "   AND anchor_date = :d "
-                "   AND anchor_balance = :b "
-                "   AND ((created_at AT TIME ZONE 'UTC')::date) = "
-                "       (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date "
-                " LIMIT 1"
-            ), {"a": params.account_id, "d": today, "b": stored}).scalar()
-            if already:
+        if loan.is_arm:
+            if replay_balance == stored:
+                # The rare ARM whose stored value happens to match
+                # the from-origination replay (e.g. brand-new ARM at
+                # origination with no payments and current ==
+                # original).  Origination event alone suffices; no
+                # trueup needed.
                 continue
+            reason = "arm"
+        else:
+            if replay_balance == stored:
+                continue
+            reason = "fixed_divergence"
 
-            connection.execute(sa.text(
-                "INSERT INTO budget.loan_anchor_events "
-                "  (account_id, anchor_date, anchor_balance, source_id) "
-                "VALUES (:a, :d, :b, :s)"
-            ), {
-                "a": params.account_id,
-                "d": today,
-                "b": stored,
-                "s": trueup_source_id,
-            })
-            inserted.append((params.account_id, reason))
-    finally:
-        # Do not close the bind-bound session; closing would commit
-        # the migration's open transaction prematurely.  ``Session``
-        # objects bound to an external connection rely on the caller
-        # for transaction control.
-        session.close()
+        # Same-day duplicate guard: the unique functional index
+        # rejects literal duplicates but allows the same account
+        # to receive two different trueups on the same day.  This
+        # guard prevents a re-run from doubling the trueup row
+        # for an account whose stored value has not changed.
+        already = connection.execute(sa.text(
+            "SELECT 1 FROM budget.loan_anchor_events "
+            " WHERE account_id = :a "
+            "   AND anchor_date = :d "
+            "   AND anchor_balance = :b "
+            "   AND ((created_at AT TIME ZONE 'UTC')::date) = "
+            "       (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date "
+            " LIMIT 1"
+        ), {"a": loan.account_id, "d": today, "b": stored}).scalar()
+        if already:
+            continue
+
+        connection.execute(sa.text(
+            "INSERT INTO budget.loan_anchor_events "
+            "  (account_id, anchor_date, anchor_balance, source_id) "
+            "VALUES (:a, :d, :b, :s)"
+        ), {
+            "a": loan.account_id,
+            "d": today,
+            "b": stored,
+            "s": trueup_source_id,
+        })
+        inserted.append((loan.account_id, reason))
 
     return inserted
 
