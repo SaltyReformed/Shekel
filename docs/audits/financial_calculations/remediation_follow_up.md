@@ -367,8 +367,13 @@ corrections are batched.
 
 - **Surfaced during:** Commit 11 (`test(integration): cross-page balance-
   equality regression lock (HIGH-01)`), commit `4674e7e`.
-- **Status:** not started; trivial cleanup, can be folded into any
-  conftest-touching commit.
+- **Status:** resolved by Commit 2 of `remediation_follow_up_plan.md`.
+  The `global _skip_user_bootstrap_period` declaration and the two
+  assignments (`= True` before flush, `= False` in `finally`) have been
+  removed from the `bare_user` fixture, along with the inline comment
+  describing the (non-existent) listener.  Project-wide grep across
+  `app/` and `tests/` returns empty.  The body below is preserved for
+  traceability.
 
 ### Problem
 

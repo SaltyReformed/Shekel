@@ -841,20 +841,13 @@ def bare_user(app, db):
     Returns:
         dict with keys: user, settings.
     """
-    global _skip_user_bootstrap_period  # pylint: disable=global-statement
     user = User(
         email="bare@shekel.local",
         password_hash=hash_password("barepass-12345"),
         display_name="Bare User",
     )
     db.session.add(user)
-    # Suppress the bootstrap-period listener so this user is truly
-    # bare; pay_period_service tests rely on starting from zero.
-    _skip_user_bootstrap_period = True
-    try:
-        db.session.flush()
-    finally:
-        _skip_user_bootstrap_period = False
+    db.session.flush()
 
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
