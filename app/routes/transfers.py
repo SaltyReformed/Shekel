@@ -9,7 +9,7 @@ transactions.py (grid cell HTMX endpoints).
 import logging
 from datetime import date
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for, jsonify
+from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
@@ -42,6 +42,12 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
 from app.utils.balance_predicates import is_projected_clause
 from app.utils.db_errors import is_unique_violation
+from app.routes._recurrence_form_helpers import (
+    STALE_ACTION_MESSAGE,
+    STALE_EDITING_MESSAGE,
+    build_recurrence_rule_from_form,
+    handle_stale_conflict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,37 +176,25 @@ def create_transfer_template():
     start_period_id = data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Create the recurrence rule if a pattern was specified.
-    rule = None
-    pattern_id_str = data.pop("recurrence_pattern", None)
-    if pattern_id_str:
-        pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
-        if pattern is None:
-            flash("Invalid recurrence pattern.", "danger")
-            return redirect(url_for("transfers.new_transfer_template"))
-
-        interval_n = data.pop("interval_n", 1)
-        offset_periods = data.pop("offset_periods", 0)
-
-        if int(pattern_id_str) == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS) and start_period_id and interval_n:
-            start_period = db.session.get(PayPeriod, start_period_id)
-            if not start_period or start_period.user_id != current_user.id:
-                flash("Invalid start period.", "danger")
-                return redirect(url_for("transfers.new_transfer_template"))
-            offset_periods = start_period.period_index % interval_n
-
-        rule = RecurrenceRule(
-            user_id=current_user.id,
-            pattern_id=pattern.id,
-            interval_n=interval_n,
-            offset_periods=offset_periods,
-            day_of_month=data.pop("day_of_month", None),
-            month_of_year=data.pop("month_of_year", None),
-            start_period_id=start_period_id,
-            end_date=end_date,
-        )
-        db.session.add(rule)
-        db.session.flush()
+    # Create the recurrence rule via the F-24 helper.  Transfer
+    # templates require a non-NULL ``recurrence_rule_id`` (the column
+    # has no nullable contract for create -- single-shot transfers
+    # use the ONCE pattern), so the upstream
+    # ``_create_schema.validate`` rejects payloads without a
+    # ``recurrence_pattern``; the helper's "no pattern -> None"
+    # branch is therefore unreachable here, and the downstream
+    # ``rule.id`` access matches the pre-extraction contract.
+    rule_or_redirect = build_recurrence_rule_from_form(
+        data,
+        user_id=current_user.id,
+        start_period_id=start_period_id,
+        end_date_value=end_date,
+        redirect_endpoint="transfers.new_transfer_template",
+        include_due_day_of_month=False,
+    )
+    if isinstance(rule_or_redirect, Response):
+        return rule_or_redirect
+    rule = rule_or_redirect
 
     template = TransferTemplate(
         user_id=current_user.id,
@@ -348,36 +342,38 @@ def update_transfer_template(template_id):
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Update recurrence rule if pattern changed.
-    pattern_id_str = data.pop("recurrence_pattern", None)
-    if pattern_id_str:
+    # Update recurrence rule if pattern changed.  The existing-rule
+    # mutation branch stays inline (R0801 acceptance, F-24 Section 2);
+    # the no-existing-rule branch (and the no-pattern cleanup) route
+    # through the F-24 helper, which pops every recurrence key from
+    # ``data`` either way.  ``include_due_day_of_month=False`` because
+    # the transfer-template schemas do not expose the field.
+    if data.get("recurrence_pattern") and template.recurrence_rule:
+        pattern_id_str = data.pop("recurrence_pattern")
         pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
         if pattern is None:
             flash("Invalid recurrence pattern.", "danger")
             return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
-        if template.recurrence_rule:
-            template.recurrence_rule.pattern_id = pattern.id
-            template.recurrence_rule.interval_n = data.pop("interval_n", 1)
-            template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
-            template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
-            template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
-            template.recurrence_rule.end_date = end_date
-        else:
-            rule = RecurrenceRule(
-                user_id=current_user.id,
-                pattern_id=pattern.id,
-                interval_n=data.pop("interval_n", 1),
-                offset_periods=data.pop("offset_periods", 0),
-                day_of_month=data.pop("day_of_month", None),
-                month_of_year=data.pop("month_of_year", None),
-                end_date=end_date,
-            )
-            db.session.add(rule)
-            db.session.flush()
-            template.recurrence_rule_id = rule.id
+        template.recurrence_rule.pattern_id = pattern.id
+        template.recurrence_rule.interval_n = data.pop("interval_n", 1)
+        template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
+        template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
+        template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
+        template.recurrence_rule.end_date = end_date
     else:
-        for key in ("interval_n", "offset_periods", "day_of_month", "month_of_year", "end_date"):
-            data.pop(key, None)
+        rule_or_redirect = build_recurrence_rule_from_form(
+            data,
+            user_id=current_user.id,
+            start_period_id=None,
+            end_date_value=end_date,
+            redirect_endpoint="transfers.edit_transfer_template",
+            redirect_endpoint_kwargs={"template_id": template_id},
+            include_due_day_of_month=False,
+        )
+        if isinstance(rule_or_redirect, Response):
+            return rule_or_redirect
+        if rule_or_redirect is not None:
+            template.recurrence_rule_id = rule_or_redirect.id
 
     # --- Route-boundary FK ownership (commit C-27 / F-043) ---
     # Each user-scoped FK is verified only when present in the
@@ -443,19 +439,16 @@ def update_transfer_template(template_id):
     try:
         db.session.commit()
     except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on update_transfer_template id=%d",
-            template_id,
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="update_transfer_template",
+            log_id=template_id,
+            flash_message=STALE_EDITING_MESSAGE.format(
+                noun="recurring transfer",
+            ),
+            redirect_endpoint="transfers.edit_transfer_template",
+            redirect_endpoint_kwargs={"template_id": template_id},
         )
-        flash(
-            "This recurring transfer was changed by another action while "
-            "you were editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for(
-            "transfers.edit_transfer_template", template_id=template_id,
-        ))
     except IntegrityError:
         db.session.rollback()
         flash("A recurring transfer with that name already exists.", "warning")
@@ -508,17 +501,15 @@ def archive_transfer_template(template_id):
     try:
         db.session.commit()
     except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on archive_transfer_template id=%d",
-            template_id,
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="archive_transfer_template",
+            log_id=template_id,
+            flash_message=STALE_ACTION_MESSAGE.format(
+                noun="recurring transfer",
+            ),
+            redirect_endpoint="transfers.list_transfer_templates",
         )
-        flash(
-            "This recurring transfer was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("transfers.list_transfer_templates"))
 
     flash(
         f"Recurring transfer '{template.name}' archived. "
@@ -575,17 +566,15 @@ def unarchive_transfer_template(template_id):
     try:
         db.session.commit()
     except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on unarchive_transfer_template id=%d",
-            template_id,
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="unarchive_transfer_template",
+            log_id=template_id,
+            flash_message=STALE_ACTION_MESSAGE.format(
+                noun="recurring transfer",
+            ),
+            redirect_endpoint="transfers.list_transfer_templates",
         )
-        flash(
-            "This recurring transfer was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("transfers.list_transfer_templates"))
     flash(
         f"Recurring transfer '{template.name}' unarchived. "
         f"{restored_count} projected transfer(s) restored.",
@@ -663,15 +652,14 @@ def hard_delete_transfer_template(template_id):
             try:
                 db.session.commit()
             except StaleDataError:
-                db.session.rollback()
-                logger.info(
-                    "Stale-data conflict during archive-fallback in "
-                    "hard_delete_transfer_template id=%d", template_id,
-                )
-                flash(
-                    "This recurring transfer was changed by another action.  "
-                    "Please reload and try again.",
-                    "warning",
+                return handle_stale_conflict(
+                    logger=logger,
+                    log_label="hard_delete_transfer_template archive-fallback",
+                    log_id=template_id,
+                    flash_message=STALE_ACTION_MESSAGE.format(
+                        noun="recurring transfer",
+                    ),
+                    redirect_endpoint="transfers.list_transfer_templates",
                 )
         return redirect(url_for("transfers.list_transfer_templates"))
 
@@ -712,17 +700,15 @@ def hard_delete_transfer_template(template_id):
     try:
         db.session.commit()
     except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on hard_delete_transfer_template id=%d",
-            template_id,
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="hard_delete_transfer_template",
+            log_id=template_id,
+            flash_message=STALE_ACTION_MESSAGE.format(
+                noun="recurring transfer",
+            ),
+            redirect_endpoint="transfers.list_transfer_templates",
         )
-        flash(
-            "This recurring transfer was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("transfers.list_transfer_templates"))
 
     flash(f"Recurring transfer '{template_name}' permanently deleted.", "info")
     return redirect(url_for("transfers.list_transfer_templates"))
