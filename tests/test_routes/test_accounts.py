@@ -2862,6 +2862,58 @@ class TestCheckingDetailCanonicalProducer:
             # balance column at least once beyond the summary card.
             assert resp.data.count(b"$0.00") >= 2
 
+    def test_accounts_checking_balance_routed_through_resolver(self):
+        """Static guard: checking-detail balance routes through ``balance_resolver``.
+
+        F-6 lock, sibling of
+        ``test_grid_balance_computation_routed_through_resolver``.
+        The cross-page balance-equality regression test
+        (``tests/test_integration/test_cross_page_balance_equality.py``,
+        Commit 11 of the main remediation) cannot catch a route-handler
+        bypass of the canonical producer because its /accounts reader
+        re-runs ``balance_resolver.balances_for`` itself rather than
+        parsing the rendered HTML.  A regression that swaps the
+        ``checking_detail`` route's call to the bare entries-blind
+        producer ``balance_calculator.calculate_balances`` (re-opening
+        the F-009 / CRIT-01 silent-degrade seam) would drift silently
+        through that lock.  This static guard closes the gap.
+
+        Two assertions:
+          1. ``balance_resolver.balances_for`` must still appear in
+             the accounts route file (positive: the E-25 / Commit 5 +
+             Commit 7 canonical-producer wiring on ``checking_detail``
+             is intact).
+          2. ``balance_calculator.calculate_balances(`` (the bare
+             entries-blind producer) must NOT appear in the file.
+             ``calculate_balances_with_interest(`` is a distinct
+             symbol -- it is the legitimate producer for the
+             ``interest_detail`` route and will not match this
+             anti-pattern because the open-paren anchors the substring
+             to the bare function name.
+        """
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+        accounts_source = Path(
+            "app/routes/accounts.py",
+        ).read_text(encoding="utf-8")
+        assert "balance_resolver.balances_for" in accounts_source, (
+            "app/routes/accounts.py no longer calls "
+            "``balance_resolver.balances_for`` -- regression on the "
+            "E-25 / Commit 5 + Commit 7 canonical-producer contract.  "
+            "Route the checking-detail balance computation through "
+            "``balance_resolver`` instead of a hand-rolled loop or "
+            "the bare entries-blind producer."
+        )
+        assert "balance_calculator.calculate_balances(" not in accounts_source, (
+            "app/routes/accounts.py imports the bare entries-blind "
+            "``balance_calculator.calculate_balances`` -- this bypasses "
+            "the entries-aware reduction (F-009 / CRIT-01 fix).  Use "
+            "``balance_resolver.balances_for`` instead.  Note: "
+            "``calculate_balances_with_interest`` is a distinct legitimate "
+            "producer for the interest-bearing detail route and does "
+            "not match this guard."
+        )
+
 
 class TestCheckingDashboardLink:
     """Tests for the checking detail link on the savings/accounts dashboard."""

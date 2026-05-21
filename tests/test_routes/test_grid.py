@@ -3815,6 +3815,53 @@ class TestGridPeriodSubtotalCanonical:
             "F-004 same-page regression)"
         )
 
+    def test_grid_balance_computation_routed_through_resolver(self):
+        """Static guard: grid balance computation routes through ``balance_resolver``.
+
+        F-6 lock.  The cross-page balance-equality regression test
+        (``tests/test_integration/test_cross_page_balance_equality.py``,
+        Commit 11 of the main remediation) cannot catch a route-handler
+        bypass of the canonical producer because its grid reader
+        re-runs ``balance_resolver.balances_for`` itself rather than
+        parsing the rendered HTML.  A regression that re-introduces a
+        hand-rolled balance loop in ``app/routes/grid.py`` (or that
+        swaps the canonical entries-aware producer for the bare
+        entries-blind ``balance_calculator.calculate_balances``) would
+        therefore drift silently.  This static lock closes that gap.
+
+        Two assertions:
+          1. ``balance_resolver.balances_for`` must still appear in
+             ``app/routes/grid.py`` (positive: the E-25 / Commit 5
+             canonical-producer wiring is intact).
+          2. ``balance_calculator.calculate_balances(`` (the bare
+             entries-blind producer) must NOT appear -- the entries-
+             aware reduction in ``_entry_aware_amount`` is the F-009 /
+             CRIT-01 fix; the bare producer would re-open the silent-
+             degrade seam.  ``calculate_balances_with_interest`` is a
+             distinct symbol and would not match this anti-pattern.
+
+        Complements ``test_grid_inline_subtotal_loop_removed`` above:
+        that guard catches an inline ``sum(... effective_amount ...)``
+        accumulator; this guard catches a swap to the entries-blind
+        canonical-named function.
+        """
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
+        assert "balance_resolver.balances_for" in grid_source, (
+            "app/routes/grid.py no longer calls "
+            "``balance_resolver.balances_for`` -- regression on the "
+            "E-25 / Commit 5 canonical-producer contract.  Route the "
+            "balance computation through ``balance_resolver`` instead "
+            "of a hand-rolled loop or the bare entries-blind producer."
+        )
+        assert "balance_calculator.calculate_balances(" not in grid_source, (
+            "app/routes/grid.py imports the bare entries-blind "
+            "``balance_calculator.calculate_balances`` -- this bypasses "
+            "the entries-aware reduction (F-009 / CRIT-01 fix).  Use "
+            "``balance_resolver.balances_for`` instead."
+        )
+
     def test_obligations_has_no_period_subtotal_loop(self):
         """Static guard: obligations.py has no period-subtotal arithmetic.
 
