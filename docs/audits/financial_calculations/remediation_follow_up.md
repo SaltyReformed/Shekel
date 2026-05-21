@@ -1536,4 +1536,44 @@ Two options:
 
 ---
 
+## F-23. Companion route `_build_entry_data` casts a Decimal pct through float
+
+- **Surfaced during:** Commit 30 (`fix(dashboard): entry-tracked bill row
+  single disclosed base (E-21, MED-03)`).
+- **Status:** not started; in scope of Commit 31 (MED-04 -- move money
+  math out of Jinja/JS into services) and intentionally deferred there.
+
+### Problem
+
+`app/routes/companion.py:54-55` computes
+``pct = float(total / txn.estimated_amount * Decimal("100"))`` -- a
+Decimal-only arithmetic expression then cast through binary float to
+satisfy a progress-bar width consumer.  The cast lives in a route
+(violating the project standard that money math is service-layer
+Decimal), and the float result is numerically consistent today only
+because the call site is display-only.  The audit cross-references the
+inline pct from F-028's row (`03_consistency.md:2223` R2) as a
+float-on-money / route-arithmetic concern (E-10 / E-16); the
+cross-anchor row inconsistency itself is closed by Commit 30, but the
+float cast is the MED-04 / E-16 surface.
+
+### Resolution sketch
+
+Move the pct derivation into a small helper in `entry_service` (or the
+companion service if one is extracted) that returns a Decimal capped at
+100 (analogous to `_safe_pct_complete` in `dashboard_service.py`), then
+have the template/Jinja consume the Decimal directly.  Eliminate the
+`float(...)` cast at the call site.
+
+### Acceptance criteria for the eventual PR
+
+- `grep -n "float(" app/routes/companion.py` shows no money-math casts.
+- The pct value rendered for the companion progress bar is byte-
+  identical to the current display for every fixture in
+  `tests/test_routes/test_companion_routes.py`.
+- The helper has a substantive docstring naming MED-04 / E-16 as the
+  governing standard.
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->

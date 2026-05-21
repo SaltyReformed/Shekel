@@ -38,6 +38,13 @@
       ${{ "{:,.2f}".format(bill.amount|float) }}
     </span>
     {% endif %}
+    {# E-21 / MED-03: disclose the budget base for entry-tracked rows
+       so the amount cell and the entry-progress remaining/over-budget
+       share one labeled mental model rather than answering different
+       questions silently. #}
+    {% if bill.amount_base %}
+    <small class="text-muted bill-row__base-label">{{ bill.amount_base }}</small>
+    {% endif %}
     {% if bill.due_date %}
     <small class="text-muted d-none d-md-inline">{{ bill.due_date.strftime('%b %-d') }}</small>
     {% endif %}

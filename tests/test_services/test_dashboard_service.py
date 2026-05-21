@@ -251,6 +251,244 @@ class TestUpcomingBills:
             assert bills[0]["days_until_due"] == 5
 
 
+# ── Entry-tracked bill row, single declared base (E-21 / MED-03) ────
+
+
+class TestBillRowSingleBase:
+    """E-21 (MED-03 / F-028 / F-056): the entry-tracked bill row's amount,
+    remaining, and over-budget all anchor on ``estimated_amount`` -- the
+    declared budget base -- and the base is disclosed via
+    ``bill["amount_base"]``.  Pre-fix the amount cell used
+    ``effective_amount`` (tier-3 actual when populated) while remaining
+    used ``estimated_amount``, producing internally inconsistent rows.
+    """
+
+    def _make_entry_tracked_txn(
+        self, db, seed_user, period, estimated, actual=None,
+        status_enum=StatusEnum.PROJECTED,
+    ):
+        """Construct an entry-tracked (is_envelope=True) Transaction.
+
+        Returns the flushed Transaction.  The seed_entry_template
+        fixture is not used because these tests need explicit control
+        over estimated_amount / actual_amount / status.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.ref import RecurrencePattern
+        from app.models.recurrence_rule import RecurrenceRule
+        from app.models.transaction_template import TransactionTemplate
+        every_period = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name="Every Period").one()
+        )
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=every_period.id,
+        )
+        db.session.add(rule)
+        db.session.flush()
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Groceries"].id,
+            recurrence_rule_id=rule.id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            name="Envelope bill",
+            default_amount=Decimal(str(estimated)),
+            is_envelope=True,
+        )
+        db.session.add(template)
+        db.session.flush()
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=ref_cache.status_id(status_enum),
+            name="Envelope bill",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            estimated_amount=Decimal(str(estimated)),
+            actual_amount=Decimal(str(actual)) if actual is not None else None,
+            template_id=template.id,
+            due_date=date(2026, 1, 5),
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    def _add_entries(self, db, seed_user, txn, *amounts):
+        """Attach debit entries to ``txn`` summing the supplied amounts."""
+        # pylint: disable=import-outside-toplevel
+        from app.models.transaction_entry import TransactionEntry
+        for amt in amounts:
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                amount=Decimal(str(amt)),
+                description="purchase",
+                entry_date=date(2026, 1, 5),
+            ))
+        db.session.flush()
+
+    def test_row_single_base_actual_lt_estimated(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C30-1: actual=$100, estimated=$120, entries sum $80.
+
+        Pre-fix (F-028): amount=$100 (effective=actual) while
+        remaining=$120-$80=$40 -- one row, two undisclosed bases.
+
+        E-21: amount must equal $120 (estimated) so all three figures
+        share the declared base.
+            amount         = estimated_amount      = $120.00
+            entry_total    = $50 + $30             = $80.00
+            entry_remaining = estimated - entries  = $120.00 - $80.00 = $40.00
+            entry_over_budget = (entries > est)    = ($80 > $120) = False
+        amount_base = "budget" (disclosed in the UI).
+        """
+        with app.app_context():
+            txn = self._make_entry_tracked_txn(
+                db, seed_user, seed_periods[0],
+                estimated="120.00", actual="100.00",
+            )
+            self._add_entries(db, seed_user, txn, "50.00", "30.00")
+            db.session.commit()
+
+            bill = dashboard_service.txn_to_bill_dict(txn, date(2026, 1, 1))
+
+            # MED-03 / F-028: amount now equals estimated (was
+            # effective=actual=$100); the row's three numbers share
+            # one declared base.
+            assert bill["amount"] == Decimal("120.00")
+            assert bill["amount_base"] == "budget"
+            assert bill["is_tracked"] is True
+            assert bill["entry_total"] == Decimal("80.00")
+            assert bill["entry_remaining"] == Decimal("40.00")
+            assert bill["entry_over_budget"] is False
+            # Internal consistency: entry_total + entry_remaining == amount.
+            assert bill["entry_total"] + bill["entry_remaining"] == bill["amount"]
+
+    def test_base_disclosed_in_dict(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C30-2: entry-tracked rows expose ``amount_base = "budget"``.
+
+        The disclosure field is what the template renders so the user
+        reads one mental model.  A non-entry-tracked bill has no
+        progress fields to disclose against, so ``amount_base`` is
+        None.
+        """
+        with app.app_context():
+            envelope = self._make_entry_tracked_txn(
+                db, seed_user, seed_periods[0],
+                estimated="200.00",
+            )
+            # Non-entry-tracked bill: no template at all, so
+            # _is_entry_tracked is False and amount falls back to
+            # effective_amount.
+            plain = _add_txn(
+                db.session, seed_user, seed_periods[0],
+                "Plain bill", "75.00",
+                due_date=date(2026, 1, 6),
+            )
+            db.session.commit()
+
+            envelope_bill = dashboard_service.txn_to_bill_dict(
+                envelope, date(2026, 1, 1),
+            )
+            plain_bill = dashboard_service.txn_to_bill_dict(
+                plain, date(2026, 1, 1),
+            )
+
+            assert envelope_bill["amount_base"] == "budget"
+            assert plain_bill["amount_base"] is None
+            # Non-entry-tracked unchanged: amount = effective_amount.
+            assert plain_bill["amount"] == Decimal("75.00")
+
+    def test_over_budget_consistent_with_amount(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C30-4: an overspent envelope flags over-budget; under-budget does not.
+
+        Overspent case: estimated=$100, entries sum $130.
+            amount         = $100.00
+            entry_total    = $130.00
+            entry_remaining = $100.00 - $130.00 = -$30.00
+            entry_over_budget = ($130 > $100) = True
+        amount/remaining/over-budget all reference the same $100 base.
+        """
+        with app.app_context():
+            overspent = self._make_entry_tracked_txn(
+                db, seed_user, seed_periods[0],
+                estimated="100.00",
+            )
+            self._add_entries(db, seed_user, overspent, "70.00", "60.00")
+
+            under = self._make_entry_tracked_txn(
+                db, seed_user, seed_periods[1],
+                estimated="100.00",
+            )
+            self._add_entries(db, seed_user, under, "40.00")
+            db.session.commit()
+
+            over_bill = dashboard_service.txn_to_bill_dict(
+                overspent, date(2026, 1, 1),
+            )
+            under_bill = dashboard_service.txn_to_bill_dict(
+                under, date(2026, 1, 1),
+            )
+
+            assert over_bill["amount"] == Decimal("100.00")
+            assert over_bill["entry_total"] == Decimal("130.00")
+            assert over_bill["entry_remaining"] == Decimal("-30.00")
+            assert over_bill["entry_over_budget"] is True
+            # Same base across the three fields: total > amount iff
+            # over-budget, and amount - total = remaining.
+            assert (
+                over_bill["entry_over_budget"]
+                is (over_bill["entry_total"] > over_bill["amount"])
+            )
+
+            assert under_bill["amount"] == Decimal("100.00")
+            assert under_bill["entry_total"] == Decimal("40.00")
+            assert under_bill["entry_remaining"] == Decimal("60.00")
+            assert under_bill["entry_over_budget"] is False
+            assert (
+                under_bill["entry_over_budget"]
+                is (under_bill["entry_total"] > under_bill["amount"])
+            )
+
+    def test_actual_amount_does_not_shift_base(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """E-21 (MED-03): the base is estimated unconditionally.
+
+        Even when ``actual_amount`` is populated on a still-Projected
+        entry-tracked txn, the amount cell stays on ``estimated_amount``
+        so it agrees with the entry-derived remaining/over-budget.
+
+        actual=$77, estimated=$120, no entries:
+            amount = $120.00 (estimated, NOT $77 actual)
+            entry_remaining = None (no entries -> progress fields off)
+        """
+        with app.app_context():
+            txn = self._make_entry_tracked_txn(
+                db, seed_user, seed_periods[0],
+                estimated="120.00", actual="77.00",
+            )
+            db.session.commit()
+
+            bill = dashboard_service.txn_to_bill_dict(txn, date(2026, 1, 1))
+
+            assert bill["amount"] == Decimal("120.00")
+            assert bill["amount_base"] == "budget"
+            # Without entries the progress fields are off; the amount
+            # cell's base is still disclosed so the template can render
+            # the label.
+            assert bill["is_tracked"] is True
+            assert bill["entry_total"] is None
+
+
 # ── Alert Tests ─────────────────────────────────────────────────────
 
 

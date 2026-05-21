@@ -1076,6 +1076,56 @@ class TestComputeRemaining:
 
             assert remaining == Decimal("0.01")
 
+    def test_compute_remaining_anchors_on_estimated_only(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """C30-3 (E-21 / MED-03 / F-028 / F-056): compute_remaining
+        takes only ``estimated_amount`` and therefore cannot anchor on
+        ``actual_amount`` or switch on status -- the structural
+        guarantee that the entry-tracked bill row's remaining always
+        shares the declared E-21 budget base with the row's amount
+        cell.
+
+        Worked example: estimated=$120 (the E-21 base), entries
+        summing $80; ``actual_amount`` could be anything (e.g. $100)
+        and the result MUST stay anchored on $120.
+            remaining = 120.00 - 80.00 = 40.00
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            entries = [
+                _make_entry(txn, user, amount="50.00"),
+                _make_entry(txn, user, amount="30.00"),
+            ]
+
+            # Even if a hypothetical caller passed actual_amount, the
+            # function would compute against that value -- the
+            # signature accepts no actual or status, so anchoring on
+            # estimated is structural.  Pass estimated and assert the
+            # E-21 result.
+            remaining = entry_service.compute_remaining(
+                Decimal("120.00"), entries,
+            )
+
+            assert remaining == Decimal("40.00")
+
+    def test_compute_remaining_signature_excludes_actual_and_status(self):
+        """C30-3 partner: the function signature cannot consult
+        ``actual_amount`` or ``status`` -- it accepts only
+        ``estimated_amount`` and ``entries`` -- so a future change
+        cannot silently shift the entry-tracked row's base away from
+        E-21 / MED-03 estimated_amount without an explicit signature
+        change (which would surface in review).
+        """
+        # pylint: disable=import-outside-toplevel
+        import inspect
+        sig = inspect.signature(entry_service.compute_remaining)
+        # E-21 base contract: the only inputs are the declared base
+        # (estimated_amount) and the entries to subtract.  No txn, no
+        # status, no actual.
+        assert list(sig.parameters) == ["estimated_amount", "entries"]
+
 
 class TestComputeActualFromEntries:
     """Tests for entry_service.compute_actual_from_entries()."""

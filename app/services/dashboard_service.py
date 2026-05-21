@@ -168,6 +168,28 @@ def _get_upcoming_bills(
     return bills
 
 
+def _is_entry_tracked(txn: Transaction) -> bool:
+    """Return True if the transaction's template enables envelope tracking.
+
+    Per E-21 (MED-03 / F-028 / F-056) entry-tracked bill rows anchor
+    every visible figure (amount cell, remaining, over-budget flag) on
+    ``estimated_amount`` -- the declared budget base -- so the row's
+    three numbers always answer the same question.  Centralising the
+    "is this row entry-tracked" check here keeps :func:`txn_to_bill_dict`
+    and :func:`_entry_progress_fields` from re-deriving it inline (and
+    so cannot drift apart): both call this helper.
+
+    Args:
+        txn: The Transaction to inspect.  ``txn.template`` must be
+            accessible (eager-loaded by the caller for collections).
+
+    Returns:
+        True when the transaction's template exists and has
+        ``is_envelope = True``; otherwise False.
+    """
+    return txn.template is not None and txn.template.is_envelope
+
+
 def txn_to_bill_dict(txn: Transaction, today: date) -> dict:
     """Build a bill dict for the dashboard bills template from a Transaction.
 
@@ -180,19 +202,41 @@ def txn_to_bill_dict(txn: Transaction, today: date) -> dict:
     dealing with collections should eager-load them via selectinload
     /joinedload to avoid N+1 queries.
 
+    E-21 / MED-03 / F-028 / F-056: for entry-tracked (envelope) bills
+    the ``amount`` field is set from ``estimated_amount`` so it shares
+    the same declared base as ``entry_remaining`` and
+    ``entry_over_budget`` (also derived from ``estimated_amount`` in
+    :func:`_entry_progress_fields`).  ``amount_base`` carries the
+    label the template surfaces to the user ("budget") so the base is
+    disclosed in the UI, not implicit.  Non-entry-tracked rows keep
+    ``effective_amount`` (tier-3 actual when populated, otherwise
+    estimated) because the row has no progress fields to be
+    inconsistent with; ``amount_base`` is None there so the template
+    skips the label.
+
     Args:
         txn: The Transaction to convert.
         today: The reference date used to compute days_until_due.
 
     Returns:
         Dict matching the bills template contract, including the
-        entry progress fields from _entry_progress_fields.
+        entry progress fields from _entry_progress_fields and the
+        ``amount_base`` label that discloses which base the amount
+        cell uses.
     """
     days_until = (txn.due_date - today).days if txn.due_date else None
+    is_entry_tracked = _is_entry_tracked(txn)
+    if is_entry_tracked:
+        amount = txn.estimated_amount
+        amount_base = "budget"
+    else:
+        amount = txn.effective_amount
+        amount_base = None
     bill = {
         "id": txn.id,
         "name": txn.name,
-        "amount": txn.effective_amount,
+        "amount": amount,
+        "amount_base": amount_base,
         "due_date": txn.due_date,
         "period_start_date": txn.pay_period.start_date,
         "category_group": txn.category.group_name if txn.category else None,
@@ -216,6 +260,13 @@ def _entry_progress_fields(txn: Transaction) -> dict:
     and a flag indicating whether the sum exceeds the estimated
     amount.
 
+    Per E-21 / MED-03 / F-028 / F-056 the remaining and over-budget
+    figures are computed against ``txn.estimated_amount`` -- the
+    declared E-21 budget base -- so the row's three numbers (amount,
+    remaining, over-budget) all share one base.  ``txn_to_bill_dict``
+    anchors the amount cell on the same base; the template surfaces
+    ``bill.amount_base`` to disclose it.
+
     Expects txn.template and txn.entries to already be loaded on the
     transaction object (eager-loaded by the caller).
 
@@ -225,10 +276,7 @@ def _entry_progress_fields(txn: Transaction) -> dict:
     Returns:
         Dict with the five entry progress fields.
     """
-    is_tracked = (
-        txn.template is not None
-        and txn.template.is_envelope
-    )
+    is_tracked = _is_entry_tracked(txn)
     if not is_tracked or not txn.entries:
         return {
             "is_tracked": is_tracked,

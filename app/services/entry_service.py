@@ -427,10 +427,23 @@ def compute_remaining(
     credit) because the remaining balance represents budget consumption,
     not checking impact.  Negative values indicate overspending.
 
+    Per E-21 (audit MED-03 / F-028 / F-056) the budget base for an
+    entry-tracked bill row is ``estimated_amount`` unconditionally --
+    never ``actual_amount`` and never status-dependent.  This is why
+    the signature takes ``estimated_amount`` directly rather than the
+    whole ``Transaction``: the base cannot be switched on at runtime;
+    callers that want to display "remaining" against a different base
+    are out of contract and must compute it themselves.  The dashboard
+    bill row, the companion entry data builder, and the entries
+    partial all pass ``txn.estimated_amount`` (verified) so they
+    share one declared base with the row's amount cell and
+    over-budget flag.
+
     Pure function -- no database access.
 
     Args:
-        estimated_amount: The transaction's budgeted amount.
+        estimated_amount: The transaction's budgeted amount -- the
+            E-21 declared base for the row's plan-vs-actual figures.
         entries: List of TransactionEntry objects.
 
     Returns:
