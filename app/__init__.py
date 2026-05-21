@@ -10,7 +10,6 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-import sqlalchemy.exc
 from flask import Flask, render_template, request, session as flask_session
 
 from app.config import CONFIG_MAP
@@ -151,20 +150,24 @@ def create_app(config_name=None):
     # database IDs.  Then expose cached status IDs as Jinja globals so
     # templates can compare status_id without querying the database.
     #
-    # The init may fail during migrations (columns not yet added) or on
-    # a fresh database before the first migration.  In that case, log a
-    # warning and skip -- the cache will initialize on the next startup
-    # after the migration completes.
+    # ``ref_cache.init`` is resilient to missing ref tables during the
+    # bootstrap window (a pending migration that creates a new ref
+    # table, run via ``flask db upgrade``).  It returns the list of
+    # tables that were unavailable; when that list is non-empty we
+    # skip the Jinja globals registration because some accessors
+    # would otherwise raise ``KeyError``.  Production never hits this
+    # branch -- migrations have already run by the time Gunicorn
+    # imports the app.
     from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import (  # pylint: disable=import-outside-toplevel
         AcctCategoryEnum, AcctTypeEnum, CalcMethodEnum,
         DeductionTimingEnum, GoalModeEnum, IncomeUnitEnum,
         RecurrencePatternEnum, StatusEnum, TxnTypeEnum,
     )
-    try:
-        with app.app_context():
-            ref_cache.init(db.session)
+    with app.app_context():
+        unavailable_ref_tables = ref_cache.init(db.session)
 
+    if not unavailable_ref_tables:
         # Status IDs
         app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
         app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
@@ -228,11 +231,12 @@ def create_app(config_name=None):
         # Income unit IDs
         app.jinja_env.globals["INCOME_UNIT_PAYCHECKS"] = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
         app.jinja_env.globals["INCOME_UNIT_MONTHS"] = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
-    except (sqlalchemy.exc.ProgrammingError, sqlalchemy.exc.OperationalError) as exc:
+    else:
         app.logger.warning(
-            "ref_cache initialization skipped (%s). "
-            "Jinja globals will not be available until next restart.",
-            type(exc).__name__,
+            "ref_cache partial init: %d ref table(s) unavailable (%s). "
+            "Jinja globals skipped; will populate on next app start after "
+            "migrations run.",
+            len(unavailable_ref_tables), ", ".join(unavailable_ref_tables),
         )
 
     app.logger.info("Shekel app created with config=%s", config_name)
