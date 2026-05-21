@@ -1108,7 +1108,13 @@ local ``TWELVE`` / ``MONTHS_IN_YEAR`` aliases. Targeted suites:
 
 - **Surfaced during:** Commit 24 (`fix(schema): reconcile Marshmallow
   domains with DB CHECK (E-28, HIGH-06)`).
-- **Status:** not started; deletion is out of HIGH-06 scope.
+- **Status:** resolved by Commit 3 of the follow-up plan
+  (`chore(utils): delete unused pct_to_decimal helper (F-16)`).
+  ``app/utils/formatting.py`` was deleted outright (the module
+  contained only ``pct_to_decimal`` and its private ``_HUNDRED``
+  constant); the lone test docstring reference in
+  ``tests/test_routes/test_loan.py`` was rewritten to cite the
+  schema-side ``_normalize_percent_fields`` helper.
 
 ### Problem
 

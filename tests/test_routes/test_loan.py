@@ -416,7 +416,10 @@ class TestLoanParamsUpdate:
           ``_PARAM_FIELDS`` in :func:`app.routes.loan.update_params`
           no longer references it.
         * ``interest_rate=4.500`` -> ``Decimal("0.04500")`` via
-          :func:`app.utils.formatting.pct_to_decimal`.
+          ``LoanParamsUpdateSchema``'s ``@pre_load`` hook, which
+          dispatches to
+          :func:`app.schemas.validation._normalize_percent_fields`
+          (Commit 24 / HIGH-06 convention).
         """
         acct = _create_auto_loan(seed_user, db.session)
         params_before = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
