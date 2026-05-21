@@ -78,14 +78,15 @@ def test_no_display_read_of_current_principal():
         itself; the grep would otherwise count the ``db.Column``
         line as a hit.
 
-    Documented out-of-scope engine internals (``compute_contractual_pi``
-    in ``loan_payment_service.py``, ``get_loan_projection`` in
-    ``amortization_engine.py``, ``calculate_balances_with_amortization``
-    in ``balance_calculator.py``) are tracked as Commit-17 follow-ups
-    in ``docs/audits/financial_calculations/remediation_follow_up.md``
-    F-10 and are explicitly allow-listed below.  When Commit 17
-    collapses them, drop the entry from ``_ALLOWED_ENGINE_INTERNALS``
-    so this test catches any new display-read regression.
+    The three pre-F-10 engine internals
+    (``get_loan_projection`` in ``amortization_engine.py``,
+    ``calculate_balances_with_amortization`` in
+    ``balance_calculator.py``, ``compute_contractual_pi`` in
+    ``loan_payment_service.py``) were collapsed by the follow-up
+    Commit 15 (F-10): the first two were deleted as dead production
+    code; the third was rewritten to read ``original_principal``
+    instead of ``current_principal``.  No ``app/services/`` allow-
+    list entries remain.
 
     The grep matches WRITES (``params.current_principal = X``) as
     well as reads -- but Commit 15 leaves the legacy write path in
@@ -120,10 +121,6 @@ def test_no_display_read_of_current_principal():
     # and refinance-template ``comparison.current_principal`` (dict
     # key, not LoanParams attribute).
     _ALLOWED = (
-        # Engine internals -- Commit 17 follow-up F-10:
-        "services/amortization_engine.py:",
-        "services/balance_calculator.py:",
-        "services/loan_payment_service.py:",
         # DebtAccount dataclass (different class, not LoanParams):
         "services/debt_strategy_service.py:",
         # Template dict-key reads on ``comparison.current_principal``

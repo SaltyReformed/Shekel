@@ -22,13 +22,10 @@ This eliminates the double-counting risk described in design doc section 16.1.
 
 import logging
 from collections import OrderedDict
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from app.services.interest_projection import calculate_interest
-from app.utils.balance_predicates import (
-    is_projected,
-    status_contributes_to_balance,
-)
+from app.utils.balance_predicates import is_projected
 
 logger = logging.getLogger(__name__)
 
@@ -172,131 +169,6 @@ def calculate_balances_with_interest(
         balances[period.id] = running_balance
 
     return balances, interest_by_period
-
-
-def calculate_balances_with_amortization(
-    anchor_balance, anchor_period_id, periods, transactions,
-    account_id=None, loan_params=None,
-):
-    """Calculate balances for a debt account (mortgage or auto loan).
-
-    Payments into the loan account are detected from shadow income
-    transactions (transfer_id IS NOT NULL, transaction_type == income).
-    Only the principal portion (determined by amortization) reduces the
-    balance; the interest portion is the cost of the loan.
-
-    Args:
-        anchor_balance:    Decimal -- the current principal at the anchor period.
-        anchor_period_id:  int -- the pay_period.id of the anchor.
-        periods:           List of PayPeriod objects, ordered by period_index.
-        transactions:      List of Transaction objects (including shadow transactions).
-        account_id:        The loan account ID.  Used to identify payment
-                           transactions (shadow income in this account).
-        loan_params:       Object with .current_principal, .interest_rate,
-                           .term_months, .origination_date, .payment_day.
-
-    Returns:
-        (balances, principal_by_period) where:
-            balances: OrderedDict mapping period_id -> Decimal end balance
-            principal_by_period: dict mapping period_id -> Decimal principal paid
-    """
-    from app.services.amortization_engine import (
-        calculate_monthly_payment, calculate_remaining_months,
-    )
-
-    # First compute base balances (shadow transactions applied normally).
-    base_balances, _ = calculate_balances(
-        anchor_balance, anchor_period_id, periods, transactions,
-    )
-
-    principal_by_period = {}
-
-    if not loan_params or not hasattr(loan_params, "interest_rate"):
-        return base_balances, principal_by_period
-
-    annual_rate = loan_params.interest_rate  # Already Decimal from Numeric(7,5).
-    # For ARM loans, the contractual payment from original terms is wrong --
-    # interest_rate is the current rate, not the origination rate.  Use the
-    # re-amortized payment from current balance and remaining term.
-    is_arm = getattr(loan_params, "is_arm", False)
-    if is_arm:
-        remaining = calculate_remaining_months(
-            loan_params.origination_date, loan_params.term_months,
-        )
-        monthly_payment = calculate_monthly_payment(
-            loan_params.current_principal,  # Already Decimal from Numeric(12,2).
-            annual_rate,
-            remaining,
-        )
-    else:
-        monthly_payment = calculate_monthly_payment(
-            loan_params.original_principal,  # Already Decimal from Numeric(12,2).
-            annual_rate,
-            loan_params.term_months,
-        )
-
-    monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")
-
-    # Re-walk periods, tracking the loan balance reduction by principal only.
-    balances = OrderedDict()
-    running_principal = None
-
-    # Group transactions by period for payment detection.
-    txn_by_period = {}
-    for txn in transactions:
-        txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
-
-    for period in periods:
-        if period.id not in base_balances:
-            continue
-
-        if period.id == anchor_period_id:
-            running_principal = Decimal(str(anchor_balance))
-        elif running_principal is None:
-            continue
-
-        # Detect payments: shadow income transactions in the loan account
-        # represent money coming in to pay the loan.  These replace the
-        # old transfer-based detection (design doc section 6.2).
-        period_txns = txn_by_period.get(period.id, [])
-        total_payment_in = Decimal("0.00")
-        for txn in period_txns:
-            # Cancelled / Credit transactions do not represent loan
-            # payments. Routed through the centralized predicate
-            # (D6-09 / MED-02): the rule "is this row contributing"
-            # lives in one place so the loan-payment classifier and
-            # every other balance-contribution gate cannot drift
-            # apart.  The status-only variant is required because
-            # this function's docstring contract pre-filters deleted
-            # rows upstream and existing test fakes
-            # (``types.SimpleNamespace`` constructs without
-            # ``is_deleted``) rely on that contract.
-            if not status_contributes_to_balance(txn):
-                continue
-            # Shadow income transactions in this account are loan payments.
-            # effective_amount prefers actual over estimated (Decimal).
-            if (txn.transfer_id is not None
-                    and hasattr(txn, "is_income") and txn.is_income):
-                total_payment_in += txn.effective_amount
-
-        # For each payment, split into interest and principal.
-        if total_payment_in > 0 and running_principal > 0:
-            interest_portion = (running_principal * monthly_rate).quantize(
-                Decimal("0.01"), ROUND_HALF_UP
-            )
-            principal_portion = total_payment_in - interest_portion
-            principal_portion = max(principal_portion, Decimal("0.00"))
-            principal_portion = min(principal_portion, running_principal)
-
-            running_principal -= principal_portion
-            running_principal = max(running_principal, Decimal("0.00"))
-            principal_by_period[period.id] = principal_portion
-        else:
-            principal_by_period[period.id] = Decimal("0.00")
-
-        balances[period.id] = running_principal
-
-    return balances, principal_by_period
 
 
 def _entry_aware_amount(txn):

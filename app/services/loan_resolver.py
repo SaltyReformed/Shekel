@@ -571,8 +571,9 @@ def resolve_loan(
 
     # Schedule generation strategy:
     # * ARM -- pass the anchor so the engine re-amortizes from it;
-    #   matches the existing get_loan_projection ARM pattern, which
-    #   has working hand-computed coverage.
+    #   matches the engine's ARM anchor-reset pattern (the pattern
+    #   the pre-F-10 ``get_loan_projection`` wrapper exercised; the
+    #   wrapper itself was removed in follow-up Commit 15).
     # * Fixed-rate -- do NOT pass the anchor.  The engine's
     #   anchor-reset code path unconditionally overrides the
     #   contractual monthly_payment with a re-amortized value

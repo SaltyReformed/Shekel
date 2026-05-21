@@ -431,7 +431,8 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
     the SAME monthly P&I as the resolver's hand-computed constant.
 
     Pre-Commit-15 the loan card rendered ``summary.monthly_payment``
-    derived from ``amortization_engine.get_loan_projection``'s
+    derived from the (now-deleted, follow-up F-10 / Commit 15)
+    ``amortization_engine.get_loan_projection`` wrapper's
     re-amortization branch which, for an ARM, picked the contractual
     payment from the stored ``current_principal`` over a calendar-
     shrinking ``remaining_months`` count -- producing the
