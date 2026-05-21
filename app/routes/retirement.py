@@ -9,8 +9,9 @@ import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from marshmallow import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -23,6 +24,7 @@ from app.models.user import UserSettings
 from app.schemas.validation import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
+    RetirementGapQuerySchema,
     RetirementSettingsSchema,
 )
 from app.services import retirement_dashboard_service
@@ -41,6 +43,7 @@ retirement_bp = Blueprint("retirement", __name__)
 _pension_create_schema = PensionProfileCreateSchema()
 _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
+_gap_query_schema = RetirementGapQuerySchema()
 
 
 @retirement_bp.route("/retirement")
@@ -306,13 +309,20 @@ def gap_analysis():
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))
 
-    swr_override = None
+    # F-13: validate the URL-editable ``swr`` slider override through
+    # the schema, which owns the percent-to-fraction conversion and
+    # rejects values outside ``[0, 1]`` with a 422.  The calculator
+    # itself still treats non-positive SWR as zero (defense in depth),
+    # but the schema surfaces the user error rather than letting the
+    # analysis silently collapse to zero.
+    try:
+        query_data = _gap_query_schema.load(request.args)
+    except ValidationError as exc:
+        return jsonify(errors=exc.messages), 422
+
+    swr_override = query_data.get("swr")
+
     return_rate_override = None
-
-    swr_param = request.args.get("swr", type=float)
-    if swr_param is not None:
-        swr_override = Decimal(str(swr_param)) / Decimal("100")
-
     return_param = request.args.get("return_rate", type=float)
     if return_param is not None:
         return_rate_override = Decimal(str(return_param)) / Decimal("100")

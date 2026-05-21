@@ -300,15 +300,18 @@ class TestCalculateGap:
         assert result.savings_surplus_or_shortfall == Decimal("500000")
 
     def test_safe_withdrawal_rate_negative(self):
-        """Negative SWR is mathematically nonsensical; source treats it like zero.
+        """Negative SWR is mathematically nonsensical; calculator treats it as zero.
 
-        The source guard `if safe_withdrawal_rate > 0:` is False for negative
-        values, so required_retirement_savings = ZERO. No validation is
-        performed -- a negative SWR silently produces the same result as SWR=0.
-
-        # BUG: Source does not validate SWR > 0 -- negative SWR silently
-        # accepted. Should raise ValidationError.
-        # TODO: Source should validate safe_withdrawal_rate > 0.
+        The source guard ``if safe_withdrawal_rate > 0:`` is False for
+        negative values, so ``required_retirement_savings = ZERO``.  The
+        calculator is intentionally permissive (defense in depth): the
+        validation layer that rejects a negative slider override lives
+        at the ``/retirement/gap`` route via ``RetirementGapQuerySchema``
+        (F-13).  Direct calls into the calculator from trusted callers
+        (the dashboard service reads the column whose CHECK constraint
+        admits ``[0, 1]`` only) cannot pass a negative SWR through the
+        storage path; the route's Marshmallow ``Range(min=0)`` blocks
+        the only remaining channel.
 
         pre_retirement_net_monthly = (2500*26/12).quantize(0.01) = 5416.67
         monthly_income_gap = max(5416.67 - 1000, 0) = 4416.67
@@ -395,14 +398,18 @@ class TestCalculateGap:
         assert result.after_tax_surplus_or_shortfall == Decimal("-525001.00")
 
     def test_tax_rate_negative(self):
-        """Negative tax rate is nonsensical; source does not validate it.
+        """Negative tax rate is nonsensical; calculator is permissive by design.
 
-        A negative tax rate inflates after-tax pension and after-tax savings
-        (multiplies by > 1.0). This is mathematically valid but financially
-        meaningless.
-
-        # BUG: Source does not validate estimated_tax_rate >= 0.
-        # TODO: Source should raise ValidationError for negative tax rates.
+        A negative tax rate inflates after-tax pension and after-tax
+        savings (multiplies by > 1.0). This is mathematically valid but
+        financially meaningless.  The calculator does not validate the
+        bound (defense in depth -- mirrors the F-13 SWR treatment):
+        validation lives upstream at ``RetirementSettingsSchema``'s
+        ``Range(min=0, max=1)`` on ``estimated_retirement_tax_rate``,
+        and the column's DB CHECK pins the same domain.  No URL slider
+        exposes the tax rate, so the storage path is the only channel
+        and it cannot smuggle a negative value through to the
+        calculator.
 
         pre_retirement_net_monthly = (2500*26/12).quantize(0.01) = 5416.67
         after_tax_monthly_pension = (2000*(1-(-0.10))).quantize(0.01)

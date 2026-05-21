@@ -1964,6 +1964,34 @@ class RetirementSettingsSchema(BaseSchema):
     )
 
 
+class RetirementGapQuerySchema(BaseSchema):
+    """Validates the /retirement/gap HTMX slider override query string.
+
+    F-13: the slider's URL-editable ``swr`` parameter must reject
+    negative values rather than letting the calculator silently
+    collapse ``required_retirement_savings`` to zero.  Matches the
+    Commit 24 / HIGH-06 convention: the schema owns the percent-to-
+    fraction conversion via ``@pre_load`` so the route does no money
+    math.  ``Range(min=0, max=1)`` on the stored fraction mirrors
+    ``user_settings.safe_withdrawal_rate``'s CHECK constraint, so a
+    URL-edited ``swr=-5`` is rejected at the schema with a 422 instead
+    of silently zeroing the analysis.
+    """
+
+    _PERCENT_FIELDS = ("swr",)
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
+
+    swr = fields.Decimal(
+        places=5, as_string=True, allow_none=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
+    )
+
+
 # ── Calibration Schema (Phase 3.10) ──────────────────────────────
 
 

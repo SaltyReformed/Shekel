@@ -623,6 +623,76 @@ class TestGapAnalysisFragment:
         # Gap analysis table always contains income gap row.
         assert b"Monthly Income Gap" in resp.data
 
+    def test_gap_rejects_negative_swr(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-13: negative ``swr`` slider override is rejected at the schema.
+
+        Pre-F-13 the route divided the raw float by 100 and handed the
+        resulting negative fraction to the calculator, which silently
+        zeroed ``required_retirement_savings``.  Post-F-13 the
+        ``RetirementGapQuerySchema`` rejects the value with a 422 so the
+        user surfaces an actionable error instead of a falsely-balanced
+        analysis.
+        """
+        resp = auth_client.get(
+            "/retirement/gap?swr=-5",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 422
+        body = resp.get_json()
+        assert "errors" in body
+        assert "swr" in body["errors"]
+
+    def test_gap_accepts_zero_swr(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-13: ``swr=0`` (the inclusive lower bound) is accepted.
+
+        The calculator's ``> 0`` guard collapses
+        ``required_retirement_savings`` to ZERO, which is the existing
+        zero-rate behaviour preserved at the calculator (defense in
+        depth).  The route surfaces a normal 200 rather than 422.
+        """
+        _create_salary_profile(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2050, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get(
+            "/retirement/gap?swr=0",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert b"Monthly Income Gap" in resp.data
+
+    def test_gap_accepts_default_swr(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-13: ``swr=4`` (the default 4% slider value) routes happy-path.
+
+        Percent input ``"4"`` -> fraction ``Decimal("0.04")``, well
+        inside the schema's ``Range(0, 1)``; the fragment renders the
+        standard gap analysis.
+        """
+        _create_salary_profile(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2050, 1, 1)
+        settings.safe_withdrawal_rate = Decimal("0.04")
+        db.session.commit()
+
+        resp = auth_client.get(
+            "/retirement/gap?swr=4",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        # The fragment renders the SWR-driven Required Savings row.
+        assert b"4.0% rule" in resp.data
+
 
 class TestRetirementNegativePaths:
     """Negative-path and boundary tests for retirement routes."""

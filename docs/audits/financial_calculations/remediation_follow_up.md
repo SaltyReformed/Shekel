@@ -954,8 +954,11 @@ diff.
 
 - **Surfaced during:** Commit 20 (`fix(retirement): zero is a value not
   missing (E-12, CRIT-04)`).
-- **Status:** not started; product decision required (validation vs.
-  clamping vs.  status quo).
+- **Status:** resolved by Commit 7 of the follow-up plan
+  (`fix(retirement): reject negative SWR slider override (F-13)`).
+  Decision: reject (422) via Marshmallow ``Range(min=0, max=1)`` on the
+  new ``RetirementGapQuerySchema``; the calculator's permissive ``> 0``
+  guard remains as defense in depth.
 
 ### Problem
 
