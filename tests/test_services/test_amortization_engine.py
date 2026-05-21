@@ -3138,3 +3138,187 @@ class TestARMContractualPaymentBug:
 
         # Schedule should still terminate cleanly.
         assert schedule[-1].remaining_balance == Decimal("0.00")
+
+
+class TestFixedRateAnchorReset:
+    """Regression tests for F-8: anchor-reset payment gate.
+
+    Prior to the fix, ``generate_schedule`` unconditionally recomputed
+    ``monthly_payment`` whenever the anchor reset fired.  For fixed-rate
+    loans the inner contract sets ``max_months = remaining_months +
+    term_months`` (a generous upper bound for the early-payoff case),
+    so ``months_left`` at the reset was roughly ``2 * term_months`` and
+    the recomputed payment came out about half the contractual amount.
+
+    The fix gates the recompute on ``not using_contractual``: ARM loans
+    (``using_contractual`` is False) continue to re-amortize at the
+    anchor; fixed-rate loans keep the contractual monthly payment that
+    was computed at loop entry.
+
+    The bug is unreachable in production today because every fixed-rate
+    call site passes ``anchor_balance=None``.  Closing the gap lets a
+    future Commit-16 fixed-rate true-up UX project from the corrected
+    balance without corrupting the schedule.
+    """
+
+    # ── C14-1: fixed-rate anchor at origination ───────────────────
+    #
+    # $400,000 at 6% / 360 months.  M = P * r(1+r)^n / ((1+r)^n - 1)
+    # with r = 0.06 / 12 = 0.005 and n = 360:
+    #   (1.005)^360 = 6.022575...
+    #   numerator = 400000 * 0.005 * 6.022575 = 12045.150...
+    #   denominator = 6.022575 - 1 = 5.022575
+    #   M = 12045.150 / 5.022575 = 2398.2046...
+    #   -> Decimal("2398.20") after ROUND_HALF_UP to two places.
+
+    FIXED_PRINCIPAL = Decimal("400000")
+    FIXED_RATE = Decimal("0.06")
+    FIXED_TERM = 360
+    FIXED_ORIGINATION = date(2026, 1, 1)
+    FIXED_PAYMENT_DAY = 1
+    CONTRACTUAL_PAYMENT = Decimal("2398.20")
+
+    def test_fixed_rate_anchor_at_origination_preserves_contractual_payment(self):
+        """C14-1: every row's payment equals the contractual P&I when the
+        anchor is passed for a fixed-rate loan.
+
+        Without the F-8 gate, the anchor reset at the first month after
+        origination would recompute ``monthly_payment`` over
+        ``max_months - 1 + 1 = 720`` months (since
+        ``max_months = remaining_months + term_months = 360 + 360``),
+        producing a payment of roughly ``M($400000, 0.06, 720) ~ $2056``
+        instead of the contractual ``$2398.20``.  After the gate, the
+        contractual payment is held constant across every row.
+        """
+        schedule = generate_schedule(
+            current_principal=self.FIXED_PRINCIPAL,
+            annual_rate=self.FIXED_RATE,
+            remaining_months=self.FIXED_TERM,
+            origination_date=self.FIXED_ORIGINATION,
+            payment_day=self.FIXED_PAYMENT_DAY,
+            original_principal=self.FIXED_PRINCIPAL,
+            term_months=self.FIXED_TERM,
+            anchor_balance=self.FIXED_PRINCIPAL,
+            anchor_date=self.FIXED_ORIGINATION,
+        )
+
+        # The anchor at origination is a no-op for the balance (it
+        # equals the starting principal) but it fires the anchor-reset
+        # branch; the F-8 gate must prevent the payment recompute.
+        #
+        # The contractual path keeps ``max_months = remaining_months +
+        # term_months`` as a generous upper bound, so the loop may
+        # produce one extra row that absorbs sub-penny rounding residue
+        # after the contractual payment retires the principal across
+        # 360 months (this is the existing behaviour locked by
+        # ``test_contractual_payment_from_original_terms`` and is
+        # unrelated to F-8).  All non-final rows must use the
+        # contractual payment; if the F-8 gate is removed every row
+        # would instead use ``M($400000, 0.06, 720) ~ $2056.83`` and
+        # the schedule would stretch well past ``FIXED_TERM + 1``.
+        assert len(schedule) <= self.FIXED_TERM + 1, (
+            f"Schedule should retire the loan within "
+            f"{self.FIXED_TERM + 1} rows (360 contractual + at most one "
+            f"residue-absorption row); got {len(schedule)} rows, which "
+            f"indicates the contractual payment was clobbered."
+        )
+        # Every row except the optional residue-absorption final row
+        # must use the contractual payment exactly.
+        non_residue_rows = (
+            schedule[:-1] if len(schedule) > self.FIXED_TERM else schedule
+        )
+        for row in non_residue_rows:
+            assert row.payment == self.CONTRACTUAL_PAYMENT, (
+                f"Fixed-rate row {row.month} payment should be "
+                f"{self.CONTRACTUAL_PAYMENT} (contractual M($400000, "
+                f"0.06, 360)), got {row.payment}"
+            )
+
+        # The schedule must still amortize to zero -- the contractual
+        # payment with no extra correctly retires the principal.
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+
+    def test_fixed_rate_anchor_payment_matches_calculate_monthly_payment(self):
+        """C14-1 lock: ``calculate_monthly_payment`` for the fixture
+        returns exactly the value pinned in CONTRACTUAL_PAYMENT.
+
+        Locks the hand-computed value above against any drift in the
+        helper itself, so a future regression in
+        ``calculate_monthly_payment`` would fail this test loudly rather
+        than letting the schedule assertion silently re-pin against a
+        wrong helper output.
+        """
+        assert calculate_monthly_payment(
+            self.FIXED_PRINCIPAL, self.FIXED_RATE, self.FIXED_TERM,
+        ) == self.CONTRACTUAL_PAYMENT
+
+    # ── C14-2: ARM anchor mid-loan still re-amortizes ─────────────
+    #
+    # ARM scenario (``using_contractual`` is False because
+    # ``original_principal`` is None): $100,000 balance at 6% with 300
+    # months remaining, origination 2024-01-01.  Anchor at $90,000 on
+    # 2024-06-15.
+    #
+    # The first scheduled pay_date strictly after the anchor is the
+    # 6th iteration (origination + 1 -> 2024-02-01, ..., +5 ->
+    # 2024-07-01).  At month_num=6 the gate is True (ARM), the balance
+    # snaps to $90,000, and ``months_left = max_months - month_num + 1
+    # = 300 - 6 + 1 = 295``.  Expected post-anchor payment:
+    #   M($90,000, 0.06, 295)
+    # = 90000 * 0.005 * (1.005)^295 / ((1.005)^295 - 1)
+
+    ARM_BALANCE = Decimal("100000")
+    ARM_RATE = Decimal("0.06")
+    ARM_REMAINING = 300
+    ARM_ORIGINATION = date(2024, 1, 1)
+    ARM_ANCHOR_BALANCE = Decimal("90000")
+    ARM_ANCHOR_DATE = date(2024, 6, 15)
+    ARM_ANCHOR_MONTH_INDEX = 5  # 0-based: row 6 is index 5 (pay 2024-07-01)
+    ARM_MONTHS_LEFT_AT_ANCHOR = 295
+
+    def test_arm_mid_loan_anchor_reamortizes(self):
+        """C14-2: ARM loans still re-amortize at the anchor reset.
+
+        ``using_contractual`` is False for this fixture
+        (``original_principal`` is None), so the F-8 gate does NOT
+        suppress the recompute.  Row 6 (pay_date 2024-07-01) is the
+        first row strictly after anchor_date 2024-06-15; at that row
+        the balance must snap to $90,000 and the payment must
+        re-amortize over the remaining 295 months at 6%.
+        """
+        schedule = generate_schedule(
+            current_principal=self.ARM_BALANCE,
+            annual_rate=self.ARM_RATE,
+            remaining_months=self.ARM_REMAINING,
+            origination_date=self.ARM_ORIGINATION,
+            payment_day=1,
+            anchor_balance=self.ARM_ANCHOR_BALANCE,
+            anchor_date=self.ARM_ANCHOR_DATE,
+        )
+
+        anchor_row = schedule[self.ARM_ANCHOR_MONTH_INDEX]
+        assert anchor_row.payment_date == date(2024, 7, 1)
+
+        expected_post_anchor_payment = calculate_monthly_payment(
+            self.ARM_ANCHOR_BALANCE,
+            self.ARM_RATE,
+            self.ARM_MONTHS_LEFT_AT_ANCHOR,
+        )
+        # M($90,000, 0.06, 295) hand-arithmetic:
+        #   r = 0.005; (1.005)^295 ~ 4.367
+        #   M = 90000 * 0.005 * 4.367 / (4.367 - 1)
+        #     = 1965.15 / 3.367 = 583.71 (Decimal at two places).
+        assert anchor_row.payment == expected_post_anchor_payment
+
+        # Pre-anchor rows use the initial re-amortized payment from
+        # current_principal over remaining_months (the ARM contract);
+        # the gate does not change pre-anchor behaviour.
+        initial_payment = calculate_monthly_payment(
+            self.ARM_BALANCE, self.ARM_RATE, self.ARM_REMAINING,
+        )
+        assert schedule[0].payment == initial_payment
+
+        # The anchor reset must change the payment -- pin the diff so a
+        # regression that mistakenly applies the F-8 gate to ARMs would
+        # fail loudly here.
+        assert anchor_row.payment != initial_payment

@@ -483,14 +483,28 @@ def generate_schedule(
         # schedule to the anchor at the first month after anchor_date.
         # Pre-anchor rows have approximate P&I splits; post-anchor rows
         # project from the user-verified balance and are exact.
+        #
+        # F-8: the payment recompute is gated on ``not using_contractual``.
+        # For ARM loans (``using_contractual`` is False, ``max_months ==
+        # remaining_months``) re-amortization at the anchor is the
+        # intended behaviour and the recomputed payment is correct.
+        # For fixed-rate loans (``using_contractual`` is True,
+        # ``max_months == remaining_months + term_months`` as a generous
+        # upper bound for the early-payoff case), recomputing
+        # ``monthly_payment`` over ``months_left`` here would produce a
+        # payment about half the contractual amount and corrupt every
+        # subsequent row.  The contractual ``monthly_payment`` set at
+        # loop entry from ``original_principal``/``term_months`` stays in
+        # force through the anchor reset.
         if (anchor_balance is not None and anchor_date is not None
                 and not anchor_applied and pay_date > anchor_date):
             balance = anchor_balance
             anchor_applied = True
-            months_left = max_months - month_num + 1
-            monthly_payment = calculate_monthly_payment(
-                balance, current_annual_rate, months_left,
-            )
+            if not using_contractual:
+                months_left = max_months - month_num + 1
+                monthly_payment = calculate_monthly_payment(
+                    balance, current_annual_rate, months_left,
+                )
 
         # ARM rate adjustment: check if the rate changes this month.
         # When the rate differs from the previous period, re-amortize
