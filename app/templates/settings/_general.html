@@ -13,7 +13,7 @@
                    input_attrs='min="1" max="52"', errors=errors) }}
 
   {{ render_input_group("default_inflation_rate", "Default Inflation Rate",
-                         value=(settings.default_inflation_rate * 100)|round(2) if settings.default_inflation_rate else '', suffix="%",
+                         value=(settings.default_inflation_rate|to_percent)|round(2) if settings.default_inflation_rate else '', suffix="%",
                          step="0.01",
                          help_text="Annual inflation rate used for long-term expense projections (e.g. 3 for 3%).",
                          errors=errors) }}
@@ -44,7 +44,7 @@
                          errors=errors) }}
 
   {{ render_input_group("trend_alert_threshold", "Spending Trend Alert Threshold",
-                         value=(settings.trend_alert_threshold * 100)|round(0)|int if settings.trend_alert_threshold else 10, suffix="%",
+                         value=(settings.trend_alert_threshold|to_percent)|round(0)|int if settings.trend_alert_threshold else 10, suffix="%",
                          input_attrs='min="1" max="100"',
                          help_text="Alert when category spending changes by more than this percentage between periods.",
                          errors=errors) }}

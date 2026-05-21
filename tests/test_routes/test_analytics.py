@@ -963,7 +963,12 @@ class TestVarianceTab:
 
     def test_variance_chart_present(self, app, auth_client, seed_user,
                                      seed_periods, db):
-        """C15-5: Response contains canvas with chart data attributes."""
+        """C15-5: Response contains canvas with chart data attributes.
+
+        Includes C31 (JN-03): ``data-variance`` must be emitted so the
+        chart tooltip renders the server-computed variance instead of
+        recomputing ``actual - estimated`` client-side.
+        """
         with app.app_context():
             _create_paid_expense_for_route_test(
                 db, seed_user, seed_periods,
@@ -979,6 +984,7 @@ class TestVarianceTab:
             assert "data-labels" in html
             assert "data-estimated" in html
             assert "data-actual" in html
+            assert "data-variance" in html
 
     def test_variance_chart_data_matches_report(self, app, auth_client,
                                                  seed_user, seed_periods, db):

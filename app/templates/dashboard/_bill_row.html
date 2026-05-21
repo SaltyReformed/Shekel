@@ -30,12 +30,12 @@
   <div class="d-flex align-items-center gap-2 flex-shrink-0">
     {% if show_progress %}
     <span class="font-mono{% if bill.entry_over_budget %} text-danger fw-semibold{% endif %}"
-          title="${{ '{:,.2f}'.format(bill.entry_total|float) }} of ${{ '{:,.2f}'.format(bill.amount|float) }} budget -- {% if bill.entry_over_budget %}${{ '{:,.2f}'.format((bill.entry_remaining|abs)|float) }} over{% else %}${{ '{:,.2f}'.format(bill.entry_remaining|float) }} remaining{% endif %} -- {{ bill.entry_count }} entr{{ 'ies' if bill.entry_count != 1 else 'y' }}">
-      ${{ "{:,.2f}".format(bill.entry_total|float) }} / ${{ "{:,.2f}".format(bill.amount|float) }}
+          title="${{ '{:,.2f}'.format(bill.entry_total) }} of ${{ '{:,.2f}'.format(bill.amount) }} budget -- {% if bill.entry_over_budget %}${{ '{:,.2f}'.format((bill.entry_remaining|abs)) }} over{% else %}${{ '{:,.2f}'.format(bill.entry_remaining) }} remaining{% endif %} -- {{ bill.entry_count }} entr{{ 'ies' if bill.entry_count != 1 else 'y' }}">
+      ${{ "{:,.2f}".format(bill.entry_total) }} / ${{ "{:,.2f}".format(bill.amount) }}
     </span>
     {% else %}
     <span class="font-mono {% if bill.is_paid|default(false) %}text-muted text-decoration-line-through{% endif %}">
-      ${{ "{:,.2f}".format(bill.amount|float) }}
+      ${{ "{:,.2f}".format(bill.amount) }}
     </span>
     {% endif %}
     {# E-21 / MED-03: disclose the budget base for entry-tracked rows

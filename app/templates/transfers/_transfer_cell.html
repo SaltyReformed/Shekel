@@ -34,7 +34,7 @@
     {% endif %}
   {% endif %}
 
-  {% if xfer.amount|float != 0 %}
+  {% if xfer.amount != 0 %}
     <span class="font-mono">{{ "{:,.0f}".format(xfer.amount) }}</span>
   {% endif %}
 

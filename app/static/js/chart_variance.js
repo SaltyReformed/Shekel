@@ -17,10 +17,17 @@ function renderVarianceChart(canvasId) {
   var labels = JSON.parse(canvas.getAttribute('data-labels') || '[]');
   var estimated = JSON.parse(canvas.getAttribute('data-estimated') || '[]');
   var actual = JSON.parse(canvas.getAttribute('data-actual') || '[]');
+  // MED-04 / E-17 / JN-03: the per-group variance (actual - estimated)
+  // is computed server-side in _build_variance_chart_data so the
+  // tooltip below renders the same number as the table, not a
+  // re-computation that could drift from the canonical formula.
+  var variance = JSON.parse(canvas.getAttribute('data-variance') || '[]');
 
   if (labels.length === 0) return;
 
-  // Color actual bars based on over/under budget.
+  // Color actual bars based on over/under budget.  This is a
+  // comparison (not arithmetic) on the server-computed values; per
+  // the coding standard JS monetary values are display-only.
   var actualColors = actual.map(function(val, i) {
     if (val > estimated[i]) {
       return ShekelChart.getColor(6);  // Coral/danger for overspend.
@@ -64,9 +71,7 @@ function renderVarianceChart(canvasId) {
             },
             afterBody: function(items) {
               var idx = items[0].dataIndex;
-              var est = estimated[idx];
-              var act = actual[idx];
-              var diff = act - est;
+              var diff = variance[idx];
               var prefix = diff >= 0 ? '+$' : '-$';
               return 'Variance: ' + prefix +
                 Math.abs(diff).toLocaleString(undefined, {

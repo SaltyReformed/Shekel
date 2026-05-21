@@ -9,6 +9,7 @@ to get a fully wired Flask instance.
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from flask import Flask, render_template, request, session as flask_session
 
@@ -121,6 +122,31 @@ def create_app(config_name=None):
         if value is None:
             return ""
         return value
+
+    @app.template_filter("to_percent")
+    def to_percent(value):
+        """Convert a storage-domain decimal-fraction rate into its percent.
+
+        Presentation transformation only (E-16 / MED-04): the rate is
+        stored as ``Decimal("0.07")`` for 7 %, the user-facing display
+        is ``7.00 %``.  Multiplying by ``100`` in :class:`Decimal`
+        preserves the stored precision; the older Jinja pattern
+        ``value|float * 100`` introduced a binary-float cast on the
+        Decimal before the multiply (the JN-/TA-rate sites in
+        ``01_inventory.md``) and is no longer used anywhere.
+
+        Args:
+            value: Decimal storage-domain rate, or ``None``.
+
+        Returns:
+            ``value * 100`` as a Decimal, or ``None`` when ``value`` is
+            ``None``.  Numeric formatting (``"%.2f"|format(...)``) is
+            applied by the caller; this filter never quantises so the
+            caller's chosen precision wins.
+        """
+        if value is None:
+            return None
+        return Decimal(str(value)) * Decimal("100")
 
     # --- Context Processors -----------------------------------------------
     _register_context_processors(app)

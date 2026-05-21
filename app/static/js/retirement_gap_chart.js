@@ -15,14 +15,19 @@ function renderGapChart(canvasId) {
   var canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
+  // MED-04 / E-17: pension, investment, and the chart's "remaining"
+  // (post-investment residual gap) are all computed server-side in
+  // retirement_dashboard_service._compute_gap_section.  This script
+  // reads them as display-only values; the previous client-side
+  // ``pension + investment`` and ``max(0, preRetirement - covered)``
+  // computations were a divergence-risk against the server's gap
+  // formula and are removed.
   var pension = parseFloat(canvas.dataset.pension) || 0;
   var investment = parseFloat(canvas.dataset.investment) || 0;
   var preRetirement = parseFloat(canvas.dataset.preRetirement) || 0;
+  var remaining = parseFloat(canvas.dataset.chartRemaining) || 0;
 
   if (preRetirement <= 0) return;
-
-  var covered = pension + investment;
-  var remaining = Math.max(0, preRetirement - covered);
 
   ShekelChart.create(canvasId, {
     type: 'bar',

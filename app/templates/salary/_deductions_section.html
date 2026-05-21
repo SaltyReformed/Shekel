@@ -35,9 +35,9 @@
           <td>{{ d.calc_method.name|title if d.calc_method else '--' }}</td>
           <td class="text-end">
             {% if d.calc_method_id == CALC_PERCENTAGE %}
-              {{ "%.2f"|format((d.amount * 100)|float) }}%
+              {{ "%.2f"|format((d.amount|to_percent)) }}%
             {% else %}
-              ${{ "%.2f"|format(d.amount|float) }}
+              ${{ "%.2f"|format(d.amount) }}
             {% endif %}
           </td>
           <td>
@@ -52,7 +52,7 @@
             {% endif %}
           </td>
           <td class="text-end">
-            {{ '$' ~ "%.2f"|format(d.annual_cap|float) if d.annual_cap else '--' }}
+            {{ '$' ~ "%.2f"|format(d.annual_cap) if d.annual_cap else '--' }}
           </td>
           <td>
             {% if d.target_account %}
@@ -67,12 +67,12 @@
                     data-ded-name="{{ d.name }}"
                     data-ded-timing-id="{{ d.deduction_timing_id }}"
                     data-ded-method-id="{{ d.calc_method_id }}"
-                    data-ded-amount="{{ '%.2f'|format((d.amount * 100)|float) if d.calc_method_id == CALC_PERCENTAGE else '%.2f'|format(d.amount|float) }}"
+                    data-ded-amount="{{ '%.2f'|format((d.amount|to_percent)) if d.calc_method_id == CALC_PERCENTAGE else '%.2f'|format(d.amount) }}"
                     data-ded-per-year="{{ d.deductions_per_year }}"
-                    data-ded-cap="{{ '%.2f'|format(d.annual_cap|float) if d.annual_cap else '' }}"
+                    data-ded-cap="{{ '%.2f'|format(d.annual_cap) if d.annual_cap else '' }}"
                     data-ded-target-account="{{ d.target_account_id or '' }}"
                     data-ded-inflation-enabled="{{ 'true' if d.inflation_enabled else 'false' }}"
-                    data-ded-inflation-rate="{{ '%.2f'|format((d.inflation_rate * 100)|float) if d.inflation_rate else '' }}"
+                    data-ded-inflation-rate="{{ '%.2f'|format((d.inflation_rate|to_percent)) if d.inflation_rate else '' }}"
                     data-ded-inflation-month="{{ d.inflation_effective_month or '' }}"
                     data-ded-version-id="{{ d.version_id }}"
                     data-ded-edit-url="{{ url_for('salary.update_deduction', ded_id=d.id) }}">

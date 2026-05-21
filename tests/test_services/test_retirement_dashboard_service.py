@@ -44,6 +44,45 @@ class TestComputeGapData:
             }
             assert set(result.keys()) == expected_keys
 
+    def test_c31_jn01_jn02_chart_remaining_server_computed(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C31 (JN-01/JN-02) -- chart_remaining is server-computed.
+
+        The retirement-gap chart's "Gap" bar previously computed
+        ``max(0, preRetirement - (pension + investment))`` in JS
+        (``retirement_gap_chart.js``).  After Commit 31 the server
+        ships ``chart_remaining`` as a string Decimal so the client
+        only renders.  The other three legs (pension, investment,
+        pre_retirement) are still emitted alongside it; the lock
+        verifies all four are present and the relationship holds.
+        """
+        with app.app_context():
+            result = retirement_dashboard_service.compute_gap_data(
+                seed_user["user"].id
+            )
+            chart = result["chart_data"]
+            for key in (
+                "pension", "investment_income", "gap",
+                "pre_retirement", "chart_remaining",
+            ):
+                assert key in chart
+                # Each value is a string-encoded Decimal so the
+                # template can drop it verbatim into a data-* attr.
+                assert isinstance(chart[key], str)
+            # Relationship: chart_remaining = max(0, pre_retirement -
+            # (pension + investment_income)) reconstructed from the
+            # other emitted values.  This guards the JN-02 audit note
+            # that this is intentionally a different concept from
+            # ``gap`` (post-pension, before investments).
+            pre_retirement = Decimal(chart["pre_retirement"])
+            pension = Decimal(chart["pension"])
+            investment = Decimal(chart["investment_income"])
+            expected_remaining = max(
+                Decimal("0.00"), pre_retirement - pension - investment,
+            )
+            assert Decimal(chart["chart_remaining"]) == expected_remaining
+
     def test_user_with_no_accounts_returns_safe_defaults(
         self, app, db, seed_user, seed_periods
     ):

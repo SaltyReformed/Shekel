@@ -697,6 +697,20 @@ def dashboard(account_id):
     schedule_totals = _compute_schedule_totals(
         amortization_schedule, monthly_escrow,
     )
+    # MED-04 / E-16: per-row "total monthly outflow" (P&I + escrow +
+    # extra) and display rate (storage-domain decimal fraction times
+    # 100 for percent display) computed server-side so the schedule
+    # template renders without inline Jinja arithmetic.  Parallel to
+    # ``amortization_schedule``; consumed via ``loop.index0``.
+    schedule_row_totals = [
+        round_money(row.payment + monthly_escrow + row.extra_payment)
+        for row in amortization_schedule
+    ]
+    schedule_row_rates_pct = [
+        (row.interest_rate if row.interest_rate is not None else base_rate)
+        * Decimal("100")
+        for row in amortization_schedule
+    ] if show_rate_column else None
 
     return render_template(
         "loan/dashboard.html",
@@ -705,7 +719,9 @@ def dashboard(account_id):
         params=params,
         summary=summary,
         current_principal_display=current_principal_display,
-        escrow_components=escrow_components,
+        escrow_components=escrow_calculator.build_escrow_display(
+            escrow_components,
+        ),
         monthly_escrow=monthly_escrow,
         total_payment=total_payment,
         payment_breakdown=payment_breakdown,
@@ -719,6 +735,8 @@ def dashboard(account_id):
         source_accounts=source_accounts,
         default_source_id=default_source_id,
         amortization_schedule=amortization_schedule,
+        schedule_row_totals=schedule_row_totals,
+        schedule_row_rates_pct=schedule_row_rates_pct,
         show_rate_column=show_rate_column,
         schedule_totals=schedule_totals,
         # E-18 / Commit 16: pass today's ISO date as a string so the
@@ -1108,7 +1126,9 @@ def add_escrow(account_id):
     return render_template(
         "loan/_escrow_list.html",
         account=account,
-        escrow_components=escrow_components,
+        escrow_components=escrow_calculator.build_escrow_display(
+            escrow_components,
+        ),
         monthly_escrow=monthly_escrow,
         total_payment=total_payment,
     )
@@ -1153,7 +1173,9 @@ def delete_escrow(account_id, component_id):
     return render_template(
         "loan/_escrow_list.html",
         account=account,
-        escrow_components=escrow_components,
+        escrow_components=escrow_calculator.build_escrow_display(
+            escrow_components,
+        ),
         monthly_escrow=monthly_escrow,
         total_payment=total_payment,
     )
@@ -1323,11 +1345,17 @@ def payoff_calculate(account_id):
             rate_changes=rate_changes,
         )
 
+        total_monthly = (
+            round_money(monthly_payment + required_extra)
+            if required_extra is not None and required_extra > 0
+            else None
+        )
         return render_template(
             "loan/_payoff_results.html",
             mode=mode,
             required_extra=required_extra,
             monthly_payment=monthly_payment,
+            total_monthly=total_monthly,
         )
 
     return render_template(
@@ -1452,6 +1480,14 @@ def refinance_calculate(account_id):
             )
         )
 
+    # MED-04 / E-16: pre-compute the principal delta and its absolute
+    # magnitude server-side so the refinance template renders without
+    # inline arithmetic.  Previously the template subtracted
+    # ``refi_principal - current_principal`` (TA-07) and applied a
+    # unary negation ``-princ_diff`` (TA-08) on Decimal values.
+    principal_diff = refi_principal - current_real_principal
+    principal_diff_abs = abs(principal_diff)
+
     comparison = {
         "current_monthly": current_monthly,
         "current_total_interest": current_total_interest,
@@ -1467,6 +1503,8 @@ def refinance_calculate(account_id):
         "interest_savings": interest_savings,
         "break_even_months": break_even_months,
         "closing_costs": closing_costs,
+        "principal_diff": principal_diff,
+        "principal_diff_abs": principal_diff_abs,
     }
 
     return render_template(

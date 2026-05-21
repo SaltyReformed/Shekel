@@ -2,11 +2,11 @@
    Rendered by analytics.trends_tab() into #tab-content. #}
 
 {% macro fmt(value) -%}
-  ${{ "{:,.2f}".format(value|float) }}
+  ${{ "{:,.2f}".format(value) }}
 {%- endmacro %}
 
 {% macro fmt_pct(value) -%}
-  {% if value > 0 %}+{{ "{:.2f}".format(value|float) }}%{% elif value < 0 %}{{ "{:.2f}".format(value|float) }}%{% else %}0.00%{% endif %}
+  {% if value > 0 %}+{{ "{:.2f}".format(value) }}%{% elif value < 0 %}{{ "{:.2f}".format(value) }}%{% else %}0.00%{% endif %}
 {%- endmacro %}
 
 {% macro fmt_change(value) -%}
@@ -55,7 +55,7 @@
 {# ── Window Info ───────────────────────────────────────────────── #}
 <p class="text-muted small mb-3">
   Based on {{ report.window_months }}-month window ({{ report.window_periods }} pay periods).
-  Alert threshold: {{ "{:.0f}".format((report.threshold * 100)|float) }}%.
+  Alert threshold: {{ "{:.0f}".format((report.threshold|to_percent)) }}%.
 </p>
 
 {# ── Top-5 Ranked Lists ───────────────────────────────────────── #}
@@ -78,7 +78,7 @@
                 {% if item.avg_days_before_due is not none %}
                 <br>
                 <small class="{% if item.avg_days_before_due < 0 %}trend-payment-late{% else %}text-muted{% endif %}">
-                  Avg payment: {{ "{:.0f}".format(item.avg_days_before_due|float|abs) }}
+                  Avg payment: {{ "{:.0f}".format(item.avg_days_before_due|abs) }}
                   days {% if item.avg_days_before_due >= 0 %}before due{% else %}late{% endif %}
                 </small>
                 {% endif %}
@@ -117,7 +117,7 @@
                 {% if item.avg_days_before_due is not none %}
                 <br>
                 <small class="{% if item.avg_days_before_due < 0 %}trend-payment-late{% else %}text-muted{% endif %}">
-                  Avg payment: {{ "{:.0f}".format(item.avg_days_before_due|float|abs) }}
+                  Avg payment: {{ "{:.0f}".format(item.avg_days_before_due|abs) }}
                   days {% if item.avg_days_before_due >= 0 %}before due{% else %}late{% endif %}
                 </small>
                 {% endif %}

@@ -37,14 +37,14 @@
       <div class="col-md-3">
         <div class="text-muted small">Current Balance</div>
         <div class="fs-4 fw-bold font-mono text-accent">
-          ${{ "{:,.2f}".format(current_balance|float) }}
+          ${{ "{:,.2f}".format(current_balance) }}
         </div>
       </div>
       <div class="col-md-3">
         <div class="text-muted small">Assumed Return</div>
         <div class="fs-4 fw-bold">
           {% if params %}
-            {{ "%.2f"|format(params.assumed_annual_return|float * 100) }}%
+            {{ "%.2f"|format(params.assumed_annual_return|to_percent) }}%
           {% else %}
             --
           {% endif %}
@@ -53,13 +53,13 @@
       <div class="col-md-3">
         <div class="text-muted small">Per-Period Contribution</div>
         <div class="fs-4 fw-bold font-mono">
-          ${{ "{:,.2f}".format(periodic_contribution|float) }}
+          ${{ "{:,.2f}".format(periodic_contribution) }}
         </div>
       </div>
       <div class="col-md-3">
         <div class="text-muted small">Employer Per Period</div>
         <div class="fs-4 fw-bold font-mono">
-          ${{ "{:,.2f}".format(employer_contribution_per_period|float) }}
+          ${{ "{:,.2f}".format(employer_contribution_per_period) }}
         </div>
       </div>
     </div>
@@ -73,7 +73,7 @@
     <div class="d-flex justify-content-between align-items-center mb-2">
       <span class="text-muted">{{ date.today().year if date is defined else '' }} Contributions</span>
       <span class="font-mono fw-bold">
-        ${{ "{:,.2f}".format(limit_info.ytd|float) }} / ${{ "{:,.2f}".format(limit_info.limit|float) }}
+        ${{ "{:,.2f}".format(limit_info.ytd) }} / ${{ "{:,.2f}".format(limit_info.limit) }}
       </span>
     </div>
     <div class="progress progress-h-10">
@@ -120,7 +120,7 @@
     <p class="mb-2 small">
       {% if suggested_amount and suggested_amount > 0 %}
       Create a recurring transfer of
-      <strong class="font-mono">${{ "{:,.2f}".format(suggested_amount|float) }}</strong>
+      <strong class="font-mono">${{ "{:,.2f}".format(suggested_amount) }}</strong>
       per pay period to stay on track with your contribution limit.
       {% else %}
       Create a recurring transfer to this account to start building your investment.
@@ -144,7 +144,7 @@
           <span class="input-group-text">$</span>
           <input type="number" step="0.01" min="0.01" name="amount" id="contribution_amount"
                  class="form-control"
-                 value="{{ "{:.2f}".format(suggested_amount|float) if suggested_amount and suggested_amount > 0 else '' }}"
+                 value="{{ "{:.2f}".format(suggested_amount) if suggested_amount and suggested_amount > 0 else '' }}"
                  placeholder="0.00">
         </div>
       </div>
@@ -168,13 +168,13 @@
   <div class="card-body">
     {% if employer_params.type == 'flat_percentage' %}
     <p class="mb-0">
-      Employer contributes <strong>{{ "%.2f"|format(employer_params.flat_percentage|float * 100) }}%</strong>
+      Employer contributes <strong>{{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}%</strong>
       of gross salary each pay period, regardless of employee contribution.
     </p>
     {% elif employer_params.type == 'match' %}
     <p class="mb-0">
-      Employer matches <strong>{{ "%.0f"|format(employer_params.match_percentage|float * 100) }}%</strong>
-      of employee contributions up to <strong>{{ "%.2f"|format(employer_params.match_cap_percentage|float * 100) }}%</strong>
+      Employer matches <strong>{{ "%.0f"|format(employer_params.match_percentage|to_percent) }}%</strong>
+      of employee contributions up to <strong>{{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}%</strong>
       of gross salary.
     </p>
     {% endif %}
@@ -250,7 +250,7 @@
           <label class="form-label">Assumed Annual Return (%)</label>
           <input type="number" step="0.01" name="assumed_annual_return"
                  class="form-control form-control-sm"
-                 value="{{ "%.2f"|format(params.assumed_annual_return|float * 100) if params else '7.00' }}"
+                 value="{{ "%.2f"|format(params.assumed_annual_return|to_percent) if params else '7.00' }}"
                  required>
           <small class="text-muted">Enter as percentage (e.g. 7 for 7%)</small>
         </div>
@@ -260,7 +260,7 @@
             <span class="input-group-text">$</span>
             <input type="number" step="0.01" name="annual_contribution_limit"
                    class="form-control"
-                   value="{{ params.annual_contribution_limit|float if params and params.annual_contribution_limit else '' }}">
+                   value="{{ params.annual_contribution_limit if params and params.annual_contribution_limit else '' }}">
           </div>
           <small class="text-muted">Leave blank for no limit</small>
         </div>
@@ -284,19 +284,19 @@
           <label class="form-label">Employer Flat %</label>
           <input type="number" step="0.01" name="employer_flat_percentage"
                  class="form-control form-control-sm"
-                 value="{{ "%.2f"|format(params.employer_flat_percentage|float * 100) if params and params.employer_flat_percentage else '' }}">
+                 value="{{ "%.2f"|format(params.employer_flat_percentage|to_percent) if params and params.employer_flat_percentage else '' }}">
         </div>
         <div class="col-md-3">
           <label class="form-label">Match %</label>
           <input type="number" step="0.01" name="employer_match_percentage"
                  class="form-control form-control-sm"
-                 value="{{ "%.0f"|format(params.employer_match_percentage|float * 100) if params and params.employer_match_percentage else '' }}">
+                 value="{{ "%.0f"|format(params.employer_match_percentage|to_percent) if params and params.employer_match_percentage else '' }}">
         </div>
         <div class="col-md-3">
           <label class="form-label">Match Cap %</label>
           <input type="number" step="0.01" name="employer_match_cap_percentage"
                  class="form-control form-control-sm"
-                 value="{{ "%.2f"|format(params.employer_match_cap_percentage|float * 100) if params and params.employer_match_cap_percentage else '' }}">
+                 value="{{ "%.2f"|format(params.employer_match_cap_percentage|to_percent) if params and params.employer_match_cap_percentage else '' }}">
         </div>
       </div>
       <div class="row g-3 mt-1">

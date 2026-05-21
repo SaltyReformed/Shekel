@@ -271,13 +271,31 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         estimated_tax_rate=tax_rate,
     )
 
+    investment_income_decimal = (
+        (gap_result.projected_total_savings * swr / 12).quantize(Decimal("0.01"))
+        if gap_result.projected_total_savings > 0
+        else Decimal("0.00")
+    )
+    # MED-04 / E-17: the chart's "Gap" bar is the residual income
+    # remaining after BOTH pension and SWR investment income have
+    # been covered.  This is a different concept from
+    # ``gap_result.monthly_income_gap`` (post-pension only, before
+    # investments) and was previously computed in JS
+    # (``retirement_gap_chart.js``).  The server computes it here so
+    # the chart's data attribute is the value to render, not the
+    # inputs to add together client-side.
+    covered = monthly_pension_income + investment_income_decimal
+    chart_remaining = max(
+        Decimal("0.00"),
+        gap_result.pre_retirement_net_monthly - covered,
+    )
+
     chart_data = {
         "pension": str(monthly_pension_income),
-        "investment_income": str(
-            (gap_result.projected_total_savings * swr / 12).quantize(Decimal("0.01"))
-        ) if gap_result.projected_total_savings > 0 else "0",
+        "investment_income": str(investment_income_decimal),
         "gap": str(gap_result.monthly_income_gap),
         "pre_retirement": str(gap_result.pre_retirement_net_monthly),
+        "chart_remaining": str(chart_remaining),
     }
 
     return {

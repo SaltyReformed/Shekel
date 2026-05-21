@@ -16,7 +16,7 @@
   <div class="col-md-4">
     <div class="text-muted small">Interest Saved</div>
     <div class="fw-bold text-success font-mono">
-      ${{ "{:,.2f}".format(payoff_summary.interest_saved|float) }}
+      ${{ "{:,.2f}".format(payoff_summary.interest_saved) }}
     </div>
   </div>
 </div>
@@ -34,7 +34,7 @@
       {% endif %}
       <span class="font-mono ms-2 text-success">
         {% if committed_interest_saved > 0 %}
-        ${{ "{:,.2f}".format(committed_interest_saved|float) }} saved
+        ${{ "{:,.2f}".format(committed_interest_saved) }} saved
         {% endif %}
       </span>
     </div>
@@ -63,13 +63,13 @@
   <div class="col-md-6">
     <div class="text-muted small">Required Extra Monthly Payment</div>
     <div class="fs-5 fw-bold font-mono text-accent">
-      ${{ "{:,.2f}".format(required_extra|float) }}
+      ${{ "{:,.2f}".format(required_extra) }}
     </div>
   </div>
   <div class="col-md-6">
     <div class="text-muted small">New Total Monthly</div>
     <div class="fw-bold font-mono">
-      ${{ "{:,.2f}".format((monthly_payment|float + required_extra|float)) }}
+      ${{ "{:,.2f}".format(total_monthly) }}
     </div>
   </div>
 </div>

@@ -129,8 +129,8 @@
                   </select>
                 </td>
                 <td>{{ debt.name }}</td>
-                <td class="font-mono">${{ "{:,.2f}".format(debt.current_principal|float) }}</td>
-                <td>{{ "%.2f"|format(debt.interest_rate|float * 100) }}%</td>
+                <td class="font-mono">${{ "{:,.2f}".format(debt.current_principal) }}</td>
+                <td>{{ "%.2f"|format(debt.interest_rate|to_percent) }}%</td>
               </tr>
               {% endfor %}
             </tbody>

@@ -12,8 +12,8 @@
       {{ 'Traditional' if proj.is_traditional else 'Roth/Taxable' }}
     </span>
   </td>
-  <td class="text-end font-mono">${{ "{:,.2f}".format(proj.current_balance|float) }}</td>
-  <td class="text-end font-mono text-muted">{%- if proj.annual_return_rate is not none %}{{ "%.1f"|format(proj.annual_return_rate|float * 100) }}%{%- else %}&mdash;{%- endif %}</td>
-  <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(proj.projected_balance|float) }}</td>
+  <td class="text-end font-mono">${{ "{:,.2f}".format(proj.current_balance) }}</td>
+  <td class="text-end font-mono text-muted">{%- if proj.annual_return_rate is not none %}{{ "%.1f"|format(proj.annual_return_rate|to_percent) }}%{%- else %}&mdash;{%- endif %}</td>
+  <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(proj.projected_balance) }}</td>
 </tr>
 {% endfor %}

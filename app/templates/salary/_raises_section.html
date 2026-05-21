@@ -36,9 +36,9 @@
           </td>
           <td>
             {% if r.percentage %}
-              {{ "%.2f"|format((r.percentage * 100)|float) }}%
+              {{ "%.2f"|format((r.percentage|to_percent)) }}%
             {% else %}
-              ${{ "%.2f"|format(r.flat_amount|float) }}
+              ${{ "%.2f"|format(r.flat_amount) }}
             {% endif %}
           </td>
           <td>
@@ -56,8 +56,8 @@
                     data-raise-type-id="{{ r.raise_type_id }}"
                     data-raise-month="{{ r.effective_month }}"
                     data-raise-year="{{ r.effective_year }}"
-                    data-raise-percentage="{{ '%.2f'|format((r.percentage * 100)|float) if r.percentage else '' }}"
-                    data-raise-flat="{{ '%.2f'|format(r.flat_amount|float) if r.flat_amount else '' }}"
+                    data-raise-percentage="{{ '%.2f'|format((r.percentage|to_percent)) if r.percentage else '' }}"
+                    data-raise-flat="{{ '%.2f'|format(r.flat_amount) if r.flat_amount else '' }}"
                     data-raise-recurring="{{ 'true' if r.is_recurring else 'false' }}"
                     data-raise-version-id="{{ r.version_id }}"
                     data-raise-edit-url="{{ url_for('salary.update_raise', raise_id=r.id) }}">

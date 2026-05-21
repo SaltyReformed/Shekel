@@ -42,22 +42,22 @@
           {# Row 2: Total interest #}
           <tr>
             <td class="fw-bold">Total Interest</td>
-            <td class="font-mono">${{ "{:,.2f}".format(comparison.baseline.total_interest|float) }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(comparison.avalanche.total_interest|float) }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(comparison.snowball.total_interest|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.baseline.total_interest) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.avalanche.total_interest) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.snowball.total_interest) }}</td>
             {% if comparison.custom %}
-            <td class="font-mono">${{ "{:,.2f}".format(comparison.custom.total_interest|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.custom.total_interest) }}</td>
             {% endif %}
           </tr>
 
           {# Row 3: Total paid #}
           <tr>
             <td class="fw-bold">Total Paid</td>
-            <td class="font-mono">${{ "{:,.2f}".format(comparison.baseline.total_paid|float) }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(comparison.avalanche.total_paid|float) }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(comparison.snowball.total_paid|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.baseline.total_paid) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.avalanche.total_paid) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.snowball.total_paid) }}</td>
             {% if comparison.custom %}
-            <td class="font-mono">${{ "{:,.2f}".format(comparison.custom.total_paid|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(comparison.custom.total_paid) }}</td>
             {% endif %}
           </tr>
 
@@ -78,9 +78,9 @@
             <td class="text-muted">--</td>
             {% for key in ['avalanche', 'snowball'] %}
             {% set saved = comparison[key].interest_saved %}
-            <td class="font-mono {{ 'text-success' if saved|float > 0 else '' }}">
-              {% if saved|float > 0 %}
-              ${{ "{:,.2f}".format(saved|float) }}
+            <td class="font-mono {{ 'text-success' if saved > 0 else '' }}">
+              {% if saved > 0 %}
+              ${{ "{:,.2f}".format(saved) }}
               {% else %}
               $0.00
               {% endif %}
@@ -88,9 +88,9 @@
             {% endfor %}
             {% if comparison.custom %}
             {% set saved = comparison.custom.interest_saved %}
-            <td class="font-mono {{ 'text-success' if saved|float > 0 else '' }}">
-              {% if saved|float > 0 %}
-              ${{ "{:,.2f}".format(saved|float) }}
+            <td class="font-mono {{ 'text-success' if saved > 0 else '' }}">
+              {% if saved > 0 %}
+              ${{ "{:,.2f}".format(saved) }}
               {% else %}
               $0.00
               {% endif %}
@@ -178,8 +178,8 @@
             <td>{{ acct.name }}</td>
             <td>{{ acct.payoff_month }}</td>
             <td>{{ acct.payoff_date.strftime('%b %Y') }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(acct.total_interest|float) }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(acct.total_paid|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(acct.total_interest) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(acct.total_paid) }}</td>
           </tr>
           {% endfor %}
         </tbody>

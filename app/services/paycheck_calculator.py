@@ -106,6 +106,19 @@ class PaycheckBreakdown:
     def total_taxes(self):
         return self.federal_tax + self.state_tax + self.social_security + self.medicare
 
+    @property
+    def take_home_rate_pct(self) -> Decimal | None:
+        """Return ``net / gross`` expressed as a percent (MED-04 / E-16).
+
+        Pre-computed here so the salary breakdown template renders the
+        take-home rate without Jinja-side division.  Returns ``None``
+        when ``gross_biweekly`` is non-positive so the template can
+        render a placeholder ``--`` without dividing by zero.
+        """
+        if self.gross_biweekly <= ZERO:
+            return None
+        return (self.net_pay / self.gross_biweekly) * Decimal("100")
+
 
 def calculate_paycheck(profile, period, all_periods, tax_configs,
                        *, calibration=None):

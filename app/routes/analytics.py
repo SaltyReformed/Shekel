@@ -519,18 +519,22 @@ def _build_variance_chart_data(report):
     """Build chart data dict from a VarianceReport.
 
     Converts Decimal values to float for JSON serialization in
-    template data attributes.
+    template data attributes.  Includes the per-group ``variance``
+    array (``actual - estimated``) computed server-side so the
+    variance tooltip in ``chart_variance.js`` renders without
+    recomputing it client-side (MED-04 / E-17 / JN-03).
 
     Args:
         report: VarianceReport from the variance service.
 
     Returns:
-        dict with labels, estimated, and actual lists.
+        dict with labels, estimated, actual, and variance lists.
     """
     return {
         "labels": [g.group_name for g in report.groups],
         "estimated": [float(g.estimated_total) for g in report.groups],
         "actual": [float(g.actual_total) for g in report.groups],
+        "variance": [float(g.variance) for g in report.groups],
     }
 
 

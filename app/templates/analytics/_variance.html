@@ -2,7 +2,7 @@
    Rendered by analytics.variance_tab() into #tab-content. #}
 
 {% macro fmt(value) -%}
-  ${{ "{:,.2f}".format(value|float) }}
+  ${{ "{:,.2f}".format(value) }}
 {%- endmacro %}
 
 {% macro fmt_var(value) -%}
@@ -10,7 +10,7 @@
 {%- endmacro %}
 
 {% macro fmt_pct(value) -%}
-  {% if value is none %}--{% elif value > 0 %}+{{ "{:.2f}".format(value|float) }}%{% elif value < 0 %}{{ "{:.2f}".format(value|float) }}%{% else %}0.00%{% endif %}
+  {% if value is none %}--{% elif value > 0 %}+{{ "{:.2f}".format(value) }}%{% elif value < 0 %}{{ "{:.2f}".format(value) }}%{% else %}0.00%{% endif %}
 {%- endmacro %}
 
 {% macro var_class(value) -%}
@@ -126,7 +126,8 @@
       <canvas id="chart-variance"
               data-labels='{{ chart_data.labels | tojson }}'
               data-estimated='{{ chart_data.estimated | tojson }}'
-              data-actual='{{ chart_data.actual | tojson }}'>
+              data-actual='{{ chart_data.actual | tojson }}'
+              data-variance='{{ chart_data.variance | tojson }}'>
       </canvas>
     </div>
   </div>

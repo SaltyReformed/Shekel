@@ -45,10 +45,10 @@
       <td>{{ p.name }}</td>
       <td class="d-none d-lg-table-cell">{{ p.filing_status.name|replace('_', ' ')|title if p.filing_status else '--' }}</td>
       <td class="d-none d-lg-table-cell">{{ p.state_code }}</td>
-      <td class="text-end">${{ "%.2f"|format(p.annual_salary|float) }}</td>
+      <td class="text-end">${{ "%.2f"|format(p.annual_salary) }}</td>
       <td class="text-end">
         {% if item.net_pay is not none %}
-          <span class="text-success fw-bold">${{ "%.2f"|format(item.net_pay|float) }}</span>
+          <span class="text-success fw-bold">${{ "%.2f"|format(item.net_pay) }}</span>
           {% if p.calibration and p.calibration.is_active %}
           <span class="badge bg-success ms-1" title="Calibrated from pay stub">Cal</span>
           {% endif %}

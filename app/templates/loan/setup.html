@@ -38,7 +38,7 @@
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" id="current_principal"
                        name="current_principal" step="0.01" min="0" required
-                       value="{{ "%.2f"|format(account.current_anchor_balance|float) if account.current_anchor_balance else '' }}">
+                       value="{{ "%.2f"|format(account.current_anchor_balance) if account.current_anchor_balance else '' }}">
               </div>
             </div>
           </div>

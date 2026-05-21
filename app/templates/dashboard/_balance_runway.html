@@ -7,7 +7,7 @@
        hx-swap="innerHTML"
        title="Click to update balance"
        role="button" tabindex="0">
-    <span class="font-mono">${{ "{:,.2f}".format(balance_info.current_balance|float) }}</span>
+    <span class="font-mono">${{ "{:,.2f}".format(balance_info.current_balance) }}</span>
   </div>
   <small class="text-muted d-block">{{ balance_info.account_name }}</small>
   {% if balance_info.last_true_up_date %}

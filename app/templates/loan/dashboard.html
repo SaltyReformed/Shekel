@@ -54,10 +54,10 @@
     <h6 class="alert-heading mb-1">No recurring payment set up for this loan</h6>
     <p class="mb-2 small">
       Create a recurring monthly transfer of
-      <strong class="font-mono">${{ "{:,.2f}".format(total_payment|float) }}</strong>
-      {% if monthly_escrow|float > 0 %}
-        (<span class="font-mono">${{ "{:,.2f}".format(summary.monthly_payment|float) }}</span> P&I
-        + <span class="font-mono">${{ "{:,.2f}".format(monthly_escrow|float) }}</span> escrow)
+      <strong class="font-mono">${{ "{:,.2f}".format(total_payment) }}</strong>
+      {% if monthly_escrow > 0 %}
+        (<span class="font-mono">${{ "{:,.2f}".format(summary.monthly_payment) }}</span> P&I
+        + <span class="font-mono">${{ "{:,.2f}".format(monthly_escrow) }}</span> escrow)
       {% endif %}
       to keep your loan on track.
     </p>
@@ -96,7 +96,7 @@
           <div class="card-body">
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Original Principal</span>
-              <span class="font-mono">${{ "{:,.2f}".format(params.original_principal|float) }}</span>
+              <span class="font-mono">${{ "{:,.2f}".format(params.original_principal) }}</span>
             </div>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Current Principal</span>
@@ -105,13 +105,13 @@
                    not the non-authoritative stored LoanParams.current_principal
                    column.  Same dollar figure as /savings debt card and
                    the year-end net-worth liability. #}
-                ${{ "{:,.2f}".format(current_principal_display|float) }}
+                ${{ "{:,.2f}".format(current_principal_display) }}
               </span>
             </div>
             <div class="d-flex justify-content-between mb-2" id="interest-rate-display">
               <span class="text-muted">Interest Rate</span>
               <span class="fw-bold text-accent">
-                {{ "%.3f"|format(params.interest_rate|float * 100) }}%
+                {{ "%.3f"|format(params.interest_rate|to_percent) }}%
                 {% if params.is_arm %}<span class="badge bg-warning text-dark ms-1">ARM</span>{% endif %}
               </span>
             </div>
@@ -130,17 +130,17 @@
             <hr>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted" title="Principal &amp; Interest">Monthly P&I</span>
-              <span class="fw-bold font-mono">${{ "{:,.2f}".format(summary.monthly_payment|float) }}</span>
+              <span class="fw-bold font-mono">${{ "{:,.2f}".format(summary.monthly_payment) }}</span>
             </div>
             <div class="d-flex justify-content-between mb-2{% if not total_payment %} d-none{% endif %}" id="total-payment-display">
               <span class="text-muted">Total Monthly (with escrow)</span>
               <span class="fw-bold font-mono text-accent">
-                {% if total_payment %}${{ "{:,.2f}".format(total_payment|float) }}{% endif %}
+                {% if total_payment %}${{ "{:,.2f}".format(total_payment) }}{% endif %}
               </span>
             </div>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Total Interest (life of loan)</span>
-              <span class="font-mono">${{ "{:,.2f}".format(summary.total_interest|float) }}</span>
+              <span class="font-mono">${{ "{:,.2f}".format(summary.total_interest) }}</span>
             </div>
             <div class="d-flex justify-content-between">
               <span class="text-muted">Projected Payoff</span>
@@ -171,7 +171,7 @@
                   <label for="interest_rate" class="form-label">Interest Rate</label>
                   <div class="input-group">
                     <input type="number" class="form-control" id="interest_rate" name="interest_rate"
-                           value="{{ "%.3f"|format(params.interest_rate|float * 100) }}" step="0.001" min="0" max="100">
+                           value="{{ "%.3f"|format(params.interest_rate|to_percent) }}" step="0.001" min="0" max="100">
                     <span class="input-group-text">%</span>
                   </div>
                 </div>
@@ -243,7 +243,7 @@
               <input type="number" class="form-control"
                      id="anchor_balance" name="anchor_balance"
                      step="0.01" min="0"
-                     value="{{ "%.2f"|format(current_principal_display|float) }}"
+                     value="{{ "%.2f"|format(current_principal_display) }}"
                      required>
             </div>
           </div>
@@ -281,7 +281,7 @@
       <div class="card-header d-flex justify-content-between align-items-center">
         <h6 class="mb-0"><i class="bi bi-shield-check"></i> Escrow Components</h6>
         <span class="badge bg-secondary font-mono" id="escrow-badge">
-          ${{ "{:,.2f}".format(monthly_escrow|float) }}/mo
+          ${{ "{:,.2f}".format(monthly_escrow) }}/mo
         </span>
       </div>
       <div id="escrow-list">

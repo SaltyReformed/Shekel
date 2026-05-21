@@ -78,7 +78,7 @@
       <td>{{ t.name }}</td>
       <td>{{ t.from_account.name if t.from_account else '--' }}</td>
       <td>{{ t.to_account.name if t.to_account else '--' }}</td>
-      <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
+      <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
       <td class="d-none d-md-table-cell">{{ recurrence_cell(t) }}</td>
       <td>
         <a href="{{ url_for('transfers.edit_transfer_template', template_id=t.id) }}"
@@ -143,7 +143,7 @@
           <td>{{ t.name }}</td>
           <td>{{ t.from_account.name if t.from_account else '--' }}</td>
           <td>{{ t.to_account.name if t.to_account else '--' }}</td>
-          <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
+          <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
           <td class="d-none d-md-table-cell">{{ recurrence_cell(t) }}</td>
           <td>
             <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
