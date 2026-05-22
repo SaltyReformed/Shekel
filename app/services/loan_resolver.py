@@ -549,6 +549,70 @@ def _compute_monthly_payment(
     )
 
 
+def compute_monthly_payment_baseline(
+    loan_params,
+    anchor_events: list,
+    rate_changes: list[RateChangeRecord] | None,
+    as_of: date,
+) -> Decimal:
+    """Return the resolver-derived monthly P&I without running the full resolver.
+
+    Single source of truth for the "what does the user pay each
+    month" number.  Same three branches as
+    :func:`_compute_monthly_payment` (ARM-in-window, ARM-out-of-
+    window, fixed-rate); used by
+    :func:`app.services.loan_payment_service.load_loan_context` to
+    size the escrow-subtraction threshold so the
+    schedule's projected P&I matches the loan card's P&I exactly.
+
+    For the ARM-out-of-window branch the function uses
+    ``anchor_balance`` as a stand-in for ``current_balance``.  The
+    full resolver derives ``current_balance`` from the anchor walk
+    over confirmed payments; the difference is the small post-anchor
+    principal paydown (typically a few hundred dollars over the
+    months since the latest anchor).  For the threshold's role --
+    "is this payment plausibly gross of escrow, yes/no" -- this
+    approximation is exact enough that the resulting net payment
+    matches ``LoanState.monthly_payment`` to the cent.  Callers
+    needing the exact resolver-derived number for display must call
+    :func:`resolve_loan` and read ``state.monthly_payment``.
+
+    Args:
+        loan_params: Loan parameter object exposing the same fields
+            :func:`resolve_loan` reads.
+        anchor_events: Non-empty list of LoanAnchorEvent-shaped
+            objects.  The latest by
+            ``(anchor_date, created_at)`` DESC is selected.
+        rate_changes: Optional ARM rate-history.  ``None`` or empty
+            for fixed-rate loans.
+        as_of: Evaluation date.  Drives the ARM-window check and the
+            out-of-window remaining-months calculation.
+
+    Returns:
+        Rounded Decimal monthly P&I (via ``round_money``).  Matches
+        :attr:`LoanState.monthly_payment` for the same inputs.
+
+    Raises:
+        ValueError: When ``anchor_events`` is empty (via
+            :func:`_select_latest_anchor`).
+    """
+    anchor = _select_latest_anchor(anchor_events)
+    anchor_balance = Decimal(str(anchor.anchor_balance))
+    anchor_date = anchor.anchor_date
+    base_rate = Decimal(str(loan_params.interest_rate))
+    in_window = _is_in_arm_fixed_window(loan_params, anchor_date, as_of)
+    return _compute_monthly_payment(
+        loan_params,
+        anchor_balance,
+        anchor_date,
+        anchor_balance,  # approximation of current_balance; see docstring.
+        rate_changes,
+        as_of,
+        base_rate,
+        in_window,
+    )
+
+
 def resolve_loan(
     loan_params,
     anchor_events: list,
@@ -796,58 +860,6 @@ def _remaining_rate_changes(
     ]
 
 
-def _contractual_payment_for_projection(
-    loan_params,
-    base_rate: Decimal,
-    replay_balance_as_of: Decimal,
-    replay_applicable_rate: Decimal,
-    replay_remaining_months: int,
-) -> Decimal:
-    """Return the contractual P&I baseline ``project_forward`` should use.
-
-    For fixed-rate loans the contractual payment is the original
-    amortization of ``original_principal`` over ``term_months`` at
-    ``base_rate`` -- constant for the life of the loan, matching the
-    resolver's existing fixed-rate behavior
-    (``_compute_monthly_payment`` lines 469-475).  Pre-payments
-    accelerate the payoff date rather than shrinking the monthly
-    payment.
-
-    For ARM loans the contractual is the re-amortized payment at
-    ``as_of``: remaining balance over remaining months at the
-    applicable rate.  This matches the resolver's ARM-outside-window
-    branch and is correct as the projection's starting baseline --
-    ARM rate transitions inside ``project_forward`` will recompute
-    this as transitions fire.
-
-    Args:
-        loan_params: Loan parameter object exposing ``is_arm``,
-            ``original_principal``, ``term_months``.
-        base_rate: Loan's original interest rate as Decimal.
-        replay_balance_as_of: ``ReplayResult.balance_as_of`` -- the
-            outstanding balance at the projection's start.
-        replay_applicable_rate: ``ReplayResult.applicable_rate_as_of``.
-        replay_remaining_months: ``ReplayResult.remaining_months_as_of``.
-
-    Returns:
-        Decimal contractual P&I payment.  ``Decimal("0.00")`` when
-        the loan has no principal or no remaining months (handled by
-        ``calculate_monthly_payment``'s guard).
-    """
-    is_arm = bool(getattr(loan_params, "is_arm", False))
-    if is_arm:
-        return calculate_monthly_payment(
-            replay_balance_as_of,
-            replay_applicable_rate,
-            replay_remaining_months,
-        )
-    return calculate_monthly_payment(
-        Decimal(str(loan_params.original_principal)),
-        base_rate,
-        loan_params.term_months,
-    )
-
-
 def compute_payoff_scenarios(
     *,
     loan_params,
@@ -882,21 +894,23 @@ def compute_payoff_scenarios(
 
     1. Pick the latest :class:`LoanAnchorEvent` from
        ``anchor_events`` (same selector the resolver uses).
-    2. For ARM loans, pass the anchor balance + date to replay so the
-       running balance snaps to the verified value at ``anchor_date``.
-       Fixed-rate loans do not snap (the origination anchor's
-       balance equals ``original_principal`` so the snap would be a
-       no-op anyway; explicit None is clearer).
-    3. Filter ``payments`` to confirmed entries with
-       ``payment_date <= as_of``; the rest become forward overrides
+    2. Pass the anchor balance + date to replay unconditionally
+       (ARM and fixed-rate alike) so replay starts at the verified
+       balance.  Pre-anchor confirmed payments are filtered inside
+       replay; their effect is already baked into ``anchor_balance``.
+    3. Group projected payments (and any confirmed payments past
+       ``as_of``) by ``(year, month)`` for the forward overrides
        (see :func:`_build_monthly_override`).
     4. Replay produces ``history_rows``, ``balance_as_of``,
        ``next_pay_date``, ``remaining_months_as_of``,
        ``applicable_rate_as_of``.
     5. Three forward projections share that starting state.  Their
-       contractual P&I is derived once via
-       :func:`_contractual_payment_for_projection`; rate-change
-       remainders (transitions effective at or after
+       contractual P&I is computed via
+       :func:`_compute_monthly_payment` against the same three
+       branches the loan card reads (ARM-in-window,
+       ARM-out-of-window, fixed-rate) so the schedule's projected
+       P&I matches ``LoanState.monthly_payment`` by construction.
+       Rate-change remainders (transitions effective at or after
        ``next_pay_date``) are passed to all three so ARM behavior is
        consistent across the trio.
     6. Summary metrics derive from the same forward slices --
@@ -941,45 +955,35 @@ def compute_payoff_scenarios(
             ``_select_latest_anchor``).
     """
     anchor = _select_latest_anchor(anchor_events)
-    is_arm = bool(getattr(loan_params, "is_arm", False))
     base_rate = Decimal(str(loan_params.interest_rate))
     orig_principal = Decimal(str(loan_params.original_principal))
+    anchor_balance = Decimal(str(anchor.anchor_balance))
+    anchor_date = anchor.anchor_date
 
-    # ARM anchors snap replay's running balance to the verified value
-    # at anchor_date; fixed-rate loans do not snap (the origination
-    # anchor is a no-op snap, and a hypothetical fixed-rate trueup
-    # is the F-8 follow-up).  This mirrors the resolver's
-    # is_arm-gated anchor passthrough (resolve_loan lines 589-596).
-    if is_arm:
-        replay_anchor_balance: Decimal | None = Decimal(
-            str(anchor.anchor_balance)
-        )
-        replay_anchor_date: date | None = anchor.anchor_date
-    else:
-        replay_anchor_balance = None
-        replay_anchor_date = None
-
-    # Replay consumes confirmed payments at or before as_of.  An
-    # unconfirmed payment (Projected status) is a future commitment,
-    # not a historical fact, so it must not reduce the replayed
-    # balance.  Confirmed payments past as_of are routed through
-    # monthly_override below.
-    confirmed_for_replay = [
-        payment
-        for payment in (payments or [])
-        if payment.is_confirmed and payment.payment_date <= as_of
-    ]
-
+    # The anchor is the single source of truth for the loan's
+    # outstanding balance at ``anchor_date``; replay starts there and
+    # walks forward through confirmed payments.  Passed unconditionally
+    # (ARM and fixed-rate alike) so a user-recorded balance trueup on
+    # a fixed-rate loan is honored -- the prior is_arm gating was a
+    # hangover from the snap-mid-iteration shape of replay and is
+    # incorrect under the anchor-seeded shape.
     replay = replay_confirmed_history(
         origination_date=loan_params.origination_date,
         original_principal=orig_principal,
         annual_rate=base_rate,
         term_months=loan_params.term_months,
         payment_day=loan_params.payment_day,
-        confirmed_payments=confirmed_for_replay,
+        # Replay filters pre-anchor and post-as_of entries internally;
+        # passing the unfiltered confirmed payments keeps the composer
+        # honest about what replay's contract is.
+        confirmed_payments=[
+            payment
+            for payment in (payments or [])
+            if payment.is_confirmed
+        ],
         rate_changes=rate_changes,
-        anchor_balance=replay_anchor_balance,
-        anchor_date=replay_anchor_date,
+        anchor_balance=anchor_balance,
+        anchor_date=anchor_date,
         as_of=as_of,
     )
 
@@ -987,12 +991,24 @@ def compute_payoff_scenarios(
     rate_changes_remaining = _remaining_rate_changes(
         rate_changes, replay.next_pay_date,
     )
-    contractual = _contractual_payment_for_projection(
+    # Contractual P&I baseline for the forward projection is the
+    # SAME number that drives ``LoanState.monthly_payment`` on the
+    # loan card.  Routing both through ``_compute_monthly_payment``
+    # makes overview ($1,293.96-style) and schedule rows agree by
+    # construction; the prior ``_contractual_payment_for_projection``
+    # helper used ``replay.balance_as_of`` for ARM but
+    # ``original_principal`` for fixed-rate, which could not match
+    # the resolver's branching rules.
+    in_window = _is_in_arm_fixed_window(loan_params, anchor_date, as_of)
+    contractual = _compute_monthly_payment(
         loan_params,
-        base_rate,
+        anchor_balance,
+        anchor_date,
         replay.balance_as_of,
-        replay.applicable_rate_as_of,
-        replay.remaining_months_as_of,
+        rate_changes,
+        as_of,
+        base_rate,
+        in_window,
     )
 
     # All three forward slices share starting state; only override

@@ -1116,34 +1116,35 @@ class TestReplayConfirmedHistory:
         assert result.rows[0].remaining_balance == Decimal("299701.35")
         assert result.balance_as_of == Decimal("299701.35")
 
-    # ── C1-7: ARM anchor snaps balance ────────────────────────────
+    # ── C1-7: replay starts at anchor; pre-anchor payments filtered ──
 
-    # ARM-anchor scenario: $400,000 / 6% / 360 / originated 2024-01-01.
-    # Anchor verified at $250,000 on 2025-12-15.  Two confirmed
-    # contractual payments straddle the anchor (2024-06-01 and
+    # Anchor scenario: $400,000 / 6% / 360 / originated 2024-01-01.
+    # Anchor verified at $250,000 on 2025-12-15 (the user recorded a
+    # balance trueup after paying down outside Shekel).  Four
+    # confirmed payments straddle the anchor (2024-06-01 and
     # 2024-07-01 pre-anchor, 2026-01-01 and 2026-02-01 post-anchor).
-    # The anchor reset fires on the first scheduled month strictly
-    # AFTER 2025-12-15.  With payment_day=1, schedule month 24 is
-    # 2026-01-01, which is the first row strictly past the anchor.
     #
-    # Hand arithmetic for the four kept rows:
-    #   Pre-anchor at $400k / 6% / contractual $2,398.20:
-    #     Row 1 (2024-06-01): interest = 400000.00 * 0.005 = $2,000.00
-    #       principal = 2398.20 - 2000.00 = $398.20
-    #       balance = 400000.00 - 398.20 = $399,601.80
-    #     Row 2 (2024-07-01): interest = 399601.80 * 0.005 = 1998.009
-    #       -> $1,998.01
-    #       principal = 2398.20 - 1998.01 = $400.19
-    #       balance = 399601.80 - 400.19 = $399,201.61
-    #   Anchor reset to $250,000:
-    #     Row 3 (2026-01-01): pre-row balance snapped to 250000.00.
-    #       interest = 250000.00 * 0.005 = $1,250.00
-    #       principal = 2398.20 - 1250.00 = $1,148.20
-    #       balance = 250000.00 - 1148.20 = $248,851.80
-    #     Row 4 (2026-02-01): interest = 248851.80 * 0.005 = 1244.259
-    #       -> $1,244.26
-    #       principal = 2398.20 - 1244.26 = $1,153.94
-    #       balance = 248851.80 - 1153.94 = $247,697.86
+    # New anchor-seeded contract: replay starts at the anchor and
+    # processes ONLY confirmed payments strictly after anchor_date.
+    # Pre-anchor payments are filtered because their effect is
+    # already baked into anchor_balance ($250,000 already reflects
+    # whatever the 2024 payments did to the balance); applying them
+    # again would double-count.  This matches
+    # ``loan_resolver._replay_balance_from_anchor`` (the resolver's
+    # current-balance derivation) so the schedule and the loan card
+    # cannot diverge.
+    #
+    # Hand arithmetic for the two kept rows:
+    #   Row 1 (2026-01-01): pre-row balance is anchor_balance = $250,000.
+    #     interest = 250000.00 * 0.005 = $1,250.00
+    #     principal = 2398.20 - 1250.00 = $1,148.20
+    #     balance = 250000.00 - 1148.20 = $248,851.80
+    #     month = months_from_origination(2026-01-01) = 24
+    #   Row 2 (2026-02-01):
+    #     interest = 248851.80 * 0.005 = 1244.259 -> $1,244.26
+    #     principal = 2398.20 - 1244.26 = $1,153.94
+    #     balance = 248851.80 - 1153.94 = $247,697.86
+    #     month = 25
 
     ARM_ANCHOR_PRINCIPAL = Decimal("400000.00")
     ARM_ANCHOR_RATE = Decimal("0.06")
@@ -1154,16 +1155,19 @@ class TestReplayConfirmedHistory:
     ARM_ANCHOR_BALANCE = Decimal("250000.00")
     ARM_ANCHOR_DATE = date(2025, 12, 15)
 
-    def test_arm_anchor_snaps_balance(self):
-        """C1-7: ARM anchor snaps the running balance at the first
-        scheduled month strictly after ``anchor_date``.
+    def test_anchor_seeds_balance_pre_anchor_payments_filtered(self):
+        """C1-7: replay starts at the anchor balance; confirmed
+        payments at or before ``anchor_date`` are filtered.
 
-        Pre-anchor rows compute interest against the un-snapped
-        balance (the historical rate is unknown so the split is
-        approximate, matching the engine's documented behavior).
-        The post-anchor row computes interest against the anchor
-        balance ($250,000 * 0.005 = $1,250.00); subsequent rows
-        project from the post-payment balance and are exact.
+        The four-payment input straddles the anchor (two pre, two
+        post).  Only the two post-anchor payments produce rows.
+        The post-anchor row 1's interest reflects the anchor
+        balance exactly ($250,000 * 0.005 = $1,250.00); row 2
+        projects from the post-payment balance.  Each row's
+        ``month`` field is the calendar month index from
+        origination, NOT a "row count" -- so a Shekel user with
+        most history pre-anchor still sees the right month label
+        on the limited rows replay returns.
         """
         result = replay_confirmed_history(
             origination_date=self.ARM_ANCHOR_ORIGINATION,
@@ -1172,6 +1176,7 @@ class TestReplayConfirmedHistory:
             term_months=self.ARM_ANCHOR_TERM,
             payment_day=self.ARM_ANCHOR_PAYMENT_DAY,
             confirmed_payments=[
+                # Pre-anchor (filtered).
                 PaymentRecord(
                     payment_date=date(2024, 6, 1),
                     amount=self.ARM_ANCHOR_CONTRACTUAL,
@@ -1182,6 +1187,7 @@ class TestReplayConfirmedHistory:
                     amount=self.ARM_ANCHOR_CONTRACTUAL,
                     is_confirmed=True,
                 ),
+                # Post-anchor (kept).
                 PaymentRecord(
                     payment_date=date(2026, 1, 1),
                     amount=self.ARM_ANCHOR_CONTRACTUAL,
@@ -1198,31 +1204,125 @@ class TestReplayConfirmedHistory:
             anchor_date=self.ARM_ANCHOR_DATE,
             as_of=date(2026, 5, 21),
         )
-        assert len(result.rows) == 4
-        # Pre-anchor row 1 (2024-06-01).
-        assert result.rows[0].payment_date == date(2024, 6, 1)
-        # interest = 400000.00 * 0.005 = 2000.00 (approximate split:
-        # uses the current rate, not the unknown historical rate).
-        assert result.rows[0].interest == Decimal("2000.00")
-        assert result.rows[0].remaining_balance == Decimal("399601.80")
-        # Pre-anchor row 2 (2024-07-01).
-        assert result.rows[1].remaining_balance == Decimal("399201.61")
-        # Post-anchor row 3 (2026-01-01): the snap fires before
-        # interest is computed, so interest reflects the anchor
-        # balance exactly.
-        assert result.rows[2].payment_date == date(2026, 1, 1)
+        # Pre-anchor payments are filtered.  Only the two post-anchor
+        # rows are emitted.
+        assert len(result.rows) == 2
+        # Row 1 (2026-01-01): the anchor seeds the balance so
+        # interest reflects $250,000 exactly.
+        assert result.rows[0].payment_date == date(2026, 1, 1)
+        # months_from_origination(2026-01-01) = (2026-2024)*12 + (1-1) = 24.
+        assert result.rows[0].month == 24
         # 250000.00 * 0.005 = 1250.00.
-        assert result.rows[2].interest == Decimal("1250.00")
+        assert result.rows[0].interest == Decimal("1250.00")
         # 2398.20 - 1250.00 = 1148.20.
-        assert result.rows[2].principal == Decimal("1148.20")
+        assert result.rows[0].principal == Decimal("1148.20")
         # 250000.00 - 1148.20 = 248851.80.
-        assert result.rows[2].remaining_balance == Decimal("248851.80")
-        # Post-anchor row 4 (2026-02-01).
-        # interest = 248851.80 * 0.005 = 1244.259 -> 1244.26.
-        assert result.rows[3].interest == Decimal("1244.26")
-        # 248851.80 - (2398.20 - 1244.26) = 247697.86.
-        assert result.rows[3].remaining_balance == Decimal("247697.86")
+        assert result.rows[0].remaining_balance == Decimal("248851.80")
+        # Row 2 (2026-02-01).
+        assert result.rows[1].payment_date == date(2026, 2, 1)
+        assert result.rows[1].month == 25
+        # 248851.80 * 0.005 = 1244.259 -> 1244.26.
+        assert result.rows[1].interest == Decimal("1244.26")
+        # 2398.20 - 1244.26 = 1153.94.
+        assert result.rows[1].principal == Decimal("1153.94")
+        # 248851.80 - 1153.94 = 247697.86.
+        assert result.rows[1].remaining_balance == Decimal("247697.86")
         assert result.balance_as_of == Decimal("247697.86")
+        # remaining_months_as_of: term - months_consumed_before_next.
+        # next_pay_date = 2026-03-01 (month 26); months_consumed = 25.
+        # 360 - 25 = 335.
+        assert result.remaining_months_as_of == 335
+
+    def test_pre_shekel_history_with_anchor_only_post_anchor_payments_emitted(
+        self,
+    ):
+        """C1-7b: the user's reported symptom -- loan originated long
+        before Shekel, anchor recorded recently with the true current
+        balance, only a handful of confirmed payments after the
+        anchor.
+
+        Input: origination 2018-12-01, original principal $202,000,
+        anchor 2026-02-15 / $177,999.54, two confirmed payments
+        2026-03-01 and 2026-04-01 of $1,943.99 each (loan portion
+        of a $1,943.99 paycheck transfer).  ``as_of`` = 2026-05-21.
+
+        Expectations:
+          * Exactly two rows (Mar and Apr 2026).
+          * Row 1 (Mar): interest = 177999.54 * 0.06875 / 12 =
+            1019.7890... -> $1,019.79.  Principal = 1943.99 -
+            1019.79 = $924.20.  Balance = 177999.54 - 924.20 =
+            $177,075.34.
+          * Row 2 (Apr): interest = 177075.34 * 0.06875 / 12 =
+            1014.4941... -> $1,014.49.  Principal = 1943.99 -
+            1014.49 = $929.50.  Balance = 177075.34 - 929.50 =
+            $176,145.84.
+          * Row month numbers are 87 and 88 (months from
+            origination 2018-12-01 to 2026-03-01 and 2026-04-01).
+          * balance_as_of == $176,145.84 (matches a hand-computed
+            "_replay_balance_from_anchor" -- the schedule and the
+            loan card cannot diverge under the new anchor-seeded
+            contract).
+          * extra_payment per row reflects the informational
+            contractual baseline (calculate_monthly_payment(
+            original_principal, annual_rate, term) = $1,327.00 from
+            $202,000 / 6.875% / 360).  Each $1,943.99 payment is
+            $616.99 above that baseline.  This is the engine's
+            simplified-contractual artifact; replay does not
+            re-amortize the baseline at the anchor.
+        """
+        result = replay_confirmed_history(
+            origination_date=date(2018, 12, 1),
+            original_principal=Decimal("202000.00"),
+            annual_rate=Decimal("0.06875"),
+            term_months=360,
+            payment_day=1,
+            confirmed_payments=[
+                PaymentRecord(
+                    payment_date=date(2026, 3, 1),
+                    amount=Decimal("1943.99"),
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2026, 4, 1),
+                    amount=Decimal("1943.99"),
+                    is_confirmed=True,
+                ),
+            ],
+            rate_changes=None,
+            anchor_balance=Decimal("177999.54"),
+            anchor_date=date(2026, 2, 15),
+            as_of=date(2026, 5, 21),
+        )
+        assert len(result.rows) == 2
+        # Row 1 (2026-03-01) -- month 87 of the loan.
+        assert result.rows[0].payment_date == date(2026, 3, 1)
+        assert result.rows[0].month == 87
+        # 177999.54 * 0.06875 / 12 = 1019.7890... -> 1019.79.
+        assert result.rows[0].interest == Decimal("1019.79")
+        # 1943.99 - 1019.79 = 924.20.
+        assert result.rows[0].principal == Decimal("924.20")
+        # 177999.54 - 924.20 = 177075.34.
+        assert result.rows[0].remaining_balance == Decimal("177075.34")
+        # Extra: 1943.99 - 1327.00 (baseline P&I from original
+        # terms) = 616.99.  Informational; replay does not
+        # re-amortize the baseline against the anchor.
+        assert result.rows[0].extra_payment == Decimal("616.99")
+        # Row 2 (2026-04-01) -- month 88.
+        assert result.rows[1].payment_date == date(2026, 4, 1)
+        assert result.rows[1].month == 88
+        # 177075.34 * 0.06875 / 12 = 1014.4941... -> 1014.49.
+        assert result.rows[1].interest == Decimal("1014.49")
+        # 1943.99 - 1014.49 = 929.50.
+        assert result.rows[1].principal == Decimal("929.50")
+        # 177075.34 - 929.50 = 176145.84.
+        assert result.rows[1].remaining_balance == Decimal("176145.84")
+        assert result.balance_as_of == Decimal("176145.84")
+        # next_pay_date: month after last row (2026-04-01) at
+        # payment_day=1 -> 2026-05-01.
+        assert result.next_pay_date == date(2026, 5, 1)
+        # months_from_origination(2026-05-01) = 89; consumed = 88;
+        # remaining = 360 - 88 = 272.
+        assert result.remaining_months_as_of == 272
 
     # ── C1-8: rate change during replay ───────────────────────────
 

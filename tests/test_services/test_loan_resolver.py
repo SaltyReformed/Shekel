@@ -1109,26 +1109,29 @@ class TestComputePayoffScenarios:
     def test_months_saved_metric(self):
         """C3-8: months_saved = len(committed) - len(accelerated).
 
-        Hand-computed from the closed-form amortization formula:
+        Under the anchor-seeded replay contract, the loan's remaining
+        contractual life at as_of is ``term - months_from_origination
+        (next_pay_date) + 1``, NOT ``term - len(rows)``.  Origination
+        2024-01-01, next_pay_date 2026-05-01 -> month 28 of the loan
+        -> 333 months remain (360 - 27).  The forward projection
+        therefore caps at 333 rows for committed (full term tail
+        from $298,796.42 at 6%), 211 rows for accelerated ($500/mo
+        extra accelerates payoff to ~Nov 2043).
 
-            P = 298796.42, i = 0.005
-            committed M  = 1798.65; n = -log(1 - P*i/M) / log(1+i)
-                = -log(0.169393) / log(1.005)
-                approx 356 months (committed pays off in 356 -- the
-                remaining_months floor of project_forward's loop;
-                hand-arithmetic agrees within rounding)
-            accelerated M = 2298.65; n = -log(1 - P*i/M) / log(1+i)
-                = -log(0.350067) / log(1.005)
-                approx 210.44 -> 211 months at HALF_UP / month boundary
+            P = 298796.42, i = 0.005, n_remaining = 333
+            committed M  = 1798.65; pays off at month 333
+            accelerated M = 2298.65; n_accel = -log(1 - P*i/M) /
+                log(1+i) approx 210.44 -> 211 rows
+            months_saved = 333 - 211 = 122
 
-            months_saved = 356 - 211 = 145
-
-        Pinning the discovered 145 here; the closed-form derivation
-        above is the verification path.  A regression in the
-        composer that re-introduced "extra applied to ghost history"
-        would inflate this number well past 200 because the buggy
-        accelerated schedule would consume 23+ months of fictitious
-        2024-2025 acceleration.
+        Pinning 122 here; the closed-form derivation above is the
+        verification path.  The pre-fix architecture used
+        ``remaining_months = term - len(rows) = 356`` and produced
+        months_saved=145, which was wrong: the four-row history
+        already consumed months 24-27 of the loan, so the committed
+        tail is 333 months, not 356.  A regression that re-
+        introduced the len(rows)-based calculation would push this
+        number back to 145.
         """
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
@@ -1145,24 +1148,23 @@ class TestComputePayoffScenarios:
             == len(scenarios.committed_forward)
             - len(scenarios.accelerated_forward)
         )
-        assert scenarios.months_saved == 145
+        assert scenarios.months_saved == 122
 
     def test_interest_saved_metric(self):
         """C3-9: interest_saved = sum(committed.interest) - sum(accel.interest).
 
-        Hand-derivable from the committed and accelerated payoff
-        slices: a $500/month acceleration on a ~$298,796 balance at
-        6% saves the interest that would have accrued on the
-        principal the acceleration paid down sooner.
+        Composer-derived from the 333-row committed tail and the
+        211-row accelerated tail (see C3-8 for the row-count
+        derivation):
 
-            sum(committed.interest)   = $341,524.42 (composer-derived)
-            sum(accelerated.interest) = $184,964.88 (composer-derived)
-            interest_saved            = $156,559.54
+            sum(committed.interest)   = $339,142.28
+            sum(accelerated.interest) = $184,964.88
+            interest_saved            = $154,177.40
 
         The pinned value is the composer's output for the symptom
-        inputs; the closed-form derivation above is the verification
-        (a 145-month early payoff at a 6% APR saves ~$157k of
-        interest, matching within rounding).
+        inputs.  A 122-month early payoff at a 6% APR on a $298,796
+        starting balance saves ~$154k of interest, matching within
+        rounding.
         """
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
@@ -1179,7 +1181,7 @@ class TestComputePayoffScenarios:
             - scenarios.total_interest_accelerated
         )
         assert scenarios.interest_saved == expected
-        assert scenarios.interest_saved == Decimal("156559.54")
+        assert scenarios.interest_saved == Decimal("154177.40")
 
     def test_originally_reported_bug_regression(self):
         """C3-10: LOAD-BEARING regression lock for the symptom.
@@ -1250,8 +1252,10 @@ class TestComputePayoffScenarios:
             assert row.extra_payment == Decimal("500.00")
         # 4. Hand-computed months_saved (see C3-8 for the derivation;
         #    a regression that re-introduces ghost-history
-        #    acceleration would inflate this past 200).
-        assert scenarios.months_saved == 145
+        #    acceleration would inflate this past 200, and a
+        #    regression to the len(rows)-based remaining-months
+        #    formula would push it to 145).
+        assert scenarios.months_saved == 122
 
     def test_temporal_gap_property(self):
         """C3-11: history row count tracks confirmed-payment count, not gap.
