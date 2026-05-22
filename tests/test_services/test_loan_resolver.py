@@ -502,15 +502,55 @@ def test_zero_rate_loan_payment_is_principal_over_n():
 
 
 def test_payoff_date_and_total_interest():
-    """C13-11: Schedule yields a hand-computable payoff date and total interest.
+    """C13-11 (re-pinned at C6): hand-computable payoff date and total interest.
 
     Setup: small fixed-rate loan $10,000 / 6% / 12 months from
-    2026-01-01.  Contractual payment = amortize(10000, 0.06, 12)
-    = $860.66.  With rounding residue absorbed in the final row,
-    the engine produces a 13-row schedule ending 2027-02-01.
-    Life-of-loan interest sums to $327.96 (verified by walking the
-    engine output: each row's interest is balance * 0.005 quantized
-    HALF_UP; the cumulative sum is the schedule's total_interest).
+    2026-01-01.  Contractual payment =
+    amortize(10000, 0.06, 12) = $860.66 (HALF_UP from the exact
+    $860.6643...).
+
+    Hand-computed schedule (per-row interest is
+    ``balance * 0.005`` quantized HALF_UP, principal is
+    ``860.66 - interest`` in rows 1-11, balance reduced accordingly):
+
+        r1  i=50.00 p=810.66 bal=9189.34
+        r2  i=45.95 p=814.71 bal=8374.63
+        r3  i=41.87 p=818.79 bal=7555.84
+        r4  i=37.78 p=822.88 bal=6732.96
+        r5  i=33.66 p=827.00 bal=5905.96
+        r6  i=29.53 p=831.13 bal=5074.83
+        r7  i=25.37 p=835.29 bal=4239.54
+        r8  i=21.20 p=839.46 bal=3400.08
+        r9  i=17.00 p=843.66 bal=2556.42
+        r10 i=12.78 p=847.88 bal=1708.54
+        r11 i= 8.54 p=852.12 bal= 856.42
+        r12 i= 4.28 p=856.42 bal=   0.00  (final row absorbs residue)
+
+    Twelve rows ending 2027-01-01.  Total interest = $327.96
+    (sum of rows 1-12; cross-check: also equals the sum the
+    pre-C6 engine produced because the pre-C6 13-row schedule had
+    interest=$0.00 on its phantom $0.04 residue row, so the total
+    is unchanged).
+
+    Re-pinning context (per
+    ``remediation_follow_up_common.md`` Apply-rule 4): the pre-C6
+    ``generate_schedule`` produced a 13-row schedule ending
+    2027-02-01 with row 13 being a phantom payment=$0.04 row
+    that absorbed sub-penny residue left by rounding the
+    contractual payment to two places.  That residue row was a
+    math artifact of ``generate_schedule``'s ``max_months =
+    remaining_months + term_months`` slack; it was never user-
+    facing-correct (a 12-month loan does not "pay off in month
+    13").  ``project_forward`` (Commit 2 primitive; used here via
+    ``compute_payoff_scenarios`` in :func:`resolve_loan` after
+    Commit 6) forces ``is_final = month_num == remaining_months``
+    on the final scheduled month so the last row absorbs residue
+    into a slightly larger final payment ($860.70 = $856.42
+    principal + $4.28 interest).  This matches real-lender
+    practice (the final scheduled payment fully retires the loan
+    within the contractual term).  See
+    ``docs/plans/2026-05-21-amortization-engine-split-implementation.md``
+    Section 9 Commit 6 for the architectural finding.
     """
     params = FakeLoanParams(
         origination_date=date(2026, 1, 1),
@@ -525,8 +565,12 @@ def test_payoff_date_and_total_interest():
         params, [anchor], None, None, date(2026, 2, 1),
     )
 
-    assert state.payoff_date == date(2027, 2, 1)
+    assert state.payoff_date == date(2027, 1, 1)
     assert state.total_interest == Decimal("327.96")
+    # Twelve rows: the final row absorbs residue into the
+    # contractual term rather than emitting a phantom 13th row.
+    assert len(state.schedule) == 12
+    assert state.schedule[-1].remaining_balance == Decimal("0.00")
 
 
 # -- Defensive coverage beyond the plan's enumerated cases ------------------
@@ -654,6 +698,123 @@ def test_arm_trueup_in_window_produces_new_constant():
     assert state_a.monthly_payment == Decimal("2337.47")
     # In-window constant must hold across both as_of dates.
     assert state_a.monthly_payment == state_b.monthly_payment
+
+
+# -- C6-8 -- resolver chokepoint: no direct generate_schedule reference -----
+
+
+def test_no_generate_schedule_in_resolver():
+    """C6-8: ``loan_resolver`` source contains no ``generate_schedule`` ref.
+
+    Phase 6 of the amortization-engine split moves the resolver's
+    schedule generation off the legacy ``generate_schedule`` entry
+    point and onto :func:`compute_payoff_scenarios`.  The resolver
+    is the single chokepoint other surfaces (year-end debt
+    aggregation, savings dashboard debt card, debt-strategy, the
+    refinance calculator) read through, so locking it pure-of-engine
+    here keeps the downstream consumers automatically on the new
+    primitives.
+
+    Inspects the raw module source (including comments and
+    docstrings).  A regression that reintroduces ``generate_schedule``
+    in any form would surface here loud before reaching any
+    downstream consumer.
+    """
+    source = inspect.getsource(loan_resolver)
+    assert "generate_schedule" not in source, (
+        "loan_resolver.py references generate_schedule; the resolver "
+        "must route schedule generation through "
+        "compute_payoff_scenarios (Phase 6 / Commit 6 of the "
+        "amortization-engine split)."
+    )
+
+
+# -- C6-9 / C6-10 -- is_confirmed flags on history vs forward rows ----------
+
+
+def test_history_rows_marked_confirmed():
+    """C6-9: schedule rows backing confirmed payments are is_confirmed=True.
+
+    Setup: $300k / 6% / 360 mo, three confirmed contractual payments
+    Feb-Apr 2026, ``as_of=2026-05-01``.  The composer's replay
+    consumes the three confirmed payments and emits three history
+    rows; the resolver's ``LoanState.schedule`` starts with those
+    three rows.  Every history row carries ``is_confirmed=True``
+    so a downstream caller can distinguish recorded history from
+    projection without re-tracing the row through the payment list.
+
+    This invariant is load-bearing for any future surface that
+    needs to render history differently from projection (e.g. a
+    "shade past months" treatment in the amortization tab) without
+    re-querying the payment store.
+    """
+    params = FakeLoanParams(
+        origination_date=date(2026, 1, 1),
+        term_months=360,
+        original_principal=Decimal("300000.00"),
+        interest_rate=Decimal("0.06"),
+        payment_day=1,
+    )
+    anchor = _origination_anchor(params)
+    payments = [
+        PaymentRecord(date(2026, 2, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 4, 1), Decimal("1798.65"), True),
+    ]
+
+    state = resolve_loan(
+        params, [anchor], payments, None, date(2026, 5, 1),
+    )
+
+    # First three rows are the replayed confirmed payments.
+    assert len(state.schedule) >= 3
+    for idx, row in enumerate(state.schedule[:3]):
+        assert row.is_confirmed is True, (
+            f"history row {idx} ({row.payment_date}) is not "
+            f"flagged is_confirmed=True"
+        )
+
+
+def test_forward_rows_marked_unconfirmed():
+    """C6-10: schedule rows past as_of are is_confirmed=False.
+
+    Same setup as :func:`test_history_rows_marked_confirmed`.  The
+    fourth row onward comes from :func:`project_forward` (via the
+    composer's ``committed_forward`` slice) and is unconfirmed by
+    construction -- projection rows are not facts about the
+    recorded past.
+
+    Together with C6-9 this pins the contract that
+    ``LoanState.schedule`` carries an authoritative confirmation
+    flag per row: callers can rely on ``is_confirmed`` to
+    distinguish historical fact from projection without re-deriving
+    the boundary from ``as_of``.
+    """
+    params = FakeLoanParams(
+        origination_date=date(2026, 1, 1),
+        term_months=360,
+        original_principal=Decimal("300000.00"),
+        interest_rate=Decimal("0.06"),
+        payment_day=1,
+    )
+    anchor = _origination_anchor(params)
+    payments = [
+        PaymentRecord(date(2026, 2, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 4, 1), Decimal("1798.65"), True),
+    ]
+
+    state = resolve_loan(
+        params, [anchor], payments, None, date(2026, 5, 1),
+    )
+
+    # All rows past the three history rows are forward projections.
+    assert len(state.schedule) > 3
+    for idx, row in enumerate(state.schedule[3:], start=3):
+        assert row.is_confirmed is False, (
+            f"forward row {idx} ({row.payment_date}) is flagged "
+            f"is_confirmed=True; only history rows should be"
+        )
 
 
 # -- TestComputePayoffScenarios (Commit 3, C3-1..C3-15) ---------------------

@@ -394,72 +394,122 @@ def test_interest_saved_uses_round_money_half_up():
 def test_months_saved_single_quantity(
     app, seed_user, seed_periods,
 ):
-    """C17-4 / HIGH-08 / F-022: ``months_saved`` on the payoff
-    calculator is one integer derived from the engine summary, not
-    four divergent quantities.
+    """C17-4 / HIGH-08 / F-022: ``months_saved`` is one quantity
+    derived from the scenario composer, not multiple divergent paths.
 
     F-022 / F-023 documented that pre-remediation, four different
     "months saved" values could appear depending on how the surface
     computed it (resolver schedule length, summary metric, route-side
     subtraction, engine summary helper).  After Commit 13 introduced
-    the resolver and Commit 17 collapses every surface onto its
-    schedule, there is ONE definition: the engine summary's
-    ``months_saved`` (``len(standard) - len(accelerated)``).
+    the resolver, Commit 17 collapsed every display surface onto its
+    schedule, and the amortization-engine split (Phase 6 / Commit 6
+    of ``docs/plans/2026-05-21-amortization-engine-split-implementation.md``)
+    rewired the resolver's schedule generation through
+    :func:`loan_resolver.compute_payoff_scenarios`.  After that
+    rewire ``months_saved`` has one definition: the composer's
+    ``len(committed_forward) - len(accelerated_forward)``.  Every
+    display surface that needs the figure reads it off the composer
+    via the resolver chokepoint, so there is no "engine summary
+    path" left to diverge from.
 
-    Hand-computed expectation: for our $300,000 / 6% / 360-month
-    fixture with ``extra_monthly = $200``, the engine summary's
-    ``months_saved`` must equal the difference between the
-    resolver's life-of-loan schedule length and the accelerated
-    schedule length computed against the SAME resolver-anchored
-    inputs.  Any divergence indicates a parallel computation path
-    has reappeared.
+    Pre-C6 this test compared ``calculate_summary``'s
+    ``months_saved`` against ``len(state.schedule) - len(accelerated)``
+    where ``accelerated`` was a separate ``generate_schedule`` call.
+    Both surfaces used the same engine, so they agreed.  Post-C6 the
+    resolver routes through ``project_forward`` (which absorbs
+    rounding residue cleanly in the contractual final row, no
+    phantom $0.04 trailing row) while ``calculate_summary`` still
+    uses ``generate_schedule`` (which emits the phantom row).  The
+    two paths diverge by one row per fixed-rate loan that has
+    rounded-payment residue at month ``term_months``.  That
+    divergence is real and unavoidable until Commit 9 deletes
+    ``generate_schedule`` and ``calculate_summary`` entirely; this
+    test re-anchors at the post-C6 canonical surface
+    (``compute_payoff_scenarios``) so the F-022 SSOT lock survives
+    the engine deletion intact.
+
+    Hand-computed expectation for the $300k / 6% / 360 mo fixture
+    with ``extra_monthly = $200`` (closed-form payoff with extra):
+    contractual payment $1798.65, total monthly $1998.65,
+    ``n_extra = -log(1 - P*i/M_total) / log(1+i)
+    = -log(1 - 300000*0.005/1998.65) / log(1.005)
+    = -log(0.249493) / log(1.005) ~= 278.31 -> 279 rows at HALF_UP``.
+    Standard payoff is the contractual 360 months (clean residue
+    absorption; no phantom row).  Therefore
+    ``months_saved == 360 - 279 == 81``.  Pinning the composer's
+    output to 81 catches both directions of regression: a return to
+    phantom-row semantics (would inflate to 82) and any future
+    parallel-path bug (would put the composer's months_saved out of
+    sync with its own forward slices).
     """
-    from app.services import amortization_engine  # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel
+    from app.services.loan_resolver import compute_payoff_scenarios
 
     with app.app_context():
         account, loan_params = _create_fixed_loan(
             seed_user, seed_periods[0].id,
         )
 
-        state = _resolver_state(account, loan_params, date.today())
-        standard_months = len(state.schedule)
+        ctx = loan_payment_service.load_loan_context(
+            account.id, None, loan_params,
+        )
+        anchor_events = (
+            db.session.query(LoanAnchorEvent)
+            .filter_by(account_id=account.id)
+            .all()
+        )
 
-        # Engine-summary path matches the route's payoff calculator.
         extra = Decimal("200.00")
-        accelerated = amortization_engine.generate_schedule(
-            FIXED_PRINCIPAL, FIXED_RATE, FIXED_TERM,
+        scenarios = compute_payoff_scenarios(
+            loan_params=loan_params,
+            anchor_events=anchor_events,
+            payments=ctx.payments,
+            rate_changes=ctx.rate_changes,
             extra_monthly=extra,
-            origination_date=FIXED_ORIGINATION,
-            payment_day=1,
-            original_principal=FIXED_PRINCIPAL,
-            term_months=FIXED_TERM,
-        )
-        engine_summary = amortization_engine.calculate_summary(
-            current_principal=FIXED_PRINCIPAL,
-            annual_rate=FIXED_RATE,
-            remaining_months=FIXED_TERM,
-            origination_date=FIXED_ORIGINATION,
-            payment_day=1,
-            term_months=FIXED_TERM,
-            extra_monthly=extra,
-            original_principal=FIXED_PRINCIPAL,
+            as_of=date.today(),
         )
 
-        engine_months_saved = engine_summary.months_saved
-        hand_months_saved = standard_months - len(accelerated)
-
-        # ONE quantity: the resolver-anchored schedule length delta
-        # equals the engine's summary value.  F-022 closed.
-        assert engine_months_saved == hand_months_saved, (
-            f"engine summary months_saved={engine_months_saved} "
-            f"differs from hand-derived (standard_months - "
-            f"accelerated_months) = {hand_months_saved} -- a "
-            "parallel computation path has reappeared."
+        # The composer's months_saved must equal its own forward
+        # length diff.  Tautological by construction in today's
+        # implementation -- which is the point of the lock: a future
+        # refactor that adds a parallel months_saved computation
+        # would break the equality and surface here.  Post-Commit-9
+        # this is the only surviving path; the lock is structural.
+        composer_diff = (
+            len(scenarios.committed_forward)
+            - len(scenarios.accelerated_forward)
         )
-        # Positive: extra payments do shorten the loan.
-        assert engine_months_saved > 0, (
-            "With $200/mo extra against a 30-year mortgage, "
-            f"months_saved must be positive (got {engine_months_saved})."
+        assert scenarios.months_saved == composer_diff, (
+            f"composer months_saved={scenarios.months_saved} "
+            f"differs from len(committed_forward) - "
+            f"len(accelerated_forward) = {composer_diff} -- a "
+            "parallel computation path has reappeared inside the "
+            "composer."
+        )
+
+        # Hand-computed lock: 360 - 279 = 81 months saved.  A
+        # regression that reintroduced the pre-C6 phantom residue
+        # row would inflate committed_forward by 1 and surface here
+        # as 82, not 81.
+        assert scenarios.months_saved == 81, (
+            "Hand-computed months_saved for $300k / 6% / 360 mo "
+            f"with $200 extra is 81 (got {scenarios.months_saved})."
+        )
+
+        # And the resolver schedule that downstream surfaces read
+        # uses the same committed_forward slice that the composer
+        # used to derive months_saved -- locks the chokepoint that
+        # makes the SSOT cross-surface.
+        state = _resolver_state(account, loan_params, date.today())
+        assert (
+            len(state.schedule)
+            == len(scenarios.history_rows) + len(scenarios.committed_forward)
+        ), (
+            "resolver.state.schedule must equal "
+            "history_rows + committed_forward (the composer's "
+            "Committed-no-extra composition); a different "
+            "assembly here would re-introduce the parallel-path "
+            "divergence F-022 locks against."
         )
 
 

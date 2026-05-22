@@ -77,7 +77,6 @@ from app.services.amortization_engine import (
     RateChangeRecord,
     calculate_monthly_payment,
     calculate_remaining_months,
-    generate_schedule,
     project_forward,
     replay_confirmed_history,
 )
@@ -564,8 +563,9 @@ def resolve_loan(
     :class:`LoanAnchorEvent` to derive the current balance; computes
     the monthly payment per the ARM-window-aware rules documented at
     module scope; generates the full schedule via
-    :func:`amortization_engine.generate_schedule`; derives the payoff
-    date and total interest from the same schedule.
+    :func:`compute_payoff_scenarios` (the "Committed with no extra"
+    composition: ``history_rows + committed_forward``); derives the
+    payoff date and total interest from the same schedule.
 
     The function is pure: it takes plain data (model instances and
     plain Python lists), returns a frozen :class:`LoanState`, and
@@ -580,14 +580,16 @@ def resolve_loan(
        ``payment_date`` is strictly after the anchor date.  Projected
        (unconfirmed) payments are NOT replayed -- they are future
        commitments, not historical fact.
-    3. Generate the schedule with the engine.  For ARM loans, pass
-       the anchor so the engine re-amortizes from it; for
-       fixed-rate, do not pass the anchor (the engine projects from
-       origination using the contractual payment, which is the
-       correct behavior when the only anchor is the origination
-       event -- the common fixed-rate case).
-    4. Derive the current balance by walking the schedule for the
-       latest confirmed post-anchor row at-or-before ``as_of``.
+    3. Generate the schedule via :func:`compute_payoff_scenarios`
+       with ``extra_monthly=0`` and the confirmed-only payment list.
+       ARM vs. fixed-rate anchor handling lives inside the composer
+       (Phase 6 of the amortization-engine split); the resolver no
+       longer reaches the engine directly.
+       ``LoanState.schedule = history_rows + committed_forward``.
+    4. Derive the current balance from the anchor + confirmed-payment
+       replay (independent of the schedule walk -- the resolver owns
+       its balance derivation so a future schedule refactor cannot
+       silently change ``state.current_balance``).
     5. Compute the monthly payment per ARM-in-window vs.
        ARM-out-of-window vs. fixed-rate rules.
     6. Return the LoanState; consumers read its fields without
@@ -640,48 +642,35 @@ def resolve_loan(
         if payment.is_confirmed and payment.payment_date > anchor_date
     ]
 
-    is_arm = bool(getattr(loan_params, "is_arm", False))
     base_rate = Decimal(str(loan_params.interest_rate))
-    orig_principal = Decimal(str(loan_params.original_principal))
 
-    # Schedule generation strategy:
-    # * ARM -- pass the anchor so the engine re-amortizes from it;
-    #   matches the engine's ARM anchor-reset pattern (the pattern
-    #   the pre-F-10 ``get_loan_projection`` wrapper exercised; the
-    #   wrapper itself was removed in follow-up Commit 15).
-    # * Fixed-rate -- do NOT pass the anchor.  The engine's
-    #   anchor-reset code path unconditionally overrides the
-    #   contractual monthly_payment with a re-amortized value
-    #   (using months_left from the engine's loop counter against
-    #   max_months = 2 * term_months in the contractual branch),
-    #   which would corrupt the schedule for fixed-rate loans.
-    #   The from-origination contractual path already handles
-    #   payment replay correctly via the ``payments`` parameter
-    #   and is the established fixed-rate pattern in
-    #   ``debt_strategy._compute_real_principal``.  Fixed-rate
-    #   trueups remain a follow-up: see F-8 in
-    #   ``docs/audits/financial_calculations/remediation_follow_up.md``.
-    if is_arm:
-        engine_anchor_balance = anchor_balance
-        engine_anchor_date = anchor_date
-        engine_original = None
-    else:
-        engine_anchor_balance = None
-        engine_anchor_date = None
-        engine_original = orig_principal
-
-    schedule = generate_schedule(
-        current_principal=orig_principal,
-        annual_rate=base_rate,
-        remaining_months=loan_params.term_months,
-        origination_date=loan_params.origination_date,
-        payment_day=loan_params.payment_day,
-        original_principal=engine_original,
-        term_months=loan_params.term_months,
+    # Schedule generation routes through the scenario composer
+    # (Phase 6 of the amortization-engine split -- architectural plan:
+    # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
+    # ``compute_payoff_scenarios`` calls ``replay_confirmed_history``
+    # once and ``project_forward`` once with ``extra_monthly=0`` to
+    # produce a "Committed with no extra" composition;
+    # ``LoanState.schedule`` is the concatenation of the confirmed-
+    # history rows and the forward-projected rows.  ARM vs. fixed-rate
+    # anchor handling is owned by the composer (it inspects
+    # ``loan_params.is_arm`` and forwards the anchor to replay for ARM
+    # only -- the same is_arm-gated passthrough the prior direct
+    # engine call implemented inline above).  Passing
+    # only ``confirmed_after_anchor`` keeps the resolver's confirmed-
+    # only contract intact: every entry feeds replay, none becomes a
+    # forward override.  Fixed-rate trueups remain a follow-up: see
+    # F-8 in
+    # ``docs/audits/financial_calculations/remediation_follow_up.md``.
+    scenarios = compute_payoff_scenarios(
+        loan_params=loan_params,
+        anchor_events=anchor_events,
         payments=confirmed_after_anchor,
         rate_changes=rate_changes,
-        anchor_balance=engine_anchor_balance,
-        anchor_date=engine_anchor_date,
+        extra_monthly=ZERO_MONEY,
+        as_of=as_of,
+    )
+    schedule = list(scenarios.history_rows) + list(
+        scenarios.committed_forward
     )
 
     current_balance_full = _replay_balance_from_anchor(
