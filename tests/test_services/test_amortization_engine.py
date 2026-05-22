@@ -4,6 +4,7 @@ Tests for the amortization engine service.
 
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,7 @@ from app.services.amortization_engine import (
     calculate_remaining_months,
     calculate_summary,
     generate_schedule,
+    project_forward,
     replay_confirmed_history,
 )
 
@@ -3705,3 +3707,487 @@ class TestReplayConfirmedHistory:
         # Cross-check: month after the last row.
         assert result.next_pay_date.month == 5
         assert result.next_pay_date.year == 2026
+
+
+class TestProjectForward:
+    """Tests for ``project_forward``.
+
+    The second half of the amortization-engine split (Commit 2 of
+    ``docs/plans/2026-05-21-amortization-engine-split-implementation.md``;
+    architectural plan
+    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
+    Verifies that projection is a pure forward-only function of a
+    known starting state:
+
+      - ``extra_monthly`` lives only on this surface;
+      - ``monthly_override`` routes the user's planned payments
+        through a forward-only channel;
+      - override months never receive ``extra_monthly`` (C2-4 -- the
+        architectural plan's "critical regression-prevention
+        assertion": override + extra cannot interact to silently
+        suppress or double-apply acceleration);
+      - negative amortization, overpayment cap, and ARM rate-change
+        re-amortization all mirror ``generate_schedule``'s existing
+        behavior on the projection side;
+      - every projected row carries ``is_confirmed=False``.
+
+    Standard scenario: $300,000 / 6% / 360 months / payment_day=1
+    with a known starting date of 2026-02-01.  Monthly P&I:
+        M = P * [r(1+r)^n] / [(1+r)^n - 1]
+        r = 0.06/12 = 0.005, n = 360
+        (1.005)^360 ~ 6.022575
+        M = 300000 * 0.005 * 6.022575 / 5.022575 = $1,798.65
+    """
+
+    PRINCIPAL = Decimal("300000.00")
+    RATE = Decimal("0.06")
+    TERM_MONTHS = 360
+    PAYMENT_DAY = 1
+    CONTRACTUAL_PAYMENT = Decimal("1798.65")
+    STARTING_DATE = date(2026, 2, 1)
+
+    # ── C2-1: no override, no extra -> contractual schedule ───────
+
+    def test_no_override_no_extra_is_contractual(self):
+        """C2-1: with no override and no extra, ``project_forward``
+        produces the standard contractual schedule over
+        ``remaining_months``.
+
+        Hand arithmetic at $300,000 / 6% / 360, payment_day=1, first
+        payment 2026-02-01:
+          row 1: interest = 300000.00 * 0.005 = $1,500.00;
+                 principal = 1798.65 - 1500.00 = $298.65;
+                 balance = $299,701.35
+          row 360: schedule terminates with balance == $0.00 by the
+                   ``is_final`` absorbing branch (final row rolls up
+                   any sub-penny residue).
+        ``extra_payment`` is $0.00 on every row.
+        """
+        rows = project_forward(
+            starting_balance=self.PRINCIPAL,
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+        )
+        assert len(rows) == self.TERM_MONTHS
+        # Row 1.
+        assert rows[0].payment_date == date(2026, 2, 1)
+        assert rows[0].interest == Decimal("1500.00")
+        assert rows[0].principal == Decimal("298.65")
+        assert rows[0].extra_payment == Decimal("0.00")
+        assert rows[0].remaining_balance == Decimal("299701.35")
+        assert rows[0].is_confirmed is False
+        # Every row uses the contractual payment (sans final-row
+        # absorption rounding), no extra.
+        for row in rows[:-1]:
+            assert row.payment == self.CONTRACTUAL_PAYMENT
+            assert row.extra_payment == Decimal("0.00")
+            assert row.is_confirmed is False
+        # Final row absorbs the residue and closes the balance at 0.
+        assert rows[-1].payment_date == date(2056, 1, 1)
+        assert rows[-1].remaining_balance == Decimal("0.00")
+        assert rows[-1].extra_payment == Decimal("0.00")
+
+    # ── C2-2: monthly_override only (no extra) ────────────────────
+
+    def test_monthly_override_only(self):
+        """C2-2: an override entry replaces the contractual payment
+        for that month, with ``extra_payment == 0`` on the row.
+
+        Hand arithmetic at the start of month 5 (June 2026):
+          balance before June = $298,796.42 (after four contractual
+          payments at $1,798.65).
+          June interest = 298796.42 * 0.005 = 1493.98210 -> $1,493.98
+          override = $2,000.00 -> principal = 2000.00 - 1493.98
+                                            = $506.02
+          balance after June = 298796.42 - 506.02 = $298,290.40
+        Non-override months use the contractual payment.
+        """
+        rows = project_forward(
+            starting_balance=self.PRINCIPAL,
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            monthly_override={(2026, 6): Decimal("2000.00")},
+        )
+        june = next(r for r in rows if r.payment_date == date(2026, 6, 1))
+        assert june.payment == Decimal("2000.00")
+        assert june.interest == Decimal("1493.98")
+        assert june.principal == Decimal("506.02")
+        assert june.extra_payment == Decimal("0.00")
+        assert june.remaining_balance == Decimal("298290.40")
+        # Adjacent non-override months keep the contractual payment.
+        may = next(r for r in rows if r.payment_date == date(2026, 5, 1))
+        assert may.payment == self.CONTRACTUAL_PAYMENT
+        assert may.extra_payment == Decimal("0.00")
+        july = next(r for r in rows if r.payment_date == date(2026, 7, 1))
+        assert july.payment == self.CONTRACTUAL_PAYMENT
+        assert july.extra_payment == Decimal("0.00")
+
+    # ── C2-3: extra_monthly only, no override ─────────────────────
+
+    def test_extra_monthly_only_no_override(self):
+        """C2-3: ``extra_monthly`` applies to every non-final month;
+        the schedule shortens to ~17.7 years and the final row
+        absorbs the residue with ``extra_payment == 0``.
+
+        Hand arithmetic at row 1:
+          interest = 300000.00 * 0.005 = $1,500.00
+          principal = 1798.65 - 1500.00 = $298.65
+          extra = $500.00 (uncapped: 500.00 < 299701.35)
+          balance = 300000.00 - 298.65 - 500.00 = $299,201.35
+        At $300,000 / 6% with $500 extra, the loan amortizes in 212
+        rows; the final row's ``is_final`` branch absorbs the balance
+        and reports ``extra_payment == $0.00``.
+        """
+        rows = project_forward(
+            starting_balance=self.PRINCIPAL,
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            extra_monthly=Decimal("500.00"),
+        )
+        # Row 1 hand-computed values.
+        assert rows[0].payment == self.CONTRACTUAL_PAYMENT
+        assert rows[0].extra_payment == Decimal("500.00")
+        assert rows[0].principal == Decimal("298.65")
+        assert rows[0].interest == Decimal("1500.00")
+        assert rows[0].remaining_balance == Decimal("299201.35")
+        # Schedule shortens substantially (under the unaccelerated
+        # 360 months).
+        assert len(rows) == 212
+        # Final row absorbs residue.
+        assert rows[-1].remaining_balance == Decimal("0.00")
+        # Every non-final row has the configured extra applied.
+        for row in rows[:-1]:
+            assert row.extra_payment == Decimal("500.00")
+
+    # ── C2-4: override + extra -- the regression-prevention lock ──
+
+    def test_override_plus_extra_extra_not_added_to_override_months(self):
+        """C2-4: when both an override and ``extra_monthly`` are
+        present, the override month uses the override as the total
+        payment and ``extra_payment == 0``; non-override months use
+        contractual + extra.
+
+        CRITICAL: this is the primitive-level regression lock that
+        makes the architectural bug structurally impossible.  In the
+        old ``generate_schedule`` flow a projected payment record
+        would suppress ``extra_monthly`` silently (the gate was "any
+        record present") -- now override and extra are independent
+        parameters of ``project_forward``, and the override path
+        unconditionally sets ``extra = $0.00``.
+
+        Hand arithmetic for June 2026 (the override month, $2000):
+          balance before June = $295,748.32 (after four
+          contractual+$500-extra rows preceding); this is mechanical
+          to compute and not re-derived in the assertion -- the test
+          asserts the SHAPE of the result (payment == override,
+          extra == 0).
+        Hand arithmetic for July 2026 (no override, extra applies):
+          July payment = $1,798.65 contractual
+          July extra_payment = $500.00
+        """
+        rows = project_forward(
+            starting_balance=self.PRINCIPAL,
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            monthly_override={(2026, 6): Decimal("2000.00")},
+            extra_monthly=Decimal("500.00"),
+        )
+        june = next(r for r in rows if r.payment_date == date(2026, 6, 1))
+        assert june.payment == Decimal("2000.00")
+        # The load-bearing assertion: extra is NEVER added to an
+        # override month, even when ``extra_monthly`` is set.
+        assert june.extra_payment == Decimal("0.00")
+        july = next(r for r in rows if r.payment_date == date(2026, 7, 1))
+        assert july.payment == self.CONTRACTUAL_PAYMENT
+        assert july.extra_payment == Decimal("500.00")
+        # Every override-less month past the override carries extra.
+        post_override = [
+            r for r in rows
+            if r.payment_date > date(2026, 6, 1) and r != rows[-1]
+        ]
+        for row in post_override:
+            assert row.extra_payment == Decimal("500.00")
+
+    # ── C2-5: override below interest -> negative amortization ────
+
+    def test_override_below_interest_negative_amortization(self):
+        """C2-5: an override below the period's interest produces
+        negative ``principal_portion`` and the balance grows.
+
+        Hand arithmetic at row 1 with override $50 and $1500 interest:
+          interest = 300000.00 * 0.005 = $1,500.00
+          principal = 50.00 - 1500.00 = -$1,450.00 (negative am)
+          balance = 300000.00 - (-1450.00) = $301,450.00
+        Existing engine behavior on ``generate_schedule``'s
+        payment-record branch is preserved.
+        """
+        rows = project_forward(
+            starting_balance=self.PRINCIPAL,
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            monthly_override={(2026, 2): Decimal("50.00")},
+        )
+        feb = rows[0]
+        assert feb.payment_date == date(2026, 2, 1)
+        assert feb.payment == Decimal("50.00")
+        assert feb.interest == Decimal("1500.00")
+        # Negative principal portion is valid -- it represents
+        # unpaid interest capitalized into the balance.
+        assert feb.principal == Decimal("-1450.00")
+        assert feb.extra_payment == Decimal("0.00")
+        # 300000.00 - (-1450.00) = 301450.00.
+        assert feb.remaining_balance == Decimal("301450.00")
+
+    # ── C2-6: ARM rate change during projection ───────────────────
+
+    def test_arm_rate_change_during_projection(self):
+        """C2-6: when ``rate_changes_remaining`` has an entry whose
+        ``effective_date`` is reached during the projection, the
+        engine re-amortizes the remaining balance over remaining
+        months at the new rate.
+
+        Setup: 30 yr / $300,000 / starts at 6%; rate change at
+        2027-02-01 to 7.5%.  Hand arithmetic at month 13 (Feb 2027):
+          balance entering Feb 2027 (post-Jan 2027) = $296,316.00
+          new monthly_rate = 0.075 / 12 = 0.00625
+          interest = 296316.00 * 0.00625 = 1851.97500 -> $1,851.98
+        Existing engine ARM behavior is preserved by construction
+        (project_forward shares the rate-change handler shape with
+        generate_schedule).
+        """
+        contractual = calculate_monthly_payment(
+            self.PRINCIPAL, self.RATE, self.TERM_MONTHS,
+        )
+        rows = project_forward(
+            starting_balance=self.PRINCIPAL,
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=contractual,
+            rate_changes_remaining=[
+                RateChangeRecord(
+                    effective_date=date(2027, 2, 1),
+                    interest_rate=Decimal("0.075"),
+                ),
+            ],
+        )
+        # Row 12 (month 13, Feb 2027) is the first row at the new
+        # rate.  Pre-change row 11 (Jan 2027, month 12) keeps the
+        # base 6% rate.
+        jan_2027 = rows[11]
+        feb_2027 = rows[12]
+        assert jan_2027.payment_date == date(2027, 1, 1)
+        assert jan_2027.interest_rate == Decimal("0.06")
+        assert feb_2027.payment_date == date(2027, 2, 1)
+        assert feb_2027.interest_rate == Decimal("0.075")
+        # interest at the new rate: 296316.00 * 0.075/12.
+        assert feb_2027.interest == Decimal("1851.98")
+        # Re-amortized payment is strictly greater than the base
+        # 6% contractual ($1798.65); the engine recomputes
+        # monthly_payment at the rate-change boundary.
+        assert feb_2027.payment > self.CONTRACTUAL_PAYMENT
+
+    # ── C2-7: overpayment cap on the final row ────────────────────
+
+    def test_overpayment_cap_final_row(self):
+        """C2-7: when extra (or an override) would drive the balance
+        below zero, the final row absorbs the remaining balance
+        exactly, ``extra_payment`` is capped, and the closing balance
+        is $0.00.
+
+        Hand arithmetic at $1,000 balance, 6%, contractual $1,798.65,
+        extra $500 over a 360-month projection:
+          interest = 1000.00 * 0.005 = $5.00
+          principal (contractual - interest) = 1798.65 - 5.00 = $1,793.65
+          ``is_final`` triggers because principal >= balance:
+            principal := 1000.00
+            actual_payment = 1000.00 + 5.00 = $1,005.00
+            extra := $0.00 (final-row absorption clears extra)
+            balance := $0.00
+        The schedule terminates in a single row.
+        """
+        rows = project_forward(
+            starting_balance=Decimal("1000.00"),
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            extra_monthly=Decimal("500.00"),
+        )
+        assert len(rows) == 1
+        final = rows[0]
+        assert final.payment == Decimal("1005.00")
+        assert final.principal == Decimal("1000.00")
+        assert final.interest == Decimal("5.00")
+        assert final.extra_payment == Decimal("0.00")
+        assert final.remaining_balance == Decimal("0.00")
+
+    # ── C2-8: zero starting balance returns empty ─────────────────
+
+    def test_zero_starting_balance_returns_empty(self):
+        """C2-8: ``starting_balance == 0`` returns an empty list
+        (the loan is already paid off; nothing to project).
+        """
+        rows = project_forward(
+            starting_balance=Decimal("0.00"),
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+        )
+        assert rows == []
+        # Negative balance is treated the same way (defensive).
+        rows = project_forward(
+            starting_balance=Decimal("-10.00"),
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+        )
+        assert rows == []
+
+    # ── C2-9: zero remaining_months returns empty ─────────────────
+
+    def test_zero_remaining_months_returns_empty(self):
+        """C2-9: ``remaining_months == 0`` returns an empty list
+        (no time horizon for projection).
+        """
+        rows = project_forward(
+            starting_balance=self.PRINCIPAL,
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=0,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+        )
+        assert rows == []
+        # Negative remaining_months is treated the same way.
+        rows = project_forward(
+            starting_balance=self.PRINCIPAL,
+            starting_date=self.STARTING_DATE,
+            annual_rate=self.RATE,
+            remaining_months=-3,
+            payment_day=self.PAYMENT_DAY,
+            contractual_payment=self.CONTRACTUAL_PAYMENT,
+        )
+        assert rows == []
+
+    # ── C2-10: hand-computed payoff cross-check vs generate_schedule ─
+
+    def test_hand_computed_payoff_with_extra(self):
+        """C2-10: $279,985 starting balance / 6% / 336 remaining
+        months / $200 extra.
+
+        Independently-computed via ``generate_schedule``: the
+        existing trusted engine surface for pure projection (no
+        ``payments`` argument, identical contractual / extra logic
+        per ``generate_schedule`` lines 622-654).  Cross-check during
+        the migration window (Commits 1-8 keep both surfaces alive;
+        Commit 9 deletes ``generate_schedule`` and this assertion
+        re-anchors against the historical hand-computed payoff date
+        baked into the architectural plan).
+
+        Hand-arithmetic anchor for the contractual payment used by
+        both functions:
+          r = 0.005, n = 336
+          (1.005)^336 ~ 5.34324
+          M = 279985 * 0.005 * 5.34324 / (5.34324 - 1)
+            = 7479.4 / 4.34324
+            ~ $1,722.25
+        Independently-computed payoff: 262 rows; final pay_date
+        2048-02-29 (payment_day=30 clamped to 29 in February); final
+        ``remaining_balance == $0.00``.
+        """
+        starting = Decimal("279985.00")
+        remaining = 336
+        extra = Decimal("200.00")
+        payment_day = 30
+        # Independent ref: generate_schedule with no payments.
+        # generate_schedule starts at origination + 1 month, so
+        # origination = starting_date - 1 month.
+        ref = generate_schedule(
+            current_principal=starting,
+            annual_rate=self.RATE,
+            remaining_months=remaining,
+            extra_monthly=extra,
+            origination_date=date(2026, 4, 30),
+            payment_day=payment_day,
+        )
+        contractual = calculate_monthly_payment(
+            starting, self.RATE, remaining,
+        )
+        # Hand-anchored contractual value.
+        assert contractual == Decimal("1722.25")
+        rows = project_forward(
+            starting_balance=starting,
+            starting_date=date(2026, 5, 30),
+            annual_rate=self.RATE,
+            remaining_months=remaining,
+            payment_day=payment_day,
+            contractual_payment=contractual,
+            extra_monthly=extra,
+        )
+        # Hand-anchored independently-computed payoff.
+        assert len(rows) == 262
+        assert rows[-1].payment_date == date(2048, 2, 29)
+        assert rows[-1].remaining_balance == Decimal("0.00")
+        # Cross-check vs generate_schedule (row-by-row identity).
+        assert len(rows) == len(ref)
+        assert rows[-1].payment_date == ref[-1].payment_date
+        for pf_row, gs_row in zip(rows, ref):
+            assert pf_row.remaining_balance == gs_row.remaining_balance
+            assert pf_row.payment == gs_row.payment
+            assert pf_row.principal == gs_row.principal
+            assert pf_row.interest == gs_row.interest
+            assert pf_row.extra_payment == gs_row.extra_payment
+
+    # ── C2-11: round_money is the only rounding boundary ──────────
+
+    def test_round_money_is_only_rounding_boundary(self):
+        """C2-11: ``project_forward``'s body contains no bare
+        ``.quantize(Decimal("0.01"))`` without an explicit
+        ``rounding=`` keyword (coding standards: rounding goes
+        through ``round_money`` or an explicit ``ROUND_HALF_UP``).
+
+        Source-level guard against silent ``ROUND_HALF_EVEN``
+        regressions: a bare ``.quantize(Decimal("0.01"))`` would use
+        Python's default banker's rounding and silently drift away
+        from the project's hand-computed test assertions.  The
+        ``round_money`` helper rejects ``float`` and pins
+        ``ROUND_HALF_UP``; this test pins the helper as the only
+        rounding surface inside the new primitive.
+        """
+        engine_source = Path(
+            "app/services/amortization_engine.py"
+        ).read_text(encoding="utf-8")
+        # Slice out the project_forward body for the assertion.
+        marker = "def project_forward("
+        next_def = "\ndef calculate_summary("
+        start = engine_source.index(marker)
+        end = engine_source.index(next_def, start)
+        body = engine_source[start:end]
+        # No bare cents quantize without explicit rounding= keyword.
+        assert '.quantize(Decimal("0.01"))' not in body
+        assert '.quantize(TWO_PLACES)' not in body
+        # round_money IS used (positive assertion that the helper
+        # is the rounding boundary).
+        assert "round_money(" in body
