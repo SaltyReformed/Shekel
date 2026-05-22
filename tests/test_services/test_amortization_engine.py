@@ -1262,13 +1262,15 @@ class TestReplayConfirmedHistory:
             "_replay_balance_from_anchor" -- the schedule and the
             loan card cannot diverge under the new anchor-seeded
             contract).
-          * extra_payment per row reflects the informational
-            contractual baseline (calculate_monthly_payment(
-            original_principal, annual_rate, term) = $1,327.00 from
-            $202,000 / 6.875% / 360).  Each $1,943.99 payment is
-            $616.99 above that baseline.  This is the engine's
-            simplified-contractual artifact; replay does not
-            re-amortize the baseline at the anchor.
+          * extra_payment per row is always Decimal("0.00").  Replay
+            does not compute a per-row "extra above contractual"
+            value: the bank's contractual P&I at a moment in time
+            depends on current_balance, which depends on prepared
+            payments, which depends on the escrow threshold -- the
+            cycle is the same one that produced the user-reported
+            schedule/loan-card divergence.  Historical overpayments
+            surface via the principal column and a faster balance
+            descent instead.
         """
         result = replay_confirmed_history(
             origination_date=date(2018, 12, 1),
@@ -1303,10 +1305,8 @@ class TestReplayConfirmedHistory:
         assert result.rows[0].principal == Decimal("924.20")
         # 177999.54 - 924.20 = 177075.34.
         assert result.rows[0].remaining_balance == Decimal("177075.34")
-        # Extra: 1943.99 - 1327.00 (baseline P&I from original
-        # terms) = 616.99.  Informational; replay does not
-        # re-amortize the baseline against the anchor.
-        assert result.rows[0].extra_payment == Decimal("616.99")
+        # Replay rows always have extra_payment = 0 (see docstring).
+        assert result.rows[0].extra_payment == Decimal("0.00")
         # Row 2 (2026-04-01) -- month 88.
         assert result.rows[1].payment_date == date(2026, 4, 1)
         assert result.rows[1].month == 88

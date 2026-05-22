@@ -154,12 +154,21 @@ def load_loan_context(
     # match LoanState.monthly_payment -- the SSOT property the user
     # called out (P&I, escrow, and monthly payment numbers must be the
     # same across the loan card, the schedule's projected rows, and
-    # the prepared-payment net amount).
+    # the prepared-payment net amount).  ``raw_payments`` is passed
+    # so the baseline does a conservative anchor-walk over the raw
+    # (gross-of-escrow) amounts -- guarantees the threshold is at-
+    # or-below ``state.monthly_payment``, which guarantees the
+    # escrow-subtraction min() in :func:`prepare_payments_for_engine`
+    # picks the FULL escrow amount.  Without this, the threshold is
+    # an anchor-based approximation that slightly overestimates the
+    # true P&I, under-subtracts escrow, and leaks a few cents per
+    # row into the schedule's "Payment" column.
     contractual_pi = compute_contractual_pi(
         loan_params,
         anchor_events=anchor_events,
         rate_changes=rate_changes,
         as_of=date.today(),
+        payments=raw_payments,
     )
     payments = prepare_payments_for_engine(
         raw_payments, loan_params.payment_day,
@@ -267,6 +276,7 @@ def compute_contractual_pi(
     anchor_events: list | None = None,
     rate_changes: list[RateChangeRecord] | None = None,
     as_of: date | None = None,
+    payments: list[PaymentRecord] | None = None,
 ) -> Decimal:
     """Return the SSOT monthly P&I number for a loan.
 
@@ -300,6 +310,15 @@ def compute_contractual_pi(
         as_of: Optional evaluation date.  Defaults to
             ``date.today()`` when ``anchor_events`` is provided.
             Ignored on the legacy fallback path.
+        payments: Optional list of :class:`PaymentRecord` -- the RAW
+            shadow-income amounts BEFORE escrow subtraction.  When
+            provided, drives the conservative current-balance
+            approximation in :func:`loan_resolver.compute_monthly_payment_baseline`
+            so the threshold is guaranteed to be at-or-below the
+            true ``state.monthly_payment``.  Without it (legacy
+            callers), the baseline uses ``anchor_balance``, which
+            slightly overestimates the threshold for an ARM whose
+            principal has paid down since the latest anchor.
 
     Returns:
         Decimal monthly P&I payment, or ``Decimal("0")`` when either
@@ -322,6 +341,7 @@ def compute_contractual_pi(
             anchor_events,
             rate_changes,
             as_of or date.today(),
+            payments=payments,
         )
     return amortization_engine.calculate_monthly_payment(
         Decimal(str(params.original_principal)),

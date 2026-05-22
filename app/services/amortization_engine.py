@@ -470,7 +470,14 @@ def replay_confirmed_history(
     All produced rows are unconditionally ``is_confirmed=True``;
     mixed-confirmation inputs are not distinguished at the row level
     because replay's semantic role is "the deterministic-past
-    slice."
+    slice."  All produced rows also have ``extra_payment=0``: the
+    "extra above contractual" concept is forward-looking and any
+    per-row historical contractual baseline would couple replay back
+    to the threshold/preparation cycle (the bank's required P&I at a
+    moment in time depends on current_balance, which depends on the
+    prepared payments, which depends on the contractual threshold).
+    Historical overpayments surface via the ``principal`` column and
+    a faster balance descent, not via ``extra_payment``.
 
     Args:
         origination_date: Loan origination date.  Used to compute
@@ -616,13 +623,12 @@ def replay_confirmed_history(
         key=lambda payment: payment.payment_date,
     )
 
-    # Contractual payment baseline (informational; drives the "extra"
-    # field on each row).  Held at the original-terms formula and
-    # updated only on ARM rate transitions.  Replay's payment amount
-    # is always the recorded value, never this baseline.
-    monthly_payment = calculate_monthly_payment(
-        original_principal, annual_rate, term_months,
-    )
+    # Track the applicable rate as the iteration advances so the
+    # interest calc reflects ARM rate transitions that fired during
+    # the replay window.  No monthly_payment baseline is maintained
+    # because replay's rows always carry ``extra_payment=0`` (see
+    # docstring): per-row historical contractual would couple replay
+    # back to the threshold/preparation cycle, breaking SSOT.
     current_annual_rate = annual_rate
     balance = effective_anchor_balance
     rows: list[AmortizationRow] = []
@@ -633,25 +639,16 @@ def replay_confirmed_history(
 
         pay_date = payment.payment_date
 
-        # ARM rate transition: when the applicable rate changes, the
-        # monthly_payment baseline re-amortizes over the remaining
-        # balance and remaining months at the new rate.  Affects only
-        # the informational "extra" field; the per-row interest is
-        # computed against the period rate directly below.
+        # ARM rate transition: update the applicable rate so the per-
+        # row interest calc reflects the new rate from this row
+        # forward.  No monthly_payment baseline to re-amortize --
+        # extras are always 0 for replay rows.
         if rate_schedule:
             period_rate = _find_applicable_rate(
                 pay_date, rate_schedule, annual_rate,
             )
             if period_rate != current_annual_rate:
                 current_annual_rate = period_rate
-                months_left = max(
-                    0,
-                    term_months - _months_from_origination(pay_date) + 1,
-                )
-                if months_left > 0:
-                    monthly_payment = calculate_monthly_payment(
-                        balance, current_annual_rate, months_left,
-                    )
 
         monthly_rate = (
             current_annual_rate / 12
@@ -662,15 +659,12 @@ def replay_confirmed_history(
 
         total_payment = payment.amount
         principal_portion = total_payment - interest
-        extra = max(total_payment - monthly_payment, Decimal("0.00"))
 
         # Overpayment cap: if the principal portion would drive the
-        # balance below zero, absorb the remaining balance exactly
-        # and recompute the actual payment + extra.
+        # balance below zero, absorb the remaining balance exactly.
         if principal_portion >= balance:
             principal_portion = balance
             actual_payment = principal_portion + interest
-            extra = max(actual_payment - monthly_payment, Decimal("0.00"))
             balance = Decimal("0.00")
         else:
             actual_payment = principal_portion + interest
@@ -691,7 +685,7 @@ def replay_confirmed_history(
             payment=round_money(actual_payment),
             principal=round_money(principal_portion),
             interest=interest,
-            extra_payment=round_money(extra),
+            extra_payment=Decimal("0.00"),
             remaining_balance=balance,
             is_confirmed=True,
             interest_rate=row_rate,
@@ -1004,6 +998,7 @@ def calculate_payoff_by_date(
     original_principal: Decimal | None = None,
     term_months: int | None = None,
     rate_changes: list[RateChangeRecord] | None = None,
+    contractual_payment: Decimal | None = None,
 ) -> Decimal | None:
     """Calculate required extra monthly payment to pay off by target_date.
 
@@ -1050,6 +1045,23 @@ def calculate_payoff_by_date(
         rate_changes: Optional list of :class:`RateChangeRecord`
             instances for ARM loans.  Forwarded as
             ``rate_changes_remaining`` to ``project_forward``.
+        contractual_payment: Optional SSOT contractual P&I.  When
+            provided (the production path: the route passes
+            ``state.monthly_payment`` from the resolver), drives both
+            the standard projection and every binary-search iteration
+            -- so the displayed ``total_monthly = monthly_payment +
+            required_extra`` matches the loan card exactly.  When
+            ``None`` (the legacy path), the function derives the
+            contractual itself from
+            ``(current_principal, annual_rate, remaining_months)``
+            for ARM or
+            ``(original_principal, annual_rate, term_months)`` for
+            fixed-rate.  The legacy derivation uses ``annual_rate``
+            as both the projection rate AND the contractual rate; for
+            an ARM whose base rate diverges from the currently-
+            applicable rate this produced the D-2 divergence where
+            the binary-searched ``required_extra`` did not pair
+            correctly with the loan card's ``monthly_payment``.
 
     Returns:
         ``None`` if ``target_date`` is in the past (no extra payment
@@ -1063,31 +1075,38 @@ def calculate_payoff_by_date(
     if current_principal <= 0 or remaining_months <= 0:
         return Decimal("0.00")
 
-    # Derive the contractual payment: from original terms when
-    # provided and the loan is fixed-rate; otherwise re-amortize from
-    # current state at the current rate (ARM path).
+    # Derive the contractual payment when the caller did not supply
+    # one.  When the caller supplies ``contractual_payment`` (the
+    # production path), it is the SSOT value from the resolver and
+    # the local derivation is bypassed.  ``projection_months`` still
+    # widens for the fixed-rate-with-original-terms case so a
+    # partially paid loan can finish before ``remaining_months``
+    # without hitting the loop cap.
     has_rate_changes = rate_changes is not None and len(rate_changes) > 0
     using_contractual = (
         original_principal is not None
         and term_months is not None
         and not has_rate_changes
     )
-    if using_contractual:
-        contractual_payment = calculate_monthly_payment(
-            original_principal, annual_rate, term_months,
-        )
-        # Generous cap: a partially paid loan (current < original)
-        # pays off before ``remaining_months`` with the contractual
-        # payment, so widen ``projection_months`` to cover the
-        # early-payoff case; the final-row absorption in
-        # ``project_forward`` fires on balance reaching zero, not on
-        # hitting the loop cap.
-        projection_months = remaining_months + term_months
+    if contractual_payment is None:
+        if using_contractual:
+            contractual_payment = calculate_monthly_payment(
+                original_principal, annual_rate, term_months,
+            )
+        else:
+            contractual_payment = calculate_monthly_payment(
+                current_principal, annual_rate, remaining_months,
+            )
+    # Coerce a caller-supplied value to Decimal in case it arrived as
+    # a float-shaped DB column or string.
     else:
-        contractual_payment = calculate_monthly_payment(
-            current_principal, annual_rate, remaining_months,
-        )
-        projection_months = remaining_months
+        contractual_payment = Decimal(str(contractual_payment))
+
+    projection_months = (
+        remaining_months + term_months
+        if using_contractual
+        else remaining_months
+    )
 
     starting_date = advance_to_next_payment_date(
         origination_date, payment_day,

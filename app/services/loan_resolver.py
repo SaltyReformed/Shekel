@@ -67,6 +67,7 @@ The resolver collapses both onto a single derivation:
   Commit 16 owns the trueup write path via ``anchor_service``.
 """
 
+import dataclasses
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -554,6 +555,7 @@ def compute_monthly_payment_baseline(
     anchor_events: list,
     rate_changes: list[RateChangeRecord] | None,
     as_of: date,
+    payments: list[PaymentRecord] | None = None,
 ) -> Decimal:
     """Return the resolver-derived monthly P&I without running the full resolver.
 
@@ -562,20 +564,39 @@ def compute_monthly_payment_baseline(
     :func:`_compute_monthly_payment` (ARM-in-window, ARM-out-of-
     window, fixed-rate); used by
     :func:`app.services.loan_payment_service.load_loan_context` to
-    size the escrow-subtraction threshold so the
-    schedule's projected P&I matches the loan card's P&I exactly.
+    size the escrow-subtraction threshold so the schedule's
+    projected P&I matches the loan card's P&I exactly.
 
-    For the ARM-out-of-window branch the function uses
-    ``anchor_balance`` as a stand-in for ``current_balance``.  The
-    full resolver derives ``current_balance`` from the anchor walk
-    over confirmed payments; the difference is the small post-anchor
-    principal paydown (typically a few hundred dollars over the
-    months since the latest anchor).  For the threshold's role --
-    "is this payment plausibly gross of escrow, yes/no" -- this
-    approximation is exact enough that the resulting net payment
-    matches ``LoanState.monthly_payment`` to the cent.  Callers
-    needing the exact resolver-derived number for display must call
-    :func:`resolve_loan` and read ``state.monthly_payment``.
+    For the ARM-out-of-window branch the current_balance argument to
+    :func:`_compute_monthly_payment` cannot be the EXACT
+    ``state.current_balance`` (computing that requires already-
+    prepared payments, which depend on this threshold -- the cycle
+    that produced the user-reported schedule/loan-card divergence).
+    The function instead uses an APPROXIMATE current_balance that is
+    guaranteed to be at-or-below the true ``state.current_balance``:
+
+    * When ``payments`` is provided, the approximation is the result
+      of :func:`_replay_balance_from_anchor` walking ``anchor +
+      confirmed_payments`` using the RAW payment amounts (gross of
+      escrow).  Treating gross amounts as full P&I over-counts the
+      principal reduction at each payment, producing a balance below
+      the true post-replay balance.  An amortized monthly payment
+      computed from a low balance is itself low, so the resulting
+      threshold is at-or-below ``LoanState.monthly_payment``, which
+      guarantees the escrow-subtraction min() in
+      :func:`prepare_payments_for_engine` picks the full escrow
+      amount -- the SSOT invariant the schedule "Payment" column
+      depends on.
+    * When ``payments`` is ``None`` (legacy / pre-payment-loaded
+      callers), the function falls back to ``anchor_balance`` --
+      correct for the ARM-in-window and fixed-rate branches because
+      those branches do not consume the current_balance argument
+      anyway, and a defensible heuristic for ARM-out-of-window when
+      no payments are known.
+
+    Callers needing the EXACT resolver-derived number for display
+    must call :func:`resolve_loan` and read
+    ``state.monthly_payment``.
 
     Args:
         loan_params: Loan parameter object exposing the same fields
@@ -587,10 +608,15 @@ def compute_monthly_payment_baseline(
             for fixed-rate loans.
         as_of: Evaluation date.  Drives the ARM-window check and the
             out-of-window remaining-months calculation.
+        payments: Optional list of :class:`PaymentRecord` -- the RAW
+            shadow-income amounts BEFORE escrow subtraction.  When
+            provided, drives the conservative current-balance
+            approximation described above.  ``None`` falls back to
+            ``anchor_balance``.
 
     Returns:
-        Rounded Decimal monthly P&I (via ``round_money``).  Matches
-        :attr:`LoanState.monthly_payment` for the same inputs.
+        Rounded Decimal monthly P&I (via ``round_money``), at or
+        below :attr:`LoanState.monthly_payment` for the same inputs.
 
     Raises:
         ValueError: When ``anchor_events`` is empty (via
@@ -601,11 +627,30 @@ def compute_monthly_payment_baseline(
     anchor_date = anchor.anchor_date
     base_rate = Decimal(str(loan_params.interest_rate))
     in_window = _is_in_arm_fixed_window(loan_params, anchor_date, as_of)
+
+    if payments:
+        # Conservative current-balance approximation.  See docstring
+        # for why over-counting principal is the right tradeoff here.
+        confirmed_after_anchor = [
+            payment
+            for payment in payments
+            if payment.is_confirmed and payment.payment_date > anchor_date
+        ]
+        approximate_current_balance = _replay_balance_from_anchor(
+            anchor_balance,
+            confirmed_after_anchor,
+            rate_changes,
+            base_rate,
+            as_of,
+        )
+    else:
+        approximate_current_balance = anchor_balance
+
     return _compute_monthly_payment(
         loan_params,
         anchor_balance,
         anchor_date,
-        anchor_balance,  # approximation of current_balance; see docstring.
+        approximate_current_balance,
         rate_changes,
         as_of,
         base_rate,
@@ -966,7 +1011,15 @@ def compute_payoff_scenarios(
     # (ARM and fixed-rate alike) so a user-recorded balance trueup on
     # a fixed-rate loan is honored -- the prior is_arm gating was a
     # hangover from the snap-mid-iteration shape of replay and is
-    # incorrect under the anchor-seeded shape.
+    # incorrect under the anchor-seeded shape.  Replay does NOT
+    # compute an ``extra_payment`` for historical rows (always 0): the
+    # concept of "extra above contractual" is forward-looking, and any
+    # comparison against a per-row contractual would require knowing
+    # the bank's required P&I at that moment in time, which depends on
+    # current_balance, which depends on the prepared payments, which
+    # depends on the threshold, which closes the cycle.  Historical
+    # rows surface overpayment via the Principal column / faster
+    # balance descent instead.
     replay = replay_confirmed_history(
         origination_date=loan_params.origination_date,
         original_principal=orig_principal,
@@ -1010,6 +1063,29 @@ def compute_payoff_scenarios(
         base_rate,
         in_window,
     )
+
+    # Surface historical overpayments via the ``extra_payment`` field
+    # without coupling replay back to the threshold/preparation cycle.
+    # Replay returns ``extra_payment=0`` (see its docstring); the
+    # composer applies the SSOT ``contractual`` value post-replay so
+    # the schedule's Extra column shows the difference between each
+    # recorded payment and the resolver's monthly_payment.  For a
+    # user paying exactly ``state.monthly_payment + monthly_escrow``,
+    # the prepared payment equals ``contractual`` and extra is 0.
+    # For a legitimate overpayment ($2080 against $1580 contractual),
+    # extra surfaces as $500.  This closes the D-1 divergence
+    # ("historical extra computed against original-terms even for an
+    # ARM whose rate has adjusted") because ``contractual`` IS the
+    # ARM-aware SSOT value.
+    history_rows_with_extras = [
+        dataclasses.replace(
+            row,
+            extra_payment=round_money(
+                max(row.payment - contractual, ZERO_MONEY)
+            ),
+        )
+        for row in replay.rows
+    ]
 
     # All three forward slices share starting state; only override
     # presence and extra_monthly vary.  The architectural plan's
@@ -1068,7 +1144,7 @@ def compute_payoff_scenarios(
     )
 
     return PayoffScenarios(
-        history_rows=replay.rows,
+        history_rows=history_rows_with_extras,
         original_forward=original_forward,
         committed_forward=committed_forward,
         accelerated_forward=accelerated_forward,

@@ -1383,6 +1383,11 @@ def payoff_calculate(account_id):
             original_principal=original,
             term_months=params.term_months,
             rate_changes=rate_changes,
+            # SSOT contractual: the binary search must use the same
+            # P&I baseline the loan card displays, so the rendered
+            # ``total_monthly = monthly_payment + required_extra``
+            # is internally consistent (D-2 closure).
+            contractual_payment=monthly_payment,
         )
 
         total_monthly = (
