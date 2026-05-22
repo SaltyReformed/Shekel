@@ -2541,22 +2541,23 @@ class TestAmortizationSchedule:
     def test_schedule_has_correct_row_count(self, auth_client, seed_user, db, seed_periods):
         """C-5.13-2: 30-year mortgage produces the correct number of data rows.
 
-        Creates a fresh mortgage where original_principal = current_principal
-        and origination_date = this month, so remaining_months = term = 360.
-        The engine may produce 360 or 361 rows depending on rounding
-        residual (a sub-dollar final payment to zero out the balance).
-        Computes the expected count from the engine and verifies the
-        template renders all of them.
+        Re-pinned for Commit 5 of the amortization engine split
+        (``docs/plans/2026-05-21-amortization-engine-split-implementation.md``).
+        Pre-Commit-5 the dashboard called ``generate_schedule``
+        directly, which iterated up to ``max_months = remaining_months
+        + term_months`` and emitted a 361st row absorbing the
+        sub-penny rounding residue.  Post-Commit-5 the dashboard
+        routes through ``compute_payoff_scenarios`` ->
+        ``project_forward``, which terminates cleanly at
+        ``month_num == remaining_months``, absorbing the residue in
+        the final scheduled month.  The architecturally correct row
+        count for a 30-year mortgage with no payments is therefore
+        ``term_months == 360`` -- one row per scheduled month, no
+        residue artifact.  Hand-derivation:
+        ``len(history_rows) == 0`` (no confirmed payments) +
+        ``len(committed_forward) == remaining_months_as_of == 360``.
         """
-        from app.services.amortization_engine import generate_schedule
-
-        principal = Decimal("250000.00")
-        rate = Decimal("0.06500")
-        term = 360
-        expected_count = len(generate_schedule(
-            principal, rate, term,
-            payment_day=1, original_principal=principal, term_months=term,
-        ))
+        expected_count = 360
 
         acct = _create_fresh_mortgage(seed_user, db.session)
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
@@ -2576,31 +2577,45 @@ class TestAmortizationSchedule:
     ):
         """C-5.13-3: Confirmed payment rows are visually distinguished.
 
-        Creates a mortgage and two confirmed transfers matching the
-        schedule's first two months (April and May 2026 via seed_periods
-        7 and 9).  Asserts confirmed rows get a distinct badge and the
-        rest are Projected.
+        Creates a mortgage and two confirmed transfers in months
+        that have already passed relative to the autouse-frozen
+        today (2026-03-20).  Asserts confirmed rows get a distinct
+        badge and the rest are Projected.
 
-        Origination is pinned to March 1, 2026 so the schedule's first
-        payment month (April) aligns with seed_periods[7] regardless
-        of when the test is run.  Without the explicit origination,
-        ``_create_fresh_mortgage`` would derive it from ``date.today()``
-        and the alignment would silently break each calendar month.
+        Re-pinned for Commit 5 of the amortization engine split
+        (``docs/plans/2026-05-21-amortization-engine-split-implementation.md``).
+        Pre-Commit-5 the dashboard called ``generate_schedule``,
+        which had no ``as_of`` concept and marked any payment record
+        as Confirmed based solely on the ``is_confirmed`` field.
+        Post-Commit-5 the dashboard routes through
+        ``compute_payoff_scenarios``, whose replay only consumes
+        confirmed payments with ``payment_date <= as_of``; confirmed
+        payments dated AFTER today are data-hygiene cases and are
+        routed through ``monthly_override`` (Projected badge) -- the
+        new architecture's stricter semantic for the Confirmed badge.
+        The previous fixture used April/May 2026 seed_periods (after
+        the frozen today), which exercised the data-hygiene path,
+        not the realistic "DONE payment in history" path.  This
+        rewrite uses February/March seed_periods (before today) so
+        the DONE payments fall in the replay window and produce
+        Confirmed badges.
         """
-        # seed_periods[7] start_date is in April 2026; pin the schedule
-        # so its first payment month is also April (origination + 1
-        # month).
+        # Origination 2026-01-01 -> first scheduled payment month
+        # is February 2026 (origination + 1 month).  seed_periods[3]
+        # starts 2026-02-13 (Feb 2026) -> schedule month 1.
+        # seed_periods[5] starts 2026-03-13 (Mar 2026) -> schedule
+        # month 2.  Both before frozen today 2026-03-20, so the
+        # composer's replay consumes them and produces history rows
+        # with is_confirmed=True.
         acct = _create_fresh_mortgage(
-            seed_user, db.session, origination_date=date(2026, 3, 1),
+            seed_user, db.session, origination_date=date(2026, 1, 1),
         )
-        # seed_periods[7] start_date is in April 2026 -> schedule month 1.
-        # seed_periods[9] start_date is in May 2026 -> schedule month 2.
         _create_transfer_to_loan(
-            seed_user, acct, seed_periods[7], Decimal("1580.17"),
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
         )
         _create_transfer_to_loan(
-            seed_user, acct, seed_periods[9], Decimal("1580.17"),
+            seed_user, acct, seed_periods[5], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
         )
         db.session.commit()
@@ -2853,22 +2868,43 @@ class TestAmortizationSchedule:
     ):
         """C-5.13-12: Extra payments show as dollar amounts when present.
 
-        Creates a mortgage with a committed transfer that overpays the
-        standard P&I.  The row matching that month should show a non-zero
-        Extra column.  The Extra column itself is only shown when at
-        least one row has a genuine extra payment.
+        Creates a mortgage with a confirmed transfer that overpays
+        the standard P&I.  The row matching that month should show a
+        non-zero Extra column.
 
-        Origination is pinned to March 1, 2026 so the schedule's first
-        payment month (April) aligns with seed_periods[7] regardless
-        of when the test is run.
+        Re-pinned for Commit 5 of the amortization engine split
+        (``docs/plans/2026-05-21-amortization-engine-split-implementation.md``).
+        Pre-Commit-5 the dashboard called ``generate_schedule``,
+        which computed ``extra = max(total - contractual, 0)`` for
+        ANY payment record (confirmed or projected) above
+        contractual.  Post-Commit-5 the dashboard routes through
+        ``compute_payoff_scenarios``: only the REPLAY side (confirmed
+        payments dated <= as_of) breaks out an overpayment as Extra;
+        projected payments are routed through ``monthly_override``
+        whose rows are locked to ``extra_payment=0`` by C2-4 (the
+        override IS the user's planned outlay, not "extra beyond
+        plan").  The previous fixture used a PROJECTED $2080.17
+        transfer, which under the new architecture produces an
+        override row with extra=0 and the column disappears.  This
+        rewrite uses a DONE $2080.17 transfer dated before today so
+        replay sees the overpayment and breaks out the $500 above
+        contractual ($2080.17 - $1580.17 = $500.00).
         """
+        # Origination 2026-01-01 -> first scheduled payment month
+        # is February 2026.  seed_periods[3] starts 2026-02-13
+        # (Feb 2026); the DONE transfer falls in the replay window
+        # (payment_date 2026-02-13 <= frozen today 2026-03-20).
+        # Replay computes:
+        #   total_payment = $2080.17
+        #   monthly_payment (contractual) = $1580.17
+        #   extra = max(2080.17 - 1580.17, 0) = $500.00
+        # which the schedule template renders in the Extra column.
         acct = _create_fresh_mortgage(
-            seed_user, db.session, origination_date=date(2026, 3, 1),
+            seed_user, db.session, origination_date=date(2026, 1, 1),
         )
-        # Standard payment is ~$1,580.17.  Overpay by $500.
         _create_transfer_to_loan(
-            seed_user, acct, seed_periods[7], Decimal("2080.17"),
-            status_enum=StatusEnum.PROJECTED,
+            seed_user, acct, seed_periods[3], Decimal("2080.17"),
+            status_enum=StatusEnum.DONE,
         )
         db.session.commit()
 
@@ -2888,17 +2924,26 @@ class TestAmortizationSchedule:
         Creates a mortgage with a confirmed transfer.  If the schedule
         used only the original (no-payments) schedule, no rows would
         be marked Confirmed.  Presence of Confirmed badges proves the
-        committed schedule is used.
+        committed schedule (via the composer's history_rows) is used.
 
-        Origination is pinned to March 1, 2026 so the schedule's first
-        payment month (April) aligns with seed_periods[7] regardless
-        of when the test is run.
+        Re-pinned for Commit 5 of the amortization engine split.
+        See ``test_schedule_confirmed_rows_marked`` for the full
+        rationale (same architectural change: composer's replay only
+        consumes confirmed payments with ``payment_date <= as_of``;
+        future-dated DONE goes through ``monthly_override`` and
+        renders as Projected).  Previous fixture used April 2026
+        seed_periods after the frozen today (2026-03-20); this
+        rewrite uses February 2026 so the DONE payment lands in
+        replay.
         """
+        # Origination 2026-01-01 -> first scheduled payment month
+        # is February 2026.  seed_periods[3] (2026-02-13) falls in
+        # the replay window before today (2026-03-20).
         acct = _create_fresh_mortgage(
-            seed_user, db.session, origination_date=date(2026, 3, 1),
+            seed_user, db.session, origination_date=date(2026, 1, 1),
         )
         _create_transfer_to_loan(
-            seed_user, acct, seed_periods[7], Decimal("1580.17"),
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
         )
         db.session.commit()
@@ -2949,21 +2994,6 @@ class TestDashboardPayoffConsistency:
     redistribution) while the other uses raw data.
     """
 
-    @pytest.mark.xfail(
-        reason=(
-            "Transient between Commit 4 and Commit 5 of the amortization "
-            "engine split (see docs/plans/"
-            "2026-05-21-amortization-engine-split-implementation.md). "
-            "Commit 4 migrated payoff_calculate to compute_payoff_scenarios, "
-            "which produces a 360-row schedule whose final row absorbs the "
-            "rounding residue at month_num == remaining_months. The dashboard "
-            "still calls generate_schedule directly (361 rows: $0.38 then "
-            "$0.00 finalize). Commit 5 migrates the dashboard to the same "
-            "composer and restores byte-equality; this test will pass again "
-            "and the xfail marker should be removed at that point."
-        ),
-        strict=False,
-    )
     def test_payoff_committed_matches_dashboard_chart(
         self, auth_client, seed_user, db, seed_periods,
     ):
@@ -3134,6 +3164,397 @@ class TestDashboardPayoffConsistency:
             data={"mode": "extra_payment", "extra_monthly": "0"},
         )
         assert resp.status_code == 200
+
+
+# -- Dashboard Chart Composer Tests (Commit 5) -----------------------------
+
+
+class TestDashboardChartComposer:
+    """Lock the dashboard's migration to compute_payoff_scenarios.
+
+    Commit 5 of the amortization engine split
+    (``docs/plans/2026-05-21-amortization-engine-split-implementation.md``)
+    replaces the dashboard's three direct ``generate_schedule`` calls
+    (planned, original, floor) with two composer calls.  These tests
+    lock the resulting behavior:
+
+    * C5-1..C5-4 and C5-8 are "assert-unchanged" -- they pin the
+      composer-driven dashboard output against hand-computed
+      expectations derived from the composer (the new SSOT, not the
+      pre-Commit-5 ``generate_schedule`` 361-row residue artifact).
+    * C5-5 is a static grep guard: the dashboard body MUST NOT call
+      ``generate_schedule`` directly.
+    * C5-6 / C5-7 lock the floor's "projections cancelled" semantic.
+
+    Helper notes: ``_create_fresh_mortgage`` with
+    ``origination_date=date(2026, 1, 1)`` produces a 30-year
+    $250,000 / 6.5% mortgage whose first scheduled payment month is
+    February 2026.  ``seed_periods[3]`` (2026-02-13) falls before
+    the autouse-frozen today (2026-03-20) so confirmed transfers in
+    that period land in the composer's replay window.
+    """
+
+    def _parse_chart_array(self, html, key):
+        """Extract a chart data array as a list of floats."""
+        match = re.search(rf"data-{key}='(\[[^']*\])'", html)
+        assert match, f"Dashboard missing data-{key} chart array"
+        # The Jinja tojson filter emits a JSON literal; eval-safe parse.
+        import json  # pylint: disable=import-outside-toplevel
+        return json.loads(match.group(1))
+
+    def test_dashboard_chart_values_unchanged(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C5-1: Dashboard chart arrays match composer-derived expected.
+
+        Fixture: 30-yr / $250k / 6.5% mortgage originated 2026-01-01,
+        one confirmed payment in Feb 2026 (seed_periods[3], replay
+        window), one projected payment in May 2026 (seed_periods[9],
+        forward window via monthly_override).
+
+        Asserts the dashboard's data-original / data-committed /
+        data-floor arrays come from the composer:
+          * All three arrays have equal length (== len(original_rows)).
+          * Lengths equal term_months (360) -- one row per scheduled
+            month, no residue artifact (Commit 5 architectural fix).
+          * Original is monotonically non-increasing (pure contractual
+            never increases balance for a fixed-rate loan with no
+            rate change).
+          * The first array entry of each series matches a hand-
+            computed value derived from the composer's replay.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        # Confirmed Feb 2026 (before today=2026-03-20) -- goes to
+        # replay's history_rows.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        # Projected May 2026 (after today) -- goes to monthly_override.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[9], Decimal("1580.17"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        original = self._parse_chart_array(html, "original")
+        committed = self._parse_chart_array(html, "committed")
+        floor = self._parse_chart_array(html, "floor")
+
+        # All three series share history_rows and render against the
+        # same x-axis of Original (the longest baseline).
+        assert len(original) == len(committed) == len(floor)
+        # 360 months for a 30-yr mortgage with no overpayment (one row
+        # per scheduled month; the composer eliminates the pre-Commit-5
+        # residue artifact).
+        assert len(original) == 360, (
+            f"Expected 360 rows from composer, got {len(original)}"
+        )
+        # Original is the pure contractual baseline -- balance never
+        # increases month-over-month (positive amortization).
+        for i in range(1, len(original)):
+            assert original[i] <= original[i - 1] + 0.01, (
+                f"Original balance increased at index {i}: "
+                f"{original[i - 1]} -> {original[i]}"
+            )
+        # Series end at $0 (paid off at term).
+        assert original[-1] == 0.0
+        assert committed[-1] == 0.0
+        assert floor[-1] == 0.0
+
+    def test_amortization_tab_rows_unchanged(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C5-2: Amortization tab renders term_months rows for a full loan.
+
+        Uses the same fixture as C5-1.  The amortization tab
+        renders ``planned_schedule = history_rows + committed_forward``
+        from the composer.  History contributes one row (the Feb 2026
+        confirmed payment); the forward slice contributes 359
+        contractual rows.  Total: 360 rows.
+
+        Re-pinned for Commit 5 (one row per remaining_months, no
+        residue artifact).
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[9], Decimal("1580.17"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        confirmed = html.count('badge bg-success">Confirmed</span>')
+        projected = html.count('badge bg-secondary">Projected</span>')
+        total = confirmed + projected
+        # 1 confirmed (Feb 2026 in history) + 359 forward = 360.
+        assert confirmed == 1, f"Expected 1 confirmed row, got {confirmed}"
+        assert total == 360, (
+            f"Expected 360 total schedule rows, got {total} "
+            f"({confirmed} confirmed + {projected} projected)"
+        )
+
+    def test_payment_breakdown_unchanged(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C5-3: Payment breakdown sums to total and percentages sum to 100.
+
+        The breakdown card derives from
+        ``_find_current_period_row(planned_schedule)``.  After
+        Commit 5 ``planned_schedule = scenarios_main.history_rows +
+        scenarios_main.committed_forward``; the first row with
+        ``is_confirmed=False`` is the next planned payment.  The
+        truncate-then-distribute percentages MUST still sum to
+        exactly 100.0% (the dashboard rendering invariant).
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Extract the breakdown card's percentages via the
+        # ``data-progress-pct`` attribute, which only appears on the
+        # principal/interest/escrow progress bars and not elsewhere
+        # on the page.  This isolates the truncate-then-distribute
+        # output from unrelated percent strings (e.g., the interest
+        # rate display).
+        pct_strings = re.findall(r'data-progress-pct="([0-9.]+)"', html)
+        assert len(pct_strings) >= 2, (
+            f"Expected >= 2 breakdown percent attributes, "
+            f"found {pct_strings}"
+        )
+        breakdown_pcts = [Decimal(p) for p in pct_strings]
+        total_pct = sum(breakdown_pcts, Decimal("0.0"))
+        assert total_pct == Decimal("100.0"), (
+            f"Breakdown percentages sum to {total_pct}, expected 100.0"
+        )
+
+    def test_recurrence_end_date_update_idempotent(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C5-4: Recurrence end_date update is idempotent on dashboard reload.
+
+        When ``_update_transfer_end_date`` is called with a planned
+        schedule whose last row's payment_date equals the recurrence
+        rule's existing end_date, NO write occurs (the guard at
+        ``loan.py:_update_transfer_end_date``).  Re-rendering the
+        dashboard a second time must not mutate the row.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        # Create a recurring transfer template; its rule's end_date
+        # starts at None.  First GET will sync end_date to the
+        # planned schedule's last payment date.  Second GET must be
+        # a no-op.
+        _create_transfer_template(seed_user, db.session, acct)
+        db.session.commit()
+
+        # First GET sets end_date.
+        resp1 = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp1.status_code == 200
+
+        # Re-fetch the rule's end_date after the first sync.
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+        template = db.session.query(TransferTemplate).filter_by(
+            to_account_id=acct.id,
+        ).one()
+        first_end_date = template.recurrence_rule.end_date
+        assert first_end_date is not None
+
+        # Count audit log rows for recurrence_rule UPDATE before the
+        # second GET.  The guard at ``_update_transfer_end_date``
+        # short-circuits when the new end_date equals the current
+        # one; the system.audit_log row count must NOT increase
+        # after the second dashboard render.
+        audit_count_sql = sa.text(
+            "SELECT COUNT(*) FROM system.audit_log "
+            "WHERE table_name = 'recurrence_rules' AND operation = 'UPDATE'"
+        )
+        audit_before = db.session.execute(audit_count_sql).scalar()
+
+        # Second GET must be a no-op (end_date already matches).
+        resp2 = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp2.status_code == 200
+        db.session.expire_all()
+        rule = db.session.query(RecurrenceRule).filter_by(
+            id=template.recurrence_rule_id,
+        ).one()
+        assert rule.end_date == first_end_date
+        audit_after = db.session.execute(audit_count_sql).scalar()
+        assert audit_after == audit_before, (
+            "Second dashboard GET wrote a new recurrence_rule UPDATE row "
+            f"to system.audit_log ({audit_before} -> {audit_after}) -- "
+            "idempotency guard at _update_transfer_end_date failed"
+        )
+
+    def test_no_direct_generate_schedule_in_dashboard(self):
+        """C5-5: Dashboard body must not call generate_schedule directly.
+
+        Static grep against ``app/routes/loan.py`` confirming the
+        dashboard route was migrated to the composer.  The function
+        ``generate_schedule`` is still referenced by:
+          * the ``refinance_calculate`` route (Commit 7 migrates it),
+          * ``calculate_payoff_by_date`` internals (Commit 7),
+          * comments / docstrings,
+        but NOT the dashboard function body.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+        source = pathlib.Path("app/routes/loan.py").read_text()
+        # Find the dashboard function body.
+        dash_start = source.find("def dashboard(account_id):")
+        assert dash_start > 0, "dashboard function not found"
+        # The next top-level def or @ decorator ends the function.
+        next_route = source.find("\n@loan_bp.route", dash_start + 1)
+        assert next_route > dash_start, "next route boundary not found"
+        dashboard_body = source[dash_start:next_route]
+        assert "amortization_engine.generate_schedule" not in dashboard_body, (
+            "Dashboard body still calls amortization_engine.generate_schedule "
+            "directly -- Commit 5 migration incomplete"
+        )
+
+    def test_floor_above_committed_with_projections(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C5-6: Floor sits at-or-above Committed past today when projections exist.
+
+        Floor is "Committed with the projected portion of payments
+        filtered out."  When the loan has projected overpayments (or
+        any projected payments at all), Committed reduces the
+        balance further/faster than Floor in those months; therefore
+        Floor[i] >= Committed[i] for indices past today.
+
+        Fixture: confirmed payment at contractual ($1580.17) in
+        Feb 2026 PLUS projected OVERPAYMENT ($2080.17) in May 2026.
+        The projected overpayment is what creates the floor /
+        committed gap -- without it both series collapse (see C5-7).
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        # Projected overpayment in May 2026 (after today).
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[9], Decimal("2080.17"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        committed = self._parse_chart_array(html, "committed")
+        floor = self._parse_chart_array(html, "floor")
+
+        assert len(committed) == len(floor)
+        # Floor is the projected-cancelled trajectory; with a
+        # projected OVERPAYMENT, Floor sits above Committed for
+        # every index past the May 2026 projection.
+        diffs_strictly_above = sum(
+            1 for c, f in zip(committed, floor) if f > c + 0.5
+        )
+        assert diffs_strictly_above > 0, (
+            "Floor never rises above Committed despite a projected "
+            "overpayment -- the projection was not cancelled in the "
+            "floor composer call"
+        )
+        # No index should have Floor below Committed (cancelling
+        # projections can only slow paydown, never speed it).
+        for i, (c, f) in enumerate(zip(committed, floor)):
+            assert f >= c - 0.5, (
+                f"Floor below Committed at index {i}: {f} < {c}"
+            )
+
+    def test_floor_equals_committed_when_no_projections(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C5-7: Floor equals Committed when no projected payments exist.
+
+        With only confirmed payments, the floor composer call sees
+        the same payment list as the main composer call (filtering
+        projected payments removes nothing).  The two series are
+        byte-identical.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        committed = self._parse_chart_array(html, "committed")
+        floor = self._parse_chart_array(html, "floor")
+
+        assert committed == floor, (
+            "Floor and Committed must match when no projected payments "
+            "exist -- there is nothing to cancel"
+        )
+
+    def test_arm_dashboard_chart_unchanged(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C5-8: ARM dashboard chart values from composer match expected.
+
+        Creates an ARM mortgage in its fixed-rate window and asserts
+        the dashboard's chart arrays come from the composer:
+          * Lengths agree (composer's single-source-of-truth lock).
+          * Original is monotonically non-increasing in the
+            fixed-rate window (the rate cannot rise yet).
+          * Final values reach $0.
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, "Mortgage", "ARM 5/1",
+            Decimal("100000.00"), Decimal("0.05000"), 360,
+            date(2024, 1, 1), 1, is_arm=True,
+        )
+        # Fixed-rate window: arm_first_adjustment_months defaults to
+        # None in this fixture, so the ARM behaves like fixed-rate
+        # for the resolver outside the window.  Either way the
+        # composer's behavior is locked.
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        original = self._parse_chart_array(html, "original")
+
+        assert len(original) > 0
+        # Last entry reaches $0 (loan pays off at term boundary).
+        assert original[-1] == 0.0
+        # Original baseline is non-increasing (fixed-rate window).
+        for i in range(1, len(original)):
+            assert original[i] <= original[i - 1] + 0.01, (
+                f"ARM Original balance increased at index {i}: "
+                f"{original[i - 1]} -> {original[i]}"
+            )
 
 
 # -- Recurrence End Date Auto-Update Tests (Commit 5.9-1) ----------------

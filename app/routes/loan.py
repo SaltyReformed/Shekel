@@ -535,44 +535,75 @@ def dashboard(account_id):
     monthly_escrow = ctx["monthly_escrow"]
     state = ctx["state"]
     base_rate = ctx["base_rate"]
-    original_for_engine = ctx["original_for_engine"]
-    orig_principal = Decimal(str(params.original_principal))
 
     # Resolver-derived "current state" fields drive the loan card
     # (E-18 / Commit 15).  current_principal_display == /savings debt
     # card balance == net-worth liability.
     current_principal_display = state.current_balance
 
-    # PLANNED-trajectory schedule for display (Amortization Schedule
-    # tab) and "life of loan" forecasts (total interest, payoff date,
-    # recurrence end_date update).  Includes confirmed AND projected
-    # payments so the user's planned PITI transfers shape the
-    # displayed amortization.  This is intentionally separate from
-    # ``state.schedule`` (resolver's confirmed-only forward): the
-    # resolver answers "what's true now"; the planned schedule
-    # answers "what's my trajectory if every planned payment hits
-    # as scheduled."  Resolver still owns current_balance and
-    # monthly_payment so the loan card / debt card / net-worth
-    # liability cannot diverge from one another (the E-18 invariant).
-    anchor_bal_planned = state.current_balance if params.is_arm else None
-    anchor_dt_planned = date.today() if params.is_arm else None
-    planned_schedule = amortization_engine.generate_schedule(
-        orig_principal, base_rate, params.term_months,
-        origination_date=params.origination_date,
-        payment_day=params.payment_day,
-        original_principal=original_for_engine,
-        term_months=params.term_months,
+    # Anchor events feed both composer calls below.  Loaded once so
+    # the two scenarios share the same anchor (and any future trueup
+    # cannot drift between the main and floor invocations).
+    anchor_events = _load_anchor_events(account.id)
+    as_of = date.today()
+
+    # --- Single composer call drives chart, schedule, summary -----
+    # Commit 5 of the amortization-engine split: replaces the
+    # previous three direct ``generate_schedule`` calls (planned,
+    # original, floor) with two ``compute_payoff_scenarios`` calls.
+    # Chart series and summary derive from the same return value so
+    # they cannot diverge -- the structural fix documented at
+    # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``.
+    #
+    # ``scenarios_main`` consumes ALL payments (confirmed +
+    # projected) with ``extra_monthly=0``.  Its ``history_rows +
+    # committed_forward`` slice IS the planned trajectory the
+    # amortization tab, payment breakdown, schedule totals,
+    # recurrence end_date update, and summary all read.
+    scenarios_main = loan_resolver.compute_payoff_scenarios(
+        loan_params=params,
+        anchor_events=anchor_events,
         payments=payments,
         rate_changes=rate_changes,
-        anchor_balance=anchor_bal_planned,
-        anchor_date=anchor_dt_planned,
+        extra_monthly=Decimal("0.00"),
+        as_of=as_of,
+    )
+
+    # ``scenarios_floor`` re-uses the composer with the projected
+    # portion of ``payments`` filtered out.  Its
+    # ``committed_forward`` is therefore "pure contractual from
+    # balance_as_of" -- the floor's semantic of "where I stand if
+    # I cancel all extras today."  When no projected payments
+    # exist, floor and committed collapse to the same series.
+    confirmed_payments = [p for p in payments if p.is_confirmed]
+    scenarios_floor = loan_resolver.compute_payoff_scenarios(
+        loan_params=params,
+        anchor_events=anchor_events,
+        payments=confirmed_payments,
+        rate_changes=rate_changes,
+        extra_monthly=Decimal("0.00"),
+        as_of=as_of,
+    )
+
+    # PLANNED-trajectory schedule for display (Amortization Schedule
+    # tab) and "life of loan" forecasts (total interest, payoff
+    # date, recurrence end_date update).  Composed from
+    # ``scenarios_main``: real confirmed history + projected /
+    # contractual forward.  Resolver still owns current_balance and
+    # monthly_payment so the loan card / debt card / net-worth
+    # liability cannot diverge (the E-18 invariant).
+    planned_schedule = (
+        scenarios_main.history_rows + scenarios_main.committed_forward
     )
 
     # Build AmortizationSummary for the template / end_date update:
     # monthly_payment from the resolver (single source of truth);
     # total_interest / payoff_date from the planned schedule so the
     # "Total Interest (life of loan)" and "Projected Payoff" cards
-    # reflect the user's planned trajectory.
+    # reflect the user's full trajectory (history + forward).  The
+    # composer's ``total_interest_committed`` covers the forward
+    # slice only; summing over ``planned_schedule`` adds back the
+    # history-row interest the dashboard has always displayed.
     planned_total_interest = sum(
         (row.interest for row in planned_schedule), Decimal("0.00"),
     )
@@ -602,58 +633,40 @@ def dashboard(account_id):
     )
 
     # --- Multi-scenario chart data ---
-    # All schedules start from origination with original_principal so
-    # payment records are matched by the engine's year-month lookup.
-    # This matches the year-end service pattern and ensures confirmed
-    # payments produce correct balances and chart trajectories.
-    # Commit 17 will collapse these direct ``generate_schedule`` calls
-    # into the resolver too; for now the base-rate input from the
-    # resolver context drives the same chart layout.
+    # All three series share ``history_rows`` and then diverge:
+    #   Original   = history + original_forward
+    #                (pure contractual from balance_as_of forward)
+    #   Committed  = history + committed_forward
+    #                (planned outlays via monthly_override)
+    #   Floor      = floor_history + floor_committed_forward
+    #                (committed with projections cancelled)
+    # Chart labels are taken from the Original series because it is
+    # the longest baseline (no override, no extra means contractual
+    # all the way to term end); Committed and Floor may pay off
+    # earlier but render against the same x-axis with shorter
+    # arrays.  ``_balances_for_chart`` pads with $0.00 so Chart.js
+    # plots equal-length arrays.
+    original_rows = scenarios_main.history_rows + scenarios_main.original_forward
+    committed_rows = scenarios_main.history_rows + scenarios_main.committed_forward
+    floor_rows = scenarios_floor.history_rows + scenarios_floor.committed_forward
+    target_len = len(original_rows)
 
-    # Original schedule: contractual baseline, no payments, no rate
-    # changes.  "What the bank expects."
-    original_schedule = amortization_engine.generate_schedule(
-        orig_principal, base_rate, params.term_months,
-        origination_date=params.origination_date,
-        payment_day=params.payment_day,
-        original_principal=original_for_engine,
-        term_months=params.term_months,
-    )
-    chart_labels, chart_original = _build_chart_data(original_schedule)
+    chart_labels = [
+        row.payment_date.strftime("%b %Y") for row in original_rows
+    ]
+    chart_original = _balances_for_chart(original_rows, target_len)
 
-    # Committed schedule: the planned schedule reflects all
-    # payments (confirmed + projected) and rate changes -- the
-    # "what I'm planning" curve for the chart.
+    # Committed and Floor render empty when the loan has no payments
+    # (the JS overlays just Original).  Preserves the pre-Commit-5
+    # dashboard behavior where chart_committed / chart_floor were
+    # set conditionally on ``has_payments``.
     has_payments = len(payments) > 0
     if has_payments:
-        _, chart_committed = _build_chart_data(planned_schedule)
+        chart_committed = _balances_for_chart(committed_rows, target_len)
+        chart_floor = _balances_for_chart(floor_rows, target_len)
     else:
         chart_committed = []
-
-    # Floor schedule: confirmed payments only, standard payments
-    # forward.  "Where I stand if I cancel all extras today."
-    # ARM anchor is the resolver-derived current balance, ensuring
-    # the floor projects from the same dollar figure the loan card
-    # displays (E-18: one balance per loan).
-    chart_floor = []
-    if has_payments:
-        confirmed_payments = [p for p in payments if p.is_confirmed]
-        floor_anchor_bal = (
-            state.current_balance if params.is_arm else None
-        )
-        floor_anchor_dt = date.today() if params.is_arm else None
-        floor_schedule = amortization_engine.generate_schedule(
-            orig_principal, base_rate, params.term_months,
-            origination_date=params.origination_date,
-            payment_day=params.payment_day,
-            original_principal=original_for_engine,
-            term_months=params.term_months,
-            payments=confirmed_payments if confirmed_payments else None,
-            rate_changes=rate_changes,
-            anchor_balance=floor_anchor_bal,
-            anchor_date=floor_anchor_dt,
-        )
-        _, chart_floor = _build_chart_data(floor_schedule)
+        chart_floor = []
 
     # Recurring payment transfer prompt: show when LoanParams exist
     # but no active recurring transfer template targets this account.
