@@ -1710,8 +1710,19 @@ have the template/Jinja consume the Decimal directly.  Eliminate the
 
 - **Surfaced during:** Commit 8 of the follow-up plan (F-14 defense-
   in-depth filter on `hard_delete_transfer_template`).
-- **Status:** not started; baseline pylint `duplicate-code` finding
-  predates the audit chain.
+- **Status:** resolved by Commit 2 of
+  `remediation_follow_up_F24_F25_F26_plan.md`
+  (`refactor(routes): extract recurrence-rule and stale-conflict
+  helpers for templates/transfers (F-24)`).  Two new helpers in
+  `app/routes/_recurrence_form_helpers.py`
+  (`build_recurrence_rule_from_form`, `handle_stale_conflict`)
+  close all 9 pre-extraction R0801 pairs the entry named (plus 6
+  wider stale-conflict variations folded in per the plan's
+  R-FU-3 scope addition).  The existing-rule mutation branch in
+  `update_template` / `update_transfer_template` stays inline per
+  the plan's Section 2 design decision (extracting it would
+  replace nine `setattr`-style assignments with a helper whose
+  body is identical to the inline form).
 
 ### Problem
 
@@ -1791,8 +1802,18 @@ routes and can become a module-level format string consumed by both.
   (`chore(release): follow-up final gate`), gate-time pylint run after
   Commit 21 split the historical monolithic `app/routes/accounts.py`
   into a per-sub-domain package.
-- **Status:** not started; accepted technical debt unless / until the
-  blueprint layout is redesigned.
+- **Status:** resolved by Commit 1 of
+  `remediation_follow_up_F24_F25_F26_plan.md`
+  (`refactor(routes): move accounts_bp to dedicated module to break
+  import cycle (F-25)`).  The blueprint declaration moved to a leaf
+  module `app/routes/accounts/_bp.py`; each per-sub-domain
+  submodule imports the blueprint from there directly, breaking
+  the package <-> submodule round-trip pylint flagged.  The
+  package init re-exports the symbol so consumers that do
+  `from app.routes.accounts import accounts_bp` (notably
+  `app/__init__.py`'s factory-time registration) resolve without
+  an edit.  The re-export contract is pinned by
+  `tests/test_routes/test_accounts.py::TestAccountsBlueprintReExport::test_package_reexports_same_blueprint_instance`.
 
 ### Problem
 
@@ -1856,12 +1877,25 @@ refactor in this package would benefit from breaking the cycle.
 
 ## F-26. Residual R0801 duplicates between `templates.py` and `transfers.py` beyond F-24's scope
 
-- **Surfaced during:** Commit 2 of `remediation_follow_up_F24_F25_plan.md`
+- **Surfaced during:** Commit 2 of `remediation_follow_up_F24_F25_F26_plan.md`
   (`refactor(routes): extract recurrence-rule and stale-conflict
   helpers for templates/transfers (F-24)`), gate-time
   `pylint --disable=all --enable=R0801` run.
-- **Status:** not started; accepted technical debt unless / until a
-  follow-up commit extracts the remaining shared shapes.
+- **Status:** partially resolved by Commit 3 of
+  `remediation_follow_up_F24_F25_F26_plan.md`
+  (`refactor(routes): extract stale-form and recurrence-conflict
+  helpers for templates/transfers (F-26 partial)`).  Pairs 1
+  (stale-form check, optimistic-locking version_id mismatch) and
+  2 (RecurrenceConflict logger.warning + flash) are closed via
+  two new helpers in `app/routes/_recurrence_form_helpers.py`
+  (`handle_stale_form_conflict`, `handle_recurrence_conflict`).
+  Pairs 3, 4, 5 (list-rendering shapes) and pair 6 (hard-delete
+  archive-fallback body wrapping) are explicitly deferred per
+  the plan's Section 9 with acceptance criteria for the eventual
+  cleanup PR.  Each deferred pair needs its own design
+  discussion (different abstraction for list rendering;
+  model-specific soft-delete callable for the archive-fallback
+  body) that did not fit the F-26 commit's scope.
 
 ### Problem
 
