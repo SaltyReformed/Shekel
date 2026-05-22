@@ -362,19 +362,39 @@ class TestScanEmptyOnCleanDatabase:
     def test_run_cli_exits_zero_on_clean_database(self, app, db):  # pylint: disable=unused-argument,redefined-outer-name
         """``run_cli`` returns 0 against a clean test DB.
 
-        ``run_cli`` builds its own Flask app via ``create_app()``,
-        which on CI defaults to ``DevConfig`` (FLASK_ENV unset) and
-        would otherwise try to reach a local Unix socket.  Pass the
-        per-worker DB URL through the documented ``--database-url``
-        override so the CLI's app construction targets the same
-        database the fixture session is bound to.  Asserting exit 0
-        covers the success path; a failed connection would return 3
-        per the script's documented exit codes.
+        Invoke the CLI as a subprocess rather than calling ``run_cli``
+        in-process.  ``app.config.DevConfig.SQLALCHEMY_DATABASE_URI``
+        is a class attribute resolved at module import time, so in
+        an already-imported-app process (i.e., this test runner) a
+        late ``os.environ["DATABASE_URL"] = ...`` inside ``run_cli``
+        does not influence the cached config.  Running the script
+        as a child process is the script's documented invocation
+        pattern: env is set before ``import app``, the class
+        attribute resolves correctly, and the per-worker DB is the
+        one actually scanned.  Asserting exit 0 covers the success
+        path; the script returns 3 on connection failure.
         """
-        # ``app`` fixture is already inside an app context; ``run_cli``
-        # creates its own and pops it cleanly.
-        exit_code = run_cli(database_url=app.config["SQLALCHEMY_DATABASE_URI"])
-        assert exit_code == 0
+        import subprocess  # pylint: disable=import-outside-toplevel
+        import sys  # pylint: disable=import-outside-toplevel
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+        repo_root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "scan_destroyed_received_history.py"),
+                "--database-url",
+                app.config["SQLALCHEMY_DATABASE_URI"],
+            ],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        assert result.returncode == 0, (
+            f"scan_destroyed CLI exited {result.returncode}; "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
 
 
 # ── Report formatting & aggregation ─────────────────────────────
