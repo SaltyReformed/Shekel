@@ -78,6 +78,8 @@ from app.services.amortization_engine import (
     calculate_monthly_payment,
     calculate_remaining_months,
     generate_schedule,
+    project_forward,
+    replay_confirmed_history,
 )
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
@@ -123,6 +125,79 @@ class LoanState:
     schedule: list[AmortizationRow]
     payoff_date: date
     total_interest: Decimal
+
+
+@dataclass(frozen=True)
+class PayoffScenarios:
+    """Single-return-value bundle for the Payoff Calculator's three scenarios.
+
+    Frozen because the composer returns a snapshot the caller renders;
+    every consumer (chart series + summary card) reads from one
+    instance, so chart and summary cannot diverge by construction.
+    The architectural fix this snapshot implements is documented at
+    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``;
+    chart-summary divergence was the failure mode that motivated the
+    split.
+
+    All three forward slices start from the same
+    ``(starting_balance, starting_date, remaining_months,
+    applicable_rate)`` tuple produced by a single
+    :func:`replay_confirmed_history` call; they differ only in
+    ``monthly_override`` and ``extra_monthly``.  Chart rendering is
+    ``history_rows + <slice>_forward``; the prefix is byte-identical
+    across slices because replay returns the same row list.
+
+    Attributes:
+        history_rows: Confirmed-payment rows from origination (or the
+            latest anchor) through ``as_of``.  Every row carries
+            ``is_confirmed=True``.  Empty when no confirmed payments
+            exist at or before ``as_of``.
+        original_forward: Pure contractual amortization from
+            ``replay.balance_as_of`` forward -- no override, no
+            extra.  Models "what the lender would amortize the
+            remaining balance to" if the user paid exactly the
+            contractual P&I every month.
+        committed_forward: Contractual amortization with projected
+            transfers routed through ``monthly_override`` -- the
+            user's planned outlay, no acceleration.
+        accelerated_forward: ``committed_forward`` plus
+            ``extra_monthly`` applied to every non-override month.
+            Override months ignore extra -- the load-bearing
+            distinction that makes the "extra applied to ghost
+            historical months" bug structurally impossible (no row
+            of any forward slice has a payment_date at or before the
+            last replay row).
+        months_saved: ``len(committed_forward) - len(accelerated_forward)``.
+            Number of payments avoided by paying ``extra_monthly`` per
+            non-override month.  Zero when ``extra_monthly == 0`` or
+            when the schedules pay off at the same month boundary.
+        interest_saved: ``round_money(sum(committed.interest) -
+            sum(accelerated.interest))``.  Total interest avoided by
+            the acceleration.  Zero or negative is meaningful (a
+            negative value would indicate a corner case where extra
+            slightly increases total interest -- not expected under
+            normal inputs).
+        payoff_date_committed: ``committed_forward[-1].payment_date``
+            or ``as_of`` when the slice is empty.  The date the loan
+            reaches zero under the planned-payment scenario.
+        payoff_date_accelerated: ``accelerated_forward[-1].payment_date``
+            or ``as_of`` when the slice is empty.
+        total_interest_committed: Life-of-remaining-loan interest under
+            the committed scenario, rounded via ``round_money``.
+            Excludes ``history_rows`` (already paid).
+        total_interest_accelerated: Same for the accelerated scenario.
+    """
+
+    history_rows: list[AmortizationRow]
+    original_forward: list[AmortizationRow]
+    committed_forward: list[AmortizationRow]
+    accelerated_forward: list[AmortizationRow]
+    months_saved: int
+    interest_saved: Decimal
+    payoff_date_committed: date
+    payoff_date_accelerated: date
+    total_interest_committed: Decimal
+    total_interest_accelerated: Decimal
 
 
 def _select_latest_anchor(anchor_events: list) -> object:
@@ -646,4 +721,358 @@ def resolve_loan(
         schedule=schedule,
         payoff_date=payoff_date,
         total_interest=round_money(total_interest_full),
+    )
+
+
+def _build_monthly_override(
+    payments: list[PaymentRecord],
+    as_of: date,
+) -> dict[tuple[int, int], Decimal]:
+    """Group projection-eligible payments into a (year, month) sum.
+
+    The composer routes two payment classes through
+    ``project_forward``'s ``monthly_override``:
+
+    * Every projected (``is_confirmed=False``) payment regardless of
+      date.  These are the user's planned future outlays from
+      recurring transfer templates; they belong on the forward side
+      because they have not actually happened yet.
+    * Confirmed payments dated strictly after ``as_of``.  Rare data
+      hygiene case (a user marked a future payment as settled);
+      treated as a projection so the replay window stops cleanly at
+      ``as_of`` and the forward slice picks the payment up.
+
+    Payments with multiple entries in the same calendar month are
+    summed so the override map is a "total planned outlay for this
+    month" view -- matching how ``project_forward`` consumes it.
+
+    Args:
+        payments: The full prepared payment list, typically from
+            :func:`app.services.loan_payment_service.prepare_payments_for_engine`.
+            Mixed confirmed/projected; the function filters
+            internally.
+        as_of: Cutoff date used to separate replay history from
+            forward projection.  Confirmed payments at or before
+            ``as_of`` are consumed by replay and excluded here.
+
+    Returns:
+        A dict mapping ``(year, month) -> Decimal`` total payment.
+        Empty dict when no projection-eligible payment exists.
+    """
+    override: dict[tuple[int, int], Decimal] = {}
+    for payment in payments:
+        # Confirmed payments at or before as_of belong to replay,
+        # not projection -- exclude them.  Everything else
+        # (projected payments + confirmed payments past as_of) is a
+        # forward-only concept.
+        if payment.is_confirmed and payment.payment_date <= as_of:
+            continue
+        key = (payment.payment_date.year, payment.payment_date.month)
+        override[key] = override.get(key, ZERO_MONEY) + payment.amount
+    return override
+
+
+def _remaining_rate_changes(
+    rate_changes: list[RateChangeRecord] | None,
+    next_pay_date: date,
+) -> list[RateChangeRecord]:
+    """Filter ``rate_changes`` to entries effective at or after ``next_pay_date``.
+
+    ``project_forward``'s ARM behavior only needs rate transitions
+    that fire within its window.  Replay consumes the pre-window
+    transitions internally to compute ``applicable_rate_as_of``,
+    which is then the projection's starting rate, so passing
+    already-consumed transitions to projection would be wasted work
+    (and a future-defensive guard against double-applying a
+    transition at the replay/projection boundary).
+
+    Args:
+        rate_changes: Optional full rate-change history (possibly
+            unsorted).  ``None`` or empty is treated as "no remaining
+            transitions."
+        next_pay_date: First payment_date of the forward projection
+            (replay's ``next_pay_date``).  Entries strictly before
+            this date are dropped.
+
+    Returns:
+        A list of :class:`RateChangeRecord` whose ``effective_date``
+        is at or after ``next_pay_date``.  Empty list when no entry
+        qualifies.
+    """
+    if not rate_changes:
+        return []
+    return [
+        change for change in rate_changes
+        if change.effective_date >= next_pay_date
+    ]
+
+
+def _contractual_payment_for_projection(
+    loan_params,
+    base_rate: Decimal,
+    replay_balance_as_of: Decimal,
+    replay_applicable_rate: Decimal,
+    replay_remaining_months: int,
+) -> Decimal:
+    """Return the contractual P&I baseline ``project_forward`` should use.
+
+    For fixed-rate loans the contractual payment is the original
+    amortization of ``original_principal`` over ``term_months`` at
+    ``base_rate`` -- constant for the life of the loan, matching the
+    resolver's existing fixed-rate behavior
+    (``_compute_monthly_payment`` lines 469-475).  Pre-payments
+    accelerate the payoff date rather than shrinking the monthly
+    payment.
+
+    For ARM loans the contractual is the re-amortized payment at
+    ``as_of``: remaining balance over remaining months at the
+    applicable rate.  This matches the resolver's ARM-outside-window
+    branch and is correct as the projection's starting baseline --
+    ARM rate transitions inside ``project_forward`` will recompute
+    this as transitions fire.
+
+    Args:
+        loan_params: Loan parameter object exposing ``is_arm``,
+            ``original_principal``, ``term_months``.
+        base_rate: Loan's original interest rate as Decimal.
+        replay_balance_as_of: ``ReplayResult.balance_as_of`` -- the
+            outstanding balance at the projection's start.
+        replay_applicable_rate: ``ReplayResult.applicable_rate_as_of``.
+        replay_remaining_months: ``ReplayResult.remaining_months_as_of``.
+
+    Returns:
+        Decimal contractual P&I payment.  ``Decimal("0.00")`` when
+        the loan has no principal or no remaining months (handled by
+        ``calculate_monthly_payment``'s guard).
+    """
+    is_arm = bool(getattr(loan_params, "is_arm", False))
+    if is_arm:
+        return calculate_monthly_payment(
+            replay_balance_as_of,
+            replay_applicable_rate,
+            replay_remaining_months,
+        )
+    return calculate_monthly_payment(
+        Decimal(str(loan_params.original_principal)),
+        base_rate,
+        loan_params.term_months,
+    )
+
+
+def compute_payoff_scenarios(
+    *,
+    loan_params,
+    anchor_events: list,
+    payments: list[PaymentRecord] | None,
+    rate_changes: list[RateChangeRecord] | None,
+    extra_monthly: Decimal,
+    as_of: date,
+) -> PayoffScenarios:
+    """Single source of truth for the Payoff Calculator's three scenarios.
+
+    Calls :func:`replay_confirmed_history` ONCE to derive a
+    deterministic-past slice plus the starting state, then calls
+    :func:`project_forward` THREE times from the same starting
+    ``(balance, date, remaining_months, rate)`` tuple, differing only
+    in ``monthly_override`` and ``extra_monthly``.  The chart series
+    (Original / Committed / Accelerated) and the summary metrics
+    (months_saved, interest_saved, payoff dates, life-of-remaining-
+    loan interest) all derive from the single return value, so chart
+    and summary cannot diverge.
+
+    Routes projected payments forward through ``monthly_override``
+    instead of relying on the engine's "apply extra when no payment
+    record exists" convention -- the architectural fix for the
+    "extra applied to ghost historical months" bug documented at
+    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``.
+    Override months never receive ``extra_monthly``; non-override
+    months always do (when extra is non-zero).  This makes the buggy
+    parameter combination structurally inexpressible.
+
+    Algorithm:
+
+    1. Pick the latest :class:`LoanAnchorEvent` from
+       ``anchor_events`` (same selector the resolver uses).
+    2. For ARM loans, pass the anchor balance + date to replay so the
+       running balance snaps to the verified value at ``anchor_date``.
+       Fixed-rate loans do not snap (the origination anchor's
+       balance equals ``original_principal`` so the snap would be a
+       no-op anyway; explicit None is clearer).
+    3. Filter ``payments`` to confirmed entries with
+       ``payment_date <= as_of``; the rest become forward overrides
+       (see :func:`_build_monthly_override`).
+    4. Replay produces ``history_rows``, ``balance_as_of``,
+       ``next_pay_date``, ``remaining_months_as_of``,
+       ``applicable_rate_as_of``.
+    5. Three forward projections share that starting state.  Their
+       contractual P&I is derived once via
+       :func:`_contractual_payment_for_projection`; rate-change
+       remainders (transitions effective at or after
+       ``next_pay_date``) are passed to all three so ARM behavior is
+       consistent across the trio.
+    6. Summary metrics derive from the same forward slices --
+       ``months_saved`` is a length diff, ``interest_saved`` is a
+       row-sum diff.
+
+    Args:
+        loan_params: A :class:`LoanParams`-shaped object exposing
+            ``origination_date`` (date), ``term_months`` (int),
+            ``original_principal`` (Decimal/str), ``interest_rate``
+            (Decimal/str), ``payment_day`` (int), ``is_arm`` (bool),
+            and (for ARM) ``arm_first_adjustment_months`` (int |
+            None).  Duck-typed test fixtures work unchanged.
+        anchor_events: Non-empty list of LoanAnchorEvent-shaped
+            objects (``anchor_date``, ``anchor_balance``,
+            ``created_at``).  Commit-12's origination backfill
+            guarantees at least one event per loan; an empty list
+            raises a ValueError via ``_select_latest_anchor``.
+        payments: Prepared list of :class:`PaymentRecord` (typically
+            from
+            :func:`app.services.loan_payment_service.prepare_payments_for_engine`).
+            May be ``None`` or empty.  The composer separates
+            confirmed-pre-as_of (replay) from everything else
+            (override) internally.
+        rate_changes: Optional ARM rate transitions.  ``None`` or
+            empty for fixed-rate loans.  Replay consumes
+            pre-``next_pay_date`` entries; the composer slices the
+            remainder for projection.
+        extra_monthly: Additional principal payment applied to every
+            non-override month in the accelerated scenario.  ``0``
+            collapses the accelerated slice to the committed slice
+            (``months_saved == 0``, ``interest_saved == 0``).
+        as_of: Evaluation date.  The replay/projection boundary.
+            Typically ``date.today()`` from the route.
+
+    Returns:
+        A :class:`PayoffScenarios` with the three forward slices and
+        the four summary metrics.
+
+    Raises:
+        ValueError: When ``anchor_events`` is empty (via
+            ``_select_latest_anchor``).
+    """
+    anchor = _select_latest_anchor(anchor_events)
+    is_arm = bool(getattr(loan_params, "is_arm", False))
+    base_rate = Decimal(str(loan_params.interest_rate))
+    orig_principal = Decimal(str(loan_params.original_principal))
+
+    # ARM anchors snap replay's running balance to the verified value
+    # at anchor_date; fixed-rate loans do not snap (the origination
+    # anchor is a no-op snap, and a hypothetical fixed-rate trueup
+    # is the F-8 follow-up).  This mirrors the resolver's
+    # is_arm-gated anchor passthrough (resolve_loan lines 589-596).
+    if is_arm:
+        replay_anchor_balance: Decimal | None = Decimal(
+            str(anchor.anchor_balance)
+        )
+        replay_anchor_date: date | None = anchor.anchor_date
+    else:
+        replay_anchor_balance = None
+        replay_anchor_date = None
+
+    # Replay consumes confirmed payments at or before as_of.  An
+    # unconfirmed payment (Projected status) is a future commitment,
+    # not a historical fact, so it must not reduce the replayed
+    # balance.  Confirmed payments past as_of are routed through
+    # monthly_override below.
+    confirmed_for_replay = [
+        payment
+        for payment in (payments or [])
+        if payment.is_confirmed and payment.payment_date <= as_of
+    ]
+
+    replay = replay_confirmed_history(
+        origination_date=loan_params.origination_date,
+        original_principal=orig_principal,
+        annual_rate=base_rate,
+        term_months=loan_params.term_months,
+        payment_day=loan_params.payment_day,
+        confirmed_payments=confirmed_for_replay,
+        rate_changes=rate_changes,
+        anchor_balance=replay_anchor_balance,
+        anchor_date=replay_anchor_date,
+        as_of=as_of,
+    )
+
+    monthly_override = _build_monthly_override(payments or [], as_of)
+    rate_changes_remaining = _remaining_rate_changes(
+        rate_changes, replay.next_pay_date,
+    )
+    contractual = _contractual_payment_for_projection(
+        loan_params,
+        base_rate,
+        replay.balance_as_of,
+        replay.applicable_rate_as_of,
+        replay.remaining_months_as_of,
+    )
+
+    # All three forward slices share starting state; only override
+    # presence and extra_monthly vary.  The architectural plan's
+    # critical regression-prevention property -- chart and summary
+    # cannot diverge -- is enforced HERE by funnelling all three
+    # through the same primitive call shape.
+    projection_kwargs = {
+        "starting_balance": replay.balance_as_of,
+        "starting_date": replay.next_pay_date,
+        "annual_rate": replay.applicable_rate_as_of,
+        "remaining_months": replay.remaining_months_as_of,
+        "payment_day": loan_params.payment_day,
+        "contractual_payment": contractual,
+        "rate_changes_remaining": (
+            rate_changes_remaining if rate_changes_remaining else None
+        ),
+    }
+    override_for_projection = monthly_override if monthly_override else None
+
+    original_forward = project_forward(
+        **projection_kwargs,
+        monthly_override=None,
+        extra_monthly=ZERO_MONEY,
+    )
+    committed_forward = project_forward(
+        **projection_kwargs,
+        monthly_override=override_for_projection,
+        extra_monthly=ZERO_MONEY,
+    )
+    accelerated_forward = project_forward(
+        **projection_kwargs,
+        monthly_override=override_for_projection,
+        extra_monthly=extra_monthly,
+    )
+
+    # Summary metrics derive from the same forward slices the chart
+    # plots -- the load-bearing single-source-of-truth guarantee.
+    months_saved = len(committed_forward) - len(accelerated_forward)
+    total_interest_committed_full = sum(
+        (row.interest for row in committed_forward), ZERO_MONEY,
+    )
+    total_interest_accelerated_full = sum(
+        (row.interest for row in accelerated_forward), ZERO_MONEY,
+    )
+    interest_saved_full = (
+        total_interest_committed_full - total_interest_accelerated_full
+    )
+
+    payoff_date_committed = (
+        committed_forward[-1].payment_date
+        if committed_forward else as_of
+    )
+    payoff_date_accelerated = (
+        accelerated_forward[-1].payment_date
+        if accelerated_forward else as_of
+    )
+
+    return PayoffScenarios(
+        history_rows=replay.rows,
+        original_forward=original_forward,
+        committed_forward=committed_forward,
+        accelerated_forward=accelerated_forward,
+        months_saved=months_saved,
+        interest_saved=round_money(interest_saved_full),
+        payoff_date_committed=payoff_date_committed,
+        payoff_date_accelerated=payoff_date_accelerated,
+        total_interest_committed=round_money(total_interest_committed_full),
+        total_interest_accelerated=round_money(
+            total_interest_accelerated_full
+        ),
     )
