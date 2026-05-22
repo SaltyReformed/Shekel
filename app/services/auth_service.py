@@ -15,7 +15,7 @@ import hashlib
 import logging
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import bcrypt
@@ -25,8 +25,11 @@ from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.user import User, UserSettings
-from app.models.account import Account
+# Account / AccountAnchorHistory are not imported at module level;
+# the canonical factory in ``app.services.account_service`` materializes
+# both and is the only acceptable creation path post-E-19.
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.ref import FilingStatus, TaxType
 from app.models.scenario import Scenario
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
@@ -776,15 +779,41 @@ def register_user(email, password, display_name):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Create default checking account.
+    # Bootstrap pay period (E-19, Commit 3).  The default Checking
+    # account's anchor columns are NOT NULL (migration cfb15e782f86),
+    # so an account cannot exist without a pay period to point at.
+    # The user's actual pay schedule is captured later via
+    # /pay-periods/generate, which appends additional periods starting
+    # at ``max(period_index) + 1``; this bootstrap takes period_index 0
+    # and is preserved so the anchor reference stays valid.  Start
+    # date is today and cadence is the project-default 14 days so the
+    # grid shows a current-period balance immediately after sign-up.
+    today = date.today()
+    bootstrap_period = PayPeriod(
+        user_id=user.id,
+        start_date=today,
+        end_date=today + timedelta(days=13),
+        period_index=0,
+    )
+    db.session.add(bootstrap_period)
+    db.session.flush()
+
+    # Default Checking account via the canonical factory (E-19): the
+    # service writes both anchor columns + a matching origination
+    # AccountAnchorHistory row in one call, so the contract is
+    # enforced in exactly one place across every Account-creating
+    # path (this service, the /accounts route, scripts, fixtures).
+    # Decimal("0.00") is a real value per E-12, not "missing".
+    from app.services import account_service  # pylint: disable=import-outside-toplevel
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    account = Account(
+    account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type_id,
         name="Checking",
-        current_anchor_balance=0,
+        anchor_balance=Decimal("0.00"),
+        anchor_period_id=bootstrap_period.id,
+        notes="origination (sign-up)",
     )
-    db.session.add(account)
 
     # Create baseline scenario.
     scenario = Scenario(user_id=user.id, name="Baseline", is_baseline=True)

@@ -48,6 +48,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import pay_period_service, transfer_service
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -167,11 +168,11 @@ def _make_discrete_txn(seed_user, period, template):
 def _make_savings_account(seed_user):
     """Create a Savings account for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="CFP Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(acct)
     db.session.flush()

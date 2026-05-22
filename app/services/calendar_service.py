@@ -26,12 +26,37 @@ from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_calculator
 from app.services.account_resolver import resolve_analytics_account
+from app.services.balance_resolver import balance_as_of_date
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import (
+    balance_contributing_clause,
+    is_balance_contributing,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class CalendarAccountNotResolvableError(LookupError):
+    """Raised when the calendar cannot resolve a backing account or scenario.
+
+    After Commits 3-8 of the main remediation locked the E-19 / CRIT-01
+    invariant ("anchor is never NULL; ``resolve_anchor`` raises or
+    returns a valid ``AnchorPoint``"), an ``account is None`` /
+    ``scenario is None`` outcome from
+    :func:`~app.services.account_resolver.resolve_analytics_account` or
+    :func:`~app.services.scenario_resolver.get_baseline_scenario`
+    indicates an *upstream* defect (deleted analytics account, missing
+    baseline scenario), not a normal "empty calendar" state.  Pre-F-2
+    the service silently substituted a zeroed :class:`MonthSummary` /
+    :class:`YearOverview`, which masked the upstream bug behind a
+    ``$0.00`` calendar shown to the user with no error.  Raising
+    instead lets the route layer answer with the project-standard 404
+    ("404 for both 'not found' and 'not yours'", see
+    :mod:`app.utils.auth_helpers`).
+    """
+
 
 # Recurrence patterns considered "infrequent" -- less frequent than monthly.
 _INFREQUENT_PATTERNS = frozenset({
@@ -113,11 +138,17 @@ def get_month_detail(
     """
     account = resolve_analytics_account(user_id, account_id)
     if account is None:
-        return _empty_month(year, month)
+        raise CalendarAccountNotResolvableError(
+            f"Analytics account not resolvable for user_id={user_id} "
+            f"account_id={account_id} year={year} month={month}",
+        )
 
     scenario = get_baseline_scenario(user_id)
     if scenario is None:
-        return _empty_month(year, month)
+        raise CalendarAccountNotResolvableError(
+            f"Baseline scenario not resolvable for user_id={user_id} "
+            f"year={year} month={month}",
+        )
 
     first_day = date(year, month, 1)
     last_day = date(year, month, calendar.monthrange(year, month)[1])
@@ -155,11 +186,17 @@ def get_year_overview(
     """
     account = resolve_analytics_account(user_id, account_id)
     if account is None:
-        return _empty_year(year)
+        raise CalendarAccountNotResolvableError(
+            f"Analytics account not resolvable for user_id={user_id} "
+            f"account_id={account_id} year={year}",
+        )
 
     scenario = get_baseline_scenario(user_id)
     if scenario is None:
-        return _empty_year(year)
+        raise CalendarAccountNotResolvableError(
+            f"Baseline scenario not resolvable for user_id={user_id} "
+            f"year={year}",
+        )
 
     first_day = date(year, 1, 1)
     last_day = date(year, 12, 31)
@@ -208,6 +245,17 @@ def _query_transactions_for_range(
 
     Eager-loads category, status, template -> recurrence_rule, and
     pay_period to prevent N+1 queries downstream.
+
+    Per F-3 / HIGH-02 / W-065, the row-set is constrained by
+    :func:`~app.utils.balance_predicates.balance_contributing_clause`
+    (``is_deleted=False AND status_id NOT IN (Credit, Cancelled)``)
+    rather than the prior inline ``is_deleted=False``-only gate.  This
+    is the locked Choice-2 semantic from
+    ``remediation_follow_up_plan.md`` Section 2: calendar day cells
+    display realized payments at their settled date, so the predicate
+    is "balance-contributing" (Projected + Settled, excludes Credit and
+    Cancelled) -- intentionally wider than the grid period subtotal's
+    Projected-only predicate.  The two surfaces diverge by design.
     """
     overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]
@@ -225,7 +273,7 @@ def _query_transactions_for_range(
         .filter(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
-            Transaction.is_deleted.is_(False),
+            balance_contributing_clause(),
             or_(
                 Transaction.due_date.between(first_day, last_day),
                 Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(
@@ -278,6 +326,18 @@ def _assign_transactions_to_days(
     Returns the day_map, total_income, and total_expenses for the
     target month.  Deduplicates by transaction ID to prevent
     double-counting when periods overlap month boundaries.
+
+    Per F-3 / W-065, every transaction is re-checked against
+    :func:`~app.utils.balance_predicates.is_balance_contributing`
+    before being assigned to a day.  This is the belt-and-suspenders
+    half of the locked Choice-2 predicate: the SQL filter in
+    :func:`_query_transactions_for_range` already constrains the row
+    set, but reapplying the Python predicate here ensures a future
+    regression that drops the SQL filter alone (or routes a different
+    query into this helper) cannot leak Cancelled / Credit rows into
+    the day-cell display.  ``is_balance_contributing`` is generated
+    from the same ``ref_cache`` accessors as the SQL clause so the
+    two predicates cannot disagree.
     """
     threshold = Decimal(str(large_threshold))
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
@@ -289,6 +349,8 @@ def _assign_transactions_to_days(
 
     for txn in transactions:
         if txn.id in seen_ids:
+            continue
+        if not is_balance_contributing(txn):
             continue
         display_day = _get_display_day(txn, month, year)
         if display_day is None:
@@ -436,81 +498,36 @@ def _compute_month_end_balance(
     account: Account,
     year: int,
     month: int,
-    user_id: int,
+    user_id: int,  # pylint: disable=unused-argument
     scenario: Scenario,
 ) -> Decimal:
-    """Compute the projected balance at the end of the given month.
+    """Project the checking balance at the true calendar month-end (E-27).
 
-    Finds the last pay period whose end_date is in or before the target
-    month-end, runs the balance calculator, and returns the projected
-    end balance for that period.  Returns Decimal("0") if no suitable
-    period or anchor exists.
+    Routes through :func:`~app.services.balance_resolver.balance_as_of_date`
+    at the actual last day of the month.  This is the HIGH-02 / W-277
+    fix: pre-remediation the calendar walked a separate code path
+    that (a) selected the last pay period whose ``end_date`` was on or
+    before the calendar month-end (up to ~13 days stale when the
+    period straddled the month boundary) and (b) issued a transaction
+    query without ``selectinload(Transaction.entries)``, silently
+    degrading to ``effective_amount`` (the F-009 seam on a second
+    surface).  Both defects collapse into the single canonical
+    "balance as of date D" producer.
+
+    Args:
+        account: The :class:`~app.models.account.Account` to summarize.
+        year: Target calendar year.
+        month: Target calendar month (1-12).
+        user_id: The user's id.  Unused after the route through
+            ``balance_as_of_date`` (the producer reads
+            ``account.user_id`` directly); retained in the signature
+            so :func:`_build_month_summary` callers do not change.
+        scenario: The baseline :class:`~app.models.scenario.Scenario`.
+
+    Returns:
+        ``Decimal`` -- the projected balance on the last day of the
+        target month, quantized to cents via
+        :func:`~app.utils.money.round_money` inside the resolver.
     """
-    if account.current_anchor_period_id is None:
-        return Decimal("0")
-
     last_day = date(year, month, calendar.monthrange(year, month)[1])
-
-    all_periods = (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=user_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-
-    # Find the last period whose end_date <= last_day of month.
-    target_period = None
-    for p in all_periods:
-        if p.end_date <= last_day:
-            target_period = p
-
-    if target_period is None:
-        return Decimal("0")
-
-    period_ids = [p.id for p in all_periods]
-    all_txns = (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.scenario_id == scenario.id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    )
-
-    balances, _ = balance_calculator.calculate_balances(
-        account.current_anchor_balance,
-        account.current_anchor_period_id,
-        all_periods,
-        all_txns,
-    )
-
-    return balances.get(target_period.id, Decimal("0"))
-
-
-def _empty_month(year: int, month: int) -> MonthSummary:
-    """Return a MonthSummary with zero totals and empty collections."""
-    return MonthSummary(
-        year=year,
-        month=month,
-        total_income=Decimal("0"),
-        total_expenses=Decimal("0"),
-        net=Decimal("0"),
-        projected_end_balance=Decimal("0"),
-        is_third_paycheck_month=False,
-        large_transactions=[],
-        day_entries={},
-        paycheck_days=[],
-    )
-
-
-def _empty_year(year: int) -> YearOverview:
-    """Return a YearOverview with 12 empty MonthSummaries."""
-    return YearOverview(
-        year=year,
-        months=[_empty_month(year, m) for m in range(1, 13)],
-        annual_income=Decimal("0"),
-        annual_expenses=Decimal("0"),
-        annual_net=Decimal("0"),
-    )
+    return balance_as_of_date(account, scenario.id, last_day)

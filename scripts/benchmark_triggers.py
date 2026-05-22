@@ -28,14 +28,13 @@ def run_benchmark():
     from app import create_app
     from app.extensions import db
     from app.models.user import User, UserSettings
-    from app.models.account import Account
     from app.models.scenario import Scenario
     from app.models.category import Category
     from app.models.transaction import Transaction
     from app.models.transaction_template import TransactionTemplate
     from app.models.recurrence_rule import RecurrenceRule
     from app.models.ref import AccountType, RecurrencePattern, Status, TransactionType
-    from app.services import recurrence_engine, pay_period_service
+    from app.services import account_service, recurrence_engine, pay_period_service
     from app.services.auth_service import hash_password
 
     app = create_app()
@@ -55,14 +54,26 @@ def run_benchmark():
         settings = UserSettings(user_id=user.id)
         db.session.add(settings)
 
+        # Pay periods must exist before the account so the canonical
+        # account factory (E-19, Commit 3) can resolve / receive an
+        # anchor period.
+        periods = pay_period_service.generate_pay_periods(
+            user_id=user.id,
+            start_date=date(2026, 1, 2),
+            num_periods=52,
+            cadence_days=14,
+        )
+        db.session.flush()
+
         checking = db.session.query(AccountType).filter_by(name="Checking").one()
-        account = Account(
+        account = account_service.create_account(
             user_id=user.id,
             account_type_id=checking.id,
             name="Bench Checking",
-            current_anchor_balance=Decimal("5000.00"),
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=periods[0].id,
+            notes="origination (benchmark_triggers.py)",
         )
-        db.session.add(account)
 
         scenario = Scenario(user_id=user.id, name="Baseline", is_baseline=True)
         db.session.add(scenario)
@@ -74,14 +85,6 @@ def run_benchmark():
         db.session.add(category)
         db.session.flush()
 
-        periods = pay_period_service.generate_pay_periods(
-            user_id=user.id,
-            start_date=date(2026, 1, 2),
-            num_periods=52,
-            cadence_days=14,
-        )
-        db.session.flush()
-        account.current_anchor_period_id = periods[0].id
         db.session.commit()
 
         expense = db.session.query(TransactionType).filter_by(name="Expense").one()

@@ -27,6 +27,7 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import transfer_service
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 
 # ── XSS Payload Vectors ─────────────────────────────────────────
@@ -82,11 +83,11 @@ def _create_savings_account(seed_user):
     savings_type = (
         db.session.query(AccountType).filter_by(name="Savings").one()
     )
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="XSS Test Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(acct)
     db.session.commit()
@@ -98,11 +99,11 @@ def _create_mortgage_account_with_params(seed_user):
     mortgage_type = (
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=mortgage_type.id,
         name="XSS Test Mortgage",
-        current_anchor_balance=Decimal("200000"),
+        anchor_balance=Decimal("200000"),
     )
     db.session.add(acct)
     db.session.flush()
@@ -117,6 +118,10 @@ def _create_mortgage_account_with_params(seed_user):
         payment_day=1,
     )
     db.session.add(params)
+    db.session.flush()
+    # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
+    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    insert_origination_event(params)
     db.session.commit()
     return acct, params
 

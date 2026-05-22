@@ -57,7 +57,24 @@ class InterestParams(TimestampMixin, db.Model):
         nullable=False,
         unique=True,
     )
-    apy = db.Column(db.Numeric(7, 5), nullable=False, server_default="0.04500")
+    # HIGH-06 / Commit 24: ``apy`` is NOT NULL but has no
+    # ``server_default``.  Pre-fix the column carried
+    # ``server_default="0.04500"`` so any INSERT that omitted
+    # ``apy`` -- specifically the auto-create paths in
+    # ``app/routes/accounts.py`` at account-creation and at
+    # interest-detail rendering -- silently materialised a 4.5%
+    # rate the user never configured.  ``calculate_interest``
+    # treats only ``apy <= 0`` as "no interest"
+    # (``interest_projection.py``), so a missing-value default in
+    # the dangerous non-zero direction (Q-24 #2 / E-12 "zero is a
+    # value, not missing") shipped ghost interest projections to
+    # every silently-created row.  The fix is twofold: the
+    # ``server_default`` is removed here, and the two auto-create
+    # sites in ``accounts.py`` now pass an explicit
+    # ``apy=Decimal("0")`` sentinel so the row is created in the
+    # safe "no interest configured" state until the user enters a
+    # real APY via the interest-detail form.
+    apy = db.Column(db.Numeric(7, 5), nullable=False)
     compounding_frequency = db.Column(
         db.String(10), nullable=False, server_default="daily"
     )

@@ -39,10 +39,10 @@ from app.extensions import db
 from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
-from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.services import amortization_engine, escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
+from app.utils.balance_predicates import balance_excluded_status_ids
 
 logger = logging.getLogger(__name__)
 
@@ -191,9 +191,18 @@ def get_payment_history(
 
     # Query shadow income transactions with eager-loaded status and
     # pay_period to avoid N+1 queries when iterating results.
+    # Status filter routes through the centralized
+    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02): the
+    # exclusion-set definition lives in one place.  The
+    # ``join(Transaction.pay_period)`` is retained because the
+    # subsequent ``order_by(PayPeriod.start_date)`` requires the
+    # PayPeriod alias to be in scope; ``join(Transaction.status)``
+    # is dropped because the ``Transaction.status_id`` filter no
+    # longer needs it.  ``joinedload(Transaction.status)`` still
+    # eager-loads the status row for the downstream ``is_settled``
+    # consumer.
     txns = (
         db.session.query(Transaction)
-        .join(Transaction.status)
         .join(Transaction.pay_period)
         .options(
             joinedload(Transaction.status),
@@ -207,7 +216,7 @@ def get_payment_history(
             Transaction.is_deleted.is_(False),
             # Exclude statuses that do not represent real payments
             # (Cancelled, Credit).  These have excludes_from_balance=True.
-            Status.excludes_from_balance.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
         )
         .order_by(PayPeriod.start_date)
         .all()
@@ -231,28 +240,41 @@ def get_payment_history(
 
 
 def compute_contractual_pi(params: LoanParams) -> Decimal:
-    """Compute the standard monthly P&I payment from loan params.
+    """Compute the contractual monthly P&I boundary from the seed columns.
 
-    For ARM loans, the payment is re-amortized from current balance at
-    the current rate.  For fixed-rate loans, uses original terms.
+    F-10 / Commit 15 follow-up: uses ``original_principal`` (always
+    non-NULL per the model's NOT NULL constraint) and ``interest_rate``
+    (resolver's BASE rate fallback; required at insert by the
+    Marshmallow ``LoanParamsCreateSchema`` and read by
+    ``loan_resolver._rate_at_date`` when no ``RateHistory`` row
+    applies, so non-NULL in practice).  Replaces the pre-F-10 read of
+    ``current_principal`` which became non-authoritative under E-18 /
+    main-remediation Commit 15.
+
+    For fixed-rate loans this is the contractual P&I that the borrower
+    actually pays every month -- byte-identical to the pre-F-10
+    formula because the inputs are the same.
+
+    For ARM loans this is a slightly less precise boundary heuristic
+    (uses the BASE rate instead of the current rate after adjustment),
+    which is acceptable because the boundary's only consumer is
+    ``prepare_payments_for_engine``'s escrow-subtraction step: it
+    decides "is this payment's excess above contractual P&I plausibly
+    escrow?" The boundary never directly affects the resolver's
+    output -- the engine re-amortizes ARM payments from the anchor at
+    the current rate downstream of this heuristic.
 
     Args:
-        params: LoanParams model instance with original_principal,
-            current_principal, interest_rate, term_months,
-            origination_date, and is_arm attributes.
+        params: LoanParams model instance with ``original_principal``,
+            ``interest_rate``, and ``term_months``.
 
     Returns:
-        Decimal monthly P&I payment.
+        Decimal monthly P&I payment, or ``Decimal("0")`` when either
+        seed input is NULL (the E-18 / Commit 15 demotion permits
+        ``interest_rate`` to be NULL at the storage tier).
     """
-    remaining = amortization_engine.calculate_remaining_months(
-        params.origination_date, params.term_months,
-    )
-    if params.is_arm:
-        return amortization_engine.calculate_monthly_payment(
-            Decimal(str(params.current_principal)),
-            Decimal(str(params.interest_rate)),
-            remaining,
-        )
+    if params.original_principal is None or params.interest_rate is None:
+        return Decimal("0")
     return amortization_engine.calculate_monthly_payment(
         Decimal(str(params.original_principal)),
         Decimal(str(params.interest_rate)),

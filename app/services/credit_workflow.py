@@ -16,6 +16,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
 from app.exceptions import NotFoundError, ValidationError
 from app.services.state_machine import verify_transition
+from app.utils.balance_predicates import is_credit, is_projected
 from app.utils.log_events import (
     BUSINESS,
     EVT_CREDIT_MARKED,
@@ -179,7 +180,10 @@ def mark_as_credit(transaction_id, user_id):
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Idempotency: if already credited with existing payback, return it.
-    if txn.status_id == credit_id:
+    # Routed through the centralized ``is_credit`` predicate
+    # (D6-09 / MED-02) so the idempotency gate shares one definition
+    # with ``unmark_credit`` and ``entry_service.create_entry``.
+    if is_credit(txn):
         existing_payback = (
             db.session.query(Transaction)
             .filter_by(credit_payback_for_id=txn.id)
@@ -189,7 +193,10 @@ def mark_as_credit(transaction_id, user_id):
             return existing_payback
 
     # Only projected transactions can be newly marked as credit.
-    if txn.status_id != projected_id:
+    # Routed through the centralized ``is_projected`` predicate
+    # (D6-09 / MED-02); the local ``projected_id`` binding above
+    # remains for the payback INSERT below ``status_id=projected_id``.
+    if not is_projected(txn):
         raise ValidationError(
             f"Cannot mark a '{txn.status.name}' transaction as credit. "
             "Only projected transactions can be marked as credit."
@@ -300,13 +307,15 @@ def unmark_credit(transaction_id, user_id):
     if txn.pay_period.user_id != user_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
-    credit_id = ref_cache.status_id(StatusEnum.CREDIT)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Bespoke source-state guard.  Friendly user-facing message that
     # names the offending status.  The route layer surfaces this as
-    # the response body on a 400.
-    if txn.status_id != credit_id:
+    # the response body on a 400.  Routed through the centralized
+    # ``is_credit`` predicate (D6-09 / MED-02); the ``projected_id``
+    # local binding above is for the state-machine call and the
+    # post-guard status assignment below.
+    if not is_credit(txn):
         current_name = txn.status.name if txn.status is not None else "<unset>"
         raise ValidationError(
             f"Cannot unmark credit on a '{current_name}' transaction.  "

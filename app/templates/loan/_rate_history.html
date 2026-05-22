@@ -5,7 +5,7 @@
 <div class="d-flex justify-content-between mb-2" id="interest-rate-display" hx-swap-oob="true">
   <span class="text-muted">Interest Rate</span>
   <span class="fw-bold text-accent">
-    {{ "%.3f"|format(params.interest_rate|float * 100) }}%
+    {{ "%.3f"|format(params.interest_rate|to_percent) }}%
     {% if params.is_arm %}<span class="badge bg-warning text-dark ms-1">ARM</span>{% endif %}
   </span>
 </div>
@@ -26,7 +26,7 @@
         {% for entry in rate_history %}
         <tr>
           <td>{{ entry.effective_date.strftime('%b %-d, %Y') }}</td>
-          <td class="text-end font-mono">{{ "%.3f"|format(entry.interest_rate|float * 100) }}%</td>
+          <td class="text-end font-mono">{{ "%.3f"|format(entry.interest_rate|to_percent) }}%</td>
           <td><small class="text-muted">{{ entry.notes or '' }}</small></td>
         </tr>
         {% endfor %}

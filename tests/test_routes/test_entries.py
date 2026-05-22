@@ -23,6 +23,7 @@ from app.models.ref import AccountType, RecurrencePattern, Status, TransactionTy
 from app.models.user import User, UserSettings
 from app.services import pay_period_service
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 from tests._test_helpers import freeze_today
 
@@ -172,17 +173,31 @@ def _create_other_user_txn():
     db.session.add(other_user)
     db.session.flush()
 
+
+    # Bootstrap pay period (E-19, Commit 3): the
+    # account_service factory requires the user to have at
+    # least one pay period to anchor against.
+    from datetime import date as _date, timedelta as _td
+    from app.models.pay_period import PayPeriod as _PayPeriod
+    _bootstrap = _PayPeriod(
+        user_id=other_user.id,
+        start_date=_date(2024, 1, 5),
+        end_date=_date(2024, 1, 5) + _td(days=13),
+        period_index=0,
+    )
+    db.session.add(_bootstrap)
+    db.session.flush()
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
     checking_type = db.session.query(AccountType).filter_by(
         name="Checking",
     ).one()
-    account = Account(
+    account = account_service.create_account(
         user_id=other_user.id,
         account_type_id=checking_type.id,
         name="Other Checking",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
     )
     db.session.add(account)
 

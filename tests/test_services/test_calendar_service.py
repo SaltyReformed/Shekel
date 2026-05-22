@@ -11,14 +11,18 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+import pytest
+
 from app.services import calendar_service
+from app.services.balance_resolver import period_subtotal
 from app.services.calendar_service import (
+    CalendarAccountNotResolvableError,
     _detect_third_paycheck_months,
     _is_infrequent,
 )
@@ -40,7 +44,7 @@ def _expense_type_id(db_session):
 def _add_transaction(
     db_session, seed_user, period, name, amount,
     is_income=False, due_date=None, template=None,
-    is_deleted=False,
+    is_deleted=False, status=StatusEnum.PROJECTED, actual_amount=None,
 ):
     """Create a transaction for testing.
 
@@ -54,6 +58,13 @@ def _add_transaction(
         due_date: Optional due_date override.
         template: Optional template to link.
         is_deleted: Soft-delete flag.
+        status: StatusEnum member; defaults to PROJECTED.  Mixed-status
+            calendar tests (F-3 / W-065) pass SETTLED, CANCELLED, CREDIT
+            to assert the balance-contributing predicate filters them
+            correctly.
+        actual_amount: Optional realized amount.  Required for SETTLED
+            so ``effective_amount`` returns the realized hit rather than
+            falling back to ``estimated_amount``.
 
     Returns:
         The created Transaction.
@@ -68,13 +79,14 @@ def _add_transaction(
         template_id=template.id if template else None,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(
-            __import__("app.enums", fromlist=["StatusEnum"]).StatusEnum.PROJECTED,
-        ),
+        status_id=ref_cache.status_id(status),
         name=name,
         category_id=None,
         transaction_type_id=type_id,
         estimated_amount=Decimal(str(amount)),
+        actual_amount=(
+            Decimal(str(actual_amount)) if actual_amount is not None else None
+        ),
         due_date=due_date,
         is_deleted=is_deleted,
     )
@@ -457,9 +469,7 @@ class TestCategoryInfo:
                 account_id=seed_user["account"].id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(
-                    __import__("app.enums", fromlist=["StatusEnum"]).StatusEnum.PROJECTED,
-                ),
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Car Payment",
                 category_id=cat.id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
@@ -525,9 +535,23 @@ class TestMonthEndBalance:
         """Projected end balance reflects anchor + income - expenses.
 
         Anchor balance = $1000 (seed_user).
-        Period 0 (anchor): +$2000 income, -$500 expense = $2500.
-        Period 1: +$2000 income, -$500 expense = $4000.
-        Both periods end in January, so month-end = $4000.
+        seed_periods are 10 biweekly starting 2026-01-02 so:
+          Period 0: Jan 2 -- Jan 15 (anchor)
+          Period 1: Jan 16 -- Jan 29
+          Period 2: Jan 30 -- Feb 12  (contains Jan 31)
+        Post-Commit-9 (HIGH-02 / W-277): the month-end balance is
+        ``balance_as_of_date(2026-01-31)``, which projects forward
+        through the period CONTAINING Jan 31 (period 2), not the
+        pre-Commit-9 "last period whose end_date <= Jan 31"
+        (period 1).  Period 2 has no transactions here so the
+        projected balance carries forward unchanged from period 1's
+        4000.00, which keeps this assertion valid; the next test
+        proves the producer steps into period 2 when it has data.
+
+        Period 0 (anchor): 1000 + 2000 - 500 = 2500.
+        Period 1:          2500 + 2000 - 500 = 4000.
+        Period 2:          4000 + 0 - 0      = 4000  (no txns)
+        Month-end (Jan 31, falls in period 2): 4000.00.
         """
         with app.app_context():
             p0 = seed_periods[0]
@@ -556,9 +580,74 @@ class TestMonthEndBalance:
                 year=2026,
                 month=1,
             )
-            # Anchor $1000 + $2000 - $500 = $2500 (period 0 end)
-            # $2500 + $2000 - $500 = $4000 (period 1 end)
             assert result.projected_end_balance == Decimal("4000.00")
+
+    def test_month_end_balance_includes_straddling_period(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """C9-1 (calendar surface): month-end mid-period includes that period.
+
+        HIGH-02 / W-277: pre-Commit-9 the calendar selected the last
+        pay period whose ``end_date <= last_day_of_month`` and
+        returned that period's end balance, missing the contribution
+        of the period that straddles the month boundary.
+        Post-Commit-9 the month-end balance flows through
+        ``balance_as_of_date``, which projects through the period
+        CONTAINING the target date.
+
+        seed_periods:
+          Period 1: Jan 16 -- Jan 29
+          Period 2: Jan 30 -- Feb 12  (contains Jan 31)
+
+        Setup loads income/expense in BOTH periods so the
+        pre-Commit-9 path (which would stop after period 1) and the
+        post-Commit-9 path (which includes period 2) produce
+        distinct values; the assertion locks the correct one.
+
+        Hand arithmetic (no entries, formula collapses to
+        effective_amount; statuses are Projected so the
+        balance-contributing predicate includes them):
+          Period 0 (anchor, 1000.00):  1000 + 0 - 0 = 1000
+          Period 1:                    1000 + 1500 - 200 = 2300
+          Period 2:                    2300 + 1500 - 200 = 3600
+
+        Pre-Commit-9 would have returned 2300.00 (period 1 end);
+        post-Commit-9 must return 3600.00.  Re-pinned per
+        HIGH-02 / W-277.
+        """
+        with app.app_context():
+            p1 = seed_periods[1]
+            p2 = seed_periods[2]
+            assert p1.end_date == date(2026, 1, 29)
+            assert p2.start_date == date(2026, 1, 30)
+            assert p2.end_date == date(2026, 2, 12)
+
+            _add_transaction(
+                db.session, seed_user, p1, "Mid-Jan Pay", "1500.00",
+                is_income=True, due_date=date(2026, 1, 16),
+            )
+            _add_transaction(
+                db.session, seed_user, p1, "Mid-Jan Bill", "200.00",
+                due_date=date(2026, 1, 20),
+            )
+            _add_transaction(
+                db.session, seed_user, p2, "Late-Jan Pay", "1500.00",
+                is_income=True, due_date=date(2026, 1, 30),
+            )
+            _add_transaction(
+                db.session, seed_user, p2, "Late-Jan Bill", "200.00",
+                due_date=date(2026, 1, 30),
+            )
+            db.session.commit()
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id,
+                year=2026,
+                month=1,
+            )
+            # 1000 + (1500-200) + (1500-200) = 3600.00.
+            # Pre-Commit-9 returned 2300.00 -- HIGH-02 / W-277.
+            assert result.projected_end_balance == Decimal("3600.00")
 
 
 # ── Infrequency Tests ────────────────────────────────────────────────
@@ -903,3 +992,335 @@ class TestEdgeCases:
             )
             assert 5 in result.day_entries
             assert result.day_entries[5][0].name == "Transfer Out"
+
+
+# ── F-3 / W-065 balance-contributing predicate ─────────────────────
+
+
+class TestBalanceContributingPredicate:
+    """F-3 / HIGH-02 / W-065: calendar per-day filter via the locked
+    Choice-2 ``balance-contributing`` predicate (Projected + Settled,
+    excludes Cancelled + Credit).
+
+    Locks the post-Commit-10 (follow-up) behaviour so a future change
+    that drops the predicate from either the SQL filter in
+    ``_query_transactions_for_range`` or the Python re-check in
+    ``_assign_transactions_to_days`` fails loud with a concrete
+    arithmetic divergence rather than a silent display regression.
+    """
+
+    def test_c10_1_projected_and_settled_both_contribute(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """F-3 / W-065 C10-1: Projected $500 + Settled $200 -> day total $700.
+
+        Hand arithmetic: 500 (Projected expense, effective = estimated)
+        + 200 (Settled expense, effective = actual_amount) = 700.
+        Both statuses are balance-contributing: Projected because it
+        is not in the {Credit, Cancelled} exclusion set; Settled for
+        the same reason -- the calendar's locked Choice-2 predicate
+        intentionally includes realized payments at their settled date.
+        """
+        with app.app_context():
+            p0 = seed_periods[0]
+            _add_transaction(
+                db.session, seed_user, p0, "Projected Bill", "500.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.PROJECTED,
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Settled Bill", "200.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.SETTLED, actual_amount="200.00",
+            )
+            db.session.commit()
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id,
+                year=2026,
+                month=1,
+            )
+            # F-3 / W-065: 500 + 200 = 700.00 (both contribute).
+            assert result.total_expenses == Decimal("700.00")
+            assert len(result.day_entries[5]) == 2
+            names = sorted(e.name for e in result.day_entries[5])
+            assert names == ["Projected Bill", "Settled Bill"]
+
+    def test_c10_2_cancelled_and_credit_excluded(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """F-3 / W-065 C10-2: Cancelled + Credit excluded from day total.
+
+        Same day as C10-1 plus a Cancelled $100 expense and a Credit
+        $50 expense.  Hand arithmetic: 500 (Projected) + 200 (Settled)
+        = 700.00; the Cancelled and Credit rows are filtered out by
+        ``balance_contributing_clause`` (their status carries
+        ``excludes_from_balance=True``) and never reach the day
+        assignment, so they neither inflate totals nor appear as
+        day entries.
+
+        A pre-Commit-10-follow-up calendar would have included all
+        four rows in ``day_entries[5]``; their amount contribution
+        collapses to zero via ``effective_amount`` so totals stay at
+        700.00, but the visible-entries regression is the user-facing
+        defect F-3 names.  This test locks both the arithmetic AND
+        the entry-count contract.
+        """
+        with app.app_context():
+            p0 = seed_periods[0]
+            _add_transaction(
+                db.session, seed_user, p0, "Projected Bill", "500.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.PROJECTED,
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Settled Bill", "200.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.SETTLED, actual_amount="200.00",
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Cancelled Bill", "100.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.CANCELLED,
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Credit Bill", "50.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.CREDIT,
+            )
+            db.session.commit()
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id,
+                year=2026,
+                month=1,
+            )
+            # F-3 / W-065: 500 + 200 = 700.00; Cancelled + Credit excluded.
+            assert result.total_expenses == Decimal("700.00")
+            # Day cell shows only the two contributing rows.
+            assert len(result.day_entries[5]) == 2
+            names = sorted(e.name for e in result.day_entries[5])
+            assert names == ["Projected Bill", "Settled Bill"]
+
+    def test_c10_3_grid_period_subtotal_projected_only(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """F-3 / W-065 C10-3: grid period subtotal stays Projected-only.
+
+        Same fixture as C10-2 (Projected $500 + Settled $200 +
+        Cancelled $100 + Credit $50 on Jan 5).  The grid period
+        subtotal is sourced from
+        ``balance_resolver.period_subtotal``, whose ``_sum_all``
+        helper gates on ``is_projected(txn)`` -- so only the
+        Projected $500 expense contributes; Settled, Cancelled, and
+        Credit are all excluded.  Hand arithmetic: 500.00.
+
+        The two surfaces intentionally diverge: calendar day total
+        for the same day is 700.00 (C10-2), grid period subtotal
+        for the same period is 500.00 (this test).  This divergence
+        is the locked Choice-2 design from the follow-up plan.
+        """
+        with app.app_context():
+            p0 = seed_periods[0]
+            _add_transaction(
+                db.session, seed_user, p0, "Projected Bill", "500.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.PROJECTED,
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Settled Bill", "200.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.SETTLED, actual_amount="200.00",
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Cancelled Bill", "100.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.CANCELLED,
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Credit Bill", "50.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.CREDIT,
+            )
+            db.session.commit()
+
+            sub = period_subtotal(
+                seed_user["account"],
+                seed_user["scenario"].id,
+                p0,
+            )
+            # Projected-only: 500.00.  Diverges intentionally from
+            # the calendar day total of 700.00 in C10-2.
+            assert sub.expense == Decimal("500.00")
+            assert sub.income == Decimal("0.00")
+
+    def test_c10_4_regression_lock_predicate_drop_visible(
+        self, app, seed_user, seed_periods, db, monkeypatch,
+    ):
+        """F-3 / W-065 C10-4: regression lock for predicate removal.
+
+        Simulates the regression where the locked predicate is
+        dropped from BOTH the SQL filter and the Python re-check by
+        monkey-patching ``balance_contributing_clause`` to a
+        trivially-true predicate (only ``is_deleted=False``, the
+        pre-fix gate) and ``is_balance_contributing`` to ignore the
+        excludes_from_balance flag.  With the predicate dropped the
+        Cancelled and Credit rows leak into ``day_entries[5]`` and
+        the day cell renders four entries instead of the two the
+        locked Choice-2 semantic mandates.
+
+        The post-Commit-10-follow-up code MUST reject this
+        regression: with the production predicate in place this test
+        confirms the day shows exactly two contributing entries.
+        Then the monkey-patched regression run confirms the locked
+        behaviour: with the predicate removed, four entries appear.
+        A diff between the two locks the predicate's contribution.
+
+        Hand arithmetic on the four totals through ``effective_amount``:
+            Projected $500: effective = 500
+            Settled $200: effective = 200
+            Cancelled $100: excludes_from_balance=True, effective = 0
+            Credit $50: excludes_from_balance=True, effective = 0
+            Sum = 700.00 either way; the visible regression is the
+            entry-count contract (2 vs 4), which this test locks.
+        """
+        with app.app_context():
+            p0 = seed_periods[0]
+            _add_transaction(
+                db.session, seed_user, p0, "Projected Bill", "500.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.PROJECTED,
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Settled Bill", "200.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.SETTLED, actual_amount="200.00",
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Cancelled Bill", "100.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.CANCELLED,
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Credit Bill", "50.00",
+                due_date=date(2026, 1, 5),
+                status=StatusEnum.CREDIT,
+            )
+            db.session.commit()
+
+            # Production predicate: exactly two entries on Jan 5.
+            real = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id,
+                year=2026,
+                month=1,
+            )
+            assert len(real.day_entries[5]) == 2
+            assert real.total_expenses == Decimal("700.00")
+
+            # Simulated regression: drop the predicate from both
+            # surfaces.  The SQL filter degrades to is_deleted-only;
+            # the Python re-check is short-circuited to always
+            # contribute.
+            from app.services import calendar_service as cs
+            monkeypatch.setattr(
+                cs, "balance_contributing_clause",
+                lambda: Transaction.is_deleted.is_(False),
+            )
+            monkeypatch.setattr(
+                cs, "is_balance_contributing", lambda _txn: True,
+            )
+
+            regressed = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id,
+                year=2026,
+                month=1,
+            )
+            # Predicate dropped: all four rows leak into the day cell.
+            assert len(regressed.day_entries[5]) == 4
+            # The visible-totals regression for a hypothetical future
+            # change that ALSO replaces effective_amount with
+            # estimated_amount would be 500 + 200 + 100 + 50 = 850;
+            # today's effective_amount zeroes Cancelled + Credit so
+            # the total stays 700.00 even with the predicate dropped.
+            # The entry-count contract above is the load-bearing
+            # regression lock.
+            assert regressed.total_expenses == Decimal("700.00")
+
+
+# ── Anchor-None contract (F-2 / Commit 11) ──────────────────────────
+
+
+class TestUnresolvableAccountOrScenario:
+    """Tests for the F-2 / Commit 11 contract.
+
+    After Commits 3-8 of the main remediation locked the E-19 /
+    CRIT-01 invariant, the calendar service must raise
+    :class:`CalendarAccountNotResolvableError` when
+    :func:`resolve_analytics_account` or
+    :func:`get_baseline_scenario` returns ``None`` -- the pre-F-2
+    behaviour of silently substituting a zeroed
+    :class:`MonthSummary` / :class:`YearOverview` masked the
+    upstream defect behind a ``$0.00`` calendar.
+    """
+
+    def test_month_detail_raises_when_account_unresolvable(
+        self, app, seed_user, db, monkeypatch,
+    ):
+        """C11-1 (service): None account -> CalendarAccountNotResolvableError."""
+        with app.app_context():
+            monkeypatch.setattr(
+                calendar_service, "resolve_analytics_account",
+                lambda _user_id, _account_id: None,
+            )
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_month_detail(
+                    user_id=seed_user["user"].id,
+                    year=2026,
+                    month=1,
+                )
+
+    def test_month_detail_raises_when_scenario_unresolvable(
+        self, app, seed_user, db, monkeypatch,
+    ):
+        """C11-2 (service): None baseline scenario -> error."""
+        with app.app_context():
+            monkeypatch.setattr(
+                calendar_service, "get_baseline_scenario",
+                lambda _user_id: None,
+            )
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_month_detail(
+                    user_id=seed_user["user"].id,
+                    year=2026,
+                    month=1,
+                )
+
+    def test_year_overview_raises_when_account_unresolvable(
+        self, app, seed_user, db, monkeypatch,
+    ):
+        """C11-1 (service, year view): None account -> error."""
+        with app.app_context():
+            monkeypatch.setattr(
+                calendar_service, "resolve_analytics_account",
+                lambda _user_id, _account_id: None,
+            )
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_year_overview(
+                    user_id=seed_user["user"].id,
+                    year=2026,
+                )
+
+    def test_year_overview_raises_when_scenario_unresolvable(
+        self, app, seed_user, db, monkeypatch,
+    ):
+        """C11-2 (service, year view): None scenario -> error."""
+        with app.app_context():
+            monkeypatch.setattr(
+                calendar_service, "get_baseline_scenario",
+                lambda _user_id: None,
+            )
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_year_overview(
+                    user_id=seed_user["user"].id,
+                    year=2026,
+                )

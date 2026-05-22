@@ -19,6 +19,7 @@ import pytest
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
+from app.services import account_service
 
 from tests._test_helpers import freeze_today
 
@@ -405,6 +406,94 @@ class TestCalendarTab:
             assert resp.status_code == 302
             assert "/analytics" in resp.headers["Location"]
 
+    def test_calendar_tab_404_when_account_unresolvable(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """C11-1 (route): unresolvable analytics account returns 404.
+
+        F-2 / Commit 11: pre-remediation the route silently rendered a
+        zeroed calendar.  After the contract change, the route maps
+        ``CalendarAccountNotResolvableError`` to a 404 ("404 for both
+        'not found' and 'not yours'").  Monkeypatching the resolver
+        is the deterministic way to simulate the upstream defect
+        without coupling the test to user/account fixture deletion.
+        """
+        from app.services import calendar_service as cs
+        monkeypatch.setattr(
+            cs, "resolve_analytics_account",
+            lambda _user_id, _account_id: None,
+        )
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+    def test_calendar_tab_404_when_scenario_unresolvable(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """C11-2 (route): unresolvable baseline scenario returns 404."""
+        from app.services import calendar_service as cs
+        monkeypatch.setattr(
+            cs, "get_baseline_scenario",
+            lambda _user_id: None,
+        )
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+    def test_calendar_tab_year_view_404_when_account_unresolvable(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """C11-1 (route, year view): year-view path also 404s."""
+        from app.services import calendar_service as cs
+        monkeypatch.setattr(
+            cs, "resolve_analytics_account",
+            lambda _user_id, _account_id: None,
+        )
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?view=year",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+    def test_calendar_tab_csv_404_when_scenario_unresolvable(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """C11-1/C11-2 (route, CSV branch): CSV path also 404s."""
+        from app.services import calendar_service as cs
+        monkeypatch.setattr(
+            cs, "get_baseline_scenario",
+            lambda _user_id: None,
+        )
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?format=csv&view=month"
+                "&year=2026&month=1",
+            )
+            assert resp.status_code == 404
+
+    def test_calendar_tab_200_when_resolvable(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """C11-3 (route): valid account + scenario renders the calendar.
+
+        Locks the happy path so future regressions of the exception
+        handler (e.g. raising too eagerly) fail loud.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"calendar-grid" in resp.data
+
 
 class TestYearEndTab:
     """Tests for GET /analytics/year-end HTMX partial endpoint."""
@@ -619,16 +708,16 @@ class TestYearEndTab:
             mortgage_type = db.session.query(AccountType).filter_by(
                 name="Mortgage",
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=mortgage_type.id,
                 name="Mortgage",
-                current_anchor_balance=Decimal("240000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("240000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(LoanParams(
+            lp = LoanParams(
                 account_id=acct.id,
                 original_principal=Decimal("240000.00"),
                 current_principal=Decimal("240000.00"),
@@ -636,7 +725,11 @@ class TestYearEndTab:
                 term_months=360,
                 origination_date=date(2025, 1, 1),
                 payment_day=1,
-            ))
+            )
+            db.session.add(lp)
+            db.session.flush()
+            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            insert_origination_event(lp)
             db.session.commit()
 
             resp = auth_client.get(
@@ -686,12 +779,12 @@ class TestYearEndTab:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
             ).one()
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Emergency Fund",
-                current_anchor_balance=Decimal("0"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("0"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(savings)
             db.session.flush()
@@ -726,16 +819,16 @@ class TestYearEndTab:
             mortgage_type = db.session.query(AccountType).filter_by(
                 name="Mortgage",
             ).one()
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=mortgage_type.id,
                 name="My Mortgage",
-                current_anchor_balance=Decimal("200000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("200000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(LoanParams(
+            lp = LoanParams(
                 account_id=acct.id,
                 original_principal=Decimal("200000.00"),
                 current_principal=Decimal("200000.00"),
@@ -743,7 +836,11 @@ class TestYearEndTab:
                 term_months=360,
                 origination_date=date(2025, 1, 1),
                 payment_day=1,
-            ))
+            )
+            db.session.add(lp)
+            db.session.flush()
+            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            insert_origination_event(lp)
             db.session.commit()
 
             resp = auth_client.get(
@@ -954,7 +1051,12 @@ class TestVarianceTab:
 
     def test_variance_chart_present(self, app, auth_client, seed_user,
                                      seed_periods, db):
-        """C15-5: Response contains canvas with chart data attributes."""
+        """C15-5: Response contains canvas with chart data attributes.
+
+        Includes C31 (JN-03): ``data-variance`` must be emitted so the
+        chart tooltip renders the server-computed variance instead of
+        recomputing ``actual - estimated`` client-side.
+        """
         with app.app_context():
             _create_paid_expense_for_route_test(
                 db, seed_user, seed_periods,
@@ -970,6 +1072,7 @@ class TestVarianceTab:
             assert "data-labels" in html
             assert "data-estimated" in html
             assert "data-actual" in html
+            assert "data-variance" in html
 
     def test_variance_chart_data_matches_report(self, app, auth_client,
                                                  seed_user, seed_periods, db):

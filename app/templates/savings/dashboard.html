@@ -51,17 +51,17 @@
       <div class="col-md-6">
         <div class="d-flex justify-content-between small mb-1">
           <span class="text-muted">Total Debt</span>
-          <span class="fw-bold font-mono">${{ "{:,.2f}".format(debt_summary.total_debt|float) }}</span>
+          <span class="fw-bold font-mono">${{ "{:,.2f}".format(debt_summary.total_debt) }}</span>
         </div>
         <div class="d-flex justify-content-between small mb-1">
           <span class="text-muted">Monthly Payments</span>
-          <span class="fw-bold font-mono">${{ "{:,.2f}".format(debt_summary.total_monthly_payments|float) }}</span>
+          <span class="fw-bold font-mono">${{ "{:,.2f}".format(debt_summary.total_monthly_payments) }}</span>
         </div>
       </div>
       <div class="col-md-6">
         <div class="d-flex justify-content-between small mb-1">
           <span class="text-muted">Weighted Avg Rate</span>
-          <span class="fw-bold">{{ "%.2f"|format(debt_summary.weighted_avg_rate|float * 100) }}%</span>
+          <span class="fw-bold">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span>
         </div>
         {% if debt_summary.projected_debt_free_date %}
         <div class="d-flex justify-content-between small mb-1">
@@ -134,13 +134,13 @@
                 {{ ad.account.account_type.name|format_account_type }}
               {% endif %}
               {% if ad.interest_params is defined and ad.interest_params %}
-                -- APY: {{ "%.2f"|format(ad.interest_params.apy|float * 100) }}%
+                -- APY: {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%
               {% endif %}
               {% if ad.loan_params is defined and ad.loan_params %}
-                -- {{ "%.3f"|format(ad.loan_params.interest_rate|float * 100) }}%
+                -- {{ "%.3f"|format(ad.loan_params.interest_rate|to_percent) }}%
               {% endif %}
               {% if ad.investment_params is defined and ad.investment_params %}
-                -- Return: {{ "%.2f"|format(ad.investment_params.assumed_annual_return|float * 100) }}%
+                -- Return: {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%
               {% endif %}
             </small>
           </div>
@@ -183,7 +183,7 @@
           <div class="text-muted small">Current Balance</div>
           <div class="fs-4 fw-bold font-mono text-accent">
             {% if ad.current_balance is not none %}
-              ${{ "{:,.2f}".format(ad.current_balance|float) }}
+              ${{ "{:,.2f}".format(ad.current_balance) }}
             {% else %}
               --
             {% endif %}
@@ -193,7 +193,7 @@
         <div class="mt-2">
           <div class="d-flex justify-content-between small">
             <span class="text-muted">Monthly Payment</span>
-            <span class="font-mono">${{ "{:,.2f}".format(ad.monthly_payment|float) }}</span>
+            <span class="font-mono">${{ "{:,.2f}".format(ad.monthly_payment) }}</span>
           </div>
           {% if ad.payoff_date %}
           <div class="d-flex justify-content-between small">
@@ -273,7 +273,7 @@
             <div class="mt-2">
               <div class="small">Last Balance</div>
               <div class="fs-5 fw-bold font-mono">
-                ${{ "{:,.2f}".format(ad.current_balance|float) }}
+                ${{ "{:,.2f}".format(ad.current_balance) }}
               </div>
             </div>
           </div>
@@ -314,9 +314,9 @@
     </div>
     <div class="text-center mt-2">
       <small class="text-muted">
-        Based on ${{ "{:,.0f}".format(total_savings|float) }} savings
-        {% if avg_monthly_expenses|float > 0 %}
-        and ${{ "{:,.0f}".format(avg_monthly_expenses|float) }}/mo avg expenses
+        Based on ${{ "{:,.0f}".format(total_savings) }} savings
+        {% if avg_monthly_expenses > 0 %}
+        and ${{ "{:,.0f}".format(avg_monthly_expenses) }}/mo avg expenses
         {% endif %}
       </small>
     </div>
@@ -360,9 +360,9 @@
         {# Progress bar #}
         <div class="mb-2">
           <div class="d-flex justify-content-between small mb-1">
-            <span class="font-mono">${{ "{:,.0f}".format(gd.current_balance|float) }}</span>
+            <span class="font-mono">${{ "{:,.0f}".format(gd.current_balance) }}</span>
             <span class="font-mono">
-              ${{ "{:,.0f}".format(gd.resolved_target|float) }}
+              ${{ "{:,.0f}".format(gd.resolved_target) }}
               {% if gd.income_descriptor %}
               <span class="text-muted">({{ gd.income_descriptor }})</span>
               {% endif %}
@@ -399,7 +399,7 @@
         <div class="d-flex justify-content-between small mt-1">
           <span class="text-muted fw-semibold">Recommended per paycheck</span>
           <span class="fw-semibold font-mono text-accent">
-            ${{ "{:,.2f}".format(gd.required_contribution|float) }}
+            ${{ "{:,.2f}".format(gd.required_contribution) }}
           </span>
         </div>
         {% elif gd.required_contribution is none and gd.progress_pct < 100 %}
@@ -411,7 +411,7 @@
         {% if gd.goal.contribution_per_period %}
         <div class="d-flex justify-content-between small">
           <span class="text-muted">Manual target</span>
-          <span class="font-mono">${{ "{:,.2f}".format(gd.goal.contribution_per_period|float) }}/period</span>
+          <span class="font-mono">${{ "{:,.2f}".format(gd.goal.contribution_per_period) }}/period</span>
         </div>
         {% endif %}
 
@@ -441,7 +441,7 @@
           <span class="badge bg-warning text-dark">Behind pace</span>
           {% if traj.required_monthly %}
           <p class="small text-muted mt-1 mb-0">
-            Increase to ${{ "{:,.2f}".format(traj.required_monthly|float) }}/mo
+            Increase to ${{ "{:,.2f}".format(traj.required_monthly) }}/mo
             to reach goal by {{ gd.goal.target_date.strftime('%b %Y') }}.
           </p>
           {% endif %}

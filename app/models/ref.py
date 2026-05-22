@@ -336,6 +336,32 @@ class IncomeUnit(db.Model):
         return f"<IncomeUnit {self.name}>"
 
 
+class LoanAnchorSource(db.Model):
+    """Loan anchor event source reference: 'origination', 'user_trueup'.
+
+    Tags every row in :class:`budget.loan_anchor_events` with the
+    provenance of that anchor.  ``origination`` is materialised once
+    per loan from the immutable ``LoanParams.origination_date`` /
+    ``LoanParams.original_principal`` fields; ``user_trueup`` is
+    appended by the loan dashboard's balance edit flow whenever the
+    operator asserts a new dated balance (commit C-16 / decision D-C).
+
+    Application code resolves these via ``ref_cache.loan_anchor_source_id``
+    and compares against the integer ID -- never the string name --
+    matching the project-wide ``ref-table: IDs for logic, strings for
+    display only`` invariant.
+    """
+
+    __tablename__ = "loan_anchor_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<LoanAnchorSource {self.name}>"
+
+
 class UserRole(db.Model):
     """User role reference: 'owner', 'companion'.
 

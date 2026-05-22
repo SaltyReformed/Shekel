@@ -15,6 +15,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
+from app.services import account_service
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
     RecurrencePattern, TransactionType,
@@ -93,11 +94,11 @@ def _create_pension(seed_user, db_session, salary_profile=None, name="State Pens
 def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
     """Helper to create a retirement account with investment params."""
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=acct_type.id,
         name=f"Test {type_name}",
-        current_anchor_balance=Decimal("10000.00"),
+        anchor_balance=Decimal("10000.00"),
     )
     db_session.add(account)
     db_session.flush()
@@ -179,6 +180,52 @@ class TestPensionCRUD:
         assert pension is not None
         assert pension.name == "LGERS"
         assert pension.benefit_multiplier == Decimal("0.01850")
+
+    def test_create_pension_percent_normalized_by_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C12-2 (F-17 / Commit 12): pension-create schema's @pre_load
+        converts ``benefit_multiplier`` percent input to its fraction
+        equivalent.  Arithmetic: 2.5 / 100 = 0.025 (stored at the
+        column's ``Numeric(7, 5)`` precision as ``0.02500``).
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "C12-2 Pension",
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "2.5",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        })
+        assert resp.status_code == 302
+        pension = db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id, name="C12-2 Pension",
+        ).one()
+        # Hand-computed: 2.5 / 100 = 0.025.
+        assert pension.benefit_multiplier == Decimal("0.02500")
+
+    def test_update_pension_percent_normalized_by_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-17 / Commit 12: pension-update schema's @pre_load converts
+        ``benefit_multiplier`` percent input to its fraction equivalent
+        on the update path too.  Arithmetic: 3.5 / 100 = 0.035.
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": pension.name,
+            "salary_profile_id": str(profile.id),
+            "benefit_multiplier": "3.5",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        })
+        assert resp.status_code == 302
+        db.session.refresh(pension)
+        # Hand-computed: 3.5 / 100 = 0.035.
+        assert pension.benefit_multiplier == Decimal("0.03500")
 
     def test_edit_pension_form(self, auth_client, seed_user, db, seed_periods_today):
         """GET edit form returns 200 with pre-populated pension data."""
@@ -390,6 +437,27 @@ class TestRetirementSettings:
         assert settings.safe_withdrawal_rate == Decimal("0.0400")
         assert settings.planned_retirement_date == date(2055, 1, 1)
         assert settings.estimated_retirement_tax_rate == Decimal("0.2000")
+
+    def test_update_settings_percent_normalized_by_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C12-3 (F-17 / Commit 12): retirement-settings schema's
+        @pre_load converts both percent fields to fractions before the
+        route persists.  Arithmetic: 4 / 100 = 0.04 (stored as
+        ``0.0400``); 22 / 100 = 0.22 (stored as ``0.2200``).
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "4",
+            "estimated_retirement_tax_rate": "22",
+        })
+        assert resp.status_code == 302
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        # Hand-computed: 4 / 100 = 0.04.
+        assert settings.safe_withdrawal_rate == Decimal("0.0400")
+        # Hand-computed: 22 / 100 = 0.22.
+        assert settings.estimated_retirement_tax_rate == Decimal("0.2200")
 
     def test_update_settings_partial(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -621,6 +689,76 @@ class TestGapAnalysisFragment:
         assert resp.status_code == 200
         # Gap analysis table always contains income gap row.
         assert b"Monthly Income Gap" in resp.data
+
+    def test_gap_rejects_negative_swr(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-13: negative ``swr`` slider override is rejected at the schema.
+
+        Pre-F-13 the route divided the raw float by 100 and handed the
+        resulting negative fraction to the calculator, which silently
+        zeroed ``required_retirement_savings``.  Post-F-13 the
+        ``RetirementGapQuerySchema`` rejects the value with a 422 so the
+        user surfaces an actionable error instead of a falsely-balanced
+        analysis.
+        """
+        resp = auth_client.get(
+            "/retirement/gap?swr=-5",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 422
+        body = resp.get_json()
+        assert "errors" in body
+        assert "swr" in body["errors"]
+
+    def test_gap_accepts_zero_swr(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-13: ``swr=0`` (the inclusive lower bound) is accepted.
+
+        The calculator's ``> 0`` guard collapses
+        ``required_retirement_savings`` to ZERO, which is the existing
+        zero-rate behaviour preserved at the calculator (defense in
+        depth).  The route surfaces a normal 200 rather than 422.
+        """
+        _create_salary_profile(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2050, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get(
+            "/retirement/gap?swr=0",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert b"Monthly Income Gap" in resp.data
+
+    def test_gap_accepts_default_swr(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """F-13: ``swr=4`` (the default 4% slider value) routes happy-path.
+
+        Percent input ``"4"`` -> fraction ``Decimal("0.04")``, well
+        inside the schema's ``Range(0, 1)``; the fragment renders the
+        standard gap analysis.
+        """
+        _create_salary_profile(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2050, 1, 1)
+        settings.safe_withdrawal_rate = Decimal("0.04")
+        db.session.commit()
+
+        resp = auth_client.get(
+            "/retirement/gap?swr=4",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        # The fragment renders the SWR-driven Required Savings row.
+        assert b"4.0% rule" in resp.data
 
 
 class TestRetirementNegativePaths:
@@ -1271,11 +1409,11 @@ class TestReturnRateClarity:
         )
         # Create a second account with a different rate.
         acct_type = db.session.query(AccountType).filter_by(name="Roth IRA").one()
-        acct2 = Account(
+        acct2 = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=acct_type.id,
             name="Test Roth IRA",
-            current_anchor_balance=Decimal("5000.00"),
+            anchor_balance=Decimal("5000.00"),
         )
         db.session.add(acct2)
         db.session.flush()
@@ -1428,12 +1566,12 @@ class TestIsPretaxDispatch:
             db.session.add(custom_type)
             db.session.flush()
 
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 name="My 403(b)",
                 account_type_id=custom_type.id,
-                current_anchor_balance=Decimal("50000"),
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=Decimal("50000"),
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()
@@ -1471,12 +1609,12 @@ class TestIsPretaxDispatch:
             db.session.add(custom_type)
             db.session.flush()
 
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 name="My Roth Solo 401(k)",
                 account_type_id=custom_type.id,
-                current_anchor_balance=Decimal("25000"),
-                current_anchor_period_id=seed_periods_today[0].id,
+                anchor_balance=Decimal("25000"),
+                anchor_period_id=seed_periods_today[0].id,
             )
             db.session.add(acct)
             db.session.flush()

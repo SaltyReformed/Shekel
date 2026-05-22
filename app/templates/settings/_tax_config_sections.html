@@ -31,8 +31,8 @@
           <td>{{ sc.tax_year }}</td>
           <td>{{ sc.state_code }}</td>
           <td>{{ sc.tax_type.name|title if sc.tax_type else '--' }}</td>
-          <td>{{ "%.2f"|format((sc.flat_rate * 100)|float) if sc.flat_rate else '--' }}%</td>
-          <td>{{ '$' ~ "%.0f"|format(sc.standard_deduction|float) if sc.standard_deduction else '--' }}</td>
+          <td>{{ "%.2f"|format((sc.flat_rate|to_percent)) if sc.flat_rate else '--' }}%</td>
+          <td>{{ '$' ~ "%.0f"|format(sc.standard_deduction) if sc.standard_deduction else '--' }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -59,7 +59,7 @@
           <label class="form-label">Flat Rate %</label>
           <input type="number" step="0.01" name="flat_rate"
                  class="form-control form-control-sm" required
-                 value="{{ "%.2f"|format((state_configs[0].flat_rate * 100)|float) if state_configs and state_configs[0].flat_rate else '' }}"
+                 value="{{ "%.2f"|format((state_configs[0].flat_rate|to_percent)) if state_configs and state_configs[0].flat_rate else '' }}"
                  placeholder="e.g. 3.99">
         </div>
         <div class="col">
@@ -99,11 +99,11 @@
         {% for fc in fica_configs %}
         <tr>
           <td>{{ fc.tax_year }}</td>
-          <td>{{ "%.2f"|format((fc.ss_rate * 100)|float) }}%</td>
-          <td>${{ "%.0f"|format(fc.ss_wage_base|float) }}</td>
-          <td>{{ "%.2f"|format((fc.medicare_rate * 100)|float) }}%</td>
-          <td>{{ "%.2f"|format((fc.medicare_surtax_rate * 100)|float) }}%</td>
-          <td>${{ "%.0f"|format(fc.medicare_surtax_threshold|float) }}</td>
+          <td>{{ "%.2f"|format((fc.ss_rate|to_percent)) }}%</td>
+          <td>${{ "%.0f"|format(fc.ss_wage_base) }}</td>
+          <td>{{ "%.2f"|format((fc.medicare_rate|to_percent)) }}%</td>
+          <td>{{ "%.2f"|format((fc.medicare_surtax_rate|to_percent)) }}%</td>
+          <td>${{ "%.0f"|format(fc.medicare_surtax_threshold) }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -122,7 +122,7 @@
         <div class="col">
           <label class="form-label">SS Rate %</label>
           <input type="number" step="0.01" name="ss_rate" class="form-control form-control-sm"
-                 required value="{{ "%.2f"|format((fica_configs[0].ss_rate * 100)|float) if fica_configs else '6.20' }}">
+                 required value="{{ "%.2f"|format((fica_configs[0].ss_rate|to_percent)) if fica_configs else '6.20' }}">
         </div>
         <div class="col">
           <label class="form-label">SS Wage Base</label>
@@ -132,12 +132,12 @@
         <div class="col">
           <label class="form-label">Medicare %</label>
           <input type="number" step="0.01" name="medicare_rate" class="form-control form-control-sm"
-                 required value="{{ "%.2f"|format((fica_configs[0].medicare_rate * 100)|float) if fica_configs else '1.45' }}">
+                 required value="{{ "%.2f"|format((fica_configs[0].medicare_rate|to_percent)) if fica_configs else '1.45' }}">
         </div>
         <div class="col">
           <label class="form-label">Surtax %</label>
           <input type="number" step="0.01" name="medicare_surtax_rate" class="form-control form-control-sm"
-                 required value="{{ "%.2f"|format((fica_configs[0].medicare_surtax_rate * 100)|float) if fica_configs else '0.90' }}">
+                 required value="{{ "%.2f"|format((fica_configs[0].medicare_surtax_rate|to_percent)) if fica_configs else '0.90' }}">
         </div>
         <div class="col">
           <label class="form-label">Threshold</label>
@@ -184,11 +184,11 @@
           <div class="mb-3">
             <h6>
               {{ bs.filing_status.name|replace('_', ' ')|title }}
-              <small class="text-muted">(Std. Deduction: ${{ "%.2f"|format(bs.standard_deduction|float) }})</small>
+              <small class="text-muted">(Std. Deduction: ${{ "%.2f"|format(bs.standard_deduction) }})</small>
             </h6>
             <div class="mb-2 small">
-              <span class="text-muted">Child Credit:</span> ${{ "%.2f"|format(bs.child_credit_amount|float) }}
-              <span class="ms-3 text-muted">Other Dependent Credit:</span> ${{ "%.2f"|format(bs.other_dependent_credit_amount|float) }}
+              <span class="text-muted">Child Credit:</span> ${{ "%.2f"|format(bs.child_credit_amount) }}
+              <span class="ms-3 text-muted">Other Dependent Credit:</span> ${{ "%.2f"|format(bs.other_dependent_credit_amount) }}
             </div>
             <table class="table table-sm table-bordered mb-2 mw-px-500">
               <thead>
@@ -201,9 +201,9 @@
               <tbody>
                 {% for b in bs.brackets|sort(attribute='sort_order') %}
                 <tr>
-                  <td>${{ "%.0f"|format(b.min_income|float) }}</td>
-                  <td>{{ '$' ~ "%.0f"|format(b.max_income|float) if b.max_income else 'No limit' }}</td>
-                  <td>{{ "%.1f"|format((b.rate * 100)|float) }}%</td>
+                  <td>${{ "%.0f"|format(b.min_income) }}</td>
+                  <td>{{ '$' ~ "%.0f"|format(b.max_income) if b.max_income else 'No limit' }}</td>
+                  <td>{{ "%.1f"|format((b.rate|to_percent)) }}%</td>
                 </tr>
                 {% endfor %}
               </tbody>

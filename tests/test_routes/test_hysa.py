@@ -8,21 +8,42 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.ref import AccountType
+from app.services import account_service
 
 
-def _create_hysa_account(seed_user, db_session, name="My HYSA"):
-    """Helper to create a HYSA account with params."""
+def _create_hysa_account(seed_user, db_session, name="My HYSA", anchor_period_id=None):
+    """Helper to create a HYSA account with params.
+
+    ``anchor_period_id`` is forwarded to
+    :func:`app.services.account_service.create_account` so the
+    origination ``AccountAnchorHistory`` row points at the caller's
+    intended anchor period.  Tests that previously mutated
+    ``account.current_anchor_period_id`` directly after the helper
+    returned were relying on the pre-Commit-4 cache being authoritative;
+    post-Commit-4 the dated SoT (latest history row) wins over the
+    cache, so the explicit ``anchor_period_id`` here is the canonical
+    way to anchor a HYSA against a specific period at creation time.
+    """
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=hysa_type.id,
         name=name,
-        current_anchor_balance=Decimal("10000.00"),
+        anchor_balance=Decimal("10000.00"),
+        anchor_period_id=anchor_period_id,
     )
     db_session.add(account)
     db_session.flush()
 
-    params = InterestParams(account_id=account.id)
+    # HIGH-06 / Commit 24: ``apy`` is NOT NULL and no longer carries
+    # ``server_default="0.04500"``; the production auto-create path
+    # (``app/routes/accounts.py``) supplies an explicit
+    # ``Decimal("0")`` sentinel so a first-save flow cannot
+    # silently materialise the legacy 4.5% rate.  Test fixtures
+    # mirror the production convention.
+    params = InterestParams(
+        account_id=account.id, apy=Decimal("0.04500"),
+    )
     db_session.add(params)
     db_session.commit()
     return account, params
@@ -34,16 +55,24 @@ def _create_other_hysa(second_user, db_session):
     Builds on the shared second_user fixture. Returns (Account, InterestParams).
     """
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=second_user["user"].id,
         account_type_id=hysa_type.id,
         name="Other HYSA",
-        current_anchor_balance=Decimal("5000.00"),
+        anchor_balance=Decimal("5000.00"),
     )
     db_session.add(account)
     db_session.flush()
 
-    params = InterestParams(account_id=account.id)
+    # HIGH-06 / Commit 24: ``apy`` is NOT NULL and no longer carries
+    # ``server_default="0.04500"``; the production auto-create path
+    # (``app/routes/accounts.py``) supplies an explicit
+    # ``Decimal("0")`` sentinel so a first-save flow cannot
+    # silently materialise the legacy 4.5% rate.  Test fixtures
+    # mirror the production convention.
+    params = InterestParams(
+        account_id=account.id, apy=Decimal("0.04500"),
+    )
     db_session.add(params)
     db_session.commit()
     return account, params
@@ -53,10 +82,18 @@ class TestHysaDetailView:
     """GET /accounts/<id>/interest."""
 
     def test_hysa_detail_view(self, auth_client, seed_user, db, seed_periods_today):
-        """Returns 200 with interest data."""
-        account, _ = _create_hysa_account(seed_user, db.session)
-        account.current_anchor_period_id = seed_periods_today[0].id
-        db.session.commit()
+        """Returns 200 with interest data.
+
+        Re-pinned (rule 2 exception; CRIT-01 / F-001 / Commit 4):
+        passing ``anchor_period_id`` through the canonical factory
+        replaces the legacy ``account.current_anchor_period_id = ...``
+        cache mutation.  The dated ``AccountAnchorHistory`` SoT is
+        authoritative post-Commit-4, so the cache-only mutation no
+        longer drives the rendered projection.
+        """
+        account, _ = _create_hysa_account(
+            seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
+        )
 
         resp = auth_client.get(f"/accounts/{account.id}/interest")
         assert resp.status_code == 200
@@ -253,7 +290,24 @@ class TestCreateHysaAccount:
     """Creating a HYSA account auto-creates InterestParams."""
 
     def test_create_hysa_account_auto_params(self, auth_client, seed_user, db, seed_periods_today):
-        """POST to create account with HYSA type → auto-creates InterestParams."""
+        """POST to create account with HYSA type auto-creates InterestParams
+        with an explicit zero-APY sentinel (HIGH-06 / Commit 24).
+
+        Re-pinned (rule 2 exception; HIGH-06 / E-12 "zero is a value,
+        not missing"): pre-fix the assertion was
+        ``params.apy == Decimal("0.04500")`` because the column
+        carried ``server_default="0.04500"`` and the auto-create
+        path emitted no Python-side ``apy`` assignment -- so a
+        first-time HYSA silently materialised a 4.5% rate the user
+        never configured.  Post-fix the auto-create supplies
+        ``apy=Decimal("0")`` and ``calculate_interest`` short-
+        circuits on ``apy <= 0`` so the account projects zero
+        interest until the user enters a real rate via the
+        interest-detail form.  ``compounding_frequency`` is still
+        provided by the column ``server_default="daily"`` (the
+        choice of cadence is not a financial hazard if the rate is
+        zero, so the default is retained).
+        """
         hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
 
         resp = auth_client.post(
@@ -270,7 +324,8 @@ class TestCreateHysaAccount:
         params = db.session.query(InterestParams).filter_by(account_id=account.id).first()
         assert params is not None, "InterestParams were not auto-created"
         assert params.account_id == account.id
-        assert params.apy == Decimal("0.04500")
+        # HIGH-06 / Commit 24 re-pin: explicit zero sentinel.
+        assert params.apy == Decimal("0.00000")
         assert params.compounding_frequency == "daily"
 
 
@@ -292,9 +347,24 @@ class TestHysaDetailShadowTransactions:
         from app.models.ref import Status  # pylint: disable=import-outside-toplevel
         from app.services import transfer_service  # pylint: disable=import-outside-toplevel
 
-        account, _ = _create_hysa_account(seed_user, db.session)
-        account.current_anchor_period_id = seed_periods_today[0].id
-        db.session.commit()
+        # Re-pinned (rule 2 exception; CRIT-01 / F-001 / Commit 4):
+        # pass ``anchor_period_id`` through the canonical factory so the
+        # origination ``AccountAnchorHistory`` row points at
+        # ``seed_periods_today[0]``.  Pre-Commit-7 the legacy
+        # cache-only mutation drove ``interest_detail``'s read; post-
+        # Commit-7 the resolver reads the dated SoT (latest history
+        # row), so the cache mutation no longer takes effect.  Without
+        # this change the anchor would be the bootstrap-resolved
+        # period (today's current period, i.e. ``seed_periods_today[4]``),
+        # which is post-anchor to the transfer in
+        # ``seed_periods_today[0]`` and silently omits it from the
+        # projection (the symptom #1 / F-009 silent-degrade shape).
+        # Hand arithmetic: anchor 10000 + 500 transfer + interest at
+        # 4.5% APY daily compounding over 10 biweekly periods
+        # ~= $10,6XX.  The ``"10,6"`` substring assertion is unchanged.
+        account, _ = _create_hysa_account(
+            seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
+        )
 
         # Add transfer categories required by the service.
         incoming = Category(
@@ -338,10 +408,15 @@ class TestHysaDetailShadowTransactions:
         """Verify that the HYSA detail page still works correctly when
         there are no transfers.  The account_id query must return an
         empty set without errors, and the balance equals anchor + interest.
+
+        Re-pinned (rule 2 exception; CRIT-01 / F-001 / Commit 4):
+        anchor period passed through the canonical factory rather
+        than mutated on the cache column; see the sibling test for
+        the rationale.
         """
-        account, _ = _create_hysa_account(seed_user, db.session)
-        account.current_anchor_period_id = seed_periods_today[0].id
-        db.session.commit()
+        account, _ = _create_hysa_account(
+            seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
+        )
 
         resp = auth_client.get(f"/accounts/{account.id}/interest")
         assert resp.status_code == 200

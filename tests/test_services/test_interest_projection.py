@@ -52,12 +52,15 @@ class TestDailyCompounding:
         # interest = 10000 * ((1 + 0.045/365)^30 - 1) ≈ $37.05
         assert result == Decimal("37.05")
 
-    def test_leap_year_february(self):
-        """Leap year February period uses 365 as divisor, not 366.
+    def test_leap_year_february_window_not_crossing_feb_29(self):
+        """A Feb 15-28 window in a leap year keeps the 365-day divisor.
 
-        The source hardcodes DAYS_IN_YEAR = Decimal("365") regardless of
-        whether the period falls in a leap year. This test verifies that
-        behavior with a Feb 15-28 period in 2028 (a leap year).
+        Per MED-05 / PA-06, the divisor switches to 366 only when the
+        projection window contains Feb 29.  A Feb 15-Feb 28 window in
+        2028 (a leap year) stops at Feb 28 and never includes Feb 29,
+        so the daily rate uses 365.  This locks the "non-crossing
+        window" half of the actual/actual switch as a regression guard.
+
         Expected:
           daily_rate = 0.045 / 365
           interest = 10000 * ((1 + daily_rate)^13 - 1) = $16.04
@@ -70,6 +73,99 @@ class TestDailyCompounding:
             period_end=date(2028, 2, 28),
         )
         assert result == Decimal("16.04")
+
+    def test_leap_year_window_crossing_feb_29_uses_366(self):
+        """C27-1: a 14-day window crossing Feb 29 2028 uses the 366-day divisor.
+
+        MED-05 / PA-06: pre-fix the divisor was a hardcoded 365 even in
+        leap years, overstating daily interest by ~0.27% for windows
+        containing Feb 29.  The fix switches to 366 when the window
+        contains Feb 29.
+
+        Hand calculation for $10,000 at 4.5% APY over a 14-day window
+        2028-02-20 -> 2028-03-05 (contains 2028-02-29):
+
+          daily_rate = 0.045 / 366 = 0.000122950819672...
+          (1 + daily_rate)^14 - 1 = 0.001722687790...
+          interest = 10000 * 0.001722687790 = 17.226877905...
+          round half-up to 2dp = $17.23
+
+        Pre-fix value (365 divisor) was $17.27, so the corrected value
+        is $0.04 lower at this balance (corresponds to the ~$0.47/$100K
+        figure cited in MED-05's evidence).
+        """
+        result = calculate_interest(
+            balance=Decimal("10000.00"),
+            apy=Decimal("0.04500"),
+            compounding_frequency="daily",
+            period_start=date(2028, 2, 20),
+            period_end=date(2028, 3, 5),
+        )
+        assert result == Decimal("17.23")
+
+    def test_non_leap_year_window_unchanged(self):
+        """C27-2: a window entirely outside any leap year is unchanged by MED-05.
+
+        2026 is not a leap year, so the divisor stays 365.  The
+        expected value matches the legacy
+        ``test_basic_14_day_period`` baseline byte-for-byte;
+        re-asserted here as an explicit no-regression lock for the
+        non-leap branch of the actual/actual switch.
+
+        daily_rate = 0.045 / 365
+        interest = 10000 * ((1 + daily_rate)^14 - 1) -> $17.27
+        """
+        result = calculate_interest(
+            balance=Decimal("10000.00"),
+            apy=Decimal("0.04500"),
+            compounding_frequency="daily",
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 15),
+        )
+        assert result == Decimal("17.27")
+
+    def test_leap_year_window_ending_on_feb_29_does_not_cross(self):
+        """C27-2b: half-open interval -- a window whose end IS Feb 29 stays at 365.
+
+        ``(period_end - period_start).days`` treats ``period_end`` as
+        exclusive, so a window ending on Feb 29 contains 0 days of
+        Feb 29 and gets the 365-day divisor.  Locks the half-open
+        boundary semantics documented in the module docstring.
+
+        Expected: Feb 15 -> Feb 29 (14-day window, exclusive of Feb 29)
+        in 2028 uses 365 divisor, same as the non-crossing baseline.
+          daily_rate = 0.045 / 365
+          interest = 10000 * ((1 + daily_rate)^14 - 1) = $17.27
+        """
+        result = calculate_interest(
+            balance=Decimal("10000.00"),
+            apy=Decimal("0.04500"),
+            compounding_frequency="daily",
+            period_start=date(2028, 2, 15),
+            period_end=date(2028, 2, 29),
+        )
+        assert result == Decimal("17.27")
+
+    def test_leap_year_window_starting_on_feb_29_uses_366(self):
+        """C27-2c: a window starting on Feb 29 contains the leap day -> 366.
+
+        The half-open interval ``[Feb 29, Mar 14)`` contains Feb 29,
+        so the divisor is 366.  Complements
+        ``test_leap_year_window_ending_on_feb_29_does_not_cross`` so
+        both ends of the boundary semantics are pinned.
+
+        Hand calc, 14-day window starting Feb 29 2028:
+          daily_rate = 0.045 / 366
+          interest = 10000 * ((1 + daily_rate)^14 - 1) -> $17.23
+        """
+        result = calculate_interest(
+            balance=Decimal("10000.00"),
+            apy=Decimal("0.04500"),
+            compounding_frequency="daily",
+            period_start=date(2028, 2, 29),
+            period_end=date(2028, 3, 14),
+        )
+        assert result == Decimal("17.23")
 
     def test_very_high_apy_no_overflow(self):
         """100% APY with daily compounding produces correct result without overflow.
@@ -284,50 +380,64 @@ class TestRounding:
 
 
 class TestDayCountConventionDocstring:
-    """Verify the 365-day-year accepted-simplification docstring is in place.
+    """Verify the actual/actual leap-day-crossing docstring is in place.
 
-    F-126 of the 2026-04-15 security audit classified the actual/365
-    day-count convention as an accepted simplification rather than a
-    code change.  The closure condition for that audit item is that
-    the convention is documented in a discoverable docstring (module
-    + function), so callers reasoning about leap-year accuracy do not
-    have to grep the constant definition to find the rationale.
+    The 2026-04-15 security audit closed F-126 with an
+    "accepted simplification" wording: actual/365 day count, even in
+    leap years, because the per-leap-year overstatement (~$0.25/$100K)
+    was small.  MED-05 / PA-06 of the financial-calculation audit
+    (2026-05-19) superseded that closure with a code-level fix: the
+    divisor is 366 when the projection window contains Feb 29 and 365
+    otherwise.
 
-    These tests pin the docstring content.  They fail if a future
-    refactor strips the acknowledgement; the audit then reopens.
+    These tests pin the *new* docstring content so a future refactor
+    that strips the rationale (or reverts wording to the historical
+    "accepted simplification" phrasing) breaks the test and reopens
+    the audit item.
     """
 
-    def test_module_docstring_acknowledges_365_day_convention(self):
-        """The module docstring names the 365-day actual/365 convention.
+    def test_module_docstring_names_actual_actual_and_leap_day_check(self):
+        """The module docstring names the actual/actual convention and the leap-day trigger.
 
-        Asserts both the convention name (``actual/365``) and the
-        explicit acknowledgement keyword (``accepted simplification``)
-        are present so that wording drift -- e.g. someone rewording
-        the docstring to say "approximation" instead of
-        "simplification" -- breaks the test.  The audit-closure language
-        is "accepted simplification"; that exact phrase must survive.
+        Asserts the new convention name (``actual/actual``), the
+        per-window leap-day trigger (``Feb 29``), and the audit IDs
+        (``MED-05`` and ``PA-06``) that govern the fix.  The previous
+        ``actual/365`` / ``accepted simplification`` phrasing must NOT
+        appear, otherwise a wording revert would pass silently.
+
+        Re-pinned under MED-05 / PA-06: was a F-126 lock; superseded
+        2026-05-19 (this commit).
         """
         from app.services import interest_projection  # pylint: disable=import-outside-toplevel
 
         doc = interest_projection.__doc__ or ""
-        assert "actual/365" in doc
-        assert "accepted simplification" in doc.lower()
-        assert "F-126" in doc
+        # New audit-aligned wording.
+        assert "actual/actual" in doc
+        assert "Feb 29" in doc
+        assert "MED-05" in doc
+        assert "PA-06" in doc
+        # Old F-126 phrasing must not survive a wording revert.
+        assert "actual/365" not in doc
+        assert "accepted simplification" not in doc.lower()
 
-    def test_calculate_interest_docstring_acknowledges_leap_year(self):
-        """The function docstring names the leap-year behaviour for callers.
+    def test_calculate_interest_docstring_names_366_and_feb_29(self):
+        """The function docstring names the 366-day divisor and the Feb 29 trigger.
 
         A caller reading only the function docstring (the common case
-        in editors / API docs) must learn that leap years use the
-        365-day divisor.  Asserts both ``leap year`` and ``365`` are
-        named in the function-level docstring (separate from the
-        module-level rationale) so the docstring stays self-sufficient.
+        in editors / API docs) must learn that windows crossing Feb 29
+        use a 366-day divisor.  Asserts the substantive keywords
+        (``366``, ``Feb 29``, ``MED-05`` / ``PA-06``) so the docstring
+        stays self-sufficient and audit-traceable.
+
+        Re-pinned under MED-05 / PA-06: was a F-126 lock; superseded
+        2026-05-19 (this commit).
         """
         from app.services.interest_projection import (  # pylint: disable=import-outside-toplevel
             calculate_interest,
         )
 
         doc = calculate_interest.__doc__ or ""
-        assert "leap year" in doc.lower()
-        assert "365" in doc
-        assert "F-126" in doc
+        assert "366" in doc
+        assert "Feb 29" in doc
+        assert "MED-05" in doc
+        assert "PA-06" in doc

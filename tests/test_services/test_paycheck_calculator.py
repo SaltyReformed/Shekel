@@ -785,6 +785,68 @@ class TestDeductionCalculation:
                                        _timing_id("pre_tax"), _pct_id(), False)
         assert len(result) == 0
 
+    # ── Commit 32 / MED-07 / PA-22: pct-of-zero-gross boundary ────
+
+    def test_percentage_pre_tax_of_zero_gross_is_zero(self):
+        """Percentage pre-tax deduction with gross_biweekly=0 yields 0.
+
+        Pinning the PA-22 edge that 07_test_gaps Slice-3 / Concept 7 / 8
+        flag as UNTESTED: a percentage deduction applied to a zero
+        biweekly gross must produce a Decimal("0.00") line, never a
+        negative or undefined value.  The amount is
+            gross_biweekly * pct -> 0 * 0.06 = 0
+        quantized HALF_UP to 0.00.  Asserting the exact edge value rather
+        than just `len(result) == 1` proves the edge BEHAVIOR
+        (testing-standards.md "Edge Case Tests").
+        """
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[
+                FakeDeduction(name="401k", amount="0.06",
+                              calc_method="percentage",
+                              deduction_timing="pre_tax"),
+            ],
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result = _calculate_deductions(
+            profile, period, [period], Decimal("0.00"),
+            _timing_id("pre_tax"), _pct_id(), False,
+        )
+        assert len(result) == 1
+        assert result[0].name == "401k"
+        assert result[0].amount == Decimal("0.00"), (
+            f"Expected 0.00, got {result[0].amount}"
+        )
+
+    def test_percentage_post_tax_of_zero_gross_is_zero(self):
+        """Percentage post-tax deduction with gross_biweekly=0 yields 0.
+
+        Mirror of test_percentage_pre_tax_of_zero_gross_is_zero for the
+        post-tax timing.  Both timings share the same parameterized
+        producer (F-038/F-039 AGREE), so this is the post-side edge
+        proof.  amount = 0 * 0.04 = 0, quantized HALF_UP to 0.00.
+        """
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[
+                FakeDeduction(name="Roth", amount="0.04",
+                              calc_method="percentage",
+                              deduction_timing="post_tax"),
+            ],
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result = _calculate_deductions(
+            profile, period, [period], Decimal("0.00"),
+            _timing_id("post_tax"), _pct_id(), False,
+        )
+        assert len(result) == 1
+        assert result[0].name == "Roth"
+        assert result[0].amount == Decimal("0.00"), (
+            f"Expected 0.00, got {result[0].amount}"
+        )
+
 
 class TestThirdPaycheckDetection:
     """Tests for _is_third_paycheck()."""
@@ -1257,14 +1319,26 @@ class TestAnnualProjection:
         self, base_profile, biweekly_periods,
         simple_tax_configs
     ):
-        """Annual totals across 26 periods for $60k salary.
+        """C27-3: Annual totals across 26 periods for $60k salary; gross reconciles to exact annual.
 
-        All periods identical (cumul max $59,999.94 is under
-        SS cap $168,600 and surtax threshold $200,000).
-        Per period: gross=$2,307.69, federal=$173.08,
-          state=$103.85, SS=$143.08, medicare=$33.46,
-          net=$1,854.22
-        Annual = per_period * 26 for each field.
+        Per-period values after MED-05 / PA-07 residue reconciliation
+        (60000 / 26 floors to 2307.69; the +0.06 residue gives 6 cents
+        to distribute):
+          Periods 1-6  (first 6 of the year): gross=$2307.70,
+            net=$1854.23 (= 2307.70 - 173.08 - 103.85 - 143.08 - 33.46)
+          Periods 7-26 (last 20):              gross=$2307.69,
+            net=$1854.22 (= 2307.69 - 173.08 - 103.85 - 143.08 - 33.46)
+
+        Federal/state/SS/medicare are byte-identical across all 26
+        periods at this salary because both per-period grosses
+        ($2307.69 and $2307.70) round to the same per-period tax at
+        each step (cumul max $59,999.94..$60,000.06 is under SS cap
+        $168,600 and surtax threshold $200,000).
+
+        Re-pinned under MED-05 / PA-07: was 26 * $2307.69 = $59,999.94
+        (post-fix correct value is $60,000.00 exact, the contract
+        annual salary).  Arithmetic of the residue distribution:
+        floor=$2307.69, residue=$60000-$2307.69*26=$0.06, residue_cents=6.
         """
         results = project_salary(
             base_profile, biweekly_periods, simple_tax_configs
@@ -1274,63 +1348,61 @@ class TestAnnualProjection:
             f"expected 26 results, got {len(results)}"
         )
 
-        # Per-period oracle values:
-        # gross=60000/26=2307.69, federal=4499.99/26=173.08
-        # state=2700.00/26=103.85, SS=2307.69*0.062=143.08
-        # medicare=2307.69*0.0145=33.46
-        # net=2307.69-173.08-103.85-143.08-33.46=1854.22
-        exp_gross = Decimal("2307.69")
-        exp_net = Decimal("1854.22")
-
-        # 2307.69 * 26 = 59999.94
-        total_gross = sum(
-            r.gross_biweekly for r in results
-        )
-        assert total_gross == exp_gross * 26, (
-            f"total gross: expected 59999.94, "
-            f"got {total_gross}"
+        # MED-05 / PA-07: total_gross is the exact annual salary, not
+        # the prior 26 * $2307.69 = $59,999.94 understatement.
+        total_gross = sum(r.gross_biweekly for r in results)
+        assert total_gross == Decimal("60000.00"), (
+            f"total gross: expected 60000.00 (exact annual; "
+            f"MED-05/PA-07 reconciliation), got {total_gross}"
         )
 
-        # 173.08 * 26 = 4500.08
-        total_federal = sum(
-            r.federal_tax for r in results
-        )
+        # Periods 1-6 receive floor+$0.01 = $2307.70; periods 7-26
+        # receive floor = $2307.69.  6 * 2307.70 + 20 * 2307.69
+        #   = 13846.20 + 46153.80 = 60000.00.
+        for i in range(6):
+            assert results[i].gross_biweekly == Decimal("2307.70"), (
+                f"period {i+1}: expected 2307.70 (residue +cent), "
+                f"got {results[i].gross_biweekly}"
+            )
+        for i in range(6, 26):
+            assert results[i].gross_biweekly == Decimal("2307.69"), (
+                f"period {i+1}: expected 2307.69 (floor), "
+                f"got {results[i].gross_biweekly}"
+            )
+
+        # 173.08 * 26 = 4500.08 (per-period federal byte-identical;
+        # both 2307.69 and 2307.70 annualise to the same 10%-bracket
+        # withholding after the standard deduction).
+        total_federal = sum(r.federal_tax for r in results)
         assert total_federal == Decimal("173.08") * 26, (
-            f"total federal: expected 4500.08, "
-            f"got {total_federal}"
+            f"total federal: expected 4500.08, got {total_federal}"
         )
 
         # 103.85 * 26 = 2700.10
-        total_state = sum(
-            r.state_tax for r in results
-        )
+        total_state = sum(r.state_tax for r in results)
         assert total_state == Decimal("103.85") * 26, (
-            f"total state: expected 2700.10, "
-            f"got {total_state}"
+            f"total state: expected 2700.10, got {total_state}"
         )
 
-        # 143.08 * 26 = 3720.08
-        total_ss = sum(
-            r.social_security for r in results
-        )
+        # 143.08 * 26 = 3720.08 (FICA per-period unchanged: both
+        # 2307.69*0.062 and 2307.70*0.062 round to 143.08).
+        total_ss = sum(r.social_security for r in results)
         assert total_ss == Decimal("143.08") * 26, (
-            f"total SS: expected 3720.08, "
-            f"got {total_ss}"
+            f"total SS: expected 3720.08, got {total_ss}"
         )
 
-        # 33.46 * 26 = 869.96
-        total_medicare = sum(
-            r.medicare for r in results
-        )
+        # 33.46 * 26 = 869.96 (both grosses round to the same medicare).
+        total_medicare = sum(r.medicare for r in results)
         assert total_medicare == Decimal("33.46") * 26, (
-            f"total medicare: expected 869.96, "
-            f"got {total_medicare}"
+            f"total medicare: expected 869.96, got {total_medicare}"
         )
 
-        # 1854.22 * 26 = 48209.72
+        # Re-pinned: net first 6 = $1854.23, last 20 = $1854.22.
+        # 6 * 1854.23 + 20 * 1854.22 = 11125.38 + 37084.40 = 48209.78.
+        # (Pre-fix value was 26 * $1854.22 = $48209.72.)
         total_net = sum(r.net_pay for r in results)
-        assert total_net == exp_net * 26, (
-            f"total net: expected 48209.72, "
+        assert total_net == Decimal("48209.78"), (
+            f"total net: expected 48209.78 (MED-05/PA-07 reconciled), "
             f"got {total_net}"
         )
 
@@ -1344,11 +1416,22 @@ class TestAnnualProjection:
         self, base_profile, biweekly_periods,
         simple_tax_configs
     ):
-        """All 26 periods identical for $60k (under all caps).
+        """C27-3 corollary: $60k breakdown is residue-distributed across 26 periods.
 
-        $60k cumul max = 26*2307.69 = $59,999.94, under
-        SS cap ($168,600) and surtax ($200,000). Every
-        period produces the exact same breakdown.
+        $60k cumul max = $60,000.00 exact under MED-05 / PA-07, under
+        SS cap ($168,600) and surtax ($200,000).  After the
+        reconciliation contract the first 6 periods receive a +$0.01
+        residue cent on gross/net; periods 7-26 receive the floor.
+        Federal, state, SS, and medicare per-period values are
+        byte-identical across all 26 periods (the $0.01 gross
+        difference is below the cent-rounding boundary for each tax).
+
+        Re-pinned under MED-05 / PA-07: the prior "all 26 periods
+        identical" invariant relied on the unreconciled per-period
+        quantisation that this commit fixes.  The new invariant is:
+        within each cent-equivalence group (first 6 vs. last 20)
+        every breakdown field is identical, and the tax fields are
+        identical across all 26.
         """
         results = project_salary(
             base_profile, biweekly_periods, simple_tax_configs
@@ -1358,38 +1441,63 @@ class TestAnnualProjection:
             f"expected 26 results, got {len(results)}"
         )
 
+        # First 6 periods: gross = floor + $0.01 = $2307.70;
+        # net = $2307.70 - $173.08 - $103.85 - $143.08 - $33.46
+        #     = $1854.23.
+        first_group_gross = results[0].gross_biweekly
+        first_group_net = results[0].net_pay
+        assert first_group_gross == Decimal("2307.70")
+        assert first_group_net == Decimal("1854.23")
+        for i in range(1, 6):
+            r = results[i]
+            assert r.gross_biweekly == first_group_gross, (
+                f"period {i+1}: gross {r.gross_biweekly} != "
+                f"first-group gross {first_group_gross}"
+            )
+            assert r.net_pay == first_group_net, (
+                f"period {i+1}: net {r.net_pay} != "
+                f"first-group net {first_group_net}"
+            )
+
+        # Last 20 periods: gross = floor = $2307.69; net = $1854.22.
+        last_group_gross = results[6].gross_biweekly
+        last_group_net = results[6].net_pay
+        assert last_group_gross == Decimal("2307.69")
+        assert last_group_net == Decimal("1854.22")
+        for i in range(7, 26):
+            r = results[i]
+            assert r.gross_biweekly == last_group_gross, (
+                f"period {i+1}: gross {r.gross_biweekly} != "
+                f"last-group gross {last_group_gross}"
+            )
+            assert r.net_pay == last_group_net, (
+                f"period {i+1}: net {r.net_pay} != "
+                f"last-group net {last_group_net}"
+            )
+
+        # Group boundary: exactly $0.01 between adjacent groups.
+        assert first_group_gross - last_group_gross == Decimal("0.01")
+        assert first_group_net - last_group_net == Decimal("0.01")
+
+        # Federal/state/FICA per-period: byte-identical across all 26.
         first = results[0]
         for i in range(1, 26):
             r = results[i]
-            assert r.gross_biweekly == first.gross_biweekly, (
-                f"period {i+1}: gross "
-                f"{r.gross_biweekly} != "
-                f"period 1 gross {first.gross_biweekly}"
-            )
             assert r.federal_tax == first.federal_tax, (
-                f"period {i+1}: federal "
-                f"{r.federal_tax} != "
+                f"period {i+1}: federal {r.federal_tax} != "
                 f"period 1 federal {first.federal_tax}"
             )
             assert r.state_tax == first.state_tax, (
-                f"period {i+1}: state "
-                f"{r.state_tax} != "
+                f"period {i+1}: state {r.state_tax} != "
                 f"period 1 state {first.state_tax}"
             )
             assert r.social_security == first.social_security, (
-                f"period {i+1}: SS "
-                f"{r.social_security} != "
+                f"period {i+1}: SS {r.social_security} != "
                 f"period 1 SS {first.social_security}"
             )
             assert r.medicare == first.medicare, (
-                f"period {i+1}: medicare "
-                f"{r.medicare} != "
+                f"period {i+1}: medicare {r.medicare} != "
                 f"period 1 medicare {first.medicare}"
-            )
-            assert r.net_pay == first.net_pay, (
-                f"period {i+1}: net "
-                f"{r.net_pay} != "
-                f"period 1 net {first.net_pay}"
             )
 
 
@@ -2895,46 +3003,411 @@ class TestCalibrationIntegration:
             )
 
 
-class TestBiweeklyResidueDocstring:
-    """Verify the $0.13 biweekly rounding residue is documented in docstrings.
+class TestBiweeklyResidueReconciliation:
+    """MED-05 / PA-07: per-cycle residue reconciles into the annual aggregate.
 
-    F-127 of the 2026-04-15 security audit classified the biweekly
-    quantisation residue as an accepted simplification (real-payroll
-    parity > residue elimination).  The closure condition is that the
-    residue is acknowledged in module- and function-level docstrings so
-    a future reader does not file a duplicate "bug" against
-    well-understood behaviour, and so reconciliation work against W-2
-    Box 1 has a discoverable explanation.
-
-    Arithmetic context: $75,000 / 26 = $2,884.6153... -> $2,884.62
-    (rounded half-up) * 26 = $75,000.12.  The residue (+$0.12) is
-    bounded by 26 * $0.005 = $0.13/year.
+    For each canonical example in the module docstring, runs
+    ``project_salary`` with a full 26-period year and asserts the sum
+    of ``gross_biweekly`` values equals the contract annual salary
+    exactly.  Also asserts the distribution is deterministic across
+    repeat invocations (no random ordering, no shared mutable state)
+    and that the partial-context fallback preserves the historical
+    half-up semantics for single-period callers.
     """
 
-    def test_module_docstring_acknowledges_biweekly_residue(self):
-        """Module docstring names the residue, its bound, and the audit ID.
+    @pytest.mark.parametrize(
+        "annual_salary,expected_floor,expected_residue_cents",
+        [
+            # Per-period exact = annual / 26.  Floor is the per-period
+            # value rounded *down* to the cent; residue_cents is the
+            # number of periods that receive floor + $0.01.
+            #
+            # $50,000 / 26 = $1923.0769...; floor=$1923.07,
+            #   exact_share=$50,000.00, 26*1923.07=$49999.82,
+            #   residue=$0.18 = 18 cents.
+            (Decimal("50000"), Decimal("1923.07"), 18),
+            # $75,000 / 26 = $2884.6153...; floor=$2884.61,
+            #   26*2884.61=$74999.86, residue=$0.14 = 14 cents.
+            (Decimal("75000"), Decimal("2884.61"), 14),
+            # $100,000 / 26 = $3846.1538...; floor=$3846.15,
+            #   26*3846.15=$99999.90, residue=$0.10 = 10 cents.
+            (Decimal("100000"), Decimal("3846.15"), 10),
+            # $60,000 / 26 = $2307.6923...; floor=$2307.69,
+            #   26*2307.69=$59999.94, residue=$0.06 = 6 cents.
+            (Decimal("60000"), Decimal("2307.69"), 6),
+            # $78,000 / 26 = $3000.0000 exact; floor=$3000.00,
+            #   residue=0 -> no +cent periods.
+            (Decimal("78000"), Decimal("3000.00"), 0),
+        ],
+    )
+    def test_full_year_sum_equals_annual_exact(
+        self, annual_salary, expected_floor, expected_residue_cents,
+        biweekly_periods, simple_tax_configs,
+    ):
+        """C27-3: sum of 26 biweekly gross values == annual salary exactly.
 
-        Asserts the literal phrase ``accepted simplification`` plus the
-        ``$0.13`` bound plus the audit identifier ``F-127`` so wording
-        drift breaks the test (the audit-closure language uses this
-        exact phrasing).
+        For each parameter row, runs ``project_salary`` with 26
+        periods and asserts: (a) the sum of grosses equals the annual
+        salary at the cent; (b) the first ``residue_cents`` periods
+        carry the +$0.01 adjustment and the rest carry the floor;
+        (c) the boundary between groups is exactly one cent.
+
+        Hand-derived ``floor`` and ``residue_cents`` are in the
+        parametrize table so each row's arithmetic is reviewable
+        inline.
+        """
+        profile = FakeProfile(
+            annual_salary=annual_salary,
+            created_at=date(2026, 1, 1),
+        )
+
+        results = project_salary(
+            profile, biweekly_periods, simple_tax_configs
+        )
+        assert len(results) == 26
+
+        total_gross = sum(r.gross_biweekly for r in results)
+        assert total_gross == annual_salary.quantize(Decimal("0.01")), (
+            f"sum of grosses {total_gross} != annual {annual_salary}"
+        )
+
+        plus_cent = expected_floor + Decimal("0.01")
+        for i in range(expected_residue_cents):
+            assert results[i].gross_biweekly == plus_cent, (
+                f"period {i+1}: expected {plus_cent} (residue +cent), "
+                f"got {results[i].gross_biweekly}"
+            )
+        for i in range(expected_residue_cents, 26):
+            assert results[i].gross_biweekly == expected_floor, (
+                f"period {i+1}: expected {expected_floor} (floor), "
+                f"got {results[i].gross_biweekly}"
+            )
+
+    def test_residue_distribution_deterministic_across_runs(
+        self, base_profile, biweekly_periods, simple_tax_configs,
+    ):
+        """C27-4: residue distribution is byte-identical across repeat runs.
+
+        ``project_salary`` is invoked twice on the same inputs; the
+        per-period gross sequence must match byte-for-byte.  This
+        guards against any non-deterministic ordering (e.g. dict
+        iteration before insertion-ordering became reliable, set
+        randomisation) inside the reconciliation helper.
+        """
+        first_run = project_salary(
+            base_profile, biweekly_periods, simple_tax_configs
+        )
+        second_run = project_salary(
+            base_profile, biweekly_periods, simple_tax_configs
+        )
+
+        first_grosses = [r.gross_biweekly for r in first_run]
+        second_grosses = [r.gross_biweekly for r in second_run]
+
+        assert first_grosses == second_grosses, (
+            "residue distribution diverged between runs: "
+            f"first={first_grosses} second={second_grosses}"
+        )
+
+    def test_single_period_call_uses_half_up_fallback(
+        self, base_profile, simple_tax_configs,
+    ):
+        """Partial-context single-period call retains ROUND_HALF_UP semantics.
+
+        Route previews and isolated test fixtures invoke
+        ``calculate_paycheck`` with ``all_periods=[period]``; with
+        fewer than ``pay_periods_per_year`` periods in the year, the
+        reconciliation cannot anchor against a complete annual
+        figure, so the helper falls back to the historical half-up
+        quantisation.  $60k / 26 -> $2307.69 (half-up) regardless of
+        which calendar position the period occupies.
+        """
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        result = calculate_paycheck(
+            base_profile, period, [period], simple_tax_configs,
+        )
+        # Half-up: 2307.6923... -> 2307.69 (same as the legacy contract).
+        assert result.gross_biweekly == Decimal("2307.69")
+
+    def test_mid_year_raise_reconciles_each_salary_segment(
+        self, biweekly_periods, simple_tax_configs,
+    ):
+        """A mid-year raise splits the year into two reconciliation groups.
+
+        A non-recurring 10% raise effective month 7 (July) splits 2026
+        into:
+          - Periods 1-13 (Jan 2 .. Jun 26, dates < Jul): annual=$60,000
+          - Periods 14-26 (Jul 10 .. Dec 18, dates >= Jul): annual=$66,000
+
+        The biweekly_periods fixture spaces periods 14 days apart from
+        Jan 2; the 14th period starts 13*14 = 182 days later = Jul 3
+        2026, so periods 14..26 fall in the post-raise segment.  Each
+        segment reconciles independently against its share of the
+        annual salary:
+          floor(60000/26) = $2307.69; 13 * $2307.69 = $29,999.97;
+            exact share = 60000 * 13/26 = $30,000.00; residue = 3 cents.
+          floor(66000/26) = $2538.46; 13 * $2538.46 = $32,999.98;
+            exact share = 66000 * 13/26 = $33,000.00; residue = 2 cents.
+
+        First 3 of segment 1 get +cent ($2307.70); first 2 of segment 2
+        get +cent ($2538.47).  Sum of all 26 grosses = $30,000 + $33,000
+        = $63,000 exact.
+        """
+        profile = FakeProfile(
+            annual_salary=60000,
+            created_at=date(2026, 1, 1),
+            raises=[
+                FakeRaise(
+                    percentage="0.10",
+                    effective_month=7, effective_year=2026,
+                    is_recurring=False,
+                ),
+            ],
+        )
+        results = project_salary(
+            profile, biweekly_periods, simple_tax_configs
+        )
+        assert len(results) == 26
+
+        # Identify segment boundary: pre-raise periods have annual
+        # 60000, post-raise have 66000.  By construction (Jul 3 is
+        # period 14 = index 13), indices 0..12 are pre-raise and
+        # indices 13..25 are post-raise.
+        for i in range(13):
+            assert results[i].annual_salary == Decimal("60000.00")
+        for i in range(13, 26):
+            assert results[i].annual_salary == Decimal("66000.00")
+
+        # Pre-raise segment: 13 periods, residue 3 cents.
+        # First 3 (indices 0..2) get $2307.70; rest (3..12) get $2307.69.
+        for i in range(3):
+            assert results[i].gross_biweekly == Decimal("2307.70"), (
+                f"pre-raise period {i+1}: expected 2307.70, "
+                f"got {results[i].gross_biweekly}"
+            )
+        for i in range(3, 13):
+            assert results[i].gross_biweekly == Decimal("2307.69"), (
+                f"pre-raise period {i+1}: expected 2307.69, "
+                f"got {results[i].gross_biweekly}"
+            )
+
+        # Post-raise segment: 13 periods, residue 2 cents.
+        # First 2 (indices 13..14) get $2538.47; rest (15..25) get $2538.46.
+        for i in range(13, 15):
+            assert results[i].gross_biweekly == Decimal("2538.47"), (
+                f"post-raise period {i+1}: expected 2538.47, "
+                f"got {results[i].gross_biweekly}"
+            )
+        for i in range(15, 26):
+            assert results[i].gross_biweekly == Decimal("2538.46"), (
+                f"post-raise period {i+1}: expected 2538.46, "
+                f"got {results[i].gross_biweekly}"
+            )
+
+        # Each segment sums to its share of its annual salary exactly.
+        pre_total = sum(r.gross_biweekly for r in results[:13])
+        post_total = sum(r.gross_biweekly for r in results[13:])
+        # 60000 * 13/26 = 30000.00; 66000 * 13/26 = 33000.00.
+        assert pre_total == Decimal("30000.00"), (
+            f"pre-raise total: expected 30000.00, got {pre_total}"
+        )
+        assert post_total == Decimal("33000.00"), (
+            f"post-raise total: expected 33000.00, got {post_total}"
+        )
+
+        # Whole-year total = $30000 + $33000 = $63000 exact.
+        assert pre_total + post_total == Decimal("63000.00")
+
+
+class TestBiweeklyResidueDocstring:
+    """Verify the biweekly residue reconciliation is documented in docstrings.
+
+    F-127 of the 2026-04-15 security audit had classified the biweekly
+    quantisation residue as an accepted simplification.  MED-05 / PA-07
+    of the financial-calculation audit (2026-05-19) superseded that
+    closure with a code-level fix: the residue is now distributed
+    deterministically across the periods of a salary group so the
+    year's grosses sum to the annual salary exactly.
+
+    These tests pin the *new* docstring content; the old F-127 /
+    ``accepted simplification`` wording must NOT survive a revert,
+    because it would silently signal the old contract still applied.
+
+    Re-pinned under MED-05 / PA-07: was F-127 locks; superseded
+    2026-05-19 (this commit).
+    """
+
+    def test_module_docstring_names_reconciliation_contract(self):
+        """Module docstring names the reconciliation contract and audit IDs.
+
+        Asserts the substantive keywords (``reconciled``,
+        ``annual aggregate``, ``MED-05``, ``PA-07``) and the audit
+        supersession trail (``F-127``, ``supersedes``) so a future
+        reader cannot accidentally drift back to the historical wording.
         """
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
 
         doc = paycheck_calculator.__doc__ or ""
-        assert "accepted simplification" in doc.lower()
-        assert "$0.13" in doc
+        # New audit-aligned wording.
+        assert "reconciled" in doc.lower()
+        assert "annual aggregate" in doc.lower()
+        assert "MED-05" in doc
+        assert "PA-07" in doc
+        # Supersession of the prior F-127 wording is explicit.
         assert "F-127" in doc
+        assert "supersedes" in doc.lower()
 
-    def test_calculate_paycheck_docstring_references_residue(self):
-        """Function docstring on ``calculate_paycheck`` points at the residue.
+    def test_calculate_paycheck_docstring_references_reconciliation(self):
+        """Function docstring on ``calculate_paycheck`` points at the new contract.
 
-        The function-level docstring must reference the rounding
-        residue so a caller reading only the function signature in an
-        IDE tooltip learns about the behaviour; relying solely on the
-        module docstring leaves the discoverability gap that F-127
-        flagged.
+        The function-level docstring must reference the reconciliation
+        contract so a caller reading only the function signature in an
+        IDE tooltip learns that the per-period gross is residue-adjusted
+        (relying solely on the module docstring leaves a discoverability
+        gap).  Asserts the substantive keywords plus the new audit IDs.
         """
         doc = calculate_paycheck.__doc__ or ""
-        assert "residue" in doc.lower()
-        assert "F-127" in doc
+        assert "reconciled" in doc.lower()
+        assert "MED-05" in doc
+        assert "PA-07" in doc
+
+
+# ── CRIT-03 / F-037 integration: calibration path SS cap ──────────
+
+
+class TestCalibrationSSCapIntegration:
+    """End-to-end integration: calibrated paycheck honours the SS cap.
+
+    Verifies that calculate_paycheck plumbs cumulative_wages into the
+    calibration branch correctly and that the year-total SS on the
+    calibration path equals the bracket-path year-total to the cent
+    for the F-037 worked example ($312k salary, 26 periods at $12,000).
+
+    Pre-fix (audit 2026-05-19): the calibration branch never received
+    cumulative_wages, so SS accrued for every period of the year
+    (26 * $744.00 = $19,344.00), overstating FICA by $7,905.00 vs the
+    correct $11,439.00 (= ss_wage_base * ss_rate = 184500 * 0.062).
+    """
+
+    @staticmethod
+    def _high_earner_periods():
+        """26 biweekly periods starting 2026-01-02."""
+        start = date(2026, 1, 2)
+        return [
+            FakePeriod(
+                start_date=date.fromordinal(
+                    start.toordinal() + i * 14
+                ),
+                period_id=i + 1,
+            )
+            for i in range(26)
+        ]
+
+    @staticmethod
+    def _fica_2026():
+        """Seed 2026 FICA: ss_rate 0.062, ss_wage_base $184,500."""
+        return FakeFicaConfig(
+            ss_rate="0.062",
+            ss_wage_base="184500",
+        )
+
+    def _tax_configs(self, simple_bracket_set, nc_state_config):
+        """Tax configs with the 2026-seed wage base."""
+        return {
+            "bracket_set": simple_bracket_set,
+            "state_config": nc_state_config,
+            "fica_config": self._fica_2026(),
+        }
+
+    def test_calibration_year_ss_matches_bracket_year_ss(
+        self, simple_bracket_set, nc_state_config,
+    ):
+        """C18-3 integration: 26-period year SS sums match to the cent.
+
+        $312,000 salary, 26 periods, $12,000/period gross, calibration
+        active with effective_ss_rate = statutory 0.062.  Both paths must
+        produce the IRS-invariant year total $11,439.00.
+        """
+        profile = FakeProfile(
+            annual_salary=312000,
+            created_at=date(2026, 1, 1),
+        )
+        periods = self._high_earner_periods()
+        tax_configs = self._tax_configs(
+            simple_bracket_set, nc_state_config
+        )
+        cal = FakeCalibration(
+            federal_rate="0.20000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        bracket = project_salary(profile, periods, tax_configs)
+        calibrated = project_salary(
+            profile, periods, tax_configs, calibration=cal,
+        )
+
+        bracket_year_ss = sum(r.social_security for r in bracket)
+        cal_year_ss = sum(r.social_security for r in calibrated)
+
+        # Bracket path year SS: 15 * (12000*0.062) + 279.00 + 10 * 0.00
+        # = 15*744.00 + 279.00 = 11160.00 + 279.00 = 11439.00
+        assert bracket_year_ss == Decimal("11439.00"), (
+            f"Bracket year SS must be 11439.00 (ss_wage_base * ss_rate); "
+            f"got {bracket_year_ss}"
+        )
+        assert cal_year_ss == bracket_year_ss, (
+            f"Calibration year SS ({cal_year_ss}) must equal bracket "
+            f"year SS ({bracket_year_ss}); pre-fix divergence was "
+            f"$7,905.00 (F-037)"
+        )
+
+    def test_calibration_partial_period_at_cap(
+        self, simple_bracket_set, nc_state_config,
+    ):
+        """C18-5 integration: period 16 SS = $279.00 (partial crossing).
+
+        After 15 periods at $12,000 each, cumul = $180,000.  Period 16
+        crosses the $184,500 cap: ss_taxable = $4,500.00, SS = $279.00.
+        Periods 17-26 must be exactly $0.00.
+        """
+        profile = FakeProfile(
+            annual_salary=312000,
+            created_at=date(2026, 1, 1),
+        )
+        periods = self._high_earner_periods()
+        tax_configs = self._tax_configs(
+            simple_bracket_set, nc_state_config
+        )
+        cal = FakeCalibration(
+            federal_rate="0.20000",
+            state_rate="0.05000",
+            ss_rate="0.06200",
+            medicare_rate="0.01450",
+        )
+
+        results = project_salary(
+            profile, periods, tax_configs, calibration=cal,
+        )
+
+        # Periods 1-15 (indexes 0-14): full SS.  12000.00 * 0.062 = 744.00.
+        for i in range(15):
+            assert results[i].social_security == Decimal("744.00"), (
+                f"Period {i+1}: SS expected 744.00, got "
+                f"{results[i].social_security}"
+            )
+
+        # Period 16 (index 15): partial.  cumul=180000, ss_taxable=4500.
+        # 4500 * 0.062 = 279.00.
+        assert results[15].social_security == Decimal("279.00"), (
+            f"Period 16 (partial crossing): SS expected 279.00, got "
+            f"{results[15].social_security}"
+        )
+
+        # Periods 17-26 (indexes 16-25): cumul >= cap, SS = 0.00.
+        for i in range(16, 26):
+            assert results[i].social_security == Decimal("0.00"), (
+                f"Period {i+1}: SS expected 0.00 (over cap), got "
+                f"{results[i].social_security}"
+            )

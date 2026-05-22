@@ -341,6 +341,12 @@ EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP = _register(
     "entries_cleared_on_anchor_trueup", BUSINESS,
     "Anchor true-up bulk-cleared past-dated entries on projected parents.",
 )
+EVT_ANCHOR_CACHE_RECONCILED = _register(
+    "anchor_cache_reconciled", BUSINESS,
+    "balance_resolver.resolve_anchor found Account.current_anchor_* "
+    "disagreeing with the latest AccountAnchorHistory row; the history "
+    "row won (E-19 dated source of truth) and the divergence was logged.",
+)
 
 
 # ── Business events: pay periods ───────────────────────────────────

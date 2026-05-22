@@ -19,6 +19,7 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.paycheck_calculator import DeductionLine, PaycheckBreakdown
+from app.services import account_service
 
 
 # ── Transaction.effective_amount ─────────────────────────────────────
@@ -195,11 +196,11 @@ class TestTransferEffectiveAmount:
         from app.models.ref import AccountType
 
         savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("0"),
+            anchor_balance=Decimal("0"),
         )
         db.session.add(savings)
         db.session.flush()

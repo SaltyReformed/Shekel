@@ -23,6 +23,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.ref import Status, TransactionType
 from app.services import balance_calculator
 from app.enums import StatusEnum
+from app.services import account_service
 
 
 class TestEntryAwareBalance:
@@ -666,11 +667,37 @@ class TestEntryAwareBalance:
     # ── Selectinload behavior ────────────────────────────────────────
 
     def test_entry_aware_entries_not_loaded(self, app, db, seed_user, seed_periods):
-        """Entries NOT selectinloaded -- falls back to effective_amount.
+        """Entries NOT pre-loaded -- the engine applies the formula anyway.
 
-        When entries are not eagerly loaded, the calculator uses
-        effective_amount (estimated_amount for projected transactions)
-        without triggering a lazy load.
+        Re-pinned under CLAUDE.md Section 1 rule 2 exception
+        (F-009 / CRIT-01 / E-25): pre-Commit-5 this test pinned
+        ``Decimal("4500.00")`` to lock the silent-degrade short-
+        circuit -- ``balance_calculator._entry_aware_amount`` returned
+        ``txn.effective_amount`` whenever the consuming query had not
+        issued ``selectinload(Transaction.entries)``.  Symptom #1
+        ($160 grid vs $114.29 /savings) is exactly that seam in
+        production, and the developer-locked expectation E-25
+        identifies the seam itself as the bug, not the entries-aware
+        value.
+
+        Post-Commit-5 the engine accesses ``txn.entries`` via the
+        relationship descriptor, which lazy-loads on demand so the
+        entries-aware reduction is unconditional.  The previous
+        post-calc ``"entries" not in __dict__`` assertion is removed
+        because it asserted the seam's implementation detail (no
+        lazy load), which contradicts the fix.  In production, every
+        balance consumer routes through the canonical
+        ``balance_resolver.balances_for`` producer that always
+        pre-loads entries, so the lazy-load fallback exercised here
+        is the safety net for any caller that bypasses the producer
+        -- still correct, just one extra SELECT per transaction.
+
+        Hand arithmetic:
+          est = 500.00; cleared_debit = 0; uncleared_debit = 0
+          sum_credit = 300.00 (one credit entry)
+          checking_impact = max(500.00 - 0 - 300.00, 0)
+                          = max(200.00, 0) = 200.00
+          post_anchor_balance = 5000.00 + 0 - 200.00 = 4800.00
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -702,8 +729,7 @@ class TestEntryAwareBalance:
             db.session.add(txn)
             db.session.flush()
 
-            # Add a $300 credit entry that WOULD reduce checking impact
-            # to max(500 - 300, 0) = 200 if entries were loaded.
+            # $300 credit entry -- reduces the reservation by 300.
             db.session.add(TransactionEntry(
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
@@ -714,14 +740,17 @@ class TestEntryAwareBalance:
             ))
             db.session.flush()
 
-            # Query WITHOUT selectinload -- entries not in the instance dict.
+            # Query WITHOUT selectinload to exercise the lazy-load
+            # safety net.  Pre-Commit-5 this caller silently got the
+            # wrong value; post-Commit-5 the formula is applied
+            # regardless via the relationship descriptor.
             all_txns = (
                 db.session.query(Transaction)
                 .filter(Transaction.id == txn.id)
                 .all()
             )
 
-            # Verify entries are NOT loaded in the instance dict.
+            # Entries genuinely not pre-loaded going into the engine.
             assert "entries" not in all_txns[0].__dict__
 
             balances, _ = balance_calculator.calculate_balances(
@@ -731,12 +760,11 @@ class TestEntryAwareBalance:
                 transactions=all_txns,
             )
 
-            # Without entries loaded, falls back to effective_amount = 500.
-            # 5000 - 500 = 4500 (not 4800 which would be the entry-aware value).
-            assert balances[seed_periods[1].id] == Decimal("4500.00")
-
-            # Verify that no lazy load was triggered during calculation.
-            assert "entries" not in all_txns[0].__dict__
+            # max(500 - 0 - 300, 0) = 200 expense reservation.
+            # 5000 + 0 - 200 = 4800.  Pre-Commit-5 this returned 4500
+            # via the silent-degrade short-circuit; F-009 / CRIT-01
+            # proved that value wrong.
+            assert balances[seed_periods[1].id] == Decimal("4800.00")
 
     # ── Formula edge cases ───────────────────────────────────────────
 
@@ -1338,10 +1366,12 @@ class TestEntryAwareBalance:
             savings_type = (
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(savings)
             db.session.flush()

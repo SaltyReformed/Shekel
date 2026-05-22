@@ -23,6 +23,7 @@ from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
 from app.enums import RoleEnum
+from app.services import account_service
 
 
 # ── Helper ────────────────────────────────────────────────────────
@@ -213,11 +214,11 @@ class TestCreateEntry:
             checking_type = (
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
-            second_account = Account(
+            second_account = account_service.create_account(
                 user_id=user_id,
                 account_type_id=checking_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("500.00"),
+                anchor_balance=Decimal("500.00"),
             )
             db.session.add(second_account)
             db.session.flush()
@@ -1075,6 +1076,56 @@ class TestComputeRemaining:
 
             assert remaining == Decimal("0.01")
 
+    def test_compute_remaining_anchors_on_estimated_only(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """C30-3 (E-21 / MED-03 / F-028 / F-056): compute_remaining
+        takes only ``estimated_amount`` and therefore cannot anchor on
+        ``actual_amount`` or switch on status -- the structural
+        guarantee that the entry-tracked bill row's remaining always
+        shares the declared E-21 budget base with the row's amount
+        cell.
+
+        Worked example: estimated=$120 (the E-21 base), entries
+        summing $80; ``actual_amount`` could be anything (e.g. $100)
+        and the result MUST stay anchored on $120.
+            remaining = 120.00 - 80.00 = 40.00
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            entries = [
+                _make_entry(txn, user, amount="50.00"),
+                _make_entry(txn, user, amount="30.00"),
+            ]
+
+            # Even if a hypothetical caller passed actual_amount, the
+            # function would compute against that value -- the
+            # signature accepts no actual or status, so anchoring on
+            # estimated is structural.  Pass estimated and assert the
+            # E-21 result.
+            remaining = entry_service.compute_remaining(
+                Decimal("120.00"), entries,
+            )
+
+            assert remaining == Decimal("40.00")
+
+    def test_compute_remaining_signature_excludes_actual_and_status(self):
+        """C30-3 partner: the function signature cannot consult
+        ``actual_amount`` or ``status`` -- it accepts only
+        ``estimated_amount`` and ``entries`` -- so a future change
+        cannot silently shift the entry-tracked row's base away from
+        E-21 / MED-03 estimated_amount without an explicit signature
+        change (which would surface in review).
+        """
+        # pylint: disable=import-outside-toplevel
+        import inspect
+        sig = inspect.signature(entry_service.compute_remaining)
+        # E-21 base contract: the only inputs are the declared base
+        # (estimated_amount) and the entries to subtract.  No txn, no
+        # status, no actual.
+        assert list(sig.parameters) == ["estimated_amount", "entries"]
+
 
 class TestComputeActualFromEntries:
     """Tests for entry_service.compute_actual_from_entries()."""
@@ -1416,3 +1467,81 @@ class TestEntryUpdateSchema:
             })
             assert "bogus_field" not in data
             assert data["amount"] == Decimal("50.00")
+
+
+# ── pct_complete (Commit 9 / F-23) ────────────────────────────────
+
+
+class TestPctComplete:
+    """Tests for entry_service.pct_complete().
+
+    Locks the MED-04 / E-16 standard: money math is service-layer
+    Decimal, not route-layer float.  The companion route used to cast
+    the entry-percentage to float before handing it to the template;
+    the helper now keeps the result as a Decimal end-to-end, mirroring
+    the shape of dashboard_service._safe_pct_complete.
+    """
+
+    def test_pct_complete_normal_case(self):
+        """C9-1: total $50, target $100 -> Decimal("50.00").
+
+        Hand arithmetic: 50 / 100 * 100 = 50, quantised to 2dp = 50.00.
+        """
+        assert entry_service.pct_complete(
+            Decimal("50"), Decimal("100"),
+        ) == Decimal("50.00")
+
+    def test_pct_complete_clamps_at_100(self):
+        """C9-2: over-budget total $150 against target $100 -> Decimal("100.00").
+
+        Hand arithmetic: 150 / 100 * 100 = 150, clamped at 100 because
+        the progress-bar width has no defined meaning past 100%.
+        """
+        assert entry_service.pct_complete(
+            Decimal("150"), Decimal("100"),
+        ) == Decimal("100.00")
+
+    def test_pct_complete_target_zero_guard(self):
+        """C9-3: target $0 -> Decimal("0") (no divide-by-zero).
+
+        A zero target is a degenerate budget line; returning 0 (rather
+        than raising) lets the companion view render the row without
+        special-casing in the template.
+        """
+        assert entry_service.pct_complete(
+            Decimal("50"), Decimal("0"),
+        ) == Decimal("0")
+
+    def test_pct_complete_target_negative_guard(self):
+        """Negative target -> Decimal("0") (same guard path as zero).
+
+        Defensive: ``estimated_amount`` is CHECK-constrained to >= 0
+        at the storage tier, but the helper should not produce a
+        misleading negative percentage if a future caller violates
+        that invariant in an in-memory object.
+        """
+        assert entry_service.pct_complete(
+            Decimal("50"), Decimal("-10"),
+        ) == Decimal("0")
+
+    def test_pct_complete_zero_total(self):
+        """Zero spending against a positive target -> Decimal("0.00").
+
+        Hand arithmetic: 0 / 100 * 100 = 0.00.
+        """
+        assert entry_service.pct_complete(
+            Decimal("0"), Decimal("100"),
+        ) == Decimal("0.00")
+
+    def test_pct_complete_returns_decimal_not_float(self):
+        """MED-04 / E-16: the return type is Decimal, not float.
+
+        Locks the post-F-23 contract that no caller has to do a
+        ``float(Decimal_expression)`` cast at the route layer.
+        """
+        result = entry_service.pct_complete(
+            Decimal("55.50"), Decimal("100.00"),
+        )
+        assert isinstance(result, Decimal)
+        # Hand arithmetic: 55.50 / 100 * 100 = 55.50.
+        assert result == Decimal("55.50")

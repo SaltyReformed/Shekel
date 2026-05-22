@@ -157,3 +157,15 @@ class RoleEnum(enum.Enum):
 
     OWNER = "owner"
     COMPANION = "companion"
+
+
+class LoanAnchorSourceEnum(enum.Enum):
+    """Loan anchor event source values (CRIT-02 / E-18).
+
+    Distinguishes the origination event that every loan carries from
+    user-initiated balance true-ups appended through the dashboard
+    edit flow.  Values match ``ref.loan_anchor_sources.name``.
+    """
+
+    ORIGINATION = "origination"
+    USER_TRUEUP = "user_trueup"

@@ -12,7 +12,6 @@ already supports companion access via ``_get_accessible_transaction``.
 """
 
 import logging
-from decimal import Decimal
 
 from flask import Blueprint, redirect, render_template, url_for
 from flask_login import current_user, login_required
@@ -20,7 +19,11 @@ from flask_login import current_user, login_required
 from app import ref_cache
 from app.enums import RoleEnum
 from app.services import companion_service, pay_period_service
-from app.services.entry_service import compute_entry_sums, compute_remaining
+from app.services.entry_service import (
+    compute_entry_sums,
+    compute_remaining,
+    pct_complete,
+)
 from app.exceptions import NotFoundError
 
 logger = logging.getLogger(__name__)
@@ -41,8 +44,12 @@ def _build_entry_data(transactions: list) -> dict[int, dict]:
     Returns:
         Dict mapping transaction ID to a dict with keys:
         ``total`` (Decimal), ``remaining`` (Decimal), ``count`` (int),
-        ``pct`` (float -- percentage of budget consumed, capped at 100
-        for progress bar width).
+        ``pct`` (Decimal -- percentage of budget consumed in [0, 100],
+        quantised to two decimal places via
+        :func:`entry_service.pct_complete`; the ``data-progress-pct``
+        attribute on the progress-bar element is parsed via
+        ``parseFloat`` in ``progress_bar.js`` so the Decimal string
+        format is valid as-is).
     """
     entry_data: dict[int, dict] = {}
     for txn in transactions:
@@ -50,16 +57,11 @@ def _build_entry_data(transactions: list) -> dict[int, dict]:
             sum_debit, sum_credit = compute_entry_sums(txn.entries)
             total = sum_debit + sum_credit
             remaining = compute_remaining(txn.estimated_amount, txn.entries)
-            pct = (
-                float(total / txn.estimated_amount * Decimal("100"))
-                if txn.estimated_amount > 0
-                else 0.0
-            )
             entry_data[txn.id] = {
                 "total": total,
                 "remaining": remaining,
                 "count": len(txn.entries),
-                "pct": pct,
+                "pct": pct_complete(total, txn.estimated_amount),
             }
     return entry_data
 

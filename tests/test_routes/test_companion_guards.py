@@ -23,6 +23,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 
 # ── Companion blocked from all guarded routes ────────────────────────
@@ -421,17 +422,31 @@ class TestMarkDoneCompanionAccess:
         db.session.add(second_user)
         db.session.flush()
 
+
+        # Bootstrap pay period (E-19, Commit 3): the
+        # account_service factory requires the user to have at
+        # least one pay period to anchor against.
+        from datetime import date as _date, timedelta as _td
+        from app.models.pay_period import PayPeriod as _PayPeriod
+        _bootstrap = _PayPeriod(
+            user_id=second_user.id,
+            start_date=_date(2024, 1, 5),
+            end_date=_date(2024, 1, 5) + _td(days=13),
+            period_index=0,
+        )
+        db.session.add(_bootstrap)
+        db.session.flush()
         settings = UserSettings(user_id=second_user.id)
         db.session.add(settings)
 
         checking_type = (
             db.session.query(AccountType).filter_by(name="Checking").one()
         )
-        account = Account(
+        account = account_service.create_account(
             user_id=second_user.id,
             account_type_id=checking_type.id,
             name="Checking",
-            current_anchor_balance=Decimal("1000.00"),
+            anchor_balance=Decimal("1000.00"),
         )
         db.session.add(account)
 

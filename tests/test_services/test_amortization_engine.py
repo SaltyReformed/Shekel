@@ -10,7 +10,6 @@ import pytest
 from app.services.amortization_engine import (
     AmortizationRow,
     AmortizationSummary,
-    LoanProjection,
     PaymentRecord,
     RateChangeRecord,
     calculate_monthly_payment,
@@ -18,7 +17,6 @@ from app.services.amortization_engine import (
     calculate_remaining_months,
     calculate_summary,
     generate_schedule,
-    get_loan_projection,
 )
 
 
@@ -524,85 +522,6 @@ class TestCalculateRemainingMonths:
         )
 
 
-class TestGetLoanProjection:
-    """Tests for the get_loan_projection convenience function."""
-
-    def test_returns_projection_dataclass(self):
-        """get_loan_projection returns a LoanProjection with all fields."""
-        params = type("P", (), {
-            "origination_date": date(2025, 1, 1),
-            "term_months": 60,
-            "original_principal": Decimal("25000.00"),
-            "current_principal": Decimal("25000.00"),
-            "interest_rate": Decimal("0.05000"),
-            "payment_day": 15,
-        })()
-
-        proj = get_loan_projection(params)
-        assert isinstance(proj, LoanProjection)
-        assert proj.remaining_months >= 0
-        assert isinstance(proj.summary, AmortizationSummary)
-        assert isinstance(proj.schedule, list)
-        assert proj.summary.monthly_payment > 0
-
-    def test_zero_remaining_months(self):
-        """Projection for fully elapsed loan does not raise.
-
-        Regression test for the int-vs-Decimal sum() bug.  The monthly
-        payment still reflects the contractual amount (from original
-        principal and term).  The schedule now contains the full
-        life-of-loan history from origination (not empty), and
-        total_interest is the life-of-loan total (not zero).
-        remaining_months is 0 because the term has fully elapsed.
-        """
-        params = type("P", (), {
-            "origination_date": date(2015, 1, 1),
-            "term_months": 60,
-            "original_principal": Decimal("25000.00"),
-            "current_principal": Decimal("25000.00"),
-            "interest_rate": Decimal("0.05000"),
-            "payment_day": 15,
-        })()
-
-        proj = get_loan_projection(params)
-        assert proj.remaining_months == 0
-        # Schedule shows full history from origination.
-        assert len(proj.schedule) > 0
-        # Last row should have zero remaining balance.
-        assert proj.schedule[-1].remaining_balance == Decimal("0.00")
-        # Contractual payment is still computed from original terms.
-        assert proj.summary.monthly_payment > Decimal("0.00")
-        # Total interest is the life-of-loan amount.
-        assert proj.summary.total_interest > Decimal("0.00")
-
-    def test_contractual_payment_uses_original_principal(self):
-        """Monthly payment reflects original loan terms, not current balance.
-
-        Regression test: a $35,000 auto loan at 3.25%/72mo with $18,000
-        remaining should show ~$536.87/mo (the contractual payment), not
-        ~$1,663 (re-amortizing $18k over 11 remaining months).
-        """
-        params = type("P", (), {
-            "origination_date": date(2021, 2, 1),
-            "term_months": 72,
-            "original_principal": Decimal("35000.00"),
-            "current_principal": Decimal("18000.00"),
-            "interest_rate": Decimal("0.03250"),
-            "payment_day": 1,
-        })()
-
-        # Contractual payment: amortize(35000, 0.0325, 72).
-        expected = calculate_monthly_payment(
-            Decimal("35000.00"), Decimal("0.03250"), 72,
-        )
-
-        proj = get_loan_projection(params)
-        assert proj.summary.monthly_payment == expected
-        # Must be around $537, definitely not $1,663.
-        assert proj.summary.monthly_payment < Decimal("600")
-        assert proj.summary.monthly_payment > Decimal("500")
-
-
 # ── Section 5 Regression Baseline ──────────────────────────────────────
 
 
@@ -710,43 +629,6 @@ class TestAmortizationEngineRegression:
         )
         assert accel[-1].payment_date <= target
         assert accel[-1].remaining_balance == Decimal("0.00")
-
-    # ── get_loan_projection consistency ────────────────────────────
-
-    def test_get_loan_projection_wraps_individual_functions(self):
-        """get_loan_projection must return results consistent with calling
-        calculate_summary and generate_schedule individually.
-
-        Section 5 may refactor the projection pipeline.  This ensures the
-        wrapper stays in sync with the underlying functions.
-
-        get_loan_projection now generates the full life-of-loan schedule
-        from origination_date using original_principal and term_months.
-        Replicate that exact behavior for a valid cross-check.
-        """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.MONTHS,
-            "original_principal": self.PRINCIPAL,
-            "current_principal": self.PRINCIPAL,
-            "interest_rate": self.RATE,
-            "payment_day": self.PAYMENT_DAY,
-        })()
-
-        projection = get_loan_projection(params)
-
-        # Replicate what get_loan_projection does internally:
-        # summary and schedule start from origination with original
-        # principal and full term.
-        standalone_summary = calculate_summary(
-            self.PRINCIPAL, self.RATE, self.MONTHS,
-            self.ORIGINATION, self.PAYMENT_DAY, self.MONTHS,
-            original_principal=self.PRINCIPAL,
-        )
-
-        assert projection.summary.monthly_payment == standalone_summary.monthly_payment
-        assert projection.summary.total_interest == standalone_summary.total_interest
-        assert projection.summary.payoff_date == standalone_summary.payoff_date
 
     # ── Known-value regression locks ───────────────────────────────
 
@@ -1464,8 +1346,14 @@ class TestPaymentAwareSchedule:
         )
         # Month 1: payment record exists, extra_monthly NOT added.
         assert schedule[0].extra_payment == Decimal("0.00")
-        # Month 2: no payment record, extra_monthly IS applied.
-        assert schedule[1].extra_payment > Decimal("0.00")
+        # Month 2 (Commit 32 / MED-07 pinning of directional check):
+        # extra = min(extra_monthly, balance - principal_portion).
+        # Balance is ~$249,774 entering month 2, principal_portion is
+        # ~$226, so the cap is far above the $500 extra_monthly.
+        # The schedule must record extra_payment == 500.00 verbatim.
+        assert schedule[1].extra_payment == Decimal("500.00"), (
+            f"Expected 500.00, got {schedule[1].extra_payment}"
+        )
 
     # ── Summary and projection passthrough ────────────────────────
 
@@ -1494,42 +1382,6 @@ class TestPaymentAwareSchedule:
         )
         # Extra payment reduces total interest.
         assert summary_with.total_interest < summary_standard.total_interest
-
-    def test_get_loan_projection_with_payments_passthrough(self):
-        """get_loan_projection with payments returns consistent results.
-
-        Note: get_loan_projection uses schedule_start as origination_date
-        for the schedule.  When schedule_start=None it defaults to
-        today's 1st.  The payment must fall in a schedule month to have
-        any effect.  We use a fixed schedule_start and a matching
-        payment date.
-        """
-        schedule_start = date(2026, 1, 1)
-        params = type("P", (), {
-            "origination_date": schedule_start,
-            "term_months": self.MONTHS,
-            "original_principal": self.PRINCIPAL,
-            "current_principal": self.PRINCIPAL,
-            "interest_rate": self.RATE,
-            "payment_day": self.PAYMENT_DAY,
-        })()
-
-        # The schedule starts at Feb 2026 (month after schedule_start).
-        # Place a large lump-sum payment in Feb 2026 (month 1).
-        payments = [
-            PaymentRecord(
-                payment_date=date(2026, 2, 15),
-                amount=Decimal("5000.00"),
-                is_confirmed=True,
-            ),
-        ]
-        proj_std = get_loan_projection(params, schedule_start=schedule_start)
-        proj_pay = get_loan_projection(
-            params, schedule_start=schedule_start, payments=payments,
-        )
-        # Lump-sum payment should reduce total interest.
-        assert proj_pay.summary.total_interest < proj_std.summary.total_interest
-
 
 class TestPaymentRecordValidation:
     """Tests for PaymentRecord dataclass validation.
@@ -1985,34 +1837,6 @@ class TestARMRateChangeSchedule:
         )
         # Rate increase -> more total interest.
         assert summary_arm.total_interest > summary_fixed.total_interest
-
-    def test_arm_get_loan_projection_with_rate_changes(self):
-        """get_loan_projection threads rate_changes correctly.
-
-        A rate increase should produce a different total_interest than
-        the fixed-rate projection.
-        """
-        schedule_start = date(2024, 1, 1)
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.MONTHS,
-            "original_principal": self.PRINCIPAL,
-            "current_principal": self.PRINCIPAL,
-            "interest_rate": self.RATE,
-            "payment_day": self.PAYMENT_DAY,
-        })()
-        rate_changes = [
-            RateChangeRecord(date(2025, 2, 1), Decimal("0.07")),
-        ]
-        proj_fixed = get_loan_projection(
-            params, schedule_start=schedule_start,
-        )
-        proj_arm = get_loan_projection(
-            params, schedule_start=schedule_start,
-            rate_changes=rate_changes,
-        )
-        assert proj_arm.summary.total_interest > proj_fixed.summary.total_interest
-
 
 class TestRateChangeRecordValidation:
     """Tests for RateChangeRecord dataclass validation.
@@ -2769,142 +2593,6 @@ class TestARMContractualPaymentBug:
             f"{self.CURRENT_PRINCIPAL}, got {total_principal}"
         )
 
-    # ── get_loan_projection ──────────────────────────────────────
-
-    def test_arm_projection_with_rate_changes(self):
-        """get_loan_projection for a partially paid ARM with rate_changes
-        must return the re-amortized payment, not the contractual payment.
-
-        Tests the engine-level defense: rate_changes disables contractual.
-        """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.TERM_MONTHS,
-            "original_principal": self.ORIGINAL_PRINCIPAL,
-            "current_principal": self.CURRENT_PRINCIPAL,
-            "interest_rate": self.CURRENT_RATE,
-            "payment_day": self.PAYMENT_DAY,
-            "is_arm": True,
-        })()
-
-        proj = get_loan_projection(
-            params,
-            schedule_start=self.ORIGINATION,
-            rate_changes=self.RATE_CHANGES,
-        )
-
-        expected_payment = calculate_monthly_payment(
-            self.CURRENT_PRINCIPAL,
-            self.CURRENT_RATE,
-            proj.remaining_months,
-        )
-        assert proj.summary.monthly_payment == expected_payment, (
-            f"ARM projection payment should be {expected_payment}, "
-            f"got {proj.summary.monthly_payment}"
-        )
-        wrong = calculate_monthly_payment(
-            self.ORIGINAL_PRINCIPAL,
-            self.CURRENT_RATE,
-            self.TERM_MONTHS,
-        )
-        assert proj.summary.monthly_payment != wrong, (
-            "ARM projection must not use contractual path"
-        )
-
-    def test_arm_projection_without_rate_changes(self):
-        """ARM loan with is_arm=True but NO rate_changes (newly created
-        loan with no rate history entered yet) must still use the
-        re-amortized payment.
-
-        This is the exact scenario that caused the reported bug: the user
-        created a new ARM mortgage and the displayed payment used
-        M(original_principal, current_rate, term_months) instead of
-        M(current_principal, current_rate, remaining_months).
-        """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.TERM_MONTHS,
-            "original_principal": self.ORIGINAL_PRINCIPAL,
-            "current_principal": self.CURRENT_PRINCIPAL,
-            "interest_rate": self.CURRENT_RATE,
-            "payment_day": self.PAYMENT_DAY,
-            "is_arm": True,
-        })()
-
-        # No rate_changes -- simulating a new ARM with no history.
-        proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
-
-        expected_payment = calculate_monthly_payment(
-            self.CURRENT_PRINCIPAL,
-            self.CURRENT_RATE,
-            proj.remaining_months,
-        )
-        assert proj.summary.monthly_payment == expected_payment, (
-            f"ARM projection (no rate history) should be {expected_payment}, "
-            f"got {proj.summary.monthly_payment}"
-        )
-        wrong = calculate_monthly_payment(
-            self.ORIGINAL_PRINCIPAL,
-            self.CURRENT_RATE,
-            self.TERM_MONTHS,
-        )
-        assert proj.summary.monthly_payment != wrong, (
-            "ARM projection without rate_changes must still use "
-            "re-amortized path when is_arm=True"
-        )
-
-    def test_arm_projection_is_arm_false_uses_contractual(self):
-        """A fixed-rate loan (is_arm=False) uses the contractual payment
-        from original terms, even if the params look like an ARM scenario.
-
-        This confirms is_arm is the controlling flag, not the principal
-        delta or rate value.
-        """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.TERM_MONTHS,
-            "original_principal": self.ORIGINAL_PRINCIPAL,
-            "current_principal": self.CURRENT_PRINCIPAL,
-            "interest_rate": self.CURRENT_RATE,
-            "payment_day": self.PAYMENT_DAY,
-            "is_arm": False,
-        })()
-
-        proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
-
-        contractual = calculate_monthly_payment(
-            self.ORIGINAL_PRINCIPAL,
-            self.CURRENT_RATE,
-            self.TERM_MONTHS,
-        )
-        assert proj.summary.monthly_payment == contractual, (
-            "Fixed-rate loan must use contractual payment from original terms"
-        )
-
-    def test_arm_projection_missing_is_arm_defaults_contractual(self):
-        """Params without an is_arm attribute default to fixed-rate behavior.
-
-        Backward compatibility: older params objects or test stubs without
-        is_arm should not break -- they get the contractual path.
-        """
-        params = type("P", (), {
-            "origination_date": self.ORIGINATION,
-            "term_months": self.TERM_MONTHS,
-            "original_principal": self.ORIGINAL_PRINCIPAL,
-            "current_principal": self.CURRENT_PRINCIPAL,
-            "interest_rate": self.CURRENT_RATE,
-            "payment_day": self.PAYMENT_DAY,
-        })()
-
-        proj = get_loan_projection(params, schedule_start=self.ORIGINATION)
-
-        contractual = calculate_monthly_payment(
-            self.ORIGINAL_PRINCIPAL,
-            self.CURRENT_RATE,
-            self.TERM_MONTHS,
-        )
-        assert proj.summary.monthly_payment == contractual
-
     # ── Fixed-rate contractual path still works ──────────────────
 
     def test_fixed_rate_contractual_path_unchanged(self):
@@ -2949,19 +2637,21 @@ class TestARMContractualPaymentBug:
         using original_principal and the full term.  The correct ARM
         formula is M(current_principal, rate, remaining_months); the
         exact dollar value depends on remaining_months which advances
-        each calendar month.  We verify two stable invariants:
+        each calendar month.  We verify two stable invariants via
+        ``calculate_summary`` with explicit ``rate_changes``:
 
           1. The monthly_payment equals the re-amortization formula
-             applied to the CURRENT remaining months (not 272 forever).
+             applied to the CURRENT remaining months (272 here).
           2. The monthly_payment is NOT the contractual value
              ($1,327.00) -- this is the witness for the original bug.
 
-        Tests both engine paths:
-          A. calculate_summary with rate_changes (engine-level guard)
-             -- remaining_months passed explicitly, so this is stable.
-          B. get_loan_projection with is_arm=True, no rate_changes
-             -- the actual user scenario; remaining_months computed
-             from origination_date and date.today().
+        Pre-Commit-15 the test also exercised the orchestration via
+        ``get_loan_projection`` (Path B); F-10 / follow-up Commit 15
+        deleted that wrapper -- its orchestration responsibility now
+        lives in ``loan_resolver.resolve_loan`` and is covered by the
+        integration tests in
+        ``tests/test_integration/test_loan_resolver_arm.py`` and
+        ``tests/test_integration/test_loan_resolver_single_source.py``.
         """
         origination = date(2018, 12, 1)
         current_principal = Decimal("178103.41")
@@ -2981,8 +2671,8 @@ class TestARMContractualPaymentBug:
             "user scenario must equal $1,327.00 (the bug witness)."
         )
 
-        # Path A: Engine-level guard via rate_changes.  remaining_months
-        # is passed explicitly so the expected value is fully determined
+        # Engine-level guard via rate_changes.  remaining_months is
+        # passed explicitly so the expected value is fully determined
         # by the inputs (no date.today() involvement).
         rate_changes = [
             RateChangeRecord(
@@ -3000,52 +2690,19 @@ class TestARMContractualPaymentBug:
             original_principal=original_principal,
             rate_changes=rate_changes,
         )
-        path_a_expected = calculate_monthly_payment(
+        expected = calculate_monthly_payment(
             current_principal, rate, 272,
         )
         # Hand-computed sanity: M($178,103.41, 6.875%, 272) = $1,293.96.
-        assert path_a_expected == Decimal("1293.96")
-        assert summary.monthly_payment == path_a_expected, (
-            f"Path A: monthly_payment must equal "
-            f"M(${current_principal}, {rate}, 272) = {path_a_expected}, "
+        assert expected == Decimal("1293.96")
+        assert summary.monthly_payment == expected, (
+            f"monthly_payment must equal "
+            f"M(${current_principal}, {rate}, 272) = {expected}, "
             f"got {summary.monthly_payment}"
         )
         assert summary.monthly_payment != contractual_payment, (
-            "Path A regression: monthly_payment reverted to contractual "
+            "Regression: monthly_payment reverted to contractual "
             f"value ${contractual_payment} (the original bug)."
-        )
-
-        # Path B: get_loan_projection with is_arm=True, no rate_changes.
-        # The exact user scenario.  remaining_months is derived from
-        # date.today() inside calculate_remaining_months, so the
-        # expected value must be computed the same way to stay valid
-        # as time advances.  The bug-regression check (NOT equal to
-        # contractual value) is unchanged.
-        remaining_today = calculate_remaining_months(origination, term)
-        path_b_expected = calculate_monthly_payment(
-            current_principal, rate, remaining_today,
-        )
-        params = type("P", (), {
-            "origination_date": origination,
-            "term_months": term,
-            "original_principal": original_principal,
-            "current_principal": current_principal,
-            "interest_rate": rate,
-            "payment_day": 1,
-            "is_arm": True,
-        })()
-        proj = get_loan_projection(
-            params,
-            schedule_start=origination,
-        )
-        assert proj.summary.monthly_payment == path_b_expected, (
-            f"Path B: projected monthly_payment must equal "
-            f"M(${current_principal}, {rate}, {remaining_today}) = "
-            f"{path_b_expected}, got {proj.summary.monthly_payment}"
-        )
-        assert proj.summary.monthly_payment != contractual_payment, (
-            "Path B regression: projected monthly_payment reverted to "
-            f"contractual value ${contractual_payment} (the original bug)."
         )
 
     # ── Edge cases ───────────────────────────────────────────────
@@ -3131,3 +2788,187 @@ class TestARMContractualPaymentBug:
 
         # Schedule should still terminate cleanly.
         assert schedule[-1].remaining_balance == Decimal("0.00")
+
+
+class TestFixedRateAnchorReset:
+    """Regression tests for F-8: anchor-reset payment gate.
+
+    Prior to the fix, ``generate_schedule`` unconditionally recomputed
+    ``monthly_payment`` whenever the anchor reset fired.  For fixed-rate
+    loans the inner contract sets ``max_months = remaining_months +
+    term_months`` (a generous upper bound for the early-payoff case),
+    so ``months_left`` at the reset was roughly ``2 * term_months`` and
+    the recomputed payment came out about half the contractual amount.
+
+    The fix gates the recompute on ``not using_contractual``: ARM loans
+    (``using_contractual`` is False) continue to re-amortize at the
+    anchor; fixed-rate loans keep the contractual monthly payment that
+    was computed at loop entry.
+
+    The bug is unreachable in production today because every fixed-rate
+    call site passes ``anchor_balance=None``.  Closing the gap lets a
+    future Commit-16 fixed-rate true-up UX project from the corrected
+    balance without corrupting the schedule.
+    """
+
+    # ── C14-1: fixed-rate anchor at origination ───────────────────
+    #
+    # $400,000 at 6% / 360 months.  M = P * r(1+r)^n / ((1+r)^n - 1)
+    # with r = 0.06 / 12 = 0.005 and n = 360:
+    #   (1.005)^360 = 6.022575...
+    #   numerator = 400000 * 0.005 * 6.022575 = 12045.150...
+    #   denominator = 6.022575 - 1 = 5.022575
+    #   M = 12045.150 / 5.022575 = 2398.2046...
+    #   -> Decimal("2398.20") after ROUND_HALF_UP to two places.
+
+    FIXED_PRINCIPAL = Decimal("400000")
+    FIXED_RATE = Decimal("0.06")
+    FIXED_TERM = 360
+    FIXED_ORIGINATION = date(2026, 1, 1)
+    FIXED_PAYMENT_DAY = 1
+    CONTRACTUAL_PAYMENT = Decimal("2398.20")
+
+    def test_fixed_rate_anchor_at_origination_preserves_contractual_payment(self):
+        """C14-1: every row's payment equals the contractual P&I when the
+        anchor is passed for a fixed-rate loan.
+
+        Without the F-8 gate, the anchor reset at the first month after
+        origination would recompute ``monthly_payment`` over
+        ``max_months - 1 + 1 = 720`` months (since
+        ``max_months = remaining_months + term_months = 360 + 360``),
+        producing a payment of roughly ``M($400000, 0.06, 720) ~ $2056``
+        instead of the contractual ``$2398.20``.  After the gate, the
+        contractual payment is held constant across every row.
+        """
+        schedule = generate_schedule(
+            current_principal=self.FIXED_PRINCIPAL,
+            annual_rate=self.FIXED_RATE,
+            remaining_months=self.FIXED_TERM,
+            origination_date=self.FIXED_ORIGINATION,
+            payment_day=self.FIXED_PAYMENT_DAY,
+            original_principal=self.FIXED_PRINCIPAL,
+            term_months=self.FIXED_TERM,
+            anchor_balance=self.FIXED_PRINCIPAL,
+            anchor_date=self.FIXED_ORIGINATION,
+        )
+
+        # The anchor at origination is a no-op for the balance (it
+        # equals the starting principal) but it fires the anchor-reset
+        # branch; the F-8 gate must prevent the payment recompute.
+        #
+        # The contractual path keeps ``max_months = remaining_months +
+        # term_months`` as a generous upper bound, so the loop may
+        # produce one extra row that absorbs sub-penny rounding residue
+        # after the contractual payment retires the principal across
+        # 360 months (this is the existing behaviour locked by
+        # ``test_contractual_payment_from_original_terms`` and is
+        # unrelated to F-8).  All non-final rows must use the
+        # contractual payment; if the F-8 gate is removed every row
+        # would instead use ``M($400000, 0.06, 720) ~ $2056.83`` and
+        # the schedule would stretch well past ``FIXED_TERM + 1``.
+        assert len(schedule) <= self.FIXED_TERM + 1, (
+            f"Schedule should retire the loan within "
+            f"{self.FIXED_TERM + 1} rows (360 contractual + at most one "
+            f"residue-absorption row); got {len(schedule)} rows, which "
+            f"indicates the contractual payment was clobbered."
+        )
+        # Every row except the optional residue-absorption final row
+        # must use the contractual payment exactly.
+        non_residue_rows = (
+            schedule[:-1] if len(schedule) > self.FIXED_TERM else schedule
+        )
+        for row in non_residue_rows:
+            assert row.payment == self.CONTRACTUAL_PAYMENT, (
+                f"Fixed-rate row {row.month} payment should be "
+                f"{self.CONTRACTUAL_PAYMENT} (contractual M($400000, "
+                f"0.06, 360)), got {row.payment}"
+            )
+
+        # The schedule must still amortize to zero -- the contractual
+        # payment with no extra correctly retires the principal.
+        assert schedule[-1].remaining_balance == Decimal("0.00")
+
+    def test_fixed_rate_anchor_payment_matches_calculate_monthly_payment(self):
+        """C14-1 lock: ``calculate_monthly_payment`` for the fixture
+        returns exactly the value pinned in CONTRACTUAL_PAYMENT.
+
+        Locks the hand-computed value above against any drift in the
+        helper itself, so a future regression in
+        ``calculate_monthly_payment`` would fail this test loudly rather
+        than letting the schedule assertion silently re-pin against a
+        wrong helper output.
+        """
+        assert calculate_monthly_payment(
+            self.FIXED_PRINCIPAL, self.FIXED_RATE, self.FIXED_TERM,
+        ) == self.CONTRACTUAL_PAYMENT
+
+    # ── C14-2: ARM anchor mid-loan still re-amortizes ─────────────
+    #
+    # ARM scenario (``using_contractual`` is False because
+    # ``original_principal`` is None): $100,000 balance at 6% with 300
+    # months remaining, origination 2024-01-01.  Anchor at $90,000 on
+    # 2024-06-15.
+    #
+    # The first scheduled pay_date strictly after the anchor is the
+    # 6th iteration (origination + 1 -> 2024-02-01, ..., +5 ->
+    # 2024-07-01).  At month_num=6 the gate is True (ARM), the balance
+    # snaps to $90,000, and ``months_left = max_months - month_num + 1
+    # = 300 - 6 + 1 = 295``.  Expected post-anchor payment:
+    #   M($90,000, 0.06, 295)
+    # = 90000 * 0.005 * (1.005)^295 / ((1.005)^295 - 1)
+
+    ARM_BALANCE = Decimal("100000")
+    ARM_RATE = Decimal("0.06")
+    ARM_REMAINING = 300
+    ARM_ORIGINATION = date(2024, 1, 1)
+    ARM_ANCHOR_BALANCE = Decimal("90000")
+    ARM_ANCHOR_DATE = date(2024, 6, 15)
+    ARM_ANCHOR_MONTH_INDEX = 5  # 0-based: row 6 is index 5 (pay 2024-07-01)
+    ARM_MONTHS_LEFT_AT_ANCHOR = 295
+
+    def test_arm_mid_loan_anchor_reamortizes(self):
+        """C14-2: ARM loans still re-amortize at the anchor reset.
+
+        ``using_contractual`` is False for this fixture
+        (``original_principal`` is None), so the F-8 gate does NOT
+        suppress the recompute.  Row 6 (pay_date 2024-07-01) is the
+        first row strictly after anchor_date 2024-06-15; at that row
+        the balance must snap to $90,000 and the payment must
+        re-amortize over the remaining 295 months at 6%.
+        """
+        schedule = generate_schedule(
+            current_principal=self.ARM_BALANCE,
+            annual_rate=self.ARM_RATE,
+            remaining_months=self.ARM_REMAINING,
+            origination_date=self.ARM_ORIGINATION,
+            payment_day=1,
+            anchor_balance=self.ARM_ANCHOR_BALANCE,
+            anchor_date=self.ARM_ANCHOR_DATE,
+        )
+
+        anchor_row = schedule[self.ARM_ANCHOR_MONTH_INDEX]
+        assert anchor_row.payment_date == date(2024, 7, 1)
+
+        expected_post_anchor_payment = calculate_monthly_payment(
+            self.ARM_ANCHOR_BALANCE,
+            self.ARM_RATE,
+            self.ARM_MONTHS_LEFT_AT_ANCHOR,
+        )
+        # M($90,000, 0.06, 295) hand-arithmetic:
+        #   r = 0.005; (1.005)^295 ~ 4.367
+        #   M = 90000 * 0.005 * 4.367 / (4.367 - 1)
+        #     = 1965.15 / 3.367 = 583.71 (Decimal at two places).
+        assert anchor_row.payment == expected_post_anchor_payment
+
+        # Pre-anchor rows use the initial re-amortized payment from
+        # current_principal over remaining_months (the ARM contract);
+        # the gate does not change pre-anchor behaviour.
+        initial_payment = calculate_monthly_payment(
+            self.ARM_BALANCE, self.ARM_RATE, self.ARM_REMAINING,
+        )
+        assert schedule[0].payment == initial_payment
+
+        # The anchor reset must change the payment -- pin the diff so a
+        # regression that mistakenly applies the F-8 gate to ARMs would
+        # fail loudly here.
+        assert anchor_row.payment != initial_payment

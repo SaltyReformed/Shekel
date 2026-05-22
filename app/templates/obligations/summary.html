@@ -44,26 +44,26 @@
       <div class="col-md-4">
         <div class="text-muted small">Monthly Outflows</div>
         <div class="fw-bold fs-5 font-mono text-danger">
-          ${{ "{:,.2f}".format(total_outflows|float) }}
+          ${{ "{:,.2f}".format(total_outflows) }}
         </div>
         <div class="text-muted small">
-          Expenses ${{ "{:,.2f}".format(total_expense_monthly|float) }}
-          + Transfers ${{ "{:,.2f}".format(total_transfer_monthly|float) }}
+          Expenses ${{ "{:,.2f}".format(total_expense_monthly) }}
+          + Transfers ${{ "{:,.2f}".format(total_transfer_monthly) }}
         </div>
       </div>
       <div class="col-md-4">
         <div class="text-muted small">Monthly Income</div>
         <div class="fw-bold fs-5 font-mono text-success">
-          ${{ "{:,.2f}".format(total_income_monthly|float) }}
+          ${{ "{:,.2f}".format(total_income_monthly) }}
         </div>
       </div>
       <div class="col-md-4">
         <div class="text-muted small">Net Cash Flow</div>
-        <div class="fw-bold fs-5 font-mono {{ 'text-success' if net_cash_flow|float >= 0 else 'text-danger' }}">
-          {% if net_cash_flow|float >= 0 %}
-          ${{ "{:,.2f}".format(net_cash_flow|float) }}
+        <div class="fw-bold fs-5 font-mono {{ 'text-success' if net_cash_flow >= 0 else 'text-danger' }}">
+          {% if net_cash_flow >= 0 %}
+          ${{ "{:,.2f}".format(net_cash_flow) }}
           {% else %}
-          -${{ "{:,.2f}".format((-net_cash_flow)|float) }}
+          -${{ "{:,.2f}".format((-net_cash_flow)) }}
           {% endif %}
         </div>
       </div>
@@ -97,9 +97,9 @@
             <td>{{ item.name }}</td>
             <td class="d-none d-md-table-cell">{{ item.account_name }}</td>
             <td class="d-none d-md-table-cell">{{ item.category_name }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.amount|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(item.amount) }}</td>
             <td>{{ item.frequency }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.monthly|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(item.monthly) }}</td>
             <td>{{ item.next_date.strftime('%-m/%-d/%Y') if item.next_date else '--' }}</td>
           </tr>
           {% endfor %}
@@ -108,7 +108,7 @@
           <tr>
             <td colspan="5" class="d-none d-md-table-cell text-end fw-bold">Total Monthly</td>
             <td colspan="3" class="d-md-none text-end fw-bold">Total Monthly</td>
-            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_expense_monthly|float) }}</td>
+            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_expense_monthly) }}</td>
             <td></td>
           </tr>
         </tfoot>
@@ -146,9 +146,9 @@
             <td>{{ item.name }}</td>
             <td>{{ item.from_account }}</td>
             <td>{{ item.to_account }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.amount|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(item.amount) }}</td>
             <td>{{ item.frequency }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.monthly|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(item.monthly) }}</td>
             <td>{{ item.next_date.strftime('%-m/%-d/%Y') if item.next_date else '--' }}</td>
           </tr>
           {% endfor %}
@@ -156,7 +156,7 @@
         <tfoot class="table-light">
           <tr>
             <td colspan="5" class="text-end fw-bold">Total Monthly</td>
-            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_transfer_monthly|float) }}</td>
+            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_transfer_monthly) }}</td>
             <td></td>
           </tr>
         </tfoot>
@@ -192,9 +192,9 @@
           <tr>
             <td>{{ item.name }}</td>
             <td class="d-none d-md-table-cell">{{ item.account_name }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.amount|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(item.amount) }}</td>
             <td>{{ item.frequency }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.monthly|float) }}</td>
+            <td class="font-mono">${{ "{:,.2f}".format(item.monthly) }}</td>
             <td>{{ item.next_date.strftime('%-m/%-d/%Y') if item.next_date else '--' }}</td>
           </tr>
           {% endfor %}
@@ -203,7 +203,7 @@
           <tr>
             <td colspan="4" class="d-none d-md-table-cell text-end fw-bold">Total Monthly</td>
             <td colspan="3" class="d-md-none text-end fw-bold">Total Monthly</td>
-            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_income_monthly|float) }}</td>
+            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_income_monthly) }}</td>
             <td></td>
           </tr>
         </tfoot>

@@ -7,10 +7,10 @@ and retirement planning settings.
 
 import logging
 from datetime import date
-from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from marshmallow import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -23,6 +23,7 @@ from app.models.user import UserSettings
 from app.schemas.validation import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
+    RetirementGapQuerySchema,
     RetirementSettingsSchema,
 )
 from app.services import retirement_dashboard_service
@@ -41,6 +42,7 @@ retirement_bp = Blueprint("retirement", __name__)
 _pension_create_schema = PensionProfileCreateSchema()
 _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
+_gap_query_schema = RetirementGapQuerySchema()
 
 
 @retirement_bp.route("/retirement")
@@ -113,10 +115,9 @@ def create_pension():
 
     data = _pension_create_schema.load(request.form)
 
-    # Convert percentage input (e.g. 1.85 → 0.0185).
-    if data.get("benefit_multiplier"):
-        data["benefit_multiplier"] = Decimal(str(data["benefit_multiplier"])) / Decimal("100")
-
+    # F-17 / Commit 12: percent-to-fraction conversion happens in the
+    # schema's @pre_load; ``benefit_multiplier`` arrives already
+    # converted to its decimal-fraction storage form.
     pension = PensionProfile(user_id=current_user.id, **data)
     db.session.add(pension)
     try:
@@ -209,9 +210,8 @@ def update_pension(pension_id):
 
     data = _pension_update_schema.load(request.form)
 
-    # Convert percentage input.
-    if data.get("benefit_multiplier"):
-        data["benefit_multiplier"] = Decimal(str(data["benefit_multiplier"])) / Decimal("100")
+    # F-17 / Commit 12: schema's @pre_load owns the percent-to-fraction
+    # conversion; ``benefit_multiplier`` arrives already as a fraction.
 
     # Cross-field date validation: merge submitted values with existing
     # pension data so partial updates are validated against the full state.
@@ -306,16 +306,19 @@ def gap_analysis():
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))
 
-    swr_override = None
-    return_rate_override = None
+    # F-13: validate the URL-editable ``swr`` slider override through
+    # the schema, which owns the percent-to-fraction conversion and
+    # rejects values outside ``[0, 1]`` with a 422.  The calculator
+    # itself still treats non-positive SWR as zero (defense in depth),
+    # but the schema surfaces the user error rather than letting the
+    # analysis silently collapse to zero.
+    try:
+        query_data = _gap_query_schema.load(request.args)
+    except ValidationError as exc:
+        return jsonify(errors=exc.messages), 422
 
-    swr_param = request.args.get("swr", type=float)
-    if swr_param is not None:
-        swr_override = Decimal(str(swr_param)) / Decimal("100")
-
-    return_param = request.args.get("return_rate", type=float)
-    if return_param is not None:
-        return_rate_override = Decimal(str(return_param)) / Decimal("100")
+    swr_override = query_data.get("swr")
+    return_rate_override = query_data.get("return_rate")
 
     data = retirement_dashboard_service.compute_gap_data(
         current_user.id,
@@ -343,22 +346,11 @@ def update_settings():
     # Preserve original user input for form re-display on error.
     raw_form_data = dict(request.form)
 
-    # Convert percentage inputs from form.
-    form_data = dict(request.form)
-    for field in ("safe_withdrawal_rate", "estimated_retirement_tax_rate"):
-        if field in form_data and form_data[field]:
-            try:
-                form_data[field] = str(Decimal(form_data[field]) / Decimal("100"))
-            except InvalidOperation:
-                # Narrow catch (C-46 / F-145): a non-numeric string
-                # (e.g. "abc") raises ``decimal.InvalidOperation``.
-                # Leave the raw value in place so the Marshmallow
-                # schema rejects it with a field-level "Not a valid
-                # number." message and the user sees the 422 form
-                # re-render rather than a silent normalisation.
-                pass
-
-    errors = _settings_schema.validate(form_data)
+    # F-17 / Commit 12: percent-to-fraction conversion is owned by the
+    # schema's @pre_load (RetirementSettingsSchema._PERCENT_FIELDS); the
+    # route forwards the raw form payload and reads back the loaded
+    # fractions directly.
+    errors = _settings_schema.validate(request.form)
     if errors:
         settings = (
             db.session.query(UserSettings)
@@ -385,7 +377,7 @@ def update_settings():
             mfa_enabled=False,
         ), 422
 
-    data = _settings_schema.load(form_data)
+    data = _settings_schema.load(request.form)
 
     settings = (
         db.session.query(UserSettings)

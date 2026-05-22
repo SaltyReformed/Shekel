@@ -19,28 +19,28 @@
         {% endif %}
       </span>
       <span class="fw-bold font-mono text-accent">
-        ${{ "{:,.2f}".format(payment_breakdown.total|float) }}
+        ${{ "{:,.2f}".format(payment_breakdown.total) }}
       </span>
     </div>
     <div class="progress mb-3 progress-h-22">
       {% if payment_breakdown.principal_pct > 0 %}
       <div class="progress-bar bg-success" role="progressbar"
            data-progress-pct="{{ payment_breakdown.principal_pct }}"
-           title="Principal: ${{ '{:,.2f}'.format(payment_breakdown.principal|float) }}">
+           title="Principal: ${{ '{:,.2f}'.format(payment_breakdown.principal) }}">
         {% if payment_breakdown.principal_pct >= 8 %}{{ payment_breakdown.principal_pct }}%{% endif %}
       </div>
       {% endif %}
       {% if payment_breakdown.interest_pct > 0 %}
       <div class="progress-bar bg-warning text-dark" role="progressbar"
            data-progress-pct="{{ payment_breakdown.interest_pct }}"
-           title="Interest: ${{ '{:,.2f}'.format(payment_breakdown.interest|float) }}">
+           title="Interest: ${{ '{:,.2f}'.format(payment_breakdown.interest) }}">
         {% if payment_breakdown.interest_pct >= 8 %}{{ payment_breakdown.interest_pct }}%{% endif %}
       </div>
       {% endif %}
       {% if payment_breakdown.escrow_pct > 0 %}
       <div class="progress-bar bg-info" role="progressbar"
            data-progress-pct="{{ payment_breakdown.escrow_pct }}"
-           title="Escrow: ${{ '{:,.2f}'.format(payment_breakdown.escrow|float) }}">
+           title="Escrow: ${{ '{:,.2f}'.format(payment_breakdown.escrow) }}">
         {% if payment_breakdown.escrow_pct >= 8 %}{{ payment_breakdown.escrow_pct }}%{% endif %}
       </div>
       {% endif %}
@@ -48,18 +48,18 @@
     <ul class="list-unstyled mb-0 small">
       <li class="mb-1">
         <span class="badge bg-success">&nbsp;</span>
-        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.principal|float) }}</span>
+        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.principal) }}</span>
         to principal ({{ payment_breakdown.principal_pct }}%)
       </li>
       <li class="mb-1">
         <span class="badge bg-warning">&nbsp;</span>
-        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.interest|float) }}</span>
+        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.interest) }}</span>
         to interest ({{ payment_breakdown.interest_pct }}%)
       </li>
       {% if payment_breakdown.escrow > 0 %}
       <li class="mb-1">
         <span class="badge bg-info">&nbsp;</span>
-        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.escrow|float) }}</span>
+        <span class="font-mono">${{ "{:,.2f}".format(payment_breakdown.escrow) }}</span>
         to escrow ({{ payment_breakdown.escrow_pct }}%)
       </li>
       {% endif %}
@@ -67,7 +67,7 @@
     {% if payment_breakdown.next_year_escrow %}
     <div class="mt-2 small text-muted">
       <i class="bi bi-graph-up-arrow"></i>
-      Escrow may increase to ~${{ "{:,.2f}".format(payment_breakdown.next_year_escrow|float) }}/month
+      Escrow may increase to ~${{ "{:,.2f}".format(payment_breakdown.next_year_escrow) }}/month
       next year based on inflation estimates.
     </div>
     {% endif %}

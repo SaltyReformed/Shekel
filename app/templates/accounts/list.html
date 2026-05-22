@@ -107,7 +107,7 @@
           <td>{{ acct.account_type.name|format_account_type if acct.account_type else '--' }}</td>
           <td class="text-end">
             {% if acct.current_anchor_balance is not none %}
-              ${{ "%.2f"|format(acct.current_anchor_balance|float) }}
+              ${{ "%.2f"|format(acct.current_anchor_balance) }}
             {% else %}
               --
             {% endif %}

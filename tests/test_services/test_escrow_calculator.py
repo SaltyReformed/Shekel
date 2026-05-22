@@ -7,15 +7,17 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from app.services.escrow_calculator import (
+    build_escrow_display,
     calculate_monthly_escrow,
     calculate_total_payment,
     project_annual_escrow,
 )
 
 
-def _comp(name, annual, inflation=None, is_active=True, created_at=None):
+def _comp(name, annual, inflation=None, is_active=True, created_at=None, id=1):
     """Helper to create a mock escrow component."""
     return SimpleNamespace(
+        id=id,
         name=name,
         annual_amount=Decimal(str(annual)),
         inflation_rate=Decimal(str(inflation)) if inflation else None,
@@ -244,3 +246,68 @@ class TestProjectAnnualEscrow:
         assert result[2] == (2028, Decimal("2700.00"))
         assert result[3] == (2029, Decimal("4050.00"))
         assert result[4] == (2030, Decimal("6075.00"))
+
+
+class TestBuildEscrowDisplay:
+    """Tests for the display DTO builder (MED-04 / E-16, C31-3)."""
+
+    def test_c31_3_escrow_per_period_server_decimal(self):
+        """C31-3 -- per-component monthly is server-computed in Decimal.
+
+        Arithmetic: 4800 / 12 = 400.00 exact; 2400 / 12 = 200.00 exact.
+        Both quantised HALF_UP to two places.  No float cast.
+        """
+        components = [
+            _comp("Property Tax", "4800", id=1),
+            _comp("Insurance", "2400", inflation="0.03", id=2),
+        ]
+        rows = build_escrow_display(components)
+        assert len(rows) == 2
+        assert rows[0].id == 1
+        assert rows[0].name == "Property Tax"
+        assert rows[0].annual_amount == Decimal("4800.00")
+        assert rows[0].monthly_amount == Decimal("400.00")
+        assert rows[0].inflation_rate is None
+        assert rows[0].inflation_rate_pct is None
+        assert rows[1].id == 2
+        assert rows[1].annual_amount == Decimal("2400.00")
+        assert rows[1].monthly_amount == Decimal("200.00")
+        # 0.03 * 100 = 3.00 (Decimal -- no float drift)
+        assert rows[1].inflation_rate == Decimal("0.03")
+        assert rows[1].inflation_rate_pct == Decimal("3.00")
+        # Type assertions: every monetary/percentage field is Decimal.
+        for row in rows:
+            assert isinstance(row.annual_amount, Decimal)
+            assert isinstance(row.monthly_amount, Decimal)
+
+    def test_inactive_excluded(self):
+        """Inactive components are filtered the same way as the
+        :func:`calculate_monthly_escrow` aggregate, so the per-row
+        display and the badge total can never disagree."""
+        components = [
+            _comp("Property Tax", "4800", id=1),
+            _comp("Old Insurance", "1200", is_active=False, id=2),
+        ]
+        rows = build_escrow_display(components)
+        assert len(rows) == 1
+        assert rows[0].id == 1
+
+    def test_uneven_division_rounds_half_up(self):
+        """1000 / 12 = 83.3333... -> HALF_UP rounds to 83.33.
+
+        Hand calc: 1000 / 12 = 83.333... -> quantize 0.01 HALF_UP -> 83.33
+        (the third decimal is a 3, so the cents digit is not bumped).
+        """
+        components = [_comp("Edge", "1000", id=1)]
+        rows = build_escrow_display(components)
+        assert rows[0].monthly_amount == Decimal("83.33")
+
+    def test_half_up_rounding_boundary(self):
+        """500 / 12 = 41.6666... -> HALF_UP rounds to 41.67.
+
+        Hand calc: 500 / 12 = 41.6666... -> quantize 0.01 HALF_UP -> 41.67
+        (the third decimal is a 6, so the cents digit is bumped from 6 to 7).
+        """
+        components = [_comp("Edge", "500", id=1)]
+        rows = build_escrow_display(components)
+        assert rows[0].monthly_amount == Decimal("41.67")

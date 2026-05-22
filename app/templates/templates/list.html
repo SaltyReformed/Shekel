@@ -96,7 +96,7 @@
           <span class="badge bg-danger">Expense</span>
         {% endif %}
       </td>
-      <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
+      <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
       <td>{{ recurrence_cell(t) }}</td>
       <td>
         <a href="{{ url_for('templates.edit_template', template_id=t.id) }}"
@@ -179,7 +179,7 @@
               <span class="badge bg-danger">Expense</span>
             {% endif %}
           </td>
-          <td class="text-end">${{ "%.2f"|format(t.default_amount|float) }}</td>
+          <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
           <td>{{ recurrence_cell(t) }}</td>
           <td>
             <form method="POST" action="{{ url_for('templates.unarchive_template', template_id=t.id) }}"

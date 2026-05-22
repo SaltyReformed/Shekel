@@ -1,0 +1,118 @@
+"""Tests for the centralized monetary rounding boundary (E-26, HIGH-04).
+
+The audit (08_findings.md HIGH-04) identified 24 bare
+``.quantize(Decimal("0.01"))`` sites in ``app/`` that silently fall back
+to Python's default ``ROUND_HALF_EVEN`` (banker's), against the
+``ROUND_HALF_UP`` convention every hand-computed financial test in this
+project assumes. ``app/utils/money.py`` introduces the single boundary
+helper E-26 requires. This file pins the helper's behavior at the
+boundaries that matter:
+
+- The half-up / banker's divergence at the ``Decimal("2.345")`` boundary
+  (the canonical case where the two rounding modes produce different
+  cents: half-up -> 2.35, banker's -> 2.34).
+- Negative-number half-up semantics (away from zero on ties).
+- Long-precision inputs typical of pre-quantize loan/interest math.
+- ``ROUND_CEILING`` sanctioned variant for the savings-goal case (named
+  at the call site to make the deviation from default rounding
+  explicit).
+- ``TypeError`` on ``float`` so callers cannot bypass the Decimal
+  contract by accident.
+
+Test IDs C1-1..C1-10 trace to remediation_plan.md Section 9 "Commit 1"
+subsection E.
+"""
+from decimal import Decimal
+
+import pytest
+
+from app.utils.money import round_money, round_money_ceiling
+
+
+class TestRoundMoney:
+    """Hand-computed golden-cents pins for ``round_money`` (ROUND_HALF_UP)."""
+
+    def test_round_money_half_up_boundary(self):
+        """C1-1: 2.345 -> 2.35 under HALF_UP.
+
+        Half-up: ties round away from zero, so 2.345 -> 2.35. Banker's
+        (ROUND_HALF_EVEN, Python's Decimal default) would round to the
+        nearest even and produce 2.34. The whole point of E-26 is that
+        this boundary case must never silently return 2.34.
+        """
+        assert round_money(Decimal("2.345")) == Decimal("2.35")
+
+    def test_round_money_half_up_even_digit(self):
+        """C1-2: 2.355 -> 2.36 under HALF_UP.
+
+        Half-up: 2.355 ties at the cent boundary, rounds away from
+        zero to 2.36. Documents the third-decimal-5 case symmetric
+        to C1-1.
+        """
+        assert round_money(Decimal("2.355")) == Decimal("2.36")
+
+    def test_round_money_negative_half_up(self):
+        """C1-3: -2.345 -> -2.35 under HALF_UP (ties away from zero).
+
+        ROUND_HALF_UP rounds ties away from zero, so the negative
+        half-cent boundary goes to -2.35, not -2.34. Pins the sign
+        behavior callers must rely on.
+        """
+        assert round_money(Decimal("-2.345")) == Decimal("-2.35")
+
+    def test_round_money_already_two_places(self):
+        """C1-4: 100.00 -> 100.00 (idempotent at the boundary)."""
+        assert round_money(Decimal("100.00")) == Decimal("100.00")
+
+    def test_round_money_long_precision(self):
+        """C1-5: 1234.5650001 -> 1234.57.
+
+        Past the half-cent boundary the input is strictly greater
+        than 1234.565, so HALF_UP (and any reasonable rounding mode)
+        rounds up to 1234.57. Documents the typical pre-quantize
+        loan/interest intermediate precision.
+        """
+        assert round_money(Decimal("1234.5650001")) == Decimal("1234.57")
+
+    def test_round_money_zero(self):
+        """C1-6: 0 -> 0.00 (quantization expands to two places)."""
+        assert round_money(Decimal("0")) == Decimal("0.00")
+
+    def test_round_money_rejects_float(self):
+        """C1-7: round_money(2.345) raises TypeError.
+
+        Accepting a float here would let an upstream
+        ``Decimal(float_value)`` -- or worse, a raw float -- bypass
+        the Decimal-from-string contract and re-introduce the float
+        imprecision the helper exists to eliminate. The boundary
+        must refuse loud.
+        """
+        with pytest.raises(TypeError, match="round_money expects Decimal"):
+            round_money(2.345)
+
+
+class TestRoundMoneyCeiling:
+    """Hand-computed pins for the sanctioned ``round_money_ceiling`` variant."""
+
+    def test_round_money_ceiling_rounds_up(self):
+        """C1-8: 2.341 -> 2.35 under ROUND_CEILING.
+
+        Ceiling rounds toward positive infinity, so any fractional
+        cent past 2.34 lifts to 2.35 -- the savings-goal monthly-
+        contribution invariant (never under-fund by a sub-cent).
+        """
+        assert round_money_ceiling(Decimal("2.341")) == Decimal("2.35")
+
+    def test_round_money_ceiling_exact(self):
+        """C1-9: 2.340 -> 2.34 (exact two-place input is idempotent)."""
+        assert round_money_ceiling(Decimal("2.340")) == Decimal("2.34")
+
+    def test_round_money_ceiling_rejects_float(self):
+        """C1-10: round_money_ceiling(2.34) raises TypeError.
+
+        Same Decimal-only contract as ``round_money``; documented
+        per-variant so a future caller cannot assume one helper is
+        looser than the other.
+        """
+        with pytest.raises(TypeError, match="round_money_ceiling expects Decimal"):
+            round_money_ceiling(2.34)

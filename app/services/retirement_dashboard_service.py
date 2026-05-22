@@ -18,27 +18,28 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, TxnTypeEnum
+from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import (
-    balance_calculator,
+    balance_resolver,
     growth_engine,
+    income_service,
     pay_period_service,
     paycheck_calculator,
     pension_calculator,
     retirement_gap_calculator,
 )
-from app.services.investment_projection import (
-    adapt_deductions,
-    calculate_investment_inputs,
+from app.services.investment_projection import adapt_deductions
+from app.services.projection_inputs import (
+    build_investment_projection_inputs,
+    load_active_deductions_for_accounts,
+    load_shadow_income_contributions_for_accounts,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -74,6 +75,40 @@ _PCT_SCALE = Decimal("100")
 # carry two fractional digits to avoid rendering artefacts when an
 # unquantised Decimal feeds through Python's % formatter.
 _PCT_QUANTUM = Decimal("0.01")
+
+
+def _resolve_swr_fraction(settings):
+    """Resolve the active safe-withdrawal rate as a fractional Decimal.
+
+    A single definition shared by :func:`compute_gap_data` and
+    :func:`compute_slider_defaults` so the slider display and the
+    gap/projection math read the stored SWR exactly once -- the
+    CRIT-04 / F-042 / PA-04 / PA-05 phantom-income defect was that
+    those two call sites resolved the same column under two
+    different rules (truthiness ``or "0.04"`` vs.  ``is None``), so
+    an explicit ``Decimal("0.0000")`` safe-withdrawal rate rendered
+    as 0.00% on the slider but drove the projection at 4% -- a
+    phantom $4,000/mo of retirement income on a $1.2M balance the
+    slider says is zero.  E-12 / coding-standard "do not rely on
+    truthiness for business logic": a stored zero rate is a real
+    zero; only ``settings is None`` or ``safe_withdrawal_rate is
+    None`` means "unset, use the default."
+
+    Args:
+        settings: the user's :class:`~app.models.user.UserSettings`
+            row, or ``None`` when the user has not yet created one.
+
+    Returns:
+        The fractional-decimal SWR (the form
+        :func:`app.services.retirement_gap_calculator.calculate_gap`
+        expects: ``0.04`` for the 4% rule, not ``4.0``).  Falls back
+        to ``_DEFAULT_SWR_PCT / _PCT_SCALE`` when ``settings`` is
+        ``None`` or the stored column is ``None``; an explicit zero
+        stored value is preserved as :class:`~decimal.Decimal` zero.
+    """
+    if settings is None or settings.safe_withdrawal_rate is None:
+        return _DEFAULT_SWR_PCT / _PCT_SCALE
+    return Decimal(str(settings.safe_withdrawal_rate))
 
 
 def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
@@ -137,15 +172,23 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
     net_biweekly = Decimal("0")
+    # F-20 / MED-06 / F-032: the raise-aware engine gross from this
+    # same breakdown is consumed at the gap-comparison block below
+    # so the page agrees with the paycheck engine for the current
+    # period on BOTH net (effective-take-home math) and gross
+    # (effective-take-home-rate denominator).  Pre-Commit-17 the
+    # gross side was an off-engine ``annual_salary / pay_periods``
+    # recompute that silently dropped any applicable SalaryRaise.
+    current_breakdown = None
     if salary_profiles:
         profile = salary_profiles[0]
         if current_period:
             from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
             tax_configs = load_tax_configs(user_id, profile)
-            breakdown = paycheck_calculator.calculate_paycheck(
+            current_breakdown = paycheck_calculator.calculate_paycheck(
                 profile, current_period, all_periods, tax_configs,
             )
-            net_biweekly = breakdown.net_pay
+            net_biweekly = current_breakdown.net_pay
 
     # ── Load retirement/investment accounts ──────────────────────
     retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
@@ -191,10 +234,19 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     gap_net_biweekly = net_biweekly
     if salary_profiles and planned_retirement_date and net_biweekly > 0:
         profile = salary_profiles[0]
+        # F-20 / MED-06 / F-032: ``current_breakdown.gross_biweekly`` is
+        # the paycheck-engine value the ``net_biweekly`` line above
+        # already paid for; reusing it here avoids re-running the
+        # engine for an identical result and locks the
+        # effective-take-home-rate denominator to the same per-period
+        # gross the engine reports.  Pre-Commit-17 this site recomputed
+        # ``annual_salary / pay_periods_per_year`` directly, which
+        # silently dropped any applicable ``SalaryRaise`` row.
         current_gross_biweekly = (
-            Decimal(str(profile.annual_salary))
-            / (profile.pay_periods_per_year or 26)
-        ).quantize(Decimal("0.01"))
+            current_breakdown.gross_biweekly
+            if current_breakdown is not None
+            else Decimal("0.00")
+        )
         if current_gross_biweekly > 0:
             effective_take_home_rate = net_biweekly / current_gross_biweekly
             if salary_by_year is None:
@@ -214,14 +266,23 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
                 ).quantize(Decimal("0.01"))
 
     # ── Gap calculation ─────────────────────────────────────────
+    # CRIT-04 / E-12: route both call sites through the same
+    # resolver so an explicit zero SWR is honoured everywhere (no
+    # truthiness fallback to the default for a stored zero).
     swr = (
         swr_override
         if swr_override is not None
-        else Decimal(str(settings.safe_withdrawal_rate or "0.04")) if settings else Decimal("0.04")
+        else _resolve_swr_fraction(settings)
     )
+    # F-12 sibling: ``settings`` is a SQLAlchemy ``UserSettings`` row;
+    # use explicit ``is not None`` (post-CRIT-04 convention).  The
+    # ``settings.estimated_retirement_tax_rate`` truthiness on the
+    # second conjunct is the LOW-05 / CRIT-04 carry-open (build vs do
+    # not build a bracket-based fallback for a stored zero tax rate)
+    # and is intentionally NOT changed here.
     tax_rate = (
         Decimal(str(settings.estimated_retirement_tax_rate))
-        if settings and settings.estimated_retirement_tax_rate
+        if settings is not None and settings.estimated_retirement_tax_rate
         else None
     )
 
@@ -234,13 +295,31 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         estimated_tax_rate=tax_rate,
     )
 
+    investment_income_decimal = (
+        (gap_result.projected_total_savings * swr / 12).quantize(Decimal("0.01"))
+        if gap_result.projected_total_savings > 0
+        else Decimal("0.00")
+    )
+    # MED-04 / E-17: the chart's "Gap" bar is the residual income
+    # remaining after BOTH pension and SWR investment income have
+    # been covered.  This is a different concept from
+    # ``gap_result.monthly_income_gap`` (post-pension only, before
+    # investments) and was previously computed in JS
+    # (``retirement_gap_chart.js``).  The server computes it here so
+    # the chart's data attribute is the value to render, not the
+    # inputs to add together client-side.
+    covered = monthly_pension_income + investment_income_decimal
+    chart_remaining = max(
+        Decimal("0.00"),
+        gap_result.pre_retirement_net_monthly - covered,
+    )
+
     chart_data = {
         "pension": str(monthly_pension_income),
-        "investment_income": str(
-            (gap_result.projected_total_savings * swr / 12).quantize(Decimal("0.01"))
-        ) if gap_result.projected_total_savings > 0 else "0",
+        "investment_income": str(investment_income_decimal),
         "gap": str(gap_result.monthly_income_gap),
         "pre_retirement": str(gap_result.pre_retirement_net_monthly),
+        "chart_remaining": str(chart_remaining),
     }
 
     return {
@@ -301,12 +380,14 @@ def compute_slider_defaults(data):
         ... <= 1)``, NULL meaning "use the default").
     """
     settings = data["settings"]
-    if settings is None or settings.safe_withdrawal_rate is None:
-        current_swr = _DEFAULT_SWR_PCT
-    else:
-        current_swr = (settings.safe_withdrawal_rate * _PCT_SCALE).quantize(
-            _PCT_QUANTUM,
-        )
+    # CRIT-04 / E-12: scale the shared fractional resolver into
+    # percent for the slider.  The previous code had a parallel
+    # ``is None`` branch here while ``compute_gap_data`` used
+    # truthiness ``or "0.04"`` -- two definitions of "missing SWR"
+    # that disagreed on explicit zero (slider 0.00%, projection 4%).
+    current_swr = (
+        _resolve_swr_fraction(settings) * _PCT_SCALE
+    ).quantize(_PCT_QUANTUM)
 
     projections = data.get("retirement_account_projections", [])
     total_balance = Decimal("0")
@@ -318,8 +399,21 @@ def compute_slider_defaults(data):
             .filter_by(account_id=acct.id)
             .first()
         )
-        if params and params.assumed_annual_return:
-            bal = proj.get("current_balance", acct.current_anchor_balance) or Decimal("0")
+        # CRIT-04 / E-12: zero is a real value, only ``None`` means
+        # "unset."  A stable-value / cash sleeve at exactly 0.00%
+        # return must contribute its balance to the weighted-average
+        # denominator; the prior truthiness check dropped it
+        # entirely (two $100k accounts at 0% and 7% reported 7.00%
+        # instead of the true blended 3.50%).
+        if params is not None and params.assumed_annual_return is not None:
+            # F-11 / CRIT-04 / E-12: explicit ``is None`` guard, not
+            # truthiness on a Decimal.  A stored zero balance is a real
+            # zero (Account A at $0.00 contributes weight 0 to the
+            # denominator); only the upstream-contract escape hatch
+            # ``proj.get`` returning ``None`` triggers the fallback.
+            bal = proj.get("current_balance", acct.current_anchor_balance)
+            if bal is None:
+                bal = Decimal("0")
             total_balance += bal
             weighted_return += bal * params.assumed_annual_return
     if total_balance > 0:
@@ -348,46 +442,26 @@ def _project_retirement_accounts(
     account_ids = [a.id for a in accounts]
     period_ids = [p.id for p in all_periods]
 
-    # Batch-load paycheck deductions.
-    deductions_by_account = {}
-    if account_ids:
-        inv_deductions = (
-            db.session.query(PaycheckDeduction)
-            .join(SalaryProfile)
-            .filter(
-                SalaryProfile.user_id == user_id,
-                SalaryProfile.is_active.is_(True),
-                PaycheckDeduction.target_account_id.in_(account_ids),
-                PaycheckDeduction.is_active.is_(True),
-            )
-            .all()
-        )
-        for ded in inv_deductions:
-            deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
+    # F-22 / Commit 18: shared deduction batch loader; replaces the
+    # filter-shape duplicate that previously lived inline here and in
+    # savings_dashboard_service / year_end_summary_service.
+    deductions_by_account = load_active_deductions_for_accounts(
+        user_id, account_ids,
+    )
 
-    # Batch-load shadow income contributions.
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    all_acct_contributions = []
-    if account_ids and period_ids:
-        all_acct_contributions = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.account_id.in_(account_ids),
-                Transaction.transfer_id.isnot(None),
-                Transaction.transaction_type_id == income_type_id,
-                Transaction.pay_period_id.in_(period_ids),
-                Transaction.is_deleted.is_(False),
-            )
-            .all()
-        )
+    # F-22 / Commit 18: shared batch shadow-income loader.
+    all_acct_contributions = load_shadow_income_contributions_for_accounts(
+        account_ids, period_ids,
+    )
 
-    salary_gross_biweekly = Decimal("0")
-    if salary_profiles:
-        profile = salary_profiles[0]
-        salary_gross_biweekly = (
-            Decimal(str(profile.annual_salary))
-            / (profile.pay_periods_per_year or 26)
-        ).quantize(Decimal("0.01"))
+    # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not
+    # the off-engine ``annual_salary / pay_periods_per_year`` recompute
+    # that silently dropped any applicable ``SalaryRaise`` row.  The
+    # value feeds ``calculate_investment_inputs`` as the basis for the
+    # employer-match cap; under-stating it under-stated the match.
+    salary_gross_biweekly = income_service.get_current_gross_biweekly(
+        user_id,
+    )
 
     # Synthetic projection periods to retirement date.
     synthetic_periods = []
@@ -397,32 +471,27 @@ def _project_retirement_accounts(
             end_date=planned_retirement_date,
         )
 
-    # Compute actual current balances via balance calculator.
+    # Compute actual current balances via the canonical entries-aware
+    # producer (E-25 / CRIT-01 / F-009 / R-1: Commit 8).
+    # ``balances_for`` owns the transaction query (entries eager-loaded)
+    # and resolves the anchor via the dated ``AccountAnchorHistory``
+    # SoT, so each retirement / investment account's "current balance"
+    # input to the gap calculation matches the figure rendered on the
+    # grid and the /investment dashboard for the same inputs.
     scenario = get_baseline_scenario(user_id)
     acct_balance_map = {}
-    if scenario and period_ids:
+    # F-12 sibling: ``scenario`` is a SQLAlchemy ``Scenario`` row;
+    # use explicit ``is not None`` (post-CRIT-04 convention).
+    # ``Account.current_anchor_balance`` is ``NOT NULL`` so no
+    # ``or Decimal("0")`` fallback is needed here -- the prior
+    # truthiness was dead defence on a stored zero.
+    if scenario is not None and period_ids:
         for acct in accounts:
-            anchor = acct.current_anchor_balance or Decimal("0")
-            anchor_pid = acct.current_anchor_period_id or (
-                current_period.id if current_period else None
-            )
-            if anchor_pid:
-                acct_txns = (
-                    db.session.query(Transaction)
-                    .filter(
-                        Transaction.account_id == acct.id,
-                        Transaction.pay_period_id.in_(period_ids),
-                        Transaction.scenario_id == scenario.id,
-                        Transaction.is_deleted.is_(False),
-                    )
-                    .all()
-                )
-                bals, _ = balance_calculator.calculate_balances(
-                    anchor_balance=anchor,
-                    anchor_period_id=anchor_pid,
-                    periods=all_periods,
-                    transactions=acct_txns,
-                )
+            anchor = acct.current_anchor_balance
+            if acct.current_anchor_period_id is not None:
+                bals = balance_resolver.balances_for(
+                    acct, scenario.id, all_periods,
+                ).balances
                 acct_balance_map[acct.id] = (
                     bals.get(current_period.id, anchor)
                     if current_period else anchor
@@ -439,7 +508,7 @@ def _project_retirement_accounts(
             .first()
         )
         balance = acct_balance_map.get(
-            acct.id, acct.current_anchor_balance or Decimal("0")
+            acct.id, acct.current_anchor_balance,
         )
         projected_balance = balance
         effective_return = None
@@ -451,7 +520,7 @@ def _project_retirement_accounts(
                 if p.period_index >= current_period.period_index
             ]
 
-        if params and projection_periods:
+        if params is not None and projection_periods:
             acct_deductions = deductions_by_account.get(acct.id, [])
             adapted_deductions = adapt_deductions(acct_deductions)
 
@@ -460,14 +529,9 @@ def _project_retirement_accounts(
                 if t.account_id == acct.id
             ]
 
-            inputs = calculate_investment_inputs(
-                account_id=acct.id,
-                investment_params=params,
-                deductions=adapted_deductions,
-                all_contributions=acct_contributions,
-                all_periods=all_periods,
-                current_period=current_period,
-                salary_gross_biweekly=salary_gross_biweekly,
+            inputs = build_investment_projection_inputs(
+                acct.id, params, adapted_deductions, acct_contributions,
+                all_periods, current_period, salary_gross_biweekly,
             )
 
             annual_return = (

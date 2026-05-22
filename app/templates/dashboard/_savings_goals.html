@@ -5,19 +5,19 @@
   <div class="d-flex justify-content-between align-items-center mb-1">
     <small class="fw-bold">{{ goal.name }}</small>
     <small class="font-mono text-muted">
-      ${{ "{:,.2f}".format(goal.current_balance|float) }}
-      / ${{ "{:,.2f}".format(goal.target_amount|float) }}
+      ${{ "{:,.2f}".format(goal.current_balance) }}
+      / ${{ "{:,.2f}".format(goal.target_amount) }}
     </small>
   </div>
   <div class="progress progress-h-8">
-    <div class="progress-bar {% if goal.pct_complete|float >= 100 %}bg-success{% else %}bg-primary{% endif %}"
+    <div class="progress-bar {% if goal.pct_complete >= 100 %}bg-success{% else %}bg-primary{% endif %}"
          role="progressbar"
-         data-progress-pct="{{ [goal.pct_complete|float, 100]|min }}"
-         aria-valuenow="{{ goal.pct_complete|float }}"
+         data-progress-pct="{{ [goal.pct_complete, 100]|min }}"
+         aria-valuenow="{{ goal.pct_complete }}"
          aria-valuemin="0" aria-valuemax="100">
     </div>
   </div>
-  <small class="text-muted">{{ "{:.0f}".format(goal.pct_complete|float) }}% -- {{ goal.account_name }}</small>
+  <small class="text-muted">{{ "{:.0f}".format(goal.pct_complete) }}% -- {{ goal.account_name }}</small>
 </div>
 {% endfor %}
 {% else %}

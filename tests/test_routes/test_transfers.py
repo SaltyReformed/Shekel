@@ -19,16 +19,17 @@ from app.models.scenario import Scenario
 from app.models.ref import AccountType, RecurrencePattern, Status
 from app.services import transfer_service
 from app.services.auth_service import hash_password
+from app.services import account_service
 
 
 def _create_savings_account(seed_user):
     """Helper: create a second (savings) account for the test user."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(acct)
     db.session.commit()
@@ -103,19 +104,33 @@ def _create_other_user_with_template():
     db.session.add(other_user)
     db.session.flush()
 
+
+    # Bootstrap pay period (E-19, Commit 3): the
+    # account_service factory requires the user to have at
+    # least one pay period to anchor against.
+    from datetime import date as _date, timedelta as _td
+    from app.models.pay_period import PayPeriod as _PayPeriod
+    _bootstrap = _PayPeriod(
+        user_id=other_user.id,
+        start_date=_date(2024, 1, 5),
+        end_date=_date(2024, 1, 5) + _td(days=13),
+        period_index=0,
+    )
+    db.session.add(_bootstrap)
+    db.session.flush()
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
-    checking = Account(
+    checking = account_service.create_account(
         user_id=other_user.id, account_type_id=checking_type.id,
-        name="Other Checking", current_anchor_balance=Decimal("500.00"),
+        name="Other Checking", anchor_balance=Decimal("500.00"),
     )
-    savings = Account(
+    savings = account_service.create_account(
         user_id=other_user.id, account_type_id=savings_type.id,
-        name="Other Savings", current_anchor_balance=Decimal("0"),
+        name="Other Savings", anchor_balance=Decimal("0"),
     )
     db.session.add_all([checking, savings])
 
@@ -936,11 +951,11 @@ def _create_second_user_transfer(second_user_data):
     from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    savings = Account(
+    savings = account_service.create_account(
         user_id=second_user_data["user"].id,
         account_type_id=savings_type.id,
         name="Other Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(savings)
     db.session.flush()
@@ -1840,6 +1855,203 @@ class TestTransferTemplateHardDelete:
 
             db.session.refresh(template)
             assert template.is_active is False
+
+    def test_hard_delete_transfer_template_received_blocked(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C21-6: A transfer template with a RECEIVED transfer is archived, not deleted.
+
+        Mirror of the transaction-template CRIT-05 fix proof.  The
+        pre-fix predicate enumerated ``[DONE, SETTLED]`` and silently
+        omitted ``RECEIVED``; ``RECEIVED`` carries ``is_settled=True``
+        in ``ref_seeds.py`` so the post-fix
+        ``transfer_template_has_paid_history`` -- now filtering on
+        ``Status.is_settled`` -- correctly returns True for a
+        RECEIVED transfer and the route archives instead of
+        physically destroying the transfer plus its shadow pair.
+        Verifies the predicate fix end-to-end at the route layer.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+
+            received_status = db.session.query(Status).filter_by(name="Received").one()
+            xfer_received = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("250.00"),
+                status_id=received_status.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transfer_template_id=template.id,
+                name="Monthly Savings",
+            )
+            db.session.commit()
+
+            template_id = template.id
+            xfer_id = xfer_received.id
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"archived instead" in resp.data
+            # The archive-fallback flash contains "cannot be permanently
+            # deleted" so the broad substring check is unsafe; assert
+            # the literal success-flash text never fired instead.
+            assert (
+                b"Recurring transfer 'Monthly Savings' permanently deleted"
+                not in resp.data
+            )
+
+            # Template archived, not deleted.
+            db.session.refresh(template)
+            assert template.is_active is False
+            assert db.session.get(TransferTemplate, template_id) is not None
+
+            # RECEIVED transfer preserved with original amount.  Hand-
+            # verified: $250.00 stays exactly $250.00 (Decimal from
+            # string per coding standards).
+            surviving = db.session.get(Transfer, xfer_id)
+            assert surviving is not None
+            assert surviving.status_id == received_status.id
+            assert surviving.is_deleted is False
+            assert surviving.amount == Decimal("250.00")
+
+            # Both shadows survive untouched (transfer invariant 1: a
+            # transfer always has exactly two linked shadows).
+            shadow_count = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id,
+            ).count()
+            assert shadow_count == 2
+
+    def test_hard_delete_transfer_template_bulk_delete_skips_settled_rows(
+        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """C8-1: Even if the predicate is bypassed, the bulk delete spares settled transfers.
+
+        Defense in depth (F-14, mirror of CRIT-05 / E-22): commit C-21
+        of the main remediation already fixed
+        ``transfer_template_has_paid_history`` to filter on
+        ``Status.is_settled`` so the guard at the route's entry
+        catches every settled status.  This commit adds the second
+        layer: the bulk-delete loop itself filters on
+        ``Transaction.status_id.notin_(settled_status_ids)`` so a
+        future regression of the predicate, a race window between
+        the guard and the delete, or a different caller that bypasses
+        the guard cannot physically destroy settled transfers plus
+        their shadow pairs.  This test forces the bypass scenario by
+        monkey-patching ``transfer_template_has_paid_history`` to
+        return False even when a RECEIVED transfer exists, then
+        asserts the post-conditions: the settled transfer plus its
+        two shadows survive intact while the Projected transfer is
+        deleted as intended.
+
+        ``Transfer.transfer_template_id`` is a FK with ``ON DELETE
+        SET NULL`` (``app/models/transfer.py``) so the surviving
+        Received transfer has its ``transfer_template_id`` cleared
+        but its financial data -- amount, status, period -- is
+        intact.  Both linked shadow transactions ride along: they
+        reference ``transfer_id`` (NOT NULL), so the transfer's
+        survival guarantees their survival.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+
+            received_status = db.session.query(Status).filter_by(name="Received").one()
+            projected_status = db.session.query(Status).filter_by(name="Projected").one()
+
+            # RECEIVED transfer in period 0 (must survive).
+            xfer_received = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("250.00"),
+                status_id=received_status.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transfer_template_id=template.id,
+                name="Past Transfer",
+            )
+            # PROJECTED transfer in period 1 (must be deleted).
+            xfer_projected = transfer_service.create_transfer(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods_today[1].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("250.00"),
+                status_id=projected_status.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transfer_template_id=template.id,
+                name="Future Transfer",
+            )
+            db.session.commit()
+
+            template_id = template.id
+            received_id = xfer_received.id
+            projected_id = xfer_projected.id
+            received_shadow_ids = [
+                row.id for row in db.session.query(Transaction).filter_by(
+                    transfer_id=received_id,
+                ).all()
+            ]
+            assert len(received_shadow_ids) == 2
+
+            # Force the bypass: predicate lies and says "no history."
+            # The defense-in-depth filter inside the route is what must
+            # save the Received transfer plus its two shadows.
+            monkeypatch.setattr(
+                "app.routes.transfers.archive_helpers.transfer_template_has_paid_history",
+                lambda _template_id: False,
+            )
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+
+            # Settled (Received) transfer SURVIVES with original
+            # amount and status; FK SET NULL clears transfer_template_id.
+            surviving = db.session.get(Transfer, received_id)
+            assert surviving is not None
+            assert surviving.status_id == received_status.id
+            assert surviving.is_deleted is False
+            # Hand-verified: original $250.00 stays exactly $250.00
+            # (Decimal from string per coding standards).
+            assert surviving.amount == Decimal("250.00")
+            assert surviving.transfer_template_id is None
+
+            # Both shadows of the Received transfer survive untouched
+            # (transfer invariant 1: a transfer always has exactly two
+            # linked shadows).
+            surviving_shadows = db.session.query(Transaction).filter_by(
+                transfer_id=received_id,
+            ).all()
+            assert len(surviving_shadows) == 2
+            for shadow in surviving_shadows:
+                assert shadow.is_deleted is False
+                assert shadow.status_id == received_status.id
+                assert shadow.estimated_amount == Decimal("250.00")
+            assert {s.id for s in surviving_shadows} == set(received_shadow_ids)
+
+            # Non-settled (Projected) transfer was deleted by the
+            # bulk loop, as intended -- the defense-in-depth filter is
+            # additive, not a wholesale block.
+            assert db.session.get(Transfer, projected_id) is None
+            orphaned_projected_shadows = db.session.query(Transaction).filter_by(
+                transfer_id=projected_id,
+            ).count()
+            assert orphaned_projected_shadows == 0
+
+            # Template itself was deleted (the bypass path completed).
+            assert db.session.get(TransferTemplate, template_id) is None
 
     def test_hard_delete_preserves_shadow_invariant(
         self, app, auth_client, seed_user, seed_periods_today,

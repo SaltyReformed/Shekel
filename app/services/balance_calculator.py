@@ -22,14 +22,12 @@ This eliminates the double-counting risk described in design doc section 16.1.
 
 import logging
 from collections import OrderedDict
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from app.services.interest_projection import calculate_interest
+from app.utils.balance_predicates import is_projected
 
 logger = logging.getLogger(__name__)
-
-from app import ref_cache
-from app.enums import StatusEnum
 
 
 def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
@@ -173,129 +171,13 @@ def calculate_balances_with_interest(
     return balances, interest_by_period
 
 
-def calculate_balances_with_amortization(
-    anchor_balance, anchor_period_id, periods, transactions,
-    account_id=None, loan_params=None,
-):
-    """Calculate balances for a debt account (mortgage or auto loan).
-
-    Payments into the loan account are detected from shadow income
-    transactions (transfer_id IS NOT NULL, transaction_type == income).
-    Only the principal portion (determined by amortization) reduces the
-    balance; the interest portion is the cost of the loan.
-
-    Args:
-        anchor_balance:    Decimal -- the current principal at the anchor period.
-        anchor_period_id:  int -- the pay_period.id of the anchor.
-        periods:           List of PayPeriod objects, ordered by period_index.
-        transactions:      List of Transaction objects (including shadow transactions).
-        account_id:        The loan account ID.  Used to identify payment
-                           transactions (shadow income in this account).
-        loan_params:       Object with .current_principal, .interest_rate,
-                           .term_months, .origination_date, .payment_day.
-
-    Returns:
-        (balances, principal_by_period) where:
-            balances: OrderedDict mapping period_id -> Decimal end balance
-            principal_by_period: dict mapping period_id -> Decimal principal paid
-    """
-    from app.services.amortization_engine import (
-        calculate_monthly_payment, calculate_remaining_months,
-    )
-
-    # First compute base balances (shadow transactions applied normally).
-    base_balances, _ = calculate_balances(
-        anchor_balance, anchor_period_id, periods, transactions,
-    )
-
-    principal_by_period = {}
-
-    if not loan_params or not hasattr(loan_params, "interest_rate"):
-        return base_balances, principal_by_period
-
-    annual_rate = loan_params.interest_rate  # Already Decimal from Numeric(7,5).
-    # For ARM loans, the contractual payment from original terms is wrong --
-    # interest_rate is the current rate, not the origination rate.  Use the
-    # re-amortized payment from current balance and remaining term.
-    is_arm = getattr(loan_params, "is_arm", False)
-    if is_arm:
-        remaining = calculate_remaining_months(
-            loan_params.origination_date, loan_params.term_months,
-        )
-        monthly_payment = calculate_monthly_payment(
-            loan_params.current_principal,  # Already Decimal from Numeric(12,2).
-            annual_rate,
-            remaining,
-        )
-    else:
-        monthly_payment = calculate_monthly_payment(
-            loan_params.original_principal,  # Already Decimal from Numeric(12,2).
-            annual_rate,
-            loan_params.term_months,
-        )
-
-    monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")
-
-    # Re-walk periods, tracking the loan balance reduction by principal only.
-    balances = OrderedDict()
-    running_principal = None
-
-    # Group transactions by period for payment detection.
-    txn_by_period = {}
-    for txn in transactions:
-        txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
-
-    for period in periods:
-        if period.id not in base_balances:
-            continue
-
-        if period.id == anchor_period_id:
-            running_principal = Decimal(str(anchor_balance))
-        elif running_principal is None:
-            continue
-
-        # Detect payments: shadow income transactions in the loan account
-        # represent money coming in to pay the loan.  These replace the
-        # old transfer-based detection (design doc section 6.2).
-        period_txns = txn_by_period.get(period.id, [])
-        total_payment_in = Decimal("0.00")
-        for txn in period_txns:
-            # Cancelled transactions do not represent loan payments.
-            if txn.status and txn.status.excludes_from_balance:
-                continue
-            # Shadow income transactions in this account are loan payments.
-            # effective_amount prefers actual over estimated (Decimal).
-            if (txn.transfer_id is not None
-                    and hasattr(txn, "is_income") and txn.is_income):
-                total_payment_in += txn.effective_amount
-
-        # For each payment, split into interest and principal.
-        if total_payment_in > 0 and running_principal > 0:
-            interest_portion = (running_principal * monthly_rate).quantize(
-                Decimal("0.01"), ROUND_HALF_UP
-            )
-            principal_portion = total_payment_in - interest_portion
-            principal_portion = max(principal_portion, Decimal("0.00"))
-            principal_portion = min(principal_portion, running_principal)
-
-            running_principal -= principal_portion
-            running_principal = max(running_principal, Decimal("0.00"))
-            principal_by_period[period.id] = principal_portion
-        else:
-            principal_by_period[period.id] = Decimal("0.00")
-
-        balances[period.id] = running_principal
-
-    return balances, principal_by_period
-
-
 def _entry_aware_amount(txn):
     """Compute the checking-balance impact for a single expense transaction.
 
-    For projected expenses with eagerly loaded entries (via selectinload),
-    the formula partitions debit entries into cleared and uncleared
-    buckets, then holds back only the portion of the budget that has not
-    yet been reconciled with the anchor:
+    For projected expenses with entries (loaded eagerly or
+    lazy-loaded on demand), the formula partitions debit entries into
+    cleared and uncleared buckets, then holds back only the portion
+    of the budget that has not yet been reconciled with the anchor:
 
         cleared_debit   = sum(entries where not is_credit and     is_cleared)
         uncleared_debit = sum(entries where not is_credit and not is_cleared)
@@ -305,9 +187,6 @@ def _entry_aware_amount(txn):
             estimated_amount - cleared_debit - sum_credit,
             uncleared_debit,
         )
-
-    For all other cases (no entries loaded, entries empty, non-projected
-    status): returns effective_amount unchanged.
 
     Semantics:
       - A cleared debit is already reflected in the checking anchor
@@ -322,9 +201,8 @@ def _entry_aware_amount(txn):
         reservation.
       - With every is_cleared = FALSE (the default for new entries),
         cleared_debit = 0 and the formula reduces to
-        max(estimated - sum_credit, uncleared_debit), which is the
-        original pre-fix behavior from scope doc section 4.2.  This is
-        why the fix is backward compatible.
+        max(estimated - sum_credit, uncleared_debit), which matches
+        the pre-cleared-flag behavior from scope doc section 4.2.
 
     Example (the user's grocery bug):
       est = 500, three cleared debit purchases summing to 462.34.
@@ -332,37 +210,68 @@ def _entry_aware_amount(txn):
       remaining budget to hold back now that the anchor reflects the
       first three purchases.
 
-    This function NEVER triggers a lazy load.  It checks __dict__
-    directly to determine if entries were eagerly loaded (via
-    selectinload).  When entries are not loaded, it falls back to
-    effective_amount -- the standard behavior for all services that
-    do not selectinload entries.  Also safe for non-ORM objects
-    (e.g. test fakes) where 'entries' is simply absent.
+    Seam removed (Commit 5 / CRIT-01 / F-009 / E-25): the pre-Commit-5
+    implementation guarded the entry formula behind an
+    eager-load presence check on the relationship (the ``entries``
+    key in the SQLAlchemy instance dict), and returned
+    ``txn.effective_amount`` whenever that check missed.  That
+    silently degraded to the non-entries-aware value whenever the
+    consuming query had not issued
+    ``selectinload(Transaction.entries)``.  Symptom #1 ($160 on grid
+    vs $114.29 on /savings for the same data) is exactly that seam in
+    production: the grid eager-loaded entries and computed the
+    reduction; /savings did not and got back ``estimated_amount``
+    unchanged.  E-25's correction makes the canonical producer
+    ``app.services.balance_resolver.balances_for`` always
+    eager-load entries, so this function never sees an unloaded
+    relationship from a routed caller.  The remaining
+    ``getattr(txn, "entries", ())`` access below covers two safe
+    cases:
+
+      * **Not-yet-routed ORM callers** (savings/accounts/calendar/
+        year-end/investment/retirement, fixed in Commits 6-9): the
+        SQLAlchemy descriptor lazy-loads the relationship.  The
+        caller now gets the CORRECT entries-aware value with one
+        extra SELECT per transaction (acceptable for the transition;
+        the producer routing eliminates the extra query).
+      * **Non-ORM test fakes** with no ``entries`` attribute:
+        ``getattr`` returns the default ``()``, the empty-entries
+        early return fires, and the function returns
+        ``effective_amount`` -- the same behavior pre-Commit-5 had
+        for test fakes.
+
+    What is no longer possible: the same Projected envelope expense
+    yielding two different values for two different consumers based
+    purely on whether their query happened to ``selectinload``.
 
     Args:
-        txn: A Transaction object with entries optionally eager-loaded
-             via selectinload.
+        txn: A Transaction object.  The ``entries`` relationship may
+            be eager-loaded (canonical producer), unloaded
+            (transitional caller; lazy-loads on demand), or absent
+            (test fake).
 
     Returns:
-        Decimal -- the amount this transaction contributes to checking balance.
+        Decimal -- the amount this transaction contributes to checking
+        balance.
     """
-    # Check if entries were eagerly loaded without triggering a lazy load.
-    # For SQLAlchemy models, unloaded lazy='select' relationships are NOT
-    # in __dict__ until accessed; selectinload populates them eagerly.
-    # For non-ORM objects (e.g. test fakes), 'entries' is absent.
-    if 'entries' not in txn.__dict__:
-        return txn.effective_amount
-
-    entries = txn.__dict__['entries']
+    # ``getattr`` with a default of ``()`` handles both unloaded ORM
+    # relationships (descriptor lazy-loads via the session) and
+    # non-ORM fakes (no attribute defined).  The empty-tuple default
+    # passes the falsy check below, mirroring the original empty-list
+    # short-circuit and keeping non-ORM tests stable.
+    entries = getattr(txn, "entries", ())
     if not entries:
         return txn.effective_amount
 
     # Only apply the entry formula to projected transactions.
     # Settled, cancelled, and credit statuses are already handled
     # correctly by effective_amount (returns 0 for excluded statuses,
-    # actual_amount for settled statuses).
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    if txn.status_id != projected_id:
+    # actual_amount for settled statuses).  Routed through the
+    # centralized ``is_projected`` predicate (D6-09 / MED-02) so
+    # this entry-formula gate cannot drift from the other
+    # Projected-only filters in this module and in the balance
+    # resolver.
+    if not is_projected(txn):
         return txn.effective_amount
 
     # Three-bucket partition: cleared debit, uncleared debit, credit.
@@ -403,12 +312,14 @@ def _sum_remaining(transactions):
     income = Decimal("0.00")
     expenses = Decimal("0.00")
 
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
     for txn in transactions:
         # Only projected items remain to be settled -- everything else
         # is either already in the anchor or excluded from balance.
-        if txn.status_id != projected_id:
+        # Routed through the centralized ``is_projected`` predicate
+        # (D6-09 / MED-02) so the anchor-period Projected filter
+        # shares one definition with ``_sum_all`` and
+        # ``_entry_aware_amount`` below.
+        if not is_projected(txn):
             continue
 
         if txn.is_income:
@@ -436,11 +347,13 @@ def _sum_all(transactions):
     income = Decimal("0.00")
     expenses = Decimal("0.00")
 
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
     for txn in transactions:
         # Only projected items affect the projected balance.
-        if txn.status_id != projected_id:
+        # Routed through the centralized ``is_projected`` predicate
+        # (D6-09 / MED-02) so the post-anchor Projected filter
+        # shares one definition with ``_sum_remaining`` above and
+        # ``_entry_aware_amount``.
+        if not is_projected(txn):
             continue
 
         if txn.is_income:

@@ -48,6 +48,7 @@ from app.models.transfer import Transfer
 from app.services import amortization_engine, paycheck_calculator
 from app.services.tax_config_service import load_tax_configs
 from app.services.year_end_summary_service import compute_year_end_summary
+from app.services import account_service
 
 ZERO = Decimal("0")
 TWO_PLACES = Decimal("0.01")
@@ -246,12 +247,12 @@ def _create_mortgage_account(user, periods):
         db.session.query(AccountType)
         .filter_by(name="Mortgage").one()
     )
-    mortgage_acct = Account(
+    mortgage_acct = account_service.create_account(
         user_id=user.id,
         account_type_id=mortgage_type.id,
         name="Home Mortgage",
-        current_anchor_balance=Decimal("240000.00"),
-        current_anchor_period_id=periods[0].id,
+        anchor_balance=Decimal("240000.00"),
+        anchor_period_id=periods[0].id,
     )
     db.session.add(mortgage_acct)
     db.session.flush()
@@ -266,6 +267,11 @@ def _create_mortgage_account(user, periods):
         payment_day=1,
     )
     db.session.add(params)
+    db.session.flush()
+    # E-18 / Commit 15: origination LoanAnchorEvent so the resolver
+    # can derive current_balance from the event stream.
+    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    insert_origination_event(params)
     db.session.commit()
 
     return mortgage_acct, params
@@ -290,12 +296,12 @@ def _create_investment_account(
         db.session.query(AccountType)
         .filter_by(name="401(k)").one()
     )
-    inv_acct = Account(
+    inv_acct = account_service.create_account(
         user_id=user.id,
         account_type_id=inv_type.id,
         name="401k",
-        current_anchor_balance=Decimal("10000.00"),
-        current_anchor_period_id=periods[0].id,
+        anchor_balance=Decimal("10000.00"),
+        anchor_period_id=periods[0].id,
     )
     db.session.add(inv_acct)
     db.session.flush()
@@ -326,12 +332,12 @@ def _create_hysa_account(user, periods):
         db.session.query(AccountType)
         .filter_by(name="HYSA").one()
     )
-    hysa_acct = Account(
+    hysa_acct = account_service.create_account(
         user_id=user.id,
         account_type_id=hysa_type.id,
         name="High Yield Savings",
-        current_anchor_balance=Decimal("5000.00"),
-        current_anchor_period_id=periods[0].id,
+        anchor_balance=Decimal("5000.00"),
+        anchor_period_id=periods[0].id,
     )
     db.session.add(hysa_acct)
     db.session.flush()
@@ -612,12 +618,12 @@ class TestMortgageInterest:
             db.session.query(AccountType)
             .filter_by(name="Mortgage").one()
         )
-        mortgage_acct = Account(
+        mortgage_acct = account_service.create_account(
             user_id=user.id,
             account_type_id=mortgage_type.id,
             name="New Mortgage",
-            current_anchor_balance=Decimal("200000.00"),
-            current_anchor_period_id=periods[0].id,
+            anchor_balance=Decimal("200000.00"),
+            anchor_period_id=periods[0].id,
         )
         db.session.add(mortgage_acct)
         db.session.flush()
@@ -632,6 +638,10 @@ class TestMortgageInterest:
             payment_day=1,
         )
         db.session.add(params)
+        db.session.flush()
+        # E-18 / Commit 15: origination LoanAnchorEvent.
+        from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+        insert_origination_event(params)
         db.session.commit()
 
         # Expected: first payment Aug 1 2026.  5 or 6 payments in 2026.
@@ -887,12 +897,12 @@ class TestTransfersSummary:
             db.session.query(AccountType)
             .filter_by(name="Savings").one()
         )
-        savings_acct = Account(
+        savings_acct = account_service.create_account(
             user_id=user.id,
             account_type_id=savings_type.id,
             name="Savings",
-            current_anchor_balance=Decimal("0"),
-            current_anchor_period_id=periods[0].id,
+            anchor_balance=Decimal("0"),
+            anchor_period_id=periods[0].id,
         )
         db.session.add(savings_acct)
 
@@ -900,12 +910,12 @@ class TestTransfersSummary:
             db.session.query(AccountType)
             .filter_by(name="Mortgage").one()
         )
-        mortgage_acct = Account(
+        mortgage_acct = account_service.create_account(
             user_id=user.id,
             account_type_id=mortgage_type.id,
             name="Mortgage",
-            current_anchor_balance=Decimal("200000.00"),
-            current_anchor_period_id=periods[0].id,
+            anchor_balance=Decimal("200000.00"),
+            anchor_period_id=periods[0].id,
         )
         db.session.add(mortgage_acct)
         db.session.flush()
@@ -954,12 +964,12 @@ class TestTransfersSummary:
             ("Savings B", Decimal("500.00"), 1),
             ("Savings C", Decimal("300.00"), 2),
         ]:
-            dest = Account(
+            dest = account_service.create_account(
                 user_id=user.id,
                 account_type_id=savings_type.id,
                 name=name,
-                current_anchor_balance=ZERO,
-                current_anchor_period_id=periods[0].id,
+                anchor_balance=ZERO,
+                anchor_period_id=periods[0].id,
             )
             db.session.add(dest)
             db.session.flush()
@@ -1379,6 +1389,49 @@ class TestDebtProgress:
         result = compute_year_end_summary(seed_user["user"].id, YEAR)
         assert result["debt_progress"] == []
 
+    def test_debt_progress_byte_identical_after_dispatcher_extraction(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C19-2 / F-21: year-end debt-progress is byte-identical to
+        the pre-Commit-19 values after extracting the shared
+        :func:`compute_loan_period_balance_map` dispatcher.
+
+        Commit 19 moved the period-end-keyed walk verbatim from a
+        local ``_schedule_to_period_balance_map`` into
+        ``account_projection.compute_loan_period_balance_map`` and
+        wired the year-end net-worth liability column through it
+        (debt-progress itself stays on the date-keyed
+        ``_balance_from_schedule_at_date`` helper -- different
+        question, different lookup shape).  This sibling lock asserts
+        the published debt-progress totals did not drift across the
+        extraction: ``test_debt_progress_uses_amortization`` already
+        pins the same values, this test names the F-21 contract
+        explicitly so a future regression on the shared dispatcher's
+        period-end-keyed semantic surfaces with a clear breadcrumb.
+
+        Hand-pinned values reproduced from
+        ``test_debt_progress_uses_amortization``:
+
+          jan1_balance == $237,547.74 (balance after Dec 2025 payment
+          on a $240,000, 6.5%, 360-month mortgage originated
+          2025-01-01).
+          dec31_balance == $234,701.02 (balance after Dec 2026
+          payment).
+          principal_paid == $2,846.72 (jan1 - dec31).
+        """
+        user = seed_user["user"]
+        periods = seed_periods
+        _create_mortgage_account(user, periods)
+
+        result = compute_year_end_summary(user.id, YEAR)
+        debt = result["debt_progress"]
+        assert len(debt) == 1
+        entry = debt[0]
+
+        assert entry["jan1_balance"] == Decimal("237547.74")
+        assert entry["dec31_balance"] == Decimal("234701.02")
+        assert entry["principal_paid"] == Decimal("2846.72")
+
     def test_mortgage_interest_with_prepared_payments(
         self, app, db, seed_user, seed_periods,
     ):
@@ -1660,6 +1713,209 @@ class TestSavingsProgress:
             assert "total_contributions" in entry
 
 
+# ── F-19 Lump-Sum Contribution Timeline Tests ────────────────────
+
+
+class TestSavingsProgressLumpSum:
+    """F-19 / Commit 16: year-end investment projection via timeline.
+
+    Pre-fix, ``_project_investment_for_year`` consumed the averaged
+    ``periodic_contribution`` from ``calculate_investment_inputs``,
+    which treated a single lump-sum settled transfer as a per-period
+    amount (Step 2 averaging at ``investment_projection.py:142-161``).
+    Post-fix, it builds a per-period contribution timeline via
+    ``build_contribution_timeline`` and feeds it to
+    ``growth_engine.project_balance`` -- mirroring the shape the
+    investment dashboard already uses.
+    """
+
+    def test_lump_sum_employer_match_caps_per_period(
+        self, app, db, seed_full_user_data,
+    ):
+        """C16-1: lump-sum + recurring respects the per-period cap.
+
+        Fixture
+        -------
+        - 10 biweekly pay periods (all in 2026 per ``seed_periods``).
+        - 401(k) account with anchor balance $10,000, 7% assumed
+          annual return, employer match 50% of employee contribution
+          up to 6% of gross.
+        - ``annual_contribution_limit = $23,000`` so the cap actually
+          bites once the lump sum lands.
+        - Salary profile gross overridden to $100,000 annual
+          (``gross_biweekly = 100000 / 26 = 3846.15``).
+        - One recurring $1,500 flat pre-tax 401(k) deduction.
+        - One settled $23,300 lump-sum transfer landing in period 9
+          (the last period of the 10-period window).
+
+        Hand-computed expected
+        ----------------------
+        ``matchable_salary = quantize(3846.15 * 0.06, HALF_UP) = 230.77``
+        Periods 0-8 (recurring only): contribution=1500, cap is the
+        contribution-limit remaining (>=1500 every period because
+        9 * 1500 = 13500 < 23000), so capped=1500.  Employer match
+        per period = quantize(min(1500, 230.77) * 0.50, HALF_UP) =
+        quantize(115.385, HALF_UP) = 115.39.
+        Period 9 (lump-sum + recurring via timeline = 1500 + 23300 =
+        24800): ytd before = 13500, remaining = 9500, capped = 9500.
+        Employer match = quantize(min(9500, 230.77) * 0.50, HALF_UP)
+        = 115.39.
+        Total employer = 10 * 115.39 = 1153.90.
+
+        Pre-fix would compute ``periodic_contribution = 1500 +
+        23300/1 = 24800`` from Step 2 averaging and feed it as a flat
+        per-period amount.  Period 0 caps at 23000 (consumes the
+        entire annual limit on day one) so employer match = 115.39;
+        periods 1-9 cap at 0 so employer match = 0.  Pre-fix total
+        would be 115.39 -- an order of magnitude understated, and
+        the lump sum lands in the wrong period.
+
+        ``total_contributions`` is the sum of shadow income
+        transactions (``_sum_shadow_income``) -- only the $23,300
+        lump-sum transfer counts; the paycheck deduction is not a
+        transfer, so it contributes 0.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        account = data["account"]
+        scenario = data["scenario"]
+        salary_profile = data["salary_profile"]
+        periods = data["periods"]
+
+        # F-19 / C16-1: $100k salary -> gross_biweekly = 100000/26 =
+        # 3846.15 quantized (banker's rounding, but the digit after
+        # .15 is 3 so the result is the same in any mode).
+        salary_profile.annual_salary = Decimal("100000.00")
+
+        inv_acct, inv_params = _create_investment_account(
+            user, periods,
+            employer_type="match",
+            match_pct=Decimal("0.5000"),
+            match_cap_pct=Decimal("0.0600"),
+        )
+        # Cap so the per-period contribution-limit guard actually
+        # bites once the lump sum is added.
+        inv_params.annual_contribution_limit = Decimal("23000.00")
+
+        # Recurring pre-tax flat 401(k) deduction targeting this
+        # account: $1,500/period.
+        flat_method = (
+            db.session.query(CalcMethod)
+            .filter_by(name="flat").one()
+        )
+        pre_tax_timing = (
+            db.session.query(DeductionTiming)
+            .filter_by(name="pre_tax").one()
+        )
+        ded = PaycheckDeduction(
+            salary_profile_id=salary_profile.id,
+            target_account_id=inv_acct.id,
+            name="401k Contribution",
+            amount=Decimal("1500.00"),
+            calc_method_id=flat_method.id,
+            deduction_timing_id=pre_tax_timing.id,
+            is_active=True,
+        )
+        db.session.add(ded)
+
+        # One settled lump-sum transfer of $23,300 landing in the
+        # last seeded period (period 9).
+        _create_transfer_with_shadows(
+            user, account, inv_acct, scenario, periods[9],
+            "Year-end 401k contribution", Decimal("23300.00"),
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+
+        # Hand-computed: 10 periods * 115.39 employer match each.
+        assert entry["employer_contributions"] == Decimal("1153.90")
+        # Only the lump-sum transfer is shadow income; the deduction
+        # path is not a transfer and does not count here.
+        assert entry["total_contributions"] == Decimal("23300.00")
+        # Growth and end-balance sanity checks (exact growth depends
+        # on the Decimal ** non-integer exponent context and is not
+        # hand-pinned, but it must be strictly positive and
+        # dec31 > jan1 because contributions land every period).
+        assert entry["investment_growth"] > ZERO
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+
+    def test_recurring_only_byte_identical_post_fix(
+        self, app, db, seed_full_user_data,
+    ):
+        """C16-2: recurring-only path is byte-identical pre vs post.
+
+        Fixture is the C16-1 setup minus the lump-sum transfer.
+        With only the $1,500/period recurring deduction:
+        - 10 * 1500 = 15000 total employee contributions <= 23000
+          annual limit, so the cap never bites.
+        - Each period: capped=1500, employer match = quantize(min(
+          1500, 230.77) * 0.50, HALF_UP) = 115.39.
+        - Total employer = 10 * 115.39 = 1153.90 (same as C16-1).
+
+        Pre-fix would compute periodic_contribution = 1500 (no
+        transfers -> Step 2 averaging adds nothing) and feed it as
+        the per-period amount, producing exactly the same per-period
+        values as the post-fix timeline (Path 1 deductions emit one
+        $1500 record per period; Path 2 contributes nothing).  This
+        is the byte-identical case the fix preserves.
+
+        ``total_contributions`` is 0 because there are no shadow
+        income transactions.
+        """
+        data = seed_full_user_data
+        user = data["user"]
+        salary_profile = data["salary_profile"]
+        periods = data["periods"]
+
+        salary_profile.annual_salary = Decimal("100000.00")
+
+        inv_acct, inv_params = _create_investment_account(
+            user, periods,
+            employer_type="match",
+            match_pct=Decimal("0.5000"),
+            match_cap_pct=Decimal("0.0600"),
+        )
+        inv_params.annual_contribution_limit = Decimal("23000.00")
+
+        flat_method = (
+            db.session.query(CalcMethod)
+            .filter_by(name="flat").one()
+        )
+        pre_tax_timing = (
+            db.session.query(DeductionTiming)
+            .filter_by(name="pre_tax").one()
+        )
+        ded = PaycheckDeduction(
+            salary_profile_id=salary_profile.id,
+            target_account_id=inv_acct.id,
+            name="401k Contribution",
+            amount=Decimal("1500.00"),
+            calc_method_id=flat_method.id,
+            deduction_timing_id=pre_tax_timing.id,
+            is_active=True,
+        )
+        db.session.add(ded)
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        savings = result["savings_progress"]
+        entry = next(
+            s for s in savings if s["account_name"] == "401k"
+        )
+
+        # Hand-computed: 10 periods * 115.39 employer match each.
+        assert entry["employer_contributions"] == Decimal("1153.90")
+        # No shadow income transfers -> total_contributions = 0.
+        assert entry["total_contributions"] == ZERO
+        assert entry["investment_growth"] > ZERO
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+
+
 # ── Pre-Anchor Savings Progress Tests ────────────────────────────
 
 
@@ -1804,12 +2060,12 @@ class TestSavingsProgressPreAnchor:
             db.session.query(AccountType)
             .filter_by(name="Roth IRA").one()
         )
-        ira_acct = Account(
+        ira_acct = account_service.create_account(
             user_id=user.id,
             account_type_id=ira_type.id,
             name="Roth IRA",
-            current_anchor_balance=Decimal("5000.00"),
-            current_anchor_period_id=periods[5].id,
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=periods[5].id,
         )
         db.session.add(ira_acct)
         db.session.flush()
@@ -2128,3 +2384,272 @@ class TestIntegration:
         # Verify net worth delta is consistent.
         nw = result["net_worth"]
         assert nw["delta"] == nw["dec31"] - nw["jan1"]
+
+
+# ── C8: Net worth uses the canonical entries-aware producer ───────
+#
+# Pre-Commit-8, ``_get_account_balance_map`` ran the checking branch
+# through ``balance_calculator.calculate_balances`` with a transaction
+# query that did NOT ``selectinload(Transaction.entries)``.  When a
+# checking account had a Projected envelope expense with cleared debit
+# entries, the silent-degrade seam in ``_entry_aware_amount`` (closed
+# at the math layer in Commit 5 by lazy-loading, structurally closed
+# here by routing through the canonical producer) returned
+# ``effective_amount`` unchanged.  Result: the same data shipped
+# $160.00 on the grid and $114.29 on the net-worth aggregate -- the
+# audit's symptom #5 facet on net worth.  Commit 8 routes the
+# checking-style branch through ``balance_resolver.balances_for`` so
+# the figure cannot disagree with the grid for the same inputs.
+
+
+def _override_account_anchor_year_end(db_session, account, pay_period, anchor_balance):
+    """Replace ``account``'s current anchor with the given balance + period.
+
+    Mirrors ``_override_anchor`` in test_savings_dashboard_service.py
+    and ``_override_account_anchor`` in test_accounts.py: appends a
+    fresh :class:`AccountAnchorHistory` row (latest-wins by
+    ``created_at``) and syncs the cache columns so the resolver's
+    cache-reconciliation log does NOT fire (cache and history agree).
+    Required because ``seed_user`` writes its origination anchor of
+    $1,000 against the seed_user bootstrap period; the Commit 8
+    symptom reproduction needs $614.29 on a chosen period inside the
+    target tax year.
+    """
+    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+
+    history = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=pay_period.id,
+        anchor_balance=anchor_balance,
+        notes="C8 symptom-#5 net-worth test: anchor override",
+    )
+    db_session.add(history)
+    db_session.flush()
+    account.current_anchor_balance = anchor_balance
+    account.current_anchor_period_id = pay_period.id
+    db_session.commit()
+
+
+def _add_envelope_expense_with_cleared_entries(
+    db_session, *, user_id, account, scenario, period, category,
+    estimated, cleared_amounts,
+):
+    """Create a Projected envelope expense with the given cleared debit entries.
+
+    Builds the ``is_envelope=True`` template + Transaction pair that
+    entries attach to, then attaches one CLEARED debit
+    :class:`TransactionEntry` per amount in ``cleared_amounts``.  These
+    are the entries that produce the F-009 / CRIT-01 silent-degrade
+    gap: pre-Commit-5 the entry-aware reduction would not run on
+    consumers that did not eager-load entries, so the cleared amount
+    (already in the anchor) would be implicitly subtracted a second
+    time off the projection.
+    """
+    from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
+    template = TransactionTemplate(
+        user_id=user_id,
+        account_id=account.id,
+        category_id=category.id,
+        transaction_type_id=expense_type_id,
+        name="Groceries",
+        default_amount=estimated,
+        is_envelope=True,
+    )
+    db_session.add(template)
+    db_session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=period.id,
+        scenario_id=scenario.id,
+        account_id=account.id,
+        status_id=projected_id,
+        name="Groceries",
+        category_id=category.id,
+        transaction_type_id=expense_type_id,
+        estimated_amount=estimated,
+    )
+    db_session.add(txn)
+    db_session.flush()
+
+    for amt in cleared_amounts:
+        db_session.add(TransactionEntry(
+            transaction_id=txn.id,
+            user_id=user_id,
+            amount=amt,
+            description="Cleared purchase",
+            entry_date=date(2026, 5, 15),
+            is_credit=False,
+            is_cleared=True,
+        ))
+    db_session.flush()
+    return txn
+
+
+class TestNetWorthEntryAware:
+    """C8-1: net-worth aggregate routes through canonical entries-aware producer.
+
+    Pins the symptom #5 (net-worth facet) fix: the year-end net-worth
+    section now reads the same checking balance as the grid and
+    /savings for the same inputs.  See remediation_plan.md Commit 8 +
+    audit finding R-1 (the silent-degrade balance seam had more
+    consumers than CRIT-01 enumerated, including the year-end summary).
+    """
+
+    def test_networth_balance_entry_aware(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C8-1: monthly net-worth value uses the entries-aware reduction.
+
+        Reproduction of symptom #5 / F-009 worked example on the
+        net-worth aggregate (``05_symptoms.md:1437-1481``):
+
+          - Real checking anchor 614.29 on a period inside YEAR (2026).
+          - One Projected envelope expense
+            ``estimated_amount = 500.00`` in the same period (so
+            ``_sum_remaining`` applies for the anchor period and
+            ``_sum_all`` for any post-anchor periods, both via
+            ``_entry_aware_amount``).
+          - Three CLEARED debit entries 20.00 + 15.71 + 10.00 = 45.71.
+            No credit entries, no uncleared debits.
+
+        Hand arithmetic (CRIT-01 / F-009 / R-1):
+
+          cleared_debit   = 20.00 + 15.71 + 10.00 = 45.71
+          uncleared_debit = 0
+          sum_credit      = 0
+          checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
+          anchor_period_balance = 614.29 + 0 - 454.29 = 160.00
+
+        With checking as the only account, the May 2026 net-worth
+        value (which reads from period index 9 ending 2026-05-22, the
+        most recent period ending on or before 2026-05-31) MUST equal
+        Decimal("160.00") -- byte-identical to the grid via
+        ``balance_resolver.balances_for``.  Pre-Commit-8 the value
+        was Decimal("114.29") (= 614.29 - 500.00) via the silent-
+        degrade seam.
+        """
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+
+        user = seed_user["user"]
+        account = seed_user["account"]
+        scenario = seed_user["scenario"]
+        # seed_periods produces 10 biweekly periods starting 2026-01-02;
+        # the last period (index 9) ends 2026-05-22, inside YEAR=2026
+        # and the May-2026 month-end bucket.
+        anchor_period = seed_periods[9]
+        _override_account_anchor_year_end(
+            db.session, account, anchor_period, Decimal("614.29"),
+        )
+
+        _add_envelope_expense_with_cleared_entries(
+            db.session,
+            user_id=user.id,
+            account=account,
+            scenario=scenario,
+            period=anchor_period,
+            category=seed_user["categories"]["Groceries"],
+            estimated=Decimal("500.00"),
+            cleared_amounts=(
+                Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
+            ),
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+
+        # Net worth bucket for May (month=5).  Net worth at May 2026
+        # reads the last period ending on or before 2026-05-31, which
+        # is period 9 ending 2026-05-22 -- where we anchored.
+        may_value = next(
+            v for v in result["net_worth"]["monthly_values"]
+            if v["month"] == 5
+        )
+
+        # CRIT-01 / F-009 / R-1: 614.29 - max(500 - 45.71 - 0, 0)
+        #                       = 614.29 - 454.29 = 160.00.
+        # Pre-Commit-8 the net-worth aggregate reported 114.29 because
+        # the underlying query did not selectinload(Transaction.entries)
+        # and the math-layer seam (closed in Commit 5) was the only
+        # safety net -- routing through balances_for makes the
+        # entries-aware reduction structural.
+        assert may_value["balance"] == Decimal("160.00")
+
+        # And cross-check: the grid value (canonical producer) for
+        # the same period MUST equal the net-worth value -- that is
+        # the contract Commit 8 locks for the symptom #5 net-worth
+        # facet.
+        grid_result = balance_resolver.balances_for(
+            account, scenario.id, seed_periods,
+        )
+        assert grid_result.balances[anchor_period.id] == Decimal("160.00")
+        assert grid_result.balances[anchor_period.id] == may_value["balance"]
+
+
+def test_no_external_calculate_balances_callers():
+    """C8-5: no external callers of plain ``calculate_balances`` remain.
+
+    The Commit 8 verification gate from
+    ``remediation_plan.md``: after this commit, the only call sites of
+    ``balance_calculator.calculate_balances`` (the plain entries-aware
+    engine, not the ``_with_interest`` variant which Commit 28 will
+    collapse) outside the engine module itself live in
+    ``balance_resolver`` (and after Commit 13, ``loan_resolver``).  The
+    seam-bearing engine therefore has no external live caller.
+
+    The interest variant ``calculate_balances_with_interest`` is
+    explicitly out of scope here -- it routes through the same
+    math-layer entry-aware reduction (post-Commit-5 lazy-load) and
+    will be collapsed into the canonical resolver by MED-01 / Commit
+    28.  The calendar service's plain ``calculate_balances`` caller
+    is the explicit target of Commit 9 (HIGH-02) and remains the only
+    expected exception at this point in the rollout.
+    """
+    import re  # pylint: disable=import-outside-toplevel
+    import subprocess  # pylint: disable=import-outside-toplevel
+
+    out = subprocess.run(
+        [
+            "git", "grep", "-n", "balance_calculator.calculate_balances",
+            "--", "app/routes/", "app/services/",
+        ],
+        capture_output=True, text=True, check=True,
+    ).stdout
+
+    # Strip out (a) the resolver, (b) the loan resolver if/when it
+    # lands, (c) the engine module itself, and (d) the ``_with_interest``
+    # callers that this commit explicitly leaves for MED-01 / Commit 28.
+    forbidden = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        path = line.split(":", 1)[0]
+        if "balance_resolver" in path:
+            continue
+        if "loan_resolver" in path:
+            continue
+        if path.endswith("balance_calculator.py"):
+            continue
+        # The interest variant uses a different call site
+        # (``calculate_balances_with_interest``) and is intentionally
+        # left alone by this commit (see module docstring above).
+        if re.search(r"calculate_balances_with_interest", line):
+            continue
+        # Calendar service is the explicit target of Commit 9 (HIGH-02)
+        # and remains the only expected residual plain-``calculate_balances``
+        # external caller at this point in the rollout.  Once Commit 9
+        # lands, this allowance should be removed.
+        if "app/services/calendar_service.py" in path:
+            continue
+        forbidden.append(line)
+
+    assert not forbidden, (
+        "Commit 8 verification gate failed -- found external callers "
+        "of balance_calculator.calculate_balances outside the canonical "
+        "producer / engine module:\n  " + "\n  ".join(forbidden)
+    )

@@ -23,6 +23,7 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+from app.services import account_service
 from app.utils.archive_helpers import (
     account_has_history,
     category_has_usage,
@@ -1146,11 +1147,11 @@ class TestArchiveHelpers:
             paid_status = db.session.query(Status).filter_by(name="Paid").one()
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
-            savings_account = Account(
+            savings_account = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings for Transfer Test",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(savings_account)
             db.session.flush()
@@ -1190,11 +1191,11 @@ class TestArchiveHelpers:
             projected_status = db.session.query(Status).filter_by(name="Projected").one()
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
-            savings_account = Account(
+            savings_account = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings for Projected Transfer",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(savings_account)
             db.session.flush()

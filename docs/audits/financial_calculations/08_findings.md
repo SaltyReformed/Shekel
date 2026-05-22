@@ -3175,3 +3175,101 @@ Part 8.C appended; "Phase 8 complete" recorded with the G1-G9 roll-up (9/9
 PASS). The financial-calculation audit's Phase 8 deliverable -- the
 severity-sorted, root-cause-clustered, surjection-proven findings report --
 is complete. Session ends.
+
+---
+
+# Remediation addendum -- R-9 / R-10 reconciliation closure (Commit 35, 2026-05-21)
+
+This addendum is appended by the remediation work (`remediation_plan.md`
+Section 9, Commit 35); it does not retroactively edit any Phase-8 finding or
+reconciliation item. Each Phase-8 R-item above is a documentation-correction
+against an earlier phase that surfaced a `00_priors.md` PA-status drift in
+the open and explicitly did NOT resolve it (the "surfaced not smoothed"
+contract, P8-e item 7). The remediation work has now consumed two of those
+items end-to-end; this section records that consumption so a future reader
+of `08_findings.md` can trace each surfaced drift to its closing commit
+without re-deriving the live-source state.
+
+## R-9 -- PA-10 / PA-11 (HIGH-01 cross-page balance-equality lock)
+
+P8-c surfaced that the prior-audit `00_priors.md:819-820` rows describing
+PA-10 / PA-11 as `open` with "no test" were stale: live source already
+carried `tests/test_services/test_balance_calculator.py:532
+def test_52_period_penny_accuracy(` and `:907
+def test_idempotent_same_inputs_same_outputs(`, which pin the **single
+producer** `calculate_balances` in isolation but do NOT exercise the
+cross-page balance-equality invariant HIGH-01 governs. HIGH-01's
+load-bearing substance -- "no test renders two balance surfaces and asserts
+they agree" -- stood at audit close (the three audit-plan greps returned
+zero matches against live `tests/`).
+
+Commit 11 (`test(integration): cross-page balance-equality regression lock
+(HIGH-01)`, sha `4674e7e`) closes HIGH-01's load-bearing substance:
+`tests/test_integration/test_cross_page_balance_equality.py` plus the PT-01
+fixture in `tests/conftest.py` render grid / `/savings` / `/accounts`
+checking detail / dashboard / year-end net-worth per-account / calendar for
+one (account, period, scenario) tuple with a Projected envelope expense
+carrying cleared entries, then assert every surface returns the identical
+`Decimal`. A 5-case parameter matrix locks the formula (not just the symptom
+#1 hand-computed number), a subtotal-reconciliation assertion locks the
+E-25 / Q-10 same-formula invariant per case, and a seam-injection negative
+control proves the lock bites when any surface diverges. R-9's only
+residual is a `00_priors.md` PA-10 / PA-11 row update from `open` to
+"single-producer penny-accuracy + idempotency tests present at
+`test_balance_calculator.py:532` / `:907`; cross-page lock added Commit 11
+(`tests/test_integration/test_cross_page_balance_equality.py`)"; that is a
+documentation update to `00_priors.md`, NOT a money finding, and stays
+deferred to the next dedicated audit-doc reconciliation pass per the R-8
+precedent.
+
+## R-10 -- PA-08 (LOW-03 carry-forward scenario filter)
+
+P8-d surfaced that the prior-audit `00_priors.md:817` row describing PA-08
+as `open` with "missing `scenario_id` filter" was stale: live source at
+`app/services/carry_forward_service.py:261-263` already filters
+`Transaction.scenario_id == scenario_id,` inside
+`_build_carry_forward_context`; the mutating bulk UPDATE at `:405-412`
+operates only on rows drawn from that scenario-filtered set; the function
+signature takes `scenario_id` and the docstring at `:318` states it
+"Prevents [cross-scenario mixing]". The PA-08 risk no longer exists in
+live source.
+
+Live source re-verified this session (2026-05-21):
+`carry_forward_service.py:261-263` still carries the three-clause filter
+exactly as P8-d recorded; no commit between the audit close and Commit 35
+has touched that filter. R-10 therefore is closed by **prior remediation**
+(predating this audit), not by any commit in the
+`docs/audits/financial_calculations/remediation_plan.md` sequence. The
+only residual is the same `00_priors.md` PA-08 row update from `open` to
+"remediated; filter present at `carry_forward_service.py:262`,
+scenario-scoped signature + docstring", parked alongside R-9 for the
+dedicated audit-doc reconciliation pass.
+
+## What is not closed here
+
+- **R-1 / R-2 / R-2a / R-3 / R-4 / R-5 / R-6 / R-7 / R-8** remain
+  documentation-corrections against prior phase outputs (the 21-vs-20
+  DIVERGE count, the F-044 / F-046-SoT citation drifts, etc.) and are not
+  affected by Commit 35; they are still surfaced-not-smoothed exactly as
+  P8-e recorded them.
+- **LOW-04 (Phase-4 D3 row nit)** is closed by Commit 35's edit to
+  `04_source_of_truth.md` (the `escrow_components.inflation_rate` row is
+  promoted from "AUTHORITATIVE (implicit) ... D2 nit" to a standalone
+  AUTHORITATIVE classification line, citing the `loan_features.py:111-115`
+  CHECK as its DB-enforced domain).
+- **LOW-05 (model comment vs `calculate_gap` NULL semantics)** is closed
+  by Commit 35's edit to `app/models/user.py` (the comment now reads
+  "NULL = no retirement-tax adjustment applied", matching the code per
+  A-26).
+- **Q-26 sub-2 (the product-contract question: SHOULD a bracket-based
+  fallback exist?)** remains the single Phase-8 carried-open tail, exactly
+  as `08_findings.md:3097-3106` and `09_open_questions.md:1841-1879`
+  recorded it. A-26 decided the remediation direction (do NOT build a
+  fallback); the product-contract decision (whether the feature should
+  exist) is a separate Phase-9 / post-audit product question that Commit
+  35 explicitly does NOT resolve.
+
+This addendum is documentation-only; no source, test, migration, template,
+or JS file is touched by it (the Commit-35 edits to `app/models/user.py`
+and `docs/audits/financial_calculations/04_source_of_truth.md` are
+recorded in the commit message, not retroactively in this audit doc).

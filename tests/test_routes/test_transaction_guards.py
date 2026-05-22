@@ -17,16 +17,17 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.ref import AccountType, Status, TransactionType
 from app.services import transfer_service
+from app.services import account_service
 
 
 def _create_savings(seed_user):
     """Create a savings account for the test user."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(acct)
     db.session.flush()

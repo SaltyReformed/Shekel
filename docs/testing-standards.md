@@ -18,14 +18,18 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
 
 ## Test Run Guidelines
 
-- **Full suite:** ~62 s wall-clock on a fresh test-db container,
-  ~5,276 tests at the default `-n 12` parallelism (set in
-  `pytest.ini` `addopts`).  Back-to-back full-suite runs drift up
-  to ~72 s as the PG cluster's catalog cache fragments from
-  CREATE/DROP DATABASE churn (Phase 3b's drop+reclone mechanism);
-  `docker restart shekel-dev-test-db` returns to the ~62 s
-  baseline.  A single `pytest` invocation completes well under
-  the 10-min hard timeout.
+- **Invoke via `./scripts/test.sh`, not bare `pytest`.**  The
+  wrapper restarts `shekel-dev-test-db` before pytest runs (see
+  "Catalog fragmentation and the test-runner wrapper" below for
+  the reason), forwards all arguments verbatim, and falls through
+  to plain pytest when the container is absent (CI, fresh
+  checkout).  `SKIP_DB_RESTART=1` skips the restart for chained
+  follow-up invocations.
+- **Full suite:** ~65 s wall-clock including the restart (~62 s
+  pytest + ~3 s restart) on a fresh test-db container, ~5,504
+  tests at the default `-n 12` parallelism (set in `pytest.ini`
+  `addopts`).  A single `./scripts/test.sh` invocation completes
+  well under the 10-min hard timeout.
 - **Concurrent invocations are NOT safe under Phase 3b.**  The
   per-worker DB name is the stable form `shekel_test_{worker_id}`
   (no PID suffix) so the Flask-SQLAlchemy engine URL stays valid
@@ -62,12 +66,91 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
   each is expected).  Anything past 30s raises a timeout error
   rather than hanging the suite.
 
+## Catalog fragmentation and the test-runner wrapper
+
+Phase 3b's per-test drop+reclone gives strict isolation but
+exposes a PostgreSQL behaviour worth naming explicitly so future
+"is the suite slowing down?" investigations land on the answer
+immediately.
+
+**Symptom.**  Over many back-to-back suite runs on a long-lived
+test-db container, full-suite wall-clock drifts linearly.
+Measured progression starting from a freshly-restarted container:
+
+| Run | Wall (s) | Single CREATE/DROP (ms) |
+|---:|---:|---:|
+| 1 | 71 | 14.6 |
+| 2 | 72 | 15.6 |
+| 3 | 76 | 18.3 |
+| 4 | 81 | 20.9 |
+| ~50 (37 h uptime) | 220 | 128 |
+
+The slowdown is entirely in `DROP DATABASE WITH (FORCE)`; the
+fixture profile harness (`SHEKEL_TEST_FIXTURE_PROFILE=1`) shows
+DROP dominating ~80 % of per-test fixture cost in the degraded
+state.  `CREATE DATABASE ... TEMPLATE` stays constant at ~5 ms
+because `file_copy_method=clone` is a reflink, independent of
+catalog state.
+
+**Cause.**  Not on-disk bloat.  Verified with `VACUUM`,
+`VACUUM (FULL)` on `pg_database` / `pg_shdepend` /
+`pg_shseclabel` / `pg_db_role_setting`, and `CHECKPOINT` --
+none of them moved DROP time at all.  The catalog tables are
+small (1 page, 5 live rows, 0 dead) even in the degraded state.
+
+The accumulation is in PG's in-memory shared state: the shared
+invalidation (`sinval`) queue, syscache, and relcache
+invalidations broadcast by every DDL operation.  Long-lived
+backends (Python xdist worker pools held by SQLAlchemy) consume
+these invalidations slowly, and over thousands of CREATE/DROP
+DATABASE cycles the postmaster's bookkeeping degrades.  Only
+restarting the postmaster resets it.
+
+Verified by the negative: 5,000 CREATE/DROP cycles through
+fresh `psql` connections (each command exits, no long-lived
+backend) does **not** fragment -- DROP stays at ~3 ms.  Only
+the workload pattern of "many long-lived backends + heavy DDL"
+triggers the drift.
+
+**Fix.**  `./scripts/test.sh` restarts `shekel-dev-test-db`
+before every pytest invocation, waits for `pg_isready`, then
+execs into pytest with whatever arguments were passed.  Cost
+is ~3 s -- ~5 % of a 65 s suite, invisible compared to the
+variance it eliminates.
+
+Escape hatches:
+
+- `SKIP_DB_RESTART=1 ./scripts/test.sh ...` -- skip the restart
+  for follow-up invocations in a tight iteration loop.  First
+  invocation pays the restart; subsequent ones reuse the warm
+  cluster.  Re-restart manually (or just call the wrapper without
+  `SKIP_DB_RESTART`) once degradation becomes noticeable -- a
+  single `CREATE / DROP DATABASE` round-trip at the admin DSN
+  past ~15 ms is the rule-of-thumb cutoff.
+- `DB_CONTAINER=other-container-name ./scripts/test.sh` -- point
+  at a different test-db container (e.g. when running against a
+  staging cluster on a different port).
+- Wrapper is a no-op when the container does not exist, so CI
+  (which spins up its own postgres service) is unaffected.
+
+**Why not just VACUUM the shared catalogs from a pytest
+sessionstart hook?**  Tried; does not help.  See "Cause" above.
+The fragmentation is in PG shared memory, not on-disk pages.
+
+**Why not switch back to TRUNCATE-based reset?**  The Phase 3b
+move to drop+reclone was driven by audit-trigger and DDL-state
+isolation requirements (see
+`docs/audits/test_improvements/per-worker-database-plan.md`).
+Reverting would re-introduce the bugs Phase 3b fixed.  The
+restart-per-suite cost is a better tradeoff than test isolation
+gaps.
+
 ### Optional per-directory batching (historical)
 
 The 8-batch split below was required when the suite was ~28 min
 sequentially and the 10-min CI timeout forced sub-batches.  At
-the current Phase 3 `-n 12` default (~62 s full suite first run,
-~72 s plateau) it is **purely historical** -- batched invocations
+the current Phase 3 `-n 12` default (~65 s full suite via
+`./scripts/test.sh`) it is **purely historical** -- batched invocations
 no longer offer any wall-clock benefit and individual batches
 finish in seconds, so the bisecting-a-regression and sequential-
 debugging scenarios are better served by `pytest <specific-file>
@@ -86,12 +169,12 @@ DO NOT cite these timings in new measurements.
 | `tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/` | ~545 | -- |
 | `tests/test_audit_fixes.py test_ref_cache.py test_schemas/ test_utils/ test_concurrent/` | ~400 | -- |
 
-Total: ~5,276 tests / ~62 s at `-n 12` (full suite is faster than
-the sum of batches because pytest startup + 12-worker bootstrap
-overhead amortises over the full inventory rather than paying
-8x).  `tests/test_performance/` is excluded from the default
-`addopts` and must be invoked explicitly: `pytest
-tests/test_performance -v -s`.
+Total: ~5,504 tests / ~65 s at `-n 12` via `./scripts/test.sh`
+(full suite is faster than the sum of batches because pytest
+startup + 12-worker bootstrap overhead amortises over the full
+inventory rather than paying 8x).  `tests/test_performance/` is
+excluded from the default `addopts` and must be invoked
+explicitly: `./scripts/test.sh tests/test_performance -v -s`.
 
 ## Building the test template
 

@@ -5,10 +5,81 @@ Pure-function service for mortgage escrow calculations.
 No database access -- operates only on values passed in.
 """
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.utils.money import MONTHS_PER_YEAR
+
 TWO_PLACES = Decimal("0.01")
+
+
+@dataclass(frozen=True)
+class EscrowComponentDisplay:
+    """Display DTO for one escrow component (MED-04 / E-16).
+
+    Carries both the stored annual amount and the derived per-period
+    monthly amount so the Jinja template renders without inline
+    arithmetic.  The monthly amount is rounded once, here, with the
+    project default ROUND_HALF_UP -- the previous template-resident
+    ``comp.annual_amount|float / 12`` introduced a binary-float cast
+    on a Decimal before the divide, masking precision drift behind
+    the formatter.
+
+    ``inflation_rate`` is the storage-domain decimal fraction (e.g.
+    ``Decimal("0.03")`` for 3 %); ``inflation_rate_pct`` is the same
+    value multiplied by 100 for display, kept here so the template
+    does not multiply rates inline either (E-16 applies to
+    rate-arithmetic as much as to dollar-arithmetic).
+    """
+
+    id: int
+    name: str
+    annual_amount: Decimal
+    monthly_amount: Decimal
+    inflation_rate: Decimal | None
+    inflation_rate_pct: Decimal | None
+
+
+def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
+    """Build display DTOs for the escrow components list (MED-04 / E-16).
+
+    Filters inactive components (mirroring
+    :func:`calculate_monthly_escrow`'s gate) and computes the per-
+    component monthly amount as ``annual / 12`` rounded HALF_UP so
+    every row's monthly value matches the rule the aggregate
+    ``calculate_monthly_escrow`` uses.
+
+    Args:
+        components: Iterable of escrow components with ``.id``,
+            ``.name``, ``.annual_amount``, ``.is_active``, and
+            optionally ``.inflation_rate``.
+
+    Returns:
+        List of :class:`EscrowComponentDisplay` ordered as ``components``.
+        Inactive components are skipped.
+    """
+    rows: list[EscrowComponentDisplay] = []
+    for comp in components:
+        if hasattr(comp, "is_active") and not comp.is_active:
+            continue
+        annual = Decimal(str(comp.annual_amount))
+        monthly = (annual / MONTHS_PER_YEAR).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        if getattr(comp, "inflation_rate", None) is not None:
+            inflation = Decimal(str(comp.inflation_rate))
+            inflation_pct = inflation * Decimal("100")
+        else:
+            inflation = None
+            inflation_pct = None
+        rows.append(EscrowComponentDisplay(
+            id=comp.id,
+            name=comp.name,
+            annual_amount=annual,
+            monthly_amount=monthly,
+            inflation_rate=inflation,
+            inflation_rate_pct=inflation_pct,
+        ))
+    return rows
 
 
 def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -> Decimal:
@@ -46,12 +117,12 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
                     + (as_of_date.month - created.month)
                 )
                 years_elapsed = max(
-                    months_elapsed / Decimal("12"), Decimal("0")
+                    months_elapsed / MONTHS_PER_YEAR, Decimal("0")
                 )
                 if years_elapsed > 0:
                     annual = annual * (1 + rate) ** years_elapsed
 
-        monthly = annual / 12
+        monthly = annual / MONTHS_PER_YEAR
         total += monthly
 
     return total.quantize(TWO_PLACES, ROUND_HALF_UP)

@@ -3,60 +3,81 @@ Shekel Budget App -- Archive and Delete History Helpers
 
 Provides history-detection functions used by the unified delete/archive
 pattern across transaction templates, transfer templates, accounts,
-and categories.  Each function answers: "Does this entity have
-Paid/Settled history that prevents permanent deletion?"
+and categories.  Each function answers: "Does this entity have settled
+history that prevents permanent deletion?"
 
 These functions are pure queries -- they do not perform mutations.
+
+The transaction/transfer template predicates filter on the semantic
+``Status.is_settled`` boolean column (audit finding CRIT-05 / E-22):
+enumerating ``[Paid, Settled]`` by name or ID silently missed Received
+-- the status assigned to every income paycheck on mark-done -- and
+let a normal user permanently destroy real RECEIVED income history.
+``is_settled`` is the single source of truth for "this transaction is
+real money already exchanged" (Paid, Received, Settled all carry
+``is_settled=True`` in ``ref_seeds.py``), so a boolean predicate
+covers every current and future settled status without enumeration.
 """
 
 from app.extensions import db
-from app import ref_cache
-from app.enums import StatusEnum
+from app.models.ref import Status
 
 
 def template_has_paid_history(template_id: int) -> bool:
-    """Check if a transaction template has any Paid or Settled transactions.
+    """Check if a transaction template has any settled transactions.
+
+    "Settled" is determined by the semantic ``Status.is_settled``
+    boolean (Paid, Received, Settled in the current seed -- see
+    ``ref_seeds.py``).  Enumerating status names or IDs here would
+    silently miss any status added to the settled set in the
+    future; the boolean column is the single source of truth.
+    Audit reference: CRIT-05 / E-22 (the prior ``[DONE, SETTLED]``
+    enumeration omitted RECEIVED and enabled irreversible RECEIVED
+    income-history deletion).
 
     Args:
         template_id: The TransactionTemplate.id to check.
 
     Returns:
-        True if at least one linked transaction has Paid or Settled
-        status and is not soft-deleted.
+        True if at least one linked transaction has a settled status
+        and is not soft-deleted.
     """
     from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
 
-    paid_id = ref_cache.status_id(StatusEnum.DONE)
-    settled_id = ref_cache.status_id(StatusEnum.SETTLED)
-
     return db.session.query(
-        db.session.query(Transaction).filter(
+        db.session.query(Transaction)
+        .join(Status, Transaction.status_id == Status.id)
+        .filter(
             Transaction.template_id == template_id,
-            Transaction.status_id.in_([paid_id, settled_id]),
+            Status.is_settled.is_(True),
             Transaction.is_deleted.is_(False),
         ).exists()
     ).scalar()
 
 
 def transfer_template_has_paid_history(template_id: int) -> bool:
-    """Check if a transfer template has any Paid or Settled transfers.
+    """Check if a transfer template has any settled transfers.
+
+    Mirrors :func:`template_has_paid_history`: filters on the
+    semantic ``Status.is_settled`` boolean so Received and any
+    future settled status are covered without enumeration.  Audit
+    reference: CRIT-05 / E-22.
 
     Args:
         template_id: The TransferTemplate.id to check.
 
     Returns:
-        True if at least one linked transfer has Paid or Settled
-        status and is not soft-deleted.
+        True if at least one linked transfer has a settled status
+        and is not soft-deleted.
     """
     from app.models.transfer import Transfer  # pylint: disable=import-outside-toplevel
 
-    paid_id = ref_cache.status_id(StatusEnum.DONE)
-    settled_id = ref_cache.status_id(StatusEnum.SETTLED)
-
     return db.session.query(
-        db.session.query(Transfer).filter(
+        db.session.query(Transfer)
+        .join(Status, Transfer.status_id == Status.id)
+        .filter(
             Transfer.transfer_template_id == template_id,
-            Transfer.status_id.in_([paid_id, settled_id]),
+            Status.is_settled.is_(True),
             Transfer.is_deleted.is_(False),
         ).exists()
     ).scalar()
@@ -65,11 +86,12 @@ def transfer_template_has_paid_history(template_id: int) -> bool:
 def account_has_history(account_id: int) -> bool:
     """Check if an account has any non-deleted transactions.
 
-    Unlike template history checks, this does NOT filter by status.
-    Any non-deleted transaction means the account has history.  This is
-    intentionally stricter than the template functions because account
-    deletion would cascade to all related financial records -- even
-    Projected transactions represent user-entered data worth preserving.
+    Unlike the template history checks, this does NOT filter by
+    status.  Any non-deleted transaction means the account has
+    history.  This is intentionally stricter than the template
+    functions because account deletion would cascade to all related
+    financial records -- even Projected transactions represent
+    user-entered data worth preserving.
 
     Args:
         account_id: The Account.id to check.

@@ -569,7 +569,10 @@ import pytest
 from app import create_app
 from app.extensions import db as _db
 from app.models.user import User, UserSettings
-from app.models.account import Account
+# ``Account`` is intentionally not imported here: every test fixture
+# constructs accounts via ``app.services.account_service.create_account``,
+# the canonical post-E-19 factory.  Tests that need to exercise the
+# storage-tier NOT NULL constraint directly use raw SQL inserts.
 from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
@@ -582,6 +585,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
     AccountType, FilingStatus, RecurrencePattern, Status, TransactionType,
 )
+from app.services import account_service
 from app.services.auth_service import hash_password
 
 
@@ -824,6 +828,80 @@ def client(app, db):
 
 
 @pytest.fixture()
+def bare_user(app, db):
+    """A minimal user fixture: User + UserSettings only.
+
+    No account, no pay periods, no scenario.  Tests that exercise
+    services in isolation (e.g. ``pay_period_service``) and want a
+    clean user state with no pre-existing pay periods use this
+    instead of ``seed_user``, which after E-19 / Commit 3 must seed
+    a bootstrap period so its default account satisfies the NOT NULL
+    anchor columns.
+
+    Returns:
+        dict with keys: user, settings.
+    """
+    user = User(
+        email="bare@shekel.local",
+        password_hash=hash_password("barepass-12345"),
+        display_name="Bare User",
+    )
+    db.session.add(user)
+    db.session.flush()
+
+    settings = UserSettings(user_id=user.id)
+    db.session.add(settings)
+    db.session.commit()
+
+    return {"user": user, "settings": settings}
+
+
+@pytest.fixture()
+def bare_auth_client(app, db, client, bare_user):  # pylint: disable=unused-argument
+    """Provide an authenticated test client for the bare user.
+
+    Companion to ``auth_client``: bare_user has no account, no
+    scenario, no categories, and (importantly for pay_period_service
+    tests) no bootstrap pay period.  Use this in tests that need a
+    logged-in session against a user with no pre-existing financial
+    data.
+    """
+    resp = client.post("/login", data={
+        "email": "bare@shekel.local",
+        "password": "barepass-12345",
+    })
+    assert resp.status_code == 302, (
+        f"bare_auth_client login failed with status {resp.status_code}"
+    )
+    return client
+
+
+@pytest.fixture()
+def bare_periods(app, db, bare_user):
+    """Generate 10 pay periods for ``bare_user`` starting 2026-01-02.
+
+    The bare_user-companion to ``seed_periods`` for tests that test
+    the pay-period service contract in isolation: bare_user has no
+    pre-existing periods, so the generated periods take indices
+    0..9, exactly as the pre-Commit-3 ``seed_periods`` did against
+    seed_user.
+
+    Returns:
+        List of PayPeriod objects.
+    """
+    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+    periods = pay_period_service.generate_pay_periods(
+        user_id=bare_user["user"].id,
+        start_date=date(2026, 1, 2),
+        num_periods=10,
+        cadence_days=14,
+    )
+    db.session.commit()
+    return periods
+
+
+@pytest.fixture()
 def seed_user(app, db):
     """Create and return a test user with settings, account, and scenario.
 
@@ -841,16 +919,38 @@ def seed_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
+    # Bootstrap pay period (E-19, Commit 3): every account row has
+    # non-NULL anchor columns post-migration cfb15e782f86, so this
+    # fixture needs at least one period in place before the Checking
+    # account can be created.  Date is an arbitrary Friday well
+    # before any test's typical 2026 range, so the bootstrap stays
+    # out of the way of date-anchored assertions.  The period is
+    # exposed as ``seed_user["bootstrap_period"]`` so tests that
+    # create additional accounts inline can anchor them to it.
+    bootstrap_period = PayPeriod(
+        user_id=user.id,
+        start_date=date(2024, 1, 5),
+        end_date=date(2024, 1, 18),
+        period_index=0,
+    )
+    db.session.add(bootstrap_period)
+    db.session.flush()
+
+    # Default Checking account via the canonical factory.  Tests that
+    # later true-up the anchor produce additional AccountAnchorHistory
+    # rows; the factory's origination row is here from t0 so the
+    # post-Commit-4 resolver reads a consistent event stream.
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Checking",
-        current_anchor_balance=Decimal("1000.00"),
+        anchor_balance=Decimal("1000.00"),
+        anchor_period_id=bootstrap_period.id,
+        notes="seed_user fixture origination",
     )
-    db.session.add(account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -886,14 +986,80 @@ def seed_user(app, db):
         "account": account,
         "scenario": scenario,
         "categories": {c.item_name: c for c in categories},
+        "bootstrap_period": bootstrap_period,
     }
+
+
+def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
+    """Replace ``seed_user``'s bootstrap pay period with the supplied new
+    anchor and renumber the user's remaining periods to start at 0.
+
+    The ``seed_user`` fixture provisions a ``period_index=0`` bootstrap
+    so the account factory has something to anchor against (E-19 /
+    Commit 3 makes that anchor NOT NULL).  Periods fixtures
+    (``seed_periods``, ``seed_periods_today``, etc.) generate the
+    user's "real" pay-period set after the bootstrap; those rows
+    therefore take indices 1..N.  Without cleanup, every existing
+    test that counts user pay periods or asserts ``periods[0].period_index == 0``
+    drifts by 1.
+
+    This helper restores the pre-Commit-3 expectation in one place:
+    (1) repoints the account's anchor (and any matching
+    AccountAnchorHistory row) at the supplied ``new_anchor_period``,
+    (2) deletes the bootstrap (CASCADE removes the bootstrap's
+    history row and any transactions in it -- there should be none
+    at fixture-setup time), (3) renumbers the surviving periods to
+    start at 0.
+
+    Args:
+        db: the SQLAlchemy ``db`` fixture.
+        seed_user: dict returned by the ``seed_user`` fixture.
+        account: the account whose anchor must be repointed.
+        new_anchor_period: the period to anchor the account against
+            after the bootstrap is removed.
+
+    Returns:
+        None.  The mutation is committed before returning so
+        subsequent fixture/test code sees the cleaned state.
+    """
+    bootstrap = seed_user.get("bootstrap_period")
+    if bootstrap is None:
+        return
+    # Re-fetch by id -- the cached object might be stale across the
+    # nested commits below.
+    bootstrap_id = bootstrap.id
+    # Step 1: repoint the account anchor.
+    account.current_anchor_period_id = new_anchor_period.id
+    # Repoint any history rows that referenced the bootstrap so they
+    # survive the cascade-delete (the rows would otherwise be wiped
+    # by the AccountAnchorHistory.pay_period_id CASCADE FK).
+    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+    db.session.query(AccountAnchorHistory).filter_by(
+        account_id=account.id, pay_period_id=bootstrap_id,
+    ).update({"pay_period_id": new_anchor_period.id})
+    db.session.flush()
+    # Step 2: delete the bootstrap row.
+    db.session.query(PayPeriod).filter_by(id=bootstrap_id).delete()
+    db.session.flush()
+    # Step 3: renumber remaining periods to start at 0.
+    db.session.execute(_db.text(
+        "UPDATE budget.pay_periods "
+        "SET period_index = period_index - 1 "
+        "WHERE user_id = :u"
+    ), {"u": seed_user["user"].id})
+    db.session.commit()
+    # Refresh the in-memory period rows the caller will use.
+    db.session.expire_all()
 
 
 @pytest.fixture()
 def seed_periods(app, db, seed_user):
     """Generate 10 pay periods starting from 2026-01-02.
 
-    Also sets the anchor period to the first period.
+    Also sets the anchor period to the first period and removes the
+    ``seed_user`` bootstrap (see ``_drop_seed_user_bootstrap`` for
+    the rationale) so the returned periods occupy indices 0..9 as
+    pre-Commit-3 tests expect.
 
     Returns:
         List of PayPeriod objects.
@@ -908,12 +1074,15 @@ def seed_periods(app, db, seed_user):
     )
     db.session.flush()
 
-    # Set the anchor period.
     account = seed_user["account"]
-    account.current_anchor_period_id = periods[0].id
-    db.session.commit()
-
-    return periods
+    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
+    # Reload periods so callers see the renumbered period_index values.
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=seed_user["user"].id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
 
 
 def _today_relative_start_date():
@@ -956,13 +1125,14 @@ def seed_periods_today(app, db, seed_user):
     )
     db.session.flush()
 
-    # Set the anchor period to the first period so account-level
-    # projections start from a valid period reference.
     account = seed_user["account"]
-    account.current_anchor_period_id = periods[0].id
-    db.session.commit()
-
-    return periods
+    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=seed_user["user"].id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
 
 
 @pytest.fixture()
@@ -979,6 +1149,251 @@ def auth_client(app, db, client, seed_user):
         f"auth_client login failed with status {resp.status_code}"
     )
     return client
+
+
+@pytest.fixture()
+def seed_cross_page_account(app, db, seed_user):
+    """Factory fixture for the PT-01 cross-page balance equality lock (HIGH-01).
+
+    Returns a callable ``build(anchor_balance, expense_amount, entries)``
+    that materialises one symptom-tuple case shared across every
+    balance-rendering surface (grid, /savings, /accounts checking detail,
+    dashboard, year-end net-worth per-account, calendar).  The fixture
+    realises the structural premise of HIGH-01 -- the developer's worst
+    two symptoms (#1 $160 grid vs $114.29 /savings; #5 /accounts matches
+    nowhere) had zero falsifying tests until this lock landed (Commit 11).
+
+    The realised data shape is invariant across cases:
+
+      * The user's existing seed_user bootstrap pay period is removed and
+        replaced with 24 calendar-monthly periods spanning
+        ``[today.year - 1, today.year + 1]``.  Monthly (not biweekly)
+        periods are chosen deliberately so the anchor period's
+        ``end_date`` IS a calendar month-end -- the C9-3 boundary
+        invariant of :func:`balance_resolver.balance_as_of_date` then
+        guarantees the calendar surface's projected month-end balance
+        equals the resolver's anchor-period balance for the same data.
+        Without that alignment a mid-period month-end would silently make
+        the calendar surface look like a divergence even when the
+        underlying math agrees, defeating the cross-page lock.
+      * The anchor period is the calendar month containing
+        ``date.today()`` (so the dashboard's ``get_current_period`` and
+        the grid's ``get_periods_in_range(current_period.period_index,
+        ...)`` both naturally land on the anchor period without any
+        date-mock plumbing).
+      * The account anchor is overridden -- via a fresh
+        ``AccountAnchorHistory`` row + cache-column update, latest-wins
+        per E-19 -- to the case's ``anchor_balance``.  ``seed_user``'s
+        factory-default $1,000 anchor is irrelevant here.
+      * A single Projected envelope expense in the anchor period with
+        ``estimated_amount = expense_amount`` and the supplied entries
+        list, each entry dated ``anchor_period.start_date`` (so all
+        entries fall on or before any month-end ``as_of`` the calendar
+        surface evaluates).
+
+    The factory returns a context dict keyed:
+
+      * ``user_id``, ``account``, ``account_id``, ``scenario``,
+        ``scenario_id``: identifiers callers pass to every surface.
+      * ``all_periods``, ``anchor_period``: the period list and the
+        chosen anchor period.
+      * ``year``, ``month``: ``anchor_period.start_date.year /
+        .month`` -- the calendar/year-end surfaces consume these.
+
+    The five remediation-plan cases (PT-01 base, zero anchor, negative
+    overdraft, credit-only entries, uncleared-floor) are realised by the
+    test's ``@pytest.mark.parametrize`` block, not baked into the
+    fixture, so a future case can be added in one place without growing
+    a conftest variant.
+
+    Returns:
+        Callable ``(anchor_balance, expense_amount, entries) ->
+        dict``.  Each entry is a 3-tuple ``(amount, is_credit,
+        is_cleared)`` -- amount as ``Decimal`` (from string),
+        booleans as the entries-aware reduction's discriminants.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.models.account import Account, AccountAnchorHistory
+    from app.models.transaction_entry import TransactionEntry
+
+    def _build(
+        anchor_balance: Decimal,
+        expense_amount: Decimal,
+        entries: list[tuple[Decimal, bool, bool]],
+    ) -> dict:
+        user = seed_user["user"]
+        account = seed_user["account"]
+        scenario = seed_user["scenario"]
+
+        # Build 36 calendar-monthly periods spanning today's year +/- 1.
+        # ``period_index`` starts at 1 so they sit cleanly above the
+        # ``seed_user`` bootstrap (index 0, dated 2024-01).  The
+        # bootstrap is left in place rather than deleted via
+        # ``_drop_seed_user_bootstrap``: deleting it cascades the
+        # ``AccountAnchorHistory.pay_period_id`` ondelete=CASCADE and
+        # forces an autoflush UPDATE on the account anchor mid-flush,
+        # which races the just-flushed new pay periods on stricter
+        # autoflush orderings (observed: ``ForeignKeyViolation`` on
+        # ``current_anchor_period_id``).  Keeping the bootstrap is
+        # equivalent for HIGH-01 lock purposes because it is a 2024
+        # pre-anchor period that every surface skips: the resolver
+        # only emits balances from the anchor period forward, the
+        # year-end's pre-target-year period lookup either falls on
+        # one of our 2025 monthly periods or returns the bootstrap
+        # (whose entry in ``balances`` is absent so the
+        # ``balances.get(..., ZERO)`` short-circuit yields the
+        # neutral zero), and the grid / dashboard / /savings /
+        # /accounts surfaces all key off
+        # ``pay_period_service.get_current_period`` which matches
+        # today's calendar-month period, not the 2024 bootstrap.
+        today = date.today()
+        first_year = today.year - 1
+        period_index = 1
+        created = []
+        for year in range(first_year, first_year + 3):
+            for month in range(1, 13):
+                start = date(year, month, 1)
+                # last day of month: subtract one from the first of
+                # next month (December rolls to next year).
+                if month == 12:
+                    next_first = date(year + 1, 1, 1)
+                else:
+                    next_first = date(year, month + 1, 1)
+                end = next_first - timedelta(days=1)
+                period = PayPeriod(
+                    user_id=user.id,
+                    start_date=start,
+                    end_date=end,
+                    period_index=period_index,
+                )
+                db.session.add(period)
+                created.append(period)
+                period_index += 1
+        db.session.commit()
+
+        # The anchor period is the calendar month containing today.
+        # ``today.month`` is 1..12 and the created list contains
+        # months chronologically starting at January of ``first_year``,
+        # so today's month is at index ``12 + (today.month - 1)``.
+        anchor_period = created[12 + (today.month - 1)]
+        assert anchor_period.start_date <= today <= anchor_period.end_date, (
+            f"anchor_period {anchor_period.start_date}..{anchor_period.end_date} "
+            f"does not contain today={today}; fixture invariant broken"
+        )
+
+        # Build the ordered period list every surface consumes via
+        # ``pay_period_service.get_all_periods``.  Includes the 2024
+        # bootstrap at index 0 plus our 36 monthly periods at
+        # indices 1..36; the bootstrap is pre-anchor and benign for
+        # every surface (see the rationale block above).
+        all_periods = (
+            db.session.query(PayPeriod)
+            .filter_by(user_id=user.id)
+            .order_by(PayPeriod.period_index)
+            .all()
+        )
+
+        # Override the anchor balance and matching history row.  The
+        # ``seed_user`` factory already wrote an origination history
+        # row at $1,000 against the bootstrap period; appending a
+        # newer row makes ``resolve_anchor`` (latest-wins by
+        # ``created_at``) return the case's balance instead.  The
+        # cache columns are updated in the same flush so the
+        # resolver's cache-reconciliation path stays quiet (cache ==
+        # latest event), which keeps the test log free of spurious
+        # ``EVT_ANCHOR_CACHE_RECONCILED`` entries.
+        #
+        # Re-fetch ``account`` against the live session because the
+        # earlier ``db.session.commit()`` (after the new period
+        # inserts) expires every object loaded in this session
+        # (``expires_on_commit=True``).  Setting attributes on an
+        # expired instance whose load fixture lives upstream in
+        # ``seed_user`` does not reliably re-mark the row dirty in
+        # every SQLAlchemy ORM mode -- the symptom is a silent
+        # ``EVT_ANCHOR_CACHE_RECONCILED`` log entry on every surface
+        # read because the cache column did not actually move.
+        # Refetching by primary key gives us a known-attached
+        # instance whose attribute assignments are guaranteed to
+        # mark the row dirty for the next flush.
+        account = db.session.get(Account, seed_user["account"].id)
+        history = AccountAnchorHistory(
+            account_id=account.id,
+            pay_period_id=anchor_period.id,
+            anchor_balance=anchor_balance,
+            notes="seed_cross_page_account: HIGH-01 lock anchor override",
+        )
+        db.session.add(history)
+        account.current_anchor_balance = anchor_balance
+        account.current_anchor_period_id = anchor_period.id
+        db.session.flush()
+
+        # Single Projected envelope expense in the anchor period.
+        # ``is_envelope=True`` is what makes the entries-aware
+        # reduction applicable -- a non-envelope template would short-
+        # circuit to ``effective_amount`` regardless of entries.
+        projected_status = (
+            db.session.query(Status).filter_by(name="Projected").one()
+        )
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        groceries_cat = seed_user["categories"]["Groceries"]
+        template = TransactionTemplate(
+            user_id=user.id,
+            account_id=account.id,
+            category_id=groceries_cat.id,
+            transaction_type_id=expense_type.id,
+            name="PT-01 envelope expense",
+            default_amount=expense_amount,
+            is_envelope=True,
+        )
+        db.session.add(template)
+        db.session.flush()
+
+        txn = Transaction(
+            template_id=template.id,
+            pay_period_id=anchor_period.id,
+            scenario_id=scenario.id,
+            account_id=account.id,
+            status_id=projected_status.id,
+            name="PT-01 envelope expense",
+            category_id=groceries_cat.id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=expense_amount,
+        )
+        db.session.add(txn)
+        db.session.flush()
+
+        # Entries all dated on anchor_period.start_date -- a date that
+        # is on or before every month-end ``as_of`` the calendar
+        # surface evaluates, so the E-27 entry-date cut is a no-op
+        # for this fixture and the calendar surface's balance equals
+        # the resolver's anchor-period balance by construction.
+        for amount, is_credit, is_cleared in entries:
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id,
+                user_id=user.id,
+                amount=amount,
+                description="PT-01 entry",
+                entry_date=anchor_period.start_date,
+                is_credit=is_credit,
+                is_cleared=is_cleared,
+            ))
+        db.session.commit()
+
+        return {
+            "user_id": user.id,
+            "account": account,
+            "account_id": account.id,
+            "scenario": scenario,
+            "scenario_id": scenario.id,
+            "all_periods": all_periods,
+            "anchor_period": anchor_period,
+            "year": anchor_period.start_date.year,
+            "month": anchor_period.start_date.month,
+        }
+
+    return _build
 
 
 @pytest.fixture()
@@ -1001,16 +1416,28 @@ def second_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
+    # Bootstrap pay period (E-19, Commit 3); see ``seed_user`` for
+    # the rationale.
+    bootstrap_period = PayPeriod(
+        user_id=user.id,
+        start_date=date(2024, 1, 5),
+        end_date=date(2024, 1, 18),
+        period_index=0,
+    )
+    db.session.add(bootstrap_period)
+    db.session.flush()
+
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Other Checking",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
+        anchor_period_id=bootstrap_period.id,
+        notes="second_user fixture origination",
     )
-    db.session.add(account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -1042,6 +1469,7 @@ def second_user(app, db):
         "account": account,
         "scenario": scenario,
         "categories": {c.item_name: c for c in categories},
+        "bootstrap_period": bootstrap_period,
     }
 
 
@@ -1066,10 +1494,13 @@ def seed_periods_52(app, db, seed_user):
     db.session.flush()
 
     account = seed_user["account"]
-    account.current_anchor_period_id = periods[0].id
-    db.session.commit()
-
-    return periods
+    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=seed_user["user"].id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
 
 
 # --- Two-User Isolation Fixtures ------------------------------------------
@@ -1096,16 +1527,28 @@ def seed_second_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
+    # Bootstrap pay period (E-19, Commit 3); see ``seed_user`` for
+    # the rationale.
+    bootstrap_period = PayPeriod(
+        user_id=user.id,
+        start_date=date(2024, 1, 5),
+        end_date=date(2024, 1, 18),
+        period_index=0,
+    )
+    db.session.add(bootstrap_period)
+    db.session.flush()
+
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
-    account = Account(
+    account = account_service.create_account(
         user_id=user.id,
         account_type_id=checking_type.id,
         name="Checking",
-        current_anchor_balance=Decimal("2000.00"),
+        anchor_balance=Decimal("2000.00"),
+        anchor_period_id=bootstrap_period.id,
+        notes="seed_second_user fixture origination",
     )
-    db.session.add(account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -1140,6 +1583,7 @@ def seed_second_user(app, db):
         "account": account,
         "scenario": scenario,
         "categories": {c.item_name: c for c in categories},
+        "bootstrap_period": bootstrap_period,
     }
 
 
@@ -1163,10 +1607,13 @@ def seed_second_periods(app, db, seed_second_user):
     db.session.flush()
 
     account = seed_second_user["account"]
-    account.current_anchor_period_id = periods[0].id
-    db.session.commit()
-
-    return periods
+    _drop_seed_user_bootstrap(db, seed_second_user, account, periods[0])
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=seed_second_user["user"].id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
 
 
 @pytest.fixture()
@@ -1268,17 +1715,16 @@ def _build_full_user_data(db, seed_user, periods):
     )
     db.session.add(goal)
 
-    # c) Savings account + transfer template.
-    savings_account = Account(
+    # c) Savings account + transfer template via the canonical
+    # factory (E-19, Commit 3).
+    savings_account = account_service.create_account(
         user_id=user.id,
         account_type_id=savings_acct_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
+        anchor_period_id=periods[0].id,
+        notes="_build_full_user_data savings origination",
     )
-    db.session.add(savings_account)
-    db.session.flush()
-
-    savings_account.current_anchor_period_id = periods[0].id
 
     transfer_tpl = TransferTemplate(
         user_id=user.id,
@@ -1429,17 +1875,16 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     )
     db.session.add(goal)
 
-    # c) Savings account + transfer template.
-    savings_account = Account(
+    # c) Savings account + transfer template via the canonical
+    # factory (E-19, Commit 3).
+    savings_account = account_service.create_account(
         user_id=user.id,
         account_type_id=savings_acct_type.id,
         name="Savings",
-        current_anchor_balance=Decimal("300.00"),
+        anchor_balance=Decimal("300.00"),
+        anchor_period_id=periods[0].id,
+        notes="seed_full_second_user_data savings origination",
     )
-    db.session.add(savings_account)
-    db.session.flush()
-
-    savings_account.current_anchor_period_id = periods[0].id
 
     transfer_tpl = TransferTemplate(
         user_id=user.id,
@@ -1614,62 +2059,20 @@ def _refresh_ref_cache_and_jinja_globals(app):
          that no longer exist and every template that references
          one would break.
 
-    Mirrors the ID exposure list in ``app/__init__.py``; missing
-    a member here would render a Jinja Undefined at request time
-    and fail tests in confusing ways.  The list is duplicated
-    (rather than imported) on purpose -- ``app/__init__.py`` runs
-    inside ``create_app()`` which is called once per test session,
-    while this helper runs once per test, so a single source of
-    truth would require restructuring the registration into a
-    standalone function the factory calls.  That refactor is
-    out of scope for C-28.
+    Delegates to ``app.jinja_globals.register_ref_id_globals`` --
+    the same helper ``create_app`` uses -- so the two call sites
+    cannot drift out of sync.  Follow-up plan Commit 6 (F-7)
+    extracted the helper; prior to that the conftest list was
+    missing eight entries (timing / calc-method / goal-mode /
+    income-unit IDs) and any template referencing one would raise
+    ``UndefinedError`` at test time.
     """
     # pylint: disable=import-outside-toplevel
     from app import ref_cache
-    from app.enums import (
-        AcctCategoryEnum, AcctTypeEnum, RecurrencePatternEnum,
-        StatusEnum, TxnTypeEnum,
-    )
+    from app.jinja_globals import register_ref_id_globals
 
     ref_cache.init(_db.session)
-
-    app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
-    app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
-    app.jinja_env.globals["STATUS_RECEIVED"] = ref_cache.status_id(StatusEnum.RECEIVED)
-    app.jinja_env.globals["STATUS_CREDIT"] = ref_cache.status_id(StatusEnum.CREDIT)
-    app.jinja_env.globals["STATUS_CANCELLED"] = ref_cache.status_id(StatusEnum.CANCELLED)
-    app.jinja_env.globals["STATUS_SETTLED"] = ref_cache.status_id(StatusEnum.SETTLED)
-    app.jinja_env.globals["TXN_TYPE_INCOME"] = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    app.jinja_env.globals["TXN_TYPE_EXPENSE"] = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    app.jinja_env.globals["ACCT_TYPE_CHECKING"] = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    app.jinja_env.globals["ACCT_TYPE_SAVINGS"] = ref_cache.acct_type_id(AcctTypeEnum.SAVINGS)
-    app.jinja_env.globals["ACCT_TYPE_HYSA"] = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
-    app.jinja_env.globals["ACCT_TYPE_MONEY_MARKET"] = ref_cache.acct_type_id(AcctTypeEnum.MONEY_MARKET)
-    app.jinja_env.globals["ACCT_TYPE_CD"] = ref_cache.acct_type_id(AcctTypeEnum.CD)
-    app.jinja_env.globals["ACCT_TYPE_HSA"] = ref_cache.acct_type_id(AcctTypeEnum.HSA)
-    app.jinja_env.globals["ACCT_TYPE_CREDIT_CARD"] = ref_cache.acct_type_id(AcctTypeEnum.CREDIT_CARD)
-    app.jinja_env.globals["ACCT_TYPE_MORTGAGE"] = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
-    app.jinja_env.globals["ACCT_TYPE_AUTO_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN)
-    app.jinja_env.globals["ACCT_TYPE_STUDENT_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.STUDENT_LOAN)
-    app.jinja_env.globals["ACCT_TYPE_PERSONAL_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.PERSONAL_LOAN)
-    app.jinja_env.globals["ACCT_TYPE_HELOC"] = ref_cache.acct_type_id(AcctTypeEnum.HELOC)
-    app.jinja_env.globals["ACCT_TYPE_401K"] = ref_cache.acct_type_id(AcctTypeEnum.K401)
-    app.jinja_env.globals["ACCT_TYPE_ROTH_401K"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K)
-    app.jinja_env.globals["ACCT_TYPE_TRADITIONAL_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA)
-    app.jinja_env.globals["ACCT_TYPE_ROTH_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA)
-    app.jinja_env.globals["ACCT_TYPE_BROKERAGE"] = ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE)
-    app.jinja_env.globals["ACCT_TYPE_529"] = ref_cache.acct_type_id(AcctTypeEnum.PLAN_529)
-    app.jinja_env.globals["REC_EVERY_N_PERIODS"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS)
-    app.jinja_env.globals["REC_MONTHLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
-    app.jinja_env.globals["REC_MONTHLY_FIRST"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY_FIRST)
-    app.jinja_env.globals["REC_QUARTERLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.QUARTERLY)
-    app.jinja_env.globals["REC_SEMI_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.SEMI_ANNUAL)
-    app.jinja_env.globals["REC_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ANNUAL)
-    app.jinja_env.globals["REC_ONCE"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
-    app.jinja_env.globals["ACCT_CAT_ASSET"] = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
-    app.jinja_env.globals["ACCT_CAT_LIABILITY"] = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
-    app.jinja_env.globals["ACCT_CAT_RETIREMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
-    app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
+    register_ref_id_globals(app)
 
 
 def _profile_step_stats(values):

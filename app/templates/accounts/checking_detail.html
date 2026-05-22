@@ -40,7 +40,7 @@
           <span class="text-muted">Current Balance</span>
           <span class="fs-5 fw-bold font-mono text-accent">
             {% if current_balance is not none %}
-              ${{ "{:,.2f}".format(current_balance|float) }}
+              ${{ "{:,.2f}".format(current_balance) }}
             {% else %}
               --
             {% endif %}
@@ -52,7 +52,7 @@
         {% for label, bal in projected.items() %}
         <div class="d-flex justify-content-between">
           <small class="text-muted">{{ label }}</small>
-          <small class="font-mono">${{ "{:,.0f}".format(bal|float) }}</small>
+          <small class="font-mono">${{ "{:,.0f}".format(bal) }}</small>
         </div>
         {% endfor %}
         {% endif %}
@@ -82,7 +82,7 @@
             <td>
               <small>{{ pd.period.start_date.strftime('%b %-d') }} - {{ pd.period.end_date.strftime('%b %-d, %Y') }}</small>
             </td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format(pd.balance|float) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(pd.balance) }}</td>
           </tr>
           {% endfor %}
         </tbody>

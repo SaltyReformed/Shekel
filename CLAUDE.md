@@ -74,11 +74,11 @@ These are requirements, not suggestions. Violating them is never acceptable.
 # Dev server
 flask run
 
-# Tests -- full suite: ~4 min at -n 12 default (5,148 tests); single invocation OK
+# Tests -- full suite: ~65 s at -n 12 default (5,504 tests); single invocation OK
 python scripts/build_test_template.py         # first-time setup; rebuild after migrations
-pytest                                        # full suite with pytest.ini's -n 12
-pytest tests/path/test_file.py -v             # single file (fast feedback)
-pytest tests/path/test_file.py::test_name -v  # single test
+./scripts/test.sh                             # full suite (restarts test-db first; see Tests section)
+./scripts/test.sh tests/path/test_file.py -v  # single file (fast feedback)
+./scripts/test.sh tests/path/test_file.py::test_name -v  # single test
 
 # Lint
 pylint app/ --fail-on=E,F
@@ -207,11 +207,15 @@ Detailed standards are in these files. Read them when working on code, tests, or
 - Coding standards (Python, SQL, HTML/Jinja, JS, CSS, shell): @docs/coding-standards.md
 - Testing standards and problem reporting: @docs/testing-standards.md
 
-## Tests -- 5,276 tests, ~62 s full suite at -n 12 (pytest-xdist default)
+## Tests -- 5,504 tests, ~65 s full suite at -n 12 (pytest-xdist default)
 
-A single `pytest` invocation completes well under the 10-min hard
-timeout. `pytest.ini` carries `-n 12 --dist=loadgroup` in `addopts`,
-so the bare command runs the full suite across 12 parallel workers.
+Run tests via `./scripts/test.sh` rather than bare `pytest`. The
+wrapper restarts the local `shekel-dev-test-db` container before
+invoking pytest (see "Catalog fragmentation" below for the
+reason), forwards all arguments verbatim, and falls through to
+plain pytest when the container is absent (CI, fresh checkout).
+`pytest.ini` carries `-n 12 --dist=loadgroup` in `addopts`, so the
+bare command runs the full suite across 12 parallel workers.
 Override with `-n 0` for single-process debugging.
 
 Per-test isolation is delivered by drop+reclone of a per-worker DB
@@ -221,10 +225,22 @@ backed PGDATA to reflink-copy the template in ~4-5 ms per clone
 (`-n 0`) or ~30 ms per clone under 12-way contention.  Per-test
 fixture floor: ~25 ms at `-n 0`, ~83 ms at `-n 12` (the cluster-
 level `pg_database` lock serialises CREATE/DROP across xdist
-workers).  Full-suite wall-clock at `-n 12` is ~62 s on a fresh
-test-db container; back-to-back runs drift up to ~72 s as the
-cluster's catalog cache fragments from CREATE/DROP churn -- a
-`docker restart shekel-dev-test-db` returns to the ~62 s baseline.
+workers).  Full-suite wall-clock at `-n 12` is ~65 s on a fresh
+test-db container.
+
+**Catalog fragmentation.** Over many back-to-back runs the
+postmaster accumulates shared-memory state (sinval queue,
+syscache, relcache invalidations) that VACUUM / CHECKPOINT cannot
+reset; only restarting the postmaster does.  Without intervention
+the suite drifts linearly: measured ~62 s baseline, +2-3 s per
+suite run, reaching ~220 s after ~50 runs / ~37 h uptime.
+`./scripts/test.sh` short-circuits that drift with a
+`docker restart` (~3 s; ~5 % overhead on a 65 s suite) every
+invocation.  If you need to chain several pytest commands without
+paying the restart each time, set `SKIP_DB_RESTART=1` on the
+follow-ups.  See `docs/testing-standards.md`
+"Catalog fragmentation and the test-runner wrapper" for the
+full analysis.
 
 The per-worker DB name is the stable form `shekel_test_{worker_id}`
 (no PID suffix as of Phase 3b).  Two simultaneous pytest invocations
@@ -246,5 +262,10 @@ debugging).
 
 ## Single file or single test for fast feedback
 
-pytest tests/path/test_file.py -v
-pytest tests/path/test_file.py::test_name -v
+./scripts/test.sh tests/path/test_file.py -v
+./scripts/test.sh tests/path/test_file.py::test_name -v
+
+For tight iteration where the restart's ~3 s is too costly, set
+`SKIP_DB_RESTART=1` after the first invocation:
+
+SKIP_DB_RESTART=1 ./scripts/test.sh tests/path/test_file.py::test_name -v

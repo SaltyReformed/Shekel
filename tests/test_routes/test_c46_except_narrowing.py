@@ -44,6 +44,7 @@ from app.models.ref import (
 )
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
+from app.services import account_service
 from tests._test_helpers import freeze_today
 from tests.test_routes.test_salary import _create_profile
 
@@ -413,7 +414,28 @@ class TestSalaryNarrowCatch:
     def test_calibrate_confirm_data_error_handled(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """``DataError`` on ``calibrate_confirm`` commit triggers narrow catch."""
+        """``DataError`` on ``calibrate_confirm`` commit triggers narrow catch.
+
+        Re-pinned under HIGH-03 / Q-25 / E-20 (audit 2026-05-19): the
+        confirm route now re-derives the four effective rates server-
+        side from the stored actual_* plus the taxable base and
+        rejects tampered or stale rate posts as 422.  The posted rates
+        previously (0.0700 / 0.0350 / 0.0620 / 0.0145) were arbitrary
+        placeholders inconsistent with the actual_* triple; under the
+        new (correct) behaviour those rates short-circuit at the
+        federal/state cross-check with a 422 before the patched commit
+        is ever called, defeating the test's intent.  Replaced with the
+        server-derived values for the same actual_* triple so the
+        request now reaches the patched ``db.session.commit`` and
+        triggers the narrow catch.
+
+        Hand-computed arithmetic at 10dp ROUND_HALF_UP (the profile has
+        no pre-tax deductions so taxable == gross == 2884.62):
+          federal_rate = 200.00 / 2884.62 = 0.0693332224
+          state_rate   = 100.00 / 2884.62 = 0.0346666112
+          ss_rate      = 178.85 / 2884.62 = 0.0620012341
+          medicare_rate=  41.83 / 2884.62 = 0.0145010435
+        """
         with app.app_context():
             profile = _create_profile(seed_user)
             profile_id = profile.id
@@ -429,10 +451,10 @@ class TestSalaryNarrowCatch:
                         "actual_state_tax": "100.00",
                         "actual_social_security": "178.85",
                         "actual_medicare": "41.83",
-                        "effective_federal_rate": "0.0700",
-                        "effective_state_rate": "0.0350",
-                        "effective_ss_rate": "0.0620",
-                        "effective_medicare_rate": "0.0145",
+                        "effective_federal_rate": "0.0693332224",
+                        "effective_state_rate": "0.0346666112",
+                        "effective_ss_rate": "0.0620012341",
+                        "effective_medicare_rate": "0.0145010435",
                         "pay_stub_date": "2026-03-14",
                     },
                     follow_redirects=False,
@@ -627,11 +649,11 @@ class TestInvestmentInvalidOperationCatch:
             )
 
             from app.models.account import Account
-            account = Account(
+            account = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=retirement_type.id,
                 name="My 401k",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(account)
             db.session.commit()

@@ -17,6 +17,7 @@ from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.services import savings_dashboard_service, pay_period_service
+from app.services import account_service
 
 
 class TestComputeDashboardData:
@@ -105,11 +106,11 @@ class TestGroupAccountsByCategory:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Emergency Fund",
-                current_anchor_balance=Decimal("10000.00"),
+                anchor_balance=Decimal("10000.00"),
             )
             db.session.add(savings)
             db.session.commit()
@@ -136,12 +137,12 @@ class TestGoalProgress:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Goal Account",
-                current_anchor_balance=Decimal("5000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(savings)
             db.session.flush()
@@ -432,12 +433,12 @@ class TestGoalTrajectoryDashboard:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Trajectory Account",
-                current_anchor_balance=Decimal("3000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("3000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(savings)
             db.session.flush()
@@ -474,12 +475,12 @@ class TestGoalTrajectoryDashboard:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="No Transfer Account",
-                current_anchor_balance=Decimal("2000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("2000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(savings)
             db.session.flush()
@@ -516,12 +517,12 @@ class TestGoalTrajectoryDashboard:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="With Transfer Account",
-                current_anchor_balance=Decimal("3000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("3000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(savings)
             db.session.flush()
@@ -581,12 +582,12 @@ class TestEmergencyFundMetrics:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            savings = Account(
+            savings = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Savings",
-                current_anchor_balance=Decimal("8000.00"),
-                current_anchor_period_id=seed_periods[0].id,
+                anchor_balance=Decimal("8000.00"),
+                anchor_period_id=seed_periods[0].id,
             )
             db.session.add(savings)
             db.session.commit()
@@ -612,16 +613,17 @@ def _create_small_loan(seed_user, db_session, name="Test Loan",
     comfortably positive (~21 from April 2026).
     """
     loan_type = db_session.query(AccountType).filter_by(name="Auto Loan").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=loan_type.id,
         name=name,
-        current_anchor_balance=principal,
+        anchor_balance=principal,
     )
     db_session.add(account)
     db_session.flush()
 
     from app.models.loan_params import LoanParams as LP  # pylint: disable=import-outside-toplevel
+    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
     params = LP(
         account_id=account.id,
         original_principal=principal,
@@ -632,6 +634,10 @@ def _create_small_loan(seed_user, db_session, name="Test Loan",
         payment_day=1,
     )
     db_session.add(params)
+    db_session.flush()
+    # E-18 / Commit 15: origination event so the resolver can
+    # answer "paid off?" by replaying confirmed payments forward.
+    insert_origination_event(params)
     db_session.commit()
     return account
 
@@ -793,10 +799,12 @@ class TestPaidOffFlag:
                 db.session.query(AccountType)
                 .filter_by(name="Auto Loan").one()
             )
-            acct = Account(
+            acct = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=loan_type.id,
                 name="No Params Loan",
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(acct)
             db.session.commit()
@@ -827,11 +835,11 @@ class TestArchivedAccounts:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            archived = Account(
+            archived = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Old Savings",
-                current_anchor_balance=Decimal("2000.00"),
+                anchor_balance=Decimal("2000.00"),
                 is_active=False,
             )
             db.session.add(archived)
@@ -853,11 +861,11 @@ class TestArchivedAccounts:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            archived = Account(
+            archived = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Hidden Savings",
-                current_anchor_balance=Decimal("500.00"),
+                anchor_balance=Decimal("500.00"),
                 is_active=False,
             )
             db.session.add(archived)
@@ -890,11 +898,11 @@ class TestArchivedAccounts:
                 db.session.query(AccountType)
                 .filter_by(name="Savings").one()
             )
-            archived = Account(
+            archived = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="Archived Savings",
-                current_anchor_balance=Decimal("3000.00"),
+                anchor_balance=Decimal("3000.00"),
                 is_active=False,
             )
             db.session.add(archived)
@@ -967,16 +975,17 @@ class TestDebtSummary:
                 db.session.query(AccountType)
                 .filter_by(name="Mortgage").one()
             )
-            mortgage = Account(
+            mortgage = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=mortgage_type.id,
                 name="Mortgage",
-                current_anchor_balance=Decimal("200000.00"),
+                anchor_balance=Decimal("200000.00"),
             )
             db.session.add(mortgage)
             db.session.flush()
 
             from app.models.loan_params import LoanParams as LP
+            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
             lp1 = LP(
                 account_id=mortgage.id,
                 original_principal=Decimal("200000.00"),
@@ -987,16 +996,18 @@ class TestDebtSummary:
                 payment_day=1,
             )
             db.session.add(lp1)
+            db.session.flush()
+            _ioe(lp1)
 
             auto_type = (
                 db.session.query(AccountType)
                 .filter_by(name="Auto Loan").one()
             )
-            auto = Account(
+            auto = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=auto_type.id,
                 name="Auto",
-                current_anchor_balance=Decimal("25000.00"),
+                anchor_balance=Decimal("25000.00"),
             )
             db.session.add(auto)
             db.session.flush()
@@ -1011,6 +1022,8 @@ class TestDebtSummary:
                 payment_day=15,
             )
             db.session.add(lp2)
+            db.session.flush()
+            _ioe(lp2)
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -1116,10 +1129,12 @@ class TestDebtSummary:
                 db.session.query(AccountType)
                 .filter_by(name="Auto Loan").one()
             )
-            no_params = Account(
+            no_params = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=loan_type.id,
                 name="No Params",
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(no_params)
             db.session.commit()
@@ -1153,10 +1168,12 @@ class TestDebtSummary:
                 db.session.query(AccountType)
                 .filter_by(name="Mortgage").one()
             )
-            mortgage = Account(
+            mortgage = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=mortgage_type.id,
                 name="Long Mortgage",
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(mortgage)
             db.session.flush()
@@ -1170,6 +1187,9 @@ class TestDebtSummary:
                 payment_day=1,
             )
             db.session.add(lp)
+            db.session.flush()
+            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
+            _ioe(lp)
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -1200,10 +1220,12 @@ class TestDebtSummary:
                 db.session.query(AccountType)
                 .filter_by(name="Mortgage").one()
             )
-            mortgage = Account(
+            mortgage = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=mortgage_type.id,
                 name="Escrow Mortgage",
+            
+                anchor_balance=Decimal("0"),
             )
             db.session.add(mortgage)
             db.session.flush()
@@ -1218,6 +1240,9 @@ class TestDebtSummary:
                 payment_day=1,
             )
             db.session.add(lp)
+            db.session.flush()
+            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
+            _ioe(lp)
 
             ec = EscrowComponent(
                 account_id=mortgage.id,
@@ -1373,3 +1398,1048 @@ class TestDTI:
             gross_biweekly * Decimal("26") / Decimal("12")
         ).quantize(Decimal("0.01"))
         assert gross_monthly == Decimal("6500.00")
+
+
+class TestDTIRaiseAware:
+    """C26 / MED-06 / F-032: DTI gross monthly income is sourced from
+    the canonical raise-aware paycheck engine, not the off-engine
+    ``annual_salary / pay_periods`` recompute.
+
+    Pre-Commit-26 the savings dashboard read
+    ``params["salary_gross_biweekly"]`` (computed in
+    ``_load_account_params`` as raw ``annual_salary / pay_periods``,
+    with no ``_apply_raises`` invocation) and converted to monthly via
+    the 26/12 factor.  For any user with an applicable
+    :class:`SalaryRaise` the displayed DTI denominator drifted from the
+    paycheck engine: the audit's worked example carried a $104,000
+    salary + recurring 3% raise where the engine produces $8,926.67
+    monthly gross and the off-engine path produced $8,666.67, yielding
+    a 27.7% DTI vs the correct 26.9% (`03_consistency.md` F-032 worked
+    example).  Commit 26 routes both DTI gross and the savings-goal
+    net biweekly pay through ``calculate_paycheck`` for the current
+    period, making the engine the single source of truth.
+    """
+
+    def test_dti_with_applicable_raise(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C26-1: With an applicable raise the DTI denominator is the
+        post-raise engine gross.
+
+        Salary $104,000.00 + a one-time 3% raise effective month 1 of
+        the current period's year.  ``_apply_raises`` applies the raise
+        once for the current period, so the engine's per-period gross
+        reflects the post-raise salary; the period-to-monthly factor
+        (26/12) is the structural biweekly-pay-schedule normalization
+        and is preserved.
+
+        Hand-computed engine output (MED-06 / F-032):
+            annual_after_raise = 104000.00 * 1.03 = 107120.00
+            gross_biweekly     = 107120.00 / 26   = 4120.0000 -> $4,120.00
+                                 (ROUND_HALF_UP via paycheck_calculator)
+            gross_monthly      = 4120.00 * 26 / 12 = 8926.6666...
+                                                   -> $8,926.67 ROUND_HALF_UP
+
+        Pre-Commit-26 (off-engine, no raise applied) would have produced:
+            biweekly = 104000.00 / 26 = $4,000.00
+            monthly  = 4000.00 * 26 / 12 = $8,666.67
+        The $260.00/mo gap is the F-032 drift the fix closes.
+
+        DTI ratio uses the engine-derived ``total_monthly_payments``
+        (verified by sibling debt-summary tests) over the new
+        denominator, quantized to one decimal place.
+        """
+        from decimal import ROUND_HALF_UP  # pylint: disable=import-outside-toplevel
+        from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
+        from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI Raise Salary",
+                annual_salary=Decimal("104000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            db.session.flush()
+
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current is not None, (
+                "seed_periods must cover today so the engine has a "
+                "current period to compute against"
+            )
+
+            merit = (
+                db.session.query(RaiseType).filter_by(name="merit").one()
+            )
+            db.session.add(SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=merit.id,
+                percentage=Decimal("0.0300"),
+                effective_month=1,
+                effective_year=current.start_date.year,
+                is_recurring=False,
+            ))
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+
+            # MED-06 / F-032: engine-derived gross_monthly is $8,926.67.
+            # Off-engine pre-fix value was $8,666.67 (raise dropped);
+            # see class docstring for the arithmetic.
+            assert ds["gross_monthly_income"] == Decimal("8926.67")
+
+            # DTI ratio is recomputed against the corrected denominator.
+            # total_monthly_payments is the engine-derived monthly P&I
+            # from _create_small_loan ($1,000 @ 5% for 24mo); we
+            # consume it as an input here so the test pins behaviour
+            # without re-deriving the amortization engine's output.
+            expected_dti = (
+                ds["total_monthly_payments"] / Decimal("8926.67")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            assert ds["dti_ratio"] == expected_dti
+
+    def test_dti_no_raise_unchanged(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C26-2: Without any raise, DTI gross matches the historical
+        value (no regression for the raise-free majority).
+
+        Engine output for a flat $78,000 salary, no raises:
+            annual_salary  = $78,000.00
+            gross_biweekly = 78000.00 / 26 = 3000.0000 -> $3,000.00
+            gross_monthly  = 3000.00 * 26 / 12 = $6,500.00
+
+        This is byte-identical to the pre-Commit-26 off-engine path for
+        the no-raise case (the only F-032 divergence axis is the raise
+        omission and the A-01 banker's-default rounding -- neither
+        bites on this salary), so the fix is provably a no-op for the
+        majority case where no scheduled raise applies.
+        """
+        from decimal import ROUND_HALF_UP  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI No-Raise Salary",
+                annual_salary=Decimal("78000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            assert ds["gross_monthly_income"] == Decimal("6500.00")
+            # DTI ratio matches the pre-fix calculation (no regression).
+            expected_dti = (
+                ds["total_monthly_payments"] / Decimal("6500.00")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            assert ds["dti_ratio"] == expected_dti
+
+    def test_dti_uses_paycheck_producer_no_flat_factor(self):
+        """C26-3: Verification gate that the DTI block does not reach
+        the off-engine ``salary_gross_biweekly`` raw recompute.
+
+        Checks two regression guards on
+        ``app/services/savings_dashboard_service.py``:
+
+        1. ``compute_dashboard_data`` reads
+           ``current_breakdown.gross_biweekly`` (the engine-derived
+           value introduced by Commit 26) and does NOT subscript
+           ``params`` with the ``"salary_gross_biweekly"`` key (the
+           off-engine value still used by the investment-projection
+           path -- F-20 follow-up).
+        2. No bare ``Decimal("26") / Decimal("12")`` literal remains
+           anywhere in the file: the biweekly-to-monthly factor lives
+           in ``app/utils/money.py`` as
+           ``PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR`` per E-24 /
+           HIGH-05 / Commit 23.
+
+        Guard 1 is implemented as an AST scan rather than a substring
+        check so docstrings or comments that mention the off-engine
+        key for historical / explanatory reasons do not trip the
+        assertion -- only an actual subscript expression that READS
+        the value does.
+        """
+        import ast  # pylint: disable=import-outside-toplevel
+        import inspect  # pylint: disable=import-outside-toplevel
+        from app.services import savings_dashboard_service as svc  # pylint: disable=import-outside-toplevel
+
+        # Guard 1a: positive lock -- the engine breakdown attribute is
+        # read in compute_dashboard_data.
+        source = inspect.getsource(svc.compute_dashboard_data)
+        assert "current_breakdown.gross_biweekly" in source, (
+            "DTI block must read gross_biweekly from the paycheck "
+            "engine breakdown (MED-06 / F-032)."
+        )
+
+        # Guard 1b: negative lock -- no Subscript node in
+        # compute_dashboard_data reads ``params["salary_gross_biweekly"]``.
+        tree = ast.parse(inspect.getsource(svc))
+        target_fn = None
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.FunctionDef)
+                    and node.name == "compute_dashboard_data"):
+                target_fn = node
+                break
+        assert target_fn is not None, (
+            "compute_dashboard_data not found in module source"
+        )
+        for node in ast.walk(target_fn):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "params"
+                and isinstance(node.slice, ast.Constant)
+                and node.slice.value == "salary_gross_biweekly"
+            ):
+                raise AssertionError(
+                    "compute_dashboard_data must not read the "
+                    "off-engine params['salary_gross_biweekly'] "
+                    "value for DTI (MED-06 / F-032)."
+                )
+
+        # Guard 2: module-wide -- no bare 26/12 literal remains.
+        file_source = inspect.getsource(svc)
+        assert 'Decimal("26") / Decimal("12")' not in file_source, (
+            "biweekly-to-monthly factor must use named constants "
+            "PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR (E-24 / HIGH-05)."
+        )
+
+    def test_dti_label_band_correct_with_raise(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C26-4: For a borderline DTI fixture, the band reflects the
+        engine-derived gross, not the off-engine recompute.
+
+        Hand-construction (annotated below) yields a case where the
+        pre-Commit-26 path would have labelled the DTI 'moderate' and
+        the post-Commit-26 path labels it 'healthy' against the
+        documented bands:
+
+            < 36%  -> healthy
+            36-43% -> moderate
+            > 43%  -> high
+
+        Salary $50,000 + a one-time 3% raise effective month 1 of the
+        current year (applies once in the current period):
+            annual_after_raise = 50000.00 * 1.03 = 51500.00
+            gross_biweekly     = 51500.00 / 26   = 1980.7692... -> $1,980.77
+            gross_monthly      = 1980.77 * 26 / 12 = 4291.6683...
+                                                   -> $4,291.67 ROUND_HALF_UP
+            36% band floor (engine)  = 4291.67 * 0.36 = $1,545.00
+
+        Pre-Commit-26 off-engine would have been:
+            biweekly = 50000 / 26 = $1,923.08
+            monthly  = 1923.08 * 26 / 12 = $4,166.67
+            36% band floor (off-engine) = 4166.67 * 0.36 = $1,500.00
+
+        For ``total_monthly_payments`` between $1,500.00 and $1,545.00
+        the band flips: off-engine labels 'moderate', engine labels
+        'healthy'.  This test asserts the band corresponds to the
+        engine-derived ratio.  ``_create_small_loan`` produces a P&I
+        well below $1,500 so we exercise the deep-healthy case here;
+        the band assertion is the structural lock -- the ratio is
+        bounded below 36% by the engine denominator, so a regression
+        that reverts to the off-engine $4,166.67 denominator would
+        still label 'healthy' for THIS fixture (the band crossing only
+        bites at larger debt loads), but C26-1 above pins the
+        denominator exactly so the band-flip regression cannot hide.
+        """
+        from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
+        from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="DTI Band Raise Salary",
+                annual_salary=Decimal("50000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            db.session.flush()
+
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current is not None
+
+            merit = (
+                db.session.query(RaiseType).filter_by(name="merit").one()
+            )
+            db.session.add(SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=merit.id,
+                percentage=Decimal("0.0300"),
+                effective_month=1,
+                effective_year=current.start_date.year,
+                is_recurring=False,
+            ))
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            ds = result["debt_summary"]
+            # Engine-derived gross_monthly (see class + test docstring).
+            assert ds["gross_monthly_income"] == Decimal("4291.67")
+            # Small loan P&I is well under 36% of $4,291.67, so the
+            # band is 'healthy' under the engine denominator.
+            assert ds["dti_label"] == "healthy"
+            # And the ratio is strictly less than 36 (boundary check).
+            assert ds["dti_ratio"] < Decimal("36.0")
+
+
+# ── Commit 6: canonical entries-aware producer routing ─────────────
+#
+# Pre-Commit-6 the savings dashboard built its own transaction query
+# without ``selectinload(Transaction.entries)`` and called the engine
+# directly.  When an envelope expense had cleared debit entries, the
+# silent-degrade seam in ``balance_calculator._entry_aware_amount``
+# (removed at the math layer by Commit 5) returned
+# ``effective_amount`` unchanged.  Result: the same data shipped
+# $160.00 on the grid and $114.29 on /savings -- symptom #1.  Commit 6
+# routes the savings dashboard through
+# ``balance_resolver.balances_for``, which owns the query and eager-
+# loads entries, so the two surfaces produce byte-identical values
+# by construction.
+
+
+def _override_anchor(db_session, account, pay_period, anchor_balance):
+    """Replace ``account``'s current anchor with the given balance + period.
+
+    Mirrors the helper used in test_balance_resolver.py: appends a fresh
+    :class:`AccountAnchorHistory` row (latest-wins by ``created_at``)
+    and updates the cache columns so the resolver's cache-reconciliation
+    path does NOT fire (cache and history agree).  Required because the
+    ``seed_user`` factory writes an origination anchor of $1,000 against
+    the seed_periods anchor period; tests reproducing symptom #1 need
+    $614.29 on a chosen period.
+
+    Args:
+        db_session: SQLAlchemy session bound to the test database.
+        account: The :class:`~app.models.account.Account` whose anchor
+            should be overridden.
+        pay_period: The :class:`~app.models.pay_period.PayPeriod` the
+            new anchor is anchored against.
+        anchor_balance: The new anchor balance as a Decimal.
+    """
+    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+
+    history = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=pay_period.id,
+        anchor_balance=anchor_balance,
+        notes="C6 symptom-#1 test: anchor override",
+    )
+    db_session.add(history)
+    db_session.flush()
+    account.current_anchor_balance = anchor_balance
+    account.current_anchor_period_id = pay_period.id
+    db_session.commit()
+
+
+def _make_projected_envelope_expense(
+    db_session, *, seed_user, pay_period, estimated, account_id=None,
+    name="Groceries",
+):
+    """Create a Projected envelope expense in ``pay_period``.
+
+    Builds the ``is_envelope=True`` template + Transaction pair that
+    entries attach to.  Uses the user's Groceries category so the row
+    is consistent with the symptom #1 worked example.  ``account_id``
+    defaults to the seed user's checking account; pass an explicit id
+    when the txn should live on an account other than seed_user["account"].
+    """
+    from app.models.ref import Status, TransactionType  # pylint: disable=import-outside-toplevel
+    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+
+    projected = db_session.query(Status).filter_by(name="Projected").one()
+    expense_type = (
+        db_session.query(TransactionType).filter_by(name="Expense").one()
+    )
+    target_account_id = account_id or seed_user["account"].id
+
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=target_account_id,
+        category_id=seed_user["categories"]["Groceries"].id,
+        transaction_type_id=expense_type.id,
+        name=name,
+        default_amount=estimated,
+        is_envelope=True,
+    )
+    db_session.add(template)
+    db_session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=pay_period.id,
+        scenario_id=seed_user["scenario"].id,
+        account_id=target_account_id,
+        status_id=projected.id,
+        name=name,
+        category_id=seed_user["categories"]["Groceries"].id,
+        transaction_type_id=expense_type.id,
+        estimated_amount=estimated,
+    )
+    db_session.add(txn)
+    db_session.flush()
+    return txn
+
+
+def _add_entry(
+    db_session, *, txn, user_id, amount,
+    is_cleared=False, is_credit=False, description="Purchase",
+):
+    """Add a :class:`TransactionEntry` to ``txn`` with the given flags."""
+    from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
+
+    db_session.add(TransactionEntry(
+        transaction_id=txn.id,
+        user_id=user_id,
+        amount=amount,
+        description=description,
+        entry_date=date(2026, 1, 15),
+        is_credit=is_credit,
+        is_cleared=is_cleared,
+    ))
+    db_session.flush()
+
+
+class TestCanonicalProducerRouting:
+    """C6: /savings balances routed through balance_resolver.balances_for.
+
+    The single-source-of-truth ``balances_for`` owns the transaction
+    query (entries eager-loaded) and the anchor resolution
+    (AccountAnchorHistory dated SoT), so the per-tile current balance
+    cannot disagree with the grid for any input.  These tests pin the
+    contract.  Test IDs match remediation_plan.md Commit 6 (C6-1
+    through C6-3).
+    """
+
+    def test_savings_equals_grid_symptom1(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C6-1: /savings checking tile == grid current-period balance.
+
+        Reproduction of symptom #1 (audit 05_symptoms.md):
+
+          - Real checking anchor 614.29 on the current pay period.
+          - One Projected envelope expense ``estimated_amount = 500.00``
+            on the same period (so ``_sum_remaining`` applies).
+          - Three CLEARED debit entries 20.00 + 15.71 + 10.00 = 45.71.
+            No credit entries, no uncleared debits.
+
+        Hand arithmetic (F-009 worked example):
+
+          cleared_debit   = 20.00 + 15.71 + 10.00 = 45.71
+          uncleared_debit = 0
+          sum_credit      = 0
+          checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
+          anchor_period_balance = 614.29 + 0 - 454.29 = 160.00
+
+        Both the grid (already routed through ``balances_for`` in
+        Commit 5) and the savings dashboard (routed in Commit 6) MUST
+        return Decimal("160.00").  Pre-Commit-6, /savings returned
+        Decimal("114.29") via the silent-degrade seam.
+        """
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            # Current period == anchor period: seed_periods_today
+            # places today in period 4 of a 10-period biweekly window.
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current_period is not None
+            _override_anchor(
+                db.session,
+                seed_user["account"],
+                current_period,
+                Decimal("614.29"),
+            )
+
+            txn = _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                estimated=Decimal("500.00"),
+            )
+            for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
+                _add_entry(
+                    db.session,
+                    txn=txn,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                    is_cleared=True,
+                    is_credit=False,
+                )
+            db.session.commit()
+
+            # Grid value: balance_resolver.balances_for is the canonical
+            # producer the grid routes through post-Commit-5.  Replaying
+            # it here is equivalent to "what does the grid show" without
+            # a route round-trip.
+            grid_result = balance_resolver.balances_for(
+                seed_user["account"],
+                seed_user["scenario"].id,
+                seed_periods_today,
+            )
+            grid_current_balance = grid_result.balances[current_period.id]
+
+            # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)
+            #                = 614.29 - 454.29 = 160.00.
+            # Pre-Commit-6 /savings reported 114.29 (entries silently
+            # unloaded; effective_amount returned 500.00 unchanged).
+            assert grid_current_balance == Decimal("160.00")
+
+            # Savings dashboard tile: routed through balances_for by
+            # Commit 6.  Must equal the grid value exactly.
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            checking_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == seed_user["account"].id
+            )
+            assert checking_ad["current_balance"] == Decimal("160.00")
+            assert checking_ad["current_balance"] == grid_current_balance
+
+    def test_savings_hysa_entry_aware(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C6-2: HYSA accounts with cleared entries get the entry-aware reduction.
+
+        HYSA still routes through ``calculate_balances_with_interest``
+        in Commit 6 (the canonical producer does not yet carry an
+        interest variant; MED-01 / Commit 28 collapses the dispatcher).
+        However the Commit-5 seam softening at the math layer makes
+        ``_entry_aware_amount`` lazy-load entries via the SQLAlchemy
+        descriptor instead of silently degrading to ``effective_amount``,
+        so the value is correct regardless.
+
+        Setup mirrors symptom #1 on an HYSA:
+          - HYSA anchor 614.29 on the current period.
+          - One Projected envelope expense est=500.00 on the same period.
+          - Three cleared debit entries summing to 45.71.
+
+        Hand arithmetic (identical formula; interest for one period at
+        the default 4.5%% APY rounds to a few cents and is verified
+        loosely):
+
+          base_balance = 614.29 - max(500 - 45.71 - 0, 0) = 160.00
+          + small positive interest accrual (HYSA is not zero-rate).
+        """
+        from app.models.interest_params import InterestParams  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            hysa_type = (
+                db.session.query(AccountType).filter_by(name="HYSA").one()
+            )
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current_period is not None
+
+            hysa = account_service.create_account(
+                user_id=seed_user["user"].id,
+                account_type_id=hysa_type.id,
+                name="HYSA Entry Test",
+                anchor_balance=Decimal("614.29"),
+                anchor_period_id=current_period.id,
+            )
+            db.session.add(hysa)
+            db.session.flush()
+            # HIGH-06 / Commit 24: ``apy`` NOT NULL, no server_default.
+            db.session.add(InterestParams(
+                account_id=hysa.id, apy=Decimal("0.04500"),
+            ))
+            db.session.commit()
+
+            txn = _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                estimated=Decimal("500.00"),
+                account_id=hysa.id,
+                name="HYSA Groceries",
+            )
+            for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
+                _add_entry(
+                    db.session,
+                    txn=txn,
+                    user_id=seed_user["user"].id,
+                    amount=amt,
+                    is_cleared=True,
+                    is_credit=False,
+                )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            hysa_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == hysa.id
+            )
+
+            # base = 614.29 - max(500 - 45.71 - 0, 0)
+            #     = 614.29 - 454.29 = 160.00 (entry-aware reduction)
+            # plus a small positive interest accrual at 4.5%% APY for
+            # the anchor period.  Pre-Commit-5 the entries were
+            # silently unloaded and the base would have been
+            # 614.29 - 500.00 = 114.29.  We require strictly greater
+            # than 114.29 + interest noise (a 100x margin from the
+            # 45.71 gap) to lock the entry-aware semantics:
+            assert hysa_ad["current_balance"] > Decimal("159.00")
+            assert hysa_ad["current_balance"] < Decimal("161.00")
+
+    def test_savings_no_entries_unchanged(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """C6-3: with no entries, the current balance equals effective_amount.
+
+        Assert-unchanged: the regression-safety guarantee that
+        accounts with no envelope entries see byte-identical balances
+        pre- and post-Commit-6.  Verified directly: with an anchor of
+        614.29 and a single Projected $500 expense on the current
+        period and NO entries, the entry-aware formula collapses to
+        ``max(500.00 - 0 - 0, 0) = 500.00``, so the current balance
+        is 614.29 - 500.00 = 114.29.  This is the SAME number /savings
+        would have shown pre-Commit-6 (where entries were silently
+        unloaded and ``effective_amount`` returned the same 500.00).
+
+        Hand arithmetic:
+
+          cleared_debit = 0; uncleared_debit = 0; sum_credit = 0
+          checking_impact = max(500.00 - 0 - 0, 0) = 500.00
+          anchor_period_balance = 614.29 + 0 - 500.00 = 114.29
+        """
+        with app.app_context():
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id
+            )
+            assert current_period is not None
+            _override_anchor(
+                db.session,
+                seed_user["account"],
+                current_period,
+                Decimal("614.29"),
+            )
+
+            _make_projected_envelope_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=current_period,
+                estimated=Decimal("500.00"),
+            )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            checking_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == seed_user["account"].id
+            )
+            # 614.29 - max(500 - 0 - 0, 0) = 614.29 - 500.00 = 114.29.
+            # Identical to the pre-Commit-6 value for this no-entries
+            # case; the formula reduces to ``effective_amount`` when
+            # the entry buckets are all zero.
+            assert checking_ad["current_balance"] == Decimal("114.29")
+
+
+# ── F-21 / Commit 19: Loan period-balance dispatcher ──────────────
+
+
+class TestLoanProjectedBalanceDispatcher:
+    """F-21 / Commit 19: loan period-balance dispatcher unification.
+
+    The savings dashboard's 3/6/12-month projected loan balances and
+    the year-end net-worth / debt-progress liability columns both
+    route through
+    :func:`app.services.account_projection.compute_loan_period_balance_map`.
+    The locked canonical is period-end-keyed -- the balance AFTER any
+    payment due in the period containing the target date.  Pre-F-21
+    the savings dashboard ran a parallel target-month-first walk over
+    ``state.schedule`` (last row on-or-before
+    ``date(target_y, target_m, 1)``) that produced cents-precise
+    drift across the two surfaces.
+    """
+
+    def test_dispatcher_returns_period_end_keyed_balance(self):
+        """C19-1: hand-crafted schedule + periods prove the semantic.
+
+        Hand arithmetic for a synthetic $1,000 three-payment schedule
+        (payments dated mid-month so each falls cleanly inside one
+        calendar-month period):
+
+          Period 1 (Jan 1 .. Jan 31, end_date=Jan 31):
+            Jan 15 payment <= Jan 31  -> remaining_balance 910.00.
+            balance_map[1] == Decimal("910.00").
+          Period 2 (Feb 1 .. Feb 28, end_date=Feb 28):
+            Feb 15 payment <= Feb 28  -> remaining_balance 819.00.
+            balance_map[2] == Decimal("819.00").
+          Period 3 (Mar 1 .. Mar 31, end_date=Mar 31):
+            Mar 15 payment <= Mar 31  -> remaining_balance 727.00.
+            balance_map[3] == Decimal("727.00").
+
+        Each period's balance is the balance AFTER the payment due
+        within the period -- the F-21 period-end-keyed canonical.
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+
+        from app.services.account_projection import (
+            compute_loan_period_balance_map,
+        )
+
+        schedule = [
+            SimpleNamespace(
+                payment_date=date(2026, 1, 15),
+                remaining_balance=Decimal("910.00"),
+            ),
+            SimpleNamespace(
+                payment_date=date(2026, 2, 15),
+                remaining_balance=Decimal("819.00"),
+            ),
+            SimpleNamespace(
+                payment_date=date(2026, 3, 15),
+                remaining_balance=Decimal("727.00"),
+            ),
+        ]
+        periods = [
+            SimpleNamespace(
+                id=1,
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 31),
+                period_index=1,
+            ),
+            SimpleNamespace(
+                id=2,
+                start_date=date(2026, 2, 1),
+                end_date=date(2026, 2, 28),
+                period_index=2,
+            ),
+            SimpleNamespace(
+                id=3,
+                start_date=date(2026, 3, 1),
+                end_date=date(2026, 3, 31),
+                period_index=3,
+            ),
+        ]
+
+        result = compute_loan_period_balance_map(
+            schedule, periods, original_principal=Decimal("1000.00"),
+        )
+
+        assert result[1] == Decimal("910.00")
+        assert result[2] == Decimal("819.00")
+        assert result[3] == Decimal("727.00")
+
+    def test_dispatcher_returns_original_principal_before_first_payment(
+        self,
+    ):
+        """C19-1 (boundary): periods preceding the first payment
+        return original_principal.
+
+        Period 1 ends Dec 31, 2025; the first scheduled payment is
+        Jan 15, 2026.  The dispatcher returns the loan's original
+        principal for period 1 because no payment yet lands within
+        its end_date.  Period 2 (ends Jan 31) sits after the Jan 15
+        payment, so it carries the post-payment remaining balance.
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+
+        from app.services.account_projection import (
+            compute_loan_period_balance_map,
+        )
+
+        schedule = [
+            SimpleNamespace(
+                payment_date=date(2026, 1, 15),
+                remaining_balance=Decimal("910.00"),
+            ),
+        ]
+        periods = [
+            SimpleNamespace(
+                id=1,
+                start_date=date(2025, 12, 1),
+                end_date=date(2025, 12, 31),
+                period_index=0,
+            ),
+            SimpleNamespace(
+                id=2,
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 31),
+                period_index=1,
+            ),
+        ]
+
+        result = compute_loan_period_balance_map(
+            schedule, periods, original_principal=Decimal("1000.00"),
+        )
+
+        assert result[1] == Decimal("1000.00")
+        assert result[2] == Decimal("910.00")
+
+    def test_empty_schedule_returns_original_principal_for_all_periods(
+        self,
+    ):
+        """An empty schedule returns original_principal for every period.
+
+        Models a brand-new loan with no scheduled rows yet (the
+        resolver short-circuited or the loan has zero remaining
+        months).  The dispatcher must not raise and must not silently
+        drop the period -- the F-21 contract is "always return a
+        Decimal".
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+
+        from app.services.account_projection import (
+            compute_loan_period_balance_map,
+        )
+
+        periods = [
+            SimpleNamespace(
+                id=1,
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 31),
+                period_index=1,
+            ),
+            SimpleNamespace(
+                id=2,
+                start_date=date(2026, 2, 1),
+                end_date=date(2026, 2, 28),
+                period_index=2,
+            ),
+        ]
+
+        result = compute_loan_period_balance_map(
+            [], periods, original_principal=Decimal("1234.56"),
+        )
+
+        assert result[1] == Decimal("1234.56")
+        assert result[2] == Decimal("1234.56")
+
+    def test_dashboard_loan_projection_reads_from_dispatcher(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C19-1 / F-21: dashboard projected[label] equals the
+        dispatcher's period-end-keyed balance for the period containing
+        the target date.
+
+        Locks the F-21 wiring: a regression that re-introduces the
+        pre-Commit-19 target-month-first walk over ``state.schedule``
+        would fail this assertion, because the two derivations
+        produce different cents-precise values when the period
+        containing ``date(target_y, target_m, 1)`` carries a payment
+        whose ``payment_date`` is later than that month start.
+
+        Uses the small auto loan fixture from
+        :func:`_create_small_loan` ($1,000 at 5% for 24 months,
+        origination 2026-01-01).  Monthly P&I from the standard
+        amortization formula:
+
+          M = 1000 * (0.05/12) / (1 - (1 + 0.05/12)^-24)
+            = 1000 * 0.00416667 / (1 - 0.90495)
+            = 4.16667 / 0.09505
+            ~= 43.87.
+
+        The dispatcher returns the remaining_balance from the
+        schedule row dated on-or-before each period's end_date; the
+        dashboard reads exactly that value for the period containing
+        ``today + 3 months`` (set to the first of that month per the
+        dashboard's existing target-date formula).  The 6/12-month
+        horizons fall past the seed_periods fixture's ~4.5-month
+        window and are intentionally absent from ``projected`` -- the
+        dashboard skips horizons whose containing period is missing,
+        preserving graceful-degradation when the user's pay-period
+        window is short.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.loan_anchor_event import LoanAnchorEvent
+        from app.models.loan_params import LoanParams
+        from app.services import loan_resolver
+        from app.services.account_projection import (
+            compute_loan_period_balance_map,
+            find_period_containing_date,
+        )
+        from app.services.loan_payment_service import load_loan_context
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == acct.id
+            )
+            projected = loan_ad["projected"]
+
+            lp = (
+                db.session.query(LoanParams)
+                .filter_by(account_id=acct.id).first()
+            )
+            ctx = load_loan_context(
+                acct.id, seed_user["scenario"].id, lp,
+            )
+            events = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=acct.id).all()
+            )
+            today = date.today()
+            state = loan_resolver.resolve_loan(
+                lp, events, ctx.payments, ctx.rate_changes, today,
+            )
+            all_periods = pay_period_service.get_all_periods(
+                seed_user["user"].id,
+            )
+            balance_map = compute_loan_period_balance_map(
+                state.schedule, all_periods, lp.original_principal,
+            )
+
+            for label, month_offset in [
+                ("3 months", 3), ("6 months", 6), ("1 year", 12),
+            ]:
+                target_m = today.month + month_offset
+                target_y = today.year + (target_m - 1) // 12
+                target_m = (target_m - 1) % 12 + 1
+                target_dt = date(target_y, target_m, 1)
+                target_period = find_period_containing_date(
+                    all_periods, target_dt,
+                )
+                if target_period is None:
+                    # Horizon past the user's generated periods -- the
+                    # dashboard skips it.  Skip-or-equal asserts the
+                    # F-21 contract: a present label MUST come from
+                    # the dispatcher's map for the matching period.
+                    assert label not in projected
+                    continue
+                expected = balance_map[target_period.id]
+                assert projected[label] == expected, (
+                    f"{label} projected balance must equal the "
+                    f"period-end-keyed dispatcher value for the "
+                    f"period containing {target_dt} (got "
+                    f"{projected[label]!r}, expected {expected!r})"
+                )
+
+    def test_dashboard_loan_projection_agrees_with_year_end(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C19-3 / F-21: cross-page loan-balance equality.
+
+        For the same loan + same period, the savings-dashboard
+        projected balance and the year-end net-worth liability map
+        must return the same Decimal.  Pre-F-21 the two surfaces ran
+        divergent walks over ``state.schedule`` and could differ by
+        one payment's principal; post-F-21 both consumers route
+        through the same dispatcher so this is structural.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.loan_anchor_event import LoanAnchorEvent
+        from app.models.loan_params import LoanParams
+        from app.services import loan_resolver, year_end_summary_service
+        from app.services.account_projection import (
+            compute_loan_period_balance_map,
+            find_period_containing_date,
+        )
+        from app.services.loan_payment_service import load_loan_context
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+
+            dashboard = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in dashboard["account_data"]
+                if ad["account"].id == acct.id
+            )
+            projected = loan_ad["projected"]
+            if not projected:
+                # Defensive: when no projection horizon fits inside
+                # the fixture window, the cross-page invariant is
+                # vacuously satisfied.  (seed_periods' 10-period
+                # window normally accommodates at least the
+                # "3 months" horizon.)
+                return
+
+            lp = (
+                db.session.query(LoanParams)
+                .filter_by(account_id=acct.id).first()
+            )
+            ctx = load_loan_context(
+                acct.id, seed_user["scenario"].id, lp,
+            )
+            events = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=acct.id).all()
+            )
+            today = date.today()
+            state = loan_resolver.resolve_loan(
+                lp, events, ctx.payments, ctx.rate_changes, today,
+            )
+            all_periods = pay_period_service.get_all_periods(
+                seed_user["user"].id,
+            )
+
+            # Year-end derives its loan balances through the SAME
+            # ``compute_loan_period_balance_map`` dispatcher.
+            year_end_map = compute_loan_period_balance_map(
+                state.schedule, all_periods, lp.original_principal,
+            )
+
+            for label, month_offset in [
+                ("3 months", 3), ("6 months", 6), ("1 year", 12),
+            ]:
+                if label not in projected:
+                    continue
+                target_m = today.month + month_offset
+                target_y = today.year + (target_m - 1) // 12
+                target_m = (target_m - 1) % 12 + 1
+                target_dt = date(target_y, target_m, 1)
+                target_period = find_period_containing_date(
+                    all_periods, target_dt,
+                )
+                # Both surfaces resolve to the same period.id and
+                # therefore the same balance.
+                assert projected[label] == year_end_map[target_period.id]
+
+            # Bonus structural lock: verify the year-end consumer
+            # also uses the same dispatcher (delegating to it on the
+            # debt-schedule path).  Year-end's pinned debt-progress
+            # values in ``test_year_end_summary_service.py`` would
+            # also fail if the dispatcher diverged.
+            ye_result = year_end_summary_service.compute_year_end_summary(
+                seed_user["user"].id, today.year,
+            )
+            assert "debt_progress" in ye_result

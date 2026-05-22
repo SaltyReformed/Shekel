@@ -406,7 +406,7 @@ class TestTransactionDoubleSubmit:
 class TestPayPeriodGenerationIdempotency:
     """Pay period generation deduplicates by start_date."""
 
-    def test_double_submit_pay_period_generate(self, app, db, seed_user):
+    def test_double_submit_pay_period_generate(self, app, db, bare_user):
         """Generating pay periods twice with the same start date skips duplicates.
 
         The source checks existing start_dates and skips any that already
@@ -418,7 +418,7 @@ class TestPayPeriodGenerationIdempotency:
         from app.models.pay_period import PayPeriod
 
         with app.app_context():
-            user_id = seed_user["user"].id
+            user_id = bare_user["user"].id
 
             # First generation: 10 periods starting 2026-06-01.
             periods1 = pay_period_service.generate_pay_periods(
@@ -459,7 +459,7 @@ class TestPayPeriodGenerationIdempotency:
                 assert period.start_date == expected_start + timedelta(days=14 * i)
                 assert period.end_date == expected_start + timedelta(days=14 * i + 13)
 
-    def test_double_submit_pay_period_generate_overlapping_range(self, app, db, seed_user):
+    def test_double_submit_pay_period_generate_overlapping_range(self, app, db, bare_user):
         """Generating periods with an overlapping date range deduplicates overlap.
 
         First batch: 10 periods starting 2026-06-01 (covers through ~2026-08-30).
@@ -471,7 +471,7 @@ class TestPayPeriodGenerationIdempotency:
         from app.models.pay_period import PayPeriod
 
         with app.app_context():
-            user_id = seed_user["user"].id
+            user_id = bare_user["user"].id
 
             # First generation: 10 periods starting 2026-06-01.
             periods1 = pay_period_service.generate_pay_periods(

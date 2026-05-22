@@ -22,6 +22,7 @@ from app.models.transaction import Transaction
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app.services import pay_period_service
+from app.services import account_service
 
 
 def _create_other_user_with_txn(seed_user, seed_periods_today):
@@ -41,12 +42,23 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
+    # E-19 (Commit 3): pay periods must exist before the account so
+    # the NOT NULL anchor columns can be populated at construction.
+    other_periods = pay_period_service.generate_pay_periods(
+        user_id=other_user.id,
+        start_date=date(2026, 1, 2),
+        num_periods=3,
+        cadence_days=14,
+    )
+    db.session.flush()
+
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=other_user.id,
         account_type_id=checking_type.id,
         name="Other Checking",
-        current_anchor_balance=Decimal("500.00"),
+        anchor_balance=Decimal("500.00"),
+        anchor_period_id=other_periods[0].id,
     )
     db.session.add(account)
 
@@ -64,15 +76,6 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
         item_name="Rent",
     )
     db.session.add(category)
-    db.session.flush()
-
-    # Create a pay period for the other user.
-    other_periods = pay_period_service.generate_pay_periods(
-        user_id=other_user.id,
-        start_date=date(2026, 1, 2),
-        num_periods=3,
-        cadence_days=14,
-    )
     db.session.flush()
 
     projected = db.session.query(Status).filter_by(name="Projected").one()

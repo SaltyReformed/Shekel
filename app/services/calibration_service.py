@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.exceptions import ValidationError
+from app.services.tax_calculator import capped_social_security
 
 logger = logging.getLogger(__name__)
 
@@ -103,19 +104,47 @@ def derive_effective_rates(
     )
 
 
-def apply_calibration(gross_biweekly, taxable_biweekly, calibration):
+def apply_calibration(
+    gross_biweekly,
+    taxable_biweekly,
+    calibration,
+    *,
+    cumulative_wages,
+    fica_config,
+):
     """Compute tax amounts using calibrated effective rates.
 
     Called by the paycheck calculator when a calibration override is
     active.  Returns the four tax amounts that replace the bracket-based
     calculations.
 
+    Federal, state, and Medicare lines use the calibration's effective
+    rates derived from the user's real pay stub (calibration is the user's
+    "this is how my employer actually withholds" snapshot).
+
+    The Social Security line is delegated to
+    `tax_calculator.capped_social_security` so the IRS wage-base cap is
+    enforced identically on both the bracket and calibration paths.  SS is
+    a statutory tax (6.2% up to `ss_wage_base`); the helper uses
+    `fica_config.ss_rate` and `fica_config.ss_wage_base` and the calibrated
+    `effective_ss_rate` is intentionally not used in the cap arithmetic.
+    This closes F-037 / CRIT-03 (2026-05-19 audit): before this fix the
+    calibration path had no `cumulative_wages` parameter and never zeroed
+    SS after the cap, overstating FICA by $7,905/yr on a $312k salary.
+
     Args:
         gross_biweekly:    Decimal -- gross pay for the period.
         taxable_biweekly:  Decimal -- gross minus pre-tax deductions.
         calibration:       Object with effective_federal_rate,
-                           effective_state_rate, effective_ss_rate,
+                           effective_state_rate, effective_ss_rate (stored
+                           but not consumed -- see above),
                            effective_medicare_rate attributes.
+        cumulative_wages:  Decimal -- year-to-date gross wages BEFORE this
+                           period.  Required; the SS cap cannot be evaluated
+                           without it.
+        fica_config:       FicaConfig with `ss_rate` and `ss_wage_base`.
+                           Required; carries the statutory SS rate and the
+                           wage-base cap that the helper enforces.
 
     Returns:
         dict with keys: federal, state, ss, medicare (all Decimal,
@@ -126,7 +155,6 @@ def apply_calibration(gross_biweekly, taxable_biweekly, calibration):
 
     federal_rate = Decimal(str(calibration.effective_federal_rate))
     state_rate = Decimal(str(calibration.effective_state_rate))
-    ss_rate = Decimal(str(calibration.effective_ss_rate))
     medicare_rate = Decimal(str(calibration.effective_medicare_rate))
 
     return {
@@ -136,9 +164,7 @@ def apply_calibration(gross_biweekly, taxable_biweekly, calibration):
         "state": (taxable * state_rate).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
         ),
-        "ss": (gross * ss_rate).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        ),
+        "ss": capped_social_security(gross, cumulative_wages, fica_config),
         "medicare": (gross * medicare_rate).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
         ),

@@ -197,8 +197,15 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
 
         to_delete.append(xfer)
 
+    # Route each deletion through the canonical hard-delete path
+    # (Transfer Invariant 4): transfer_service.delete_transfer runs the
+    # orphan-verification self-check and emits EVT_TRANSFER_HARD_DELETED
+    # per deletion.  Shadow-pair atomicity is unchanged -- the underlying
+    # ON DELETE CASCADE on transactions.transfer_id removes both shadows
+    # either way -- but the forensic audit row and the orphan self-check
+    # only exist on the service path.  See audit B6-03 / LOW-02.
     for xfer in to_delete:
-        db.session.delete(xfer)
+        transfer_service.delete_transfer(xfer.id, template.user_id, soft=False)
     db.session.flush()
 
     created = generate_for_template(template, periods, scenario_id, effective_from)

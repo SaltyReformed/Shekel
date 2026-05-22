@@ -23,32 +23,43 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
+from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
-from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import AccountType, Status
+from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import (
-    amortization_engine,
     balance_calculator,
+    balance_resolver,
     escrow_calculator,
     growth_engine,
+    income_service,
+    loan_resolver,
+    obligations_aggregator,
     pay_period_service,
     savings_goal_service,
 )
-from app.services.investment_projection import (
-    adapt_deductions,
-    calculate_investment_inputs,
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+    compute_loan_period_balance_map,
+    find_period_containing_date,
 )
+from app.services.investment_projection import adapt_deductions
 from app.services.loan_payment_service import (
-    get_payment_history,
     load_loan_context,
 )
+from app.services.projection_inputs import (
+    build_investment_projection_inputs,
+    load_active_deductions_for_accounts,
+)
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import balance_excluded_status_ids
+from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +110,19 @@ def compute_dashboard_data(user_id):
         .all()
     ) if scenario and period_ids else []
 
+    # Status filter routes through the centralized
+    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02) so the
+    # Credit / Cancelled exclusion is defined exactly once across the
+    # codebase.  ``joinedload(Transaction.status)`` is retained so
+    # downstream Python iteration in
+    # ``investment_projection.calculate_investment_inputs`` can read
+    # ``txn.status.excludes_from_balance`` /
+    # ``txn.status.is_settled`` without an N+1; the explicit INNER
+    # JOIN is dropped because the ``Transaction.status_id`` filter no
+    # longer needs it.
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     all_shadow_income = (
         db.session.query(Transaction)
-        .join(Transaction.status)
         .options(joinedload(Transaction.status))
         .filter(
             Transaction.transfer_id.isnot(None),
@@ -110,7 +130,7 @@ def compute_dashboard_data(user_id):
             Transaction.pay_period_id.in_(period_ids),
             Transaction.scenario_id == scenario.id,
             Transaction.is_deleted.is_(False),
-            Status.excludes_from_balance.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
         )
         .all()
     ) if scenario and period_ids else []
@@ -125,8 +145,24 @@ def compute_dashboard_data(user_id):
         current_period, params,
     )
 
-    # ── Net biweekly pay (for income-relative goals) ─────────
-    net_biweekly_pay = _get_net_biweekly_pay(user_id, all_periods, current_period)
+    # ── Canonical paycheck breakdown (MED-06 / F-032) ──────────
+    # One income producer feeds every income-derived figure on the
+    # page: the income-relative-goal trajectory's net biweekly pay AND
+    # the DTI denominator's gross monthly income.  Pre-Commit-26 the
+    # DTI path took ``params["salary_gross_biweekly"]`` (the off-engine
+    # raw ``annual_salary / pay_periods`` recompute) and silently dropped
+    # any applicable ``SalaryRaise`` rows, so a user with a 3% recurring
+    # raise saw a DTI computed against a denominator ~$260/mo too low
+    # (audit worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
+    # Routing both consumers through ``calculate_paycheck`` for the
+    # current period makes the engine the single source of truth.
+    current_breakdown = _get_current_paycheck_breakdown(
+        user_id, all_periods, current_period,
+    )
+    net_biweekly_pay = (
+        current_breakdown.net_pay if current_breakdown is not None
+        else Decimal("0.00")
+    )
 
     # ── Savings goals ───────────────────────────────────────────
     goal_data = _compute_goal_progress(
@@ -165,11 +201,26 @@ def compute_dashboard_data(user_id):
         account_data, params["escrow_map"],
     )
     if debt_summary is not None:
-        gross_biweekly = params["salary_gross_biweekly"]
+        # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine
+        # output for the current period (``calculate_paycheck`` ->
+        # ``PaycheckBreakdown.gross_biweekly``), NOT the off-engine
+        # ``annual_salary / pay_periods`` recompute the DTI block read
+        # pre-Commit-26.  The biweekly -> monthly conversion factor
+        # (``PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR``) is preserved
+        # because once the per-period gross is engine-correct, the
+        # period-to-monthly normalization is a structural property of
+        # the 26-period pay schedule (Shekel is a biweekly app), not a
+        # raise-dropping shortcut -- this is a "genuine flat conversion"
+        # in the sense Commit 26 calls out, applied to an engine-derived
+        # input.  See ``app/utils/money.py`` for the constants.
+        gross_biweekly = (
+            current_breakdown.gross_biweekly if current_breakdown is not None
+            else Decimal("0.00")
+        )
         if gross_biweekly > Decimal("0.00"):
-            gross_monthly = (
-                gross_biweekly * Decimal("26") / Decimal("12")
-            ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+            gross_monthly = round_money(
+                gross_biweekly * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+            )
             dti_ratio = (
                 debt_summary["total_monthly_payments"]
                 / gross_monthly * Decimal("100")
@@ -236,34 +287,23 @@ def _load_account_params(user_id, accounts):
         ).all():
             investment_params_map[ip.account_id] = ip
 
-    deductions_by_account = {}
-    if investment_params_map:
-        inv_account_ids = list(investment_params_map.keys())
-        inv_deductions = (
-            db.session.query(PaycheckDeduction)
-            .join(SalaryProfile)
-            .filter(
-                SalaryProfile.user_id == user_id,
-                SalaryProfile.is_active.is_(True),
-                PaycheckDeduction.target_account_id.in_(inv_account_ids),
-                PaycheckDeduction.is_active.is_(True),
-            )
-            .all()
-        )
-        for ded in inv_deductions:
-            deductions_by_account.setdefault(ded.target_account_id, []).append(ded)
+    # F-22 / Commit 18: shared deduction batch loader; replaces the
+    # filter-shape duplicate that previously lived inline here and in
+    # retirement_dashboard_service / year_end_summary_service.
+    deductions_by_account = load_active_deductions_for_accounts(
+        user_id, list(investment_params_map.keys()),
+    ) if investment_params_map else {}
 
-    salary_gross_biweekly = Decimal("0")
-    active_profile = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=user_id, is_active=True)
-        .first()
+    # F-20 / MED-06 / F-032: raise-aware gross-biweekly from the
+    # paycheck engine, not the off-engine
+    # ``annual_salary / pay_periods_per_year`` recompute which silently
+    # dropped any applicable SalaryRaise row.  ``income_service`` wraps
+    # ``calculate_paycheck`` so this producer agrees with the engine
+    # value the DTI denominator (and every other income-derived
+    # surface) consumes downstream.
+    salary_gross_biweekly = income_service.get_current_gross_biweekly(
+        user_id,
     )
-    if active_profile:
-        salary_gross_biweekly = (
-            Decimal(str(active_profile.annual_salary))
-            / (active_profile.pay_periods_per_year or 26)
-        ).quantize(Decimal("0.01"))
 
     loan_params_map = {}
     loan_account_ids = [a.id for a in accounts if a.account_type_id in amort_type_ids]
@@ -329,9 +369,28 @@ def _compute_account_projections(
 
         balances = {}
         acct_interest_params = params["interest_params_map"].get(acct.id)
+        scenario_id = params.get("scenario_id")
 
-        if anchor_period_id:
-            if acct_interest_params:
+        # MED-01 / S6-03: one flag-driven classifier shared with the
+        # year-end summary's ``_get_account_balance_map``.  The
+        # ``interest_params`` row presence still guards the interest
+        # path so an account that flags ``has_interest=True`` but
+        # has no params row falls through to the canonical resolver
+        # (the pre-Commit-28 behavior the param-map-presence check
+        # delivered as a happy accident; the classifier preserves
+        # it explicitly).
+        kind = classify_account(acct)
+
+        if kind is AccountProjectionKind.INTEREST and acct_interest_params:
+            # HYSA / interest-bearing path.  Continues to layer interest
+            # on top of the base balance calculation.  Entry-aware
+            # reduction for any envelope expenses on this account is
+            # applied unconditionally by ``_entry_aware_amount`` post-
+            # Commit-5 (the seam was removed at the math layer: an
+            # unloaded ``entries`` relationship now lazy-loads via the
+            # SQLAlchemy descriptor rather than silently degrading to
+            # ``effective_amount``).
+            if anchor_period_id:
                 balances, _ = balance_calculator.calculate_balances_with_interest(
                     anchor_balance=anchor_balance,
                     anchor_period_id=anchor_period_id,
@@ -339,13 +398,26 @@ def _compute_account_projections(
                     transactions=acct_transactions,
                     interest_params=acct_interest_params,
                 )
-            else:
-                balances, _ = balance_calculator.calculate_balances(
-                    anchor_balance=anchor_balance,
-                    anchor_period_id=anchor_period_id,
-                    periods=all_periods,
-                    transactions=acct_transactions,
-                )
+        elif scenario_id is not None:
+            # Non-interest checking / savings / loan / investment
+            # accounts route through the canonical entries-aware
+            # producer (CRIT-01 / F-009 / E-25).  ``balances_for``
+            # owns its own transaction query with
+            # ``selectinload(Transaction.entries)`` and resolves the
+            # anchor via the dated ``AccountAnchorHistory`` source of
+            # truth, so the per-tile checking balance no longer
+            # silently disagrees with the grid (symptom #1: $160 on
+            # grid vs $114.29 here pre-fix, because /savings did not
+            # eager-load entries and ``_entry_aware_amount`` returned
+            # ``effective_amount`` unchanged).  Loan and investment
+            # accounts still compute a ``balances`` map here, but
+            # ``current_bal`` is overridden below from the
+            # amortization / growth projection; the resolver call is
+            # cheap and uniform.
+            result = balance_resolver.balances_for(
+                acct, scenario_id, all_periods,
+            )
+            balances = result.balances
 
         acct_loan_params = params["loan_params_map"].get(acct.id)
         acct_investment_params = params["investment_params_map"].get(acct.id)
@@ -353,38 +425,63 @@ def _compute_account_projections(
         projected = {}
 
         if acct_loan_params:
-            # Load all context data via the shared loader.
+            # Load context (payments + escrow + rate changes), then
+            # run the loan resolver (E-18 / Commit 13).  The resolver
+            # is the source of truth for current_balance,
+            # monthly_payment, schedule, payoff_date, and
+            # total_interest -- same dollar figures rendered on the
+            # loan card and the year-end net-worth liability.
             scenario_id = params.get("scenario_id")
             loan_ctx = load_loan_context(
                 acct.id, scenario_id, acct_loan_params,
             )
-
-            proj = amortization_engine.get_loan_projection(
-                acct_loan_params,
-                payments=loan_ctx.payments,
-                rate_changes=loan_ctx.rate_changes,
+            anchor_events = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=acct.id)
+                .all()
             )
-            monthly = proj.summary.monthly_payment
-            summary = proj.summary
-
-            # Current balance from the projection.  For ARM loans
-            # this is the user-verified anchor; for fixed-rate it is
-            # derived from the schedule.
-            current_bal = proj.current_balance
-
-            # Projected balances: find the schedule row at each
-            # target date.  Walk backward to find the last row on
-            # or before the target month.
             today = date.today()
-            for label, month_offset in [("3 months", 3), ("6 months", 6), ("1 year", 12)]:
+            state = loan_resolver.resolve_loan(
+                acct_loan_params, anchor_events, loan_ctx.payments,
+                loan_ctx.rate_changes, today,
+            )
+            monthly = state.monthly_payment
+
+            # Current balance from the resolver state.  Replaces the
+            # stored ``LoanParams.current_principal`` read that pre-
+            # E-18 produced the F-008 stored-vs-engine divergence on
+            # this very tile.
+            current_bal = state.current_balance
+
+            # Projected balances at 3 / 6 / 12-month horizons.
+            # F-21 / Commit 19: route through the shared
+            # ``compute_loan_period_balance_map`` so the dashboard's
+            # projected balances agree to the cent with the year-end
+            # net-worth liability and debt-progress sections (both
+            # consumers now read the same period-end-keyed map).
+            # Pre-F-21 this site ran a parallel target-month-first
+            # walk over ``state.schedule`` that answered a slightly
+            # different question and produced cents-precise drift
+            # across the two surfaces; see ``F-21`` in
+            # ``docs/audits/financial_calculations/remediation_follow_up.md``
+            # and ``account_projection.compute_loan_period_balance_map``
+            # for the locked semantic.
+            balance_map = compute_loan_period_balance_map(
+                state.schedule, all_periods,
+                acct_loan_params.original_principal,
+            )
+            for label, month_offset in [
+                ("3 months", 3), ("6 months", 6), ("1 year", 12),
+            ]:
                 target_m = today.month + month_offset
                 target_y = today.year + (target_m - 1) // 12
                 target_m = (target_m - 1) % 12 + 1
                 target_dt = date(target_y, target_m, 1)
-                for row in reversed(proj.schedule):
-                    if row.payment_date <= target_dt:
-                        projected[label] = row.remaining_balance
-                        break
+                target_period = find_period_containing_date(
+                    all_periods, target_dt,
+                )
+                if target_period is not None and target_period.id in balance_map:
+                    projected[label] = balance_map[target_period.id]
         elif acct_investment_params and current_period:
             projected = _project_investment(
                 acct, acct_investment_params, params, all_shadow_income,
@@ -399,23 +496,44 @@ def _compute_account_projections(
                             projected[offset_label] = balances[p.id]
                             break
 
+        # MED-01 / S6-03: the third partial copy of the per-account-
+        # type ladder used to live here.  Routed through the shared
+        # classifier so the "needs setup" predicate consults the same
+        # one taxonomy the projection dispatcher above does.
         needs_setup = False
         if acct.account_type and acct.account_type.has_parameters:
-            if acct.account_type.has_interest:
+            if kind is AccountProjectionKind.INTEREST:
                 needs_setup = acct_interest_params is None
-            elif acct.account_type.has_amortization:
+            elif kind is AccountProjectionKind.AMORTIZING:
                 needs_setup = acct_loan_params is None
-            else:
+            elif kind is AccountProjectionKind.INVESTMENT:
                 needs_setup = acct_investment_params is None
 
-        # Paid-off determination: replay confirmed-only payments
-        # through the amortization engine to check if the remaining
-        # balance reaches exactly zero.
+        # Paid-off determination: ``state.current_balance`` from the
+        # resolver above answers "what do I owe AS OF TODAY given
+        # confirmed history" -- which correctly excludes settled
+        # payments dated in the future from today's balance.  The
+        # is_paid_off flag asks a different question: "have my
+        # confirmed payments EVER retired this loan?", regardless of
+        # when those payments are dated.  A second resolver call
+        # with ``as_of=date.max`` replays every confirmed payment
+        # forward and answers that question directly.  Additionally
+        # require at least one confirmed payment so a brand-new loan
+        # with a zero anchor balance (degenerate input) does not
+        # render as "paid off" -- preserves the historical
+        # _check_loan_paid_off semantic.
         is_paid_off = False
         if acct_loan_params:
-            is_paid_off = _check_loan_paid_off(
-                acct_loan_params, acct.id, params["scenario_id"],
+            has_confirmed = any(
+                p.is_confirmed for p in loan_ctx.payments
             )
+            if has_confirmed:
+                ever_state = loan_resolver.resolve_loan(
+                    acct_loan_params, anchor_events,
+                    loan_ctx.payments, loan_ctx.rate_changes,
+                    date.max,
+                )
+                is_paid_off = ever_state.current_balance == Decimal("0.00")
 
         ad = {
             "account": acct,
@@ -431,85 +549,11 @@ def _compute_account_projections(
         if acct_loan_params:
             ad["loan_params"] = acct_loan_params
             ad["monthly_payment"] = monthly
-            ad["payoff_date"] = summary.payoff_date
+            ad["payoff_date"] = state.payoff_date
 
         account_data.append(ad)
 
     return account_data
-
-
-def _check_loan_paid_off(
-    loan_params: LoanParams,
-    account_id: int,
-    scenario_id: int | None,
-) -> bool:
-    """Determine if a loan is paid off based on confirmed payments.
-
-    Replays only confirmed (Paid/Settled) payments through the
-    amortization engine and checks whether the remaining balance
-    reaches exactly zero.  Projected payments are excluded -- a loan
-    is "paid off" only when actual payments have retired the balance.
-
-    Rate changes for ARM loans are omitted from the replay.  This is
-    a minor simplification: rate changes affect the interest/principal
-    split within each payment but do not change whether a fixed-amount
-    payment sequence reaches zero balance.
-
-    Args:
-        loan_params: LoanParams model instance for the debt account.
-        account_id: The debt account ID for the payment query.
-        scenario_id: The baseline scenario ID, or None if no scenario
-            exists (returns False immediately).
-
-    Returns:
-        True if confirmed payments bring the remaining balance to
-        exactly Decimal("0.00").
-    """
-    if scenario_id is None:
-        return False
-
-    all_payments = get_payment_history(account_id, scenario_id)
-    confirmed = [p for p in all_payments if p.is_confirmed]
-
-    if not confirmed:
-        return False
-
-    orig_principal = Decimal(str(loan_params.original_principal))
-    rate = Decimal(str(loan_params.interest_rate))
-
-    # For ARM loans, pass original_principal=None to force
-    # re-amortization from current state.
-    is_arm = getattr(loan_params, "is_arm", False)
-    original = None if is_arm else orig_principal
-
-    # Start from origination with full term so past confirmed
-    # payments match the schedule's year-month lookup.  Matches
-    # the get_loan_projection() pattern from d2455e8.
-    schedule = amortization_engine.generate_schedule(
-        orig_principal, rate, loan_params.term_months,
-        origination_date=loan_params.origination_date,
-        payment_day=loan_params.payment_day,
-        original_principal=original,
-        term_months=loan_params.term_months,
-        payments=confirmed,
-    )
-
-    if not schedule:
-        # Empty schedule means current_principal <= 0 or
-        # remaining_months <= 0 -- the engine cannot verify payoff
-        # through payment replay.
-        return False
-
-    # Check the balance at the last CONFIRMED row, not the last row
-    # overall.  The engine fills non-confirmed months with standard
-    # contractual payments that would eventually bring any loan to
-    # zero.  Only a confirmed payment driving the balance to zero
-    # means the user has actually paid off the loan.
-    confirmed_rows = [r for r in schedule if r.is_confirmed]
-    if not confirmed_rows:
-        return False
-
-    return confirmed_rows[-1].remaining_balance == Decimal("0.00")
 
 
 def _project_investment(
@@ -525,14 +569,9 @@ def _project_investment(
         if t.account_id == acct.id
     ]
 
-    inputs = calculate_investment_inputs(
-        account_id=acct.id,
-        investment_params=investment_params,
-        deductions=adapted_deductions,
-        all_contributions=acct_contributions,
-        all_periods=all_periods,
-        current_period=current_period,
-        salary_gross_biweekly=params["salary_gross_biweekly"],
+    inputs = build_investment_projection_inputs(
+        acct.id, investment_params, adapted_deductions, acct_contributions,
+        all_periods, current_period, params["salary_gross_biweekly"],
     )
 
     future_periods = [
@@ -565,22 +604,37 @@ def _project_investment(
     return projected
 
 
-def _get_net_biweekly_pay(user_id, all_periods, current_period):
-    """Load the user's current net biweekly pay from the paycheck calculator.
+def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
+    """Compute the canonical paycheck breakdown for the current period.
 
-    Returns Decimal("0.00") if no active salary profile exists or if
-    there is no current period.
+    The single income producer this module uses for any engine-derived
+    income figure (MED-06 / F-032).  Both consumers -- the savings-goal
+    trajectory's net biweekly pay and the DTI denominator's gross
+    monthly income -- route through this helper so the page cannot
+    silently disagree with the paycheck engine on the same period.
+    Pre-Commit-26 the DTI denominator read the off-engine
+    ``annual_salary / pay_periods`` recompute, which dropped applicable
+    ``SalaryRaise`` rows; the engine applies raises period-by-period
+    via ``_apply_raises`` and is therefore the only correct source for
+    a raise-aware monthly gross.
 
     Args:
         user_id: Integer ID of the current user.
-        all_periods: All pay periods for the user.
-        current_period: The current PayPeriod, or None.
+        all_periods: All pay periods for the user (passed through to
+            the paycheck engine for 3rd-paycheck detection and the
+            FICA SS wage-base cap's cumulative-wage tracking).
+        current_period: The current :class:`PayPeriod`, or ``None``.
 
     Returns:
-        Decimal -- net biweekly pay, or Decimal("0.00") if unavailable.
+        :class:`PaycheckBreakdown` for the current period under the
+        user's active salary profile, or ``None`` if ``current_period``
+        is ``None`` or no active profile exists.  Callers treat
+        ``None`` as "no income data on the page" rather than as a zero
+        amount, since absence of an income source is structurally
+        different from a real zero (E-12).
     """
     if current_period is None:
-        return Decimal("0.00")
+        return None
 
     profile = (
         db.session.query(SalaryProfile)
@@ -588,16 +642,15 @@ def _get_net_biweekly_pay(user_id, all_periods, current_period):
         .first()
     )
     if profile is None:
-        return Decimal("0.00")
+        return None
 
     from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
     from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
 
     tax_configs = load_tax_configs(user_id, profile)
-    breakdown = paycheck_calculator.calculate_paycheck(
+    return paycheck_calculator.calculate_paycheck(
         profile, current_period, all_periods, tax_configs,
     )
-    return breakdown.net_pay
 
 
 def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay):
@@ -634,8 +687,9 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
     has_salary = net_biweekly_pay > Decimal("0.00")
 
     # Batch-load recurring transfer templates targeting goal accounts
-    # to avoid N+1 queries.  compute_committed_monthly() handles the
-    # per-pattern normalization to monthly equivalents.
+    # to avoid N+1 queries.  obligations_aggregator.committed_monthly
+    # handles per-pattern normalization to monthly equivalents and
+    # applies the shared skip-ONCE / skip-expired filter.
     goal_account_ids = [goal.account_id for goal in goals]
     if goal_account_ids:
         to_account_templates = (
@@ -695,10 +749,13 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
             income_descriptor = None
 
         # Monthly contribution from recurring transfers into this account.
-        # Reuses compute_committed_monthly() for pattern normalization.
+        # Routed through the one canonical aggregator (E-24 / HIGH-05) so
+        # the same skip-ONCE / skip-expired filter applies that the
+        # /obligations page applies; pre-Commit-23 this loop omitted the
+        # expired-rule guard and inflated per-goal floors indefinitely.
         acct_templates = templates_by_account.get(goal.account_id, [])
-        monthly_contribution = savings_goal_service.compute_committed_monthly(
-            [], acct_templates,
+        monthly_contribution = obligations_aggregator.committed_monthly(
+            acct_templates, date.today(),
         )
 
         # Trajectory: projected completion date and pace indicator.
@@ -762,7 +819,9 @@ def _compute_avg_monthly_expenses(
             num_periods = len(recent_periods)
             if num_periods > 0:
                 per_period = total_expenses / num_periods
-                avg_monthly_expenses = per_period * Decimal("26") / Decimal("12")
+                avg_monthly_expenses = (
+                    per_period * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+                )
 
     # Committed monthly floor from active templates.
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
@@ -791,8 +850,14 @@ def _compute_avg_monthly_expenses(
             )
             .all()
         )
-        committed_monthly = savings_goal_service.compute_committed_monthly(
-            active_expense_templates, active_transfer_templates,
+        # Same canonical aggregator the /obligations page uses
+        # (E-24 / HIGH-05). The expired-template filter that was
+        # silently missing pre-Commit-23 now applies here too, so the
+        # emergency-fund baseline no longer inherits an expired
+        # recurring expense or transfer indefinitely.
+        committed_monthly = obligations_aggregator.committed_monthly(
+            list(active_expense_templates) + list(active_transfer_templates),
+            date.today(),
         )
         avg_monthly_expenses = max(avg_monthly_expenses, committed_monthly)
 
@@ -837,11 +902,20 @@ def _compute_debt_summary(
             continue
 
         lp = ad["loan_params"]
-        principal = Decimal(str(lp.current_principal))
+        # Resolver-derived current_balance (E-18 / Commit 15).  Same
+        # dollar figure as the loan card; replaces the previous read
+        # of the non-authoritative ``LoanParams.current_principal``
+        # column that produced F-008's stored-vs-engine divergence.
+        principal = ad["current_balance"] or Decimal("0.00")
 
         if principal <= Decimal("0.00"):
             continue
 
+        # ``LoanParams.interest_rate`` is the BASE rate (the
+        # rate-history layered current rate would require the
+        # resolver's ``_rate_at_date`` and is HIGH-08 territory).
+        # Carried forward so weighted_avg_rate retains its historical
+        # meaning across this commit.
         rate = Decimal(str(lp.interest_rate))
         monthly_pi = ad["monthly_payment"]
 

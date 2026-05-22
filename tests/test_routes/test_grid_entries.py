@@ -207,6 +207,48 @@ class TestBuildEntrySumsDict:
             result = build_entry_sums_dict([])
             assert result == {}
 
+    def test_c31_4_remaining_server_computed(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C31-4 -- ``remaining`` and ``over_budget`` are server-computed.
+
+        Previously :file:`grid/_transaction_cell.html` subtracted
+        ``estimated_amount - es.total`` in Jinja (TA-01); the value
+        now arrives pre-computed in the dict so the template renders
+        without inline arithmetic.
+
+        Arithmetic: estimated $500.00 budget, two debit entries
+        $150.00 + $80.00 = $230.00 spent; remaining = 500 - 230 = 270.
+        """
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            _add_entry(txn, seed_user, Decimal("150.00"))
+            _add_entry(txn, seed_user, Decimal("80.00"))
+            db.session.commit()
+
+            sums = build_entry_sums_dict([txn])[txn.id]
+            assert sums["remaining"] == Decimal("270.00")
+            assert sums["over_budget"] is False
+            assert isinstance(sums["remaining"], Decimal)
+
+    def test_c31_4_over_budget_flag_server_computed(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C31-4 -- the over-budget flag matches a remaining < 0 test.
+
+        Arithmetic: estimated $500 budget, $600 spent; remaining = -100,
+        over_budget = True (matches the prior Jinja conditional
+        ``remaining < 0``).
+        """
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            _add_entry(txn, seed_user, Decimal("600.00"))
+            db.session.commit()
+
+            sums = build_entry_sums_dict([txn])[txn.id]
+            assert sums["remaining"] == Decimal("-100.00")
+            assert sums["over_budget"] is True
+
 
 class TestCellProgressDisplay:
     """Tests for progress display via the GET /transactions/<id>/cell endpoint."""

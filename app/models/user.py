@@ -5,6 +5,8 @@ Includes the User model (Flask-Login compatible), user settings,
 and MFA/TOTP configuration.
 """
 
+from decimal import Decimal
+
 from flask_login import UserMixin
 
 from app.extensions import db
@@ -210,9 +212,16 @@ class UserSettings(TimestampMixin, db.Model):
             name="ck_user_settings_valid_safe_withdrawal",
         ),
         # F-077 / C-24: Estimated effective tax rate during
-        # retirement (NULL = unset, fall back to current bracket-
-        # based estimate).  Same percent-to-decimal convention as
-        # ``safe_withdrawal_rate``.
+        # retirement.  NULL = no retirement-tax adjustment applied
+        # -- ``retirement_gap_calculator.calculate_gap`` skips the
+        # after-tax block entirely when ``estimated_tax_rate`` is
+        # None (`:76`, `:110`), so the projection reports gross
+        # pension income; no bracket-based fallback exists.  A-26 /
+        # LOW-05: the prior comment promised a fallback that the
+        # code does not implement; the documented contract now
+        # matches the code (whether a bracket fallback SHOULD be
+        # built is a carried product question, not a defect).  Same
+        # percent-to-decimal convention as ``safe_withdrawal_rate``.
         db.CheckConstraint(
             "estimated_retirement_tax_rate IS NULL OR "
             "(estimated_retirement_tax_rate >= 0 AND "
@@ -231,11 +240,18 @@ class UserSettings(TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
         nullable=False, unique=True,
     )
-    default_inflation_rate = db.Column(db.Numeric(5, 4), default=0.0300)
+    # E-11 / HIGH-06 (Commit 24): Python-side ``default`` constructed
+    # from a string ``Decimal`` rather than a float literal.  See
+    # :class:`~app.models.investment_params.InvestmentParams.assumed_annual_return`
+    # for the full rationale; the same convention applies to every
+    # ``Numeric`` column with a Python-side default.
+    default_inflation_rate = db.Column(
+        db.Numeric(5, 4), default=Decimal("0.0300"),
+    )
     grid_default_periods = db.Column(db.Integer, default=6)
     low_balance_threshold = db.Column(db.Integer, default=500)
     safe_withdrawal_rate = db.Column(
-        db.Numeric(5, 4), default=0.0400,
+        db.Numeric(5, 4), default=Decimal("0.0400"),
         server_default=db.text("0.0400"),
     )
     planned_retirement_date = db.Column(db.Date, nullable=True)

@@ -43,6 +43,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.services import transfer_service
+from app.services import account_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -75,11 +76,11 @@ def _create_projected_expense(seed_user, period):
 def _create_savings_account(seed_user):
     """Add a Savings account on the seeded user for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="C-29 Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(acct)
     db.session.commit()

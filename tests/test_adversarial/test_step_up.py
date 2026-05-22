@@ -56,6 +56,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.user import MfaConfig
 from app.services import mfa_service
 from app.services.mfa_service import TotpVerificationResult
+from app.services import account_service
 from app.utils.session_helpers import (
     FRESH_LOGIN_AT_KEY,
     SESSION_CREATED_AT_KEY,
@@ -1173,11 +1174,11 @@ class TestHardDeleteTransferTemplateIsStepUpGated:
         savings_type = (
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
-        savings = Account(
+        savings = account_service.create_account(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name="Step-Up Test Savings",
-            current_anchor_balance=Decimal("0"),
+            anchor_balance=Decimal("0"),
         )
         db.session.add(savings)
         db.session.flush()

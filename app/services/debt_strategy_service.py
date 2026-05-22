@@ -24,12 +24,12 @@ the strategy projection.  The current rate from LoanParams is used as-is.
 import calendar
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
+
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 # Constants for Decimal arithmetic -- avoids constructing these per call.
 ZERO = Decimal("0.00")
-TWO_PLACES = Decimal("0.01")
-TWELVE = Decimal("12")
 DEFAULT_MAX_HORIZON_MONTHS = 600
 
 # Strategy name constants -- used by the route layer for form values.
@@ -370,18 +370,25 @@ def _add_months(start: date, months: int) -> date:
 
 
 def _snap_to_zero(balance: Decimal) -> Decimal:
-    """Quantize a balance to 2 decimal places and clamp negatives to zero.
+    """Round a balance to cents and clamp negatives to zero.
 
-    Rounding can produce sub-penny negative values (e.g., -0.004 from
-    quantize).  These must not propagate as negative balances.
+    Rounding can produce sub-penny negative values (e.g. -0.004 from
+    a quantize step in the calling math).  These must not propagate
+    as negative balances.
+
+    Routed through :func:`app.utils.money.round_money` so the
+    boundary mode is the project default ROUND_HALF_UP -- the
+    rounding convention every hand-computed debt-strategy assertion
+    in this project assumes (E-26, HIGH-04 / F-017..F-023).
 
     Args:
         balance: The balance after a payment subtraction.
 
     Returns:
-        The balance quantized to TWO_PLACES, clamped to ZERO minimum.
+        ``balance`` rounded to two decimal places via
+        :func:`round_money`, clamped to ZERO minimum.
     """
-    result = balance.quantize(TWO_PLACES, ROUND_HALF_UP)
+    result = round_money(balance)
     if result < ZERO:
         return ZERO
     return result
@@ -408,9 +415,9 @@ def _accrue_interest(
     for i, debt in enumerate(sorted_debts):
         if balances[i] <= ZERO:
             continue
-        interest = (
-            balances[i] * debt.interest_rate / TWELVE
-        ).quantize(TWO_PLACES, ROUND_HALF_UP)
+        interest = round_money(
+            balances[i] * debt.interest_rate / MONTHS_PER_YEAR,
+        )
         balances[i] += interest
         interest_totals[i] += interest
 
@@ -676,12 +683,8 @@ def _build_result(
             name=debt.name,
             payoff_month=payoff_months[i],
             payoff_date=_add_months(start_date, payoff_months[i]),
-            total_interest=interest_totals[i].quantize(
-                TWO_PLACES, ROUND_HALF_UP,
-            ),
-            total_paid=paid_totals[i].quantize(
-                TWO_PLACES, ROUND_HALF_UP,
-            ),
+            total_interest=round_money(interest_totals[i]),
+            total_paid=round_money(paid_totals[i]),
             balance_timeline=timelines[i],
         ))
 

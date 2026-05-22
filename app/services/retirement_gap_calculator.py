@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
+
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
@@ -64,9 +66,11 @@ def calculate_gap(
     if retirement_account_projections is None:
         retirement_account_projections = []
 
-    # Step 1: Pre-retirement net monthly income.
+    # Step 1: Pre-retirement net monthly income. Biweekly-to-monthly
+    # uses the canonical factors from app.utils.money so this site
+    # cannot drift from /obligations and /savings (E-24, HIGH-05).
     pre_retirement_net_monthly = (
-        net_biweekly_pay * 26 / 12
+        net_biweekly_pay * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
     ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     # Step 2: Monthly pension income (passed in directly).
@@ -89,9 +93,11 @@ def calculate_gap(
     )
 
     # Step 4: Required retirement savings (4% rule or custom SWR).
+    # ``MONTHS_PER_YEAR`` annualizes the monthly gap so the SWR (an
+    # annual rate) divides into an apples-to-apples figure.
     if safe_withdrawal_rate > 0:
         required_retirement_savings = (
-            monthly_income_gap * 12 / safe_withdrawal_rate
+            monthly_income_gap * MONTHS_PER_YEAR / safe_withdrawal_rate
         ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
     else:
         required_retirement_savings = ZERO

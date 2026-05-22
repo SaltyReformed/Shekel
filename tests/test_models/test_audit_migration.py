@@ -35,6 +35,7 @@ from app.audit_infrastructure import (
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
+from app.services import account_service
 
 
 # Module-level xdist_group marker pins every test in this module to
@@ -237,11 +238,11 @@ class TestRoundTrip:
             checking_type = (
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
-            new_account = Account(
+            new_account = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=checking_type.id,
                 name="Round Trip Account",
-                current_anchor_balance=Decimal("0.00"),
+                anchor_balance=Decimal("0.00"),
             )
             db.session.add(new_account)
             db.session.flush()
@@ -447,21 +448,25 @@ class TestLeastPrivilegeRole:
             db.session.execute(db.text("RESET ROLE"))
             db.session.execute(db.text(f"SET ROLE {shekel_app_role}"))
 
-            # INSERT
+            # INSERT.  E-19 / Commit 3 makes current_anchor_period_id
+            # NOT NULL; supply ``seed_user``'s bootstrap period so the
+            # raw INSERT satisfies the constraint.
             checking_type_id = db.session.execute(db.text(
                 "SELECT id FROM ref.account_types WHERE name = 'Checking'"
             )).scalar()
             db.session.execute(
                 db.text(
                     "INSERT INTO budget.accounts "
-                    "(user_id, account_type_id, name, current_anchor_balance) "
-                    "VALUES (:uid, :tid, :name, :bal)"
+                    "(user_id, account_type_id, name, "
+                    " current_anchor_balance, current_anchor_period_id) "
+                    "VALUES (:uid, :tid, :name, :bal, :pid)"
                 ),
                 {
                     "uid": seed_user["user"].id,
                     "tid": checking_type_id,
                     "name": "App Role Test Account",
                     "bal": Decimal("100.00"),
+                    "pid": seed_user["bootstrap_period"].id,
                 },
             )
 

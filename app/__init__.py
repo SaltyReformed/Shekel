@@ -9,8 +9,8 @@ to get a fully wired Flask instance.
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
-import sqlalchemy.exc
 from flask import Flask, render_template, request, session as flask_session
 
 from app.config import CONFIG_MAP
@@ -123,6 +123,31 @@ def create_app(config_name=None):
             return ""
         return value
 
+    @app.template_filter("to_percent")
+    def to_percent(value):
+        """Convert a storage-domain decimal-fraction rate into its percent.
+
+        Presentation transformation only (E-16 / MED-04): the rate is
+        stored as ``Decimal("0.07")`` for 7 %, the user-facing display
+        is ``7.00 %``.  Multiplying by ``100`` in :class:`Decimal`
+        preserves the stored precision; the older Jinja pattern
+        ``value|float * 100`` introduced a binary-float cast on the
+        Decimal before the multiply (the JN-/TA-rate sites in
+        ``01_inventory.md``) and is no longer used anywhere.
+
+        Args:
+            value: Decimal storage-domain rate, or ``None``.
+
+        Returns:
+            ``value * 100`` as a Decimal, or ``None`` when ``value`` is
+            ``None``.  Numeric formatting (``"%.2f"|format(...)``) is
+            applied by the caller; this filter never quantises so the
+            caller's chosen precision wins.
+        """
+        if value is None:
+            return None
+        return Decimal(str(value)) * Decimal("100")
+
     # --- Context Processors -----------------------------------------------
     _register_context_processors(app)
 
@@ -151,88 +176,27 @@ def create_app(config_name=None):
     # database IDs.  Then expose cached status IDs as Jinja globals so
     # templates can compare status_id without querying the database.
     #
-    # The init may fail during migrations (columns not yet added) or on
-    # a fresh database before the first migration.  In that case, log a
-    # warning and skip -- the cache will initialize on the next startup
-    # after the migration completes.
+    # ``ref_cache.init`` is resilient to missing ref tables during the
+    # bootstrap window (a pending migration that creates a new ref
+    # table, run via ``flask db upgrade``).  It returns the list of
+    # tables that were unavailable; when that list is non-empty we
+    # skip the Jinja globals registration because some accessors
+    # would otherwise raise ``KeyError``.  Production never hits this
+    # branch -- migrations have already run by the time Gunicorn
+    # imports the app.
     from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import (  # pylint: disable=import-outside-toplevel
-        AcctCategoryEnum, AcctTypeEnum, CalcMethodEnum,
-        DeductionTimingEnum, GoalModeEnum, IncomeUnitEnum,
-        RecurrencePatternEnum, StatusEnum, TxnTypeEnum,
-    )
-    try:
-        with app.app_context():
-            ref_cache.init(db.session)
+    from app.jinja_globals import register_ref_id_globals  # pylint: disable=import-outside-toplevel
+    with app.app_context():
+        unavailable_ref_tables = ref_cache.init(db.session)
 
-        # Status IDs
-        app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
-        app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
-        app.jinja_env.globals["STATUS_RECEIVED"] = ref_cache.status_id(StatusEnum.RECEIVED)
-        app.jinja_env.globals["STATUS_CREDIT"] = ref_cache.status_id(StatusEnum.CREDIT)
-        app.jinja_env.globals["STATUS_CANCELLED"] = ref_cache.status_id(StatusEnum.CANCELLED)
-        app.jinja_env.globals["STATUS_SETTLED"] = ref_cache.status_id(StatusEnum.SETTLED)
-
-        # Transaction type IDs
-        app.jinja_env.globals["TXN_TYPE_INCOME"] = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-        app.jinja_env.globals["TXN_TYPE_EXPENSE"] = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-
-        # Account type IDs -- all types registered so templates can use
-        # integer comparisons instead of string-based name checks.
-        app.jinja_env.globals["ACCT_TYPE_CHECKING"] = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-        app.jinja_env.globals["ACCT_TYPE_SAVINGS"] = ref_cache.acct_type_id(AcctTypeEnum.SAVINGS)
-        app.jinja_env.globals["ACCT_TYPE_HYSA"] = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
-        app.jinja_env.globals["ACCT_TYPE_MONEY_MARKET"] = ref_cache.acct_type_id(AcctTypeEnum.MONEY_MARKET)
-        app.jinja_env.globals["ACCT_TYPE_CD"] = ref_cache.acct_type_id(AcctTypeEnum.CD)
-        app.jinja_env.globals["ACCT_TYPE_HSA"] = ref_cache.acct_type_id(AcctTypeEnum.HSA)
-        app.jinja_env.globals["ACCT_TYPE_CREDIT_CARD"] = ref_cache.acct_type_id(AcctTypeEnum.CREDIT_CARD)
-        app.jinja_env.globals["ACCT_TYPE_MORTGAGE"] = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
-        app.jinja_env.globals["ACCT_TYPE_AUTO_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN)
-        app.jinja_env.globals["ACCT_TYPE_STUDENT_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.STUDENT_LOAN)
-        app.jinja_env.globals["ACCT_TYPE_PERSONAL_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.PERSONAL_LOAN)
-        app.jinja_env.globals["ACCT_TYPE_HELOC"] = ref_cache.acct_type_id(AcctTypeEnum.HELOC)
-        app.jinja_env.globals["ACCT_TYPE_401K"] = ref_cache.acct_type_id(AcctTypeEnum.K401)
-        app.jinja_env.globals["ACCT_TYPE_ROTH_401K"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K)
-        app.jinja_env.globals["ACCT_TYPE_TRADITIONAL_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA)
-        app.jinja_env.globals["ACCT_TYPE_ROTH_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA)
-        app.jinja_env.globals["ACCT_TYPE_BROKERAGE"] = ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE)
-        app.jinja_env.globals["ACCT_TYPE_529"] = ref_cache.acct_type_id(AcctTypeEnum.PLAN_529)
-
-        # Recurrence pattern IDs
-        app.jinja_env.globals["REC_EVERY_N_PERIODS"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS)
-        app.jinja_env.globals["REC_MONTHLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
-        app.jinja_env.globals["REC_MONTHLY_FIRST"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY_FIRST)
-        app.jinja_env.globals["REC_QUARTERLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.QUARTERLY)
-        app.jinja_env.globals["REC_SEMI_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.SEMI_ANNUAL)
-        app.jinja_env.globals["REC_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ANNUAL)
-        app.jinja_env.globals["REC_ONCE"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
-
-        # Account category IDs
-        app.jinja_env.globals["ACCT_CAT_ASSET"] = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
-        app.jinja_env.globals["ACCT_CAT_LIABILITY"] = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
-        app.jinja_env.globals["ACCT_CAT_RETIREMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
-        app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
-
-        # Deduction timing IDs
-        app.jinja_env.globals["TIMING_PRE_TAX"] = ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
-        app.jinja_env.globals["TIMING_POST_TAX"] = ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
-
-        # Calc method IDs
-        app.jinja_env.globals["CALC_PERCENTAGE"] = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
-        app.jinja_env.globals["CALC_FLAT"] = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
-
-        # Goal mode IDs
-        app.jinja_env.globals["GOAL_MODE_FIXED"] = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
-        app.jinja_env.globals["GOAL_MODE_INCOME_RELATIVE"] = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
-
-        # Income unit IDs
-        app.jinja_env.globals["INCOME_UNIT_PAYCHECKS"] = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
-        app.jinja_env.globals["INCOME_UNIT_MONTHS"] = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
-    except (sqlalchemy.exc.ProgrammingError, sqlalchemy.exc.OperationalError) as exc:
+    if not unavailable_ref_tables:
+        register_ref_id_globals(app)
+    else:
         app.logger.warning(
-            "ref_cache initialization skipped (%s). "
-            "Jinja globals will not be available until next restart.",
-            type(exc).__name__,
+            "ref_cache partial init: %d ref table(s) unavailable (%s). "
+            "Jinja globals skipped; will populate on next app start after "
+            "migrations run.",
+            len(unavailable_ref_tables), ", ".join(unavailable_ref_tables),
         )
 
     app.logger.info("Shekel app created with config=%s", config_name)

@@ -4,8 +4,8 @@ Shekel Budget App -- Marshmallow Validation Schemas
 Validates and deserializes incoming request data.  Used by routes
 to keep controllers thin and push validation logic out of Flask.
 
-Percent / decimal-rate convention
----------------------------------
+Percent / decimal-rate convention (E-28 / HIGH-06, Commit 24)
+-------------------------------------------------------------
 
 Percentage rate fields (FICA, state flat rates, inflation, APY,
 trend alert threshold, etc.) are stored as decimal fractions in the
@@ -14,20 +14,22 @@ database -- a 6.2% rate is persisted as ``Decimal("0.0620")`` in a
 CHECK constraint pinning the value to ``[0, 1]`` (and similar
 ranges for the few "match-multiplier" cases).  The forms that
 collect these values render the user-facing percent
-(``0.0620 * 100 == 6.20``) and the routes divide by 100 (or call
-``app.utils.formatting.pct_to_decimal``) before persistence.
+(``0.0620 * 100 == 6.20``).
 
-The schemas in this module therefore validate the user-input
-representation:
-
-  - Schemas that run BEFORE the route's ``/100`` conversion accept
-    the percent (e.g. ``Range(min=0, max=100)`` for a 0-100% rate).
-  - Schemas that run AFTER the route's ``/100`` conversion (such as
-    ``InvestmentParamsCreateSchema``, where the route's
-    ``_convert_percentage_inputs`` helper rewrites the form payload
-    in place before ``schema.load``) accept the decimal fraction
-    (e.g. ``Range(min=0, max=1)`` for a 0-100% rate, or wider for
-    multiplier semantics like 401(k) employer match).
+E-28 collapses the storage / schema / form domain split into one
+consistent rule: **schemas validate the stored fraction**, and the
+percent-to-fraction conversion happens in the schema's own
+``@pre_load`` hook so the storage tier (DB CHECK) and the
+validation tier (Marshmallow ``Range``) accept and reject exactly
+the same set of values.  The shared helper
+:func:`_normalize_percent_fields` divides each declared percent
+field by 100 before the field's ``Range`` validator runs, and the
+``_PERCENT_FIELDS`` class attribute on each schema enumerates the
+fields that need conversion (an explicit declaration, not an
+implicit name pattern, so a future renamer cannot silently break
+the conversion).  Routes that consume one of these schemas no
+longer divide -- the loaded value is already the fraction the DB
+expects.
 
 The DB CHECK constraints added by commit C-24 of the 2026-04-15
 security remediation plan are the storage-tier counterpart to these
@@ -49,7 +51,7 @@ that injects an extra digit is rejected with a clean field-level
 400 instead of being silently committed.
 """
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError, EXCLUDE
 
@@ -86,6 +88,59 @@ _PERCENT_INPUT_RANGE = validate.Range(
 _NON_NEGATIVE_MONETARY = validate.Range(
     min=Decimal("0"), max=Decimal("10000000"),
 )
+
+
+# E-28 / HIGH-06 (Commit 24): the percent-to-fraction divisor used by
+# schemas whose form input is a percent (e.g. "4.5" for 4.5%) but whose
+# storage column is the equivalent decimal fraction (Decimal("0.045")).
+# Defined once here so a future tweak to the convention (no realistic
+# scenario) lands in one place.
+_PERCENT_DIVISOR = Decimal("100")
+
+
+def _normalize_percent_fields(data, field_names):
+    """Divide each named percent field in ``data`` by 100 in place.
+
+    Used inside a schema's ``@pre_load`` to bridge the form input
+    (user-facing percent like ``"4.5"``) and the storage representation
+    (decimal fraction like ``"0.045"``) so the schema's ``Range``
+    validator operates in the same domain as the DB ``CHECK``
+    constraint (E-28).
+
+    Args:
+        data: the incoming ``@pre_load`` payload (a mapping).  Empty
+            strings should already have been stripped by the caller;
+            this helper assumes any present key has a non-empty value.
+        field_names: tuple of percent-field names declared by the
+            schema's ``_PERCENT_FIELDS`` attribute.
+
+    Returns:
+        ``data`` with each named field replaced by its decimal-fraction
+        string equivalent.  Fields whose value cannot be parsed as a
+        ``Decimal`` are left untouched so the field-level validator
+        can surface the "Not a valid number." error rather than this
+        helper masking it with a ``decimal.InvalidOperation``.  Fields
+        not present in ``data`` are skipped.
+
+    Side effects:
+        mutates ``data`` in place; the returned reference is the
+        same object passed in for caller convenience.
+    """
+    for name in field_names:
+        if name not in data:
+            continue
+        raw = data[name]
+        if raw is None:
+            continue
+        try:
+            data[name] = str(Decimal(str(raw)) / _PERCENT_DIVISOR)
+        except InvalidOperation:
+            # Leave the raw value in place so the field validator
+            # rejects it with its native "Not a valid number."
+            # message.  Mirrors :func:`app.routes.investment._convert_percentage_inputs`
+            # for narrow-catch parity.
+            pass
+    return data
 
 
 class BaseSchema(Schema):
@@ -1388,15 +1443,30 @@ class AccountTypeUpdateSchema(BaseSchema):
 
 
 class InterestParamsCreateSchema(BaseSchema):
-    """Validates POST data for creating interest parameters."""
+    """Validates POST data for creating interest parameters.
+
+    E-28 / HIGH-06 / PA-02: ``apy`` is validated as a decimal fraction
+    in ``[0, 1]`` matching the DB ``CHECK(apy >= 0 AND apy <= 1)``.
+    The ``@pre_load`` divides the form's user-facing percent (e.g.
+    ``"4.5"``) by 100 so the ``Range`` validator and the DB CHECK
+    accept exactly the same set of values.
+    """
+
+    _PERCENT_FIELDS = ("apy",)
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
+    # apy storage is a fraction; see class docstring.  ``places=5``
+    # mirrors the column's ``Numeric(7, 5)`` precision so a 4.5%
+    # input (``"4.5"`` -> fraction ``"0.04500"``) round-trips
+    # without loss.
     apy = fields.Decimal(
-        required=True, places=3, as_string=True,
-        validate=validate.Range(min=0, max=100),
+        required=True, places=5, as_string=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
     compounding_frequency = fields.String(
         required=True,
@@ -1405,15 +1475,24 @@ class InterestParamsCreateSchema(BaseSchema):
 
 
 class InterestParamsUpdateSchema(BaseSchema):
-    """Validates POST data for updating interest parameters."""
+    """Validates POST data for updating interest parameters.
+
+    Same fraction-domain convention as :class:`InterestParamsCreateSchema`.
+    ``apy`` is optional here so a partial update (e.g. compounding
+    frequency only) does not have to resubmit the rate.
+    """
+
+    _PERCENT_FIELDS = ("apy",)
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     apy = fields.Decimal(
-        places=3, as_string=True,
-        validate=validate.Range(min=0, max=100),
+        places=5, as_string=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
     compounding_frequency = fields.String(
         validate=validate.OneOf(["daily", "monthly", "quarterly"]),
@@ -1428,12 +1507,25 @@ class LoanParamsCreateSchema(BaseSchema):
 
     Universal max of 600 for term_months; type-specific limits are
     enforced by the route using ref.account_types.max_term_months.
+
+    E-28 / HIGH-06 / PA-02: ``interest_rate`` is validated as a
+    decimal fraction.  ``loan_params.interest_rate`` carries a DB
+    CHECK ``interest_rate >= 0`` (no upper bound on the storage tier),
+    but a 100% APR is the practical user-facing ceiling, so the
+    schema pins the fraction to ``[0, 1]``.  The ``@pre_load``
+    converts the form percent (e.g. ``"4.5"``) to its fraction
+    equivalent (``"0.045"``) so the schema validates the same domain
+    the database stores; ``loan_resolver`` reads the stored
+    fraction directly.
     """
 
+    _PERCENT_FIELDS = ("interest_rate",)
+
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     # F-107 / C-25: DB CHECK enforces ``original_principal > 0``;
     # schema must reject 0 too so the gap surfaces as a 400 not a 500.
@@ -1442,7 +1534,10 @@ class LoanParamsCreateSchema(BaseSchema):
         validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
     current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
-    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=100))
+    interest_rate = fields.Decimal(
+        required=True, places=5, as_string=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
+    )
     term_months = fields.Integer(required=True, validate=validate.Range(min=1, max=600))
     origination_date = fields.Date(required=True)
     payment_day = fields.Integer(required=True, validate=validate.Range(min=1, max=31))
@@ -1454,17 +1549,34 @@ class LoanParamsCreateSchema(BaseSchema):
 class LoanParamsUpdateSchema(BaseSchema):
     """Validates POST data for updating loan parameters.
 
-    All fields optional (partial update).  original_principal and
-    origination_date are omitted -- not updatable after initial setup.
+    All fields optional (partial update).  ``original_principal`` and
+    ``origination_date`` are omitted -- not updatable after initial
+    setup.  ``current_principal`` is omitted (E-18 / Commit 16): the
+    column is non-authoritative seed and the displayed current
+    balance is the loan resolver's output.  Users edit the balance
+    by appending a :class:`LoanAnchorEvent` via the dated true-up
+    form (validated by :class:`LoanAnchorTrueupSchema` below), not by
+    POSTing this schema.  Stray ``current_principal`` form fields
+    submitted by a stale client are silently excluded by
+    :class:`BaseSchema`'s ``unknown = EXCLUDE`` policy and ignored.
     """
 
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+    _PERCENT_FIELDS = ("interest_rate",)
 
-    current_principal = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
-    interest_rate = fields.Decimal(places=5, as_string=True, validate=validate.Range(min=0, max=100))
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions.
+
+        See :class:`LoanParamsCreateSchema` for the E-28 fraction-
+        domain rationale.
+        """
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
+
+    interest_rate = fields.Decimal(
+        places=5, as_string=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
+    )
     term_months = fields.Integer(validate=validate.Range(min=1, max=600))
     payment_day = fields.Integer(validate=validate.Range(min=1, max=31))
     is_arm = fields.Boolean()
@@ -1472,29 +1584,112 @@ class LoanParamsUpdateSchema(BaseSchema):
     arm_adjustment_interval_months = fields.Integer(allow_none=True)
 
 
-class RateChangeSchema(BaseSchema):
-    """Validates POST data for recording a variable-rate change."""
+class LoanAnchorTrueupSchema(BaseSchema):
+    """Validates POST data for the loan dashboard balance true-up form.
+
+    Records a dated loan-balance assertion (E-18 decision D-C / Commit
+    16) by appending a ``user_trueup`` :class:`LoanAnchorEvent`.  The
+    resolver replays confirmed payments forward from this event to
+    derive every loan-touching display, so a trueup is the user's way
+    of saying "as of date D, the lender reports my balance is $X."
+
+    Schema-tier validation:
+
+    * ``anchor_date`` is required and must not be in the future --
+      a trueup is a historical assertion; "the lender will say X
+      next month" is not meaningful.
+    * ``anchor_balance`` is required and must be ``>= 0`` -- a
+      negative loan balance is not a real-world state.  The
+      ``ck_loan_anchor_events_balance_nonneg`` CHECK at the storage
+      tier backstops this if a future caller bypasses the schema.
+
+    The pre-origination check (``anchor_date >= params.origination_date``)
+    is enforced by the route, not the schema, because the schema does
+    not have access to the loan's origination date.  Routing the
+    check through the route layer keeps the schema standalone and
+    keeps :class:`LoanParams` out of the schemas module's import
+    graph.
+    """
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
         """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
+    anchor_date = fields.Date(required=True)
+    anchor_balance = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=Decimal("0")),
+    )
+
+    @validates_schema
+    def validate_not_future(self, data, **kwargs):
+        """Reject ``anchor_date`` strictly after today.
+
+        Imported inline -- the module loads at app construction time
+        and ``date.today()`` evaluated at import time would freeze
+        the "today" floor at gunicorn boot, defeating the validator
+        for any request after the boot day.  Resolving ``today``
+        per-request keeps the floor live.
+        """
+        from datetime import date as _date  # pylint: disable=import-outside-toplevel
+        anchor_date = data.get("anchor_date")
+        if anchor_date is not None and anchor_date > _date.today():
+            raise ValidationError(
+                {"anchor_date": [
+                    "Anchor date cannot be in the future."
+                ]}
+            )
+
+
+class RateChangeSchema(BaseSchema):
+    """Validates POST data for recording a variable-rate change.
+
+    E-28 / HIGH-06 / PA-02: ``interest_rate`` is validated as a
+    decimal fraction matching the DB ``CHECK(interest_rate >= 0 AND
+    interest_rate <= 1)`` on ``rate_history``.
+    """
+
+    _PERCENT_FIELDS = ("interest_rate",)
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
+
     effective_date = fields.Date(required=True)
-    interest_rate = fields.Decimal(required=True, places=5, as_string=True, validate=validate.Range(min=0, max=100))
+    interest_rate = fields.Decimal(
+        required=True, places=5, as_string=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
+    )
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
 
 class EscrowComponentSchema(BaseSchema):
-    """Validates POST data for creating/updating an escrow component."""
+    """Validates POST data for creating/updating an escrow component.
+
+    E-28 / HIGH-06 / PA-02: ``inflation_rate`` is validated as a
+    decimal fraction matching the DB CHECK on
+    ``escrow_components.inflation_rate``
+    (``IS NULL OR (>= 0 AND <= 1)``).  Nullable -- the user may omit
+    the field for an escrow component with no scheduled inflation.
+    """
+
+    _PERCENT_FIELDS = ("inflation_rate",)
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
     annual_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
-    inflation_rate = fields.Decimal(places=4, as_string=True, allow_none=True, validate=validate.Range(min=0, max=100))
+    inflation_rate = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
+    )
 
 
 
@@ -1513,20 +1708,26 @@ class PayoffCalculatorSchema(BaseSchema):
 class RefinanceSchema(BaseSchema):
     """Validates POST data for refinance what-if calculator input.
 
-    The new_rate field accepts a percentage (e.g. 5.0 for 5%);
-    the route converts to decimal (0.05) before passing to the engine.
-    The new_principal field is optional -- when omitted, the route
-    auto-calculates as current_real_principal + closing_costs.
+    E-28 / HIGH-06 / PA-02: ``new_rate`` is validated as a decimal
+    fraction; the ``@pre_load`` converts the form percent (e.g.
+    ``"5.0"``) to its fraction equivalent (``"0.05"``) so the
+    schema, the loan resolver, and the engine all agree on the
+    rate's domain.  The ``new_principal`` field is optional -- when
+    omitted, the route auto-calculates as
+    ``current_real_principal + closing_costs``.
     """
 
+    _PERCENT_FIELDS = ("new_rate",)
+
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields fall back to defaults."""
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     new_rate = fields.Decimal(
         required=True, places=5, as_string=True,
-        validate=validate.Range(min=0, max=100),
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
     new_term_months = fields.Integer(
         required=True, validate=validate.Range(min=1, max=600),
@@ -1575,11 +1776,28 @@ class InvestmentContributionTransferSchema(BaseSchema):
 
 
 class InvestmentParamsCreateSchema(BaseSchema):
-    """Validates POST data for creating investment parameters."""
+    """Validates POST data for creating investment parameters.
+
+    E-28 / HIGH-06 / F-17 (Commit 12 of the follow-up plan): the four
+    percent fields below (``assumed_annual_return`` and the three
+    employer-side rates) are persisted as decimal fractions matching
+    the DB CHECK domains.  The ``@pre_load`` converts the form's
+    user-facing percent (e.g. ``"7.5"`` for 7.5%) to its fraction
+    equivalent (``"0.075"``) so the ``Range`` validator and the DB
+    CHECK accept exactly the same set of values, completing the
+    universal "schemas own percent conversion" convention.
+    """
+
+    _PERCENT_FIELDS = (
+        "assumed_annual_return", "employer_flat_percentage",
+        "employer_match_percentage", "employer_match_cap_percentage",
+    )
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     assumed_annual_return = fields.Decimal(
         required=True, places=5, as_string=True,
@@ -1618,11 +1836,23 @@ class InvestmentParamsCreateSchema(BaseSchema):
 
 
 class InvestmentParamsUpdateSchema(BaseSchema):
-    """Validates POST data for updating investment parameters."""
+    """Validates POST data for updating investment parameters.
+
+    Same fraction-domain convention as
+    :class:`InvestmentParamsCreateSchema`; see that class for the
+    F-17 (Commit 12) rationale.
+    """
+
+    _PERCENT_FIELDS = (
+        "assumed_annual_return", "employer_flat_percentage",
+        "employer_match_percentage", "employer_match_cap_percentage",
+    )
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     assumed_annual_return = fields.Decimal(
         places=5, as_string=True,
@@ -1660,11 +1890,23 @@ class InvestmentParamsUpdateSchema(BaseSchema):
 
 
 class PensionProfileCreateSchema(BaseSchema):
-    """Validates POST data for creating a pension profile."""
+    """Validates POST data for creating a pension profile.
+
+    E-28 / HIGH-06 / F-17 (Commit 12 of the follow-up plan):
+    ``benefit_multiplier`` is persisted as a decimal fraction (e.g.
+    ``Decimal("0.01850")`` for a 1.85% multiplier).  The ``@pre_load``
+    converts the form's user-facing percent to its fraction
+    equivalent so the schema's ``Range`` validator and the storage
+    representation agree.
+    """
+
+    _PERCENT_FIELDS = ("benefit_multiplier",)
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     salary_profile_id = fields.Integer(allow_none=True)
     name = fields.String(
@@ -1714,11 +1956,19 @@ class PensionProfileCreateSchema(BaseSchema):
 
 
 class PensionProfileUpdateSchema(BaseSchema):
-    """Validates POST data for updating a pension profile."""
+    """Validates POST data for updating a pension profile.
+
+    Same fraction-domain convention as
+    :class:`PensionProfileCreateSchema`.
+    """
+
+    _PERCENT_FIELDS = ("benefit_multiplier",)
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     salary_profile_id = fields.Integer(allow_none=True)
     name = fields.String(validate=validate.Length(min=1, max=100))
@@ -1738,11 +1988,25 @@ class PensionProfileUpdateSchema(BaseSchema):
 
 
 class RetirementSettingsSchema(BaseSchema):
-    """Validates POST data for updating retirement planning settings."""
+    """Validates POST data for updating retirement planning settings.
+
+    E-28 / HIGH-06 / F-17 (Commit 12 of the follow-up plan):
+    ``safe_withdrawal_rate`` and ``estimated_retirement_tax_rate``
+    are persisted as decimal fractions matching the
+    ``user_settings`` DB CHECKs (``[0, 1]`` on both columns).  The
+    ``@pre_load`` converts the form's user-facing percent (e.g.
+    ``"4"`` for 4% SWR) to its fraction equivalent (``"0.04"``).
+    """
+
+    _PERCENT_FIELDS = (
+        "safe_withdrawal_rate", "estimated_retirement_tax_rate",
+    )
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        return {k: v for k, v in data.items() if v != ""}
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     safe_withdrawal_rate = fields.Decimal(
         places=4, as_string=True,
@@ -1755,28 +2019,86 @@ class RetirementSettingsSchema(BaseSchema):
     )
 
 
+class RetirementGapQuerySchema(BaseSchema):
+    """Validates the /retirement/gap HTMX slider override query string.
+
+    F-13: the slider's URL-editable ``swr`` parameter must reject
+    negative values rather than letting the calculator silently
+    collapse ``required_retirement_savings`` to zero.  Matches the
+    Commit 24 / HIGH-06 convention: the schema owns the percent-to-
+    fraction conversion via ``@pre_load`` so the route does no money
+    math.  ``Range(min=0, max=1)`` on the stored fraction mirrors
+    ``user_settings.safe_withdrawal_rate``'s CHECK constraint, so a
+    URL-edited ``swr=-5`` is rejected at the schema with a 422 instead
+    of silently zeroing the analysis.
+
+    F-17 (Commit 12 of the follow-up plan): the ``return_rate``
+    slider override is now routed through the same schema with the
+    same percent-to-fraction conversion -- this collapses the last
+    inline ``Decimal("100")`` division in the retirement route to
+    complete the "schemas own percent conversion" convention.  The
+    range mirrors ``investment_params.assumed_annual_return``'s
+    ``[-1, 1]`` storage bound (returns may be negative in a loss
+    scenario).
+    """
+
+    _PERCENT_FIELDS = ("swr", "return_rate")
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings, then convert percent fields to fractions."""
+        data = {k: v for k, v in data.items() if v != ""}
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
+
+    swr = fields.Decimal(
+        places=5, as_string=True, allow_none=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
+    )
+    return_rate = fields.Decimal(
+        places=5, as_string=True, allow_none=True,
+        validate=validate.Range(min=Decimal("-1"), max=Decimal("1")),
+    )
+
+
 # ── Calibration Schema (Phase 3.10) ──────────────────────────────
 
 
 class UserSettingsSchema(BaseSchema):
-    """Validates POST data for updating user settings."""
+    """Validates POST data for updating user settings.
+
+    E-28 / HIGH-06 / PA-01 / PA-02: ``default_inflation_rate`` and
+    ``trend_alert_threshold`` are persisted as decimal fractions
+    (DB CHECK ``[0, 1]`` on both columns).  The ``@pre_load`` converts
+    each percent input to its fraction equivalent so the schema's
+    ``Range`` validator and the DB CHECK agree on the accepted set.
+    Pre-Commit-24 the schema declared ``trend_alert_threshold`` as
+    ``Integer Range(1..100)`` while the DB CHECK admitted ``[0, 1]``;
+    only the literal value ``1`` satisfied both domains nominally
+    (the route's ``/100`` reconciled it in practice, but the schema
+    layer rejected ``0`` which is now a valid "alert disabled"
+    state under E-12 "zero is a value").
+    """
+
+    _PERCENT_FIELDS = ("default_inflation_rate", "trend_alert_threshold")
 
     @pre_load
-    def strip_empty_strings(self, data, **kwargs):
+    def normalize_inputs(self, data, **kwargs):
+        """Strip empty strings (with the grid-account "clear" carve-out),
+        then convert percent fields to fractions."""
         cleaned = {}
         for k, v in data.items():
             if k == "default_grid_account_id" and v == "":
                 cleaned[k] = None  # Empty string means "clear".
             elif v != "":
                 cleaned[k] = v
-        return cleaned
+        return _normalize_percent_fields(cleaned, self._PERCENT_FIELDS)
 
     grid_default_periods = fields.Integer(
         validate=validate.Range(min=1, max=52),
     )
     default_inflation_rate = fields.Decimal(
-        places=2, as_string=True,
-        validate=validate.Range(min=0, max=100),
+        places=4, as_string=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
     low_balance_threshold = fields.Integer(
         validate=validate.Range(min=0),
@@ -1784,8 +2106,12 @@ class UserSettingsSchema(BaseSchema):
     large_transaction_threshold = fields.Integer(
         validate=validate.Range(min=0),
     )
-    trend_alert_threshold = fields.Integer(
-        validate=validate.Range(min=1, max=100),
+    # E-28 / PA-01: validated as a fraction; the route stores the
+    # ``Decimal`` directly into the ``Numeric(5, 4)`` column.  Zero is
+    # now a valid "alert disabled" state per E-12.
+    trend_alert_threshold = fields.Decimal(
+        places=4, as_string=True,
+        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
     anchor_staleness_days = fields.Integer(
         validate=validate.Range(min=1),
@@ -1829,7 +2155,23 @@ class CalibrationConfirmSchema(BaseSchema):
 
     Includes the original pay stub fields plus the derived effective
     rates passed via hidden form fields from the preview page.
+
+    HIGH-03 / Q-25 / E-20 (audit 2026-05-19): the FICA cross-check below
+    enforces that the posted ``effective_ss_rate`` and
+    ``effective_medicare_rate`` pair are arithmetically consistent with
+    the posted ``actual_social_security`` / ``actual_medicare`` /
+    ``actual_gross_pay`` triple within a one-cent equivalent tolerance.
+    The federal and state divisor is the profile-derived taxable base
+    (gross minus current pre-tax deductions), which is not available at
+    the schema layer; the route performs the equivalent federal/state
+    cross-check after computing taxable so the four-rate pair is fully
+    pinned end-to-end.  The cross-check rejects tampered or stale
+    two-step submissions whose stored rate would otherwise multiply
+    against future per-period gross to produce silently wrong
+    withholding -- the failure mode the audit documented under HIGH-03.
     """
+
+    FICA_TOLERANCE = Decimal("0.01")
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
@@ -1873,6 +2215,62 @@ class CalibrationConfirmSchema(BaseSchema):
     )
     pay_stub_date = fields.Date(required=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+
+    @validates_schema
+    def validate_fica_rate_consistency(self, data, **kwargs):
+        """Cross-check posted FICA rate pair against posted actual_* pair.
+
+        For each FICA line (Social Security, Medicare), the calibrated
+        effective rate must satisfy ``rate * actual_gross_pay ==
+        actual_<line>`` to within a one-cent absolute tolerance.  This
+        is the schema-layer half of the E-20 immutable-snapshot
+        invariant; the route layer performs the federal/state half once
+        the profile-derived taxable base is available.
+
+        The tolerance is one cent of expected withholding, which covers
+        the worst-case rounding drift from storing the rate to
+        ``Numeric(12, 10)`` (rate precision 1e-10 multiplied by a
+        realistic biweekly gross of <= $10^4 is bounded by $10^{-6},
+        three orders of magnitude under one cent).
+
+        Raises:
+            ValidationError: If either FICA rate is inconsistent with
+                the corresponding actual_* pair.  The error is attached
+                to the offending ``effective_*_rate`` key so the route
+                layer's field-level handler surfaces the right input.
+        """
+        gross = data.get("actual_gross_pay")
+        if gross is None:
+            return
+
+        errors: dict[str, list[str]] = {}
+
+        ss_actual = data.get("actual_social_security")
+        ss_rate = data.get("effective_ss_rate")
+        if ss_actual is not None and ss_rate is not None:
+            derived = ss_rate * gross
+            if abs(derived - ss_actual) > self.FICA_TOLERANCE:
+                errors["effective_ss_rate"] = [
+                    f"effective_ss_rate {ss_rate} is inconsistent with "
+                    f"actual_social_security {ss_actual} on gross "
+                    f"{gross} (expected ~= {ss_actual / gross}, derived "
+                    f"{derived})."
+                ]
+
+        medicare_actual = data.get("actual_medicare")
+        medicare_rate = data.get("effective_medicare_rate")
+        if medicare_actual is not None and medicare_rate is not None:
+            derived = medicare_rate * gross
+            if abs(derived - medicare_actual) > self.FICA_TOLERANCE:
+                errors["effective_medicare_rate"] = [
+                    f"effective_medicare_rate {medicare_rate} is "
+                    f"inconsistent with actual_medicare {medicare_actual} "
+                    f"on gross {gross} (expected ~= "
+                    f"{medicare_actual / gross}, derived {derived})."
+                ]
+
+        if errors:
+            raise ValidationError(errors)
 
 
 # ── Transaction Entry Schemas (Section 9) ────────────────────────

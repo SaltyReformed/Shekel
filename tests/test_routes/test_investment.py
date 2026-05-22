@@ -15,17 +15,18 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
+from app.services import account_service
 
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
                                 name="My 401k", balance="50000.00"):
     """Helper to create an investment/retirement account."""
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = Account(
+    account = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=acct_type.id,
         name=name,
-        current_anchor_balance=Decimal(balance),
+        anchor_balance=Decimal(balance),
     )
     db_session.add(account)
     db_session.flush()
@@ -55,11 +56,11 @@ def _create_other_investment(second_user, db_session):
     (no InvestmentParams -- IDOR tests verify none get created).
     """
     acct_type = db_session.query(AccountType).filter_by(name="401(k)").one()
-    account = Account(
+    account = account_service.create_account(
         user_id=second_user["user"].id,
         account_type_id=acct_type.id,
         name="Other 401k",
-        current_anchor_balance=Decimal("10000.00"),
+        anchor_balance=Decimal("10000.00"),
     )
     db_session.add(account)
     db_session.commit()
@@ -161,6 +162,39 @@ class TestInvestmentParams:
             account_id=acct.id
         ).first()
         assert params.assumed_annual_return == Decimal("0.08000")
+
+    def test_update_params_percent_normalized_by_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C12-1 (F-17 / Commit 12): investment-params update schema's
+        @pre_load converts every declared percent field to its
+        fraction equivalent before the route persists.  Arithmetic:
+        7.5 / 100 = 0.075 (stored as ``0.07500`` in the
+        ``Numeric(7, 5)`` column).
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        _create_investment_params(db.session, acct.id)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/params",
+            data={
+                "assumed_annual_return": "7.5",
+                "annual_contribution_limit": "23500",
+                "contribution_limit_year": "2026",
+                "employer_contribution_type": "match",
+                "employer_match_percentage": "100",
+                "employer_match_cap_percentage": "6",
+            },
+        )
+        assert resp.status_code == 302
+        params = db.session.query(InvestmentParams).filter_by(
+            account_id=acct.id,
+        ).one()
+        # Hand-computed: 7.5 / 100 = 0.075.
+        assert params.assumed_annual_return == Decimal("0.07500")
+        # Hand-computed: 100 / 100 = 1.00.
+        assert params.employer_match_percentage == Decimal("1.0000")
+        # Hand-computed: 6 / 100 = 0.06.
+        assert params.employer_match_cap_percentage == Decimal("0.0600")
 
     def test_create_params_with_employer_match(self, auth_client, seed_user, db, seed_periods_today):
         """POST with employer match config."""
@@ -1295,4 +1329,442 @@ class TestWhatIfContributionCalculator:
         # 10-year horizon should produce many more periods than 2-year.
         assert len(committed) > 100, (
             f"10-year horizon should have 100+ periods, got {len(committed)}"
+        )
+
+
+# ── C8: investment dashboard / growth chart routed through producer ─
+#
+# Pre-Commit-8 the dashboard() and growth_chart() handlers each built
+# their own per-account transaction query and called
+# ``balance_calculator.calculate_balances`` directly with no
+# ``selectinload(Transaction.entries)``.  The math-layer silent-degrade
+# seam (closed in Commit 5) was the only safety net.  When an
+# investment account had a Projected expense with cleared debit
+# entries (an unusual but valid configuration; the contract is that
+# the resolver applies the entries-aware reduction unconditionally
+# regardless of account type), the route silently returned
+# ``effective_amount``.  Commit 8 routes both handlers through
+# ``balance_resolver.balances_for`` so the figure matches the grid and
+# every other surface for the same inputs.
+
+
+def _add_envelope_expense_with_cleared_entries_inv(
+    db_session, *, user_id, account, scenario, period, category_id,
+    estimated, cleared_amounts,
+):
+    """Create a Projected envelope expense with cleared debit entries.
+
+    Same shape as the helper used in the savings / accounts / year-end
+    C8 tests; copied here so this file stays standalone.  These are
+    the entries that produce the F-009 / CRIT-01 silent-degrade gap
+    when the consuming query forgets to ``selectinload(entries)``.
+    """
+    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+    from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
+    template = TransactionTemplate(
+        user_id=user_id,
+        account_id=account.id,
+        category_id=category_id,
+        transaction_type_id=expense_type_id,
+        name="Investment-side expense",
+        default_amount=estimated,
+        is_envelope=True,
+    )
+    db_session.add(template)
+    db_session.flush()
+
+    txn = Transaction(
+        template_id=template.id,
+        pay_period_id=period.id,
+        scenario_id=scenario.id,
+        account_id=account.id,
+        status_id=projected_id,
+        name="Investment-side expense",
+        category_id=category_id,
+        transaction_type_id=expense_type_id,
+        estimated_amount=estimated,
+    )
+    db_session.add(txn)
+    db_session.flush()
+
+    for amt in cleared_amounts:
+        db_session.add(TransactionEntry(
+            transaction_id=txn.id,
+            user_id=user_id,
+            amount=amt,
+            description="Cleared purchase",
+            entry_date=date(2026, 5, 15),
+            is_credit=False,
+            is_cleared=True,
+        ))
+    db_session.flush()
+    return txn
+
+
+class TestInvestmentEntryAwareRouting:
+    """C8-2 / C8-3: /investment dashboard + growth chart use canonical producer.
+
+    Pins the R-1 finding: pre-Commit-8 the two investment handlers
+    each had bare ``calculate_balances`` calls with no
+    ``selectinload(Transaction.entries)``.  Routing both through
+    ``balance_resolver.balances_for`` (which owns the eager-load and
+    the anchor resolution) makes the entries-aware reduction
+    structural for these routes.
+    """
+
+    def test_investment_holdings_entry_aware(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C8-2: dashboard current_balance == canonical producer value.
+
+        Reproduction of the symptom on /investment:
+
+          - Investment account anchor 50,000.00 on the current period.
+          - One Projected envelope expense on the same account in the
+            same period, ``estimated_amount = 500.00``.
+          - Three CLEARED debit entries summing 45.71 (20 + 15.71 + 10).
+
+        Hand arithmetic (CRIT-01 / F-009 / R-1):
+
+          cleared_debit   = 45.71
+          uncleared_debit = 0
+          sum_credit      = 0
+          checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
+          current_balance = 50,000.00 + 0 - 454.29 = 49,545.71
+
+        The route renders this number formatted with ``{:,.2f}`` so
+        the byte string ``$49,545.71`` (or the bare ``49,545.71``
+        inside the page) MUST appear in the response.  Pre-Commit-8
+        the route reported ``49,500.00`` (= 50,000 - 500) via the
+        silent-degrade seam.  We also assert byte-equality with the
+        canonical producer's value so the contract is locked beyond
+        the rendered string.
+        """
+        from app.services import balance_resolver, pay_period_service  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            current_period = pay_period_service.get_current_period(user.id)
+            assert current_period is not None
+
+            # ``account_service.create_account`` (via the helper) anchors
+            # the new account against the user's current pay period and
+            # writes the matching ``AccountAnchorHistory`` row, so no
+            # explicit override is needed -- the resolver reads the
+            # factory's history row directly.
+            acct = _create_investment_account(
+                seed_user, db.session,
+                type_name="401(k)", name="Test 401k",
+                balance="50000.00",
+            )
+            assert acct.current_anchor_period_id == current_period.id
+            _create_investment_params(db.session, acct.id)
+            _add_envelope_expense_with_cleared_entries_inv(
+                db.session,
+                user_id=user.id,
+                account=acct,
+                scenario=scenario,
+                period=current_period,
+                category_id=seed_user["categories"]["Groceries"].id,
+                estimated=Decimal("500.00"),
+                cleared_amounts=(
+                    Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
+                ),
+            )
+            db.session.commit()
+
+            # Canonical producer value: 50,000 - max(500 - 45.71 - 0, 0)
+            #                         = 50,000 - 454.29 = 49,545.71.
+            producer = balance_resolver.balances_for(
+                acct, scenario.id, seed_periods_today,
+            )
+            assert producer.balances[current_period.id] == Decimal("49545.71")
+
+            resp = auth_client.get(f"/accounts/{acct.id}/investment")
+            assert resp.status_code == 200
+            # The rendered current-balance tile carries the comma-
+            # formatted Decimal.  Pre-Commit-8 it would render
+            # 49,500.00 (silent degrade).  Asserting both presence of
+            # the correct value AND absence of the pre-fix value
+            # locks the regression in both directions.
+            assert b"49,545.71" in resp.data
+            assert b"49,500.00" not in resp.data
+
+    def test_investment_growth_chart_entry_aware(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C8-3: growth_chart() seeds the projection from the entries-aware balance.
+
+        Same setup as C8-2.  The growth-chart route projects a
+        synthetic period series forward from ``current_balance`` --
+        if that seed is wrong, the entire chart series is wrong.  The
+        first chart point (``data-balances[0]``) is the seed period's
+        end balance from the growth engine; with ``periodic_contribution
+        = 0`` (no deductions, no recurring transfers) and only the
+        post-anchor projection from 49,545.71, the first chart point
+        ends very close to the seed (subject to one biweekly's worth
+        of compounding at 7% annual = ~0.27%, ~$133 on $49,545.71).
+
+        Pre-Commit-8 the seed was 49,500.00 via the silent-degrade
+        seam, so the first chart point would land near $49,633 instead
+        of near $49,679.  We assert the chart's first point sits in
+        a tight band around the entry-aware seed -- the band is wide
+        enough to absorb the growth engine's contribution / employer-
+        match math but narrow enough to reject the pre-fix value.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+            current_period = pay_period_service.get_current_period(user.id)
+            assert current_period is not None
+
+            # ``account_service.create_account`` (via the helper) anchors
+            # the new account against the user's current pay period and
+            # writes the matching ``AccountAnchorHistory`` row, so no
+            # explicit override is needed -- the resolver reads the
+            # factory's history row directly.
+            acct = _create_investment_account(
+                seed_user, db.session,
+                type_name="401(k)", name="Test 401k",
+                balance="50000.00",
+            )
+            assert acct.current_anchor_period_id == current_period.id
+            _create_investment_params(db.session, acct.id)
+            _add_envelope_expense_with_cleared_entries_inv(
+                db.session,
+                user_id=user.id,
+                account=acct,
+                scenario=scenario,
+                period=current_period,
+                category_id=seed_user["categories"]["Groceries"].id,
+                estimated=Decimal("500.00"),
+                cleared_amounts=(
+                    Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
+                ),
+            )
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/accounts/{acct.id}/investment/growth-chart?horizon_years=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            balances = _extract_data_attr(resp.data, "balances")
+            assert balances is not None and len(balances) > 0
+
+            # First chart point sits within roughly one biweekly's
+            # compounding of the entries-aware seed 49,545.71.  At 7%
+            # annual return that is ~ 49,545.71 * 0.07 / 26 ~ $133 per
+            # biweekly period; the engine actually returns about
+            # $49,665 for this configuration (no contributions, no
+            # employer match, one period of compounding plus a small
+            # adjustment for the contribution-limit math).  The
+            # pre-fix seed 49,500.00 with the same compounding lands
+            # near $49,619 -- about $46 lower, which is the difference
+            # between the two seeds carried forward.  The assertion
+            # band [49,640, 49,800] strictly contains the entries-
+            # aware first point and strictly excludes the pre-fix
+            # value.
+            first_point = Decimal(balances[0])
+            assert first_point >= Decimal("49640.00"), (
+                f"First chart point {first_point} below the entries-"
+                "aware lower bound; pre-Commit-8 silent-degrade "
+                "regression suspected (pre-fix value lands near "
+                "$49,619)."
+            )
+            assert first_point <= Decimal("49800.00")
+
+
+class TestEmployerMatchCapped:
+    """C25 / HIGH-07 / F-043 / F-055: dashboard "Employer Per Period" card
+    feeds the limit-capped employee contribution into
+    ``calculate_employer_contribution`` so it matches the growth chart's
+    employer line and the year-end ``year_summary_employer_total``.
+
+    Pre-fix the card passed the UNCAPPED ``periodic_contribution`` to the
+    matcher (``investment.py:183 -> 187-189``), so near the annual limit
+    a match-type employer overstated the card per-period match relative
+    to the chart and year-end (F-043 worked example: $240 vs $100).
+    """
+
+    def _make_settled_shadow_income(
+        self, seed_user, to_account, period, amount, db_session,
+    ):
+        """Seed a Settled transfer into the investment account.
+
+        Uses the canonical ``transfer_service.create_transfer`` -- the
+        only sanctioned path for budget.transfers rows -- with a
+        ``Received`` status whose ``excludes_from_balance = False`` so
+        the route's YTD aggregation (``calculate_investment_inputs``
+        Step 4) counts the resulting shadow income.
+        """
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+        received_id = ref_cache.status_id(StatusEnum.RECEIVED)
+        cat = seed_user["categories"]["Groceries"]
+        xfer = transfer_service.create_transfer(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=to_account.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=received_id,
+            category_id=cat.id,
+            name="YTD seed",
+        )
+        db_session.commit()
+        return xfer
+
+    def test_card_uses_capped_contribution_at_binding_limit(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C25-1: card per-period employer match equals the chart/year-end
+        capped value when the annual limit binds.
+
+        Setup (F-043 worked example, scaled to fit a deduction):
+
+          annual_contribution_limit = $23,500
+          YTD shadow income contributed in past period of current year
+            = $23,300  -> remaining = $200
+          gross_biweekly                                 = $8,000
+          (annual_salary = 8000 * 26 = $208,000)
+          match: 50% up to 6% of gross
+            matchable_salary = 8000 * 0.06           = $480.00
+          deduction (employee contribution per period) = $1,500
+
+        Pre-fix card (UNCAPPED $1,500 fed to the matcher):
+          matched  = min(1500, 480)                  = 480
+          employer = 480 * 0.50                      = $240.00
+
+        Post-fix card (CAPPED at remaining limit before matcher):
+          capped   = min(1500, max(23500 - 23300, 0)) = 200
+          matched  = min(200, 480)                   = 200
+          employer = 200 * 0.50                      = $100.00
+
+        The card now reads $100.00; the pre-fix string $240.00 must
+        not appear in the response.
+        """
+        # 401(k) account; create_account anchors at the current period.
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="401(k)",
+            name="HIGH-07 401k", balance="10000.00",
+        )
+        _create_investment_params(
+            db.session, acct.id,
+            assumed_annual_return=Decimal("0.00000"),
+            annual_contribution_limit=Decimal("23500.00"),
+            contribution_limit_year=2026,
+            employer_contribution_type="match",
+            employer_match_percentage=Decimal("0.5000"),
+            employer_match_cap_percentage=Decimal("0.0600"),
+        )
+
+        # Salary profile: annual 208000 -> gross_biweekly 8000.
+        filing = db.session.query(FilingStatus).filter_by(name="single").one()
+        profile = SalaryProfile(
+            user_id=seed_user["user"].id,
+            scenario_id=seed_user["scenario"].id,
+            filing_status_id=filing.id,
+            name="Day Job",
+            annual_salary=Decimal("208000.00"),
+            state_code="NC",
+            is_active=True,
+        )
+        db.session.add(profile)
+        db.session.flush()
+
+        # Deduction $1500/period -> uncapped periodic_contribution = 1500.
+        _create_deduction(db.session, profile.id, acct.id, "1500.00")
+        db.session.commit()
+
+        # YTD seed: $23,300 settled shadow income in a past period
+        # within the current year.  seed_periods_today[0] is ~56 days
+        # before today (period 4 = current), so for any test date this
+        # year it lands in the same calendar year as today.
+        self._make_settled_shadow_income(
+            seed_user, acct, seed_periods_today[0],
+            Decimal("23300.00"), db.session,
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # Post-fix capped employer match.
+        assert "$100.00" in html, (
+            "Card did not render the capped employer match of $100.00 "
+            "(HIGH-07/F-043).  Card site may still be bypassing "
+            "cap_contribution_at_limit before calling "
+            "calculate_employer_contribution."
+        )
+        # Pre-fix uncapped value must NOT appear: locks the fix in both
+        # directions.  Use a regex-safe assertion -- the value must not
+        # appear anywhere in the rendered HTML.
+        assert "$240.00" not in html, (
+            "Pre-fix uncapped employer match $240.00 detected; the "
+            "cap_contribution_at_limit fix has regressed."
+        )
+
+    def test_card_unchanged_when_well_below_limit(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """C25-3: well below limit, the card value is unchanged (regression
+        guard).
+
+        Same fixture as the binding-limit test but with no YTD seed:
+        remaining = max(23500 - 0, 0) = 23500;
+        capped = min(1500, 23500) = 1500 (cap does not bind);
+        matched = min(1500, 480) = 480;
+        employer = 480 * 0.50 = $240.00.
+
+        The capped helper returns 1500 (the full periodic) so the card
+        produces the same byte-identical $240.00 it always did.
+        """
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="401(k)",
+            name="HIGH-07 below-limit", balance="10000.00",
+        )
+        _create_investment_params(
+            db.session, acct.id,
+            assumed_annual_return=Decimal("0.00000"),
+            annual_contribution_limit=Decimal("23500.00"),
+            contribution_limit_year=2026,
+            employer_contribution_type="match",
+            employer_match_percentage=Decimal("0.5000"),
+            employer_match_cap_percentage=Decimal("0.0600"),
+        )
+        filing = db.session.query(FilingStatus).filter_by(name="single").one()
+        profile = SalaryProfile(
+            user_id=seed_user["user"].id,
+            scenario_id=seed_user["scenario"].id,
+            filing_status_id=filing.id,
+            name="Day Job",
+            annual_salary=Decimal("208000.00"),
+            state_code="NC",
+            is_active=True,
+        )
+        db.session.add(profile)
+        db.session.flush()
+        _create_deduction(db.session, profile.id, acct.id, "1500.00")
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # No YTD: cap does not bind; full match (matchable=480) applies.
+        assert "$240.00" in html, (
+            "Below-limit card regressed: expected $240.00 employer per "
+            "period.  cap_contribution_at_limit may be incorrectly "
+            "clamping below the limit."
         )

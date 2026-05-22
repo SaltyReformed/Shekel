@@ -17,7 +17,7 @@ Architecture:
 
 import logging
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -25,9 +25,20 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum
+from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services.entry_credit_workflow import sync_entry_payback
+from app.utils.balance_predicates import (
+    is_cancelled,
+    is_done,
+    is_projected_clause,
+)
+# ``is_credit`` from balance_predicates collides with the
+# ``is_credit: bool`` keyword argument on this module's
+# ``create_entry`` / ``update_entry`` functions.  Aliasing the
+# predicate keeps both the helper accessible and the public
+# function signatures stable.
+from app.utils.balance_predicates import is_credit as txn_is_credit
 from app.utils.log_events import (
     BUSINESS,
     EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP,
@@ -42,6 +53,13 @@ logger = logging.getLogger(__name__)
 
 # Fields that can be updated on an entry via update_entry().
 _UPDATABLE_FIELDS = frozenset({"amount", "description", "entry_date", "is_credit"})
+
+# Quantisation + bounds for ``pct_complete``.  Mirrors the constants
+# in ``app.services.dashboard_service`` so the two surfaces that feed
+# progress-bar widths share one numeric contract.
+_TWO_PLACES = Decimal("0.01")
+_ZERO = Decimal("0")
+_HUNDRED = Decimal("100")
 
 
 def _update_actual_if_paid(txn: Transaction) -> None:
@@ -65,8 +83,10 @@ def _update_actual_if_paid(txn: Transaction) -> None:
     Args:
         txn: The parent Transaction object.
     """
-    done_id = ref_cache.status_id(StatusEnum.DONE)
-    if txn.status_id == done_id and txn.entries:
+    # Centralized ``is_done`` predicate (D6-09 / MED-02) so the
+    # actual-recompute trigger shares one definition with every
+    # other per-status equality check in the project.
+    if is_done(txn) and txn.entries:
         txn.actual_amount = compute_actual_from_entries(txn.entries)
 
 
@@ -168,13 +188,15 @@ def create_entry(
     # CANCELLED is excluded from balance -- adding entries makes no sense.
     # CREDIT is blocked for entry-capable templates (OQ-10) -- credit
     # handling happens at the entry level, not the transaction level.
-    cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
-    credit_id = ref_cache.status_id(StatusEnum.CREDIT)
-    if txn.status_id == cancelled_id:
+    # Routed through the centralized per-status predicates
+    # (D6-09 / MED-02) so the two guards share one definition with
+    # every other ``status == cancelled`` / ``status == credit``
+    # comparison in the project.
+    if is_cancelled(txn):
         raise ValidationError(
             "Cannot add entries to a cancelled transaction."
         )
-    if txn.status_id == credit_id:
+    if txn_is_credit(txn):
         raise ValidationError(
             "Cannot add entries to a transaction with Credit status. "
             "Entry-capable transactions handle credit at the entry level."
@@ -377,6 +399,14 @@ def build_entry_sums_dict(
     entry aggregates for the cell template.  Only transactions with
     non-empty entries are included in the result.
 
+    The dict carries ``remaining`` and ``over_budget`` so the grid
+    cell template renders without inline Jinja arithmetic
+    (E-16 / MED-04).  ``remaining`` is the E-21 declared base
+    (``estimated_amount``) minus the sum of all entries, matching
+    :func:`compute_remaining`; the cell's over-budget styling is
+    therefore driven by the same value that the dashboard bill row
+    sees via ``bill.entry_remaining``.
+
     Pure function -- no database access beyond what was already loaded
     on the Transaction objects (expects entries to be accessible, either
     via eager load or lazy access).
@@ -386,18 +416,23 @@ def build_entry_sums_dict(
 
     Returns:
         dict mapping transaction ID to {"debit": Decimal, "credit": Decimal,
-        "total": Decimal, "count": int}.  Empty dict if no transactions
-        have entries.
+        "total": Decimal, "count": int, "remaining": Decimal,
+        "over_budget": bool}.  Empty dict if no transactions have entries.
     """
     result: dict[int, dict] = {}
     for txn in transactions:
         if txn.entries:
             debit, credit = compute_entry_sums(txn.entries)
+            total = debit + credit
+            estimated = Decimal(str(txn.estimated_amount))
+            remaining = estimated - total
             result[txn.id] = {
                 "debit": debit,
                 "credit": credit,
-                "total": debit + credit,
+                "total": total,
                 "count": len(txn.entries),
+                "remaining": remaining,
+                "over_budget": remaining < Decimal("0"),
             }
     return result
 
@@ -412,10 +447,23 @@ def compute_remaining(
     credit) because the remaining balance represents budget consumption,
     not checking impact.  Negative values indicate overspending.
 
+    Per E-21 (audit MED-03 / F-028 / F-056) the budget base for an
+    entry-tracked bill row is ``estimated_amount`` unconditionally --
+    never ``actual_amount`` and never status-dependent.  This is why
+    the signature takes ``estimated_amount`` directly rather than the
+    whole ``Transaction``: the base cannot be switched on at runtime;
+    callers that want to display "remaining" against a different base
+    are out of contract and must compute it themselves.  The dashboard
+    bill row, the companion entry data builder, and the entries
+    partial all pass ``txn.estimated_amount`` (verified) so they
+    share one declared base with the row's amount cell and
+    over-budget flag.
+
     Pure function -- no database access.
 
     Args:
-        estimated_amount: The transaction's budgeted amount.
+        estimated_amount: The transaction's budgeted amount -- the
+            E-21 declared base for the row's plan-vs-actual figures.
         entries: List of TransactionEntry objects.
 
     Returns:
@@ -423,6 +471,48 @@ def compute_remaining(
     """
     total_spent = sum((e.amount for e in entries), Decimal("0"))
     return estimated_amount - total_spent
+
+
+def pct_complete(total: Decimal, target: Decimal) -> Decimal:
+    """Compute percent complete, clamped to [0, 100].
+
+    Feeds the entry-tracking progress-bar widths on the companion
+    transaction card (and any other surface that needs an entry
+    aggregate as a percentage of its declared budget base).  Returns a
+    Decimal so money math never crosses the Decimal/float boundary at
+    the route layer (MED-04 / E-16): the companion route used to
+    ``float(total / estimated * Decimal("100"))`` inline, which violated
+    the "money math is service-layer Decimal, not route-layer float"
+    standard.  Mirrors the shape of
+    :func:`app.services.dashboard_service._safe_pct_complete` so the
+    dashboard and companion surfaces share one numeric contract.
+
+    The two-decimal-place result is safe to render as-is in CSS width
+    values: ``data-progress-pct="55.50"`` is parsed by
+    ``app/static/js/progress_bar.js`` via ``parseFloat`` before being
+    applied as an inline width, and CSS itself accepts the decimal
+    notation in ``%`` values.
+
+    Args:
+        total: Sum of entries against the budgeted line.
+        target: Budgeted estimated amount.  If <= 0 the function
+            returns ``Decimal("0")`` rather than dividing by zero or
+            producing a misleading negative percentage.
+
+    Returns:
+        Decimal in [0, 100] quantised to two decimal places when the
+        guard does not fire; ``Decimal("0")`` when ``target <= 0``.
+    """
+    if target <= _ZERO:
+        return _ZERO
+    pct = (total / target * _HUNDRED).quantize(
+        _TWO_PLACES, rounding=ROUND_HALF_UP,
+    )
+    if pct > _HUNDRED:
+        return Decimal("100.00")
+    if pct < _ZERO:
+        return _ZERO
+    return pct
 
 
 def compute_actual_from_entries(
@@ -504,12 +594,14 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
     Returns:
         int -- number of entry rows updated.
     """
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     today = date.today()
 
     # Synchronize_session='fetch' because later code in the same request
     # (e.g. balance calculator rendering the grid) may hold refs to the
     # affected entry rows and needs to see the updated flag.
+    # The Projected filter is routed through the centralized
+    # ``is_projected_clause`` (D6-09 / MED-02) so every SQL filter
+    # over Projected shares one definition.
     updated = (
         db.session.query(TransactionEntry)
         .filter(
@@ -521,7 +613,7 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
                 .filter(
                     PayPeriod.user_id == owner_id,
                     Transaction.is_deleted.is_(False),
-                    Transaction.status_id == projected_id,
+                    is_projected_clause(Transaction),
                 )
             ),
         )

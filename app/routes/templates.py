@@ -8,7 +8,7 @@ Updating a template triggers recurrence regeneration.
 import logging
 from datetime import date
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
+from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -22,14 +22,23 @@ from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.transaction import Transaction
-from app.models.ref import RecurrencePattern, TransactionType
+from app.models.ref import RecurrencePattern, Status, TransactionType
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
+from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import recurrence_engine, pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import is_projected_clause
 from app.exceptions import RecurrenceConflict
+from app.routes._recurrence_form_helpers import (
+    STALE_ACTION_MESSAGE,
+    STALE_EDITING_MESSAGE,
+    build_recurrence_rule_from_form,
+    handle_recurrence_conflict,
+    handle_stale_conflict,
+    handle_stale_form_conflict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,43 +200,24 @@ def create_template():
     start_period_id = data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Create the recurrence rule if a pattern was specified.
-    rule = None
-    pattern_id_str = data.pop("recurrence_pattern", None)
-    if pattern_id_str:
-        pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
-        if pattern is None:
-            flash("Invalid recurrence pattern.", "danger")
-            return redirect(url_for("templates.new_template"))
-
-        interval_n = data.pop("interval_n", 1)
-        offset_periods = data.pop("offset_periods", 0)
-
-        # Auto-derive offset from start period for every_n_periods.
-        if int(pattern_id_str) == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS) and start_period_id and interval_n:
-            start_period = db.session.get(PayPeriod, start_period_id)
-            if not start_period or start_period.user_id != current_user.id:
-                flash("Invalid start period.", "danger")
-                return redirect(url_for("templates.new_template"))
-            offset_periods = start_period.period_index % interval_n
-
-        rule = RecurrenceRule(
-            user_id=current_user.id,
-            pattern_id=pattern.id,
-            interval_n=interval_n,
-            offset_periods=offset_periods,
-            day_of_month=data.pop("day_of_month", None),
-            due_day_of_month=data.pop("due_day_of_month", None),
-            month_of_year=data.pop("month_of_year", None),
-            start_period_id=start_period_id,
-            end_date=end_date,
-        )
-        db.session.add(rule)
-        db.session.flush()
-    else:
-        # Remove recurrence-related keys if no pattern.
-        for key in ("interval_n", "offset_periods", "day_of_month", "due_day_of_month", "month_of_year", "end_date"):
-            data.pop(key, None)
+    # Create the recurrence rule if a pattern was specified.  The
+    # F-24 helper pops every recurrence-related key from ``data`` so
+    # the TransactionTemplate constructor below does not receive
+    # stray kwargs; it returns a flushed RecurrenceRule, ``None``
+    # when no pattern was selected, or a Flask redirect Response
+    # for the invalid-pattern / invalid-start-period validation
+    # failures (caller returns the redirect verbatim).
+    rule_or_redirect = build_recurrence_rule_from_form(
+        data,
+        user_id=current_user.id,
+        start_period_id=start_period_id,
+        end_date_value=end_date,
+        redirect_endpoint="templates.new_template",
+        include_due_day_of_month=True,
+    )
+    if isinstance(rule_or_redirect, Response):
+        return rule_or_redirect
+    rule = rule_or_redirect
 
     # Create the template.
     template = TransactionTemplate(
@@ -314,22 +304,24 @@ def update_template(template_id):
 
     data = _update_schema.load(request.form)
 
-    # Stale-form check (commit C-18 / F-010).
+    # Stale-form check (commit C-18 / F-010).  Routed through the
+    # F-26 helper so the pre-flush optimistic-locking guard shares a
+    # single implementation with the parallel transfer-template
+    # update route.
     submitted_version = data.pop("version_id", None)
     if submitted_version is not None and submitted_version != template.version_id:
-        logger.info(
-            "Stale-form conflict on update_template id=%d "
-            "(submitted=%d, current=%d)",
-            template_id, submitted_version, template.version_id,
+        return handle_stale_form_conflict(
+            logger=logger,
+            log_label="update_template",
+            log_id=template_id,
+            submitted=submitted_version,
+            current=template.version_id,
+            flash_message=STALE_EDITING_MESSAGE.format(
+                noun="recurring transaction",
+            ),
+            redirect_endpoint="templates.edit_template",
+            redirect_endpoint_kwargs={"template_id": template_id},
         )
-        flash(
-            "This recurring transaction was changed by another action while "
-            "you were editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for(
-            "templates.edit_template", template_id=template_id,
-        ))
 
     effective_from = data.pop("effective_from", date.today())
 
@@ -337,38 +329,40 @@ def update_template(template_id):
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Update recurrence rule if pattern changed.
-    pattern_id_str = data.pop("recurrence_pattern", None)
-    if pattern_id_str:
+    # Update recurrence rule if pattern changed.  The existing-rule
+    # mutation branch stays inline (R0801 acceptance, F-24 Section 2:
+    # extracting it would replace nine ``setattr``-style assignments
+    # with a helper whose body is identical to the inline form).  The
+    # no-existing-rule branch (and the no-pattern cleanup) route
+    # through the F-24 helper, which pops every recurrence key from
+    # ``data`` either way.
+    if data.get("recurrence_pattern") and template.recurrence_rule:
+        pattern_id_str = data.pop("recurrence_pattern")
         pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
         if pattern is None:
             flash("Invalid recurrence pattern.", "danger")
             return redirect(url_for("templates.edit_template", template_id=template_id))
-        if template.recurrence_rule:
-            template.recurrence_rule.pattern_id = pattern.id
-            template.recurrence_rule.interval_n = data.pop("interval_n", 1)
-            template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
-            template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
-            template.recurrence_rule.due_day_of_month = data.pop("due_day_of_month", None)
-            template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
-            template.recurrence_rule.end_date = end_date
-        else:
-            rule = RecurrenceRule(
-                user_id=current_user.id,
-                pattern_id=pattern.id,
-                interval_n=data.pop("interval_n", 1),
-                offset_periods=data.pop("offset_periods", 0),
-                day_of_month=data.pop("day_of_month", None),
-                due_day_of_month=data.pop("due_day_of_month", None),
-                month_of_year=data.pop("month_of_year", None),
-                end_date=end_date,
-            )
-            db.session.add(rule)
-            db.session.flush()
-            template.recurrence_rule_id = rule.id
+        template.recurrence_rule.pattern_id = pattern.id
+        template.recurrence_rule.interval_n = data.pop("interval_n", 1)
+        template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
+        template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
+        template.recurrence_rule.due_day_of_month = data.pop("due_day_of_month", None)
+        template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
+        template.recurrence_rule.end_date = end_date
     else:
-        for key in ("interval_n", "offset_periods", "day_of_month", "due_day_of_month", "month_of_year", "end_date"):
-            data.pop(key, None)
+        rule_or_redirect = build_recurrence_rule_from_form(
+            data,
+            user_id=current_user.id,
+            start_period_id=None,
+            end_date_value=end_date,
+            redirect_endpoint="templates.edit_template",
+            redirect_endpoint_kwargs={"template_id": template_id},
+            include_due_day_of_month=True,
+        )
+        if isinstance(rule_or_redirect, Response):
+            return rule_or_redirect
+        if rule_or_redirect is not None:
+            template.recurrence_rule_id = rule_or_redirect.id
 
     # Validate ownership if account or category is being changed.
     if "account_id" in data:
@@ -422,33 +416,32 @@ def update_template(template_id):
                 template, periods, scenario.id, effective_from=effective_from,
             )
         except RecurrenceConflict as conflict:
-            # Store conflict info in session for the resolution page.
-            # For Phase 1, auto-keep overrides (simplest approach).
-            logger.warning(
-                "Recurrence conflict for template %d: %d overridden, %d deleted",
-                template.id, len(conflict.overridden), len(conflict.deleted),
-            )
-            flash(
-                f"Note: {len(conflict.overridden)} overridden and "
-                f"{len(conflict.deleted)} deleted entries were kept as-is.",
-                "warning",
+            # Phase-1 auto-keep-overrides advisory.  Routed through
+            # the F-26 helper so the log message and the user-facing
+            # flash share a single implementation with the parallel
+            # transfer-template regeneration call.  ``log_label``
+            # preserves the templates-side prefix verbatim so log-
+            # grep patterns stay valid.
+            handle_recurrence_conflict(
+                logger=logger,
+                log_label="Recurrence conflict for template",
+                log_id=template.id,
+                conflict=conflict,
             )
 
     try:
         db.session.commit()
     except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on update_template id=%d", template_id,
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="update_template",
+            log_id=template_id,
+            flash_message=STALE_EDITING_MESSAGE.format(
+                noun="recurring transaction",
+            ),
+            redirect_endpoint="templates.edit_template",
+            redirect_endpoint_kwargs={"template_id": template_id},
         )
-        flash(
-            "This recurring transaction was changed by another action while "
-            "you were editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for(
-            "templates.edit_template", template_id=template_id,
-        ))
     flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 
@@ -472,26 +465,27 @@ def archive_template(template_id):
     template.is_active = False
 
     # Soft-delete projected transactions for this template.
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Centralized ``is_projected_clause`` (D6-09 / MED-02) so the
+    # archive-template, unarchive-template, and hard-delete-fallback
+    # filters in this module share one definition.
     deleted_count = db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
-        Transaction.status_id == projected_id,
+        is_projected_clause(Transaction),
         Transaction.is_deleted.is_(False),
     ).update({"is_deleted": True}, synchronize_session="fetch")
 
     try:
         db.session.commit()
     except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on archive_template id=%d", template_id,
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="archive_template",
+            log_id=template_id,
+            flash_message=STALE_ACTION_MESSAGE.format(
+                noun="recurring transaction",
+            ),
+            redirect_endpoint="templates.list_templates",
         )
-        flash(
-            "This recurring transaction was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("templates.list_templates"))
 
     flash(
         f"Recurring transaction '{template.name}' archived. "
@@ -515,11 +509,11 @@ def unarchive_template(template_id):
 
     template.is_active = True
 
-    # Restore soft-deleted projected transactions.
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Restore soft-deleted projected transactions.  Routed through
+    # ``is_projected_clause`` (D6-09 / MED-02); see ``archive_template``.
     restored_count = db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
-        Transaction.status_id == projected_id,
+        is_projected_clause(Transaction),
         Transaction.is_deleted.is_(True),
     ).update({"is_deleted": False}, synchronize_session="fetch")
 
@@ -535,16 +529,15 @@ def unarchive_template(template_id):
     try:
         db.session.commit()
     except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on unarchive_template id=%d", template_id,
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="unarchive_template",
+            log_id=template_id,
+            flash_message=STALE_ACTION_MESSAGE.format(
+                noun="recurring transaction",
+            ),
+            redirect_endpoint="templates.list_templates",
         )
-        flash(
-            "This recurring transaction was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("templates.list_templates"))
 
     flash(
         f"Recurring transaction '{template.name}' unarchived. "
@@ -559,20 +552,28 @@ def unarchive_template(template_id):
 @require_owner
 @fresh_login_required()
 def hard_delete_template(template_id):
-    """Permanently delete a transaction template if it has no payment history.
+    """Permanently delete a transaction template if it has no settled history.
 
     Two-path logic:
-      1. If the template has Paid or Settled transactions, permanent deletion
-         is blocked.  The template is archived instead (if not already) and the
-         user is warned.
-      2. If no payment history exists, all linked transactions are deleted
-         first (to avoid FK constraint violations), then the template itself
-         is permanently removed.
+      1. If the template has any settled transaction (Paid, Received, or
+         Settled -- anything with ``Status.is_settled = True``), permanent
+         deletion is blocked.  The template is archived instead (if not
+         already) and the user is warned.
+      2. If no settled history exists, all linked NON-SETTLED transactions
+         are deleted first, then the template itself is permanently
+         removed.  ``Transaction.template_id`` is a FK with ON DELETE SET
+         NULL, so any rows that survive the filtered delete keep their
+         financial data intact with a NULL template_id rather than
+         cascading away.
 
-    Transactions are deleted before the template because
-    Transaction.template_id is a FK with ON DELETE SET NULL -- deleting the
-    template first would orphan transaction rows with NULL template_id
-    instead of removing them cleanly.
+    Defense in depth (CRIT-05 / E-22): the bulk delete is constrained to
+    non-settled rows via the semantic ``Status.is_settled`` boolean.
+    Even if the guard predicate above regresses, is bypassed, or races a
+    concurrent mark-done that lands between the guard check and the
+    delete, settled financial history (Paid, Received, Settled) cannot
+    be physically destroyed by this route.  The pre-fix code enumerated
+    ``[DONE, SETTLED]`` and silently omitted RECEIVED, then bulk-deleted
+    unconditionally -- the irreversible data-loss path CRIT-05 documents.
     """
     template = get_or_404(TransactionTemplate, template_id)
     if template is None:
@@ -586,52 +587,57 @@ def hard_delete_template(template_id):
         )
         if template.is_active:
             template.is_active = False
-            # Soft-delete projected transactions (same logic as archive_template).
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            # Soft-delete projected transactions (same logic as
+            # archive_template).  Routed through ``is_projected_clause``
+            # (D6-09 / MED-02); see ``archive_template`` above.
             db.session.query(Transaction).filter(
                 Transaction.template_id == template.id,
-                Transaction.status_id == projected_id,
+                is_projected_clause(Transaction),
                 Transaction.is_deleted.is_(False),
             ).update({"is_deleted": True}, synchronize_session="fetch")
             try:
                 db.session.commit()
             except StaleDataError:
-                db.session.rollback()
-                logger.info(
-                    "Stale-data conflict during archive-fallback in "
-                    "hard_delete_template id=%d", template_id,
-                )
-                flash(
-                    "This recurring transaction was changed by another "
-                    "action.  Please reload and try again.",
-                    "warning",
+                return handle_stale_conflict(
+                    logger=logger,
+                    log_label="hard_delete_template archive-fallback",
+                    log_id=template_id,
+                    flash_message=STALE_ACTION_MESSAGE.format(
+                        noun="recurring transaction",
+                    ),
+                    redirect_endpoint="templates.list_templates",
                 )
         return redirect(url_for("templates.list_templates"))
 
-    # No history -- safe to permanently delete.
-    # Delete all linked transactions first, then the template.  Only
-    # Projected transactions should remain (history check passed), but
-    # delete unconditionally for safety.
+    # No settled history -- safe to permanently delete.  Restrict the
+    # bulk delete to non-settled rows via ``Status.is_settled`` so a
+    # race-window mark-done (or any future caller that bypasses the
+    # guard above) cannot destroy real Paid/Received/Settled history.
+    # The FK ON DELETE SET NULL on ``Transaction.template_id`` means
+    # any row that survives this filter keeps its financial data with
+    # a null template_id rather than being cascaded away.
     template_name = template.name
+    settled_status_ids = db.session.query(Status.id).filter(
+        Status.is_settled.is_(True)
+    ).scalar_subquery()
     db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
+        Transaction.status_id.notin_(settled_status_ids),
     ).delete(synchronize_session="fetch")
 
     db.session.delete(template)
     try:
         db.session.commit()
     except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on hard_delete_template id=%d",
-            template_id,
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="hard_delete_template",
+            log_id=template_id,
+            flash_message=STALE_ACTION_MESSAGE.format(
+                noun="recurring transaction",
+            ),
+            redirect_endpoint="templates.list_templates",
         )
-        flash(
-            "This recurring transaction was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("templates.list_templates"))
 
     flash(f"Recurring transaction '{template_name}' permanently deleted.", "info")
     return redirect(url_for("templates.list_templates"))

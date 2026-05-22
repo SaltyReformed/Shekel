@@ -483,14 +483,28 @@ def generate_schedule(
         # schedule to the anchor at the first month after anchor_date.
         # Pre-anchor rows have approximate P&I splits; post-anchor rows
         # project from the user-verified balance and are exact.
+        #
+        # F-8: the payment recompute is gated on ``not using_contractual``.
+        # For ARM loans (``using_contractual`` is False, ``max_months ==
+        # remaining_months``) re-amortization at the anchor is the
+        # intended behaviour and the recomputed payment is correct.
+        # For fixed-rate loans (``using_contractual`` is True,
+        # ``max_months == remaining_months + term_months`` as a generous
+        # upper bound for the early-payoff case), recomputing
+        # ``monthly_payment`` over ``months_left`` here would produce a
+        # payment about half the contractual amount and corrupt every
+        # subsequent row.  The contractual ``monthly_payment`` set at
+        # loop entry from ``original_principal``/``term_months`` stays in
+        # force through the anchor reset.
         if (anchor_balance is not None and anchor_date is not None
                 and not anchor_applied and pay_date > anchor_date):
             balance = anchor_balance
             anchor_applied = True
-            months_left = max_months - month_num + 1
-            monthly_payment = calculate_monthly_payment(
-                balance, current_annual_rate, months_left,
-            )
+            if not using_contractual:
+                months_left = max_months - month_num + 1
+                monthly_payment = calculate_monthly_payment(
+                    balance, current_annual_rate, months_left,
+                )
 
         # ARM rate adjustment: check if the rate changes this month.
         # When the rate differs from the previous period, re-amortize
@@ -617,33 +631,6 @@ def generate_schedule(
             pay_year += 1
 
     return rows
-
-
-def _derive_summary_metrics(
-    schedule: list[AmortizationRow],
-    fallback_date: date,
-) -> tuple[Decimal, date]:
-    """Extract total interest and payoff date from a generated schedule.
-
-    Used by get_loan_projection to build summary metrics from a single
-    schedule generation, avoiding the redundant second pass that
-    calculate_summary would perform.
-
-    Args:
-        schedule: List of AmortizationRow from generate_schedule().
-        fallback_date: Date to return as payoff_date when the schedule
-            is empty (e.g. origination_date or today).
-
-    Returns:
-        (total_interest, payoff_date) tuple.
-    """
-    if not schedule:
-        return Decimal("0.00"), fallback_date
-    total_interest = sum(
-        (row.interest for row in schedule), Decimal("0.00"),
-    )
-    payoff_date = schedule[-1].payment_date
-    return total_interest, payoff_date
 
 
 def calculate_summary(
@@ -845,147 +832,3 @@ def calculate_payoff_by_date(
     return hi
 
 
-@dataclass
-class LoanProjection:
-    """Bundled projection output for a loan: summary, schedule, and balance.
-
-    current_balance is the loan balance as of today.  For ARM loans
-    this is the user-verified current_principal from LoanParams (set
-    via the anchor mechanism).  For fixed-rate loans it is derived
-    from the schedule by walking to today's date.
-    """
-
-    remaining_months: int
-    summary: AmortizationSummary
-    schedule: list  # list[AmortizationRow]
-    current_balance: Decimal = Decimal("0.00")
-
-
-def get_loan_projection(
-    params,
-    schedule_start=None,  # pylint: disable=unused-argument  # kept for callers
-    payments=None,
-    rate_changes=None,
-):
-    """Compute remaining months, summary, and schedule for a loan in one call.
-
-    Generates the full life-of-loan schedule from ``origination_date``
-    using ``original_principal`` as the starting balance.  This allows
-    all payment records -- past confirmed and future projected -- to be
-    matched by the engine's year-month lookup.
-
-    For ARM loans, the schedule is anchored to ``current_principal``
-    at today.  Pre-anchor rows use approximate P&I splits (the current
-    rate applied to all historical months); post-anchor rows project
-    from the user-verified balance and are mathematically exact.  This
-    handles the common case where historical rate data is unavailable.
-
-    For fixed-rate loans, the contractual monthly payment is computed
-    from ``original_principal`` and ``term_months``.  No anchor is
-    needed because the rate never changes and the origination-forward
-    calculation is deterministic.
-
-    The schedule is generated once (not twice as in the previous
-    implementation that called both calculate_summary and
-    generate_schedule).  Summary metrics are derived from the single
-    schedule via _derive_summary_metrics.
-
-    Args:
-        params: An object with ``origination_date``, ``term_months``,
-                ``original_principal``, ``current_principal``,
-                ``interest_rate``, ``payment_day``, and optionally
-                ``is_arm`` attributes (e.g. a LoanParams model instance).
-        schedule_start: Unused.  Retained for backward compatibility.
-        payments: Optional list of PaymentRecord instances passed
-                  through to generate_schedule().
-        rate_changes: Optional list of RateChangeRecord instances
-                      passed through for ARM rate adjustment support.
-
-    Returns:
-        LoanProjection with remaining_months, summary, schedule, and
-        current_balance.
-    """
-    remaining = calculate_remaining_months(
-        params.origination_date, params.term_months,
-    )
-
-    orig_principal = Decimal(str(params.original_principal))
-    current_principal = Decimal(str(params.current_principal))
-    rate = Decimal(str(params.interest_rate))
-
-    is_arm = getattr(params, "is_arm", False)
-    # For fixed-rate loans, pass original_principal so the engine uses
-    # the contractual payment.  For ARM, pass None to force
-    # re-amortization at the current rate.
-    original = None if is_arm else orig_principal
-
-    # ARM anchor: snap the schedule to the user-verified balance at
-    # today so forward projections are exact even without historical
-    # rate data.  Fixed-rate loans do not need an anchor because the
-    # origination-forward calculation is deterministic.
-    anchor_bal = current_principal if is_arm else None
-    anchor_dt = date.today() if is_arm else None
-
-    # Generate the schedule once.  For ARM loans the anchor resets the
-    # running balance at the first month after today; for fixed-rate
-    # loans anchor_balance/anchor_date are None (no-op).
-    schedule = generate_schedule(
-        orig_principal, rate, params.term_months,
-        origination_date=params.origination_date,
-        payment_day=params.payment_day,
-        original_principal=original,
-        term_months=params.term_months,
-        payments=payments,
-        rate_changes=rate_changes,
-        anchor_balance=anchor_bal,
-        anchor_date=anchor_dt,
-    )
-
-    # Derive summary metrics from the single schedule.
-    total_interest, payoff_date = _derive_summary_metrics(
-        schedule, params.origination_date,
-    )
-
-    # Monthly payment: the amount the borrower pays each month.
-    if is_arm and remaining > 0:
-        # ARM: re-amortize from current_principal at current rate.
-        monthly_payment = calculate_monthly_payment(
-            current_principal, rate, remaining,
-        )
-    else:
-        # Fixed-rate: contractual payment from original terms.
-        monthly_payment = calculate_monthly_payment(
-            orig_principal, rate, params.term_months,
-        )
-
-    summary = AmortizationSummary(
-        monthly_payment=monthly_payment,
-        total_interest=total_interest,
-        payoff_date=payoff_date,
-        total_interest_with_extra=total_interest,
-        payoff_date_with_extra=payoff_date,
-        months_saved=0,
-        interest_saved=Decimal("0.00"),
-    )
-
-    # Current balance: for ARM, the anchor value (user-verified).
-    # For fixed-rate, use the last confirmed row's remaining_balance
-    # (reflecting actual payments), falling back to current_principal
-    # when no confirmed payments exist.  Walking the schedule to
-    # today's date would pick up theoretical contractual rows that
-    # may not match reality when the user hasn't recorded payments.
-    if is_arm:
-        cur_balance = current_principal
-    else:
-        cur_balance = current_principal
-        for row in reversed(schedule):
-            if row.is_confirmed:
-                cur_balance = row.remaining_balance
-                break
-
-    return LoanProjection(
-        remaining_months=remaining,
-        summary=summary,
-        schedule=schedule,
-        current_balance=cur_balance,
-    )

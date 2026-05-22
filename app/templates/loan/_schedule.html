@@ -7,7 +7,7 @@
    obligation).  The Escrow column is shown only when escrow > $0.
    The Extra column is shown only when genuine extra principal payments
    exist (after escrow has been separated out). #}
-{% set col_count = 7 + (1 if monthly_escrow|float > 0 else 0) + (1 if schedule_totals.has_extra else 0) + (1 if show_rate_column else 0) %}
+{% set col_count = 7 + (1 if monthly_escrow > 0 else 0) + (1 if schedule_totals.has_extra else 0) + (1 if show_rate_column else 0) %}
 <div class="card mb-4">
   <div class="card-header">
     <h6 class="mb-0">
@@ -25,7 +25,7 @@
             <th class="text-end">Payment</th>
             <th class="text-end">Principal</th>
             <th class="text-end">Interest</th>
-            {% if monthly_escrow|float > 0 %}
+            {% if monthly_escrow > 0 %}
             <th class="text-end d-none d-lg-table-cell">Escrow</th>
             {% endif %}
             {% if schedule_totals.has_extra %}
@@ -52,26 +52,25 @@
           <tr class="{% if row.is_confirmed %}table-success{% endif %}">
             <td>{{ row.month }}</td>
             <td>{{ row.payment_date.strftime('%b %-d, %Y') }}</td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format((row.payment|float) + (monthly_escrow|float) + (row.extra_payment|float)) }}</td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format(row.principal|float) }}</td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format(row.interest|float) }}</td>
-            {% if monthly_escrow|float > 0 %}
-            <td class="text-end font-mono d-none d-lg-table-cell">${{ "{:,.2f}".format(monthly_escrow|float) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_row_totals[loop.index0]) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(row.principal) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(row.interest) }}</td>
+            {% if monthly_escrow > 0 %}
+            <td class="text-end font-mono d-none d-lg-table-cell">${{ "{:,.2f}".format(monthly_escrow) }}</td>
             {% endif %}
             {% if schedule_totals.has_extra %}
             <td class="text-end font-mono d-none d-lg-table-cell">
-              {% if row.extra_payment|float != 0 %}
-              ${{ "{:,.2f}".format(row.extra_payment|float) }}
+              {% if row.extra_payment != 0 %}
+              ${{ "{:,.2f}".format(row.extra_payment) }}
               {% else %}
               --
               {% endif %}
             </td>
             {% endif %}
-            <td class="text-end font-mono">${{ "{:,.2f}".format(row.remaining_balance|float) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(row.remaining_balance) }}</td>
             {% if show_rate_column %}
-            {% set display_rate = row.interest_rate if row.interest_rate is not none else params.interest_rate %}
             <td class="text-end font-mono d-none d-lg-table-cell{% if row.interest_rate is not none and row.interest_rate != ns.prev_rate and ns.prev_rate is not none %} fw-bold text-warning{% endif %}">
-              {{ "%.3f"|format(display_rate|float * 100) }}%
+              {{ "%.3f"|format(schedule_row_rates_pct[loop.index0]) }}%
             </td>
             {% if row.interest_rate is not none %}
             {% set ns.prev_rate = row.interest_rate %}
@@ -91,14 +90,14 @@
         <tfoot class="fw-bold border-top border-2">
           <tr>
             <td colspan="2">Total</td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_payment|float) }}</td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_principal|float) }}</td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_interest|float) }}</td>
-            {% if monthly_escrow|float > 0 %}
-            <td class="text-end font-mono d-none d-lg-table-cell">${{ "{:,.2f}".format(schedule_totals.total_escrow|float) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_payment) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_principal) }}</td>
+            <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_totals.total_interest) }}</td>
+            {% if monthly_escrow > 0 %}
+            <td class="text-end font-mono d-none d-lg-table-cell">${{ "{:,.2f}".format(schedule_totals.total_escrow) }}</td>
             {% endif %}
             {% if schedule_totals.has_extra %}
-            <td class="text-end font-mono d-none d-lg-table-cell">${{ "{:,.2f}".format(schedule_totals.total_extra|float) }}</td>
+            <td class="text-end font-mono d-none d-lg-table-cell">${{ "{:,.2f}".format(schedule_totals.total_extra) }}</td>
             {% endif %}
             <td></td>
             {% if show_rate_column %}<td class="d-none d-lg-table-cell"></td>{% endif %}

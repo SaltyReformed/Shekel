@@ -36,6 +36,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    account_service,
     balance_calculator,
     carry_forward_service,
     recurrence_engine,
@@ -565,11 +566,11 @@ class TestCarryForwardStatusRecheck:
 def _create_savings(seed_user):
     """Create a savings account for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = Account(
+    acct = account_service.create_account(
         user_id=seed_user["user"].id,
         account_type_id=savings_type.id,
         name="CF Savings",
-        current_anchor_balance=Decimal("0"),
+        anchor_balance=Decimal("0"),
     )
     db.session.add(acct)
     db.session.flush()
@@ -770,11 +771,11 @@ class TestCarryForwardShadowTransactions:
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings"
             ).one()
-            savings2 = Account(
+            savings2 = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=savings_type.id,
                 name="CF Savings 2",
-                current_anchor_balance=Decimal("0"),
+                anchor_balance=Decimal("0"),
             )
             db.session.add(savings2)
             db.session.flush()

@@ -3,20 +3,20 @@ Shekel Budget App -- Recurring Obligations Routes
 
 Read-only summary page showing all recurring financial obligations
 in one place: recurring expenses, recurring transfers, and recurring
-income.  Computes monthly equivalents using the shared conversion
-factors from savings_goal_service.amount_to_monthly() and displays
-next occurrence dates for each obligation.
+income.  Per-row monthly equivalents and section subtotals route
+through ``obligations_aggregator`` (E-24 / HIGH-05) -- the single
+canonical filter+sum producer also used by the /savings emergency-
+fund baseline and per-goal contribution floors, so the same
+obligation is never two different numbers on two pages.
 """
 
 import calendar
 import logging
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from flask import Blueprint, render_template
 from flask_login import current_user, login_required
-
-from app.utils.auth_helpers import require_owner
 
 from sqlalchemy.orm import joinedload
 
@@ -26,13 +26,16 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services.savings_goal_service import amount_to_monthly
+from app.services.obligations_aggregator import (
+    committed_monthly,
+    template_monthly_or_none,
+)
+from app.utils.auth_helpers import require_owner
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
 obligations_bp = Blueprint("obligations", __name__)
-
-TWO_PLACES = Decimal("0.01")
 
 # Human-readable labels for recurrence patterns, keyed by pattern ID.
 # Built lazily on first use since ref_cache is not available at import time.
@@ -253,6 +256,65 @@ def _next_periodic_month(today, start_month, day, step):
 
 
 # ---------------------------------------------------------------------------
+# Per-row display dicts
+# ---------------------------------------------------------------------------
+
+
+def _render_expense_item(tmpl: TransactionTemplate, monthly: Decimal) -> dict:
+    """Build the display dict for one recurring expense row.
+
+    ``monthly`` is the full-precision monthly equivalent returned by
+    ``template_monthly_or_none``; the per-row display value is rounded
+    to cents at the boundary via ``round_money``.
+    """
+    rule = tmpl.recurrence_rule
+    return {
+        "name": tmpl.name,
+        "account_name": tmpl.account.name if tmpl.account else "--",
+        "category_name": tmpl.category.item_name if tmpl.category else "--",
+        "amount": Decimal(str(tmpl.default_amount)),
+        "frequency": _frequency_label(rule),
+        "monthly": round_money(monthly),
+        "next_date": _next_occurrence(rule),
+    }
+
+
+def _render_income_item(tmpl: TransactionTemplate, monthly: Decimal) -> dict:
+    """Build the display dict for one recurring income row.
+
+    ``monthly`` is the full-precision monthly equivalent returned by
+    ``template_monthly_or_none``; rounded to cents for display.
+    """
+    rule = tmpl.recurrence_rule
+    return {
+        "name": tmpl.name,
+        "account_name": tmpl.account.name if tmpl.account else "--",
+        "amount": Decimal(str(tmpl.default_amount)),
+        "frequency": _frequency_label(rule),
+        "monthly": round_money(monthly),
+        "next_date": _next_occurrence(rule),
+    }
+
+
+def _render_transfer_item(tmpl: TransferTemplate, monthly: Decimal) -> dict:
+    """Build the display dict for one recurring transfer row.
+
+    ``monthly`` is the full-precision monthly equivalent returned by
+    ``template_monthly_or_none``; rounded to cents for display.
+    """
+    rule = tmpl.recurrence_rule
+    return {
+        "name": tmpl.name,
+        "from_account": tmpl.from_account.name if tmpl.from_account else "--",
+        "to_account": tmpl.to_account.name if tmpl.to_account else "--",
+        "amount": Decimal(str(tmpl.default_amount)),
+        "frequency": _frequency_label(rule),
+        "monthly": round_money(monthly),
+        "next_date": _next_occurrence(rule),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
 
@@ -324,86 +386,37 @@ def summary():
     )
 
     # --- Build obligation items with monthly equivalents ---
-    once_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
+    # The per-item filter (skip ONCE, skip expired, skip missing/zero
+    # amount, skip no-rule) lives in obligations_aggregator alongside
+    # the section totals, so the per-row inclusion decision and the
+    # section subtotal cannot drift apart (E-24 / HIGH-05).
+    as_of = date.today()
 
-    expense_items = []
-    total_expense_monthly = Decimal("0")
+    expense_items: list[dict] = []
     for tmpl in expense_templates:
-        rule = tmpl.recurrence_rule
-        if rule.pattern_id == once_id:
-            continue
-        if rule.end_date is not None and rule.end_date < date.today():
-            continue
-        amount = Decimal(str(tmpl.default_amount))
-        monthly = amount_to_monthly(amount, rule.pattern_id, rule.interval_n)
-        if monthly is None:
-            continue
-        total_expense_monthly += monthly
-        expense_items.append({
-            "name": tmpl.name,
-            "account_name": tmpl.account.name if tmpl.account else "--",
-            "category_name": tmpl.category.item_name if tmpl.category else "--",
-            "amount": amount,
-            "frequency": _frequency_label(rule),
-            "monthly": monthly.quantize(TWO_PLACES, ROUND_HALF_UP),
-            "next_date": _next_occurrence(rule),
-        })
+        monthly = template_monthly_or_none(tmpl, as_of)
+        if monthly is not None:
+            expense_items.append(_render_expense_item(tmpl, monthly))
 
-    income_items = []
-    total_income_monthly = Decimal("0")
+    income_items: list[dict] = []
     for tmpl in income_templates:
-        rule = tmpl.recurrence_rule
-        if rule.pattern_id == once_id:
-            continue
-        if rule.end_date is not None and rule.end_date < date.today():
-            continue
-        amount = Decimal(str(tmpl.default_amount))
-        monthly = amount_to_monthly(amount, rule.pattern_id, rule.interval_n)
-        if monthly is None:
-            continue
-        total_income_monthly += monthly
-        income_items.append({
-            "name": tmpl.name,
-            "account_name": tmpl.account.name if tmpl.account else "--",
-            "amount": amount,
-            "frequency": _frequency_label(rule),
-            "monthly": monthly.quantize(TWO_PLACES, ROUND_HALF_UP),
-            "next_date": _next_occurrence(rule),
-        })
+        monthly = template_monthly_or_none(tmpl, as_of)
+        if monthly is not None:
+            income_items.append(_render_income_item(tmpl, monthly))
 
-    transfer_items = []
-    total_transfer_monthly = Decimal("0")
+    transfer_items: list[dict] = []
     for tmpl in transfer_templates:
-        rule = tmpl.recurrence_rule
-        if rule.pattern_id == once_id:
-            continue
-        if rule.end_date is not None and rule.end_date < date.today():
-            continue
-        amount = Decimal(str(tmpl.default_amount))
-        monthly = amount_to_monthly(amount, rule.pattern_id, rule.interval_n)
-        if monthly is None:
-            continue
-        total_transfer_monthly += monthly
-        transfer_items.append({
-            "name": tmpl.name,
-            "from_account": tmpl.from_account.name if tmpl.from_account else "--",
-            "to_account": tmpl.to_account.name if tmpl.to_account else "--",
-            "amount": amount,
-            "frequency": _frequency_label(rule),
-            "monthly": monthly.quantize(TWO_PLACES, ROUND_HALF_UP),
-            "next_date": _next_occurrence(rule),
-        })
+        monthly = template_monthly_or_none(tmpl, as_of)
+        if monthly is not None:
+            transfer_items.append(_render_transfer_item(tmpl, monthly))
 
     # --- Compute summary metrics ---
-    total_expense_monthly = total_expense_monthly.quantize(
-        TWO_PLACES, ROUND_HALF_UP,
-    )
-    total_income_monthly = total_income_monthly.quantize(
-        TWO_PLACES, ROUND_HALF_UP,
-    )
-    total_transfer_monthly = total_transfer_monthly.quantize(
-        TWO_PLACES, ROUND_HALF_UP,
-    )
+    # Section subtotals route through the same aggregator -- the per-
+    # row monthly values above and the section totals below are
+    # derived from exactly one filter+sum implementation.
+    total_expense_monthly = committed_monthly(expense_templates, as_of)
+    total_income_monthly = committed_monthly(income_templates, as_of)
+    total_transfer_monthly = committed_monthly(transfer_templates, as_of)
     total_outflows = total_expense_monthly + total_transfer_monthly
     net_cash_flow = total_income_monthly - total_outflows
 

@@ -20,6 +20,7 @@ from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.services import balance_calculator
 from app.services.loan_payment_service import get_payment_history
+from app.services import account_service
 
 
 class TestLoanPaymentPipeline:
@@ -60,11 +61,11 @@ class TestLoanPaymentPipeline:
             loan_type = db.session.query(AccountType).filter_by(
                 name="Mortgage",
             ).one()
-            mortgage = Account(
+            mortgage = account_service.create_account(
                 user_id=seed_user["user"].id,
                 account_type_id=loan_type.id,
                 name="Pipeline Mortgage",
-                current_anchor_balance=Decimal("200000.00"),
+                anchor_balance=Decimal("200000.00"),
             )
             db.session.add(mortgage)
             db.session.flush()
@@ -81,6 +82,10 @@ class TestLoanPaymentPipeline:
                 payment_day=1,
             )
             db.session.add(loan_params)
+            db.session.flush()
+            # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
+            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            insert_origination_event(loan_params)
             db.session.commit()
 
             # Step 2: Create recurring transfer via the route.
