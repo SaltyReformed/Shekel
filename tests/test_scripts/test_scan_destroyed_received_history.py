@@ -362,15 +362,18 @@ class TestScanEmptyOnCleanDatabase:
     def test_run_cli_exits_zero_on_clean_database(self, app, db):  # pylint: disable=unused-argument,redefined-outer-name
         """``run_cli`` returns 0 against a clean test DB.
 
-        ``run_cli`` builds its own Flask app via ``create_app()`` and
-        reads from the same test database the fixture session is
-        bound to (both ultimately resolve to the per-worker DB URL).
-        Asserting exit 0 covers the success path; a failed connection
-        would return 3 per the script's documented exit codes.
+        ``run_cli`` builds its own Flask app via ``create_app()``,
+        which on CI defaults to ``DevConfig`` (FLASK_ENV unset) and
+        would otherwise try to reach a local Unix socket.  Pass the
+        per-worker DB URL through the documented ``--database-url``
+        override so the CLI's app construction targets the same
+        database the fixture session is bound to.  Asserting exit 0
+        covers the success path; a failed connection would return 3
+        per the script's documented exit codes.
         """
         # ``app`` fixture is already inside an app context; ``run_cli``
         # creates its own and pops it cleanly.
-        exit_code = run_cli()
+        exit_code = run_cli(database_url=app.config["SQLALCHEMY_DATABASE_URI"])
         assert exit_code == 0
 
 
