@@ -1,7 +1,7 @@
 """
-Shekel Budget App -- Recurrence-Form Route Helpers (F-24)
+Shekel Budget App -- Recurrence-Form Route Helpers (F-24, F-26)
 
-Two helpers shared between the transaction-template
+Four helpers shared between the transaction-template
 (:mod:`app.routes.templates`) and transfer-template
 (:mod:`app.routes.transfers`) CRUD routes:
 
@@ -10,21 +10,30 @@ Two helpers shared between the transaction-template
   fresh :class:`RecurrenceRule` (added to the session and flushed),
   ``None`` when no pattern was selected, or a Flask redirect
   :class:`Response` when validation fails (invalid pattern id,
-  invalid start period for every-N-periods auto-offset).
+  invalid start period for every-N-periods auto-offset).  [F-24]
 * :func:`handle_stale_conflict` -- emits the canonical stale-data
   flash + redirect when a commit raises :class:`StaleDataError`.
+  [F-24]
+* :func:`handle_stale_form_conflict` -- pre-flush optimistic-locking
+  guard for the ``submitted_version != template.version_id``
+  branch; logs both counters so post-mortem analysis can reconstruct
+  the race; redirects.  [F-26 pair 1]
+* :func:`handle_recurrence_conflict` -- Phase-1 auto-keep-overrides
+  advisory handler invoked from the ``except RecurrenceConflict``
+  branch of the regeneration call; logs the override / delete
+  counts and flashes the canonical "kept as-is" notice; returns
+  ``None`` because the caller continues executing.  [F-26 pair 2]
 
-Route-layer module rather than service because
-:func:`handle_stale_conflict` consumes Flask ``flash`` / ``redirect``
-/ ``url_for``; ``CLAUDE.md::Architecture`` keeps services isolated
-from Flask globals.  The leading underscore marks the module as
-route-internal.
+Route-layer module rather than service because three of the four
+helpers consume Flask ``flash`` / ``redirect`` / ``url_for``;
+``CLAUDE.md::Architecture`` keeps services isolated from Flask
+globals.  The leading underscore marks the module as route-internal.
 
 Module-level flash-template constants centralise the canonical
-"stale by another action" copy without forcing every caller through a
-single wording (some routes name "while you were editing" -- the
-update-template / update-transfer-template forms; others omit it --
-archive / unarchive / hard-delete).
+"stale by another action" and "kept as-is" copy without forcing
+every caller through a single wording (some routes name "while you
+were editing" -- the update-template / update-transfer-template
+forms; others omit it -- archive / unarchive / hard-delete).
 """
 import logging
 from datetime import date
@@ -34,6 +43,7 @@ from flask import Response, flash, redirect, url_for
 
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
+from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
@@ -57,6 +67,18 @@ STALE_ACTION_MESSAGE: str = (
 )
 """Flash template for non-edit-form mutations (archive / unarchive /
 hard-delete) where "while you were editing" would be misleading."""
+
+_RECURRENCE_CONFLICT_FLASH: str = (
+    "Note: {overridden_count} overridden and "
+    "{deleted_count} deleted entries were kept as-is."
+)
+"""Flash template for the Phase-1 auto-keep-overrides advisory
+emitted by :func:`handle_recurrence_conflict` when a regenerate-
+for-template call surfaces overridden / deleted instances.  The
+counts are substituted by the caller; the wording is byte-
+identical between the templates and transfers sides (the only
+pre-extraction difference was the log prefix, which the
+``log_label`` kwarg preserves)."""
 
 
 # Keys the recurrence-rule helper pops from the validated form payload
@@ -238,9 +260,122 @@ def handle_stale_conflict(
     ))
 
 
+def handle_stale_form_conflict(
+    *,
+    logger: logging.Logger,
+    log_label: str,
+    log_id: int,
+    submitted: int,
+    current: int,
+    flash_message: str,
+    redirect_endpoint: str,
+    redirect_endpoint_kwargs: dict[str, Any] | None = None,
+) -> Response:
+    """Optimistic-locking pre-flush form-side conflict handler (F-26).
+
+    Mirror of :func:`handle_stale_conflict` for the
+    ``submitted_version != template.version_id`` branch that fires
+    before the commit attempt.  Logs both the submitted and current
+    counters so post-mortem analysis can reconstruct the race
+    (matching the byte-identical pre-extraction log messages on
+    both the templates and transfers update routes); flashes the
+    caller-supplied message; redirects.  Does NOT roll back the
+    session because no DB write has been attempted yet at the
+    call site.
+
+    Args:
+        logger: Per-module logger; the helper does not own one
+            because log records should originate at the route
+            module so log grep / filtering by
+            ``logger=app.routes.templates`` keeps working.
+        log_label: Short label for the log message, e.g.
+            ``"update_template"`` or ``"update_transfer_template"``.
+        log_id: The mutating template id, used in the log message.
+        submitted: Version counter the form payload carried.
+        current: Version counter on the row right now.  The two
+            differ exactly when a concurrent edit has landed.
+        flash_message: Fully-formed flash string.  Callers compose
+            it via :data:`STALE_EDITING_MESSAGE` substituting the
+            route's domain noun.
+        redirect_endpoint: Flask endpoint to redirect the user to
+            (typically the edit form so they can re-load).
+        redirect_endpoint_kwargs: Kwargs for ``url_for``.
+
+    Returns:
+        A Flask redirect :class:`Response`.  The caller returns it
+        directly so the route's control flow is identical to the
+        pre-extraction shape.
+    """
+    logger.info(
+        "Stale-form conflict on %s id=%d "
+        "(submitted=%d, current=%d)",
+        log_label, log_id, submitted, current,
+    )
+    flash(flash_message, "warning")
+    return redirect(url_for(
+        redirect_endpoint, **(redirect_endpoint_kwargs or {}),
+    ))
+
+
+def handle_recurrence_conflict(
+    *,
+    logger: logging.Logger,
+    log_label: str,
+    log_id: int,
+    conflict: RecurrenceConflict,
+) -> None:
+    """Auto-keep-overrides Phase-1 advisory handler (F-26).
+
+    Called from inside an ``except RecurrenceConflict as conflict:``
+    block where the regenerate-for-template call surfaced
+    overridden / deleted transactions that Phase-1 chooses to
+    keep as-is.  Logs the override / delete counts and flashes the
+    canonical advisory notice.  Returns ``None`` -- the caller
+    continues executing (the helper is advisory, not control-flow),
+    exactly the pre-extraction behaviour.
+
+    Args:
+        logger: Per-module logger; see :func:`handle_stale_conflict`
+            for the originate-at-the-route-module rationale.
+        log_label: Full prefix for the log message preserved
+            verbatim from the pre-extraction wording -- e.g.
+            ``"Recurrence conflict for template"`` (templates side)
+            or ``"Transfer recurrence conflict for template"``
+            (transfers side).  Accepting the prefix verbatim keeps
+            log-grep patterns valid post-extraction.
+        log_id: The template id whose regeneration surfaced the
+            conflict.
+        conflict: The :class:`RecurrenceConflict` instance the
+            caller caught; only ``overridden`` and ``deleted`` are
+            read.
+
+    Returns:
+        ``None``.  Returning ``None`` (not a :class:`Response`) is
+        load-bearing: if the helper returned a Response and the
+        caller did ``return helper(...)``, the route would early-
+        exit before the commit attempt, dropping every other field
+        change in the update payload.  The pre-extraction body did
+        not return; the helper does not either.
+    """
+    logger.warning(
+        "%s %d: %d overridden, %d deleted",
+        log_label, log_id,
+        len(conflict.overridden), len(conflict.deleted),
+    )
+    flash(
+        _RECURRENCE_CONFLICT_FLASH.format(
+            overridden_count=len(conflict.overridden),
+            deleted_count=len(conflict.deleted),
+        ),
+        "warning",
+    )
+
+
 __all__ = [
     "STALE_EDITING_MESSAGE",
     "STALE_ACTION_MESSAGE",
     "build_recurrence_rule_from_form",
     "handle_stale_conflict",
+    "handle_stale_form_conflict",
+    "handle_recurrence_conflict",
 ]

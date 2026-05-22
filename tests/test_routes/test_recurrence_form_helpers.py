@@ -1,11 +1,12 @@
 """
-Unit tests for ``app.routes._recurrence_form_helpers`` (F-24).
+Unit tests for ``app.routes._recurrence_form_helpers`` (F-24, F-26).
 
-Pins helper-internal contracts so future edits to either helper
-surface as unit-test failures rather than as integration drift in
-the templates / transfers CRUD route suites.  Test IDs C2-1 through
-C2-6 map to the plan's
-``remediation_follow_up_F24_F25_plan.md`` Section 7 Commit 2 E.
+Pins helper-internal contracts so future edits to any of the four
+helpers surface as unit-test failures rather than as integration
+drift in the templates / transfers CRUD route suites.  Test IDs
+C2-1 through C2-6 map to the F-24 commit's E section; C3-1 and
+C3-2 map to the F-26 commit's E section.  Both commit specs live
+in ``remediation_follow_up_F24_F25_F26_plan.md`` Section 7.
 
 The tests use real templates / transfers blueprint endpoints
 (``templates.new_template``, ``templates.edit_template``,
@@ -21,13 +22,16 @@ from flask import Response
 
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
+from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     build_recurrence_rule_from_form,
+    handle_recurrence_conflict,
     handle_stale_conflict,
+    handle_stale_form_conflict,
 )
 
 
@@ -280,3 +284,137 @@ class TestHandleStaleConflict:
         assert "while you were editing" not in action
         assert "recurring transfer" in action
         assert "Please reload and try again." in action
+
+
+class TestHandleStaleFormConflict:
+    """F-26 helper :func:`handle_stale_form_conflict` contract tests.
+
+    Pre-flush optimistic-locking mirror of
+    :func:`handle_stale_conflict`; logs both submitted and current
+    version counters so post-mortem analysis can reconstruct the
+    race.  Does NOT roll back (no DB write attempted at the call
+    site).
+    """
+
+    def test_logs_both_counters_flashes_and_redirects(
+        self, app, auth_client, seed_user, caplog,  # pylint: disable=unused-argument
+    ):
+        """C3-1: log at INFO with submitted + current; flash; 302.
+
+        Pins the canonical handler shape so a regression that drops
+        either counter from the log (or rewords the canonical line)
+        surfaces here.
+        """
+        with app.test_request_context():
+            test_logger = logging.getLogger(
+                "test_handle_stale_form_conflict",
+            )
+            with caplog.at_level(
+                logging.INFO,
+                logger="test_handle_stale_form_conflict",
+            ):
+                response = handle_stale_form_conflict(
+                    logger=test_logger,
+                    log_label="update_template",
+                    log_id=42,
+                    submitted=7,
+                    current=9,
+                    flash_message=STALE_EDITING_MESSAGE.format(
+                        noun="recurring transaction",
+                    ),
+                    redirect_endpoint="templates.edit_template",
+                    redirect_endpoint_kwargs={"template_id": 42},
+                )
+            assert isinstance(response, Response)
+            assert response.status_code == 302
+            assert "/templates/42" in response.headers["Location"]
+            # The log record must carry BOTH the submitted and the
+            # current counters -- the post-mortem-reconstruction
+            # rationale fails if either is missing.
+            log_msg = caplog.records[-1].getMessage()
+            assert "update_template" in log_msg
+            assert "id=42" in log_msg
+            assert "submitted=7" in log_msg
+            assert "current=9" in log_msg
+
+
+class TestHandleRecurrenceConflict:
+    """F-26 helper :func:`handle_recurrence_conflict` contract tests.
+
+    Phase-1 auto-keep-overrides advisory handler.  Logs at WARNING
+    with the override / delete counts; flashes the canonical
+    "kept as-is" notice; returns ``None`` (NOT a Response -- the
+    caller continues executing after the flash).
+    """
+
+    def test_logs_warning_flashes_and_returns_none(
+        self, app, auth_client, seed_user, caplog,  # pylint: disable=unused-argument
+    ):
+        """C3-2: log WARN with counts; flash counts; return None.
+
+        Hand-arithmetic: ``len([1, 2, 3]) = 3`` overridden,
+        ``len([4]) = 1`` deleted.  The flash string substitutes
+        both counts.
+        """
+        with app.test_request_context():
+            test_logger = logging.getLogger(
+                "test_handle_recurrence_conflict",
+            )
+            conflict = RecurrenceConflict(
+                overridden=[1, 2, 3],
+                deleted=[4],
+            )
+            with caplog.at_level(
+                logging.WARNING,
+                logger="test_handle_recurrence_conflict",
+            ):
+                result = handle_recurrence_conflict(
+                    logger=test_logger,
+                    log_label="Recurrence conflict for template",
+                    log_id=99,
+                    conflict=conflict,
+                )
+            # Load-bearing: must return None, not a Response.  A
+            # Response return would cause the caller (which does
+            # ``handle_recurrence_conflict(...)`` without
+            # ``return``) to discard it, but a future caller that
+            # added ``return`` by mistake would early-exit the
+            # route mid-update.  Pin the contract.
+            assert result is None
+            log_msg = caplog.records[-1].getMessage()
+            assert "Recurrence conflict for template 99" in log_msg
+            assert "3 overridden" in log_msg
+            assert "1 deleted" in log_msg
+
+    def test_log_label_preserves_transfers_side_prefix(
+        self, app, auth_client, seed_user, caplog,  # pylint: disable=unused-argument
+    ):
+        """C3-2 (variant): log_label kwarg carries the prefix verbatim.
+
+        Pre-extraction the transfers side logged with prefix
+        "Transfer recurrence conflict for template"; the helper
+        preserves the prefix via the ``log_label`` kwarg so log-
+        grep patterns stay valid post-extraction.
+        """
+        with app.test_request_context():
+            test_logger = logging.getLogger(
+                "test_handle_recurrence_conflict_transfer",
+            )
+            conflict = RecurrenceConflict(overridden=[], deleted=[])
+            with caplog.at_level(
+                logging.WARNING,
+                logger="test_handle_recurrence_conflict_transfer",
+            ):
+                handle_recurrence_conflict(
+                    logger=test_logger,
+                    log_label="Transfer recurrence conflict for template",
+                    log_id=77,
+                    conflict=conflict,
+                )
+            log_msg = caplog.records[-1].getMessage()
+            assert (
+                "Transfer recurrence conflict for template 77"
+                in log_msg
+            )
+            assert "0 overridden" in log_msg
+            assert "0 deleted" in log_msg

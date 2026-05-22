@@ -35,7 +35,9 @@ from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     build_recurrence_rule_from_form,
+    handle_recurrence_conflict,
     handle_stale_conflict,
+    handle_stale_form_conflict,
 )
 
 logger = logging.getLogger(__name__)
@@ -302,22 +304,24 @@ def update_template(template_id):
 
     data = _update_schema.load(request.form)
 
-    # Stale-form check (commit C-18 / F-010).
+    # Stale-form check (commit C-18 / F-010).  Routed through the
+    # F-26 helper so the pre-flush optimistic-locking guard shares a
+    # single implementation with the parallel transfer-template
+    # update route.
     submitted_version = data.pop("version_id", None)
     if submitted_version is not None and submitted_version != template.version_id:
-        logger.info(
-            "Stale-form conflict on update_template id=%d "
-            "(submitted=%d, current=%d)",
-            template_id, submitted_version, template.version_id,
+        return handle_stale_form_conflict(
+            logger=logger,
+            log_label="update_template",
+            log_id=template_id,
+            submitted=submitted_version,
+            current=template.version_id,
+            flash_message=STALE_EDITING_MESSAGE.format(
+                noun="recurring transaction",
+            ),
+            redirect_endpoint="templates.edit_template",
+            redirect_endpoint_kwargs={"template_id": template_id},
         )
-        flash(
-            "This recurring transaction was changed by another action while "
-            "you were editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for(
-            "templates.edit_template", template_id=template_id,
-        ))
 
     effective_from = data.pop("effective_from", date.today())
 
@@ -412,16 +416,17 @@ def update_template(template_id):
                 template, periods, scenario.id, effective_from=effective_from,
             )
         except RecurrenceConflict as conflict:
-            # Store conflict info in session for the resolution page.
-            # For Phase 1, auto-keep overrides (simplest approach).
-            logger.warning(
-                "Recurrence conflict for template %d: %d overridden, %d deleted",
-                template.id, len(conflict.overridden), len(conflict.deleted),
-            )
-            flash(
-                f"Note: {len(conflict.overridden)} overridden and "
-                f"{len(conflict.deleted)} deleted entries were kept as-is.",
-                "warning",
+            # Phase-1 auto-keep-overrides advisory.  Routed through
+            # the F-26 helper so the log message and the user-facing
+            # flash share a single implementation with the parallel
+            # transfer-template regeneration call.  ``log_label``
+            # preserves the templates-side prefix verbatim so log-
+            # grep patterns stay valid.
+            handle_recurrence_conflict(
+                logger=logger,
+                log_label="Recurrence conflict for template",
+                log_id=template.id,
+                conflict=conflict,
             )
 
     try:

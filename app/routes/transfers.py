@@ -46,7 +46,9 @@ from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     build_recurrence_rule_from_form,
+    handle_recurrence_conflict,
     handle_stale_conflict,
+    handle_stale_form_conflict,
 )
 
 logger = logging.getLogger(__name__)
@@ -321,22 +323,24 @@ def update_transfer_template(template_id):
 
     data = _update_schema.load(request.form)
 
-    # Stale-form check (commit C-18 / F-010).
+    # Stale-form check (commit C-18 / F-010).  Routed through the
+    # F-26 helper so the pre-flush optimistic-locking guard shares a
+    # single implementation with the parallel transaction-template
+    # update route.
     submitted_version = data.pop("version_id", None)
     if submitted_version is not None and submitted_version != template.version_id:
-        logger.info(
-            "Stale-form conflict on update_transfer_template id=%d "
-            "(submitted=%d, current=%d)",
-            template_id, submitted_version, template.version_id,
+        return handle_stale_form_conflict(
+            logger=logger,
+            log_label="update_transfer_template",
+            log_id=template_id,
+            submitted=submitted_version,
+            current=template.version_id,
+            flash_message=STALE_EDITING_MESSAGE.format(
+                noun="recurring transfer",
+            ),
+            redirect_endpoint="transfers.edit_transfer_template",
+            redirect_endpoint_kwargs={"template_id": template_id},
         )
-        flash(
-            "This recurring transfer was changed by another action while "
-            "you were editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for(
-            "transfers.edit_transfer_template", template_id=template_id,
-        ))
 
     effective_from = data.pop("effective_from", date.today())
     data.pop("start_period_id", None)
@@ -426,14 +430,15 @@ def update_transfer_template(template_id):
                 template, periods, scenario.id, effective_from=effective_from,
             )
         except RecurrenceConflict as conflict:
-            logger.warning(
-                "Transfer recurrence conflict for template %d: %d overridden, %d deleted",
-                template.id, len(conflict.overridden), len(conflict.deleted),
-            )
-            flash(
-                f"Note: {len(conflict.overridden)} overridden and "
-                f"{len(conflict.deleted)} deleted entries were kept as-is.",
-                "warning",
+            # Phase-1 auto-keep-overrides advisory.  Routed through
+            # the F-26 helper; ``log_label`` carries the transfers-
+            # side "Transfer recurrence conflict for template"
+            # prefix verbatim so log-grep patterns stay valid.
+            handle_recurrence_conflict(
+                logger=logger,
+                log_label="Transfer recurrence conflict for template",
+                log_id=template.id,
+                conflict=conflict,
             )
 
     try:
