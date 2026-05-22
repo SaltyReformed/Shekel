@@ -553,7 +553,7 @@ class TestInlineReplayDecoupling:
 
     @pytest.mark.parametrize(
         "case_name,original_principal,annual_rate,term_months,"
-        "origination_date,payments",
+        "origination_date,payments,expected_balance",
         [
             (
                 "no_payments",
@@ -562,6 +562,10 @@ class TestInlineReplayDecoupling:
                 360,
                 date(2024, 1, 1),
                 [],
+                # No confirmed payment means ``last_confirmed_balance``
+                # is never captured and the helper returns the original
+                # principal unchanged.
+                Decimal("200000.00"),
             ),
             (
                 "three_confirmed_payments",
@@ -574,6 +578,18 @@ class TestInlineReplayDecoupling:
                     (date(2024, 3, 1), Decimal("1264.14"), True),
                     (date(2024, 4, 1), Decimal("1264.14"), True),
                 ],
+                # Hand arithmetic at $200,000 / 6.5% / 360, monthly
+                # rate 0.065 / 12 = 0.00541666...:
+                #   month 1: int = 200000 * 0.005416666... = 1083.33
+                #             prin = 1264.14 - 1083.33 = 180.81
+                #             bal  = 199819.19
+                #   month 2: int = 199819.19 * 0.005416666... = 1082.35
+                #             prin = 1264.14 - 1082.35 = 181.79
+                #             bal  = 199637.40
+                #   month 3: int = 199637.40 * 0.005416666... = 1081.37
+                #             prin = 1264.14 - 1081.37 = 182.77
+                #             bal  = 199454.63
+                Decimal("199454.63"),
             ),
             (
                 "mixed_confirmed_and_projected",
@@ -588,71 +604,44 @@ class TestInlineReplayDecoupling:
                     (date(2024, 10, 1), Decimal("1498.88"), True),
                     (date(2024, 11, 1), Decimal("1498.88"), False),
                 ],
+                # Hand arithmetic at $250,000 / 6.0% / 360, monthly rate
+                # 0.06 / 12 = 0.005:
+                #   month 1 (Jul, confirmed): int = 1250.00,
+                #     prin = 248.88, bal = 249751.12, last_conf = bal
+                #   month 2 (Aug, confirmed): int = 249751.12 * 0.005
+                #     = 1248.76 (1248.7556 -> ROUND_HALF_UP 1248.76),
+                #     prin = 250.12, bal = 249501.00, last_conf = bal
+                #   month 3 (Sep, projected): int = 249501.00 * 0.005
+                #     = 1247.51 (1247.505 -> ROUND_HALF_UP 1247.51),
+                #     prin = 251.37, bal = 249249.63
+                #     (projected month does NOT update last_conf)
+                #   month 4 (Oct, confirmed): int = 249249.63 * 0.005
+                #     = 1246.25 (1246.24815 -> ROUND_HALF_UP 1246.25),
+                #     prin = 252.63, bal = 248997.00, last_conf = bal
+                #   month 5 (Nov, projected): does NOT update last_conf.
+                Decimal("248997.00"),
             ),
         ],
     )
-    def test_inline_matches_engine_for_migration_input_shape(
+    def test_inline_replay_hand_anchored_balance(
         self, case_name, original_principal, annual_rate, term_months,
-        origination_date, payments,
+        origination_date, payments, expected_balance,
     ):
-        """C8-6: inline replay matches the pre-commit engine result, byte-for-byte.
+        """C8-6: inline replay produces the hand-anchored balance.
 
-        The engine's ``generate_schedule`` still exists at this commit
-        (Commit 9 deletes it), so the test imports it directly and
-        compares against the inline helper for three representative
-        loan shapes: no payments at all, a short run of confirmed
-        contractual payments, and a mixed confirmed/projected run.
+        Pre-Commit-9 this test cross-checked against
+        ``amortization_engine.generate_schedule``; Commit 9 deletes
+        ``generate_schedule`` and the cross-check moves to
+        hand-computed values for each parametrized case (every
+        ``expected_balance`` is derived inline in the parametrize
+        table from the per-month amortization formula).
 
-        Arithmetic (hand-computed for the
-        ``three_confirmed_payments`` case to anchor the test):
-        contractual monthly P at $200,000, 6.5% APR, 360 months is
-        $1,264.14.  Month 1 interest = $200,000 * (0.065/12) =
-        $1,083.33; principal = $1,264.14 - $1,083.33 = $180.81;
-        balance = $199,819.19.  The inline and the engine both
-        evolve through this branch identically; the test asserts
-        equality rather than re-pinning the literal balance so
-        future engine refactors (which the inline does NOT track)
-        do not produce a spurious failure.
-
-        For the ``no_payments`` case both implementations short-
-        circuit to ``original_principal`` and the test pins
-        identity to original.
+        Covers three representative loan shapes: no payments at all
+        (helper returns ``original_principal``), a short run of three
+        confirmed contractual payments (last_confirmed_balance after
+        month 3), and a mixed confirmed / projected run (only
+        confirmed months capture last_confirmed_balance).
         """
-        # pylint: disable=import-outside-toplevel
-        # Late import is deliberate: the test exercises the engine's
-        # schedule function only for cross-checking the migration's
-        # inlined replacement.  The migration itself no longer
-        # depends on it.
-        from app.services import amortization_engine
-
-        engine_payments = [
-            amortization_engine.PaymentRecord(
-                payment_date=pay_date,
-                amount=amount,
-                is_confirmed=is_confirmed,
-            )
-            for pay_date, amount, is_confirmed in payments
-        ]
-
-        if engine_payments:
-            schedule = amortization_engine.generate_schedule(
-                current_principal=original_principal,
-                annual_rate=annual_rate,
-                remaining_months=term_months,
-                origination_date=origination_date,
-                payment_day=1,
-                original_principal=original_principal,
-                term_months=term_months,
-                payments=engine_payments,
-            )
-            engine_result = original_principal
-            for row in reversed(schedule):
-                if row.is_confirmed:
-                    engine_result = row.remaining_balance
-                    break
-        else:
-            engine_result = original_principal
-
         inline_result = _M_LOAN_BACKFILL._replay_from_origination_inline(
             original_principal=original_principal,
             annual_rate=annual_rate,
@@ -661,6 +650,7 @@ class TestInlineReplayDecoupling:
             payments=payments,
         )
 
-        assert inline_result == engine_result, (
-            f"{case_name}: inline {inline_result} != engine {engine_result}"
+        assert inline_result == expected_balance, (
+            f"{case_name}: inline {inline_result} != "
+            f"hand-anchored {expected_balance}"
         )

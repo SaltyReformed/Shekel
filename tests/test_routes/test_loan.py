@@ -2829,18 +2829,43 @@ class TestAmortizationSchedule:
         full schedule.  The engine computes this precisely using Decimal.
         No escrow means Payment total = P&I total.
         """
-        from app.services.amortization_engine import generate_schedule
+        # Compute expected totals from the engine via
+        # ``project_forward`` (Commit 9 of the amortization-engine
+        # split removed ``generate_schedule``).  The fixture loan has
+        # no payments and no overrides, so a pure contractual
+        # projection over the full term replicates the legacy
+        # surface's output exactly.
+        from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
+            advance_to_next_payment_date,
+            calculate_monthly_payment,
+            project_forward,
+        )
 
         principal = Decimal("250000.00")
         rate = Decimal("0.06500")
         term = 360
+        # _create_fresh_mortgage seeds origination_date one month
+        # before today so the first scheduled payment lands on the
+        # first of this month.
+        first_of_this_month = date.today().replace(day=1)
+        if first_of_this_month.month == 1:
+            origination_date = first_of_this_month.replace(
+                year=first_of_this_month.year - 1, month=12,
+            )
+        else:
+            origination_date = first_of_this_month.replace(
+                month=first_of_this_month.month - 1,
+            )
+        starting_date = advance_to_next_payment_date(origination_date, 1)
+        contractual = calculate_monthly_payment(principal, rate, term)
 
-        # Compute expected totals from the engine.
-        schedule = generate_schedule(
-            principal, rate, term,
+        schedule = project_forward(
+            starting_balance=principal,
+            starting_date=starting_date,
+            annual_rate=rate,
+            remaining_months=term,
             payment_day=1,
-            original_principal=principal,
-            term_months=term,
+            contractual_payment=contractual,
         )
         expected_interest = sum(
             (row.interest for row in schedule), Decimal("0.00"),

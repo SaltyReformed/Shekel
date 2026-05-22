@@ -401,316 +401,6 @@ def _find_applicable_rate(
     return applicable_rate
 
 
-def generate_schedule(
-    current_principal: Decimal,
-    annual_rate: Decimal,
-    remaining_months: int,
-    extra_monthly: Decimal = Decimal("0.00"),
-    origination_date: date | None = None,
-    payment_day: int = 1,
-    original_principal: Decimal | None = None,
-    term_months: int | None = None,
-    payments: list[PaymentRecord] | None = None,
-    rate_changes: list[RateChangeRecord] | None = None,
-    anchor_balance: Decimal | None = None,
-    anchor_date: date | None = None,
-) -> list[AmortizationRow]:
-    """Generate month-by-month amortization schedule.
-
-    When *payments* is provided, the schedule replays those payments
-    month-by-month instead of assuming the contractual amount.  Months
-    without a matching payment use the standard contractual payment
-    plus *extra_monthly*.  This enables three projection scenarios:
-
-      1. Original schedule -- payments=None, extra_monthly=0
-      2. Committed schedule -- payments=confirmed+projected transfers
-      3. What-if schedule -- payments=confirmed only, extra_monthly=X
-
-    Payment matching is by year-month of ``payment_date``, not exact
-    day, so biweekly payment dates correctly map to monthly periods.
-
-    When *rate_changes* is provided, the schedule re-amortizes the
-    remaining balance at each rate adjustment.  The applicable rate for
-    each month is the most recent entry with effective_date <= the
-    month's payment_date.  The monthly payment is recalculated using
-    the standard amortization formula: M = P * [r(1+r)^n] / [(1+r)^n-1]
-    where P = remaining balance, r = new monthly rate, n = remaining
-    months.  Both payments and rate_changes can be used together.
-
-    When *anchor_balance* and *anchor_date* are provided, the schedule
-    resets the running balance to anchor_balance at the first month
-    whose payment date is after anchor_date, then re-amortizes from
-    that point forward.  This is used for ARM loans where the
-    origination-forward calculation drifts from reality due to missing
-    historical rate data.  Pre-anchor rows have approximate P&I splits
-    (payment amounts from confirmed records are real, but the
-    interest/principal breakdown uses the current rate rather than the
-    historical rate).  Post-anchor rows are mathematically exact.
-
-    Args:
-        current_principal: Current outstanding balance.
-        annual_rate: Annual interest rate as a decimal (e.g. 0.065 for 6.5%).
-        remaining_months: Number of months remaining on the loan.
-        extra_monthly: Additional principal payment per month.  Applied
-            only to months where no PaymentRecord exists.
-        origination_date: Loan origination date (used for payment date calc).
-        payment_day: Day of month payments are due.
-        original_principal: Original loan amount at origination.  When
-            provided with *term_months*, the contractual monthly payment
-            is computed from the original terms instead of re-amortizing
-            from current_principal.
-        term_months: Original loan term in months.  Used with
-            *original_principal* to derive the contractual payment.
-        payments: Optional list of PaymentRecord instances.  When
-            provided, each month checks for a matching payment (by
-            year-month) and uses that amount instead of the contractual
-            payment.
-        rate_changes: Optional list of RateChangeRecord instances for
-            ARM loans.  When provided, the schedule applies rate changes
-            at their effective dates and re-amortizes the remaining
-            balance at the new rate.  Pre-origination entries are
-            filtered.  None or [] leaves behavior unchanged.
-        anchor_balance: Optional verified balance to snap to at
-            anchor_date.  Used with anchor_date for ARM loans where
-            historical rate data is unavailable.
-        anchor_date: The date at which anchor_balance is known.  The
-            schedule resets balance at the first month after this date.
-
-    Returns:
-        List of AmortizationRow objects.
-    """
-    if current_principal <= 0 or remaining_months <= 0:
-        return []
-
-    # Build payment lookup dicts if payments are provided.
-    has_payments = payments is not None and len(payments) > 0
-    if has_payments:
-        amount_by_month, confirmed_by_month = _build_payment_lookups(
-            payments, origination_date,
-        )
-    else:
-        amount_by_month = {}
-        confirmed_by_month = {}
-
-    # Build rate change schedule if rate_changes are provided.
-    has_rate_changes = rate_changes is not None and len(rate_changes) > 0
-    if has_rate_changes:
-        rate_schedule = _build_rate_change_list(rate_changes, origination_date)
-    else:
-        rate_schedule = []
-
-    # Compute the monthly payment.  For fixed-rate loans with original
-    # terms provided, use the contractual payment (what the borrower
-    # actually pays -- same for the life of the loan).  For ARM loans
-    # (indicated by non-empty rate_changes), the "contractual" payment
-    # changes at each rate adjustment, so re-amortize from
-    # current_principal and remaining_months at the current rate.
-    using_contractual = (
-        original_principal is not None
-        and term_months is not None
-        and not has_rate_changes
-    )
-    if using_contractual:
-        monthly_payment = calculate_monthly_payment(
-            original_principal, annual_rate, term_months,
-        )
-    else:
-        monthly_payment = calculate_monthly_payment(
-            current_principal, annual_rate, remaining_months,
-        )
-    current_annual_rate = annual_rate
-    monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")
-
-    # When using the contractual payment, the number of months needed to
-    # pay off current_principal may differ from remaining_months (e.g. a
-    # partially paid loan where current < original needs fewer months,
-    # while remaining_months is based on the calendar).  Use a generous
-    # upper bound and let the balance-reaches-zero break handle
-    # termination.  For re-amortized schedules, remaining_months is exact.
-    if using_contractual:
-        max_months = remaining_months + term_months
-    else:
-        max_months = remaining_months
-
-    # Determine starting payment date.
-    if origination_date:
-        pay_year = origination_date.year
-        pay_month = origination_date.month + 1
-        if pay_month > 12:
-            pay_month = 1
-            pay_year += 1
-    else:
-        today = date.today()
-        pay_year = today.year
-        pay_month = today.month
-
-    # Defensive: ensure Decimal even if caller passes float from DB column.
-    balance = Decimal(str(current_principal))
-    rows = []
-    anchor_applied = False
-
-    for month_num in range(1, max_months + 1):
-        if balance <= 0:
-            break
-
-        # Calculate payment date.
-        max_day = calendar.monthrange(pay_year, pay_month)[1]
-        pay_date = date(pay_year, pay_month, min(payment_day, max_day))
-
-        # Anchor reset: when a verified balance is provided, snap the
-        # schedule to the anchor at the first month after anchor_date.
-        # Pre-anchor rows have approximate P&I splits; post-anchor rows
-        # project from the user-verified balance and are exact.
-        #
-        # F-8: the payment recompute is gated on ``not using_contractual``.
-        # For ARM loans (``using_contractual`` is False, ``max_months ==
-        # remaining_months``) re-amortization at the anchor is the
-        # intended behaviour and the recomputed payment is correct.
-        # For fixed-rate loans (``using_contractual`` is True,
-        # ``max_months == remaining_months + term_months`` as a generous
-        # upper bound for the early-payoff case), recomputing
-        # ``monthly_payment`` over ``months_left`` here would produce a
-        # payment about half the contractual amount and corrupt every
-        # subsequent row.  The contractual ``monthly_payment`` set at
-        # loop entry from ``original_principal``/``term_months`` stays in
-        # force through the anchor reset.
-        if (anchor_balance is not None and anchor_date is not None
-                and not anchor_applied and pay_date > anchor_date):
-            balance = anchor_balance
-            anchor_applied = True
-            if not using_contractual:
-                months_left = max_months - month_num + 1
-                monthly_payment = calculate_monthly_payment(
-                    balance, current_annual_rate, months_left,
-                )
-
-        # ARM rate adjustment: check if the rate changes this month.
-        # When the rate differs from the previous period, re-amortize
-        # the remaining balance over the remaining months at the new rate.
-        if rate_schedule:
-            period_rate = _find_applicable_rate(
-                pay_date, rate_schedule, annual_rate,
-            )
-            if period_rate != current_annual_rate:
-                current_annual_rate = period_rate
-                monthly_rate = (
-                    current_annual_rate / 12
-                    if current_annual_rate > 0
-                    else Decimal("0")
-                )
-                # Re-amortize: new payment for remaining balance over
-                # remaining months at the new rate.
-                months_left = max_months - month_num + 1
-                monthly_payment = calculate_monthly_payment(
-                    balance, current_annual_rate, months_left,
-                )
-
-        # Calculate interest for this month.
-        interest = (balance * monthly_rate).quantize(TWO_PLACES, ROUND_HALF_UP)
-
-        # Check for a payment record matching this month.
-        month_key = (pay_year, pay_month)
-        has_payment_record = month_key in amount_by_month
-
-        if has_payment_record:
-            # Payment record exists: use the recorded amount as the
-            # total payment for this month.  extra_monthly is NOT added
-            # on top -- the payment record IS the total payment.
-            total_payment = amount_by_month[month_key]
-            row_confirmed = confirmed_by_month[month_key]
-
-            # Split into interest and principal.
-            principal_portion = total_payment - interest
-            # Negative principal_portion is valid: it represents a
-            # partial payment below the interest due (negative
-            # amortization -- the principal increases).  This correctly
-            # models missed or underpaid months.
-
-            # The "extra" portion is any amount beyond the standard
-            # contractual payment (P&I).
-            extra = max(total_payment - monthly_payment, Decimal("0.00"))
-
-            # Overpayment cap: if principal exceeds remaining balance,
-            # cap it to avoid negative balance.
-            if principal_portion >= balance:
-                principal_portion = balance
-                actual_payment = principal_portion + interest
-                extra = max(actual_payment - monthly_payment, Decimal("0.00"))
-                balance = Decimal("0.00")
-            else:
-                actual_payment = principal_portion + interest
-                balance -= principal_portion
-                balance = balance.quantize(TWO_PLACES, ROUND_HALF_UP)
-
-                # Guard against negative balance from rounding.
-                # Mirrors the standard-path guard at the end of the
-                # else branch below.  Trigger conditions are extremely
-                # narrow (sub-penny rounding after quantize), but a
-                # negative balance would propagate downstream as a
-                # nonsensical financial value.
-                if balance < 0:
-                    balance = Decimal("0.00")
-        else:
-            # No payment record: use standard contractual logic.
-            row_confirmed = False
-
-            # Calculate principal portion.
-            principal_portion = monthly_payment - interest
-
-            # Cap payment at remaining balance + interest.
-            # When principal would exceed balance or we've hit the loop
-            # cap, absorb the remaining balance exactly to avoid
-            # rounding residue.
-            is_final = (principal_portion >= balance) or (month_num == max_months)
-            if is_final:
-                principal_portion = balance
-                actual_payment = principal_portion + interest
-                extra = Decimal("0.00")
-                balance = Decimal("0.00")
-            else:
-                actual_payment = monthly_payment
-
-                # Apply extra payment.
-                extra = min(extra_monthly, balance - principal_portion)
-                extra = max(extra, Decimal("0.00"))
-
-                balance -= principal_portion + extra
-                balance = balance.quantize(TWO_PLACES, ROUND_HALF_UP)
-
-                # Guard against negative balance from rounding.
-                if balance < 0:
-                    extra += balance
-                    balance = Decimal("0.00")
-
-        # Record the rate used for this period.  When rate_changes are
-        # provided, always populate; otherwise leave as None for backward
-        # compatibility with consumers that do not expect the field.
-        row_rate = current_annual_rate if rate_schedule else None
-
-        rows.append(AmortizationRow(
-            month=month_num,
-            payment_date=pay_date,
-            payment=actual_payment.quantize(TWO_PLACES, ROUND_HALF_UP),
-            principal=principal_portion.quantize(TWO_PLACES, ROUND_HALF_UP),
-            interest=interest,
-            extra_payment=extra.quantize(TWO_PLACES, ROUND_HALF_UP),
-            remaining_balance=balance,
-            is_confirmed=row_confirmed,
-            interest_rate=row_rate,
-        ))
-
-        if balance <= 0:
-            break
-
-        # Advance to next month.
-        pay_month += 1
-        if pay_month > 12:
-            pay_month = 1
-            pay_year += 1
-
-    return rows
-
-
 def replay_confirmed_history(
     *,
     origination_date: date,
@@ -739,8 +429,7 @@ def replay_confirmed_history(
       - The applicable rate is the most recent rate change with
         ``effective_date <= payment_date`` (falls back to
         ``annual_rate``).  ARM rate transitions re-amortize the
-        remaining balance over remaining months at the new rate,
-        mirroring ``generate_schedule``'s ARM behavior.
+        remaining balance over remaining months at the new rate.
       - If an ARM anchor is set, the running balance snaps to
         ``anchor_balance`` at the first scheduled month strictly
         after ``anchor_date`` (pre-anchor rows have approximate P&I
@@ -854,11 +543,10 @@ def replay_confirmed_history(
     # Contractual payment from original terms is correct for the life
     # of a fixed-rate loan.  For ARM loans the rate-change handler
     # recomputes monthly_payment at each transition (over the
-    # remaining balance and remaining months at the new rate),
-    # mirroring generate_schedule's behavior.  This monthly_payment
-    # is used only for the "extra" calculation (any amount above the
-    # contractual P&I), not as a payment driver -- replay's payment
-    # amount is always the recorded value.
+    # remaining balance and remaining months at the new rate).  This
+    # monthly_payment is used only for the "extra" calculation (any
+    # amount above the contractual P&I), not as a payment driver --
+    # replay's payment amount is always the recorded value.
     monthly_payment = calculate_monthly_payment(
         original_principal, annual_rate, term_months,
     )
@@ -897,8 +585,9 @@ def replay_confirmed_history(
         # about whether a payment was recorded).  ARM loans re-
         # amortize the recomputed monthly_payment at the new
         # balance; fixed-rate loans (rate_changes empty) keep the
-        # contractual payment per the F-8 gate documented in
-        # generate_schedule.
+        # contractual payment (F-8 gate: recomputing over the
+        # remaining months at the contractual cap would halve the
+        # payment).
         if (anchor_balance is not None and anchor_date is not None
                 and not anchor_applied and pay_date > anchor_date):
             balance = anchor_balance
@@ -985,8 +674,8 @@ def replay_confirmed_history(
                 balance = Decimal("0.00")
 
         # Record the rate used for this period when ARM data is
-        # present; otherwise leave None for parity with
-        # ``generate_schedule``'s output shape.
+        # present; otherwise leave None so consumers that do not
+        # render the rate column see the field absent.
         row_rate = current_annual_rate if rate_schedule else None
 
         rows.append(AmortizationRow(
@@ -1086,24 +775,25 @@ def project_forward(
         The final scheduled month absorbs whatever residue remains
         after the contractual P&I split, regardless of extra.
 
-    ARM behavior mirrors ``generate_schedule`` /
-    ``replay_confirmed_history``: when ``rate_changes_remaining`` is
-    non-empty and the applicable rate changes for the current month,
-    ``monthly_payment`` is re-amortized over the remaining balance
-    and remaining months at the new rate.  ``rate_changes_remaining``
-    is expected to contain only rate changes whose ``effective_date``
-    is at or after ``starting_date`` (the caller -- typically the
-    scenario composer -- filters out rate changes already consumed
-    by replay).  No origination-based filter is applied here because
-    projection has no origination date concept; entries with
-    duplicate ``effective_date`` are deduplicated with a warning,
-    matching ``_build_rate_change_list``'s behavior.
+    ARM behavior matches ``replay_confirmed_history``: when
+    ``rate_changes_remaining`` is non-empty and the applicable rate
+    changes for the current month, ``monthly_payment`` is re-amortized
+    over the remaining balance and remaining months at the new rate.
+    ``rate_changes_remaining`` is expected to contain only rate
+    changes whose ``effective_date`` is at or after ``starting_date``
+    (the caller -- typically the scenario composer -- filters out
+    rate changes already consumed by replay).  No origination-based
+    filter is applied here because projection has no origination date
+    concept; entries with duplicate ``effective_date`` are
+    deduplicated with a warning, matching
+    ``_build_rate_change_list``'s behavior.
 
     Every row carries ``is_confirmed=False`` because projection rows
     are not facts about the recorded past.  When
     ``rate_changes_remaining`` is non-empty, ``interest_rate`` is the
-    applicable rate for the row; otherwise it is ``None`` for parity
-    with ``generate_schedule``'s output shape.
+    applicable rate for the row; otherwise it is ``None`` so
+    consumers that do not render the rate column see the field
+    absent.
 
     Args:
         starting_balance: Outstanding balance at ``starting_date``.
@@ -1138,9 +828,9 @@ def project_forward(
         extra_monthly: Additional principal payment applied to each
             non-override month.  Clamped per month so the balance
             cannot drop below zero from extra alone.  Override months
-            ignore this parameter entirely (the load-bearing
-            distinction from ``generate_schedule``'s "apply extra when
-            no PaymentRecord exists" semantics).
+            ignore this parameter entirely -- the override IS the
+            user's planned outlay for that month, not a baseline that
+            extra accelerates further.
         rate_changes_remaining: Optional ARM rate transitions whose
             ``effective_date`` is at or after ``starting_date``.
             ``None`` or empty leaves the rate fixed at ``annual_rate``
@@ -1195,8 +885,7 @@ def project_forward(
 
         # ARM rate adjustment: when the applicable rate changes,
         # re-amortize the remaining balance over the remaining months
-        # at the new rate.  Mirrors ``generate_schedule`` /
-        # ``replay_confirmed_history``.
+        # at the new rate.  Matches ``replay_confirmed_history``.
         if rate_schedule:
             period_rate = _find_applicable_rate(
                 pay_date, rate_schedule, current_annual_rate,
@@ -1268,14 +957,14 @@ def project_forward(
                 balance -= principal_portion + extra
                 balance = round_money(balance)
                 # Guard against sub-penny negative balance from
-                # rounding; mirrors ``generate_schedule``.
+                # rounding.
                 if balance < 0:
                     extra += balance
                     balance = Decimal("0.00")
 
         # Record the rate used for this period when ARM data is
-        # present; otherwise leave None for parity with
-        # ``generate_schedule``'s output shape.
+        # present; otherwise leave None so consumers that do not
+        # render the rate column see the field absent.
         row_rate = current_annual_rate if rate_schedule else None
 
         rows.append(AmortizationRow(
@@ -1300,110 +989,6 @@ def project_forward(
             pay_year += 1
 
     return rows
-
-
-def calculate_summary(
-    current_principal: Decimal,
-    annual_rate: Decimal,
-    remaining_months: int,
-    origination_date: date,
-    payment_day: int,
-    term_months: int,
-    extra_monthly: Decimal = Decimal("0.00"),
-    original_principal: Decimal | None = None,
-    payments: list[PaymentRecord] | None = None,
-    rate_changes: list[RateChangeRecord] | None = None,
-    anchor_balance: Decimal | None = None,
-    anchor_date: date | None = None,
-) -> AmortizationSummary:
-    """Compute summary metrics: payoff date, interest saved, etc.
-
-    When *payments* is provided, both the standard and accelerated
-    schedules incorporate the payment data.  The standard schedule uses
-    payments with no extra_monthly; the accelerated schedule adds
-    extra_monthly on top.
-
-    Args:
-        original_principal: Original loan amount at origination.  For
-            fixed-rate loans, the contractual payment is computed from
-            (original_principal, annual_rate, term_months).  Ignored
-            when rate_changes is non-empty (ARM loans re-amortize from
-            current_principal at the current rate).
-        payments: Optional list of PaymentRecord instances passed
-            through to generate_schedule().
-        rate_changes: Optional list of RateChangeRecord instances
-            passed through to generate_schedule() for ARM loans.
-            When non-empty, forces re-amortization from
-            current_principal instead of using original terms.
-        anchor_balance: Optional verified balance passed through to
-            generate_schedule() for ARM anchor support.
-        anchor_date: Date at which anchor_balance is known.
-    """
-    # For fixed-rate loans, the contractual payment from original terms
-    # is correct for the life of the loan.  For ARM loans (non-empty
-    # rate_changes), the payment is re-amortized at each rate adjustment,
-    # so the current payment must be derived from current_principal and
-    # remaining_months at the current rate.
-    has_rate_changes = rate_changes is not None and len(rate_changes) > 0
-    if original_principal is not None and not has_rate_changes:
-        monthly_payment = calculate_monthly_payment(
-            original_principal, annual_rate, term_months,
-        )
-    else:
-        monthly_payment = calculate_monthly_payment(
-            current_principal, annual_rate, remaining_months,
-        )
-
-    # Standard schedule (no extra payments).
-    standard = generate_schedule(
-        current_principal, annual_rate, remaining_months,
-        extra_monthly=Decimal("0.00"),
-        origination_date=origination_date,
-        payment_day=payment_day,
-        original_principal=original_principal,
-        term_months=term_months,
-        payments=payments,
-        rate_changes=rate_changes,
-        anchor_balance=anchor_balance,
-        anchor_date=anchor_date,
-    )
-
-    total_interest_standard = sum((r.interest for r in standard), Decimal("0.00"))
-    payoff_date_standard = standard[-1].payment_date if standard else origination_date
-
-    # Accelerated schedule (with extra payments).
-    if extra_monthly > 0:
-        accelerated = generate_schedule(
-            current_principal, annual_rate, remaining_months,
-            extra_monthly=extra_monthly,
-            origination_date=origination_date,
-            payment_day=payment_day,
-            original_principal=original_principal,
-            term_months=term_months,
-            payments=payments,
-            rate_changes=rate_changes,
-            anchor_balance=anchor_balance,
-            anchor_date=anchor_date,
-        )
-        total_interest_extra = sum((r.interest for r in accelerated), Decimal("0.00"))
-        payoff_date_extra = accelerated[-1].payment_date if accelerated else origination_date
-    else:
-        total_interest_extra = total_interest_standard
-        payoff_date_extra = payoff_date_standard
-        accelerated = standard
-
-    months_saved = len(standard) - len(accelerated)
-    interest_saved = total_interest_standard - total_interest_extra
-
-    return AmortizationSummary(
-        monthly_payment=monthly_payment,
-        total_interest=total_interest_standard,
-        payoff_date=payoff_date_standard,
-        total_interest_with_extra=total_interest_extra,
-        payoff_date_with_extra=payoff_date_extra,
-        months_saved=months_saved,
-        interest_saved=interest_saved.quantize(TWO_PLACES, ROUND_HALF_UP),
-    )
 
 
 def calculate_payoff_by_date(
@@ -1475,11 +1060,9 @@ def calculate_payoff_by_date(
     if current_principal <= 0 or remaining_months <= 0:
         return Decimal("0.00")
 
-    # Derive the contractual payment the same way the old
-    # generate_schedule did: from original terms when provided and
-    # the loan is fixed-rate; otherwise re-amortize from current
-    # state at the current rate (ARM path).  This mirrors the
-    # ``using_contractual`` branch at amortization_engine.py:479-491.
+    # Derive the contractual payment: from original terms when
+    # provided and the loan is fixed-rate; otherwise re-amortize from
+    # current state at the current rate (ARM path).
     has_rate_changes = rate_changes is not None and len(rate_changes) > 0
     using_contractual = (
         original_principal is not None
@@ -1492,9 +1075,10 @@ def calculate_payoff_by_date(
         )
         # Generous cap: a partially paid loan (current < original)
         # pays off before ``remaining_months`` with the contractual
-        # payment, but the cap matches generate_schedule's
-        # ``max_months`` so the final-row absorption fires on
-        # balance reaching zero, not on hitting the loop cap.
+        # payment, so widen ``projection_months`` to cover the
+        # early-payoff case; the final-row absorption in
+        # ``project_forward`` fires on balance reaching zero, not on
+        # hitting the loop cap.
         projection_months = remaining_months + term_months
     else:
         contractual_payment = calculate_monthly_payment(
