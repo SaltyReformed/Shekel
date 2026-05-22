@@ -3,7 +3,7 @@ Tests for the amortization engine service.
 """
 
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 import pytest
 
@@ -12,11 +12,13 @@ from app.services.amortization_engine import (
     AmortizationSummary,
     PaymentRecord,
     RateChangeRecord,
+    ReplayResult,
     calculate_monthly_payment,
     calculate_payoff_by_date,
     calculate_remaining_months,
     calculate_summary,
     generate_schedule,
+    replay_confirmed_history,
 )
 
 
@@ -2972,3 +2974,734 @@ class TestFixedRateAnchorReset:
         # regression that mistakenly applies the F-8 gate to ARMs would
         # fail loudly here.
         assert anchor_row.payment != initial_payment
+
+
+class TestReplayConfirmedHistory:
+    """Tests for ``replay_confirmed_history``.
+
+    The first half of the amortization-engine split (Commit 1 of
+    ``docs/plans/2026-05-21-amortization-engine-split-implementation.md``;
+    architectural plan
+    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
+    Verifies that replay is a deterministic, what-if-free reduction of
+    confirmed history up to an ``as_of`` date:
+
+      - empty input yields a clean "no replay" result;
+      - replay does NOT fabricate contractual rows for missed months
+        (this is what distinguishes replay from projection);
+      - pre-origination payments are filtered;
+      - payments past ``as_of`` are filtered;
+      - ARM anchor and rate changes during the replayed window are
+        honored;
+      - the returned ``ReplayResult`` carries the starting state a
+        forward projection needs (``balance_as_of``,
+        ``next_pay_date``, ``remaining_months_as_of``,
+        ``applicable_rate_as_of``).
+
+    Standard scenario: 30 yr / $300,000 / 6% / payment_day=1.  Monthly
+    P&I:
+        M = P * [r(1+r)^n] / [(1+r)^n - 1]
+        r = 0.06/12 = 0.005, n = 360
+        (1.005)^360 ~ 6.022575
+        M = 300000 * 0.005 * 6.022575 / 5.022575 = $1,798.65
+    """
+
+    PRINCIPAL = Decimal("300000.00")
+    RATE = Decimal("0.06")
+    TERM_MONTHS = 360
+    ORIGINATION = date(2026, 1, 1)
+    PAYMENT_DAY = 1
+    CONTRACTUAL_PAYMENT = Decimal("1798.65")
+
+    # ── C1-1: empty input ─────────────────────────────────────────
+
+    def test_empty_confirmed_payments(self):
+        """C1-1: empty ``confirmed_payments`` returns no rows and the
+        starting-state fields describe a pristine, un-replayed loan.
+
+        Replay over an empty input must report zero rows,
+        ``balance_as_of == original_principal``, ``next_pay_date ==
+        origination + 1 month``, and ``remaining_months_as_of ==
+        term_months``.  This is the all-projection case: the caller
+        (the scenario composer) projects from origination forward
+        because no confirmed history exists.
+        """
+        result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=[],
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 12, 31),
+        )
+        assert isinstance(result, ReplayResult)
+        assert result.rows == []
+        assert result.balance_as_of == self.PRINCIPAL
+        # Origination 2026-01-01, payment_day=1 -> 2026-02-01.
+        assert result.next_pay_date == date(2026, 2, 1)
+        assert result.remaining_months_as_of == self.TERM_MONTHS
+        assert result.applicable_rate_as_of == self.RATE
+
+    # ── C1-2: single confirmed payment in month 1 ─────────────────
+
+    def test_single_confirmed_payment_month_1(self):
+        """C1-2: one confirmed contractual payment in schedule month 1.
+
+        Hand arithmetic at $300,000 / 6% / 360:
+          interest = 300000.00 * 0.005 = $1,500.00
+          principal = 1798.65 - 1500.00 = $298.65
+          balance after = 300000.00 - 298.65 = $299,701.35
+        The row must be flagged ``is_confirmed=True`` per the
+        architectural plan ("replay rows are the deterministic-past
+        slice").
+        """
+        result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=[
+                PaymentRecord(
+                    payment_date=date(2026, 2, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+            ],
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 5, 21),
+        )
+        assert len(result.rows) == 1
+        row = result.rows[0]
+        assert row.is_confirmed is True
+        assert row.payment_date == date(2026, 2, 1)
+        # 300000.00 * 0.005 = 1500.00.
+        assert row.interest == Decimal("1500.00")
+        # 1798.65 - 1500.00 = 298.65.
+        assert row.principal == Decimal("298.65")
+        # 300000.00 - 298.65 = 299701.35.
+        assert row.remaining_balance == Decimal("299701.35")
+        assert result.balance_as_of == Decimal("299701.35")
+        # Month 2: 2026-03-01.
+        assert result.next_pay_date == date(2026, 3, 1)
+        assert result.remaining_months_as_of == self.TERM_MONTHS - 1
+
+    # ── C1-3: three consecutive contractual payments ──────────────
+
+    def test_multiple_confirmed_payments_span_months_1_to_3(self):
+        """C1-3: three contractual payments span months 1-3.
+
+        Hand arithmetic at $300,000 / 6% / 360:
+          Month 1 (2026-02-01):
+            interest = 300000.00 * 0.005 = $1,500.00
+            principal = 1798.65 - 1500.00 = $298.65
+            balance = 300000.00 - 298.65 = $299,701.35
+          Month 2 (2026-03-01):
+            interest = 299701.35 * 0.005 = 1498.50675 -> $1,498.51
+            principal = 1798.65 - 1498.51 = $300.14
+            balance = 299701.35 - 300.14 = $299,401.21
+          Month 3 (2026-04-01):
+            interest = 299401.21 * 0.005 = 1497.00605 -> $1,497.01
+            principal = 1798.65 - 1497.01 = $301.64
+            balance = 299401.21 - 301.64 = $299,099.57
+        Balance must decrease monotonically; every row is
+        ``is_confirmed=True``; ``remaining_months_as_of == term -
+        rows``.
+        """
+        result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=[
+                PaymentRecord(
+                    payment_date=date(2026, 2, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2026, 3, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2026, 4, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+            ],
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 5, 21),
+        )
+        assert len(result.rows) == 3
+        # Row 1 (2026-02-01).
+        assert result.rows[0].payment_date == date(2026, 2, 1)
+        assert result.rows[0].interest == Decimal("1500.00")
+        assert result.rows[0].principal == Decimal("298.65")
+        assert result.rows[0].remaining_balance == Decimal("299701.35")
+        # Row 2 (2026-03-01).
+        assert result.rows[1].payment_date == date(2026, 3, 1)
+        assert result.rows[1].interest == Decimal("1498.51")
+        assert result.rows[1].principal == Decimal("300.14")
+        assert result.rows[1].remaining_balance == Decimal("299401.21")
+        # Row 3 (2026-04-01).
+        assert result.rows[2].payment_date == date(2026, 4, 1)
+        assert result.rows[2].interest == Decimal("1497.01")
+        assert result.rows[2].principal == Decimal("301.64")
+        assert result.rows[2].remaining_balance == Decimal("299099.57")
+        # Balance monotonically decreasing.
+        balances = [r.remaining_balance for r in result.rows]
+        assert balances == sorted(balances, reverse=True)
+        # All rows confirmed.
+        assert all(r.is_confirmed is True for r in result.rows)
+        # Aggregate fields.
+        assert result.balance_as_of == Decimal("299099.57")
+        assert result.remaining_months_as_of == self.TERM_MONTHS - 3
+
+    # ── C1-4: gap in payments (month 3 missing) ───────────────────
+
+    def test_gap_in_payments_months_1_2_4(self):
+        """C1-4: months 1, 2, 4 are confirmed; month 3 is missing.
+
+        Replay returns three rows for months 1, 2, 4 -- it does NOT
+        fabricate a contractual row for month 3.  The architectural
+        plan is explicit on this point ("Replay returns only what was
+        recorded; the missing month is the caller's responsibility to
+        reason about").  This is the load-bearing distinction between
+        replay and projection.
+
+        Hand arithmetic (skipping month 3 means no interest accrual
+        for that month; the iteration's balance carries from the
+        post-month-2 value directly into the month-4 interest calc):
+          Month 1 (2026-02-01): balance -> $299,701.35 (per C1-2).
+          Month 2 (2026-03-01): balance -> $299,401.21 (per C1-3).
+          Month 4 (2026-05-01):
+            interest = 299401.21 * 0.005 = $1,497.01
+            principal = 1798.65 - 1497.01 = $301.64
+            balance = 299401.21 - 301.64 = $299,099.57
+        The month-4 row's ``month`` field is 4 (the loop counter is
+        not reset by the skip), and its ``payment_date`` is
+        2026-05-01.
+        """
+        result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=[
+                PaymentRecord(
+                    payment_date=date(2026, 2, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2026, 3, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+                # Month 3 (2026-04-01) deliberately missing.
+                PaymentRecord(
+                    payment_date=date(2026, 5, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+            ],
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 12, 31),
+        )
+        # Exactly three rows: months 1, 2, 4.  No row fabricated for
+        # the missing month 3.
+        assert len(result.rows) == 3
+        assert result.rows[0].payment_date == date(2026, 2, 1)
+        assert result.rows[1].payment_date == date(2026, 3, 1)
+        # Critical assertion: the third row is for May (month 4), not
+        # April (month 3).
+        assert result.rows[2].payment_date == date(2026, 5, 1)
+        # The loop counter advances through skipped months, so the
+        # row's ``month`` field is 4.
+        assert result.rows[2].month == 4
+        # No row should have payment_date in April 2026.
+        april_rows = [
+            r for r in result.rows if r.payment_date.month == 4
+        ]
+        assert april_rows == []
+        # Balance after the May payment matches the post-month-2
+        # balance reduced by the May payment (no April interest
+        # accrual because the row was skipped).
+        assert result.rows[2].interest == Decimal("1497.01")
+        assert result.rows[2].principal == Decimal("301.64")
+        assert result.rows[2].remaining_balance == Decimal("299099.57")
+
+    # ── C1-5: confirmed payments past as_of filtered ──────────────
+
+    def test_payments_past_as_of_filtered(self):
+        """C1-5: confirmed payments months 1-6 with ``as_of`` set to
+        the end of schedule month 3 produce three rows (months 1-3).
+
+        The cutoff is enforced inside the iteration via
+        ``pay_date > as_of`` so payment payload order does not matter.
+        Schedule month 3 with payment_day=1 is 2026-04-01; an
+        ``as_of`` of 2026-04-30 includes that row and excludes
+        2026-05-01 and beyond.
+        """
+        payments_1_to_6 = [
+            PaymentRecord(
+                payment_date=date(2026, m, 1),
+                amount=self.CONTRACTUAL_PAYMENT,
+                is_confirmed=True,
+            )
+            for m in range(2, 8)  # Feb..Jul 2026 = schedule months 1..6.
+        ]
+        result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=payments_1_to_6,
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 4, 30),
+        )
+        # Months 1 (Feb), 2 (Mar), 3 (Apr) included.
+        assert len(result.rows) == 3
+        assert result.rows[0].payment_date == date(2026, 2, 1)
+        assert result.rows[1].payment_date == date(2026, 3, 1)
+        assert result.rows[2].payment_date == date(2026, 4, 1)
+        # No row dated after as_of.
+        for row in result.rows:
+            assert row.payment_date <= date(2026, 4, 30)
+
+    # ── C1-6: pre-origination payments filtered ───────────────────
+
+    def test_pre_origination_payments_filtered(self):
+        """C1-6: payments dated before ``origination_date`` are
+        silently filtered.
+
+        Mirrors existing engine behavior (``_build_payment_lookups``
+        applies the same filter when ``origination_date`` is set).
+        Includes one pre-origination payment plus one valid
+        post-origination payment so the test verifies BOTH the
+        filter and that the valid payment still produces a row.
+        """
+        result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=[
+                # Pre-origination: 2025-12-15 < 2026-01-01.
+                PaymentRecord(
+                    payment_date=date(2025, 12, 15),
+                    amount=Decimal("5000.00"),
+                    is_confirmed=True,
+                ),
+                # Valid post-origination payment in month 1.
+                PaymentRecord(
+                    payment_date=date(2026, 2, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+            ],
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 5, 21),
+        )
+        # Only the post-origination payment produces a row.
+        assert len(result.rows) == 1
+        assert result.rows[0].payment_date == date(2026, 2, 1)
+        # Balance reflects the valid payment only, not the
+        # pre-origination one (which would have pushed the balance
+        # to roughly 295000 if it had been applied).
+        # 300000.00 - 298.65 = 299701.35 (matches C1-2).
+        assert result.rows[0].remaining_balance == Decimal("299701.35")
+        assert result.balance_as_of == Decimal("299701.35")
+
+    # ── C1-7: ARM anchor snaps balance ────────────────────────────
+
+    # ARM-anchor scenario: $400,000 / 6% / 360 / originated 2024-01-01.
+    # Anchor verified at $250,000 on 2025-12-15.  Two confirmed
+    # contractual payments straddle the anchor (2024-06-01 and
+    # 2024-07-01 pre-anchor, 2026-01-01 and 2026-02-01 post-anchor).
+    # The anchor reset fires on the first scheduled month strictly
+    # AFTER 2025-12-15.  With payment_day=1, schedule month 24 is
+    # 2026-01-01, which is the first row strictly past the anchor.
+    #
+    # Hand arithmetic for the four kept rows:
+    #   Pre-anchor at $400k / 6% / contractual $2,398.20:
+    #     Row 1 (2024-06-01): interest = 400000.00 * 0.005 = $2,000.00
+    #       principal = 2398.20 - 2000.00 = $398.20
+    #       balance = 400000.00 - 398.20 = $399,601.80
+    #     Row 2 (2024-07-01): interest = 399601.80 * 0.005 = 1998.009
+    #       -> $1,998.01
+    #       principal = 2398.20 - 1998.01 = $400.19
+    #       balance = 399601.80 - 400.19 = $399,201.61
+    #   Anchor reset to $250,000:
+    #     Row 3 (2026-01-01): pre-row balance snapped to 250000.00.
+    #       interest = 250000.00 * 0.005 = $1,250.00
+    #       principal = 2398.20 - 1250.00 = $1,148.20
+    #       balance = 250000.00 - 1148.20 = $248,851.80
+    #     Row 4 (2026-02-01): interest = 248851.80 * 0.005 = 1244.259
+    #       -> $1,244.26
+    #       principal = 2398.20 - 1244.26 = $1,153.94
+    #       balance = 248851.80 - 1153.94 = $247,697.86
+
+    ARM_ANCHOR_PRINCIPAL = Decimal("400000.00")
+    ARM_ANCHOR_RATE = Decimal("0.06")
+    ARM_ANCHOR_TERM = 360
+    ARM_ANCHOR_ORIGINATION = date(2024, 1, 1)
+    ARM_ANCHOR_PAYMENT_DAY = 1
+    ARM_ANCHOR_CONTRACTUAL = Decimal("2398.20")
+    ARM_ANCHOR_BALANCE = Decimal("250000.00")
+    ARM_ANCHOR_DATE = date(2025, 12, 15)
+
+    def test_arm_anchor_snaps_balance(self):
+        """C1-7: ARM anchor snaps the running balance at the first
+        scheduled month strictly after ``anchor_date``.
+
+        Pre-anchor rows compute interest against the un-snapped
+        balance (the historical rate is unknown so the split is
+        approximate, matching the engine's documented behavior).
+        The post-anchor row computes interest against the anchor
+        balance ($250,000 * 0.005 = $1,250.00); subsequent rows
+        project from the post-payment balance and are exact.
+        """
+        result = replay_confirmed_history(
+            origination_date=self.ARM_ANCHOR_ORIGINATION,
+            original_principal=self.ARM_ANCHOR_PRINCIPAL,
+            annual_rate=self.ARM_ANCHOR_RATE,
+            term_months=self.ARM_ANCHOR_TERM,
+            payment_day=self.ARM_ANCHOR_PAYMENT_DAY,
+            confirmed_payments=[
+                PaymentRecord(
+                    payment_date=date(2024, 6, 1),
+                    amount=self.ARM_ANCHOR_CONTRACTUAL,
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2024, 7, 1),
+                    amount=self.ARM_ANCHOR_CONTRACTUAL,
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2026, 1, 1),
+                    amount=self.ARM_ANCHOR_CONTRACTUAL,
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2026, 2, 1),
+                    amount=self.ARM_ANCHOR_CONTRACTUAL,
+                    is_confirmed=True,
+                ),
+            ],
+            rate_changes=None,
+            anchor_balance=self.ARM_ANCHOR_BALANCE,
+            anchor_date=self.ARM_ANCHOR_DATE,
+            as_of=date(2026, 5, 21),
+        )
+        assert len(result.rows) == 4
+        # Pre-anchor row 1 (2024-06-01).
+        assert result.rows[0].payment_date == date(2024, 6, 1)
+        # interest = 400000.00 * 0.005 = 2000.00 (approximate split:
+        # uses the current rate, not the unknown historical rate).
+        assert result.rows[0].interest == Decimal("2000.00")
+        assert result.rows[0].remaining_balance == Decimal("399601.80")
+        # Pre-anchor row 2 (2024-07-01).
+        assert result.rows[1].remaining_balance == Decimal("399201.61")
+        # Post-anchor row 3 (2026-01-01): the snap fires before
+        # interest is computed, so interest reflects the anchor
+        # balance exactly.
+        assert result.rows[2].payment_date == date(2026, 1, 1)
+        # 250000.00 * 0.005 = 1250.00.
+        assert result.rows[2].interest == Decimal("1250.00")
+        # 2398.20 - 1250.00 = 1148.20.
+        assert result.rows[2].principal == Decimal("1148.20")
+        # 250000.00 - 1148.20 = 248851.80.
+        assert result.rows[2].remaining_balance == Decimal("248851.80")
+        # Post-anchor row 4 (2026-02-01).
+        # interest = 248851.80 * 0.005 = 1244.259 -> 1244.26.
+        assert result.rows[3].interest == Decimal("1244.26")
+        # 248851.80 - (2398.20 - 1244.26) = 247697.86.
+        assert result.rows[3].remaining_balance == Decimal("247697.86")
+        assert result.balance_as_of == Decimal("247697.86")
+
+    # ── C1-8: rate change during replay ───────────────────────────
+
+    # ARM rate-change scenario: $100,000 / 5% initial / 360 /
+    # originated 2024-01-01.  Rate changes to 7% effective 2025-02-01
+    # (start of schedule month 13).  Twenty-four confirmed payments
+    # cover schedule months 1-24 (2024-02-01..2026-01-01).  At month
+    # 13 the engine re-amortizes the remaining balance over the
+    # remaining 348 months at 7%.  Month 13's interest is
+    # ``balance_at_12 * 0.07 / 12``.
+
+    RC_PRINCIPAL = Decimal("100000.00")
+    RC_INITIAL_RATE = Decimal("0.05")
+    RC_NEW_RATE = Decimal("0.07")
+    RC_TERM = 360
+    RC_ORIGINATION = date(2024, 1, 1)
+    RC_PAYMENT_DAY = 1
+    RC_INITIAL_PAYMENT = Decimal("536.82")
+    RC_RATE_CHANGE_DATE = date(2025, 2, 1)
+
+    def test_rate_change_during_replay(self):
+        """C1-8: rate change at schedule month 13 reflects in the
+        applicable rate field and re-amortizes the interest
+        calculation from that month forward.
+
+        The post-change rate (0.07) must appear in
+        ``applicable_rate_as_of`` because the rate-change effective
+        date (2025-02-01) is before ``next_pay_date`` (2026-02-01)
+        after a 24-month confirmed window.  The month-13 row's
+        ``interest_rate`` field equals the new rate and its
+        ``interest`` is computed at the new rate against the
+        pre-row balance (mirrors generate_schedule's rate-change
+        behavior).
+        """
+        # Build the 24 payment dates explicitly: 2024-02..2024-12 =
+        # schedule months 1..11, 2025-01..2025-12 = schedule months
+        # 12..23, 2026-01 = schedule month 24.  All payments at
+        # $700.00, above both the pre-change contractual ($536.82)
+        # and the post-change contractual (re-amortized at the new
+        # rate; the engine recomputes at the rate boundary).
+        payments: list[PaymentRecord] = []
+        # 2024-02..2024-12 (11 dates).
+        for m in range(2, 13):
+            payments.append(PaymentRecord(
+                payment_date=date(2024, m, 1),
+                amount=Decimal("700.00"),
+                is_confirmed=True,
+            ))
+        # 2025-01..2025-12 (12 dates).
+        for m in range(1, 13):
+            payments.append(PaymentRecord(
+                payment_date=date(2025, m, 1),
+                amount=Decimal("700.00"),
+                is_confirmed=True,
+            ))
+        # 2026-01 (1 date).
+        payments.append(PaymentRecord(
+            payment_date=date(2026, 1, 1),
+            amount=Decimal("700.00"),
+            is_confirmed=True,
+        ))
+        assert len(payments) == 24
+
+        result = replay_confirmed_history(
+            origination_date=self.RC_ORIGINATION,
+            original_principal=self.RC_PRINCIPAL,
+            annual_rate=self.RC_INITIAL_RATE,
+            term_months=self.RC_TERM,
+            payment_day=self.RC_PAYMENT_DAY,
+            confirmed_payments=payments,
+            rate_changes=[
+                RateChangeRecord(
+                    effective_date=self.RC_RATE_CHANGE_DATE,
+                    interest_rate=self.RC_NEW_RATE,
+                ),
+            ],
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 5, 21),
+        )
+        # All 24 months produce rows.
+        assert len(result.rows) == 24
+        # Month 12 is the last row at the initial 5% rate (pay_date
+        # 2025-01-01, before the rate change at 2025-02-01).
+        month_12 = result.rows[11]
+        assert month_12.payment_date == date(2025, 1, 1)
+        assert month_12.interest_rate == self.RC_INITIAL_RATE
+        # Month 13 (2025-02-01) is the first row at the new 7% rate.
+        month_13 = result.rows[12]
+        assert month_13.payment_date == date(2025, 2, 1)
+        assert month_13.interest_rate == self.RC_NEW_RATE
+        # Interest in month 13 uses the new rate against the
+        # post-month-12 balance.  Compute the expected value from
+        # the engine's pre-row state via the documented formula:
+        # round_money(balance_at_12 * 0.07 / 12).
+        balance_at_12 = month_12.remaining_balance
+        expected_month_13_interest = (
+            balance_at_12 * self.RC_NEW_RATE / 12
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        assert month_13.interest == expected_month_13_interest
+        # applicable_rate_as_of: next_pay_date is 2026-02-01 (month
+        # after the last replayed row), past the rate-change
+        # effective date, so the post-change rate is the applicable
+        # rate.
+        assert result.next_pay_date == date(2026, 2, 1)
+        assert result.applicable_rate_as_of == self.RC_NEW_RATE
+
+    # ── C1-9: balance_as_of cross-check vs generate_schedule ──────
+
+    def test_balance_as_of_matches_generate_schedule_replay(self):
+        """C1-9: ``balance_as_of`` equals ``generate_schedule``'s
+        ``remaining_balance`` for the equivalent row.
+
+        Cross-check during the migration window (Commits 1-8 keep
+        both surfaces alive; Commit 9 deletes ``generate_schedule``
+        and this test deletes with it).  Both functions share the
+        per-month payment-record branch by construction, so for
+        identical inputs they must produce identical balances.
+        """
+        payments = [
+            PaymentRecord(
+                payment_date=date(2026, 2, 1),
+                amount=self.CONTRACTUAL_PAYMENT,
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 3, 1),
+                amount=self.CONTRACTUAL_PAYMENT,
+                is_confirmed=True,
+            ),
+            PaymentRecord(
+                payment_date=date(2026, 4, 1),
+                amount=self.CONTRACTUAL_PAYMENT,
+                is_confirmed=True,
+            ),
+        ]
+        replay_result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=payments,
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 4, 30),
+        )
+        generate_result = generate_schedule(
+            current_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            remaining_months=self.TERM_MONTHS,
+            origination_date=self.ORIGINATION,
+            payment_day=self.PAYMENT_DAY,
+            original_principal=self.PRINCIPAL,
+            term_months=self.TERM_MONTHS,
+            payments=payments,
+        )
+        # Both surfaces produce three rows for the three confirmed
+        # payments (generate_schedule continues past them with
+        # contractual rows, but the first three should match).
+        assert len(replay_result.rows) == 3
+        assert generate_result[2].payment_date == date(2026, 4, 1)
+        # The replay's balance_as_of equals row 2's (zero-indexed)
+        # remaining_balance from generate_schedule.
+        assert replay_result.balance_as_of == generate_result[2].remaining_balance
+        # And each replayed row's balance matches.
+        for replay_row, gen_row in zip(replay_result.rows, generate_result[:3]):
+            assert replay_row.remaining_balance == gen_row.remaining_balance
+            assert replay_row.interest == gen_row.interest
+            assert replay_row.principal == gen_row.principal
+
+    # ── C1-10: mixed-confirmation input still labels rows confirmed ─
+
+    def test_replay_rows_all_confirmed(self):
+        """C1-10: regardless of the ``is_confirmed`` flag on input
+        ``PaymentRecord`` instances, every output row is
+        ``is_confirmed=True``.
+
+        Per the architectural plan: "replay only consumes confirmed
+        inputs at this phase; the caller filters before calling.
+        All rows have is_confirmed=True."  Passing a mixed input is
+        a caller bug, but the function deliberately labels every
+        output row True because the semantic role of replay is
+        "the deterministic-past slice" and downstream consumers
+        rely on the flag.
+        """
+        result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=[
+                # Confirmed.
+                PaymentRecord(
+                    payment_date=date(2026, 2, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+                # Not confirmed (caller bug -- replay still treats it
+                # as confirmed).
+                PaymentRecord(
+                    payment_date=date(2026, 3, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=False,
+                ),
+            ],
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 5, 21),
+        )
+        assert len(result.rows) == 2
+        # Both rows labelled confirmed despite the mixed input.
+        assert all(row.is_confirmed is True for row in result.rows)
+
+    # ── C1-11: next_pay_date is the month after the last row ──────
+
+    def test_next_pay_date_correct(self):
+        """C1-11: when the last replayed row is for month N,
+        ``next_pay_date`` is the first day of month N+1 (clamped to
+        ``payment_day``).
+
+        Three contractual payments months 1-3 land the last row on
+        2026-04-01.  ``next_pay_date`` must be 2026-05-01.  Pinning
+        this property keeps the boundary between replay and
+        projection clean: the composer (Commit 3) passes
+        ``next_pay_date`` directly to ``project_forward`` as the
+        first projected ``payment_date``.
+        """
+        result = replay_confirmed_history(
+            origination_date=self.ORIGINATION,
+            original_principal=self.PRINCIPAL,
+            annual_rate=self.RATE,
+            term_months=self.TERM_MONTHS,
+            payment_day=self.PAYMENT_DAY,
+            confirmed_payments=[
+                PaymentRecord(
+                    payment_date=date(2026, 2, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2026, 3, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+                PaymentRecord(
+                    payment_date=date(2026, 4, 1),
+                    amount=self.CONTRACTUAL_PAYMENT,
+                    is_confirmed=True,
+                ),
+            ],
+            rate_changes=None,
+            anchor_balance=None,
+            anchor_date=None,
+            as_of=date(2026, 5, 21),
+        )
+        assert len(result.rows) == 3
+        assert result.rows[-1].payment_date == date(2026, 4, 1)
+        # Month after 2026-04-01 (payment_day=1) is 2026-05-01.
+        assert result.next_pay_date == date(2026, 5, 1)
+        # Cross-check: month after the last row.
+        assert result.next_pay_date.month == 5
+        assert result.next_pay_date.year == 2026
