@@ -77,19 +77,19 @@ jobs:
     steps:
       # ── 1. Check out the repository ──────────────────────────────
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ── 2. Set up Python ─────────────────────────────────────────
       # Use the same Python version as the production Dockerfile.
       - name: Set up Python 3.14
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.14"
 
       # ── 3. Cache pip dependencies ────────────────────────────────
       # Speeds up subsequent runs by caching downloaded packages.
       - name: Cache pip packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
