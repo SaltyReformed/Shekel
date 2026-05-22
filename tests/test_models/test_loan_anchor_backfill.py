@@ -514,3 +514,153 @@ class TestDowngradeSmoke:
             or "drop_table('loan_anchor_events'" in downgrade_source
         assert 'drop_table("loan_anchor_sources"' in downgrade_source \
             or "drop_table('loan_anchor_sources'" in downgrade_source
+
+
+# ---------------------------------------------------------------------------
+# C8-4 / C8-6: amortization-engine split Commit 8 (inline replay)
+# ---------------------------------------------------------------------------
+
+
+class TestInlineReplayDecoupling:
+    """C8-4 / C8-6: the migration replay is self-contained, math-equivalent.
+
+    Commit 8 of the amortization-engine split implementation
+    (``docs/plans/2026-05-21-amortization-engine-split-implementation.md``)
+    inlined the migration's replay loop so the migration survives the
+    Commit 9 deletion of the legacy engine schedule function.  These
+    tests pin two properties: (1) the migration module no longer
+    imports or calls the legacy engine function, and (2) the inline
+    helper produces bit-for-bit the same balance the original engine-
+    backed walk produced for the migration's input shape.
+    """
+
+    def test_migration_does_not_reference_engine_module_or_function(self):
+        """C8-4: migration source has zero literal references to the engine call.
+
+        Surface check on the migration's text so a future edit
+        cannot quietly re-introduce the dependency the engine
+        deletion in Commit 9 will break.  ``amortization_engine``
+        and ``generate_schedule`` must both be absent from the
+        migration source (no import, no call, no docstring mention
+        that would mask a real reintroduction during a grep audit).
+        """
+        migration_source = (
+            _MIGRATIONS_DIR
+            / "d3d25212504b_create_loan_anchor_events_table_for_.py"
+        ).read_text()
+        assert "amortization_engine" not in migration_source
+        assert "generate_schedule" not in migration_source
+
+    @pytest.mark.parametrize(
+        "case_name,original_principal,annual_rate,term_months,"
+        "origination_date,payments",
+        [
+            (
+                "no_payments",
+                Decimal("200000.00"),
+                Decimal("0.06500"),
+                360,
+                date(2024, 1, 1),
+                [],
+            ),
+            (
+                "three_confirmed_payments",
+                Decimal("200000.00"),
+                Decimal("0.06500"),
+                360,
+                date(2024, 1, 1),
+                [
+                    (date(2024, 2, 1), Decimal("1264.14"), True),
+                    (date(2024, 3, 1), Decimal("1264.14"), True),
+                    (date(2024, 4, 1), Decimal("1264.14"), True),
+                ],
+            ),
+            (
+                "mixed_confirmed_and_projected",
+                Decimal("250000.00"),
+                Decimal("0.06000"),
+                360,
+                date(2024, 6, 1),
+                [
+                    (date(2024, 7, 1), Decimal("1498.88"), True),
+                    (date(2024, 8, 1), Decimal("1498.88"), True),
+                    (date(2024, 9, 1), Decimal("1498.88"), False),
+                    (date(2024, 10, 1), Decimal("1498.88"), True),
+                    (date(2024, 11, 1), Decimal("1498.88"), False),
+                ],
+            ),
+        ],
+    )
+    def test_inline_matches_engine_for_migration_input_shape(
+        self, case_name, original_principal, annual_rate, term_months,
+        origination_date, payments,
+    ):
+        """C8-6: inline replay matches the pre-commit engine result, byte-for-byte.
+
+        The engine's ``generate_schedule`` still exists at this commit
+        (Commit 9 deletes it), so the test imports it directly and
+        compares against the inline helper for three representative
+        loan shapes: no payments at all, a short run of confirmed
+        contractual payments, and a mixed confirmed/projected run.
+
+        Arithmetic (hand-computed for the
+        ``three_confirmed_payments`` case to anchor the test):
+        contractual monthly P at $200,000, 6.5% APR, 360 months is
+        $1,264.14.  Month 1 interest = $200,000 * (0.065/12) =
+        $1,083.33; principal = $1,264.14 - $1,083.33 = $180.81;
+        balance = $199,819.19.  The inline and the engine both
+        evolve through this branch identically; the test asserts
+        equality rather than re-pinning the literal balance so
+        future engine refactors (which the inline does NOT track)
+        do not produce a spurious failure.
+
+        For the ``no_payments`` case both implementations short-
+        circuit to ``original_principal`` and the test pins
+        identity to original.
+        """
+        # pylint: disable=import-outside-toplevel
+        # Late import is deliberate: the test exercises the engine's
+        # schedule function only for cross-checking the migration's
+        # inlined replacement.  The migration itself no longer
+        # depends on it.
+        from app.services import amortization_engine
+
+        engine_payments = [
+            amortization_engine.PaymentRecord(
+                payment_date=pay_date,
+                amount=amount,
+                is_confirmed=is_confirmed,
+            )
+            for pay_date, amount, is_confirmed in payments
+        ]
+
+        if engine_payments:
+            schedule = amortization_engine.generate_schedule(
+                current_principal=original_principal,
+                annual_rate=annual_rate,
+                remaining_months=term_months,
+                origination_date=origination_date,
+                payment_day=1,
+                original_principal=original_principal,
+                term_months=term_months,
+                payments=engine_payments,
+            )
+            engine_result = original_principal
+            for row in reversed(schedule):
+                if row.is_confirmed:
+                    engine_result = row.remaining_balance
+                    break
+        else:
+            engine_result = original_principal
+
+        inline_result = _M_LOAN_BACKFILL._replay_from_origination_inline(
+            original_principal=original_principal,
+            annual_rate=annual_rate,
+            term_months=term_months,
+            origination_date=origination_date,
+            payments=payments,
+        )
+
+        assert inline_result == engine_result, (
+            f"{case_name}: inline {inline_result} != engine {engine_result}"
+        )
