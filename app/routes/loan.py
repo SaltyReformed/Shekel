@@ -449,9 +449,15 @@ def _load_loan_context(account, params):
         monthly_escrow: Decimal monthly escrow amount.
         state: :class:`LoanState` from the resolver.
         original_for_engine: Decimal original principal, or None for
-            ARM.  Needed by chart-generation paths that still call
-            :func:`amortization_engine.generate_schedule` directly
-            (Commit 17 collapses those into the resolver too).
+            ARM.  Historically consumed by chart-generation paths that
+            called the amortization engine directly; those paths now
+            route through :func:`loan_resolver.compute_payoff_scenarios`
+            (Phase 4-6 of the amortization-engine split documented in
+            ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``),
+            so the field is retained only for the payoff calculator's
+            ``mode == "target_date"`` branch (a thin
+            :func:`amortization_engine.calculate_payoff_by_date`
+            wrapper internally on :func:`project_forward`).
         base_rate: Decimal annual interest rate -- the resolver's
             ``base_rate`` input, used by the same direct-engine
             chart paths and by the refinance / payoff calculators.
@@ -1474,11 +1480,27 @@ def refinance_calculate(account_id):
     )
 
     # Compute refinance schedule for total interest and payoff date.
+    # Commit 7 of the amortization-engine split (see
+    # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``):
+    # the refi schedule is a pure forward projection from a known
+    # starting state (``refi_principal`` at next month's pay date) so
+    # it maps directly onto :func:`amortization_engine.project_forward`.
+    # No replay, no projections-as-overrides, no extra -- the
+    # contractual P&I drives every row.
     schedule_start = date.today().replace(day=1)
-    refi_schedule = amortization_engine.generate_schedule(
-        refi_principal, refi_rate, refi_term,
-        origination_date=schedule_start,
+    starting_date = amortization_engine.advance_to_next_payment_date(
+        schedule_start, params.payment_day,
+    )
+    refi_schedule = amortization_engine.project_forward(
+        starting_balance=refi_principal,
+        starting_date=starting_date,
+        annual_rate=refi_rate,
+        remaining_months=refi_term,
         payment_day=params.payment_day,
+        contractual_payment=refi_monthly,
+        monthly_override=None,
+        extra_monthly=Decimal("0.00"),
+        rate_changes_remaining=None,
     )
     refi_total_interest = sum(
         (row.interest for row in refi_schedule), Decimal("0.00"),

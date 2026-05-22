@@ -256,6 +256,35 @@ def _advance_month(year: int, month: int, day: int) -> date:
     return date(year, month, min(day, max_day))
 
 
+def advance_to_next_payment_date(
+    reference_date: date, payment_day: int,
+) -> date:
+    """Return the first payment date that follows ``reference_date``.
+
+    Public helper shared by callers that need to derive the starting
+    date of a forward projection from an anchor or origination date.
+    ``project_forward`` expects ``starting_date`` to be the first
+    payment date of the projection; for both ``calculate_payoff_by_date``
+    and ``refinance_calculate`` that date is the month after the
+    reference date with the day clamped to the month's last valid day
+    (e.g., day 31 in February becomes the 28th or 29th).
+
+    Args:
+        reference_date: The anchor date (origination, today's first
+            of month, or any other reference).  The returned date is
+            in the month immediately following.
+        payment_day: Day-of-month payments are due.  Clamped to the
+            target month's max days so a payment_day of 31 always
+            produces a valid date.
+
+    Returns:
+        The next payment date after ``reference_date``.
+    """
+    return _advance_month(
+        reference_date.year, reference_date.month, payment_day,
+    )
+
+
 def _build_payment_lookups(
     payments: list[PaymentRecord],
     origination_date: date | None,
@@ -1390,26 +1419,105 @@ def calculate_payoff_by_date(
 ) -> Decimal | None:
     """Calculate required extra monthly payment to pay off by target_date.
 
-    Args:
-        original_principal: Original loan amount for contractual payment.
-        term_months: Original loan term for contractual payment.
-        rate_changes: Optional list of RateChangeRecord instances
-            passed through to generate_schedule() for ARM loans.
+    Reframed in terms of :func:`project_forward` (Phase 7 of the
+    amortization-engine split documented in
+    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
+    The function is a pure forward projection from a known starting
+    state (``current_principal`` at ``origination_date``), so it maps
+    naturally onto the projection primitive: one ``project_forward``
+    call establishes the standard payoff date, then a binary search
+    repeats the projection with successively larger ``extra_monthly``
+    values until the schedule pays off by ``target_date``.  External
+    behavior is preserved bit-for-bit; the projected-payments
+    follow-up (OPT-1 / F-N) is explicitly out of scope here per
+    design decision D-F.
 
-    Returns None if target_date is not achievable (already past or too soon).
-    Returns Decimal("0.00") if standard payoff is already before target.
+    Args:
+        current_principal: Outstanding balance to project from.
+            ``<= 0`` returns ``Decimal("0.00")``.
+        annual_rate: Starting annual interest rate as a Decimal
+            (e.g., ``Decimal("0.065")`` for 6.5%).
+        remaining_months: Months remaining on the loan.  Doubles as
+            the projection's loop cap for ARM loans and the date-delta
+            boundary for the "already past / too soon" guards.
+        target_date: The user's desired payoff date.
+        origination_date: Anchor for the projection's first payment
+            date (``origination_date + 1 month`` clamped to
+            ``payment_day``).  The caller is responsible for passing
+            "today's first of month" when projecting from current
+            state rather than from real origination (see
+            ``app.routes.loan.payoff_calculate`` target-date branch).
+        payment_day: Day-of-month payments are due.
+        original_principal: Original loan amount used to derive the
+            contractual payment for fixed-rate loans.  When ``None``
+            or when ARM rate changes are present, the contractual
+            payment is re-amortized from
+            ``(current_principal, annual_rate, remaining_months)``.
+        term_months: Original loan term in months.  Used with
+            ``original_principal`` to derive the contractual payment.
+            Also expands the projection's loop cap to
+            ``remaining_months + term_months`` so a partially paid
+            loan that pays off before ``remaining_months`` can still
+            absorb its final-row residue without hitting the cap.
+        rate_changes: Optional list of :class:`RateChangeRecord`
+            instances for ARM loans.  Forwarded as
+            ``rate_changes_remaining`` to ``project_forward``.
+
+    Returns:
+        ``None`` if ``target_date`` is in the past (no extra payment
+        can change history).  ``Decimal("0.00")`` when no extra is
+        required because the standard schedule already pays off by
+        ``target_date`` (or the loan is already paid off).
+        Otherwise, the binary-searched Decimal extra-monthly payment
+        rounded to cents that achieves payoff at or before
+        ``target_date``.
     """
     if current_principal <= 0 or remaining_months <= 0:
         return Decimal("0.00")
 
-    # Determine the standard payoff date.
-    standard = generate_schedule(
-        current_principal, annual_rate, remaining_months,
-        origination_date=origination_date,
+    # Derive the contractual payment the same way the old
+    # generate_schedule did: from original terms when provided and
+    # the loan is fixed-rate; otherwise re-amortize from current
+    # state at the current rate (ARM path).  This mirrors the
+    # ``using_contractual`` branch at amortization_engine.py:479-491.
+    has_rate_changes = rate_changes is not None and len(rate_changes) > 0
+    using_contractual = (
+        original_principal is not None
+        and term_months is not None
+        and not has_rate_changes
+    )
+    if using_contractual:
+        contractual_payment = calculate_monthly_payment(
+            original_principal, annual_rate, term_months,
+        )
+        # Generous cap: a partially paid loan (current < original)
+        # pays off before ``remaining_months`` with the contractual
+        # payment, but the cap matches generate_schedule's
+        # ``max_months`` so the final-row absorption fires on
+        # balance reaching zero, not on hitting the loop cap.
+        projection_months = remaining_months + term_months
+    else:
+        contractual_payment = calculate_monthly_payment(
+            current_principal, annual_rate, remaining_months,
+        )
+        projection_months = remaining_months
+
+    starting_date = advance_to_next_payment_date(
+        origination_date, payment_day,
+    )
+
+    # Standard projection: no extra.  The contractual payment alone
+    # determines the standard payoff date.
+    standard = project_forward(
+        starting_balance=current_principal,
+        starting_date=starting_date,
+        annual_rate=annual_rate,
+        remaining_months=projection_months,
         payment_day=payment_day,
-        original_principal=original_principal,
-        term_months=term_months,
-        rate_changes=rate_changes,
+        contractual_payment=contractual_payment,
+        monthly_override=None,
+        extra_monthly=Decimal("0.00"),
+        rate_changes_remaining=rate_changes,
     )
     if not standard:
         return Decimal("0.00")
@@ -1418,17 +1526,13 @@ def calculate_payoff_by_date(
     if standard_payoff <= target_date:
         return Decimal("0.00")
 
-    # Calculate how many months until target_date.
-    if origination_date:
-        start_year = origination_date.year
-        start_month = origination_date.month + 1
-        if start_month > 12:
-            start_month = 1
-            start_year += 1
-    else:
-        today = date.today()
-        start_year = today.year
-        start_month = today.month
+    # Calculate how many months until target_date based on the same
+    # starting reference point ``starting_date`` would land on.  The
+    # inclusive ``+ 1`` matches the legacy convention so the "target
+    # in the past" / "target later than remaining_months" gates fire
+    # for the same inputs as before.
+    start_year = starting_date.year
+    start_month = starting_date.month
 
     target_months = (
         (target_date.year - start_year) * 12
@@ -1442,20 +1546,26 @@ def calculate_payoff_by_date(
     if target_months >= remaining_months:
         return Decimal("0.00")
 
-    # Binary search for the required extra payment.
+    # Binary search for the required extra payment.  Each iteration
+    # repeats the projection with a candidate ``extra_monthly`` and
+    # narrows the bracket until the bisection width drops below one
+    # cent (the convergence criterion the legacy implementation
+    # used).
     lo = Decimal("0.01")
     hi = current_principal  # Upper bound: pay it all off immediately.
 
     for _ in range(100):  # Max iterations for convergence.
         mid = ((lo + hi) / 2).quantize(TWO_PLACES, ROUND_HALF_UP)
-        schedule = generate_schedule(
-            current_principal, annual_rate, remaining_months,
-            extra_monthly=mid,
-            origination_date=origination_date,
+        schedule = project_forward(
+            starting_balance=current_principal,
+            starting_date=starting_date,
+            annual_rate=annual_rate,
+            remaining_months=projection_months,
             payment_day=payment_day,
-            original_principal=original_principal,
-            term_months=term_months,
-            rate_changes=rate_changes,
+            contractual_payment=contractual_payment,
+            monthly_override=None,
+            extra_monthly=mid,
+            rate_changes_remaining=rate_changes,
         )
         if not schedule:
             return mid

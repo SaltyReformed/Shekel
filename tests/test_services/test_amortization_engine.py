@@ -471,6 +471,191 @@ class TestPayoffByDate:
         assert result == Decimal("0.00")
 
 
+class TestPayoffByDateProjectForward:
+    """C7-1..C7-4, C7-6: lock ``calculate_payoff_by_date`` behaviour
+    after the migration onto :func:`project_forward`.
+
+    Commit 7 of the amortization-engine split rewrites the function
+    so both the standard schedule and the binary-search inner loop
+    call ``project_forward`` instead of ``generate_schedule``.  These
+    tests pin the externally observable behaviour: API contracts for
+    the three early-return cases (C7-1 / C7-2 / C7-3), byte-identical
+    output across five representative inputs (C7-4), and the
+    structural guarantee that no ``generate_schedule`` reference
+    remains inside the function body (C7-6).
+    """
+
+    def test_calculate_payoff_by_date_target_in_past(self):
+        """C7-1: target_date before the projection start returns None.
+
+        ``starting_date = origination_date + 1 month``; a target_date
+        before ``starting_date`` yields ``target_months <= 0`` which
+        is the legacy ``None`` short-circuit (no extra payment can
+        change history).
+        """
+        result = calculate_payoff_by_date(
+            current_principal=Decimal("200000"),
+            annual_rate=Decimal("0.065"),
+            remaining_months=360,
+            target_date=date(2025, 12, 1),
+            origination_date=date(2026, 1, 1),
+            payment_day=1,
+        )
+        assert result is None
+
+    def test_calculate_payoff_by_date_target_already_achieved(self):
+        """C7-2: target after the standard payoff returns Decimal('0.00').
+
+        Standard schedule for $200k / 6.5% / 360 months pays off on
+        2056-01-01; target 2060-01-01 is later, so no extra is
+        required and the function short-circuits before binary search.
+        """
+        result = calculate_payoff_by_date(
+            current_principal=Decimal("200000"),
+            annual_rate=Decimal("0.065"),
+            remaining_months=360,
+            target_date=date(2060, 1, 1),
+            origination_date=date(2026, 1, 1),
+            payment_day=1,
+        )
+        assert result == Decimal("0.00")
+
+    def test_calculate_payoff_by_date_converges(self):
+        """C7-3: binary search converges to a Decimal within $0.01.
+
+        $200k / 6.5% / 360 months, target 2041-01-01 (~15-year payoff)
+        converges deterministically to ``Decimal('478.08')`` -- the
+        same value the legacy implementation produced.  Hand-derived
+        via the bisection's convergence criterion (hi - lo <= 0.01).
+        """
+        result = calculate_payoff_by_date(
+            current_principal=Decimal("200000"),
+            annual_rate=Decimal("0.065"),
+            remaining_months=360,
+            target_date=date(2041, 1, 1),
+            origination_date=date(2026, 1, 1),
+            payment_day=1,
+        )
+        assert result == Decimal("478.08"), (
+            f"Expected $478.08 required extra, got {result}"
+        )
+
+    @pytest.mark.parametrize("label,kwargs,expected", [
+        # Pre-commit values captured from the legacy generate_schedule
+        # implementation on 2026-05-22 before the project_forward
+        # migration.  Any drift here is a real regression.
+        (
+            "basic_30yr",
+            dict(
+                current_principal=Decimal("200000"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                target_date=date(2041, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            ),
+            Decimal("478.08"),
+        ),
+        (
+            "partial_paid_with_original_terms",
+            dict(
+                current_principal=Decimal("150000"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=240,
+                target_date=date(2038, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+                original_principal=Decimal("200000"),
+                term_months=360,
+            ),
+            Decimal("238.75"),
+        ),
+        (
+            "15yr_target_5_percent",
+            dict(
+                current_principal=Decimal("250000"),
+                annual_rate=Decimal("0.05"),
+                remaining_months=360,
+                target_date=date(2035, 6, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            ),
+            Decimal("1436.42"),
+        ),
+        (
+            "short_horizon_payment_day_15",
+            dict(
+                current_principal=Decimal("50000"),
+                annual_rate=Decimal("0.04"),
+                remaining_months=120,
+                target_date=date(2030, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=15,
+            ),
+            Decimal("644.88"),
+        ),
+        (
+            "large_loan_7_percent",
+            dict(
+                current_principal=Decimal("500000"),
+                annual_rate=Decimal("0.07"),
+                remaining_months=360,
+                target_date=date(2045, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            ),
+            Decimal("644.46"),
+        ),
+    ])
+    def test_calculate_payoff_by_date_unchanged_vs_pre_commit(
+        self, label, kwargs, expected,
+    ):
+        """C7-4: byte-identical Decimal output across 5 representative inputs.
+
+        The migration from ``generate_schedule`` to ``project_forward``
+        is behavior-preserving (per D-F of the implementation plan).
+        These five cases are the assert-unchanged lock that proves it:
+        if any value drifts even by one cent, that is a real
+        regression caught here.
+        """
+        result = calculate_payoff_by_date(**kwargs)
+        assert result == expected, (
+            f"{label}: expected {expected}, got {result}"
+        )
+
+    def test_no_generate_schedule_in_calculate_payoff_by_date(self):
+        """C7-6: ``calculate_payoff_by_date`` no longer calls generate_schedule.
+
+        Structural guarantee that the migration is complete -- the
+        function body slice between its ``def`` and the next top-level
+        ``def`` must contain zero CALLS to ``generate_schedule`` (i.e.,
+        the ``generate_schedule(`` syntactic form).  Docstring / comment
+        mentions are exempt because they retain useful historical
+        context after the rewrite.  Catches future merges that
+        accidentally reintroduce the old engine call.
+        """
+        engine_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "app" / "services" / "amortization_engine.py"
+        )
+        source = engine_path.read_text(encoding="utf-8")
+        marker = "def calculate_payoff_by_date("
+        start = source.index(marker)
+        # The function body ends at the next top-level ``def`` /
+        # class definition.  Slice from ``start`` to whichever comes
+        # first; if neither, slice to end-of-file.
+        next_def = source.find("\ndef ", start + len(marker))
+        next_class = source.find("\nclass ", start + len(marker))
+        candidates = [c for c in (next_def, next_class) if c != -1]
+        end = min(candidates) if candidates else len(source)
+        body = source[start:end]
+        assert "generate_schedule(" not in body, (
+            "calculate_payoff_by_date must not call "
+            "generate_schedule() after the Commit 7 migration; "
+            "found a call site in the function body."
+        )
+
+
 class TestCalculateRemainingMonths:
     """Tests for calculate_remaining_months date arithmetic."""
 

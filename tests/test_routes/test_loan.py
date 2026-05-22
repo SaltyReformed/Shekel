@@ -4462,6 +4462,120 @@ class TestRefinanceCalculator:
         assert "$68,572.58" in html
 
 
+class TestRefinanceAndPayoffByDateProjectForwardMigration:
+    """C7-5, C7-7, C7-8: route-level assert-unchanged locks for the
+    Commit 7 migration of ``refinance_calculate`` and the
+    ``mode=target_date`` payoff branch onto :func:`project_forward`.
+
+    The migration is behavior-preserving (per D-F of the
+    implementation plan).  These tests pin the rendered HTML values
+    that the legacy ``generate_schedule`` path produced; any drift
+    proves a real regression.
+    """
+
+    def test_refinance_unchanged_vs_pre_commit(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C7-5: refinance partial renders byte-identical key values.
+
+        Pre-commit snapshot (200K mortgage at 6.5% refinancing to 5.0%,
+        360 months, $0 closing costs):
+          - refi_monthly        = $1,073.64
+          - refi_total_interest = $186,513.24
+          - monthly_savings     = $190.50
+          - interest_savings    = $68,572.58
+        Hand calculation (matches existing
+        ``test_refinance_comparison_metrics_hand_calculated``):
+          Current:   M(200000, 0.065/12, 360) = $1,264.14;
+                     total interest = $255,085.82.
+          Refinance: M(200000, 0.05/12, 360)  = $1,073.64;
+                     total interest = $186,513.24.
+          Savings:   1264.14 - 1073.64 = 190.50/mo;
+                     255085.82 - 186513.24 = 68572.58.
+        """
+        acct = _create_exact_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/refinance",
+            data={
+                "new_rate": "5.0",
+                "new_term_months": "360",
+                "closing_costs": "0",
+            },
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "$1,264.14" in html, "current monthly drifted"
+        assert "$1,073.64" in html, "refi monthly drifted"
+        assert "$190.50" in html, "monthly savings drifted"
+        assert "$255,085.82" in html, "current total interest drifted"
+        assert "$186,513.24" in html, "refi total interest drifted"
+        assert "$68,572.58" in html, "interest savings drifted"
+
+    def test_no_generate_schedule_in_refinance(self):
+        """C7-7: ``refinance_calculate`` no longer calls generate_schedule.
+
+        Structural guarantee mirroring C7-6 at the route layer.  The
+        function-body slice between its ``def`` and the next top-level
+        ``def`` must not reference ``amortization_engine.generate_schedule``.
+        """
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+        route_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "app" / "routes" / "loan.py"
+        )
+        source = route_path.read_text(encoding="utf-8")
+        marker = "def refinance_calculate("
+        start = source.index(marker)
+        next_def = source.find("\ndef ", start + len(marker))
+        next_async = source.find("\nasync def ", start + len(marker))
+        next_class = source.find("\nclass ", start + len(marker))
+        candidates = [
+            c for c in (next_def, next_async, next_class) if c != -1
+        ]
+        end = min(candidates) if candidates else len(source)
+        body = source[start:end]
+        assert "amortization_engine.generate_schedule" not in body, (
+            "refinance_calculate must not reference "
+            "amortization_engine.generate_schedule after Commit 7."
+        )
+        assert "generate_schedule(" not in body, (
+            "refinance_calculate body must not call generate_schedule."
+        )
+
+    def test_target_date_route_branch_unchanged(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """C7-8: ``mode=target_date`` HTML renders byte-identical
+        ``required_extra`` and ``total_monthly``.
+
+        Uses the exact $200k / 6.5% / 30yr mortgage helper.  Today is
+        frozen to 2026-03-20 by ``_freeze_today_inside_seed_range``,
+        and ``_create_exact_mortgage`` originates "today," so the
+        route's binary search anchors at ``2026-03-01`` (today's first
+        of month) with starting_date 2026-04-01.  Target 2041-01-01.
+        Pre-commit values from the legacy ``generate_schedule``-backed
+        binary search (captured 2026-05-22):
+          - required_extra = $489.67 (binary-search convergence
+            against the contractual M(200000, 0.065/12, 360) =
+            $1,264.14)
+          - total_monthly  = 1264.14 + 489.67 = $1,753.81
+        The HTMX partial only renders required_extra and total_monthly
+        in this mode; ``monthly_payment`` is passed for context-builder
+        completeness but is not surfaced as a distinct label, so the
+        assertion set matches what the user actually sees.
+        """
+        acct = _create_exact_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "target_date", "target_date": "2041-01-01"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "$489.67" in html, "required_extra drifted"
+        assert "$1,753.81" in html, "total_monthly drifted"
+
+
 # ── Nav-Pills Consistency Tests ─────────────────────────────────────
 
 
