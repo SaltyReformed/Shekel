@@ -2029,55 +2029,162 @@ Standing locks:
 ## 11. Hand-computed reconciliation appendix (filled at execution)
 
 Each commit that changes a chart shape or summary number records
-here: inputs, pre-fix value, hand arithmetic, post-fix value. To
-be filled during execution; the table below shows the schema and
-seed entries to populate.
+here: inputs, pre-fix value, hand arithmetic, post-fix value.
+Values below were populated at Commit 10 from the executed code
+and the hand-computed assertions pinned in the test suite. Every
+post-fix value is the literal Decimal the composer / primitive
+returns for the named inputs and is verified by a named test.
 
 ### Originally reported bug (Commit 4 user-visible fix)
 
-- Inputs: 30 yr / $300,000 / 6%, originated 2024-01-01, four
-  confirmed contractual payments Jan-Apr 2026, no projected
-  transfers, `extra_monthly=$500`, `as_of=2026-05-21`.
-- Hand calculation of the contractual payment:
-  $P=300000$, $i=0.06/12=0.005$, $n=360$.
-  $M^* = 300000 \cdot 0.005 / (1 - 1.005^{-360}) = 1500 / 0.83395769... = 1798.65$ (USD).
-- Pre-fix chart shape (the bug): Accelerated diverges below
-  Original from month 1 (Feb 2024); runs parallel to Original
-  through Jan-Apr 2026 (confirmed window); resumes accelerated
-  descent May 2026 onward IF no projected payments exist.
-- Post-fix chart shape: Accelerated equals Committed for every
-  index whose label is at or before today's month. Accelerated
-  strictly below Committed for at least one index past today.
-- Pre-fix `months_saved`: TBD at execution -- the buggy code's
-  inflated value (extra applied to ~22 months of fictitious 2024
-  history).
-- Post-fix `months_saved`: TBD at execution -- the hand-computed
-  value derived from a ~$279,985 starting balance with $500
-  extra (per the architectural plan line 328-330).
-- Other fields: `Interest Saved`, `Total Interest`,
-  `Projected Payoff` TBD at execution.
+Inputs: 30 yr / $300,000 / 6%, originated 2024-01-01, four
+confirmed contractual payments Jan-Apr 2026 (each $1,798.65 on
+day 1), no projected transfers, `extra_monthly=$500.00`,
+`as_of=2026-05-21`.
+
+Hand calculation of the contractual payment ($M^*$):
+`P=300000`, `i=0.06/12=0.005`, `n=360`.
+`M^* = P * i / (1 - (1+i)^-n) = 1500 / 0.83395769... = 1798.65` (USD).
+Pinned in
+`tests/test_services/test_loan_resolver.py::_four_contractual_payments_jan_to_apr_2026`
+and matched by the new replay primitive at
+`TestReplayConfirmedHistory::test_balance_after_replay_300k_4_payments`.
+
+Replay snapshot after four contractual payments (C13-5 / C3-2):
+`balance_as_of = $298,796.42`, `next_pay_date = 2026-05-01`,
+`remaining_months_as_of = 356`, `applicable_rate_as_of = 0.06`.
+Hand arithmetic for row 0 of each forward slice:
+- `interest = 298796.42 * 0.005 = 1493.98` (ROUND_HALF_UP)
+- `principal = 1798.65 - 1493.98 = 304.67`
+- `balance(original) = balance(committed) = 298796.42 - 304.67 = 298,491.75`
+- `balance(accelerated) = 298,491.75 - 500.00 = 297,991.75`
+
+Pre-fix chart shape (the bug): Accelerated diverges below
+Original from month 1 (Feb 2024); runs parallel to Committed
+through Jan-Apr 2026 (confirmed window suppresses extra); resumes
+accelerated descent May 2026 onward. The reported visual symptom.
+
+Post-fix chart shape (locked by `TestPayoffChartShape::test_accelerated_equals_committed_in_historical_region`
+and `::test_accelerated_below_committed_post_today`): Accelerated
+equals Committed for every chart index whose label is at or
+before today's month; Accelerated strictly below Committed for at
+least one index past today.
+
+| Field | Pre-fix (buggy `generate_schedule` flow) | Post-fix (composer) | Test lock |
+|---|---|---|---|
+| `len(history_rows)` | n/a (single fused schedule; ~24 ghost-history rows treated as forward) | 4 | C3-1 / C3-10 |
+| `accelerated_forward[0].payment_date` | 2024-02-01 (fictitious 2024 acceleration) | 2026-05-01 | C3-3 / C3-10 |
+| `months_saved` | >200 (inflated by ~23 months of ghost-history extra) | 145 | C3-8 / C3-10 |
+| `interest_saved` | inflated (sum over ghost history included) | $156,559.54 | C3-9 |
+| `total_interest_committed` | mixed history/forward sum | $341,524.42 | C3-9 (verified at composer output) |
+| `total_interest_accelerated` | inflated (extra applied to ~$300k for fictitious months) | $184,964.88 | C3-9 |
+| `payoff_date_committed` | computed from buggy summary | composer's `committed_forward[-1].payment_date` | derived from C3-8 / committed length 356 |
+| `payoff_date_accelerated` | inflated (earlier by ~23 fictitious-extra months) | composer's `accelerated_forward[-1].payment_date` | derived from C3-8 / accelerated length 211 |
+
+Closed-form verification of `months_saved`:
+- Committed (no extra, P&I = $1798.65, starting balance $298,796.42, $i=0.005$):
+  `n = -log(1 - P*i/M) / log(1+i) = -log(0.169393) / log(1.005)`
+  approx 356 months. Composer returns 356.
+- Accelerated (P&I = $1798.65 + $500 = $2298.65 base, $298,796.42 starting balance):
+  `n = -log(1 - 298796.42*0.005/2298.65) / log(1.005) = -log(0.350067) / log(1.005)`
+  approx 210.44, ceiled to 211 at month-boundary HALF_UP. Composer returns 211.
+- `months_saved = 356 - 211 = 145`. Matches C3-8 assertion.
 
 ### Override + extra interaction (Commit 2 C2-4 primitive lock)
 
-- Inputs: $300k starting balance, 6%, 336 remaining months,
-  contractual=$1798.65, override `(2026, 6) -> $2000`,
-  `extra_monthly=$500`.
-- Hand arithmetic: June 2026 payment = $2000 (override wins,
-  extra NOT added); July 2026 payment = $1798.65 + $500 = $2298.65;
-  every other no-override month = $2298.65.
-- Post-fix: per C2-4 assertion.
+Inputs: `starting_balance=$300,000.00`, `annual_rate=0.06`,
+`remaining_months=360`, `payment_day=1`,
+`contractual_payment=$1,798.65`,
+`monthly_override={(2026, 6): $2,000.00}`,
+`extra_monthly=$500.00`.
+
+Hand arithmetic:
+- June 2026 (override month): `payment = $2,000.00`,
+  `extra_payment = $0.00` (CRITICAL: extra is NEVER added to an
+  override month, even when `extra_monthly` is set).
+- July 2026 (no override): `payment = contractual = $1,798.65`,
+  `extra_payment = $500.00`. Total cash out July = $2,298.65.
+- Every non-final override-less month past June 2026 carries
+  `extra_payment = $500.00`. Final row's `extra_payment` is
+  capped at remaining balance per the existing overpayment-cap
+  branch.
+
+Pre-fix: in `generate_schedule`, a projected payment record for
+June 2026 would suppress `extra_monthly` (gate was "any record
+present"); the same gate misfired on origination-to-first-confirmed
+months, allowing extra against fictitious history.
+
+Post-fix: `project_forward` accepts `monthly_override` and
+`extra_monthly` as independent parameters; the override path
+unconditionally sets `extra_payment = $0.00`. Locked by
+`TestProjectForward::test_override_plus_extra_extra_not_added_to_override_months`
+(C2-4). The buggy parameter combination is now syntactically
+unexpressible.
 
 ### Resolver behavior preservation (Commit 6 assert-unchanged)
 
-- Sample inputs: 30 yr / $300k / 6%, origination 2024-01-01,
-  three confirmed payments, no projections.
-- Pre-fix `LoanState.schedule[0..2]` values: TBD (read from
-  current code).
-- Post-fix `LoanState.schedule[0..2]` values: must be
-  byte-identical to pre-fix.
+Sample inputs: $300k / 6% / 360 mo, origination 2026-01-01, three
+confirmed contractual payments Feb-Apr 2026 of $1,798.65 each,
+`as_of=2026-05-01`. (The shortened gap variant; the long-gap
+variant is the C3-10 regression scenario above.)
 
-(Additional appendix rows added during execution as each commit
-lands.)
+Post-fix invariants pinned by C6-9 / C6-10:
+- `state.schedule[0..2].is_confirmed == True` (history rows from
+  replay).
+- `state.schedule[3..].is_confirmed == False` (forward rows from
+  projection).
+- `state.current_balance`, `state.monthly_payment`,
+  `state.total_interest`, `state.payoff_date` byte-identical to
+  pre-Commit-6 values. Commit 6 was a behavior-preserving
+  refactor; the seven `test_resolver_*_unchanged` cases (C6-1..
+  C6-7) pinned the existing values and all pass.
+
+ARM in-window monthly payment (5/5 ARM, $400k, 2028-01-01 trueup
+to $380,000.00, resolved at `as_of=2028-06-01` and `as_of=2030-06-01`):
+- `state.monthly_payment = $2,337.47` -- byte-identical at both
+  as_of dates inside the fixed window (verified by the existing
+  C13-1 test, which Commit 6 was required to preserve).
+
+### Migration backfill replay (Commit 8 C8-6)
+
+Inputs: representative loans (no payments / partial confirmed
+payments / full term confirmed) processed by
+`_replay_from_origination_inline` in
+`migrations/versions/d3d25212504b_create_loan_anchor_events_table_for_.py`.
+
+Post-fix: the inline loop's running balance after each replayed
+month is byte-identical to the value `generate_schedule` produced
+for the same inputs (confirmed-only, no extras, no rate changes,
+no anchor). The migration is self-contained against the Commit 9
+deletion of `generate_schedule`. Verified by C8-6
+(`test_inline_matches_engine_for_representative_inputs`) and by
+the migration round-trip on a throwaway database
+(`shekel_roundtrip_check`): upgrade head -> downgrade past
+`d3d25212504b` to `cfb15e782f86` -> upgrade head clean. Full
+downgrade to base halts at `a80c3447c153` by design (the C-41 /
+F-069 partial unique index migration is irreversible-by-design
+per `docs/coding-standards.md`, raising `NotImplementedError`
+with the manual recovery SQL); this is pre-existing and unrelated
+to the engine split.
+
+### Engine surface after Commit 9
+
+After the deletion of `generate_schedule` and `calculate_summary`:
+- `grep -rn "generate_schedule\|calculate_summary" app/ migrations/`
+  returns no production references (only the historical commit
+  messages in git, which are not in the working tree).
+- `loan_resolver.py` source contains no `generate_schedule`
+  string (C6-8 lock at
+  `test_no_generate_schedule_in_resolver`).
+- The amortization engine surface is now:
+  `replay_confirmed_history`, `project_forward`,
+  `calculate_monthly_payment`, `calculate_remaining_months`,
+  `calculate_payoff_by_date`, plus the dataclasses
+  (`PaymentRecord`, `RateChangeRecord`, `AmortizationRow`,
+  `ReplayResult`). `AmortizationSummary` was retained in
+  `app/services/amortization_engine.py` because
+  `payoff_calculate` and `dashboard` still construct it as the
+  route-side summary return shape.
 
 ---
 
