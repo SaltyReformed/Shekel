@@ -114,6 +114,32 @@ def _build_chart_data(schedule):
     return labels, balances
 
 
+def _balances_for_chart(rows, target_len):
+    """Build a chart balance list, padded to ``target_len`` with $0.00.
+
+    When a payoff scenario reaches zero before the longest baseline,
+    its trailing months are padded with 0.0 so Chart.js plots all
+    datasets against the same x-axis.  The post-payoff balance IS
+    zero (the loan is gone), so the padding is the literal financial
+    truth, not a visual placeholder.
+
+    Args:
+        rows: Iterable of :class:`AmortizationRow`.  May be shorter
+            than ``target_len``.
+        target_len: Total number of data points the chart expects --
+            typically the length of the original (no-acceleration)
+            baseline.
+
+    Returns:
+        List of floats, length exactly ``target_len``.  Presentation
+        boundary: float() for Chart.js JSON serialization.
+    """
+    balances = [float(row.remaining_balance) for row in rows]
+    if len(balances) < target_len:
+        balances.extend([0.0] * (target_len - len(balances)))
+    return balances
+
+
 def _find_current_period_row(schedule):
     """Find the schedule row for the current or next upcoming payment.
 
@@ -1210,92 +1236,87 @@ def payoff_calculate(account_id):
     state = ctx["state"]
     base_rate = ctx["base_rate"]
     original = ctx["original_for_engine"]
-    orig_principal = Decimal(str(params.original_principal))
-
-    # ARM anchor values: committed and accelerated schedules use the
-    # resolver-derived current balance so forward projections start
-    # from the same dollar figure the loan card displays.  Original
-    # schedule (contractual baseline) does not use an anchor.
-    # Commit 17 will collapse these direct ``generate_schedule``
-    # calls into the resolver as well.
-    anchor_bal = state.current_balance if params.is_arm else None
-    anchor_dt = date.today() if params.is_arm else None
 
     if mode == "extra_payment":
         extra = Decimal(str(data.get("extra_monthly", "0")))
-        payoff_summary = amortization_engine.calculate_summary(
-            current_principal=orig_principal,
-            annual_rate=base_rate,
-            remaining_months=params.term_months,
-            origination_date=params.origination_date,
-            payment_day=params.payment_day,
-            term_months=params.term_months,
-            extra_monthly=extra,
-            original_principal=original,
+
+        # One composer call replaces the previous three direct
+        # ``generate_schedule`` calls plus ``calculate_summary``.
+        # Chart series and summary metrics derive from the same
+        # :class:`PayoffScenarios` return value so they cannot
+        # diverge -- the structural fix for the "extra applied to
+        # ghost historical months" defect documented at
+        # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``.
+        # Replay routes confirmed payments through history (no
+        # acceleration), projection routes projected payments
+        # through ``monthly_override``, and ``extra_monthly`` is
+        # applied only to forward non-override months.
+        scenarios = loan_resolver.compute_payoff_scenarios(
+            loan_params=params,
+            anchor_events=_load_anchor_events(account.id),
             payments=payments,
             rate_changes=rate_changes,
-            anchor_balance=anchor_bal,
-            anchor_date=anchor_dt,
+            extra_monthly=extra,
+            as_of=date.today(),
         )
 
-        # --- Multi-scenario chart data for payoff calculator ---
-        # Original: contractual baseline, no payments, no rate changes.
-        original_schedule = amortization_engine.generate_schedule(
-            orig_principal, base_rate, params.term_months,
-            origination_date=params.origination_date,
-            payment_day=params.payment_day,
-            original_principal=original,
-            term_months=params.term_months,
+        # Chart series: every scenario shares ``history_rows`` and
+        # then diverges.  ``original_forward`` is the longest
+        # baseline (pure contractual, no override, no extra);
+        # committed/accelerated may pay off earlier, in which case
+        # their series are padded with $0.00 (the post-payoff
+        # balance) so all three datasets line up against the same
+        # x-axis of months.  Chart.js plots equal-length arrays
+        # against the shared ``chart_labels``.
+        original_rows = scenarios.history_rows + scenarios.original_forward
+        committed_rows = scenarios.history_rows + scenarios.committed_forward
+        accelerated_rows = (
+            scenarios.history_rows + scenarios.accelerated_forward
         )
-        # Committed: all payments (confirmed + projected), no extra.
-        committed_schedule = amortization_engine.generate_schedule(
-            orig_principal, base_rate, params.term_months,
-            origination_date=params.origination_date,
-            payment_day=params.payment_day,
-            original_principal=original,
-            term_months=params.term_months,
-            payments=payments,
-            rate_changes=rate_changes,
-            anchor_balance=anchor_bal,
-            anchor_date=anchor_dt,
-        )
-        # Accelerated: committed payments + extra_monthly.
-        accelerated_schedule = amortization_engine.generate_schedule(
-            orig_principal, base_rate, params.term_months,
-            extra_monthly=extra,
-            origination_date=params.origination_date,
-            payment_day=params.payment_day,
-            original_principal=original,
-            term_months=params.term_months,
-            payments=payments,
-            rate_changes=rate_changes,
-            anchor_balance=anchor_bal,
-            anchor_date=anchor_dt,
-        )
+        target_len = len(original_rows)
 
-        chart_labels, chart_original = _build_chart_data(original_schedule)
-        _, chart_committed = _build_chart_data(committed_schedule)
-        _, chart_accelerated = _build_chart_data(accelerated_schedule)
+        chart_labels = [
+            row.payment_date.strftime("%b %Y") for row in original_rows
+        ]
+        chart_original = _balances_for_chart(original_rows, target_len)
+        chart_committed = _balances_for_chart(committed_rows, target_len)
+        chart_accelerated = _balances_for_chart(accelerated_rows, target_len)
 
         has_payments = len(payments) > 0
 
-        # Comparison metrics: committed vs. original.
+        # Comparison metrics: committed forward vs. original forward.
+        # Both slices share the same starting state from replay, so
+        # the difference quantifies what the user's planned outlays
+        # save vs. paying pure contractual from today onward.  This
+        # is the load-bearing single-source-of-truth invariant --
+        # months_saved on the chart and the displayed label derive
+        # from the same forward-row lists.
         committed_months_saved = (
-            len(original_schedule) - len(committed_schedule)
+            len(scenarios.original_forward)
+            - len(scenarios.committed_forward)
         )
-        original_interest = sum(
-            (r.interest for r in original_schedule), Decimal("0.00"),
+        original_forward_interest = sum(
+            (r.interest for r in scenarios.original_forward),
+            Decimal("0.00"),
         )
-        committed_interest = sum(
-            (r.interest for r in committed_schedule), Decimal("0.00"),
+        committed_forward_interest = sum(
+            (r.interest for r in scenarios.committed_forward),
+            Decimal("0.00"),
         )
         # Route through round_money so the half-cent boundary follows
-        # the project default ROUND_HALF_UP -- the bare .quantize call
-        # this replaces fell back to Python's ROUND_HALF_EVEN
-        # (banker's), the F-017..F-023 / HIGH-08 divergence axis the
-        # remediation closes (E-26).
+        # the project default ROUND_HALF_UP (E-26).
         committed_interest_saved = round_money(
-            original_interest - committed_interest,
+            original_forward_interest - committed_forward_interest,
+        )
+
+        payoff_summary = AmortizationSummary(
+            monthly_payment=state.monthly_payment,
+            total_interest=scenarios.total_interest_committed,
+            payoff_date=scenarios.payoff_date_committed,
+            total_interest_with_extra=scenarios.total_interest_accelerated,
+            payoff_date_with_extra=scenarios.payoff_date_accelerated,
+            months_saved=scenarios.months_saved,
+            interest_saved=scenarios.interest_saved,
         )
 
         return render_template(
