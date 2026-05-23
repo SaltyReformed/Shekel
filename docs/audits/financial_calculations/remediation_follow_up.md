@@ -2002,4 +2002,115 @@ soft-delete callable; design discussion warranted.
 
 ---
 
+## F-27. Honour projected recurring transfers in `calculate_payoff_by_date`'s "required extra"
+
+- **Surfaced during:** Commit 7 of
+  `docs/plans/2026-05-21-amortization-engine-split-implementation.md`
+  (`refactor(loan): calculate_payoff_by_date and refinance on new
+  primitives`). Deferred deliberately per design decision D-F of
+  that plan (and Q-1 of the architectural plan
+  `docs/plans/2026-05-21-amortization-engine-split-replay-projection.md`);
+  Commit 7 is a behavior-preserving refactor only.
+- **Status:** not addressed.  The refactor onto `project_forward`
+  is intentionally a pure structural migration; introducing
+  `monthly_override` for projected payments here is a separate
+  user-facing behavior change.
+
+### Problem
+
+`amortization_engine.calculate_payoff_by_date` accepts a target
+date and returns the Decimal extra-monthly payment required to
+pay off the loan by that date.  It does NOT consume the user's
+projected payments (the recurring transfer template that pays
+the loan).  A user already paying $500/mo over contractual via
+their template is told they need $X extra; in reality they need
+$X - $500.  The route at
+`app/routes/loan.py:payoff_calculate` `mode == "target_date"`
+already has access to the projected payments via
+`_load_loan_context` (`ctx["payments"]`) -- the function just
+discards them.
+
+The architectural plan refinement #2 spells out the latent issue
+and the Phase 7 paragraph documents that fixing it would change
+the displayed "required extra" for any user with a recurring
+template paying over contractual.  Commit 7 of the
+implementation plan honours that scope boundary explicitly and
+flags this entry as the canonical follow-up.
+
+### Recommended fix
+
+Thread the projected portion of `payments` through
+`calculate_payoff_by_date` as a `monthly_override`-shaped
+parameter, then pass it to both the standard and binary-search
+`project_forward` calls.  Pseudocode:
+
+```python
+def calculate_payoff_by_date(
+    current_principal,
+    annual_rate,
+    remaining_months,
+    target_date,
+    origination_date,
+    payment_day,
+    original_principal=None,
+    term_months=None,
+    rate_changes=None,
+    monthly_override=None,  # NEW
+):
+    # ... derive contractual and starting_date as today ...
+    standard = project_forward(
+        ...,
+        monthly_override=monthly_override,
+        extra_monthly=Decimal("0.00"),
+    )
+    # ... binary search with the same monthly_override ...
+```
+
+Route caller in `payoff_calculate`'s `mode == "target_date"`
+branch builds the override dict from `ctx["payments"]` filtered
+to projected entries past `as_of` (mirroring the composer's
+projection routing in
+`loan_resolver.compute_payoff_scenarios`).
+
+### Decision required before authoring
+
+This is a behaviour change, not a refactor.  Verify with the
+solo developer:
+
+1. Confirm the new "required extra" semantics are desirable
+   (lower numbers for users with recurring templates).
+2. Decide whether the UI should explain the change (a tooltip
+   on the "Required Extra Monthly Payment" label noting that
+   projected transfers are already counted).
+3. Decide whether to keep a "raw" extra calculation alongside
+   the new one (for users who want to know what they would need
+   if they did not have the template).
+
+### Acceptance criteria
+
+- New unit test in
+  `tests/test_services/test_amortization_engine.py` proves that
+  a $500 / month override reduces required extra by ~$500
+  versus the no-override baseline (the hand-computed reduction
+  for the architectural plan's symptom scenario).
+- New route test in `tests/test_routes/test_loan.py` proves the
+  `mode == "target_date"` branch surfaces the lower required
+  extra when a projected recurring transfer template exists.
+- Existing C7-3 / C7-4 / C7-8 assert-unchanged locks updated to
+  reflect the new behaviour (re-pinned per CLAUDE.md Rule 5's
+  documented exception with hand-computed arithmetic per
+  assertion).
+- F-022 invariant + Commit 3 C3-10 regression lock remain
+  green.
+
+### Out of scope
+
+- Refinance calculator (one-off projection; no template
+  semantics).
+- Composer (already honours projections via
+  `monthly_override`).
+- ARM rate-change handling (no change from current behaviour).
+
+---
+
 <!-- Add new follow-up entries above this line, numbered F-2, F-3, ... -->

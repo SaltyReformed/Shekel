@@ -464,13 +464,24 @@ class TestComputeContractualPi:
             # Uses original_principal (not current) and full term.
             assert result == Decimal("1516.96")
 
-    def test_arm_uses_current_principal_and_remaining(
+    def test_arm_fallback_path_uses_original_terms(
         self, app, db, seed_user,
     ):
-        """C1-2: ARM loan re-amortizes from current balance.
+        """C1-2: ARM loan without anchor_events falls back to original terms.
 
-        Uses current_principal ($230k), current interest_rate (7%),
-        and remaining months from origination_date/term_months.
+        The legacy pure-LoanParams call shape (no anchor_events) is
+        the unit-test fallback documented in the
+        :func:`compute_contractual_pi` docstring.  Production callers
+        always go through :func:`load_loan_context`, which loads
+        anchor_events and routes through
+        :func:`loan_resolver.compute_monthly_payment_baseline` for
+        the ARM-aware SSOT value (see
+        :class:`TestComputeContractualPiArmAware`).  This test pins
+        the fallback's behavior: pure ARM call without anchor_events
+        returns the original-terms amortization.
+
+            P = 250000.00, r = 0.07/12, n = 360
+            M = P * [r(1+r)^n] / [(1+r)^n - 1] approx $1,663.26
         """
         with app.app_context():
             params = LoanParams(
@@ -486,11 +497,158 @@ class TestComputeContractualPi:
 
             result = compute_contractual_pi(params)
 
-            # ARM payment should be computed from current_principal,
-            # not original_principal.  Result should be > 0 and
-            # different from what you'd get with original terms.
-            assert result > Decimal("0")
-            assert isinstance(result, Decimal)
+            # Legacy fallback: original-terms amortization, ignores
+            # is_arm because no anchor_events were supplied.
+            # Hand-computed: 250000 * 0.07/12 * (1.005833)^360 /
+            # ((1.005833)^360 - 1) ~= 1663.26.
+            assert result == Decimal("1663.26")
+
+
+class TestComputeContractualPiArmAware:
+    """C1-3..C1-5: ARM-aware behavior of compute_contractual_pi.
+
+    Exercises the production path where :func:`load_loan_context`
+    passes anchor_events + rate_changes + as_of through to
+    :func:`loan_resolver.compute_monthly_payment_baseline`.  Locks
+    the SSOT invariant: the returned value matches
+    ``LoanState.monthly_payment`` for the same inputs, so the escrow-
+    subtraction threshold in :func:`prepare_payments_for_engine`
+    cannot under-subtract escrow for an ARM whose rate has adjusted
+    since origination (the user-reported symptom -- schedule shows
+    a 'Payment' value $33 above the loan card's total because the
+    threshold leaked the original-terms P&I).
+    """
+
+    class _FakeAnchor:
+        """Duck-typed LoanAnchorEvent for the resolver baseline."""
+
+        def __init__(self, anchor_balance, anchor_date, created_at):
+            self.anchor_balance = anchor_balance
+            self.anchor_date = anchor_date
+            self.created_at = created_at
+
+    def test_arm_out_of_window_uses_anchor_balance_and_current_rate(
+        self,
+    ):
+        """C1-3: post-adjustment ARM returns the re-amortized P&I.
+
+        Hand-computed: anchor $177,999.54 at 6.875% over the
+        remaining contractual months (loan originated 2018-12-01,
+        360-month term, as_of 2026-05-21):
+
+            r = 0.06875 / 12 = 0.0057291666...
+            n = calculate_remaining_months(2018-12-01, 360,
+                as_of=2026-05-21)  -- the resolver's helper, which
+                counts calendar months from origination
+            M = 177999.54 * r * (1+r)^n / ((1+r)^n - 1)
+              approx $1,295.19
+
+        Pinning the engine's exact output here; the closed-form
+        derivation above matches within rounding.  A regression
+        that ignored anchor + rate_changes and returned the
+        original-terms value ($1,327.00 from
+        $202000/6.875%/360) would be the user-reported bug.
+        """
+        from app.services.amortization_engine import RateChangeRecord
+        params = LoanParams(
+            account_id=1,
+            original_principal=Decimal("202000.00"),
+            current_principal=Decimal("177999.54"),
+            interest_rate=Decimal("0.06875"),
+            term_months=360,
+            origination_date=date(2018, 12, 1),
+            payment_day=1,
+            is_arm=True,
+            arm_first_adjustment_months=60,  # 5/1 ARM, window ended 2023-12.
+        )
+        anchor = self._FakeAnchor(
+            anchor_balance=Decimal("177999.54"),
+            anchor_date=date(2026, 2, 15),
+            created_at=date(2026, 2, 15),
+        )
+        # ARM rate at 6.875% since origination.
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=date(2018, 12, 1),
+                interest_rate=Decimal("0.06875"),
+            ),
+        ]
+        result = compute_contractual_pi(
+            params,
+            anchor_events=[anchor],
+            rate_changes=rate_changes,
+            as_of=date(2026, 5, 21),
+        )
+        # NOT $1,327.00 (the original-terms value).  The new path
+        # re-amortizes the anchor balance over remaining months at
+        # the current rate.
+        assert result != Decimal("1327.00")
+        # Tight pin: engine returns $1,295.19 to the cent.
+        assert result == Decimal("1295.19")
+
+    def test_fixed_rate_with_anchor_still_returns_original_terms(self):
+        """C1-4: fixed-rate loans return original-terms regardless of anchor.
+
+        Pre-payments accelerate the payoff date on a fixed-rate
+        loan; the contractual P&I stays at the original amount.
+        Routing through the resolver baseline preserves this --
+        the fixed-rate branch in
+        :func:`loan_resolver._compute_monthly_payment` ignores
+        ``current_balance`` and uses ``original_principal``.
+        """
+        params = LoanParams(
+            account_id=1,
+            original_principal=Decimal("240000.00"),
+            current_principal=Decimal("200000.00"),
+            interest_rate=Decimal("0.06500"),
+            term_months=360,
+            origination_date=date(2025, 1, 1),
+            payment_day=1,
+            is_arm=False,
+        )
+        anchor = self._FakeAnchor(
+            anchor_balance=Decimal("200000.00"),
+            anchor_date=date(2026, 5, 1),
+            created_at=date(2026, 5, 1),
+        )
+        result = compute_contractual_pi(
+            params,
+            anchor_events=[anchor],
+            rate_changes=None,
+            as_of=date(2026, 5, 21),
+        )
+        # Original-terms: $240k at 6.5% / 360 = $1,516.96.
+        assert result == Decimal("1516.96")
+
+    def test_empty_anchor_events_falls_back_to_original_terms(self):
+        """C1-5: empty anchor_events list takes the fallback path.
+
+        Mirrors a hypothetical pre-anchor-backfill caller; production
+        callers always pass a non-empty list (Commit 12's backfill
+        invariant).  The empty case is documented as falling back
+        to the original-terms amortization rather than raising,
+        because the function's other consumers (legacy tests, a
+        hypothetical "estimate" UI) want a usable number even
+        without anchor data.
+        """
+        params = LoanParams(
+            account_id=1,
+            original_principal=Decimal("240000.00"),
+            current_principal=Decimal("200000.00"),
+            interest_rate=Decimal("0.06500"),
+            term_months=360,
+            origination_date=date(2025, 1, 1),
+            payment_day=1,
+            is_arm=False,
+        )
+        result = compute_contractual_pi(
+            params,
+            anchor_events=[],
+            rate_changes=None,
+            as_of=date(2026, 5, 21),
+        )
+        # Same as the fallback path.
+        assert result == Decimal("1516.96")
 
 
 # ── Tests for prepare_payments_for_engine ────────────────────────

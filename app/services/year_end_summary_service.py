@@ -1559,7 +1559,9 @@ def _balance_from_schedule_at_date(
     is before the first payment, returns the original principal.
 
     Args:
-        schedule: List of AmortizationRow from generate_schedule().
+        schedule: List of AmortizationRow produced by
+            ``replay_confirmed_history`` + ``project_forward`` (or any
+            chronologically ordered schedule the engine emits).
         target: The date to look up the balance for.
         original_principal: The loan's original principal (balance
             before any payments).

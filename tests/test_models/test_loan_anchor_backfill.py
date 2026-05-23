@@ -514,3 +514,143 @@ class TestDowngradeSmoke:
             or "drop_table('loan_anchor_events'" in downgrade_source
         assert 'drop_table("loan_anchor_sources"' in downgrade_source \
             or "drop_table('loan_anchor_sources'" in downgrade_source
+
+
+# ---------------------------------------------------------------------------
+# C8-4 / C8-6: amortization-engine split Commit 8 (inline replay)
+# ---------------------------------------------------------------------------
+
+
+class TestInlineReplayDecoupling:
+    """C8-4 / C8-6: the migration replay is self-contained, math-equivalent.
+
+    Commit 8 of the amortization-engine split implementation
+    (``docs/plans/2026-05-21-amortization-engine-split-implementation.md``)
+    inlined the migration's replay loop so the migration survives the
+    Commit 9 deletion of the legacy engine schedule function.  These
+    tests pin two properties: (1) the migration module no longer
+    imports or calls the legacy engine function, and (2) the inline
+    helper produces bit-for-bit the same balance the original engine-
+    backed walk produced for the migration's input shape.
+    """
+
+    def test_migration_does_not_reference_engine_module_or_function(self):
+        """C8-4: migration source has zero literal references to the engine call.
+
+        Surface check on the migration's text so a future edit
+        cannot quietly re-introduce the dependency the engine
+        deletion in Commit 9 will break.  ``amortization_engine``
+        and ``generate_schedule`` must both be absent from the
+        migration source (no import, no call, no docstring mention
+        that would mask a real reintroduction during a grep audit).
+        """
+        migration_source = (
+            _MIGRATIONS_DIR
+            / "d3d25212504b_create_loan_anchor_events_table_for_.py"
+        ).read_text()
+        assert "amortization_engine" not in migration_source
+        assert "generate_schedule" not in migration_source
+
+    @pytest.mark.parametrize(
+        "case_name,original_principal,annual_rate,term_months,"
+        "origination_date,payments,expected_balance",
+        [
+            (
+                "no_payments",
+                Decimal("200000.00"),
+                Decimal("0.06500"),
+                360,
+                date(2024, 1, 1),
+                [],
+                # No confirmed payment means ``last_confirmed_balance``
+                # is never captured and the helper returns the original
+                # principal unchanged.
+                Decimal("200000.00"),
+            ),
+            (
+                "three_confirmed_payments",
+                Decimal("200000.00"),
+                Decimal("0.06500"),
+                360,
+                date(2024, 1, 1),
+                [
+                    (date(2024, 2, 1), Decimal("1264.14"), True),
+                    (date(2024, 3, 1), Decimal("1264.14"), True),
+                    (date(2024, 4, 1), Decimal("1264.14"), True),
+                ],
+                # Hand arithmetic at $200,000 / 6.5% / 360, monthly
+                # rate 0.065 / 12 = 0.00541666...:
+                #   month 1: int = 200000 * 0.005416666... = 1083.33
+                #             prin = 1264.14 - 1083.33 = 180.81
+                #             bal  = 199819.19
+                #   month 2: int = 199819.19 * 0.005416666... = 1082.35
+                #             prin = 1264.14 - 1082.35 = 181.79
+                #             bal  = 199637.40
+                #   month 3: int = 199637.40 * 0.005416666... = 1081.37
+                #             prin = 1264.14 - 1081.37 = 182.77
+                #             bal  = 199454.63
+                Decimal("199454.63"),
+            ),
+            (
+                "mixed_confirmed_and_projected",
+                Decimal("250000.00"),
+                Decimal("0.06000"),
+                360,
+                date(2024, 6, 1),
+                [
+                    (date(2024, 7, 1), Decimal("1498.88"), True),
+                    (date(2024, 8, 1), Decimal("1498.88"), True),
+                    (date(2024, 9, 1), Decimal("1498.88"), False),
+                    (date(2024, 10, 1), Decimal("1498.88"), True),
+                    (date(2024, 11, 1), Decimal("1498.88"), False),
+                ],
+                # Hand arithmetic at $250,000 / 6.0% / 360, monthly rate
+                # 0.06 / 12 = 0.005:
+                #   month 1 (Jul, confirmed): int = 1250.00,
+                #     prin = 248.88, bal = 249751.12, last_conf = bal
+                #   month 2 (Aug, confirmed): int = 249751.12 * 0.005
+                #     = 1248.76 (1248.7556 -> ROUND_HALF_UP 1248.76),
+                #     prin = 250.12, bal = 249501.00, last_conf = bal
+                #   month 3 (Sep, projected): int = 249501.00 * 0.005
+                #     = 1247.51 (1247.505 -> ROUND_HALF_UP 1247.51),
+                #     prin = 251.37, bal = 249249.63
+                #     (projected month does NOT update last_conf)
+                #   month 4 (Oct, confirmed): int = 249249.63 * 0.005
+                #     = 1246.25 (1246.24815 -> ROUND_HALF_UP 1246.25),
+                #     prin = 252.63, bal = 248997.00, last_conf = bal
+                #   month 5 (Nov, projected): does NOT update last_conf.
+                Decimal("248997.00"),
+            ),
+        ],
+    )
+    def test_inline_replay_hand_anchored_balance(
+        self, case_name, original_principal, annual_rate, term_months,
+        origination_date, payments, expected_balance,
+    ):
+        """C8-6: inline replay produces the hand-anchored balance.
+
+        Pre-Commit-9 this test cross-checked against
+        ``amortization_engine.generate_schedule``; Commit 9 deletes
+        ``generate_schedule`` and the cross-check moves to
+        hand-computed values for each parametrized case (every
+        ``expected_balance`` is derived inline in the parametrize
+        table from the per-month amortization formula).
+
+        Covers three representative loan shapes: no payments at all
+        (helper returns ``original_principal``), a short run of three
+        confirmed contractual payments (last_confirmed_balance after
+        month 3), and a mixed confirmed / projected run (only
+        confirmed months capture last_confirmed_balance).
+        """
+        inline_result = _M_LOAN_BACKFILL._replay_from_origination_inline(
+            original_principal=original_principal,
+            annual_rate=annual_rate,
+            term_months=term_months,
+            origination_date=origination_date,
+            payments=payments,
+        )
+
+        assert inline_result == expected_balance, (
+            f"{case_name}: inline {inline_result} != "
+            f"hand-anchored {expected_balance}"
+        )

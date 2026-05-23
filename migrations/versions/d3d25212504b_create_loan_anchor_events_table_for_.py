@@ -93,21 +93,32 @@ short-circuits for ARMs (returns the stored value as-is) and falls
 back to the stored value for fixed-rate loans with no payment
 history, both of which would erase the divergence signal this
 backfill depends on.  Instead, the migration ships a small
-:func:`_replay_from_origination` helper that runs the same engine
-(:mod:`app.services.amortization_engine`) with a payment list built
-inline from raw SQL against ``budget.transactions``.  The helper
-applies uniformly to ARM and fixed-rate loans; the ARM-as-trueup
-classification falls out of the divergence rule rather than a special
-case.  Once the loan resolver lands in Commit 13, future backfill or
-migration code should delegate to that resolver instead of
-recomputing the replay here.
+:func:`_replay_from_origination_inline` pure-math helper plus the
+:func:`_replay_from_origination` wrapper that fetches payment rows
+via raw SQL against ``budget.transactions`` and feeds them through
+the inline replay.  The replay applies uniformly to ARM and
+fixed-rate loans; the ARM-as-trueup classification falls out of the
+divergence rule rather than a special case.
+
+The inline replay was originally a delegated call to the
+amortization engine's legacy schedule function; Commit 8 of the
+amortization-engine split implementation
+(``docs/plans/2026-05-21-amortization-engine-split-implementation.md``)
+inlined the math so this migration survives the Commit 9 deletion
+of that legacy function.  The inline reproduces the engine's
+confirmed-payment + contractual-fallback per-month logic for the
+exact input shape the migration uses (confirmed-and-projected
+payments, no ``extra_monthly``, no rate changes, no anchor) and
+preserves the original "balance after the last confirmed row"
+semantic (see the ``last_confirmed_balance`` capture in the inline
+helper).
 
 **Self-contained dependency policy.** This migration intentionally
-imports only :mod:`app.services.amortization_engine` -- a pure-math
-module with no schema reads, no ORM models, no ``ref_cache`` calls,
-and no Flask coupling.  Everything else (loan enumeration, scenario
-lookup, shadow-income payment history) goes through raw SQL.  The
-original draft of this migration imported
+imports nothing from :mod:`app` -- not models, not services, not
+``ref_cache``.  All schema reads (loan enumeration, scenario lookup,
+shadow-income payment history) go through raw SQL against the
+catalog this migration is itself constructing.  The original draft
+of this migration imported
 :mod:`app.services.loan_payment_service` and :mod:`app.models.*`,
 which produced a circular bootstrap deadlock: ``ref_cache.init()``
 needed ``ref.loan_anchor_sources`` (a table this migration creates),
@@ -128,7 +139,7 @@ the new INSERTs are captured).
 """
 
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 import sqlalchemy as sa
 from alembic import op
@@ -236,28 +247,214 @@ _BASELINE_SCENARIO_SQL = (
 )
 
 
+_TWO_PLACES = Decimal("0.01")
+
+
+def _replay_from_origination_inline(
+    *,
+    original_principal: Decimal,
+    annual_rate: Decimal,
+    term_months: int,
+    origination_date: date,
+    payments: list[tuple[date, Decimal, bool]],
+) -> Decimal:
+    """Replay shadow-income history forward from origination, in pure math.
+
+    Reproduces the subset of the legacy
+    ``app.services`` schedule function the migration needs
+    (confirmed-and-projected payments, no ``extra_monthly``, no
+    rate changes, no anchor) and returns the running balance
+    captured AFTER the last confirmed payment is applied.  When no
+    confirmed payment row is encountered the helper returns
+    ``original_principal`` -- matching the original
+    ``for row in reversed(schedule): if row.is_confirmed`` walk
+    that returned the stored origination value when the legacy
+    schedule contained no confirmed rows.
+
+    Inlined here so the migration is self-contained against the
+    Commit 9 deletion of the legacy schedule function (see Commit 8
+    of
+    ``docs/plans/2026-05-21-amortization-engine-split-implementation.md``).
+    The per-month math mirrors the legacy engine bit-for-bit for
+    the migration's input shape; future drift between the engine
+    and this helper is acceptable because the engine has many
+    features (rate changes, anchors, ``extra_monthly``,
+    ``monthly_override``) the migration intentionally does not
+    need.
+
+    Two per-month branches mirror the legacy engine's
+    recorded-month branch and its contractual fallback:
+
+    * **Month with a recorded payment.** Interest accrues on the
+      running balance; principal portion is ``total_payment -
+      interest`` (may be negative -- negative amortization is valid
+      for an underpayment).  The balance is reduced by the
+      principal portion, capped at zero on overpayment.  The
+      post-update balance is captured as ``last_confirmed_balance``
+      only when ALL payments contributing to the month-key are
+      confirmed (mirroring the engine's
+      ``confirmed_by_month[key] = confirmed_by_month[key] and ...``
+      AND-reduction in ``_build_payment_lookups``).
+
+    * **Month with no recorded payment.** Contractual fallback:
+      principal portion is ``monthly_payment - interest`` where
+      ``monthly_payment`` is the standard amortization formula
+      evaluated at origination terms.  The final row absorbs the
+      remaining balance exactly (mirrors the engine's
+      ``is_final`` branch).  The balance change is real (the engine
+      walked these months too) but ``last_confirmed_balance`` is
+      NOT updated because the schedule row would have
+      ``is_confirmed=False`` and the migration's
+      ``reversed(schedule)`` walk skipped it.
+
+    Loop cap matches the engine's ``using_contractual`` branch:
+    ``2 * term_months`` (engine source's ``remaining_months +
+    term_months`` with ``remaining_months == term_months`` from the
+    migration's call site).  Termination on ``balance <= 0`` is the
+    realistic exit; the cap exists to guarantee the loop halts.
+
+    Args:
+        original_principal: Loan amount at origination.  Returned
+            verbatim when the loan is degenerate (``<= 0`` or zero
+            term) or when no payment row is confirmed.
+        annual_rate: Annual interest rate as a Decimal-coercible
+            value (e.g. ``Decimal("0.065")`` for 6.5%).
+        term_months: Original loan term in months.  Used both for
+            the contractual-payment formula and as the loop cap.
+        origination_date: Loan origination date.  Payments dated
+            before this are filtered (mirrors the engine's
+            pre-origination filter in
+            ``_build_payment_lookups``).
+        payments: ``(payment_date, amount, is_confirmed)`` tuples.
+            Pre-origination entries are filtered.  Multiple entries
+            sharing a ``(year, month)`` key are summed; the
+            corresponding ``is_confirmed`` flag is AND-reduced
+            across them.
+
+    Returns:
+        Decimal: balance after the last confirmed payment applied,
+        or ``original_principal`` when no confirmed payment row was
+        encountered.  Quantized to cents via ``ROUND_HALF_UP``.
+    """
+    orig_principal_dec = Decimal(str(original_principal))
+    if orig_principal_dec <= 0 or term_months <= 0:
+        return orig_principal_dec
+
+    amount_by_month: dict[tuple[int, int], Decimal] = {}
+    confirmed_by_month: dict[tuple[int, int], bool] = {}
+    for pay_date, amount, is_confirmed in payments:
+        if pay_date < origination_date:
+            continue
+        key = (pay_date.year, pay_date.month)
+        amount_by_month[key] = (
+            amount_by_month.get(key, Decimal("0")) + Decimal(str(amount))
+        )
+        if key in confirmed_by_month:
+            confirmed_by_month[key] = confirmed_by_month[key] and is_confirmed
+        else:
+            confirmed_by_month[key] = is_confirmed
+
+    if not amount_by_month:
+        return orig_principal_dec
+
+    annual_rate_dec = Decimal(str(annual_rate))
+    monthly_rate = (
+        annual_rate_dec / 12 if annual_rate_dec > 0 else Decimal("0")
+    )
+
+    if monthly_rate <= 0:
+        monthly_payment = (orig_principal_dec / term_months).quantize(
+            _TWO_PLACES, rounding=ROUND_HALF_UP,
+        )
+    else:
+        factor = (Decimal("1") + monthly_rate) ** term_months
+        monthly_payment = (
+            orig_principal_dec * (monthly_rate * factor)
+            / (factor - Decimal("1"))
+        ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+
+    max_months = term_months * 2
+
+    balance = orig_principal_dec
+    last_confirmed_balance: Decimal | None = None
+
+    pay_year = origination_date.year
+    pay_month = origination_date.month + 1
+    if pay_month > 12:
+        pay_month = 1
+        pay_year += 1
+
+    for month_num in range(1, max_months + 1):
+        if balance <= 0:
+            break
+
+        interest = (balance * monthly_rate).quantize(
+            _TWO_PLACES, rounding=ROUND_HALF_UP,
+        )
+        month_key = (pay_year, pay_month)
+
+        if month_key in amount_by_month:
+            total_payment = amount_by_month[month_key]
+            principal_portion = total_payment - interest
+            if principal_portion >= balance:
+                balance = Decimal("0.00")
+            else:
+                balance = (balance - principal_portion).quantize(
+                    _TWO_PLACES, rounding=ROUND_HALF_UP,
+                )
+                if balance < 0:
+                    balance = Decimal("0.00")
+            if confirmed_by_month[month_key]:
+                last_confirmed_balance = balance
+        else:
+            principal_portion = monthly_payment - interest
+            is_final = (
+                principal_portion >= balance or month_num == max_months
+            )
+            if is_final:
+                balance = Decimal("0.00")
+            else:
+                balance = (balance - principal_portion).quantize(
+                    _TWO_PLACES, rounding=ROUND_HALF_UP,
+                )
+                if balance < 0:
+                    balance = Decimal("0.00")
+
+        if balance <= 0:
+            break
+
+        pay_month += 1
+        if pay_month > 12:
+            pay_month = 1
+            pay_year += 1
+
+    if last_confirmed_balance is None:
+        return orig_principal_dec
+    return last_confirmed_balance
+
+
 def _replay_from_origination(
     connection, account_id, scenario_id, original_principal,
-    interest_rate, term_months, origination_date, payment_day,
+    interest_rate, term_months, origination_date,
 ):
-    """Replay confirmed payments through the amortization engine.
+    """Fetch shadow-income payment history and replay it from origination.
 
-    Runs the full life-of-loan schedule from
-    ``original_principal`` at ``origination_date`` with the loan's
-    stored ``interest_rate``, replaying every confirmed shadow
-    income transaction (the source the resolver in Commit 13 will
-    also consume).  Returns the ``remaining_balance`` of the last
-    confirmed row, or ``original_principal`` when no confirmed
-    payments exist.
+    Thin wrapper around :func:`_replay_from_origination_inline`:
+    this function owns the raw-SQL fetch against
+    ``budget.transactions`` (via :data:`_PAYMENT_HISTORY_SQL`) and
+    delegates the pure-math replay to the inline helper.  Returns
+    the ``remaining_balance`` after the last confirmed payment, or
+    ``original_principal`` when no confirmed payments exist.
 
     Differs from ``debt_strategy._compute_real_principal`` on two
     counts: it does NOT short-circuit for ARMs (the divergence
     signal is the whole point of the backfill), and it does NOT
     fall back to stored ``current_principal`` (which would erase
     divergence for a fixed-rate loan with no payments).  Once the
-    loan resolver lands in Commit 13, future migrations should
-    delegate to it; this helper is intentionally local so Commit 12
-    does not depend on code that does not yet exist.
+    loan resolver lands in a future commit, migrations could
+    delegate to it; this helper is intentionally local so this
+    migration does not depend on code that may be refactored
+    beneath it.
 
     All loan attributes are passed as primitives rather than via
     an ORM ``LoanParams`` instance so the migration does not need
@@ -275,58 +472,37 @@ def _replay_from_origination(
         interest_rate: Decimal-coercible annual interest rate.
         term_months: Integer loan term in months.
         origination_date: ``date`` the loan originated.
-        payment_day: Day-of-month the payment is due (1-31).
 
     Returns:
         Decimal: from-origination balance after replaying confirmed
-        payments, in storage precision (Numeric(12,2) quantized by
-        the engine).
+        payments, in storage precision (Numeric(12,2) quantized).
     """
-    # pylint: disable=import-outside-toplevel
-    # ``amortization_engine`` is the one app import this migration
-    # keeps -- it is pure math (no ORM, no ref_cache, no Flask) so
-    # it is safe for migration-time use.  A future rename or removal
-    # would surface immediately on the next migration replay; that
-    # is acceptable because the replay would fail loud, not silently.
-    from app.services import amortization_engine
-
     orig_principal = Decimal(str(original_principal))
     rate = Decimal(str(interest_rate))
 
     if scenario_id is None:
-        payments = []
-    else:
-        payment_rows = connection.execute(
-            sa.text(_PAYMENT_HISTORY_SQL),
-            {"acct": account_id, "scen": scenario_id},
-        ).fetchall()
-        payments = [
-            amortization_engine.PaymentRecord(
-                payment_date=row.payment_date,
-                amount=Decimal(str(row.amount)),
-                is_confirmed=row.is_confirmed,
-            )
-            for row in payment_rows
-        ]
-
-    if not payments:
         return orig_principal
 
-    schedule = amortization_engine.generate_schedule(
-        current_principal=orig_principal,
-        annual_rate=rate,
-        remaining_months=term_months,
-        origination_date=origination_date,
-        payment_day=payment_day,
+    payment_rows = connection.execute(
+        sa.text(_PAYMENT_HISTORY_SQL),
+        {"acct": account_id, "scen": scenario_id},
+    ).fetchall()
+
+    if not payment_rows:
+        return orig_principal
+
+    payments = [
+        (row.payment_date, Decimal(str(row.amount)), row.is_confirmed)
+        for row in payment_rows
+    ]
+
+    return _replay_from_origination_inline(
         original_principal=orig_principal,
+        annual_rate=rate,
         term_months=term_months,
+        origination_date=origination_date,
         payments=payments,
     )
-
-    for row in reversed(schedule):
-        if row.is_confirmed:
-            return row.remaining_balance
-    return orig_principal
 
 
 def _backfill_trueup_events(connection):
@@ -396,7 +572,6 @@ def _backfill_trueup_events(connection):
             interest_rate=loan.interest_rate,
             term_months=loan.term_months,
             origination_date=loan.origination_date,
-            payment_day=loan.payment_day,
         )
 
         if loan.is_arm:

@@ -572,15 +572,26 @@ class TestMortgageInterest:
         periods = seed_periods
         mortgage_acct, params = _create_mortgage_account(user, periods)
 
-        # Compute expected interest from the amortization engine.
-        schedule = amortization_engine.generate_schedule(
-            current_principal=params.original_principal,
+        # Compute expected interest from the amortization engine via
+        # ``project_forward`` (the canonical projection primitive after
+        # the Commit 9 deletion of ``generate_schedule``).  Starting
+        # date is origination + 1 month, the same first scheduled
+        # ``payment_date`` the old surface produced.
+        starting_date = amortization_engine.advance_to_next_payment_date(
+            params.origination_date, params.payment_day,
+        )
+        contractual = amortization_engine.calculate_monthly_payment(
+            params.original_principal,
+            params.interest_rate,
+            params.term_months,
+        )
+        schedule = amortization_engine.project_forward(
+            starting_balance=params.original_principal,
+            starting_date=starting_date,
             annual_rate=params.interest_rate,
             remaining_months=params.term_months,
-            origination_date=params.origination_date,
             payment_day=params.payment_day,
-            original_principal=params.original_principal,
-            term_months=params.term_months,
+            contractual_payment=contractual,
         )
         expected_interest = sum(
             row.interest for row in schedule
@@ -645,14 +656,23 @@ class TestMortgageInterest:
         db.session.commit()
 
         # Expected: first payment Aug 1 2026.  5 or 6 payments in 2026.
-        schedule = amortization_engine.generate_schedule(
-            current_principal=params.original_principal,
+        # Projection via ``project_forward`` (Commit 9 of the
+        # amortization-engine split removed ``generate_schedule``).
+        starting_date = amortization_engine.advance_to_next_payment_date(
+            params.origination_date, params.payment_day,
+        )
+        contractual = amortization_engine.calculate_monthly_payment(
+            params.original_principal,
+            params.interest_rate,
+            params.term_months,
+        )
+        schedule = amortization_engine.project_forward(
+            starting_balance=params.original_principal,
+            starting_date=starting_date,
             annual_rate=params.interest_rate,
             remaining_months=params.term_months,
-            origination_date=params.origination_date,
             payment_day=params.payment_day,
-            original_principal=params.original_principal,
-            term_months=params.term_months,
+            contractual_payment=contractual,
         )
         expected = sum(
             r.interest for r in schedule if r.payment_date.year == YEAR
