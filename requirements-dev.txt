@@ -26,3 +26,14 @@ PyYAML==6.0.3
 pylint==4.0.5
 pylint-flask==0.6
 pylint-flask-sqlalchemy==0.2.0
+
+# Manual mobile / browser verification harness.  Drives a headless
+# Chromium at iPhone-sized viewports against the local dev Flask
+# server; the runnable scripts live under tests/manual/ and are
+# operator-invoked, not pytest-collected (filename pattern is outside
+# pytest.ini's python_files = test_*.py).  After ``pip install`` the
+# Chromium binary still has to be fetched once with
+# ``playwright install chromium`` (writes to ~/.cache/ms-playwright,
+# ~150 MiB).  Used by tests/manual/save_dev_session.py and
+# tests/manual/verify_mobile_grid_*.py.
+playwright==1.60.0

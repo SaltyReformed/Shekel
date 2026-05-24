@@ -124,6 +124,83 @@ M. Ask: "Ready to commit and push to dev?"
 - After PR merge, resync `dev`:
   `git fetch origin && git checkout dev && git merge origin/main && git push origin dev`.
 
+## Manual browser verification (mobile / UI commits)
+
+Pytest verifies that the server emits the right HTML; it does NOT
+verify what the browser actually renders, how Bootstrap's JS reacts
+to taps, or whether a layout collapses at a small viewport.  For any
+commit that touches a Jinja partial, CSS, or JS in the grid /
+mobile / form layer, run the Playwright harness in
+`tests/manual/` as part of the per-commit final gate.
+
+### Setup (one-time per environment)
+
+```bash
+pip install -r requirements-dev.txt          # pulls playwright
+.venv/bin/playwright install chromium        # downloads ~150 MiB
+.venv/bin/python tests/manual/save_dev_session.py
+# Prompts for email + password via getpass.  Password is read from
+# the TTY, never echoed, never enters Claude's context, never lands
+# in shell history.  Stored cookie goes to
+# tests/manual/.dev_session_state.json (gitignored).
+```
+
+Re-run `save_dev_session.py` whenever the saved session expires or
+after any logout.
+
+### Per-commit invocation
+
+If the commit ships a verification script in `tests/manual/`
+(named `verify_*.py`), run it:
+
+```bash
+.venv/bin/python tests/manual/verify_<topic>.py
+```
+
+Each script prints a per-check pass/fail summary and writes
+screenshots to `tests/manual/screenshots/`.  Exit code 0 = all
+checks passed.
+
+If the commit touches a UI surface that has no existing verification
+script, ASK whether to ship one as part of the commit (it doubles
+as a regression lock for later commits).  The harness pattern is
+documented in `tests/manual/verify_mobile_grid_commit6.py`:
+storage_state for auth, headless Chromium at 375x812, per-check
+function with a `CheckResult` dataclass, full-page screenshots at
+each interaction step.
+
+### Why this is in the per-commit gate, not "nice to have"
+
+The pytest suite asserts every server-rendered HTML invariant.  But
+the JavaScript layer -- Bootstrap tab JS, HTMX swap targets, the
+mobile bottom-sheet drag handlers, the hash-routing handler that
+keeps the active tab pinned after a full GET -- is not covered.
+A Jinja change that leaves the server-rendered HTML byte-equivalent
+can still break the browser-visible UX (a renamed selector that
+JS still queries by old id, a removed class that CSS still styles
+on, a moved element that Bootstrap's tab JS can no longer find).
+Running the Playwright harness catches these before the commit
+lands.
+
+The dev Flask server must be running (`flask run --host 172.32.0.1`
+on the bare host, or the containerised path from F-2 in
+`docs/mobile_follow_up.md` once that lands).  The harness targets
+`http://172.32.0.1:5000` directly -- bypasses nginx so the
+LAN-allowlist on `shekel-dev.saltyreformed.com` does not need to
+permit Claude's host-loopback origin.
+
+### Reporting
+
+Treat the verification output the same way as the pytest output:
+include the final summary line in section E of the work summary
+(or a sibling label, e.g. "E2. Manual browser verification:
+22/22 passed, screenshots in tests/manual/screenshots/").  If any
+check fails, treat it as a failing test per CLAUDE.md rule 4 --
+fix the underlying issue, do not edit the harness to hide the
+failure.
+
+---
+
 ## Common verification grep commands
 
 - **No Flask in services:**
