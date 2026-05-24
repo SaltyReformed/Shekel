@@ -1,0 +1,135 @@
+{# Grid row macros -- single source for matching-driven row rendering.
+
+   Both macros consume `matched_by_row_period`, the precomputed
+   dict that app/routes/grid.py::index will build in Commit 2 of
+   the mobile-first v3 implementation; key shape is
+   `(category_id, template_id, txn_name, period_id) ->
+   list[Transaction]` with `.get(key, [])` for the empty case.
+   The macros reuse the existing cell partials
+   (grid/_transaction_cell.html for desktop matched cells,
+   grid/_transaction_empty_cell.html for empty desktop cells);
+   no cell markup is duplicated here.
+
+   This commit (Phase 1, Commit 1) adds the macros alongside the
+   inline matching loops in grid.html and _mobile_grid.html.  No
+   template imports them yet -- Commits 3 and 4 switch each side
+   to the macro.  Output stays byte-equivalent for now.
+
+   Jinja globals consumed (registered in app/jinja_globals.py):
+     STATUS_PROJECTED, STATUS_CREDIT.
+#}
+
+{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, txn_type_id, account, today) -%}
+{#- Desktop grid row.  Emits one <tr> containing the sticky row
+    label (<th scope="row">) followed by one <td class="text-end
+    cell"> per visible period.  Group-header rows are emitted by
+    the caller (the v1 grid.html convention: one
+    `<tr class="group-header-row">` per rk.group_name change,
+    outside this row).
+
+    Each matched transaction is wrapped in
+    `<div id="txn-cell-{{ txn.id }}">` so HTMX cell-swap targets
+    keep resolving once Commit 3 switches grid.html to call this
+    macro.
+
+    `today` is accepted for caller-shape parity with the grid
+    route's context; it is intentionally unread here.  The
+    today-dependent grid chrome (current-period highlight,
+    carry-forward button) lives in the <thead> rather than in
+    row cells, so the macro body has no use for it.
+-#}
+<tr>
+  <th scope="row" class="sticky-col row-label" title="{{ rk.group_name }}: {{ rk.item_name }}">
+    {{ rk.display_name }}
+  </th>
+  {% for period in periods %}
+    {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+    <td class="text-end cell">
+      {% if matched %}
+        {% for txn in matched %}
+          <div id="txn-cell-{{ txn.id }}">
+            {% set found = namespace(txn=txn) %}
+            {% include "grid/_transaction_cell.html" with context %}
+          </div>
+        {% endfor %}
+      {% else %}
+        {% set category = rk.category %}
+        {% include "grid/_transaction_empty_cell.html" with context %}
+      {% endif %}
+    </td>
+  {% endfor %}
+</tr>
+{%- endmacro %}
+
+
+{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True) -%}
+{#- Mobile grid card.  Emits zero or more
+    <li class="list-group-item ... mobile-txn-card"> entries --
+    one per matched transaction for the given (rk, period) cell.
+    Group-header rows (the v1
+    `<li class="... mobile-group-header">` that appears once per
+    rk.group_name change) remain the caller's responsibility,
+    matching the v1 _mobile_grid.html pattern where the header
+    lives inside the `{% if matched %}` guard.
+
+    can_edit (default True): owner-side rendering.  Emits
+    `data-mobile-txn-id` plus -- for transfer shadows --
+    `data-mobile-xfer-id`; mobile_grid.js reads these to open
+    the bottom-sheet popover on tap.
+
+    can_edit=False: companion read-only consumer (wired in
+    Commit 13 of the mobile-first v3 implementation).  Drops
+    both `data-mobile-*` attributes so a tap no longer opens
+    the bottom sheet.  The per-card Mark Paid button arrives
+    later via `_mobile_card_actions.html` (Commit 7) at the
+    action-bar layer; companions retain that path because they
+    are allowed to mark paid per the existing entries-blueprint
+    precedent.
+
+    NOTE: the `data-mobile-xfer-id` guard uses `txn.transfer_id`
+    rather than a (not-yet-defined) `txn.is_transfer_shadow`
+    property to preserve the v1 _mobile_grid.html:101 predicate
+    text-for-text.  Adding the property is a Transaction-model
+    change that is out of scope for this template-only commit;
+    if it lands later, swap the guard here in one place.
+-#}
+{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+{% for txn in matched %}
+  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+  {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
+  {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
+  {% if show_progress %}
+    {% set remaining = es.remaining %}
+    {% set over_budget = es.over_budget %}
+  {% endif %}
+  <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
+      {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
+      {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
+      role="button" tabindex="0"
+      aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
+    <span class="text-truncate me-2">
+      {{ rk.display_name }}
+      {% if txn.status %}
+        {% if txn.status.is_settled %}
+          <span class="badge-done ms-1">&#10003;</span>
+        {% elif txn.status_id == STATUS_CREDIT %}
+          <span class="badge-credit ms-1">CC</span>
+        {% endif %}
+      {% endif %}
+      {% if txn.transfer_id %}
+        <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
+      {% endif %}
+      {% if txn.credit_payback_for_id %}
+        <span class="badge-credit ms-1">CC</span>
+      {% endif %}
+    </span>
+    <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
+      {% if show_progress %}
+        ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+      {% else %}
+        ${{ "{:,.0f}".format(display_amount) }}
+      {% endif %}
+    </span>
+  </li>
+{% endfor %}
+{%- endmacro %}
