@@ -997,15 +997,70 @@ td.htmx-loading::after {
 /* =============================================
    MOBILE GRID CARD VIEW
    ============================================= */
+/* The card itself must be opaque and relatively positioned so the
+   swipe-action button (absolute, anchored to the wrapper's right edge)
+   sits visually behind it.  When `.swiped` is added by mobile_grid.js
+   the card translates left -80 px, revealing the button underneath --
+   the iOS Mail "swipe-left for options" idiom.  Two values are folded
+   into the existing `transition` list (`background-color` + the new
+   `transform`) so the hover/focus background change keeps animating
+   alongside the swipe.  See Commit 9 of the mobile-first v3
+   implementation. */
 .mobile-txn-card {
   cursor: pointer;
-  transition: background-color 0.1s;
+  position: relative;
+  transition: background-color 0.1s, transform 150ms ease-out;
   min-height: 44px;
+  background: var(--bs-body-bg);
 }
 
 .mobile-txn-card:active,
 .mobile-txn-card:focus-visible {
   background-color: rgba(var(--shekel-accent-rgb), 0.10);
+}
+
+/* Per-card wrapper.  `position: relative` makes the wrapper the
+   containing block for `.swipe-action-mark-paid`'s absolute
+   positioning; `overflow: hidden` clips the card when it translates
+   off-screen left so the wrapper does not horizontally scroll the
+   page.  See `render_row_card` in `_grid_row_macros.html`. */
+.mobile-card-wrapper {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Swipe-revealed state -- mobile_grid.js adds `.swiped` when the
+   touchend handler detects a horizontal-dominant left swipe past the
+   50 px threshold (matching the existing period-nav swipe threshold).
+   `transform: translateX(-80px)` matches the swipe-action button's
+   80 px width so the button is fully exposed at rest. */
+.mobile-txn-card.swiped {
+  transform: translateX(-80px);
+}
+
+/* Swipe-action Mark Paid button.  Anchored to the wrapper's right
+   edge under the card; revealed by the card's swipe-left transform.
+   Width 80 px = the card's translateX magnitude.  height: 100 % so
+   the button fills the card vertically -- the card's min-height of
+   44 px is the floor (matching CLAUDE.md / WCAG 2.5.5 touch-target
+   minimum); height matches whatever the card grew to.  No inline
+   style attributes here -- CSP `style-src 'self'` blocks them.
+   `aria-label` on the button (set in `render_row_card`) is the
+   accessible name screen readers announce; the visible "Paid"
+   text and the bi-check2 icon are decorative redundancy. */
+.swipe-action-mark-paid {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 80px;
+  height: 100%;
+  background: var(--bs-success);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  font-size: 0.85rem;
 }
 
 #mobile-grid .card-header[data-bs-toggle="collapse"] {

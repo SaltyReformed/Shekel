@@ -114,6 +114,24 @@
     text-for-text.  Adding the property is a Transaction-model
     change that is out of scope for this template-only commit;
     if it lands later, swap the guard here in one place.
+
+    Swipe-action button (Commit 9): a `<button
+    class="swipe-action-mark-paid">` is emitted as the FIRST child
+    of `.mobile-card-wrapper` so it sits visually behind the card
+    (DOM order + no z-index = later siblings stack above).  The
+    card's `position: relative; background: var(--bs-body-bg)` in
+    `app.css` covers the button at rest; `.mobile-txn-card.swiped`
+    translates the card -80 px left to reveal it.  The button is
+    suppressed for any settled status (matching the action-bar
+    Mark Paid guard at `_mobile_card_actions.html:60`) -- mark_done
+    rejects settled transitions with a 400 and a swipe revealing a
+    button that 400s is worse UX than a swipe that does nothing.
+    The button is preserved for `can_edit=False` (companion render
+    path) per R-7 / the existing entries-blueprint precedent that
+    companions are allowed to mark paid.  CSRF rides on the
+    existing `htmx:configRequest` handler in `app/static/js/app.js`
+    (mobile-first v3 plan Section 1 rule 6); no inline token
+    needed.
 -#}
 {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
 {% for txn in matched %}
@@ -126,6 +144,15 @@
   {% endif %}
   {% set _aid = "card-actions-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
   <div class="mobile-card-wrapper">
+    {% if txn.status and not txn.status.is_settled %}
+      <button type="button" class="swipe-action-mark-paid"
+              hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
+              hx-target="#txn-cell-{{ txn.id }}"
+              hx-swap="outerHTML"
+              aria-label="Mark {{ txn.name }} paid">
+        <i class="bi bi-check2" aria-hidden="true"></i> Paid
+      </button>
+    {% endif %}
     <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
         {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
         {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}

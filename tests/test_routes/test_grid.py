@@ -5091,3 +5091,341 @@ class TestMobileCardActionBar:
             pane = body[pane_start:]
             assert 'id="mobile-prev-btn"' in pane
             assert 'id="mobile-next-btn"' in pane
+
+
+class TestMobileSwipeAction:
+    """Regression locks for the swipe-left Mark Paid affordance
+    (Commit 9 of the mobile-first v3 implementation).
+
+    The gesture itself lives in ``app/static/js/mobile_grid.js`` and
+    cannot run inside a pytest process (no real touch events, no
+    Bootstrap collapse JS).  These tests pin the SERVER-RENDERED
+    contract the gesture depends on:
+
+      - ``render_row_card`` emits a ``<button
+        class="swipe-action-mark-paid">`` as the first child of
+        ``.mobile-card-wrapper`` (DOM order so the card stacks
+        above the button when both share a stacking context).
+      - The button's HTMX wiring posts to ``transactions.mark_done``
+        with the row's cell as the swap target and ``outerHTML`` as
+        the swap mode -- the same shape the inline action bar's
+        Mark Paid form already uses, so both the gesture and the
+        non-gesture path commit through one endpoint.
+      - The button is preserved on the companion render
+        (``can_edit=False``) per R-7 / the existing entries-
+        blueprint precedent that companions are allowed to mark
+        paid; only the bottom-sheet / Edit Amount affordances on
+        the action bar are dropped for companions, not Mark Paid.
+      - The button is SUPPRESSED for already-settled
+        transactions, matching the action-bar Mark Paid guard at
+        ``_mobile_card_actions.html:60``.  Suppressing the button
+        rather than letting the user swipe and see a 400 from
+        ``mark_done`` aligns the gesture path with the inline
+        action-bar guard discovered in the action-bar fix that
+        landed in Commit 7.
+      - The JS swipe handler uses ``passive: true`` (R-8 of the
+        plan) and the same 50 px horizontal threshold as the
+        existing period-nav swipe at the top of ``init()``.
+
+    Direct-macro rendering (rather than scraping a full ``/grid``
+    response) is the right tool for the companion / settled
+    branches because the owner ``/grid`` route always passes
+    ``can_edit=True`` and the seeded settled-vs-projected mix in
+    ``seed_user`` is not load-bearing for the assertion.
+    """
+
+    @staticmethod
+    def _render_row_card(
+        app, *, txn, category, period, can_edit=True, id_prefix="",
+    ):
+        """Render ``render_row_card`` with a single matched txn.
+
+        Builds a ``RowKey`` and a ``matched_by_row_period`` dict
+        mirroring the shape ``grid.index`` would have produced for the
+        given txn, then renders the macro through a small
+        ``from_string`` wrapper.  Keeps the assertion target -- the
+        macro's HTML output -- in front of the test and not buried
+        inside a full ``/grid`` page.
+        """
+        from app.routes.grid import RowKey  # pylint: disable=import-outside-toplevel
+
+        rk = RowKey(
+            category_id=category.id,
+            template_id=txn.template_id,
+            txn_name=txn.name,
+            group_name=category.group_name,
+            item_name=category.item_name,
+            display_name=txn.name,
+            category=category,
+        )
+        matched_by_row_period = {
+            (rk.category_id, rk.template_id, rk.txn_name, period.id): [txn],
+        }
+        template = app.jinja_env.from_string(
+            "{% from 'grid/_grid_row_macros.html' import render_row_card %}"
+            "{{ render_row_card(rk, period, matched_by_row_period, "
+            "entry_sums, can_edit, id_prefix) }}"
+        )
+        with app.test_request_context("/"):
+            return template.render(
+                rk=rk,
+                period=period,
+                matched_by_row_period=matched_by_row_period,
+                entry_sums={},
+                can_edit=can_edit,
+                id_prefix=id_prefix,
+            )
+
+    def test_swipe_action_button_emitted(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C9-1: ``render_row_card`` emits a swipe-action button
+        sibling for a Projected txn on the live ``/grid`` page.
+
+        Integration check: locks the macro change against the
+        rendered page so a future refactor that drops the wrapper
+        emission would fail loudly here even if a unit-render test
+        somehow passed.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C9-1 Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("23.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # At least one swipe-action button exists on the page.
+            assert 'class="swipe-action-mark-paid"' in body
+            # That button targets the new txn's mark-done route.
+            assert f'/transactions/{txn.id}/mark-done' in body
+
+    def test_swipe_action_hx_post_targets_mark_done(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C9-2: the swipe-action button posts to ``mark_done`` and
+        swaps the row's cell ``outerHTML``.
+
+        Locks the three HTMX attributes the gesture depends on: the
+        post URL, the swap target (the row's ``#txn-cell-<id>``),
+        and the swap mode (``outerHTML``).  These mirror the inline
+        action bar's Mark Paid form so both paths produce the same
+        update on success.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            cat = seed_user["categories"]["Groceries"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C9-2 Projected Groceries",
+                category_id=cat.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("17.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_row_card(
+                app, txn=txn, category=cat, period=current,
+            )
+
+            assert 'class="swipe-action-mark-paid"' in rendered
+            assert f'hx-post="/transactions/{txn.id}/mark-done"' in rendered
+            assert f'hx-target="#txn-cell-{txn.id}"' in rendered
+            assert 'hx-swap="outerHTML"' in rendered
+
+    def test_swipe_action_present_for_companion(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C9-3: the swipe-action button is emitted for
+        ``can_edit=False`` (the companion render path per R-7).
+
+        Companions can mark paid via the existing entries-blueprint
+        precedent, so the gesture-shortcut Paid button must remain
+        available to them.  Only the owner-only buttons (Edit
+        Amount, Open Full -- both inside the inline action bar) are
+        dropped at ``can_edit=False``.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            cat = seed_user["categories"]["Groceries"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C9-3 Companion Projected Groceries",
+                category_id=cat.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("19.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_row_card(
+                app, txn=txn, category=cat, period=current, can_edit=False,
+            )
+
+            assert 'class="swipe-action-mark-paid"' in rendered
+            assert f'/transactions/{txn.id}/mark-done' in rendered
+            # The wrapper exists even on companion path so the JS
+            # handler's `.mobile-card-wrapper` lookup succeeds.
+            assert 'class="mobile-card-wrapper"' in rendered
+
+    def test_swipe_action_suppressed_when_settled(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C9-discovered: settled txns do NOT get a swipe-action button.
+
+        Folded refinement (work summary section I): aligns the
+        gesture path with the action-bar Mark Paid guard at
+        ``_mobile_card_actions.html:60`` so a swipe on a settled
+        row stays a no-op rather than letting the user reveal a
+        button whose POST ``mark_done`` would reject with 400.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            cat = seed_user["categories"]["Groceries"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.SETTLED),
+                name="C9-discovered Settled Groceries",
+                category_id=cat.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("12.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_row_card(
+                app, txn=txn, category=cat, period=current,
+            )
+
+            # The wrapper still exists (so the card layout is
+            # unchanged) but the swipe-action button is absent.
+            assert 'class="mobile-card-wrapper"' in rendered
+            assert 'class="swipe-action-mark-paid"' not in rendered
+            # Defensive: the cell-targeting hx-post URL for the
+            # mark_done route must not appear in the rendered card
+            # wrapper (it only lives on the suppressed swipe button
+            # and the suppressed action-bar form).
+            assert f'/transactions/{txn.id}/mark-done' not in rendered
+
+    def test_swipe_threshold_matches_period_swipe(self):
+        """C9-4: card-swipe and period-swipe both use the 50 px
+        threshold (R-8 of the mobile-first v3 plan).
+
+        Two distinct swipe gestures in ``mobile_grid.js`` -- the
+        period-nav swipe at the top of ``init()`` and the new card
+        swipe-action at module scope -- must use the same threshold
+        so the gesture feels consistent under the finger.  This
+        test reads the JS file and asserts the literal ``50`` appears
+        in both contexts (the new card touchend block and the older
+        period grid touchend block).
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        js_path = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "static" / "js" / "mobile_grid.js"
+        )
+        src = js_path.read_text(encoding="utf-8")
+
+        # Period-nav swipe at the top of init(): a horizontal motion
+        # past 50 px wins the gesture.
+        assert "Math.abs(dx) > 50" in src
+        # Card swipe-left past -50 px reveals the Paid button.
+        assert "dx < -50" in src
+        # Card swipe-right past +50 px on a swiped card un-swipes.
+        assert "dx > 50" in src
+
+    def test_swipe_handlers_are_passive(self):
+        """R-8 alignment: the new touch listeners use ``passive: true``.
+
+        Passive listeners cannot ``preventDefault`` -- they cannot
+        block vertical scroll, which is the trade-off that lets
+        the swipe co-exist with normal page scrolling.  The
+        ``Math.abs(dy) > Math.abs(dx)`` cancel-on-vertical guard
+        inside touchmove is what makes the trade-off safe.  Asserts
+        at least three ``passive: true`` listeners exist (period-
+        nav touchstart + touchend already, plus the three new card
+        touch listeners) -- a regression that flipped any of them
+        to a default non-passive listener would silently re-block
+        scroll on iOS Safari.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        js_path = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "static" / "js" / "mobile_grid.js"
+        )
+        src = js_path.read_text(encoding="utf-8")
+
+        # 2 pre-existing (period-nav touchstart + touchend) + 3 new
+        # (card touchstart + touchmove + touchend) = 5 total.
+        assert src.count("passive: true") >= 5
+
+    def test_no_inline_style_on_swipe_action(self):
+        """Pin the no-inline-style invariant on the swipe-action
+        button so a future refactor cannot bring back the
+        ``style="..."`` attribute that CSP ``style-src 'self'``
+        (without ``'unsafe-inline'``) silently rejects.
+
+        The button's visual sizing lives entirely in
+        ``app/static/css/app.css`` under the
+        ``.swipe-action-mark-paid`` selector.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        macros = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_grid_row_macros.html"
+        )
+        src = macros.read_text(encoding="utf-8")
+
+        # Grab the lines that emit the swipe-action button and assert
+        # no `style=` attribute travels with them.
+        button_block_start = src.index('class="swipe-action-mark-paid"')
+        button_block_end = src.index("</button>", button_block_start)
+        button_block = src[button_block_start:button_block_end]
+        assert "style=" not in button_block

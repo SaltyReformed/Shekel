@@ -213,3 +213,82 @@ If a mobile commit later in the plan needs Gunicorn-style behaviour
 to verify (e.g. cookie binding under workers, SIGTERM behaviour
 during the service-worker activate event), promote this item early
 rather than papering over the divergence in the dev script.
+
+---
+
+## F-3. Remove `style="min-height: 44px;"` from `_mobile_card_actions.html`
+
+- **Surfaced during:** Commit 9
+  (`feat(mobile-grid): swipe-left reveals Mark Paid button on cards`).
+- **Status:** open. Pre-existing from Commit 7
+  (`feat(mobile-grid): _mobile_plan.html + inline card action bar`).
+  Trivial to fold into any future commit that touches
+  `_mobile_card_actions.html` (or as a one-line follow-up commit).
+
+### Problem
+
+`app/templates/grid/_mobile_card_actions.html:66`, `:75`, and `:85`
+each carry an inline `style="min-height: 44px;"` attribute on the
+Mark Paid / Edit Amount / Open Full buttons. The project's CSP
+header is `style-src 'self'` (no `'unsafe-inline'`) per
+`app/__init__.py:723` and the C-02 inline-style migration noted
+in `app.css:1296-1305` removed 92 such attributes precisely so
+the policy could stay strict. These three slipped back in.
+
+Browsers honour CSP per Level 3: when `style-src-attr` is unset, it
+falls back to `style-src`. So `style-src 'self'` blocks inline
+`style="..."` attributes on Firefox and Chromium; the styles fail
+to apply and the buttons rely on whatever sizing the surrounding
+Bootstrap classes provide. The tests in
+`tests/test_integration/test_security_headers.py` lock the header
+shape; nothing currently locks "no inline style attrs in any
+template", so the regression is silent until someone DOM-inspects
+a mobile card and notices the missing min-height.
+
+### Recommended fix (estimated effort: 5 minutes)
+
+Replace the three `style="min-height: 44px;"` attributes with a
+single CSS class (e.g. `.btn-touch-44`) added to
+`app/static/css/app.css` inside the existing mobile media query
+block:
+
+```css
+@media (max-width: 767.98px) {
+  .btn-touch-44 {
+    min-height: 44px;
+  }
+}
+```
+
+and replace each button's `style="..."` with
+`class="... btn-touch-44 ..."`. Mirror the convention used by
+`.mw-px-*` / `.w-px-*` / `.fs-*` utility classes already
+established by the C-02 migration in `app.css`.
+
+### Test coverage
+
+The existing CSP tests in
+`tests/test_integration/test_security_headers.py` already lock the
+header shape. A new test asserting `style=` does not appear in
+`_mobile_card_actions.html` would lock the regression; matches the
+existing `test_no_inline_style_on_swipe_action` in
+`TestMobileSwipeAction` (Commit 9). One-line pattern:
+
+```python
+def test_no_inline_style_on_mobile_card_actions(self):
+    src = pathlib.Path(
+        "app/templates/grid/_mobile_card_actions.html"
+    ).read_text()
+    assert "style=" not in src
+```
+
+### Why defer
+
+Commit 9's stated scope is the swipe-left gesture: CSS for the
+revealed button, JS for the touch handlers, macro change to emit
+the button. Refactoring three pre-existing inline style attributes
+in a sibling partial is a separate refactor with its own review
+surface. The inline styles are currently inert (blocked by CSP) so
+the 44 px touch target is not currently enforced on the action-bar
+buttons -- a visible regression, but not a new one introduced by
+this commit.
