@@ -818,6 +818,17 @@ td.htmx-loading::after {
     font-size: 16px; /* Prevents iOS Safari zoom on input focus */
   }
 
+  /* Touch target: mobile-grid tab pills (This Period / Plan).  Bootstrap's
+     default nav-link is 0.5rem + 0.5rem + 1.5rem = 40px tall, 4px short of
+     the WCAG 2.5.5 / Apple HIG 44 px floor.  Flexbox centers the label
+     vertically once min-height takes effect. */
+  #mobile-grid .nav-pills .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   /* Bottom sheet: full-edit popover becomes a bottom-anchored panel on mobile */
   .txn-full-edit-popover {
     position: fixed !important;
