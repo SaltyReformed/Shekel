@@ -4473,3 +4473,179 @@ class TestSchemaValidation:
             schema = TransactionUpdateSchema()
             data = schema.load({"paid_at": "2026-04-15T10:00:00"})
             assert "paid_at" not in data
+
+
+class TestMobileThisPeriodPartial:
+    """Regression locks for the mobile "This Period" tab partial.
+
+    The partial at ``app/templates/grid/_mobile_this_period.html`` is
+    rendered inside the ``#mobile-this-period`` tab-pane in
+    ``_mobile_grid.html``.  These tests assert structural invariants
+    of the rendered HTML so subsequent commits cannot silently regress
+    the tab layout (default-active flip, period nav arrow hrefs, the
+    presence of the income / expense / net / balance sections).
+
+    Mobile / desktop split: ``_mobile_grid.html`` is wrapped in
+    ``d-md-none`` and the desktop grid in ``d-none d-md-block``; both
+    render server-side regardless of the requesting client, so the
+    assertions can inspect the response body without simulating a
+    mobile user-agent or viewport.
+    """
+
+    def test_this_period_partial_exists(self):
+        """C6-1: the new partial file exists at the canonical path.
+
+        Filesystem check; ensures the file landed at the path the
+        ``{% include "grid/_mobile_this_period.html" %}`` reference in
+        ``_mobile_grid.html`` resolves to.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_this_period.html"
+        )
+        assert partial.is_file()
+
+    def test_default_active_tab_is_this_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-5: the "This Period" pill is the default-active tab.
+
+        The Commit 6 default-tab flip moves the ``active`` /
+        ``aria-selected="true"`` pair from "Plan" to "This Period";
+        the matching tab-pane carries ``show active``.  Lock both so
+        a later commit cannot silently flip the default back.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # Slice each button's full opening tag ('<button ... >') so
+            # the assertions span the template's multi-line attribute
+            # layout.
+            tp_id = 'id="mobile-tab-this-period"'
+            tp_open = body[body.rindex("<button", 0, body.index(tp_id)):
+                           body.index(">", body.index(tp_id))]
+            assert "nav-link active" in tp_open
+            assert 'aria-selected="true"' in tp_open
+
+            plan_id = 'id="mobile-tab-plan"'
+            plan_open = body[body.rindex("<button", 0, body.index(plan_id)):
+                             body.index(">", body.index(plan_id))]
+            # Plan tab carries the bare "nav-link" class (no "active").
+            assert "nav-link active" not in plan_open
+            assert 'aria-selected="false"' in plan_open
+
+            # The tab-pane carries "show active" via its outer class.
+            pane_id = 'id="mobile-this-period"'
+            pane_open = body[body.rindex("<div", 0, body.index(pane_id)):
+                             body.index(">", body.index(pane_id))]
+            assert "show active" in pane_open
+
+    def test_this_period_renders_current_period_by_default(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-2: the partial renders periods[0] (== current period when
+        start_offset == 0).
+
+        At the default URL ``/grid`` the visible window starts at
+        ``current_period`` (offset=0), so the period label inside the
+        partial's nav header equals ``current_period.label``.
+        """
+        with app.app_context():
+            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # The partial's header div is followed by the period
+            # label inside a fw-bold div.  Encode the label so non-ASCII
+            # whitespace and quoting are byte-stable.
+            assert current.label.encode("utf-8") in response.data
+            # The partial-specific collapse IDs prefix with mobile-tp-
+            # to avoid colliding with the Plan tab's mobile-income-/mobile-expense-.
+            assert f"mobile-tp-income-{current.id}".encode("utf-8") in response.data
+            assert f"mobile-tp-expense-{current.id}".encode("utf-8") in response.data
+
+    def test_this_period_includes_income_expense_net_balance(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-3: the partial emits the four expected sections.
+
+        Income card (header text "Income"), expense card (header text
+        "Expenses"), net cash flow bar ("Net Cash Flow"), projected
+        balance card ("Projected Balance").  The mobile-section classes
+        carry the brand colors so they double as section markers.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # Slice to just the This Period pane so the assertions do
+            # not leak through to the Plan pane's symmetric markup.
+            pane_start = body.index('id="mobile-this-period"')
+            # The pane ends at the next sibling tab-pane (mobile-plan).
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            assert "mobile-section-income" in pane
+            assert "mobile-section-expense" in pane
+            assert "Net Cash Flow" in pane
+            assert "Projected Balance" in pane
+
+    def test_this_period_arrows_link_to_offset_neighbors(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-4: the prev/next arrows link to offset-1 and offset+1.
+
+        At the default URL ``/grid`` (``start_offset == 0``), the
+        partial's ``[<]`` should link to
+        ``/grid?periods=1&offset=-1#this-period`` and ``[>]`` to
+        ``/grid?periods=1&offset=1#this-period``.  Both carry the
+        ``#this-period`` fragment so the page lands back on the same
+        tab after the GET.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            # Flask url_for renders integer query args inline; assert
+            # the canonical href tail rather than the full URL.
+            assert "/grid?periods=1&amp;offset=-1#this-period" in pane
+            assert "/grid?periods=1&amp;offset=1#this-period" in pane
+
+    def test_this_period_arrows_use_start_offset(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-4 (extended): arrows always step from ``start_offset``.
+
+        When the user is at ``?periods=1&offset=2``, the prev arrow
+        links to ``offset=1`` and the next arrow to ``offset=3``.  The
+        partial uses ``start_offset`` directly, so the formula must
+        survive non-zero starting offsets.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid?periods=1&offset=2")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            assert "/grid?periods=1&amp;offset=1#this-period" in pane
+            assert "/grid?periods=1&amp;offset=3#this-period" in pane

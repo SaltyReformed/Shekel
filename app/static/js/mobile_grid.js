@@ -8,7 +8,28 @@
 (function() {
     'use strict';
 
+    // Activate the mobile-grid tab matching the current URL hash.
+    // The "This Period" partial's prev/next arrow links carry
+    // `#this-period` so a full GET returns to the same tab; the symmetric
+    // `#plan` entry lets future links target the Plan tab. Anything else
+    // (no hash, an unrelated fragment) leaves the default-active tab
+    // alone.
+    function activateTabFromHash() {
+        var tabIdByHash = {
+            '#this-period': 'mobile-tab-this-period',
+            '#plan': 'mobile-tab-plan'
+        };
+        var tabId = tabIdByHash[window.location.hash];
+        if (!tabId) return;
+        var btn = document.getElementById(tabId);
+        if (!btn) return;
+        if (typeof bootstrap === 'undefined' || !bootstrap.Tab) return;
+        bootstrap.Tab.getOrCreateInstance(btn).show();
+    }
+
     function init() {
+        activateTabFromHash();
+
         var panels = document.querySelectorAll('.mobile-period-panel');
         if (!panels.length) return;
 

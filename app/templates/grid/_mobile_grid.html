@@ -2,10 +2,11 @@
    Replaces the desktop table with period-by-period navigation,
    collapsible income/expense sections, and tap-to-edit cards.
 
-   Layout (Commit 5 scaffold): nav-pills with two tabs --
-     - "This Period" -- placeholder until Commit 6 ships the partial.
-     - "Plan" -- existing multi-period card flow; default active until
-       Commit 6 shifts the default to "This Period".
+   Layout: nav-pills with two tabs --
+     - "This Period" (default active; populated by
+       grid/_mobile_this_period.html). Shows ONE period -- the current
+       one by default -- with URL-driven prev/next arrow navigation.
+     - "Plan" -- existing multi-period card flow.
 
    Expected context (from grid.index route):
      periods           -- list of PayPeriod objects (visible window)
@@ -20,40 +21,39 @@
 <div class="d-md-none" id="mobile-grid">
 
   {# --- Tab Navigation: This Period / Plan ---
-     Bootstrap nav-pills tab container. "Plan" is the default active tab
-     in this commit; Commit 6 will introduce the "This Period" partial
-     and shift the default. The tab JS is loaded via
+     Bootstrap nav-pills tab container. "This Period" is the default
+     active tab; mobile_grid.js reads location.hash on load to honor
+     `#this-period` / `#plan` deep links (used by the prev/next arrow
+     hrefs in the This Period partial). The tab JS is loaded via
      bootstrap.bundle.min.js in base.html. #}
   <ul class="nav nav-pills nav-fill mb-3" role="tablist">
     <li class="nav-item" role="presentation">
-      <button class="nav-link" id="mobile-tab-this-period"
+      <button class="nav-link active" id="mobile-tab-this-period"
               data-bs-toggle="tab" data-bs-target="#mobile-this-period"
               type="button" role="tab"
-              aria-controls="mobile-this-period" aria-selected="false">
+              aria-controls="mobile-this-period" aria-selected="true">
         This Period
       </button>
     </li>
     <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="mobile-tab-plan"
+      <button class="nav-link" id="mobile-tab-plan"
               data-bs-toggle="tab" data-bs-target="#mobile-plan"
               type="button" role="tab"
-              aria-controls="mobile-plan" aria-selected="true">
+              aria-controls="mobile-plan" aria-selected="false">
         Plan
       </button>
     </li>
   </ul>
 
   <div class="tab-content">
-    {# --- This Period tab-pane: placeholder until Commit 6 ships the partial. --- #}
-    <div class="tab-pane fade" id="mobile-this-period" role="tabpanel"
-         aria-labelledby="mobile-tab-this-period">
-      <p class="text-muted text-center py-5">
-        Loading current period...
-      </p>
+    {# --- This Period tab-pane: single-period view via the partial. --- #}
+    <div class="tab-pane fade show active" id="mobile-this-period"
+         role="tabpanel" aria-labelledby="mobile-tab-this-period">
+      {% include "grid/_mobile_this_period.html" %}
     </div>
 
     {# --- Plan tab-pane: existing multi-period card flow. --- #}
-    <div class="tab-pane fade show active" id="mobile-plan"
+    <div class="tab-pane fade" id="mobile-plan"
          role="tabpanel" aria-labelledby="mobile-tab-plan">
 
       {# --- Period Navigation Header --- #}

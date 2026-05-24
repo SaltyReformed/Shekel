@@ -1,0 +1,180 @@
+{# Mobile "This Period" partial -- single-period mobile panel.
+
+   Renders ONE pay period (defaulting to today's period when
+   `start_offset == 0`) as a compact mobile panel: period-nav header
+   with prev/next arrow links, collapsible income and expense cards,
+   an optional net cash flow bar, and an optional projected balance
+   card. The arrow links use the same `?periods=N&offset=M` URL
+   convention as the desktop selector at `grid/grid.html` and carry
+   a `#this-period` fragment so the page lands back on this tab after
+   the full GET; the matching hash-routing handler lives in
+   `app/static/js/mobile_grid.js`.
+
+   Used by:
+     - the "This Period" tab in `grid/_mobile_grid.html` (owner).
+     - the companion route in Commit 13 (shared partial per
+       design decision D-B in the mobile-first v3 plan).
+
+   Expected Jinja context (* required):
+     periods *           -- list[PayPeriod]; this partial uses
+                            `periods[0]` (the leftmost visible period;
+                            equals `current_period` when
+                            `start_offset == 0`).
+     start_offset *      -- int; offset of `periods[0]` relative to
+                            `current_period.period_index`. Drives the
+                            prev / next arrow hrefs.
+     income_row_keys *   -- list[RowKey] in render order.
+     expense_row_keys *  -- list[RowKey] in render order.
+     matched_by_row_period * -- precomputed
+                            `(category_id, template_id, txn_name,
+                            period_id) -> list[Transaction]` dict
+                            from the grid route (Phase 1, Commit 2).
+     entry_sums *        -- dict[txn_id -> entry summary]; consumed
+                            by `render_row_card` for the progress-bar
+                            render path on Projected envelopes with
+                            entries.
+     subtotals           -- (optional) dict[period_id -> PeriodSubtotal].
+                            When undefined (companion contract per
+                            Section 12 Q-2 of the v3 plan), the
+                            income / expense card-header totals and
+                            the Net Cash Flow bar are gracefully
+                            omitted; row cards still render.
+     balances            -- (optional) dict[period_id -> Decimal].
+                            When undefined or missing the key for
+                            `period.id`, the Projected Balance card
+                            is gracefully omitted.
+     can_edit            -- (optional) bool, default True; forwarded
+                            to `render_row_card` so companion
+                            (`can_edit=False`) drops the
+                            bottom-sheet `data-mobile-*` attributes.
+#}
+{% from "grid/_grid_row_macros.html" import render_row_card %}
+{% set period = periods[0] %}
+{% set can_edit = can_edit | default(True) %}
+
+<div data-period-id="{{ period.id }}">
+
+  {# --- Period Navigation Header --
+       URL-driven so the navigation survives full reloads and
+       deep links. `#this-period` keeps the active tab pinned
+       after the GET (the hash-routing handler in mobile_grid.js
+       reads this on DOMContentLoaded). The desktop selector at
+       grid.html uses the same `start_offset +/- 1` convention. #}
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('grid.index', periods=1, offset=start_offset - 1) }}#this-period"
+       aria-label="Previous period">
+      <i class="bi bi-chevron-left"></i>
+    </a>
+    <div class="text-center">
+      <div class="fw-bold">{{ period.label }}</div>
+      <small class="text-muted">
+        {{ period.start_date.strftime('%-m/%-d') }} -- {{ period.end_date.strftime('%-m/%-d') }}
+      </small>
+    </div>
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('grid.index', periods=1, offset=start_offset + 1) }}#this-period"
+       aria-label="Next period">
+      <i class="bi bi-chevron-right"></i>
+    </a>
+  </div>
+
+  {# --- Income Section (collapsible) --- #}
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-income"
+         data-bs-toggle="collapse" data-bs-target="#mobile-tp-income-{{ period.id }}"
+         aria-expanded="true" aria-controls="mobile-tp-income-{{ period.id }}">
+      <span class="fw-bold small text-uppercase">
+        <i class="bi bi-chevron-down me-1"></i> Income
+      </span>
+      {% if subtotals is defined %}
+        <span class="font-mono fw-bold">
+          {% set inc_total = subtotals[period.id].income %}
+          {% if inc_total %}${{ "{:,.0f}".format(inc_total) }}{% else %}$0{% endif %}
+        </span>
+      {% endif %}
+    </div>
+    <div class="collapse show" id="mobile-tp-income-{{ period.id }}">
+      <ul class="list-group list-group-flush">
+        {% set ns_inc = namespace(current_group='') %}
+        {% for rk in income_row_keys %}
+          {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+          {% if matched %}
+            {% if rk.group_name != ns_inc.current_group %}
+              {% set ns_inc.current_group = rk.group_name %}
+              <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
+                {{ rk.group_name }}
+              </li>
+            {% endif %}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit) }}
+          {% endif %}
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+  {# --- Expense Section (collapsible) --- #}
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-expense"
+         data-bs-toggle="collapse" data-bs-target="#mobile-tp-expense-{{ period.id }}"
+         aria-expanded="true" aria-controls="mobile-tp-expense-{{ period.id }}">
+      <span class="fw-bold small text-uppercase">
+        <i class="bi bi-chevron-down me-1"></i> Expenses
+      </span>
+      {% if subtotals is defined %}
+        <span class="font-mono fw-bold">
+          {% set exp_total = subtotals[period.id].expense %}
+          {% if exp_total %}${{ "{:,.0f}".format(exp_total) }}{% else %}$0{% endif %}
+        </span>
+      {% endif %}
+    </div>
+    <div class="collapse show" id="mobile-tp-expense-{{ period.id }}">
+      <ul class="list-group list-group-flush">
+        {% set ns_exp = namespace(current_group='') %}
+        {% for rk in expense_row_keys %}
+          {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+          {% if matched %}
+            {% if rk.group_name != ns_exp.current_group %}
+              {% set ns_exp.current_group = rk.group_name %}
+              <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
+                {{ rk.group_name }}
+              </li>
+            {% endif %}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit) }}
+          {% endif %}
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+  {# --- Net Cash Flow Bar (requires subtotals) --- #}
+  {% if subtotals is defined %}
+    {% set net = subtotals[period.id].net %}
+    <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
+      <span class="fw-bold small">Net Cash Flow</span>
+      <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
+        {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
+        ${{ "{:,.0f}".format(net) }}
+      </span>
+    </div>
+  {% endif %}
+
+  {# --- Projected End Balance (requires balances) --- #}
+  {% if balances is defined %}
+    {% set bal = balances.get(period.id) %}
+    {% if bal is not none %}
+      <div class="card mb-3 {{ 'border-danger' if bal < 0 else '' }}">
+        <div class="card-body py-2 d-flex justify-content-between align-items-center">
+          <span class="fw-bold small">
+            {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
+            Projected Balance
+          </span>
+          <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
+            ${{ "{:,.2f}".format(bal) }}
+          </span>
+        </div>
+      </div>
+    {% endif %}
+  {% endif %}
+
+</div>
