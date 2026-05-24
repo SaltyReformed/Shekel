@@ -5429,3 +5429,222 @@ class TestMobileSwipeAction:
         button_block_end = src.index("</button>", button_block_start)
         button_block = src[button_block_start:button_block_end]
         assert "style=" not in button_block
+
+
+class TestMobileJumpToPeriod:
+    """Regression locks for the jump-to-period ``<select>`` in the
+    "This Period" tab header (Commit 10 of the mobile-first v3
+    implementation).
+
+    The select lives in ``app/templates/grid/_mobile_this_period.html``
+    below the ``[<] [>]`` arrow row and lets the user reach any
+    non-adjacent period in one tap, avoiding N taps on ``[<]``.
+    Picking a non-current option fires ``change``, which a delegated
+    listener in ``app/static/js/mobile_grid.js`` translates into a
+    full GET submit to ``/grid?periods=1&offset=N``.
+
+    These tests pin the structural contract the JS handler and the
+    grid route consume:
+
+      - The ``<select name="offset">`` is emitted exactly once per
+        page render, inside the ``#mobile-this-period`` tab-pane
+        (so the JS handler's ``.closest('#mobile-this-period')``
+        guard matches).
+      - One ``<option>`` per period in ``all_periods`` -- the option
+        list mirrors the user's full visible projection so the user
+        can jump to any of them.
+      - Option ``value`` is the period's offset relative to
+        ``current_period.period_index``, matching the desktop
+        selector convention at ``grid/grid.html:24-49`` and the
+        partial's own prev/next arrow hrefs.
+      - The option for the currently visible period
+        (``periods[0]`` / ``period``) carries the ``selected``
+        attribute so the picker opens on that row.
+      - Method is GET with a hidden ``periods=1`` input -- the GET
+        is read-only navigation (no state mutation), so no CSRF
+        token is required per CLAUDE.md "State-changing actions
+        must use POST".
+      - The JS file carries the delegated change handler with the
+        ``select[name="offset"]`` selector and the
+        ``#mobile-this-period`` scope guard.
+    """
+
+    def test_jump_to_select_present(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C10-1: a single ``<select name="offset">`` lives inside the
+        ``#mobile-this-period`` tab-pane.
+
+        The select is the jump-to control. Scoping the assertion to
+        the pane (not just the document) guards against a future
+        regression where a sibling ``<select name="offset">`` lands
+        in another tab and double-submits via the same delegated JS
+        handler.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            assert pane.count('<select name="offset"') == 1
+            # The hidden periods=1 input rides with the select so
+            # the GET lands at the single-period URL shape.
+            assert 'name="periods" value="1"' in pane
+            # GET form -- read-only navigation, no CSRF gate.
+            assert 'method="get"' in pane
+
+    def test_jump_to_options_match_all_periods(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C10-2: option count equals ``len(all_periods)``.
+
+        ``seed_periods_today`` provisions 10 biweekly periods
+        (indices 0..9); ``pay_period_service.get_all_periods``
+        returns all 10 to the route, so the rendered select carries
+        10 ``<option>`` elements. Each option's ``value`` is the
+        offset relative to the current period (period_index 4 under
+        ``seed_periods_today``), so the value set is
+        ``{-4, -3, -2, -1, 0, 1, 2, 3, 4, 5}``.
+        """
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            all_periods = pay_period_service.get_all_periods(
+                seed_user["user"].id,
+            )
+            assert len(all_periods) == 10
+            assert current.period_index == 4
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            # Slice down to the select's option block to keep the
+            # count immune to unrelated <option> elements elsewhere
+            # in the pane (none exist today, but the slice keeps
+            # future additions safe).
+            select_start = pane.index('<select name="offset"')
+            select_end = pane.index("</select>", select_start)
+            select_block = pane[select_start:select_end]
+            assert select_block.count("<option ") == len(all_periods)
+
+            # Spot-check the boundary offsets. period_index 0 -> -4,
+            # period_index 9 -> +5 (all under current.period_index=4).
+            assert 'value="-4"' in select_block
+            assert 'value="5"' in select_block
+            # And the current option must exist at value="0".
+            assert 'value="0"' in select_block
+
+    def test_jump_to_current_period_selected(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C10-3: the option for the currently visible period carries
+        ``selected``.
+
+        At the default ``/grid`` URL (``start_offset == 0``),
+        ``periods[0]`` (the partial's ``period`` local) equals
+        ``current_period``, so the offset-0 option is the selected
+        one. Verified by slicing the offset-0 option's opening
+        tag and asserting ``selected`` appears inside it.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            select_start = pane.index('<select name="offset"')
+            select_end = pane.index("</select>", select_start)
+            select_block = pane[select_start:select_end]
+
+            # Locate the offset=0 option (the current period under
+            # start_offset=0) and slice its full opening tag so the
+            # assertion spans the multi-line attribute layout.
+            opt_start = select_block.index('value="0"')
+            opt_tag_open = select_block.rindex("<option", 0, opt_start)
+            opt_tag_close = select_block.index(">", opt_start)
+            opt_open = select_block[opt_tag_open:opt_tag_close]
+            assert "selected" in opt_open
+
+    def test_jump_to_selected_follows_visible_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C10-3 (extended): non-zero ``start_offset`` shifts the
+        selected option to the currently visible period.
+
+        At ``?periods=1&offset=2`` the visible period is the one
+        with ``period_index == current.period_index + 2 == 6``;
+        the select's ``selected`` must move to the offset=2 option
+        (and the offset=0 option must NOT carry ``selected``).
+        Locks the ``p.id == period.id`` predicate against drift
+        toward an unconditional or current-only selection rule.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid?periods=1&offset=2")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            select_start = pane.index('<select name="offset"')
+            select_end = pane.index("</select>", select_start)
+            select_block = pane[select_start:select_end]
+
+            # offset=2 option carries selected.
+            opt2_start = select_block.index('value="2"')
+            opt2_open = select_block[
+                select_block.rindex("<option", 0, opt2_start)
+                :select_block.index(">", opt2_start)
+            ]
+            assert "selected" in opt2_open
+
+            # offset=0 option does NOT carry selected.
+            opt0_start = select_block.index('value="0"')
+            opt0_open = select_block[
+                select_block.rindex("<option", 0, opt0_start)
+                :select_block.index(">", opt0_start)
+            ]
+            assert "selected" not in opt0_open
+
+    def test_jump_to_delegated_handler_in_mobile_grid_js(self):
+        """C10 JS-side regression lock: the delegated change handler
+        in ``mobile_grid.js`` references the select selector and the
+        ``#mobile-this-period`` scope guard.
+
+        The CSP-friendly delegated handler replaces the inline
+        ``onchange="this.form.submit()"`` from the plan's draft
+        markup (per CLAUDE.md "No inline scripts"). Reading the JS
+        file directly (same pattern as
+        ``test_swipe_threshold_matches_period_swipe``) locks both
+        the selector and the scope so a future refactor cannot
+        silently drop either guard.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        js_path = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "static" / "js" / "mobile_grid.js"
+        )
+        src = js_path.read_text(encoding="utf-8")
+
+        # The selector targets the jump-to <select>.
+        assert 'select[name="offset"]' in src
+        # The scope guard limits the handler to the "This Period" pane.
+        assert "#mobile-this-period" in src
+        # form.submit() is what turns the change into a GET to /grid.
+        assert "form.submit()" in src

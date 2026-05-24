@@ -295,6 +295,29 @@
         _syncAriaExpanded(e.target, 'false');
     });
 
+    // Jump-to-period <select> submit (Commit 10 of the mobile-first
+    // v3 implementation).  The select sits inside the "This Period"
+    // tab-pane (`#mobile-this-period`) and lists every visible
+    // pay period; picking a non-current option fires `change`, which
+    // submits the parent form as a full GET to
+    // `/grid?periods=1&offset=N`.  An inline `onchange="this.form.submit()"`
+    // handler would work and CSP allows inline event handlers under
+    // the current policy, but the delegated listener is the documented
+    // project convention per CLAUDE.md "No inline scripts" -- one
+    // handler hosted in this module file, registered once at module
+    // scope so it survives HTMX swaps that re-render the partial.
+    //
+    // The `#mobile-this-period` scope is the load-bearing guard:
+    // without it any future `select[name="offset"]` elsewhere on the
+    // page (e.g. a desktop-only jump-to selector) would trigger the
+    // same submit path and double-submit.
+    document.addEventListener('change', function(e) {
+        if (e.target.matches('select[name="offset"]') &&
+                e.target.closest('#mobile-this-period')) {
+            e.target.form.submit();
+        }
+    });
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {

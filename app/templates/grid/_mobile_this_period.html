@@ -20,6 +20,14 @@
                             `periods[0]` (the leftmost visible period;
                             equals `current_period` when
                             `start_offset == 0`).
+     current_period *    -- PayPeriod; the period containing today.
+                            Anchors the offsets emitted by the
+                            jump-to <select> (each option's `value`
+                            is `p.period_index - current_period.period_index`,
+                            mirroring the desktop selector convention
+                            at `grid/grid.html:24-49`).
+     all_periods *       -- list[PayPeriod] in `period_index` order;
+                            the option list for the jump-to <select>.
      start_offset *      -- int; offset of `periods[0]` relative to
                             `current_period.period_index`. Drives the
                             prev / next arrow hrefs.
@@ -78,6 +86,32 @@
       <i class="bi bi-chevron-right"></i>
     </a>
   </div>
+
+  {# --- Jump-to-period <select> --
+       Native picker lets the user reach any non-adjacent period in
+       one tap instead of N taps on `[<]` / `[>]`. Method=GET so the
+       hidden `periods=1` + `offset=<chosen>` land in the same URL
+       shape as the arrow links and the desktop selector at
+       `grid/grid.html:24-49`. CSRF is not required for GET per
+       CLAUDE.md "HTMX Patterns / State-changing actions must use
+       POST" (this is read-only navigation, no state change).
+       Submission is wired in `app/static/js/mobile_grid.js` via a
+       delegated `change` listener (CSP-friendly per CLAUDE.md
+       "No inline scripts"). #}
+  <form action="{{ url_for('grid.index') }}" method="get" class="mb-3">
+    <input type="hidden" name="periods" value="1">
+    <select name="offset"
+            class="form-select form-select-sm"
+            aria-label="Jump to pay period">
+      {% for p in all_periods %}
+        {% set p_offset = p.period_index - current_period.period_index %}
+        <option value="{{ p_offset }}"
+                {{ 'selected' if p.id == period.id else '' }}>
+          {{ p.label }} ({{ p.start_date.strftime('%-m/%-d/%y') }})
+        </option>
+      {% endfor %}
+    </select>
+  </form>
 
   {# --- Income Section (collapsible) --- #}
   <div class="card mb-3">
