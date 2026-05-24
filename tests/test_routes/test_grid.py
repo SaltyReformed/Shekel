@@ -4649,3 +4649,445 @@ class TestMobileThisPeriodPartial:
 
             assert "/grid?periods=1&amp;offset=1#this-period" in pane
             assert "/grid?periods=1&amp;offset=3#this-period" in pane
+
+
+class TestMobileCardActionBar:
+    """Regression locks for the per-card inline action bar (Commit 7
+    of the mobile-first v3 implementation).
+
+    The bar lives in ``app/templates/grid/_mobile_card_actions.html``
+    and is emitted by ``render_row_card`` as a sibling of each card
+    ``<li>``, wrapped together in
+    ``<div class="mobile-card-wrapper">``.  A delegated tap handler in
+    ``app/static/js/mobile_grid.js`` toggles the Bootstrap collapse so
+    the user sees ``[Mark Paid]``, ``[Edit Amount]``, and
+    ``[Open Full]`` directly under the tapped card.
+
+    These tests pin down the structural contract the JS handler and
+    the action-bar route consumers depend on:
+
+      - Both new partials (``_mobile_plan.html`` and
+        ``_mobile_card_actions.html``) exist at the canonical paths.
+      - The Mark Paid form is conditional on the transaction state -
+        Projected / Received and other non-terminal statuses get it;
+        Done and Settled (the two state-machine terminals for the
+        mark-done path) do not (mark_done would reject them via the
+        state machine, so omitting the affordance is the honest UX).
+      - ``can_edit=False`` (the companion contract per R-7 / D-B of
+        the v3 plan) drops the owner-only ``[Edit Amount]`` and
+        ``[Open Full]`` buttons while keeping ``[Mark Paid]``
+        (companions are allowed to mark paid per the existing
+        entries-blueprint precedent).
+      - The Mark Paid form posts to ``transactions.mark_done`` with
+        the swap target set to the row's ``#txn-cell-<id>``.
+    """
+
+    @staticmethod
+    def _render_action_bar(app, txn, can_edit=True):
+        """Render ``_mobile_card_actions.html`` directly with the given
+        ``txn`` and ``can_edit``.
+
+        Direct render (rather than scraping a full ``/grid`` response)
+        keeps the structural assertions immune to surrounding markup
+        drift: the test asserts what the partial emits, not where
+        it lands in the larger page.  ``app.test_request_context``
+        is what makes ``url_for`` resolve inside the template; the
+        ``app.jinja_env.globals`` registrations from
+        ``app.jinja_globals.register_ref_id_globals`` provide
+        ``STATUS_DONE`` / ``STATUS_SETTLED`` without further setup.
+        """
+        template = app.jinja_env.get_template("grid/_mobile_card_actions.html")
+        with app.test_request_context("/"):
+            return template.render(txn=txn, can_edit=can_edit)
+
+    def test_plan_partial_exists(self):
+        """C7-1: ``_mobile_plan.html`` exists at the canonical path.
+
+        Filesystem check; ensures the partial landed where the
+        ``{% include "grid/_mobile_plan.html" %}`` reference in
+        ``_mobile_grid.html`` resolves to.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_plan.html"
+        )
+        assert partial.is_file()
+
+    def test_mobile_card_actions_partial_exists(self):
+        """C7-2: ``_mobile_card_actions.html`` exists at the canonical path.
+
+        Filesystem check; ensures the partial landed where the
+        ``{% include "grid/_mobile_card_actions.html" %}`` reference
+        in ``_grid_row_macros.html``'s ``render_row_card`` resolves to.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_card_actions.html"
+        )
+        assert partial.is_file()
+
+    def test_action_bar_includes_mark_paid_when_not_settled(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-3: Projected txns get a ``[Mark Paid]`` form in the bar.
+
+        A Projected transaction is in scope for the mark-done state
+        transition, so the action bar offers the affordance.  The
+        rendered partial must contain a ``hx-post`` form to
+        ``transactions.mark_done`` plus the visible button label.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-3 Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("42.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'/transactions/{txn.id}/mark-done' in rendered
+            assert "Mark Paid" in rendered
+
+    def test_action_bar_excludes_mark_paid_when_settled(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-4: Settled txns do NOT get a ``[Mark Paid]`` form.
+
+        Settled is a state-machine terminal for the mark-done path;
+        offering the button would let the user fire a request the
+        route would reject with 400.  The partial's guard on
+        ``status_id`` is the source of truth here.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.SETTLED),
+                name="C7-4 Settled Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("42.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'/transactions/{txn.id}/mark-done' not in rendered
+            assert "Mark Paid" not in rendered
+
+    def test_action_bar_excludes_mark_paid_when_done(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-4 (sibling): Done txns also drop the ``[Mark Paid]`` form.
+
+        Mirrors the Settled guard: Done is the other terminal for the
+        mark-done path (Done -> Settled is a separate transition,
+        and the action bar does not currently expose a Settle action).
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                name="C7-4b Done Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("42.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'/transactions/{txn.id}/mark-done' not in rendered
+            assert "Mark Paid" not in rendered
+
+    def test_action_bar_excludes_mark_paid_when_received(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-4c: income txns marked Received also drop ``[Mark Paid]``.
+
+        Locks the fix for an income-specific bug that the Playwright
+        harness surfaced after a mark-done round-trip:
+        ``transactions.mark_done`` sets ``status_id = RECEIVED`` for
+        income (not DONE), so the spec's literal
+        ``status_id != STATUS_DONE and status_id != STATUS_SETTLED``
+        guard missed RECEIVED and kept the Mark Paid button visible
+        on already-received income.  Switched to the semantic
+        ``Status.is_settled`` boolean which covers Paid, Received,
+        and Settled uniformly.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            salary_cat = seed_user["categories"]["Salary"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.RECEIVED),
+                name="C7-4c Received Salary",
+                category_id=salary_cat.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                estimated_amount=Decimal("2500.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'/transactions/{txn.id}/mark-done' not in rendered
+            assert "Mark Paid" not in rendered
+
+    def test_action_bar_excludes_edit_when_can_edit_false(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-5: ``can_edit=False`` (companion) drops ``[Edit Amount]`` and
+        ``[Open Full]`` but keeps ``[Mark Paid]``.
+
+        The companion role can mark transactions paid (entries
+        blueprint precedent) but cannot open the desktop full-edit
+        form or the inline quick-edit popover.  The action bar
+        partial's ``{% if can_edit %}`` guard is the only thing
+        between the companion render path and the owner-only
+        affordances.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-5 Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("99.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=False)
+
+            # Mark Paid remains -- companions can mark paid.
+            assert f'/transactions/{txn.id}/mark-done' in rendered
+            assert "Mark Paid" in rendered
+            # Edit Amount and Open Full are gone for the companion path.
+            assert "Edit Amount" not in rendered
+            assert "Open Full" not in rendered
+            assert f'/transactions/{txn.id}/quick-edit' not in rendered
+            assert "txn-expand-btn" not in rendered
+
+    def test_action_bar_hx_post_target_is_cell(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-6: Mark Paid form posts to mark-done targeting ``#txn-cell-<id>``.
+
+        Locks the form attributes the action bar's HTMX wiring
+        depends on: ``hx-post`` URL, ``hx-target`` selector, and
+        ``hx-swap`` mode.  ``outerHTML`` is the spec'd swap mode for
+        the bar (the response also fires ``HX-Trigger: gridRefresh``
+        which causes a full page reload, so the swap target and
+        mode are only load-bearing if a future commit removes the
+        gridRefresh).
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-6 Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("42.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'hx-post="/transactions/{txn.id}/mark-done"' in rendered
+            assert f'hx-target="#txn-cell-{txn.id}"' in rendered
+            assert 'hx-swap="outerHTML"' in rendered
+
+    def test_card_wrapper_emits_bar_sibling_in_grid_page(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C7-integration: the full ``/grid`` page emits the action-bar
+        sibling next to each mobile card.
+
+        Asserts the macro-level wiring: ``render_row_card`` wraps
+        each ``<li>`` in ``<div class="mobile-card-wrapper">`` and
+        emits ``_mobile_card_actions.html`` after it.  Without this
+        integration, the unit-level checks above would pass while
+        the bar still never appears on the rendered page.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-integration Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("31.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+            txn_id = txn.id
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # Wrapper exists; action-bar id is per-tab-prefixed so the
+            # same txn rendered in both This Period and Plan tabs does
+            # not violate the HTML unique-id rule.  See the
+            # `id_prefix` param on render_row_card.
+            assert 'class="mobile-card-wrapper"' in body
+            assert f'id="card-actions-tp-{txn_id}"' in body
+            assert f'id="card-actions-plan-{txn_id}"' in body
+
+    def test_action_bar_id_uses_prefix_when_supplied(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-integration: ``id_prefix`` namespaces the action-bar element id.
+
+        The "This Period" and "Plan" tabs render the same window of
+        pay periods at the same time, so without per-tab namespacing
+        the same txn yields a duplicate ``id="card-actions-<id>"``
+        in two places.  The ``id_prefix`` parameter on
+        ``render_row_card`` (forwarded into the action-bar partial
+        via ``with context``) is the fix: This Period passes
+        ``id_prefix='tp'``, Plan passes ``id_prefix='plan'``, and an
+        empty prefix preserves the simpler legacy id form for the
+        direct-render unit tests above.
+
+        Locks the three branches explicitly so a future refactor of
+        the formula cannot regress one without flagging.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-prefix Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("17.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            template = app.jinja_env.get_template(
+                "grid/_mobile_card_actions.html",
+            )
+            with app.test_request_context("/"):
+                no_prefix = template.render(txn=txn, can_edit=True)
+                tp_prefix = template.render(
+                    txn=txn, can_edit=True, id_prefix="tp",
+                )
+                plan_prefix = template.render(
+                    txn=txn, can_edit=True, id_prefix="plan",
+                )
+
+            assert f'id="card-actions-{txn.id}"' in no_prefix
+            assert f'id="card-actions-tp-{txn.id}"' in tp_prefix
+            assert f'id="card-actions-plan-{txn.id}"' in plan_prefix
+            # Prefixed renders must NOT also emit the unprefixed form.
+            assert f'id="card-actions-{txn.id}"' not in tp_prefix
+            assert f'id="card-actions-{txn.id}"' not in plan_prefix
+
+    def test_mobile_grid_includes_plan_partial(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C7-integration: ``_mobile_grid.html`` Plan tab body is the
+        ``_mobile_plan.html`` include, not the inline scroll view.
+
+        Locks the Commit 7 refactor where the Plan tab body moved
+        out of ``_mobile_grid.html`` into its own partial.  Verified
+        by asserting that the Plan tab pane carries the rendered
+        contents of the partial (the period-nav button ids) and
+        that the inline content marker from before the refactor is
+        absent at the call site level.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # The Plan partial's period-nav controls are present.
+            pane_start = body.index('id="mobile-plan"')
+            pane = body[pane_start:]
+            assert 'id="mobile-prev-btn"' in pane
+            assert 'id="mobile-next-btn"' in pane

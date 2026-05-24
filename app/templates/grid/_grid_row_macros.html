@@ -62,10 +62,16 @@
 {%- endmacro %}
 
 
-{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True) -%}
+{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True, id_prefix='') -%}
 {#- Mobile grid card.  Emits zero or more
-    <li class="list-group-item ... mobile-txn-card"> entries --
-    one per matched transaction for the given (rk, period) cell.
+    `<div class="mobile-card-wrapper">` blocks, one per matched
+    transaction for the given (rk, period) cell.  Each wrapper holds
+    the visible card `<li>` plus a sibling collapsed action bar
+    (`_mobile_card_actions.html`).  The wrapper exists so the
+    tap-to-toggle handler in `app/static/js/mobile_grid.js` can find
+    "the action bar associated with this card" via
+    `card.closest('.mobile-card-wrapper').querySelector('.mobile-card-action-bar')`.
+
     Group-header rows (the v1
     `<li class="... mobile-group-header">` that appears once per
     rk.group_name change) remain the caller's responsibility,
@@ -74,17 +80,33 @@
 
     can_edit (default True): owner-side rendering.  Emits
     `data-mobile-txn-id` plus -- for transfer shadows --
-    `data-mobile-xfer-id`; mobile_grid.js reads these to open
-    the bottom-sheet popover on tap.
+    `data-mobile-xfer-id`; mobile_grid.js reads `data-mobile-txn-id`
+    to scope the tap-to-toggle handler to real txn cards (and not
+    accidentally fire on the static group-header `<li>`).  The
+    `data-mobile-xfer-id` attribute is preserved on transfer
+    shadows so a future swipe-to-mark-paid handler (Commit 9) or a
+    re-introduced bottom-sheet path can still tell shadows from
+    regular cards.
 
     can_edit=False: companion read-only consumer (wired in
-    Commit 13 of the mobile-first v3 implementation).  Drops
-    both `data-mobile-*` attributes so a tap no longer opens
-    the bottom sheet.  The per-card Mark Paid button arrives
-    later via `_mobile_card_actions.html` (Commit 7) at the
-    action-bar layer; companions retain that path because they
-    are allowed to mark paid per the existing entries-blueprint
+    Commit 13 of the mobile-first v3 implementation).  Drops the
+    `data-mobile-*` attributes so the action bar's owner-only
+    buttons (Edit Amount, Open Full) are absent for companions.
+    The Mark Paid button is preserved through the
+    `_mobile_card_actions.html` partial because companions are
+    allowed to mark paid per the existing entries-blueprint
     precedent.
+
+    id_prefix (default ''): per-tab namespace for the
+    action-bar element id so the same txn can render in multiple
+    visible tabs without violating the HTML unique-id rule.  The
+    "This Period" partial passes `id_prefix='tp'`, the "Plan"
+    partial passes `id_prefix='plan'`; an empty prefix omits the
+    extra segment entirely so direct-render call sites (the unit
+    tests in `TestMobileCardActionBar` that bypass the macro) keep
+    the simpler `card-actions-<id>` form.  Mirrors the existing
+    `mobile-tp-` vs `mobile-` collapse-id convention on the income
+    / expense section headers in the two partials.
 
     NOTE: the `data-mobile-xfer-id` guard uses `txn.transfer_id`
     rather than a (not-yet-defined) `txn.is_transfer_shadow`
@@ -102,34 +124,40 @@
     {% set remaining = es.remaining %}
     {% set over_budget = es.over_budget %}
   {% endif %}
-  <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
-      {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
-      {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
-      role="button" tabindex="0"
-      aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
-    <span class="text-truncate me-2">
-      {{ rk.display_name }}
-      {% if txn.status %}
-        {% if txn.status.is_settled %}
-          <span class="badge-done ms-1">&#10003;</span>
-        {% elif txn.status_id == STATUS_CREDIT %}
+  {% set _aid = "card-actions-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
+  <div class="mobile-card-wrapper">
+    <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
+        {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
+        {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
+        role="button" tabindex="0"
+        aria-expanded="false"
+        aria-controls="{{ _aid }}"
+        aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
+      <span class="text-truncate me-2">
+        {{ rk.display_name }}
+        {% if txn.status %}
+          {% if txn.status.is_settled %}
+            <span class="badge-done ms-1">&#10003;</span>
+          {% elif txn.status_id == STATUS_CREDIT %}
+            <span class="badge-credit ms-1">CC</span>
+          {% endif %}
+        {% endif %}
+        {% if txn.transfer_id %}
+          <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
+        {% endif %}
+        {% if txn.credit_payback_for_id %}
           <span class="badge-credit ms-1">CC</span>
         {% endif %}
-      {% endif %}
-      {% if txn.transfer_id %}
-        <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
-      {% endif %}
-      {% if txn.credit_payback_for_id %}
-        <span class="badge-credit ms-1">CC</span>
-      {% endif %}
-    </span>
-    <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
-      {% if show_progress %}
-        ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
-      {% else %}
-        ${{ "{:,.0f}".format(display_amount) }}
-      {% endif %}
-    </span>
-  </li>
+      </span>
+      <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
+        {% if show_progress %}
+          ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+        {% else %}
+          ${{ "{:,.0f}".format(display_amount) }}
+        {% endif %}
+      </span>
+    </li>
+    {% include "grid/_mobile_card_actions.html" with context %}
+  </div>
 {% endfor %}
 {%- endmacro %}

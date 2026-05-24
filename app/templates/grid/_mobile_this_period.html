@@ -106,7 +106,7 @@
                 {{ rk.group_name }}
               </li>
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit) }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp') }}
           {% endif %}
         {% endfor %}
       </ul>
@@ -140,7 +140,7 @@
                 {{ rk.group_name }}
               </li>
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit) }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp') }}
           {% endif %}
         {% endfor %}
       </ul>

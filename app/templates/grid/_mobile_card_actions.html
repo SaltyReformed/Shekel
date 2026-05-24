@@ -1,0 +1,92 @@
+{# Mobile card action bar -- collapsible per-card row of action buttons.
+
+   Emitted once per matched transaction by ``render_row_card`` (in
+   ``grid/_grid_row_macros.html``) as a sibling of the card ``<li>``
+   inside a shared ``<div class="mobile-card-wrapper">``.  Tapping the
+   card toggles this bar via the delegated handler in
+   ``app/static/js/mobile_grid.js`` (Bootstrap ``collapse`` API).
+
+   Buttons emitted (each ``>= 44 x 44 CSS px`` per CLAUDE.md HTMX
+   patterns / mobile-first v3 plan Section 1 rule 7 / WCAG 2.5.5):
+
+     - **Mark Paid** -- a ``<form hx-post>`` that posts to
+       ``transactions.mark_done``.  Suppressed when the transaction is
+       already Done / Settled (no point offering an action that the
+       state machine rejects).  CSRF travels through the
+       ``htmx:configRequest`` handler in ``app/static/js/app.js`` which
+       injects ``X-CSRFToken`` on every HTMX request -- matching the
+       existing button pattern in ``_transaction_full_edit.html:91``.
+     - **Edit Amount** -- ``hx-get`` the inline quick-edit endpoint.
+       Suppressed when ``can_edit=False`` (companion path in Commit 13).
+     - **Open Full** -- triggers the existing bottom-sheet popover via
+       the ``txn-expand-btn`` + ``data-txn-id`` delegated handler in
+       ``grid_edit.js:482``.  Suppressed when ``can_edit=False``.
+
+   Context (* required):
+     txn *               -- a Transaction object.
+     can_edit *          -- bool; companion render passes False to
+                            drop the owner-only buttons.
+     id_prefix           -- (optional) string; per-tab namespace for
+                            the action-bar id so the same txn can
+                            render in multiple visible tabs (This
+                            Period + Plan) without violating the
+                            HTML unique-id rule.  Defaults to ''
+                            (no prefix) for direct render paths --
+                            e.g. unit tests that render this partial
+                            without going through `render_row_card`.
+                            Mirrors the existing collapse-id
+                            convention in `_mobile_this_period.html`
+                            (`mobile-tp-`) vs `_mobile_plan.html`
+                            (`mobile-`).
+#}
+{% set _prefix = id_prefix | default('') %}
+{% set _aid = "card-actions-" ~ (_prefix ~ "-" if _prefix else "") ~ txn.id %}
+<div class="collapse mobile-card-action-bar" id="{{ _aid }}">
+  <div class="d-flex gap-2 px-3 py-2 bg-surface-raised border-bottom">
+    {# Suppress Mark Paid for any already-settled status -- the
+       state machine treats Paid (expense done), Received (income
+       done), and Settled as terminals for the mark-done path, so
+       offering the button would either no-op (identity edge) or
+       reject with 400 (RECEIVED -> DONE attempt on an income txn,
+       which the spec's literal STATUS_DONE / STATUS_SETTLED guard
+       missed -- the Playwright verification harness surfaced this
+       on income transactions).  ``Status.is_settled`` is the
+       canonical boolean for "this row is already paid"; see
+       app/ref_seeds.py for the seeded truth table.  Credit and
+       Cancelled (is_settled=False, is_immutable=True) still
+       expose the button; the underlying mark_done route returns
+       400 for those state-machine transitions and the user sees
+       the error text.  Tightening that is out of scope here. #}
+    {% if txn.status and not txn.status.is_settled %}
+      <form hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
+            hx-target="#txn-cell-{{ txn.id }}"
+            hx-swap="outerHTML"
+            class="d-inline flex-fill">
+        <button type="submit" class="btn btn-success btn-sm w-100"
+                style="min-height: 44px;"
+                aria-label="Mark {{ txn.name }} as paid">
+          <i class="bi bi-check2"></i> Mark Paid
+        </button>
+      </form>
+    {% endif %}
+
+    {% if can_edit %}
+      <button type="button" class="btn btn-outline-secondary btn-sm flex-fill"
+              style="min-height: 44px;"
+              hx-get="{{ url_for('transactions.get_quick_edit', txn_id=txn.id) }}"
+              hx-target="#txn-cell-{{ txn.id }}"
+              hx-swap="innerHTML"
+              aria-label="Edit amount for {{ txn.name }}">
+        <i class="bi bi-pencil"></i> Edit Amount
+      </button>
+
+      <button type="button"
+              class="btn btn-outline-secondary btn-sm flex-fill txn-expand-btn"
+              style="min-height: 44px;"
+              data-txn-id="{{ txn.id }}"
+              aria-label="Open full edit for {{ txn.name }}">
+        <i class="bi bi-arrows-fullscreen"></i> Open Full
+      </button>
+    {% endif %}
+  </div>
+</div>
