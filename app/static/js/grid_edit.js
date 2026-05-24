@@ -171,6 +171,78 @@ function positionPopover(cell) {
 }
 
 /**
+ * Wire mobile bottom-sheet behaviour: drag-to-dismiss handle and iOS
+ * keyboard avoidance via the visualViewport API.  No-op on desktop
+ * (window.innerWidth >= 768) so the desktop popover keeps the existing
+ * fixed-position behaviour from applyDesktopPlacement().
+ *
+ * Must run AFTER popover.innerHTML has been populated, because innerHTML
+ * assignment wipes any children we added beforehand.  Touch listeners use
+ * { passive: true } to match the project convention (mobile_grid.js swipe
+ * handlers; see v3 plan R-8); they do not need preventDefault() because
+ * touch-action: none on the handle (see app.css) already stops the
+ * browser from claiming the gesture for vertical scroll.
+ *
+ * Dismiss threshold is 30 % of the sheet's rendered height -- below that,
+ * touchend snaps the sheet back via the CSS transition; above it, the
+ * sheet closes through closeFullEdit().
+ *
+ * Stores the visualViewport resize handler on popover._adjustForKeyboard
+ * so closeFullEdit() can remove it during teardown without re-deriving
+ * the closure.
+ */
+function applyMobileBottomSheetBehavior(popover) {
+    if (window.innerWidth >= 768) return;
+
+    var handle = document.createElement('div');
+    handle.className = 'bottom-sheet-handle';
+    popover.insertBefore(handle, popover.firstChild);
+
+    var startY = 0;
+    var currentTranslate = 0;
+    var popoverHeight = 0;
+
+    handle.addEventListener('touchstart', function(e) {
+        startY = e.touches[0].clientY;
+        popoverHeight = popover.offsetHeight;
+        popover.classList.add('dragging');
+    }, { passive: true });
+
+    handle.addEventListener('touchmove', function(e) {
+        var dy = e.touches[0].clientY - startY;
+        // Clamp to downward drags only; an upward drag must not lift the
+        // sheet above its docked position.
+        if (dy < 0) dy = 0;
+        currentTranslate = dy;
+        popover.style.transform = 'translateY(' + dy + 'px)';
+    }, { passive: true });
+
+    handle.addEventListener('touchend', function() {
+        popover.classList.remove('dragging');
+        if (currentTranslate > popoverHeight * 0.30) {
+            closeFullEdit();
+        } else {
+            popover.style.transform = 'translateY(0)';
+        }
+        currentTranslate = 0;
+    }, { passive: true });
+
+    if (window.visualViewport) {
+        var adjustForKeyboard = function() {
+            // When the iOS soft keyboard opens, visualViewport.height
+            // shrinks and offsetTop becomes positive.  Pin the sheet's
+            // bottom edge so it floats above the keyboard rather than
+            // being hidden behind it.
+            popover.style.bottom = (window.innerHeight
+                - window.visualViewport.height
+                - window.visualViewport.offsetTop) + 'px';
+        };
+        window.visualViewport.addEventListener('resize', adjustForKeyboard);
+        popover._adjustForKeyboard = adjustForKeyboard;
+    }
+}
+
+/**
  * Show the popover with loaded HTML content and set up click-outside.
  */
 function showPopover(popover, html) {
@@ -180,6 +252,10 @@ function showPopover(popover, html) {
 
     if (window.innerWidth < 768) {
         document.body.style.overflow = 'hidden';
+        // Drag handle + visualViewport keyboard avoidance.  Must run after
+        // innerHTML assignment above; innerHTML wipes the popover's
+        // children, so a handle injected earlier would be discarded.
+        applyMobileBottomSheetBehavior(popover);
     }
 
     // Process any HTMX attributes in the loaded content.
@@ -284,6 +360,11 @@ function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
 
         if (window.innerWidth < 768) {
             document.body.style.overflow = 'hidden';
+            // Same mobile bottom-sheet wiring as showPopover.  openFullCreate
+            // inlines its innerHTML assignment instead of calling showPopover
+            // because it needs to override hx-target before htmx.process;
+            // the helper call sits in the same place relative to innerHTML.
+            applyMobileBottomSheetBehavior(popover);
         }
 
         // Override the form's hx-target before HTMX processes it.
@@ -340,6 +421,20 @@ function closeFullEdit() {
 
     var popover = document.getElementById('txn-popover');
     if (popover) {
+        // Tear down mobile drag-to-dismiss state.  The visualViewport
+        // resize handler ref was stashed on popover._adjustForKeyboard by
+        // applyMobileBottomSheetBehavior; remove the listener now so the
+        // closure does not retain the popover after teardown.  Inline
+        // transform/bottom that the drag handler set must be cleared so
+        // the next open starts from the docked baseline rather than
+        // mid-drag.
+        if (window.visualViewport && popover._adjustForKeyboard) {
+            window.visualViewport.removeEventListener('resize', popover._adjustForKeyboard);
+            delete popover._adjustForKeyboard;
+        }
+        popover.style.transform = '';
+        popover.style.bottom = '';
+
         popover.classList.add('d-none');
         popover.innerHTML = '';
     }

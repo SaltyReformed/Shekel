@@ -829,7 +829,11 @@ td.htmx-loading::after {
     justify-content: center;
   }
 
-  /* Bottom sheet: full-edit popover becomes a bottom-anchored panel on mobile */
+  /* Bottom sheet: full-edit popover becomes a bottom-anchored panel on mobile.
+     transform: translateY(0) gives the drag-to-dismiss handler (grid_edit.js)
+     an explicit baseline to interpolate from; the transition animates the
+     snap-back on a partial drag.  .dragging below disables the transition so
+     the sheet tracks the finger one-to-one during the gesture. */
   .txn-full-edit-popover {
     position: fixed !important;
     width: 100% !important;
@@ -842,7 +846,25 @@ td.htmx-loading::after {
     border-radius: 12px 12px 0 0;
     padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
     box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.3);
-    transition: transform 0.2s ease-out;
+    transform: translateY(0);
+    transition: transform 200ms ease-out;
+  }
+
+  .txn-full-edit-popover.dragging {
+    transition: none;
+  }
+
+  /* 32 x 4 px drag handle pill centered at the top of the bottom sheet.
+     touch-action: none prevents the browser from claiming the gesture for
+     vertical scroll while the drag-to-dismiss handler is tracking it. */
+  .txn-full-edit-popover .bottom-sheet-handle {
+    width: 32px;
+    height: 4px;
+    background: var(--bs-secondary-bg);
+    border-radius: 2px;
+    margin: 8px auto;
+    cursor: grab;
+    touch-action: none;
   }
 
   /* Backdrop behind the bottom sheet */
