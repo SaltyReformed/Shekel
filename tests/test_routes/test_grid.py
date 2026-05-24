@@ -3889,6 +3889,355 @@ class TestGridPeriodSubtotalCanonical:
         )
 
 
+class TestGridMatchedByRowPeriod:
+    """Commit 2 (mobile-first v3): ``matched_by_row_period`` route context.
+
+    The matching predicate previously hand-coded in four blocks of
+    Jinja (``grid.html`` income + expense, ``_mobile_grid.html`` income +
+    expense) is precomputed once in the route as a dict keyed by
+    ``(category_id, template_id, txn_name, period_id)``.  Commit 1
+    introduced the macros that read it; Commit 2 (this commit) adds
+    the dict to the route context; Commits 3 and 4 wire the templates
+    to consume it.
+
+    These tests lock in the route contract: the dict is in the
+    rendered context, its keys are 4-tuples, its values are non-empty
+    lists of ``Transaction`` ORM objects, and its contents mirror the
+    Jinja predicate text-for-text (category match, income/expense per
+    section, not-deleted, not-cancelled, template-id-match-takes-
+    precedence with name-match fallback).
+    """
+
+    @staticmethod
+    def _capture_grid_context(app, auth_client):
+        """Return the (template, context) tuple captured from /grid.
+
+        Uses Flask's ``template_rendered`` signal to record what the
+        grid route handed to ``render_template`` so the test can
+        inspect ``matched_by_row_period`` (and any other context key)
+        without parsing rendered HTML.  Returns the first
+        ``grid/grid.html`` record; raises ``AssertionError`` if the
+        route rendered a different template (the ``no_setup`` or
+        ``no_periods`` branch) so the test fails loud rather than
+        silently inspecting the wrong context.
+        """
+        from flask import template_rendered  # pylint: disable=import-outside-toplevel
+
+        recorded: list[tuple] = []
+
+        def _record(sender, template, context, **extra):
+            recorded.append((template, context))
+
+        template_rendered.connect(_record, app)
+        try:
+            response = auth_client.get("/grid")
+        finally:
+            template_rendered.disconnect(_record, app)
+        assert response.status_code == 200, (
+            f"GET /grid returned {response.status_code}; expected 200"
+        )
+        grid_records = [
+            (t, c) for t, c in recorded if t.name == "grid/grid.html"
+        ]
+        assert grid_records, (
+            "GET /grid did not render grid/grid.html; templates "
+            f"rendered: {[t.name for t, _ in recorded]!r}"
+        )
+        return grid_records[0]
+
+    def test_index_renders_with_new_context(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C2-1: GET /grid still returns 200 with the new precomputation.
+
+        Pure smoke test that adding the precomputation and the new
+        ``matched_by_row_period`` kwarg to ``render_template`` did not
+        break the existing rendering pipeline.  No assertion on the
+        dict's contents -- C2-2 and C2-3 cover that.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            assert b"Checking Balance" in response.data
+            assert b"Projected End Balance" in response.data
+
+    def test_matched_by_row_period_in_context(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C2-2: ``matched_by_row_period`` is present in the render context.
+
+        Setup: seed one Projected expense in the current period so the
+        dict has at least one entry.  Asserts the dict exists, is a
+        ``dict``, every key is a 4-tuple of ``(int, int | None, str,
+        int)``, and every value is a non-empty list of ``Transaction``
+        ORM objects.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Weekly Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("123.45"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            _, context = self._capture_grid_context(app, auth_client)
+
+            assert "matched_by_row_period" in context, (
+                "render_template kwargs missing matched_by_row_period; "
+                "Commit 2 of mobile-first v3 adds it as the canonical "
+                "matching producer for the grid macros"
+            )
+            matched = context["matched_by_row_period"]
+            assert isinstance(matched, dict), (
+                f"matched_by_row_period must be a dict, got {type(matched)!r}"
+            )
+            assert matched, (
+                "Seeded one txn in the current period; "
+                "matched_by_row_period should be non-empty"
+            )
+            for key, value in matched.items():
+                assert isinstance(key, tuple) and len(key) == 4, (
+                    f"matched_by_row_period key {key!r} is not a 4-tuple"
+                )
+                category_id, template_id, txn_name, period_id = key
+                assert isinstance(category_id, int)
+                assert template_id is None or isinstance(template_id, int)
+                assert isinstance(txn_name, str)
+                assert isinstance(period_id, int)
+                assert isinstance(value, list) and value, (
+                    "matched_by_row_period values must be non-empty lists"
+                )
+                for matched_txn in value:
+                    assert isinstance(matched_txn, Transaction), (
+                        "matched_by_row_period values must contain "
+                        f"Transaction ORM objects, got {type(matched_txn)!r}"
+                    )
+
+    def test_matched_dict_mirrors_jinja_predicate(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C2-3: dict contents mirror the Jinja matching predicate.
+
+        Seeds four transactions exercising each predicate branch:
+          (a) a template-linked income (Salary template) in the
+              current period -- must match via the template-id branch.
+          (b) a standalone expense in Groceries by name -- must match
+              via the name-match fallback.
+          (c) a cancelled expense in Groceries -- must NOT appear (the
+              ``status_id != STATUS_CANCELLED`` guard).
+          (d) a soft-deleted expense in Groceries -- must NOT appear
+              (the ``not is_deleted`` guard).
+
+        Asserts: matched_by_row_period contains the expected keys for
+        (a) and (b); the matched lists include only the correct txn;
+        (c) and (d) do not appear in any matched list.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+            expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+            salary_cat = seed_user["categories"]["Salary"]
+            groceries_cat = seed_user["categories"]["Groceries"]
+
+            # (a) Template-linked income.
+            salary_template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=salary_cat.id,
+                transaction_type_id=income_type_id,
+                name="Biweekly Salary",
+                default_amount=Decimal("2500.00"),
+            )
+            db.session.add(salary_template)
+            db.session.flush()
+            txn_a = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_id,
+                name="Biweekly Salary",
+                category_id=salary_cat.id,
+                transaction_type_id=income_type_id,
+                estimated_amount=Decimal("2500.00"),
+                template_id=salary_template.id,
+            )
+            # (b) Standalone expense.
+            txn_b = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_id,
+                name="Adhoc Groceries",
+                category_id=groceries_cat.id,
+                transaction_type_id=expense_type_id,
+                estimated_amount=Decimal("85.00"),
+            )
+            # (c) Cancelled expense.
+            txn_c = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=cancelled_id,
+                name="Cancelled Groceries",
+                category_id=groceries_cat.id,
+                transaction_type_id=expense_type_id,
+                estimated_amount=Decimal("50.00"),
+            )
+            # (d) Soft-deleted expense.
+            txn_d = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_id,
+                name="Deleted Groceries",
+                category_id=groceries_cat.id,
+                transaction_type_id=expense_type_id,
+                estimated_amount=Decimal("60.00"),
+                is_deleted=True,
+            )
+            db.session.add_all([txn_a, txn_b, txn_c, txn_d])
+            db.session.commit()
+            txn_a_id = txn_a.id
+            txn_b_id = txn_b.id
+            txn_c_id = txn_c.id
+            txn_d_id = txn_d.id
+            template_id = salary_template.id
+
+            _, context = self._capture_grid_context(app, auth_client)
+            matched = context["matched_by_row_period"]
+
+            # (a) Template-linked: key uses template_id, txn_name from row
+            # key is the template name; the matched list contains txn_a.
+            key_a = (
+                salary_cat.id, template_id, "Biweekly Salary", current.id,
+            )
+            assert key_a in matched, (
+                f"Template-linked match missing; expected key {key_a!r} "
+                f"in dict; got keys {list(matched.keys())!r}"
+            )
+            assert [t.id for t in matched[key_a]] == [txn_a_id], (
+                f"Template-linked match must contain only txn_a "
+                f"(id={txn_a_id}); got "
+                f"{[t.id for t in matched[key_a]]!r}"
+            )
+
+            # (b) Standalone: key uses template_id=None, txn_name from
+            # row key is the instance name; matched list contains txn_b.
+            key_b = (
+                groceries_cat.id, None, "Adhoc Groceries", current.id,
+            )
+            assert key_b in matched, (
+                f"Standalone match missing; expected key {key_b!r} "
+                f"in dict; got keys {list(matched.keys())!r}"
+            )
+            assert [t.id for t in matched[key_b]] == [txn_b_id], (
+                "Standalone match must contain only txn_b "
+                f"(id={txn_b_id}); got "
+                f"{[t.id for t in matched[key_b]]!r}"
+            )
+
+            # (c) Cancelled: must not appear in any matched list.  Also
+            # row-key for "Cancelled Groceries" should be absent because
+            # _build_row_keys filters cancelled txns at row-key time.
+            all_matched_ids = {
+                t.id for v in matched.values() for t in v
+            }
+            assert txn_c_id not in all_matched_ids, (
+                f"Cancelled txn (id={txn_c_id}) must not appear in "
+                "matched_by_row_period (status_id != STATUS_CANCELLED "
+                "guard)"
+            )
+
+            # (d) Soft-deleted: must not appear in any matched list.
+            assert txn_d_id not in all_matched_ids, (
+                f"Soft-deleted txn (id={txn_d_id}) must not appear in "
+                "matched_by_row_period (not is_deleted guard)"
+            )
+
+    def test_no_balance_resolver_reads(self):
+        """C2-4: no NEW direct reads of canonical-producer source columns.
+
+        Plan Section 1 rule 2 ("Canonical producers only for monetary
+        values"): the precomputation Commit 2 introduces must not read
+        ``Account.current_anchor_balance`` /
+        ``Account.current_anchor_period_id`` /
+        ``LoanParams.current_principal`` / ``LoanParams.interest_rate``
+        beyond the baseline that already exists in the route.
+
+        Baseline (pre-commit): exactly one read of
+        ``account.current_anchor_balance`` at the ``anchor_balance``
+        local in ``index()`` -- this is the existing display value
+        and is NOT a bypass of ``balance_resolver``.  After this
+        commit, that count must still be exactly one and the other
+        three symbols must still be zero.
+
+        Complements the existing
+        ``test_grid_balance_computation_routed_through_resolver``
+        (F-6 lock) by pinning the *count* of legacy reads rather
+        than the presence/absence of the canonical-producer symbol.
+        """
+        import re  # pylint: disable=import-outside-toplevel
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
+        current_anchor_balance_reads = len(
+            re.findall(r"\.current_anchor_balance\b", grid_source),
+        )
+        current_anchor_period_id_reads = len(
+            re.findall(r"\.current_anchor_period_id\b", grid_source),
+        )
+        current_principal_reads = len(
+            re.findall(r"\.current_principal\b", grid_source),
+        )
+        interest_rate_reads = len(
+            re.findall(r"\.interest_rate\b", grid_source),
+        )
+
+        assert current_anchor_balance_reads == 1, (
+            "app/routes/grid.py contains "
+            f"{current_anchor_balance_reads} reads of "
+            "``.current_anchor_balance`` (expected 1 baseline read at "
+            "``anchor_balance = account.current_anchor_balance ...``); "
+            "Commit 2 of mobile-first v3 must not add NEW direct reads "
+            "of canonical-producer source columns -- route all monetary "
+            "values through ``balance_resolver``"
+        )
+        assert current_anchor_period_id_reads == 0, (
+            "app/routes/grid.py reads "
+            "``.current_anchor_period_id`` directly; route through "
+            "``balance_resolver`` instead"
+        )
+        assert current_principal_reads == 0, (
+            "app/routes/grid.py reads ``.current_principal`` directly; "
+            "route through ``loan_resolver`` instead"
+        )
+        assert interest_rate_reads == 0, (
+            "app/routes/grid.py reads ``.interest_rate`` directly; "
+            "route through ``loan_resolver`` instead"
+        )
+
+
 class TestPaidAtLifecycle:
     """Tests for paid_at timestamp management during status changes."""
 

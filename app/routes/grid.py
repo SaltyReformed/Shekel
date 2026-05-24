@@ -65,6 +65,110 @@ def _short_display_name(name):
     return name
 
 
+def _build_matched_by_row_period(
+    income_row_keys: list[RowKey],
+    expense_row_keys: list[RowKey],
+    periods: list,
+    txn_by_period: dict[int, list[Transaction]],
+) -> dict[tuple[int, int | None, str, int], list[Transaction]]:
+    """Pre-compute the (row_key, period) -> matched transactions dict.
+
+    Single source of truth for the grid's matching predicate: for each
+    row key and each visible period, find the transactions that belong
+    in that cell.  The Jinja grid templates (``grid.html`` and
+    ``_mobile_grid.html``) previously hand-rolled this match in four
+    duplicated blocks; the macros introduced in Commit 1 of the
+    mobile-first v3 plan and the templates wired in Commits 3 and 4
+    consume this dict instead, so the predicate is defined once.
+
+    Predicate (mirrors the Jinja loops at ``grid.html`` lines 158-173
+    and 234-246 text-for-text):
+
+    1. ``txn.category_id == rk.category_id``.
+    2. Income section -> ``txn.is_income``; expense section ->
+       ``txn.is_expense``.  Row keys are already partitioned by
+       income/expense at ``_build_row_keys`` time, but this redundant
+       per-txn guard preserves the Jinja predicate verbatim.
+    3. ``not txn.is_deleted``.
+    4. ``not is_cancelled(txn)`` -- routed through the centralized
+       ``is_cancelled`` helper so the Python producer and the Jinja
+       templates' Cancelled-status guard share the same cached-ID
+       source per E-15 / MED-02.
+    5. If both the row key and the txn carry a ``template_id``, match
+       by template id.  Otherwise fall back to name match.
+
+    Args:
+        income_row_keys: row keys for the income section, in
+            row-render order.
+        expense_row_keys: row keys for the expense section, in
+            row-render order.
+        periods: visible pay periods (the ``{% for period in
+            periods %}`` iteration axis the Jinja templates use).
+        txn_by_period: pre-built ``pay_period_id -> [Transaction]``
+            map; the matching iterates only over the txns in each
+            period's bucket.
+
+    Returns:
+        ``dict[(category_id, template_id, txn_name, period_id),
+        list[Transaction]]``.  Keys are 4-tuples uniquely identifying
+        the (row, period) cell; values are non-empty lists of
+        Transaction ORM objects in insertion order.  Cells with no
+        matched txns are omitted (the macro callers default to ``[]``
+        via ``dict.get``).
+    """
+    matched_by_row_period: dict[
+        tuple[int, int | None, str, int], list[Transaction]
+    ] = {}
+    for row_keys, is_income_section in (
+        (income_row_keys, True),
+        (expense_row_keys, False),
+    ):
+        for rk in row_keys:
+            for period in periods:
+                matched = _match_row_in_period(
+                    rk, period, txn_by_period, is_income_section,
+                )
+                if matched:
+                    matched_by_row_period[
+                        (rk.category_id, rk.template_id, rk.txn_name, period.id)
+                    ] = matched
+    return matched_by_row_period
+
+
+def _match_row_in_period(
+    rk: RowKey,
+    period,
+    txn_by_period: dict[int, list[Transaction]],
+    is_income_section: bool,
+) -> list[Transaction]:
+    """Return the transactions matching ``rk`` in ``period``.
+
+    Inner half of :func:`_build_matched_by_row_period`, lifted to its
+    own function so the outer cross-product loop stays flat (pylint
+    ``too-many-nested-blocks``) and so the per-cell predicate is
+    individually testable without instantiating the full row-key set.
+    See :func:`_build_matched_by_row_period` for the predicate
+    semantics.
+    """
+    matched: list[Transaction] = []
+    for txn in txn_by_period.get(period.id, []):
+        if txn.category_id != rk.category_id:
+            continue
+        if is_income_section and not txn.is_income:
+            continue
+        if not is_income_section and not txn.is_expense:
+            continue
+        if txn.is_deleted or is_cancelled(txn):
+            continue
+        if rk.template_id is not None and txn.template_id is not None:
+            if txn.template_id != rk.template_id:
+                continue
+        elif txn.name != rk.txn_name:
+            continue
+        matched.append(txn)
+    return matched
+
+
 def _build_row_keys(transactions, categories, is_income_section):
     """Build a deterministic, sorted list of RowKeys for the grid.
 
@@ -344,6 +448,22 @@ def index():
         row_source_txns, all_categories, is_income_section=False,
     )
 
+    # Pre-compute the (row_key, period) -> matched transactions dict
+    # once in the route so the desktop and mobile grid macros (Commit 1
+    # of the mobile-first v3 plan) consume identical data through a
+    # single matching predicate.  The four duplicated blocks of inline
+    # Jinja matching at ``grid.html`` lines 158-173 (income) /
+    # 234-246 (expense) and ``_mobile_grid.html`` lines 65-81 (income) /
+    # 152-168 (expense) collapse onto this single producer in
+    # Commits 3 and 4; this commit only adds the dict to the route
+    # context.  No template reads it yet -- unused context keys are
+    # Jinja no-ops, so the rendered HTML is byte-equivalent to the
+    # pre-commit output.  See :func:`_build_matched_by_row_period` for
+    # the predicate and key shape.
+    matched_by_row_period = _build_matched_by_row_period(
+        income_row_keys, expense_row_keys, periods, txn_by_period,
+    )
+
     # Load statuses for the edit form dropdowns.
     statuses = db.session.query(Status).all()
     transaction_types = db.session.query(TransactionType).all()
@@ -386,6 +506,7 @@ def index():
         low_balance_threshold=low_balance_threshold,
         stale_anchor_warning=stale_anchor_warning,
         entry_sums=entry_sums,
+        matched_by_row_period=matched_by_row_period,
     )
 
 
