@@ -1,18 +1,16 @@
 # Follow-up Remediation -- Common Rules and Work Summary Format
 
-Shared by every commit prompt in
-`remediation_follow_up_commit_prompts.md`. Each prompt requires this
-file to be read in full before any code is edited. Putting the rules
-here keeps the per-commit prompts focused on commit-specific
-objectives, files, and verification gates.
+Shared by every commit prompt in `remediation_follow_up_commit_prompts.md`. Each prompt requires
+this file to be read in full before any code is edited. Putting the rules here keeps the per-commit
+prompts focused on commit-specific objectives, files, and verification gates.
 
 ---
 
 ## Apply these rules (every commit)
 
 These are the floor, not the ceiling. The plan's commit specification
-(`remediation_follow_up_plan.md` Section 7) may extend them with
-commit-specific constraints; the union holds.
+(`remediation_follow_up_plan.md` Section 7) may extend them with commit-specific constraints; the
+union holds.
 
 1. **The plan's specification for this commit is the floor, not the
    ceiling.** If verification surfaces extra in-scope refinements,
@@ -52,7 +50,7 @@ commit-specific constraints; the union holds.
    work summary with `file:line` and a one-sentence reason for not
    acting. Do not silently fold them in. Items that are not directly
    handled by a future commit need to be added to
-   `docs/audits/financial_calculations/remediation_follow_up.md` as a
+   `docs/mobile_follow_up.md` as a
    new `F-N` entry. Any trivial in-scope items, offer to address as a
    separate commit.
 7. **Do not push.** After the work is green, present the work summary
@@ -64,8 +62,8 @@ commit-specific constraints; the union holds.
 
 ## Work summary format (use these labels verbatim)
 
-End every session with a structured work summary using these exact
-labels. Do not invent new labels or merge sections.
+End every session with a structured work summary using these exact labels. Do not invent new labels
+or merge sections.
 
 ```text
 A. Verification: claims you re-verified; any drift found.
@@ -130,9 +128,8 @@ M. Ask: "Ready to commit and push to dev?"
 
 - **No Flask in services:**
   `grep -nE '^(from|import)\s+flask\b|\b(request|session|current_app|render_template)\b' app/services/<file>.py`
-  -- must return empty (B6-01 import-linter is enforced by Commit 36
-  of the main remediation; per-file greps remain useful during
-  authoring).
+  -- must return empty (B6-01 import-linter is enforced by Commit 36 of the main remediation;
+  per-file greps remain useful during authoring).
 - **No `Status.name` comparisons:**
   `grep -n "\.name ==\|Status.name" <file>` -- must return empty in
   any business-logic context (use IDs from `ref_cache` instead).
