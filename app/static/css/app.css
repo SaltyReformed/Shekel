@@ -874,6 +874,23 @@ td.htmx-loading::after {
     background: rgba(0, 0, 0, 0.4);
     z-index: 99;
   }
+
+  /* Sticky action footer for the full-edit popover (commit 12 of
+     mobile-first v3).  Pins the form's Save / Cancel buttons to the
+     bottom of the bottom-sheet's scroll area so they remain reachable
+     above the iOS on-screen keyboard.  No default rule outside this
+     media query: desktop popover is short enough that sticky has no
+     benefit, and the form's natural button position is preserved.
+     padding-bottom adds safe-area-inset-bottom on iPhones with no
+     physical home button so the buttons clear the home indicator. */
+  .popover-action-footer {
+    position: sticky;
+    bottom: 0;
+    padding: 8px 16px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    background: var(--bs-body-bg);
+    border-top: 1px solid var(--bs-border-color);
+  }
 }
 
 @media (max-width: 575.98px) {

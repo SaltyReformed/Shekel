@@ -66,15 +66,20 @@
              placeholder="Notes">
     </div>
 
-    {# Save / Cancel buttons #}
-    <div class="d-flex gap-1 mb-2">
-      <button type="submit" class="btn btn-sm btn-primary flex-grow-1">
-        <i class="bi bi-plus"></i> Create
-      </button>
-      <button type="button" class="btn btn-sm btn-outline-secondary"
-              data-action="close-popover">
-        <i class="bi bi-x"></i> Cancel
-      </button>
+    {# Create / Cancel buttons -- wrapped in .popover-action-footer so
+       the primary form-submit actions stay pinned above the iOS
+       on-screen keyboard on mobile.  The sticky rule lives inside the
+       < 768 px @media block in app.css; desktop is unaffected. #}
+    <div class="popover-action-footer">
+      <div class="d-flex gap-1 mb-2">
+        <button type="submit" class="btn btn-sm btn-primary flex-grow-1">
+          <i class="bi bi-plus"></i> Create
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                data-action="close-popover">
+          <i class="bi bi-x"></i> Cancel
+        </button>
+      </div>
     </div>
   </form>
 </div>
