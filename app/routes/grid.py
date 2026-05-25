@@ -10,12 +10,15 @@ import logging
 from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
+from typing import NamedTuple
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.orm import selectinload
 
 from app.extensions import db
+from app.models.account import Account
+from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.category import Category
@@ -40,18 +43,60 @@ grid_bp = Blueprint("grid", __name__)
 __all__ = ["RowKey", "grid_bp"]
 
 
-@grid_bp.route("/grid")
-@login_required
-@require_owner
-def index():
-    """Render the full budget grid page.
+class _GridContext(NamedTuple):
+    """Request-derived context for the grid view.
 
-    Loads the current period as the leftmost column, with future
-    periods extending to the right.  The number of visible periods
-    is controlled by query params or user settings.
+    Produced by :func:`_resolve_grid_context`.  Carrying this as a
+    :class:`typing.NamedTuple` lets :func:`index` access fields via
+    attribute (``ctx.scenario``) without binding seven separate locals
+    from a tuple unpack -- the same pattern keeps the orchestrator's
+    pylint ``R0914`` count below the project threshold after the
+    mobile-follow-up Commit 8 / F-6 decomposition.
+
+    Attributes:
+        scenario: The baseline scenario for the requesting user.
+        account: The grid account (checking by default, or the user's
+            preferred grid account), or ``None`` when the user has no
+            account rows at all (the post-Commit-3 user-with-zero-
+            accounts edge case).
+        num_periods: Count of visible pay-period columns.
+        start_offset: Offset added to the current period's
+            ``period_index`` for the leftmost visible column.
+        current_period: The user's current pay period (the natural
+            leftmost column when ``start_offset == 0``).
+        periods: The visible period slice (length ``num_periods``).
+        all_periods: All periods from anchor forward; the canonical
+            producer :func:`balance_resolver.balances_for` walks this
+            list to project balances.
     """
-    user_id = current_user.id
 
+    scenario: Scenario
+    account: Account | None
+    num_periods: int
+    start_offset: int
+    current_period: PayPeriod
+    periods: list[PayPeriod]
+    all_periods: list[PayPeriod]
+
+
+def _resolve_grid_context(user_id, request_args, settings):
+    """Resolve scenario, account, and period range from the request.
+
+    Args:
+        user_id: ID of the requesting user.
+        request_args: Flask ``request.args`` (or any compatible
+            multidict).  Parsed for ``account_id``, ``periods``, and
+            ``offset``.
+        settings: ``current_user.settings`` (a ``UserSettings`` row)
+            or ``None``.  Source of the default ``grid_default_periods``
+            when the request omits ``periods``.
+
+    Returns:
+        A :class:`_GridContext` on success, OR a rendered HTML string
+        (the ``no_setup.html`` / ``no_periods.html`` early-return page)
+        when the user lacks a baseline scenario or any current pay
+        period.  The caller distinguishes via ``isinstance(result, str)``.
+    """
     # Get the baseline scenario.
     scenario = get_baseline_scenario(user_id)
     if scenario is None:
@@ -59,41 +104,60 @@ def index():
 
     # Get the grid account (checking by default, or user preference).
     account = resolve_grid_account(
-        user_id, current_user.settings,
-        request.args.get("account_id", type=int),
+        user_id, settings, request_args.get("account_id", type=int),
     )
 
     # Determine the visible period range.
-    num_periods = request.args.get(
+    num_periods = request_args.get(
         "periods",
-        default=(current_user.settings.grid_default_periods
-                 if current_user.settings else 6),
+        default=(settings.grid_default_periods if settings else 6),
         type=int,
     )
-    start_offset = request.args.get("offset", default=0, type=int)
+    start_offset = request_args.get("offset", default=0, type=int)
 
     # Find the current period as the baseline starting point.
     current_period = pay_period_service.get_current_period(user_id)
     if current_period is None:
         return render_template("grid/no_periods.html")
 
-    # Calculate the actual starting index with offset.
-    start_index = current_period.period_index + start_offset
-
-    # Load the visible periods.
-    periods = pay_period_service.get_periods_in_range(user_id, start_index, num_periods)
+    # Load the visible period slice (offset applied to current).
+    periods = pay_period_service.get_periods_in_range(
+        user_id, current_period.period_index + start_offset, num_periods,
+    )
     if not periods:
         return render_template("grid/no_periods.html")
 
-    # Load all periods from anchor forward for balance calculation.
-    all_periods = pay_period_service.get_all_periods(user_id)
+    return _GridContext(
+        scenario=scenario,
+        account=account,
+        num_periods=num_periods,
+        start_offset=start_offset,
+        current_period=current_period,
+        periods=periods,
+        # All periods from anchor forward -- the canonical balance
+        # producer walks this list to project per-period end balances.
+        all_periods=pay_period_service.get_all_periods(user_id),
+    )
 
-    # Load transactions scoped to the viewed account.  Every transaction
-    # now has account_id (NOT NULL), so filtering ensures the grid only
-    # shows income/expenses belonging to the selected account.  This is
-    # critical when the user switches accounts via settings -- without
-    # this filter, checking transactions would appear on the savings
-    # grid and corrupt the projected balance.
+
+def _load_grid_transactions(account, scenario, all_periods):
+    """Load all transactions for the visible account and scenario.
+
+    Every transaction has ``account_id`` NOT NULL, so filtering by
+    ``account_id`` ensures the grid only shows income/expenses
+    belonging to the selected account.  Without this filter, checking
+    transactions would appear on the savings grid and corrupt the
+    projected balance.  ``account=None`` (the user-with-zero-accounts
+    edge case) omits the account filter so the resulting list is
+    naturally empty.
+
+    Eager-loads ``entries`` (for entry-sum rendering) and ``template``
+    (for row-key generation) -- these are read in the row-data helper
+    and the cell template, so the eager-load avoids per-row N+1
+    queries in the grid render loop.
+
+    Returns the list of matching :class:`Transaction` rows.
+    """
     period_ids = [p.id for p in all_periods]
     txn_filters = [
         Transaction.pay_period_id.in_(period_ids),
@@ -102,7 +166,7 @@ def index():
     ]
     if account:
         txn_filters.append(Transaction.account_id == account.id)
-    all_transactions = (
+    return (
         db.session.query(Transaction)
         .options(
             selectinload(Transaction.entries),
@@ -112,16 +176,29 @@ def index():
         .all()
     )
 
-    # Calculate balances via the canonical entries-aware producer
-    # (E-25 / Commit 5).  The producer owns its own query (it always
-    # ``selectinload``s entries so the entry-aware reduction applies
-    # unconditionally), which is the structural fix for CRIT-01 /
-    # F-009.  The grid additionally keeps its own ``all_transactions``
-    # query above for display purposes -- it needs the ``template``
-    # eager-load for row-key generation and the same entries for
-    # ``entry_sums`` / cell rendering, neither of which is in
-    # ``balances_for``'s remit.  The double-query cost is a one-extra
-    # SELECT trade for the seam-removal guarantee.
+
+def _build_grid_balances(account, scenario, all_periods):
+    """Compute the anchor balance and the period-end balance projection.
+
+    Routes through the canonical entries-aware producer
+    :func:`balance_resolver.balances_for` (E-25 / Commit 5).  The
+    producer owns its own query (it always ``selectinload``s entries
+    so the entries-aware reduction in ``_entry_aware_amount`` applies
+    unconditionally), which is the structural fix for CRIT-01 /
+    F-009.  The grid additionally keeps its own ``all_transactions``
+    query (in :func:`_load_grid_transactions`) for display purposes:
+    the route needs the ``template`` eager-load for row-key generation
+    and the same entries for ``entry_sums`` / cell rendering, neither
+    of which is in ``balances_for``'s remit.  The double-query cost
+    is a one-extra SELECT trade for the seam-removal guarantee.
+
+    Returns the 3-tuple ``(balances, stale_anchor_warning,
+    anchor_balance)``.  No-account state returns an empty balance map
+    + ``False`` warning + zero anchor -- the grid template renders
+    empty cells cleanly.  Post-Commit-3 every user with an account
+    row has a resolvable anchor; the user-with-zero-accounts state
+    lands here.
+    """
     anchor_balance = (
         account.current_anchor_balance if account else Decimal("0.00")
     )
@@ -130,55 +207,40 @@ def index():
         balance_result = balance_resolver.balances_for(
             account, scenario.id, all_periods,
         )
-        balances = balance_result.balances
-        stale_anchor_warning = balance_result.stale_anchor_warning
-    else:
-        # No-account edge case: no anchor exists to project from.
-        # Post-Commit-3 every user with an account row has a
-        # resolvable anchor; the user-with-zero-accounts state lands
-        # here and gets an empty balance map (the grid template
-        # renders empty cells cleanly).
-        balances = OrderedDict()
-        stale_anchor_warning = False
+        return (
+            balance_result.balances,
+            balance_result.stale_anchor_warning,
+            anchor_balance,
+        )
 
-    # Group transactions by period for the template's per-period cell
-    # iteration.  ``grid_view_service.build_matched_by_row_period``
-    # rebuilds this same index internally, so the route's
-    # ``txn_by_period`` here only exists for the template context
-    # (the templates consume it directly to look up cell contents in
-    # legacy / debug paths).
-    txn_by_period = {}
-    for txn in all_transactions:
-        txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
+    return OrderedDict(), False, anchor_balance
 
-    # Pre-compute entry sums for tracked transactions with entries.
-    # The cell template uses this to show "spent / budget" progress
-    # instead of the standard single-amount display.
-    entry_sums = build_entry_sums_dict(all_transactions)
 
-    # Per-period subtotals via the canonical entries-aware producer
-    # (E-25 / Commit 10).  Routing the on-screen subtotal row through
-    # ``balance_resolver.period_subtotal`` closes F-002 Pair C / F-004
-    # (Q-10): the same Projected-only, entries-aware formula now
-    # generates both the subtotal row and the balance row, so
-    # ``balances[p] - balances[p-1] == subtotals[p].net`` by
-    # construction.  The pre-Commit-10 inline loop above used raw
-    # ``txn.effective_amount`` and disagreed with the entries-aware
-    # balance row whenever a Projected envelope expense carried
-    # cleared/uncleared/credit entries.  The
-    # ``PeriodSubtotal`` dataclass exposes ``.income``, ``.expense``,
-    # ``.net`` which the grid templates already access by attribute
-    # (``subtotals[period.id].income`` etc., dict and dataclass behave
-    # identically through Jinja's attribute resolution).
+def _build_grid_subtotals(account, scenario, periods):
+    """Compute per-period subtotals via the canonical entries-aware producer.
+
+    Routing the on-screen subtotal row through
+    :func:`balance_resolver.period_subtotal` (E-25 / Commit 10) closes
+    F-002 Pair C / F-004 (Q-10): the same Projected-only,
+    entries-aware formula now generates both the subtotal row and the
+    balance row, so ``balances[p] - balances[p-1] ==
+    subtotals[p].net`` by construction.  The pre-Commit-10 inline
+    loop used raw ``txn.effective_amount`` and disagreed with the
+    entries-aware balance row whenever a Projected envelope expense
+    carried cleared/uncleared/credit entries.
+
+    The :class:`balance_resolver.PeriodSubtotal` dataclass exposes
+    ``.income``, ``.expense``, ``.net`` which the grid templates
+    access by attribute (dict and dataclass behave identically
+    through Jinja's attribute resolution).  Returns a dict keyed by
+    ``period.id``; no-account state returns zero-valued
+    ``PeriodSubtotal`` so template ``.income`` / ``.expense`` /
+    ``.net`` access does not raise ``AttributeError`` and the
+    rendered subtotals match the empty-balance projection.
+    """
     subtotals = {}
     for period in periods:
         if account is None:
-            # No-account state -- the grid still renders period
-            # headers but every subtotal cell is zero.  Return a
-            # zero-valued ``PeriodSubtotal`` so the template's
-            # ``.income`` / ``.expense`` / ``.net`` access does not
-            # ``AttributeError`` and the rendered subtotals match the
-            # empty-balance projection above.
             subtotals[period.id] = balance_resolver.PeriodSubtotal(
                 income=Decimal("0.00"),
                 expense=Decimal("0.00"),
@@ -188,49 +250,46 @@ def index():
             subtotals[period.id] = balance_resolver.period_subtotal(
                 account, scenario.id, period,
             )
+    return subtotals
 
-    # Load ALL categories (including archived) for row key building so
-    # transactions with archived categories still render correctly.
-    all_categories = (
-        db.session.query(Category)
-        .filter_by(user_id=user_id)
-        .order_by(Category.group_name, Category.item_name)
-        .all()
-    )
-    # Active-only categories for the Add Transaction modal dropdown.
-    active_categories = [c for c in all_categories if c.is_active]
 
-    # Scope row generation to the visible window by default so the grid
-    # stays uncluttered when planning far in advance.  ``?show_all=1``
-    # opts back in to the full forward projection for full-picture
-    # review.  Balance math, cell matching, and subtotals all work off
-    # ``all_transactions``/``txn_by_period`` and are unaffected by this
-    # filter -- any txn hidden from row-key generation has
-    # pay_period_id outside the visible window, so it contributes $0
-    # to every visible-period subtotal and its cells were never going
-    # to render.  See docs/: grid row scoping invariants.
-    show_all = request.args.get("show_all", type=int) == 1
+def _build_grid_row_data(transactions, periods, show_all, all_categories):
+    """Build row keys, the (row_key, period) match index, and entry sums.
+
+    Row keys + the (row_key, period) -> matched-transactions dict are
+    produced by the pure :mod:`app.services.grid_view_service`.  The
+    service is also called from :func:`app.routes.companion.index` so
+    the owner mobile grid and the companion view share one definition
+    of the row-key dedup, sort order, and cell-matching predicate
+    (mobile-first v3 plan Commit 13 / D-B).
+
+    Row generation is scoped to the visible window by default so the
+    grid stays uncluttered when planning far in advance.  ``show_all``
+    opts back in to the full forward projection for full-picture
+    review.  Balance math, cell matching, and subtotals work off the
+    un-filtered ``transactions`` list -- any txn hidden from row-key
+    generation has ``pay_period_id`` outside the visible window, so
+    it contributes $0 to every visible-period subtotal and its cells
+    were never going to render.
+
+    Returns the 5-tuple ``(income_row_keys, expense_row_keys,
+    matched_by_row_period, entry_sums, txn_by_period)``.
+    ``entry_sums`` is the pre-computed tracked-progress map for the
+    cell template's "spent / budget" display.  ``txn_by_period`` is
+    the per-period transaction index that the grid template context
+    contract still surfaces; ``matched_by_row_period`` rebuilds the
+    same index internally so the dual exposure is intentional dead
+    weight pending a separate cleanup commit.
+    """
     if show_all:
-        row_source_txns = all_transactions
+        row_source_txns = transactions
     else:
         visible_period_ids = {p.id for p in periods}
         row_source_txns = [
-            t for t in all_transactions
+            t for t in transactions
             if t.pay_period_id in visible_period_ids
         ]
 
-    # Build row keys + the (row_key, period) -> matched transactions
-    # dict via the pure ``grid_view_service`` producer.  The service
-    # is also called from ``app/routes/companion.py::index`` so the
-    # owner mobile grid and the companion view share one definition of
-    # the row-key dedup, sort order, and cell-matching predicate
-    # (mobile-first v3 plan Commit 13 / D-B).  The predicate is
-    # text-for-text identical to the inline matching loops that
-    # ``grid.html`` and ``_mobile_grid.html`` v1 had at
-    # ``grid.html`` lines 158-173 (income) / 234-246 (expense) and
-    # ``_mobile_grid.html`` lines 65-81 (income) / 152-168 (expense);
-    # Commits 3 and 4 collapsed all four onto this dict, this commit
-    # only moved its construction out of the route.
     income_row_keys = grid_view_service.build_row_keys(
         row_source_txns, all_categories, is_income_section=True,
     )
@@ -238,49 +297,107 @@ def index():
         row_source_txns, all_categories, is_income_section=False,
     )
     matched_by_row_period = grid_view_service.build_matched_by_row_period(
-        income_row_keys, expense_row_keys, periods, all_transactions,
+        income_row_keys, expense_row_keys, periods, transactions,
     )
 
-    # Load statuses for the edit form dropdowns.
-    statuses = db.session.query(Status).all()
-    transaction_types = db.session.query(TransactionType).all()
+    entry_sums = build_entry_sums_dict(transactions)
 
-    # Determine column sizing class based on visible period count.
-    if num_periods <= 6:
-        col_size = "wide"
-    elif num_periods <= 13:
-        col_size = "medium"
-    else:
-        col_size = "compact"
+    txn_by_period = {}
+    for txn in transactions:
+        txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
-    low_balance_threshold = (
-        current_user.settings.low_balance_threshold
-        if current_user.settings and current_user.settings.low_balance_threshold is not None
-        else 500
+    return (
+        income_row_keys,
+        expense_row_keys,
+        matched_by_row_period,
+        entry_sums,
+        txn_by_period,
+    )
+
+
+@grid_bp.route("/grid")
+@login_required
+@require_owner
+def index():
+    """Render the full budget grid page.
+
+    Loads the current period as the leftmost column with future
+    periods extending to the right.  The number of visible periods is
+    controlled by query params or user settings.  Orchestrates
+    :func:`_resolve_grid_context` (period range + early returns),
+    :func:`_load_grid_transactions`, :func:`_build_grid_balances`,
+    :func:`_build_grid_subtotals`, and :func:`_build_grid_row_data`,
+    then dispatches to ``grid/grid.html``.
+    """
+    user_id = current_user.id
+
+    ctx = _resolve_grid_context(
+        user_id, request.args, current_user.settings,
+    )
+    if isinstance(ctx, str):
+        return ctx
+
+    all_transactions = _load_grid_transactions(
+        ctx.account, ctx.scenario, ctx.all_periods,
+    )
+    balances, stale_anchor_warning, anchor_balance = _build_grid_balances(
+        ctx.account, ctx.scenario, ctx.all_periods,
+    )
+
+    # Load ALL categories (including archived) for row-key building so
+    # transactions with archived categories still render correctly;
+    # the Add Transaction modal dropdown filters to active only.
+    all_categories = (
+        db.session.query(Category)
+        .filter_by(user_id=user_id)
+        .order_by(Category.group_name, Category.item_name)
+        .all()
+    )
+    show_all = request.args.get("show_all", type=int) == 1
+
+    (
+        income_row_keys,
+        expense_row_keys,
+        matched_by_row_period,
+        entry_sums,
+        txn_by_period,
+    ) = _build_grid_row_data(
+        all_transactions, ctx.periods, show_all, all_categories,
     )
 
     return render_template(
         "grid/grid.html",
-        scenario=scenario,
-        account=account,
-        periods=periods,
-        current_period=current_period,
+        scenario=ctx.scenario,
+        account=ctx.account,
+        periods=ctx.periods,
+        current_period=ctx.current_period,
         balances=balances,
         txn_by_period=txn_by_period,
-        subtotals=subtotals,
-        categories=active_categories,
+        subtotals=_build_grid_subtotals(
+            ctx.account, ctx.scenario, ctx.periods,
+        ),
+        categories=[c for c in all_categories if c.is_active],
         income_row_keys=income_row_keys,
         expense_row_keys=expense_row_keys,
-        statuses=statuses,
-        transaction_types=transaction_types,
-        num_periods=num_periods,
-        start_offset=start_offset,
+        statuses=db.session.query(Status).all(),
+        transaction_types=db.session.query(TransactionType).all(),
+        num_periods=ctx.num_periods,
+        start_offset=ctx.start_offset,
         show_all=show_all,
-        col_size=col_size,
+        col_size=(
+            "wide" if ctx.num_periods <= 6
+            else "medium" if ctx.num_periods <= 13
+            else "compact"
+        ),
         anchor_balance=anchor_balance,
         today=date.today(),
-        all_periods=all_periods,
-        low_balance_threshold=low_balance_threshold,
+        all_periods=ctx.all_periods,
+        low_balance_threshold=(
+            current_user.settings.low_balance_threshold
+            if current_user.settings
+            and current_user.settings.low_balance_threshold is not None
+            else 500
+        ),
         stale_anchor_warning=stale_anchor_warning,
         entry_sums=entry_sums,
         matched_by_row_period=matched_by_row_period,
