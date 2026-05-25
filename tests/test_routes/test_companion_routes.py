@@ -760,12 +760,12 @@ class TestMarkPaidButtonVisibility:
     the shared ``grid/_mobile_this_period.html`` partial + ``render_row_card``
     macro + ``_mobile_card_actions.html`` action bar, which use the shorter
     "Mark Paid" button label and the ``badge-done`` settled badge.  The
-    legacy companion ``_transaction_card.html`` (still on disk, no longer
-    reached by the route) used "Mark as Paid" + ``bi-check-circle-fill``;
-    those strings no longer render through the companion route's HTML so
-    the assertions move to the shared-design vocabulary.  The semantic
-    contract (Projected = action affordance present, Settled = badge
-    only) is unchanged.
+    legacy companion ``_transaction_card.html`` (removed in the mobile
+    follow-up F-4 cleanup; preserved in git history) used
+    "Mark as Paid" + ``bi-check-circle-fill``; those strings no longer
+    render through the companion route's HTML so the assertions move to
+    the shared-design vocabulary.  The semantic contract (Projected =
+    action affordance present, Settled = badge only) is unchanged.
     """
 
     def test_projected_transaction_shows_mark_paid_button(
