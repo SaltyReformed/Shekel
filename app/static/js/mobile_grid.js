@@ -66,18 +66,24 @@
         if (prevBtn) prevBtn.addEventListener('click', function() { navigate(-1); });
         if (nextBtn) nextBtn.addEventListener('click', function() { navigate(1); });
 
-        // Swipe detection on the mobile grid container.
-        var grid = document.getElementById('mobile-grid');
-        if (grid) {
+        // Swipe detection scoped to the Plan tab-pane.  Binding to
+        // the outer `#mobile-grid` container would silently advance
+        // the Plan tab's `currentIndex` on a swipe from the "This
+        // Period" tab (the panels[] writes have no visual effect
+        // while the Plan tab-pane is `display:none`, so the user
+        // only discovers the leak when they switch to Plan and find
+        // it on the wrong period).  See `docs/mobile_follow_up.md` F-1.
+        var planPane = document.getElementById('mobile-plan');
+        if (planPane) {
             var touchStartX = 0;
             var touchStartY = 0;
 
-            grid.addEventListener('touchstart', function(e) {
+            planPane.addEventListener('touchstart', function(e) {
                 touchStartX = e.changedTouches[0].clientX;
                 touchStartY = e.changedTouches[0].clientY;
             }, { passive: true });
 
-            grid.addEventListener('touchend', function(e) {
+            planPane.addEventListener('touchend', function(e) {
                 var dx = e.changedTouches[0].clientX - touchStartX;
                 var dy = e.changedTouches[0].clientY - touchStartY;
                 // Only trigger on horizontal swipes exceeding 50px threshold.

@@ -5455,6 +5455,35 @@ class TestMobileSwipeAction:
             f"mobile_grid.js + swipe.js, found {total}"
         )
 
+    def test_period_nav_swipe_scoped_to_plan_pane(self):
+        """F-1 lock: the period-nav swipe listener binds to
+        ``#mobile-plan`` (the Plan tab-pane), NOT ``#mobile-grid``
+        (the outer container that wraps both tabs).
+
+        Binding to the outer container caused a horizontal swipe on
+        the "This Period" tab to silently advance the Plan tab's
+        ``currentIndex`` because ``navigate()`` mutates display
+        state on Plan's ``.mobile-period-panel`` elements regardless
+        of which tab-pane is visible.  The user only discovered the
+        leak after switching to Plan and finding it on the wrong
+        period.  Per ``docs/mobile_follow_up.md`` F-1.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        mobile_grid_src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "static" / "js" / "mobile_grid.js"
+        ).read_text(encoding="utf-8")
+
+        # Positive: the Plan tab-pane is the binding site.
+        assert "document.getElementById('mobile-plan')" in mobile_grid_src
+        # Negative: the outer container must NOT be a binding site.
+        # The string `mobile-grid` is allowed in comments (e.g. the
+        # `Activate the mobile-grid tab` doc at the top of init());
+        # the `getElementById` call is what would re-introduce the
+        # cross-tab leak, so the assertion is on the call form.
+        assert "document.getElementById('mobile-grid')" not in mobile_grid_src
+
     def test_no_inline_style_on_swipe_action(self):
         """Pin the no-inline-style invariant on the swipe-action
         button so a future refactor cannot bring back the
