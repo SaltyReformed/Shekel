@@ -13,8 +13,6 @@ from decimal import Decimal
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-
-from app.utils.auth_helpers import require_owner
 from sqlalchemy.orm import selectinload
 
 from app.extensions import db
@@ -27,6 +25,7 @@ from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
 from app.services.grid_view_service import RowKey
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
 
