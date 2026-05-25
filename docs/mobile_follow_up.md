@@ -530,12 +530,17 @@ shape.
 
 - **Surfaced during:** Commit 16
   (`feat(mobile-settings): sidebar -> shekel-scroll-pills on mobile`).
-- **Status:** open. Pre-existing for the analytics and loan dashboard
-  tab rows; Commit 16 surfaces it again by adopting the same class
-  for the settings section nav on mobile. Trivial to fold into any
-  future commit that touches `app/static/css/app.css` mobile media
-  queries (Commit 23, Commit 24 are natural candidates) or as a
-  one-line follow-up.
+- **Status:** closed (commit `1725acd`,
+  `style(mobile): 44 px floor on .shekel-scroll-pills .nav-link`).
+  Pre-existing for the analytics and loan dashboard tab rows;
+  Commit 16 surfaces it again by adopting the same class for the
+  settings section nav on mobile. Added a
+  ``.shekel-scroll-pills .nav-link`` rule inside the existing
+  ``@media (max-width: 767.98px)`` block in
+  ``app/static/css/app.css`` setting ``min-height: 44px`` plus
+  flexbox vertical centering; the pre-existing
+  ``white-space: nowrap`` rule outside the media query is
+  unchanged.
 
 ### Problem
 
