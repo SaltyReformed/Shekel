@@ -625,14 +625,37 @@ issue.
 
 - **Surfaced during:** Commit 19
   (`feat(mobile-templates): cards on mobile in templates/list.html`).
-- **Status:** open. Pre-existing CLAUDE.md "Reference Tables" violation.
-  Commit 19's `recurrence_cell` reuse did not introduce any new
-  string-name comparisons (the mobile card calls the existing macro
-  verbatim), but it surfaces the violation by re-citing the macro as
-  the canonical recurrence-label producer. Trivial to fold into any
-  future commit that touches the `templates/list.html` recurrence
-  rendering or the parallel `transfers/list.html` if it carries the
-  same pattern.
+- **Status:** closed (commit `b6db37f`,
+  `refactor(templates): recurrence_cell uses REC_* pattern ID globals`).
+  Pre-existing CLAUDE.md "Reference Tables" violation that Commit 19
+  re-cited by adopting the macro as the canonical recurrence-label
+  producer across both desktop table and mobile card.  Swept both
+  files in one commit per this entry's "if `transfers/list.html`
+  carries the same pattern" guidance; verified the parallel macro
+  carried the identical violation.  Rewired both macros from
+  ``pname == 'Every Period'`` to ``rr.pattern_id == REC_EVERY_PERIOD``
+  (and the seven sibling patterns), sourcing the integer constants
+  from the existing ``app.jinja_globals.register_ref_id_globals``
+  registration site rather than adding a new dict-injection context
+  processor: ``register_ref_id_globals`` already exposes 40+ bare
+  ID globals (``STATUS_PROJECTED``, ``TXN_TYPE_INCOME``, etc.) and
+  already had 7 of the 8 ``REC_*`` patterns wired (``REC_MONTHLY``,
+  ``REC_QUARTERLY``, ``REC_ANNUAL``, etc.) consumed by
+  ``templates/form.html`` and ``transfers/form.html``; the only
+  missing constant was ``REC_EVERY_PERIOD``.  Plan drift folded in:
+  the plan's D-F design decision claimed
+  ``recurrence_pattern_labels`` was "already keyed by enum member"
+  -- it is actually a flat string-to-string dict at
+  ``app/__init__.py:285-294``, and the plan's recommended
+  dict-injection approach would have duplicated infrastructure the
+  established convention already provides.  Added
+  ``TestRecurrenceCellLock`` with two methods covering both files:
+  a no-strings lock (``.name ==`` and ``pname ==`` absent) and a
+  positive complement asserting every ``REC_*`` constant appears as
+  ``rr.pattern_id == REC_<MEMBER>`` so a future branch-deletion
+  regression fails loud instead of silently falling through to the
+  ``else`` defensive fallback.  Pylint score unchanged at 9.59/10;
+  full suite 5,660 tests green in 67.77s.
 
 ### Problem
 
