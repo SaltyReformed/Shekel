@@ -18,11 +18,19 @@ Cross-references:
 
 - **Surfaced during:** Commit 6
   (`feat(mobile-grid): _mobile_this_period.html partial with arrows`).
-- **Status:** open. Trivial to fold into Commit 7
-  (`feat(mobile-grid): _mobile_plan.html + inline card action bar`),
-  which already rewrites `mobile_grid.js` and the Plan tab markup; if
-  Commit 7 implementation does not naturally pick it up, fix it as a
-  one-line follow-up.
+- **Status:** closed (commit `90a2f5b`,
+  `fix(mobile-grid): scope period-nav swipe handler to #mobile-plan`).
+  Pre-existing latent bug introduced at Commit 5 (the tab scaffold)
+  and made user-visible at Commit 6 (the default-tab flip to
+  "This Period").  Replaced the
+  ``document.getElementById('mobile-grid')`` binding-site in
+  ``app/static/js/mobile_grid.js`` with
+  ``document.getElementById('mobile-plan')`` so a swipe on the
+  "This Period" tab no longer mutates the Plan tab's
+  ``currentIndex``; added
+  ``TestMobileSwipeAction::test_period_nav_swipe_scoped_to_plan_pane``
+  as a source-level lock so a future refactor cannot silently
+  re-introduce the cross-tab leak.
 
 ### Problem
 
