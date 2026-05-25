@@ -584,3 +584,117 @@ new settings pills inherit the same behaviour as the established
 analytics and loan dashboard consumers, so the commit does not
 introduce a regression -- it widens the surface of a pre-existing
 issue.
+
+---
+
+## F-8. Convert `recurrence_cell` macro from string-name comparisons to ref_cache IDs
+
+- **Surfaced during:** Commit 19
+  (`feat(mobile-templates): cards on mobile in templates/list.html`).
+- **Status:** open. Pre-existing CLAUDE.md "Reference Tables" violation.
+  Commit 19's `recurrence_cell` reuse did not introduce any new
+  string-name comparisons (the mobile card calls the existing macro
+  verbatim), but it surfaces the violation by re-citing the macro as
+  the canonical recurrence-label producer. Trivial to fold into any
+  future commit that touches the `templates/list.html` recurrence
+  rendering or the parallel `transfers/list.html` if it carries the
+  same pattern.
+
+### Problem
+
+`app/templates/templates/list.html:21-50` defines a `recurrence_cell`
+macro that produces a human-readable label for a transaction template's
+recurrence rule. Its body does:
+
+```jinja
+{% set pname = rr.pattern.name %}
+{% if pname == 'Every Period' %}
+  Every paycheck
+{% elif pname == 'Every N Periods' %}
+  Every {{ rr.interval_n }} paychecks
+{% elif pname == 'Monthly' and rr.day_of_month %}
+  Monthly (day {{ rr.day_of_month }})
+{% elif pname == 'Monthly First' %}
+  ...
+{% elif pname == 'Quarterly' %}
+  ...
+{% elif pname == 'Semi-Annual' %}
+  ...
+{% elif pname == 'Annual' %}
+  ...
+{% elif pname == 'Once' %}
+  One-time
+{% else %}
+  {{ recurrence_pattern_labels.get(pname, pname|replace('_', ' ')|title) }}
+{% endif %}
+```
+
+This violates CLAUDE.md "Reference Tables -- IDs for logic, strings
+for display only. Enums in `app/enums.py`, cached in `app/ref_cache.py`.
+NEVER compare against string `name` columns in Python or Jinja."
+(see also `docs/coding-standards.md` Reference Tables section and
+the `memory/feedback_id_based_lookups.md` user-feedback note.)
+
+The grep gate
+`grep -nE 'recurrence(_pattern)?\.name ==' templates/list.html`
+silently passes because the comparisons land on the intermediate
+`pname` string variable rather than on `rr.pattern.name` directly --
+the gate is a near-miss that should be tightened along with the fix.
+
+The `else`-branch fallback (`recurrence_pattern_labels.get(pname, ...)`)
+hints that a centralised label dict already exists somewhere in the
+template context; if so, the entire elif chain is dead weight that
+can collapse to a single lookup.
+
+### Recommended fix (estimated effort: 30 minutes)
+
+Two steps:
+
+1. **Drive the comparisons off `pattern_id` via `ref_cache`.**
+   Replace each `pname == 'Every Period'` with
+   `rr.pattern_id == EVERY_PERIOD_ID` where `EVERY_PERIOD_ID` is
+   `ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_PERIOD)`
+   resolved once per request and injected into the template context
+   (the same pattern `TXN_TYPE_INCOME` already uses in this file at
+   line 93). `RecurrencePatternEnum` exists at `app/enums.py:RecurrencePatternEnum`
+   and `ref_cache.recurrence_pattern_id(...)` is the established
+   resolver (used by `app/routes/templates.py:652, :692`).
+2. **Tighten the verification grep.** Update the v3 plan's gate to
+   `grep -nE '\.name\s*==\s*[\'"]' templates/list.html` (matches any
+   `.name ==` regardless of the receiver name) so future regressions
+   on the same shape cannot land silently.
+
+If `transfers/list.html` carries the same pattern (Commit 20 territory),
+sweep both files in one commit.
+
+### Test coverage
+
+Targeted `tests/test_routes/test_templates.py` (59 tests) should
+stay green by construction -- the refactor is a label-source change
+with no rendered-text difference. Add one regression-lock test that
+asserts the absence of `.name ==` comparisons in the file:
+
+```python
+def test_no_string_name_comparisons_in_recurrence_cell(self):
+    src = pathlib.Path(
+        "app/templates/templates/list.html"
+    ).read_text()
+    assert ".name ==" not in src
+    assert "pname ==" not in src
+```
+
+The two-line assertion locks both the direct form and the
+intermediate-variable form that the current gate misses.
+
+### Why defer
+
+Commit 19's stated scope is the mobile card-layout conversion for
+`templates/list.html` only. The recurrence-label refactor is a
+pre-existing CLAUDE.md violation in a macro Commit 19 only reuses;
+fixing it would mix scope (template-layout vs. ref-cache routing)
+and extend the diff into the route layer (the context-variable
+injection). The macro is rendered identically by both the desktop
+table and the new mobile card, so the violation does not get worse
+in scope -- it just becomes a more visible candidate now that the
+macro is the single source of the recurrence label across both
+breakpoints.
