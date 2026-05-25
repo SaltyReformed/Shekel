@@ -861,6 +861,22 @@ td.htmx-loading::after {
     align-items: center;
   }
 
+  /* Touch target: horizontally-scrollable tab pills (analytics tabs,
+     loan dashboard tabs, settings sidebar at < md).  Bootstrap's
+     default .nav-link computes ~40 px tall (0.5rem + 0.5rem + 1.5rem
+     line-height); 4 px short of the WCAG 2.5.5 / Apple HIG floor.
+     Mirrors the #mobile-grid .nav-pills .nav-link rule above.
+     The non-mobile-only .shekel-scroll-pills .nav-link rule outside
+     this media query keeps white-space: nowrap at every width;
+     the 44 px floor + flex centering apply only at <= 767.98 px so
+     desktop pills retain Bootstrap's default. */
+  .shekel-scroll-pills .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   /* Bottom sheet: full-edit popover becomes a bottom-anchored panel on mobile.
      transform: translateY(0) gives the drag-to-dismiss handler (grid_edit.js)
      an explicit baseline to interpolate from; the transition animates the
