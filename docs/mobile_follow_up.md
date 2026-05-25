@@ -698,3 +698,115 @@ table and the new mobile card, so the violation does not get worse
 in scope -- it just becomes a more visible candidate now that the
 macro is the single source of the recurrence label across both
 breakpoints.
+
+---
+
+## F-9. Retire the orphaned `dashboard.mark_paid` route + tighten the now-vacuous paid-bills assertion
+
+- **Surfaced during:** Commit 22
+  (`feat(mobile-dashboard): order Bills Due first + (mark-paid removed)`).
+- **Status:** open. Q-1 disposition resolved at Commit 22 as REMOVE
+  (per memory `project_dashboard_redesign_or_remove.md`); the template
+  side is done, the route + schema + test side remain.
+
+### Problem
+
+Commit 22 deleted the mark-paid `<button>` from
+`app/templates/dashboard/_bill_row.html` per the user's Q-1 decision.
+No template now references `url_for('dashboard.mark_paid', ...)`, but
+the route and its supporting cast are still wired:
+
+- `app/routes/dashboard.py:57` -- `mark_paid(txn_id)` endpoint
+- `app/routes/dashboard.py:33`-ish -- module-level `_MARK_PAID_SCHEMA`
+  singleton (per the existing comment naming `mark_paid`)
+- `app/schemas/validation.py:394` -- `MarkPaidSchema` definition
+- `tests/test_routes/test_dashboard.py:218-340` -- `TestMarkPaid`
+  class, 7 tests POST-ing directly against the route
+- `tests/test_routes/test_dashboard_entries.py:538` --
+  `test_mark_paid_tracked_returns_paid_row_without_progress` (and
+  any siblings)
+- `tests/test_routes/test_c27_input_validation_sweep.py:331-335` --
+  `MarkPaidSchema` parse-rule sweep
+- `tests/test_routes/test_c21_state_machine_broad_rollout.py:6` --
+  module docstring naming `dashboard.mark_paid` in the state-machine
+  rollout scope
+- Cross-references in comments at
+  `app/services/transfer_service.py:507`,
+  `app/routes/transfers.py:1101`,
+  `app/schemas/validation.py:394`,
+  and tests at `tests/test_routes/test_transfers.py:905`
+
+Additionally, the assertion at
+`tests/test_routes/test_dashboard.py:194` --
+
+```python
+assert "Already Paid" not in html or "mark-paid-btn" not in html
+```
+
+was a meaningful "paid bills don't show a mark-paid button" check
+when the button existed.  With the button removed entirely, the
+right operand is always true, so the test passes vacuously regardless
+of what the dashboard does with the paid bill.  The test's intent
+(verifying that paid bills are not double-presented as actionable)
+deserves a non-vacuous form.
+
+### Recommended fix (estimated effort: 1 hour)
+
+Two steps, in this order so the tests can drive the deletion:
+
+1. **Delete the route, schema, and tests.**
+   - Drop `mark_paid` and the `_MARK_PAID_SCHEMA` singleton from
+     `app/routes/dashboard.py`.
+   - Drop `MarkPaidSchema` from `app/schemas/validation.py` (verify
+     no remaining importers via `grep -rn 'MarkPaidSchema' app/ tests/`
+     before the delete).
+   - Drop `TestMarkPaid` from
+     `tests/test_routes/test_dashboard.py` (7 tests).
+   - Drop `test_mark_paid_tracked_returns_paid_row_without_progress`
+     and any siblings from
+     `tests/test_routes/test_dashboard_entries.py` (verify the file's
+     other tracked-entry tests don't depend on the helper).
+   - Remove the `dashboard.mark_paid` row from the
+     `test_c27_input_validation_sweep.py` parametrize list.
+   - Touch `test_c21_state_machine_broad_rollout.py` module
+     docstring + any in-file parametrize entries.
+   - Sweep comments in
+     `app/services/transfer_service.py:507`,
+     `app/routes/transfers.py:1101`,
+     `app/schemas/validation.py:394`,
+     `tests/test_routes/test_transfers.py:905`
+     that name `dashboard.mark_paid` as a comparison point and
+     re-anchor them on `transactions.mark_done` (which remains the
+     canonical mark-done route per `[[project_dashboard_redesign_or_remove]]`
+     audit decision E-23).
+2. **Tighten the paid-bills assertion to a non-vacuous form.**
+   Replace
+   `tests/test_routes/test_dashboard.py:194` with a direct check
+   that the paid bill is excluded from the upcoming-bills section
+   rather than the disjunction that now self-satisfies. The route
+   logic at `app/routes/dashboard.py::_upcoming_bills` (verify
+   current line) is the single producer of that section's data;
+   the assertion should mirror its filter rather than rely on
+   button-presence as a proxy.
+
+### Test coverage
+
+Targeted `tests/test_routes/test_dashboard.py` and
+`tests/test_routes/test_dashboard_entries.py` must stay green by
+construction (tests being deleted are tests for code being deleted;
+the remaining suite still exercises the bills section, the
+balance section, the alerts section, etc.). Full pytest run as the
+gate.
+
+### Why defer
+
+Commit 22's stated scope is "Delete the mark-paid form from
+`_bill_row.html`" per the Q-1 ASK's option (c) wording.  Cascading
+into the route, schema, six test files, and four comment-only
+back-references would extend the diff well past the surface the
+ASK named and into territory (state-machine sweep test docstring,
+input-validation sweep parametrize) that touches the audit
+infrastructure the financial-calculation remediation depends on.
+The orphaned route is inert (no UI calls it; only its own tests
+do) and the vacuous assertion is degraded-not-broken, so deferring
+to a focused cleanup commit is the correct trade-off.

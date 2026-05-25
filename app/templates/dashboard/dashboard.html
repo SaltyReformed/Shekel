@@ -28,9 +28,14 @@
   </a>
 </div>
 
-{# Row 1: Bills + Alerts #}
+{# Row 1: Bills + Alerts.
+   Bills Due carries ``order-first order-lg-1`` so that even if the
+   source order of Row 1's children shifts in a future edit, Bills Due
+   stays the first card in the row (it is the highest-priority surface
+   on mobile, per the mobile v3 plan Commit 22 sub-problem 1). Alerts
+   keeps its implicit ``order-lg-2`` by source position. #}
 <div class="row g-3 mb-3">
-  <div class="col-lg-8">
+  <div class="col-lg-8 order-first order-lg-1">
     <div class="card">
       <div class="card-header">
         <h6 class="mb-0"><i class="bi bi-receipt"></i> Upcoming Bills</h6>

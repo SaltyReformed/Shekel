@@ -48,15 +48,9 @@
     {% if bill.due_date %}
     <small class="text-muted d-none d-md-inline">{{ bill.due_date.strftime('%b %-d') }}</small>
     {% endif %}
-    {% if not bill.is_paid|default(false) %}
-    <button class="btn btn-sm btn-outline-success mark-paid-btn"
-            hx-post="{{ url_for('dashboard.mark_paid', txn_id=bill.id) }}"
-            hx-target="closest .bill-row"
-            hx-swap="outerHTML"
-            hx-disabled-elt="this"
-            title="Mark as paid">
-      <i class="bi bi-check-lg"></i>
-    </button>
-    {% endif %}
+    {# Mark-paid affordance removed in Commit 22 (Q-1 disposition: REMOVE).
+       The user marks bills paid from the grid (``transactions.mark_done``).
+       The ``dashboard.mark_paid`` route and its tests remain (orphaned
+       template-side); cleanup tracked in ``docs/mobile_follow_up.md`` F-9. #}
   </div>
 </div>
