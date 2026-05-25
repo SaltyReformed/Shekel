@@ -313,9 +313,18 @@ this commit.
 
 - **Surfaced during:** Commit 13
   (`refactor(grid): extract grid_view_service + companion uses This Period partial + swipe.js shared`).
-- **Status:** open. Safe to delete once Commit 13 has been verified
-  stable in production (one to two release cycles); see "Why defer"
-  for the rationale on the deliberate leave-in-place.
+- **Status:** closed (commit `96dd07e`,
+  `chore(companion): delete orphan _transaction_card.html`).
+  ``git rm`` of the 94-line orphan; zero callers since v3 commit 13
+  when ``companion/index.html`` adopted the shared
+  ``grid/_mobile_this_period.html`` partial.  Two comment-only
+  references survive (a design-lineage pointer in
+  ``app/templates/grid/_grid_row_macros.html:189`` and the
+  ``TestMarkPaidButtonVisibility`` docstring in
+  ``tests/test_routes/test_companion_routes.py``); the docstring's
+  "(still on disk, no longer reached by the route)" parenthetical
+  was rewritten to reference the removal + git history so the
+  historical-string explanation continues to read accurately.
 
 ### Problem
 
