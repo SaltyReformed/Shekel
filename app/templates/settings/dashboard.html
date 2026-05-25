@@ -13,9 +13,67 @@
 {% block content %}
 <h4 class="mb-3"><i class="bi bi-gear"></i> Settings</h4>
 
+{# Mobile-only horizontal pill row.  Mirrors the desktop sidebar's eight
+   section links so a small-viewport user reaches any section in one tap
+   without scrolling past the stacked sidebar.  The .shekel-scroll-pills
+   class (app.css) handles horizontal overflow with a hidden scrollbar
+   when the pills exceed the viewport width. #}
+<nav class="d-md-none mb-3" aria-label="Settings sections">
+  <ul class="nav nav-pills shekel-scroll-pills">
+    <li class="nav-item">
+      <a class="nav-link{{ ' active' if active_section == 'general' }}"
+         href="{{ url_for('settings.show', section='general') }}">
+        General
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link{{ ' active' if active_section == 'categories' }}"
+         href="{{ url_for('settings.show', section='categories') }}">
+        Categories
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link{{ ' active' if active_section == 'pay-periods' }}"
+         href="{{ url_for('settings.show', section='pay-periods') }}">
+        Pay Periods
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link{{ ' active' if active_section == 'tax' }}"
+         href="{{ url_for('settings.show', section='tax') }}">
+        Tax Config
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link{{ ' active' if active_section == 'account-types' }}"
+         href="{{ url_for('settings.show', section='account-types') }}">
+        Account Types
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link{{ ' active' if active_section == 'retirement' }}"
+         href="{{ url_for('settings.show', section='retirement') }}">
+        Retirement
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link{{ ' active' if active_section == 'companions' }}"
+         href="{{ url_for('settings.show', section='companions') }}">
+        Companions
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link{{ ' active' if active_section == 'security' }}"
+         href="{{ url_for('settings.show', section='security') }}">
+        Security
+      </a>
+    </li>
+  </ul>
+</nav>
+
 <div class="row">
-  {# ── Sidebar ── #}
-  <div class="col-md-3 mb-3">
+  {# ── Sidebar (md+ only; mobile uses the pill row above) ── #}
+  <div class="col-md-3 mb-3 d-none d-md-block">
     <div class="list-group">
       <a href="{{ url_for('settings.show', section='general') }}"
          class="list-group-item list-group-item-action{{ ' active' if active_section == 'general' }}">

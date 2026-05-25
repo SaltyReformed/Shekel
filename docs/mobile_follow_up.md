@@ -517,3 +517,70 @@ extraction already reduced the function's size (lifted ~140 LOC
 of helpers into `grid_view_service`), but the orchestration still
 trips the thresholds -- a separate cleanup commit is the right
 shape.
+
+---
+
+## F-7. Add 44 px min-height floor to `.shekel-scroll-pills .nav-link`
+
+- **Surfaced during:** Commit 16
+  (`feat(mobile-settings): sidebar -> shekel-scroll-pills on mobile`).
+- **Status:** open. Pre-existing for the analytics and loan dashboard
+  tab rows; Commit 16 surfaces it again by adopting the same class
+  for the settings section nav on mobile. Trivial to fold into any
+  future commit that touches `app/static/css/app.css` mobile media
+  queries (Commit 23, Commit 24 are natural candidates) or as a
+  one-line follow-up.
+
+### Problem
+
+`.shekel-scroll-pills .nav-link` (`app/static/css/app.css:954-956`)
+inherits Bootstrap's default `.nav-link` padding of `0.5rem 1rem`.
+With Bootstrap's default `1rem` font-size and `1.5` line-height the
+rendered height is `8 + 24 + 8 = 40 px`, which is `4 px` short of
+the WCAG 2.5.5 AA / Apple HIG 44 px touch-target floor mandated by
+the v3 plan's hard rule 7.
+
+The `#mobile-grid .nav-pills .nav-link` rule at
+`app/static/css/app.css:825-830` enforces the 44 px floor inside the
+mobile-grid tab container but is scoped to `#mobile-grid` only, so
+the same class on the analytics page (`analytics/analytics.html:16`),
+the loan dashboard (`loan/dashboard.html:21, :323`), and now the
+settings page (`settings/dashboard.html:22`) does not inherit it.
+
+### Recommended fix (estimated effort: 5 minutes)
+
+Add a floor inside the existing `@media (max-width: 767.98px)` block
+in `app/static/css/app.css`:
+
+```css
+@media (max-width: 767.98px) {
+  .shekel-scroll-pills .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+```
+
+This mirrors the existing `#mobile-grid .nav-pills .nav-link` rule
+and applies the floor consistently to every scroll-pills consumer.
+
+### Test coverage
+
+No new test required. Visual / DevTools spot check on each consumer
+(`/analytics`, any loan dashboard at `/savings/loan/<id>`, `/settings`)
+at 375x812 confirms the rendered pill is >= 44 px tall.
+
+### Why defer
+
+Commit 16's stated file scope is
+`app/templates/settings/dashboard.html` only. Touching
+`app/static/css/app.css` for a pre-existing gap that affects three
+unrelated consumers (analytics, loan, settings) is a separate
+refactor with its own review surface. The floor gap is inert on
+desktop (where pills are not the primary touch surface) and the
+new settings pills inherit the same behaviour as the established
+analytics and loan dashboard consumers, so the commit does not
+introduce a regression -- it widens the surface of a pre-existing
+issue.
