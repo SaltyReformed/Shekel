@@ -915,6 +915,22 @@ td.htmx-loading::after {
   .anchor-balance-display {
     font-size: 22px;
   }
+
+  /* Sticky footer for any Bootstrap modal-fullscreen-sm-down modal
+     (commit 14 of mobile-first v3).  Bootstrap's fullscreen variant
+     stretches the dialog edge-to-edge at < 576 px but does not pin
+     the footer; on a 375 x 812 viewport with the iOS on-screen
+     keyboard up, the Save button can scroll out of reach.
+     position: sticky keeps it parked at the bottom of the modal's
+     scroll area.  padding-bottom adds env(safe-area-inset-bottom)
+     so the button clears the iPhone home indicator. */
+  .modal-fullscreen-sm-down .modal-footer {
+    position: sticky;
+    bottom: 0;
+    background: var(--bs-body-bg);
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--bs-border-color);
+  }
 }
 
 /* =============================================
