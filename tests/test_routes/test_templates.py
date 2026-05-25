@@ -524,16 +524,23 @@ class TestTemplateUpdate:
 class TestGridRowKeyBuilder:
     """Defense-in-depth tests for the grid's row-key deduplication.
 
-    These tests hit _build_row_keys directly to verify the grid still
+    These tests hit ``build_row_keys`` directly to verify the grid still
     collapses template-linked rows even if stale names slip through
     (legacy data, direct DB edits, future bugs in the rename flow).
+
+    Import path updated in mobile-first v3 plan Commit 13: the helper
+    moved from the private ``app.routes.grid._build_row_keys`` to the
+    pure service module ``app.services.grid_view_service.build_row_keys``
+    (no leading underscore -- it is now a public service API per
+    plan Section 6.1).  Behaviour is unchanged; only the import path
+    moved.
     """
 
     def test_row_key_collapses_template_instances_with_drifted_names(
         self, app, seed_user, seed_periods_today,
     ):
         """Stale txn.name values must not split a template into two rows."""
-        from app.routes.grid import _build_row_keys
+        from app.services.grid_view_service import build_row_keys
         from app.models.category import Category
 
         with app.app_context():
@@ -564,7 +571,7 @@ class TestGridRowKeyBuilder:
                 user_id=seed_user["user"].id,
             ).all()
 
-            row_keys = _build_row_keys(
+            row_keys = build_row_keys(
                 instances, all_cats, is_income_section=False,
             )
 
@@ -582,7 +589,7 @@ class TestGridRowKeyBuilder:
         self, app, seed_user, seed_periods_today,
     ):
         """Non-template transactions still dedupe by (category, name)."""
-        from app.routes.grid import _build_row_keys
+        from app.services.grid_view_service import build_row_keys
         from app.models.category import Category
         from app.models.ref import Status as StatusModel
 
@@ -627,7 +634,7 @@ class TestGridRowKeyBuilder:
                 user_id=seed_user["user"].id,
             ).all()
 
-            row_keys = _build_row_keys(
+            row_keys = build_row_keys(
                 [txn_a, txn_b], all_cats, is_income_section=False,
             )
 

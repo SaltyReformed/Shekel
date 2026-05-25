@@ -55,13 +55,26 @@
                             to `render_row_card` so companion
                             (`can_edit=False`) drops the
                             bottom-sheet `data-mobile-*` attributes.
+     show_period_nav     -- (optional) bool, default True. When False,
+                            the partial omits the prev/next-arrow
+                            header and the jump-to <select>. Companion
+                            sets this to False because its
+                            period-navigation URLs target
+                            `/companion/period/<id>` (rendered by
+                            `companion/index.html` directly above the
+                            include) rather than the partial's
+                            `/grid?periods=1&offset=N` shape
+                            (mobile-first v3 plan Commit 13, fold-in
+                            for companion URL parity).
 #}
 {% from "grid/_grid_row_macros.html" import render_row_card %}
 {% set period = periods[0] %}
 {% set can_edit = can_edit | default(True) %}
+{% set show_period_nav = show_period_nav | default(True) %}
 
 <div data-period-id="{{ period.id }}">
 
+  {% if show_period_nav %}
   {# --- Period Navigation Header --
        URL-driven so the navigation survives full reloads and
        deep links. `#this-period` keeps the active tab pinned
@@ -112,6 +125,7 @@
       {% endfor %}
     </select>
   </form>
+  {% endif %}
 
   {# --- Income Section (collapsible) --- #}
   <div class="card mb-3">

@@ -292,3 +292,228 @@ surface. The inline styles are currently inert (blocked by CSP) so
 the 44 px touch target is not currently enforced on the action-bar
 buttons -- a visible regression, but not a new one introduced by
 this commit.
+
+---
+
+## F-4. Delete deprecated `app/templates/companion/_transaction_card.html`
+
+- **Surfaced during:** Commit 13
+  (`refactor(grid): extract grid_view_service + companion uses This Period partial + swipe.js shared`).
+- **Status:** open. Safe to delete once Commit 13 has been verified
+  stable in production (one to two release cycles); see "Why defer"
+  for the rationale on the deliberate leave-in-place.
+
+### Problem
+
+`app/templates/companion/_transaction_card.html` (94 lines) is no
+longer reached by any route after Commit 13.  Companion's
+`index.html` was rewritten to
+`{% include "grid/_mobile_this_period.html" with context %}` and
+the partial in turn calls `render_row_card`; the legacy card's
+markup is now produced entirely by the shared macro.
+
+A grep confirms zero callers:
+
+```
+grep -rn "_transaction_card" app/ tests/
+# (empty)
+```
+
+The file remains on disk solely to make Commit 13 easy to revert by
+restoring three lines in `companion/index.html`.  Once the new
+flow is verified stable, the file is dead weight that future
+authors might mistake for live code.
+
+### Recommended fix (estimated effort: 1 minute)
+
+```bash
+git rm app/templates/companion/_transaction_card.html
+```
+
+Run the full pytest suite afterwards to confirm no test imports or
+greps the file by name; the targeted runs in `test_companion_routes.py`
++ `test_companion_guards.py` (90 tests) already pass without
+reaching the file post-Commit-13, so deletion is a no-op for the
+runtime.
+
+### Test coverage
+
+No new tests required.  The existing companion test suite
+(`tests/test_routes/test_companion_routes.py`) asserts on the
+post-Commit-13 markup; nothing references `_transaction_card.html`
+directly.
+
+### Why defer
+
+Commit 13's plan section H (Rollback notes) explicitly directs
+leaving the file in place for rollback ease: "delete in a follow-up
+commit or leave as-is for history; this commit just stops
+including it."  Following that guidance lets the developer revert
+Commit 13 with a single-file edit to `companion/index.html`
+restoring the include.  Once the new card flow has shipped
+through one or two release cycles without regression, the file
+becomes safe to delete in this follow-up.
+
+---
+
+## F-5. Reorder third-party / first-party imports in `app/routes/grid.py`
+
+- **Surfaced during:** Commit 13
+  (`refactor(grid): extract grid_view_service + companion uses This Period partial + swipe.js shared`).
+- **Status:** open. Pre-existing pylint warning, not introduced by
+  Commit 13; confirmed via `git stash` baseline check against
+  pre-refactor `dev`.
+
+### Problem
+
+`app/routes/grid.py:18-20` interleaves a third-party import
+(`from sqlalchemy.orm import selectinload`) between two first-party
+ones (`from app.utils.auth_helpers import require_owner` at
+`:17`, then `from app.extensions import db` at `:20`).  Pylint
+reports:
+
+```
+app/routes/grid.py:18:0: C0411: third party import "sqlalchemy.orm.selectinload"
+  should be placed before first party import "app.utils.auth_helpers.require_owner"
+  (wrong-import-order)
+app/routes/grid.py:20:0: C0412: Imports from package app are not grouped
+  (ungrouped-imports)
+```
+
+The `docs/coding-standards.md` Python section states: "Three
+sections separated by blank lines: standard library, third-party,
+local application. Alphabetical within each section."  The
+current grid.py order violates the third-party-before-local rule
+and the ungrouped-imports rule.
+
+### Recommended fix (estimated effort: 2 minutes)
+
+Move `from sqlalchemy.orm import selectinload` up into the
+third-party block (between `flask_login` and the first
+`from app.*` line), so the file reads:
+
+```python
+import logging
+from collections import OrderedDict
+from datetime import date
+from decimal import Decimal
+
+from flask import Blueprint, redirect, render_template, request, url_for
+from flask_login import current_user, login_required
+from sqlalchemy.orm import selectinload
+
+from app.extensions import db
+from app.models.scenario import Scenario
+from app.models.transaction import Transaction
+from app.models.category import Category
+from app.models.ref import Status, TransactionType
+from app.services import balance_resolver, grid_view_service, pay_period_service
+from app.services.account_resolver import resolve_grid_account
+from app.services.entry_service import build_entry_sums_dict
+from app.services.grid_view_service import RowKey
+from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.auth_helpers import require_owner
+```
+
+Note the secondary reordering: `app.utils.auth_helpers` moves to
+its alphabetical position at the end of the local block (since
+`utils` sorts after `services`).
+
+### Test coverage
+
+Pylint already catches this.  Running `pylint app/routes/grid.py
+--fail-on=E,F` after the fix should show the C0411 and C0412
+warnings gone and the score nudging up.  No runtime test changes
+required.
+
+### Why defer
+
+Commit 13's scope is the grid_view_service extraction +
+companion partial-include + swipe.js shared module.  Reordering
+unrelated imports in `grid.py` would mix scope and obscure the
+refactor's diff.  Pre-existing warning, no functional impact, fix
+as a one-commit chore.
+
+---
+
+## F-6. Decompose `app/routes/grid.py::index` to reduce locals / branches / statements
+
+- **Surfaced during:** Commit 13
+  (`refactor(grid): extract grid_view_service + companion uses This Period partial + swipe.js shared`).
+- **Status:** open. Pre-existing pylint warning; Commit 13 lifted
+  three helper functions (~140 LOC) out of the file but the
+  `index()` view still trips the thresholds, so the partial cleanup
+  proved the decomposition is possible without changing behaviour.
+
+### Problem
+
+`app/routes/grid.py::index` (lines 47-285 post-Commit-13) trips:
+
+```
+app/routes/grid.py:47:0: R0914: Too many local variables (33/15) (too-many-locals)
+app/routes/grid.py:47:0: R0912: Too many branches (15/12) (too-many-branches)
+app/routes/grid.py:47:0: R0915: Too many statements (54/50) (too-many-statements)
+```
+
+The view orchestrates: scenario resolve, account resolve, period
+range computation, transaction query, anchor / balances resolve,
+subtotals build, category load + filter, row-source scoping,
+row-key + match-dict build, status / transaction-type lookups,
+column-size derivation, low-balance-threshold lookup, and finally
+`render_template`.  Each step is straight-line code but the
+cumulative locals + branches push the function past the project's
+quality thresholds.
+
+`coding-standards.md` Python section: "If a function exceeds 50
+lines, evaluate decomposition. Functions over 100 lines require
+justification."  `index()` is well past both.
+
+### Recommended fix (estimated effort: 30-60 minutes)
+
+Extract sub-orchestrators into private helpers in `grid.py`:
+
+- `_resolve_grid_context(user_id, request_args, settings) -> tuple`
+  returning `(scenario, account, num_periods, start_offset,
+  current_period, periods, all_periods)` or one of the empty-state
+  template responses.
+- `_load_grid_transactions(account, scenario, all_periods) ->
+  list[Transaction]`.
+- `_build_grid_balances(account, scenario, all_periods) -> tuple`
+  returning `(balances, stale_anchor_warning, anchor_balance)`.
+- `_build_grid_subtotals(account, scenario, periods) -> dict`.
+- `_build_grid_row_data(transactions, periods, show_all,
+  all_categories) -> tuple` returning
+  `(income_row_keys, expense_row_keys, matched_by_row_period,
+  entry_sums)`.
+
+`index()` becomes a thin orchestrator that calls each helper and
+passes the result to `render_template`.  Locals drop below 15,
+branches below 12, statements below 50.
+
+The view's HTTP concerns (request_args parsing, request_context
+binding, `render_template` calls) stay in `index()`; the helpers
+take plain inputs and return plain outputs (the existing pattern
+the project already uses for `app/services/*`).
+
+### Test coverage
+
+Targeted run of `tests/test_routes/test_grid.py` (178 tests) and
+`tests/test_routes/test_templates.py` should stay green by
+construction; the refactor preserves behaviour by moving
+straight-line code into helpers without changing any branch
+condition or return value.
+
+Optionally add unit tests for each new helper.  The helpers are
+private (`_` prefix) so direct-import tests are acceptable; the
+existing `TestGridRowKeyBuilder` pattern in `test_templates.py`
+(now post-Commit-13 importing from
+`app.services.grid_view_service`) is the model.
+
+### Why defer
+
+Commit 13 is a refactor + UI unification; decomposing `index()`
+on top of it would mix scope and obscure the diff.  Commit 13's
+extraction already reduced the function's size (lifted ~140 LOC
+of helpers into `grid_view_service`), but the orchestration still
+trips the thresholds -- a separate cleanup commit is the right
+shape.

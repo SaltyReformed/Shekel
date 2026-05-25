@@ -184,6 +184,62 @@
         {% endif %}
       </span>
     </li>
+    {# Progress detail (visual progress bar + "X entries / $Y left"
+       summary line).  Mirrors the legacy companion card design at
+       ``companion/_transaction_card.html`` for tracked envelope
+       transactions with entries.  Appears below the card header row
+       only when ``show_progress`` is true (Projected status + entries
+       present).  The unified macro (mobile-first v3 plan Commit 13)
+       now renders this for both owner mobile and companion mobile so
+       both surfaces share the same visual progress vocabulary.
+       The ``data-progress-pct`` attribute is consumed by
+       ``app/static/js/progress_bar.js`` to set the bar's width at
+       runtime (CSP ``style-src 'self'`` forbids inline ``style="..."``,
+       see F-036). #}
+    {% if show_progress %}
+      <div class="px-3 pb-2 mobile-txn-progress">
+        <div class="progress progress-h-4">
+          <div class="progress-bar{% if over_budget %} bg-danger{% endif %}"
+               role="progressbar"
+               data-progress-pct="{{ [es.pct, 100]|min }}"
+               aria-valuenow="{{ es.pct|int }}"
+               aria-valuemin="0"
+               aria-valuemax="100"></div>
+        </div>
+        <div class="d-flex justify-content-between small text-muted mt-1">
+          <span>{{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}</span>
+          <span class="font-mono{% if over_budget %} text-danger{% endif %}">
+            {% if remaining >= 0 %}
+              ${{ "{:,.0f}".format(remaining) }} left
+            {% else %}
+              ${{ "{:,.0f}".format(remaining|abs) }} over
+            {% endif %}
+          </span>
+        </div>
+      </div>
+    {% endif %}
+    {# Entries lazy-loader for tracked envelope transactions.  Mirrors
+       the legacy companion card's inline entries section: HTMX fetches
+       the per-transaction entries list on page load so the initial
+       grid response stays light.  Owner and companion both render this
+       once the macro is the unified producer (mobile-first v3 plan
+       Commit 13).  The unique id namespaces the loader by id_prefix
+       so the same txn can render in multiple tabs (This Period + Plan)
+       without violating HTML unique-id; bare id_prefix='' is the
+       direct-render path (e.g. unit tests bypassing the partial). #}
+    {% if txn.template and txn.template.is_envelope %}
+      <div hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"
+           hx-trigger="load"
+           hx-target="this"
+           hx-swap="innerHTML"
+           id="mobile-card-entries-{{ (id_prefix ~ '-' if id_prefix else '') }}{{ txn.id }}">
+        <div class="text-center py-2">
+          <span class="spinner-border spinner-border-sm" role="status">
+            <span class="visually-hidden">Loading entries...</span>
+          </span>
+        </div>
+      </div>
+    {% endif %}
     {% include "grid/_mobile_card_actions.html" with context %}
   </div>
 {% endfor %}

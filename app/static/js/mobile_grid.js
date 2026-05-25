@@ -90,108 +90,16 @@
         updateLabel();
     }
 
-    // Swipe-left to reveal Mark Paid button on a card (Commit 9 of
-    // the mobile-first v3 implementation).  Touch listeners are
-    // passive per R-8 of the plan -- they cannot preventDefault, so
-    // they cannot block vertical scroll.  The `Math.abs(dy) >
-    // Math.abs(dx)` guard inside touchmove cancels swipe tracking
-    // when the gesture is dominantly vertical so an ordinary
-    // page-scroll that happens to begin on a card stays a scroll.
-    // The 50 px horizontal threshold matches the existing period-
-    // nav swipe at lines 75-87 above -- R-8 alignment, so both
-    // gestures feel identical under the finger.
-    //
-    // Per-card swipe state lives on the card element itself
-    // (`card._swipeStartX` / `_swipeStartY`).  A single module-level
-    // pair would corrupt the anchor if the user accidentally
-    // double-taps two cards in quick succession.
-    //
-    // After touchend changes a card's `.swiped` class, the browser
-    // dispatches a synthetic click on the touched element.  Without
-    // intervention that click would land in the tap-to-toggle
-    // handler below and either (a) immediately reopen the action bar
-    // alongside the just-revealed Paid button or (b) immediately
-    // close the swipe via the "tap closes swipe" branch in the
-    // click handler.  `_suppressNextCardClick` is the one-shot flag
-    // that absorbs that synthetic click; the timeout backstop
-    // clears it after 400 ms so a swipe whose synthetic click never
-    // fires (cancelled by another touch, no-touch fallback) does
-    // not poison a later genuine tap.
-    //
-    // The suppression is SCOPED to the same card the swipe just
-    // changed (`_suppressClickFor`).  Without this scoping, a real
-    // outside-tap that arrives inside the 400 ms window would be
-    // wrongly consumed -- the spec requires "tap outside un-swipes"
-    // to work, so the flag only applies to clicks whose nearest
-    // ancestor `.mobile-txn-card` matches the swiped card.  Clicks
-    // on body / any other element fall through to the existing
-    // "any swiped? close all" branch in the click handler.
-    var _suppressNextCardClick = false;
-    var _suppressClickFor = null;
-    var _suppressTimeoutId = null;
-
-    function _armSwipeClickSuppression(card) {
-        _suppressNextCardClick = true;
-        _suppressClickFor = card;
-        if (_suppressTimeoutId !== null) {
-            clearTimeout(_suppressTimeoutId);
-        }
-        _suppressTimeoutId = setTimeout(function () {
-            _suppressNextCardClick = false;
-            _suppressClickFor = null;
-            _suppressTimeoutId = null;
-        }, 400);
-    }
-
-    document.addEventListener('touchstart', function (e) {
-        var card = e.target.closest('.mobile-txn-card');
-        if (!card) return;
-        card._swipeStartX = e.touches[0].clientX;
-        card._swipeStartY = e.touches[0].clientY;
-    }, { passive: true });
-
-    document.addEventListener('touchmove', function (e) {
-        var card = e.target.closest('.mobile-txn-card');
-        if (!card || card._swipeStartX === undefined) return;
-        var dx = e.touches[0].clientX - card._swipeStartX;
-        var dy = e.touches[0].clientY - card._swipeStartY;
-        // Vertical-dominant motion cancels swipe tracking so a
-        // standard page scroll wins the gesture.
-        if (Math.abs(dy) > Math.abs(dx)) {
-            card._swipeStartX = undefined;
-        }
-    }, { passive: true });
-
-    document.addEventListener('touchend', function (e) {
-        var card = e.target.closest('.mobile-txn-card');
-        if (!card || card._swipeStartX === undefined) return;
-        var dx = e.changedTouches[0].clientX - card._swipeStartX;
-        card._swipeStartX = undefined;
-
-        if (dx < -50) {
-            // Swipe-left past threshold -- honour only when the card
-            // actually has a swipe-action button sibling.  Settled
-            // txns (render_row_card guards on `txn.status.is_settled`)
-            // emit no button because mark_done would reject the
-            // request with 400; a swipe on those rows stays a no-op
-            // rather than revealing an empty 80 px well.
-            var wrapper = card.closest('.mobile-card-wrapper');
-            if (!wrapper || !wrapper.querySelector('.swipe-action-mark-paid')) {
-                return;
-            }
-            // Close any other open swipe so the user always knows
-            // which row a tap on the revealed button targets.
-            document.querySelectorAll('.mobile-txn-card.swiped').forEach(function (other) {
-                if (other !== card) other.classList.remove('swiped');
-            });
-            card.classList.add('swiped');
-            _armSwipeClickSuppression(card);
-        } else if (dx > 50 && card.classList.contains('swiped')) {
-            // Swipe-right on a swiped card un-swipes it.
-            card.classList.remove('swiped');
-            _armSwipeClickSuppression(card);
-        }
-    }, { passive: true });
+    // Swipe-left to reveal Mark Paid button on a card.  The gesture
+    // logic factored out to ``app/static/js/swipe.js::attachSwipeAction``
+    // in mobile-first v3 plan Commit 13 so the companion view (which
+    // also wants this gesture) can reuse it without duplication.  The
+    // helper owns touch handling, click-suppression for the synthetic
+    // click after touchend, and the "tap outside un-swipes" branch
+    // -- this module no longer carries any of that state.  Threshold
+    // is 50 px to match the period-nav swipe at the top of ``init()``
+    // (R-8 alignment).
+    window.attachSwipeAction(document, { threshold: 50 });
 
     // Tap-to-toggle action bar: delegated click handler for mobile
     // transaction cards (Commit 7).  Tapping a `.mobile-txn-card`
@@ -214,19 +122,17 @@
     //   - taps that originated inside the action bar itself are
     //     ignored (otherwise a tap on [Mark Paid] would re-toggle
     //     the bar shut as the bubble climbed past the card).
-    //   - the synthetic click that follows a swipe touchend is
-    //     suppressed (see `_suppressNextCardClick`); without this
-    //     guard adding `.swiped` would be undone immediately by
-    //     the swiped-card branch below.
-    //   - while any card is swiped open the next click anywhere
-    //     un-swipes it and short-circuits -- "tap outside to
-    //     dismiss" and "tap inside to dismiss" share the same
-    //     branch so the user is never simultaneously presented
-    //     with a swipe well and an open action bar on the same
-    //     card.
+    //   - swipe.js's capture-phase click handler absorbs the
+    //     synthetic click that follows touchend and the
+    //     tap-outside-to-unswipe click via
+    //     ``stopImmediatePropagation``, so by the time this
+    //     bubble-phase handler sees a click the swipe state has
+    //     already been resolved.
     //   - `data-mobile-txn-id` scopes the selector to real txn
     //     cards so the group-header `<li>` (no data attr in the
-    //     owner render path) cannot accidentally trigger.
+    //     owner render path) cannot accidentally trigger; companion
+    //     cards omit the attribute so the action bar there stays
+    //     collapsed and the swipe-action is the only Mark Paid path.
     //   - missing wrapper / bar / Bootstrap is a hard no-op rather
     //     than a console error -- the action bar's absence on a
     //     server-render path (companion read-only edge cases,
@@ -235,23 +141,6 @@
     document.addEventListener('click', function(e) {
         if (e.target.closest('.swipe-action-mark-paid')) return;
         if (e.target.closest('.mobile-card-action-bar')) return;
-
-        if (_suppressNextCardClick
-                && e.target.closest('.mobile-txn-card') === _suppressClickFor) {
-            _suppressNextCardClick = false;
-            _suppressClickFor = null;
-            if (_suppressTimeoutId !== null) {
-                clearTimeout(_suppressTimeoutId);
-                _suppressTimeoutId = null;
-            }
-            return;
-        }
-
-        var anySwiped = document.querySelectorAll('.mobile-txn-card.swiped');
-        if (anySwiped.length > 0) {
-            anySwiped.forEach(function (c) { c.classList.remove('swiped'); });
-            return;
-        }
 
         var card = e.target.closest('.mobile-txn-card[data-mobile-txn-id]');
         if (!card) return;

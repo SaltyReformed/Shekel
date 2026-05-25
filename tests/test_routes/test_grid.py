@@ -5355,55 +5355,75 @@ class TestMobileSwipeAction:
         """C9-4: card-swipe and period-swipe both use the 50 px
         threshold (R-8 of the mobile-first v3 plan).
 
-        Two distinct swipe gestures in ``mobile_grid.js`` -- the
-        period-nav swipe at the top of ``init()`` and the new card
-        swipe-action at module scope -- must use the same threshold
-        so the gesture feels consistent under the finger.  This
-        test reads the JS file and asserts the literal ``50`` appears
-        in both contexts (the new card touchend block and the older
-        period grid touchend block).
+        Re-scoped in mobile-first v3 plan Commit 13: the card-swipe
+        gesture moved from ``mobile_grid.js`` to the shared helper
+        ``app/static/js/swipe.js::attachSwipeAction`` so the
+        companion view (``companion.js``) can reuse it.  The
+        period-nav swipe stays in ``mobile_grid.js``.  Both files
+        must carry the literal ``50`` threshold to keep the gestures
+        consistent under the finger.
+
+        Three assertions:
+          1. ``mobile_grid.js`` still uses ``Math.abs(dx) > 50``
+             for the period-nav swipe at the top of ``init()``.
+          2. ``mobile_grid.js`` calls ``attachSwipeAction`` with
+             ``threshold: 50`` so the card gesture stays at the
+             same value the period-nav uses.
+          3. ``swipe.js`` carries the ``dx < -threshold`` (left-swipe
+             reveal) and ``dx > threshold`` (right-swipe un-swipe)
+             branches that consume the configured threshold.
         """
         import pathlib  # pylint: disable=import-outside-toplevel
 
-        js_path = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "static" / "js" / "mobile_grid.js"
-        )
-        src = js_path.read_text(encoding="utf-8")
+        root = pathlib.Path(__file__).resolve().parents[2] / "app" / "static" / "js"
+        mobile_grid_src = (root / "mobile_grid.js").read_text(encoding="utf-8")
+        swipe_src = (root / "swipe.js").read_text(encoding="utf-8")
 
         # Period-nav swipe at the top of init(): a horizontal motion
         # past 50 px wins the gesture.
-        assert "Math.abs(dx) > 50" in src
-        # Card swipe-left past -50 px reveals the Paid button.
-        assert "dx < -50" in src
-        # Card swipe-right past +50 px on a swiped card un-swipes.
-        assert "dx > 50" in src
+        assert "Math.abs(dx) > 50" in mobile_grid_src
+        # Card-swipe threshold is supplied to the shared helper at
+        # 50 px so card-swipe matches period-nav under the finger.
+        assert "threshold: 50" in mobile_grid_src
+        # The shared helper consumes the threshold via these two
+        # comparisons (Commit 13 factoring preserves the original
+        # left-/right-swipe branches text-for-text up to the
+        # threshold variable).
+        assert "dx < -threshold" in swipe_src
+        assert "dx > threshold" in swipe_src
 
     def test_swipe_handlers_are_passive(self):
-        """R-8 alignment: the new touch listeners use ``passive: true``.
+        """R-8 alignment: every touch listener uses ``passive: true``.
 
         Passive listeners cannot ``preventDefault`` -- they cannot
         block vertical scroll, which is the trade-off that lets
         the swipe co-exist with normal page scrolling.  The
         ``Math.abs(dy) > Math.abs(dx)`` cancel-on-vertical guard
-        inside touchmove is what makes the trade-off safe.  Asserts
-        at least three ``passive: true`` listeners exist (period-
-        nav touchstart + touchend already, plus the three new card
-        touch listeners) -- a regression that flipped any of them
-        to a default non-passive listener would silently re-block
-        scroll on iOS Safari.
+        inside touchmove is what makes the trade-off safe.
+
+        Re-scoped in mobile-first v3 plan Commit 13: the three
+        card touchstart/touchmove/touchend listeners moved from
+        ``mobile_grid.js`` to ``swipe.js`` along with the rest of
+        ``attachSwipeAction``.  The period-nav touchstart + touchend
+        listeners stay in ``mobile_grid.js``.  Both files together
+        must carry at least 5 ``passive: true`` listeners; either
+        file alone may carry fewer.  A regression that flipped any
+        of them to a default non-passive listener would silently
+        re-block scroll on iOS Safari.
         """
         import pathlib  # pylint: disable=import-outside-toplevel
 
-        js_path = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "static" / "js" / "mobile_grid.js"
-        )
-        src = js_path.read_text(encoding="utf-8")
+        root = pathlib.Path(__file__).resolve().parents[2] / "app" / "static" / "js"
+        mobile_grid_src = (root / "mobile_grid.js").read_text(encoding="utf-8")
+        swipe_src = (root / "swipe.js").read_text(encoding="utf-8")
 
-        # 2 pre-existing (period-nav touchstart + touchend) + 3 new
-        # (card touchstart + touchmove + touchend) = 5 total.
-        assert src.count("passive: true") >= 5
+        # 2 in mobile_grid.js (period-nav touchstart + touchend) +
+        # 3 in swipe.js (card touchstart + touchmove + touchend) = 5.
+        total = mobile_grid_src.count("passive: true") + swipe_src.count("passive: true")
+        assert total >= 5, (
+            f"expected at least 5 'passive: true' touch listeners across "
+            f"mobile_grid.js + swipe.js, found {total}"
+        )
 
     def test_no_inline_style_on_swipe_action(self):
         """Pin the no-inline-style invariant on the swipe-action
