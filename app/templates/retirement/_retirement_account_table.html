@@ -1,5 +1,10 @@
 {# Partial: full retirement account projection table (thead + rows).
-   Used by both the dashboard card and the HTMX OOB swap on slider change. #}
+   Used by both the dashboard card and the HTMX OOB swap on slider change.
+   Desktop renders the table; mobile (< md) gets a card-per-account list.
+   The popover trigger is "click focus" so the info-icons open on tap as
+   well as keyboard focus; the v1 "focus"-only trigger never fired on
+   touch because tapping an inline <i> does not always focus it. #}
+<div class="d-none d-md-block">
 <div class="table-responsive">
 <table class="table table-hover table-sm mb-0">
   <thead class="table-light">
@@ -7,13 +12,13 @@
       <th>Account</th>
       <th>Type</th>
       <th class="text-end">Current Balance
-        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Current balance from your account records."></i>
+        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Current balance from your account records."></i>
       </th>
       <th class="text-end">Annual Return
-        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="The assumed annual growth rate used for this account's projection. Adjustable via the Assumed Annual Return slider above."></i>
+        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="The assumed annual growth rate used for this account's projection. Adjustable via the Assumed Annual Return slider above."></i>
       </th>
       <th class="text-end">Projected at Retirement
-        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Balance projected to your retirement date using the account's assumed growth rate, your contributions, and employer match."></i>
+        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Balance projected to your retirement date using the account's assumed growth rate, your contributions, and employer match."></i>
       </th>
     </tr>
   </thead>
@@ -21,4 +26,48 @@
     {% include "retirement/_retirement_account_rows.html" %}
   </tbody>
 </table>
+</div>
+</div>
+
+{# Mobile card list (< md).  Mirrors the desktop table's columns: account
+   name (linked) + Traditional/Roth badge on the top row; Balance, Annual
+   return, and Projected at retirement as labeled rows below.  Each card
+   uses the same number formatting as the desktop row.  Headers are
+   replaced by labeled rows so the desktop column-header popovers are not
+   needed inside the card (the per-row label is the same affordance). #}
+<div class="d-md-none">
+  {% for proj in retirement_account_projections %}
+  <div class="card mb-2">
+    <div class="card-body py-2 px-3">
+      <div class="d-flex justify-content-between align-items-baseline">
+        <h6 class="card-title mb-0">
+          <a href="{{ url_for('investment.dashboard', account_id=proj.account.id) }}">
+            {{ proj.account.name }}
+          </a>
+        </h6>
+        <span class="badge {{ 'bg-info' if proj.is_traditional else 'bg-success' }}">
+          {{ 'Traditional' if proj.is_traditional else 'Roth/Taxable' }}
+        </span>
+      </div>
+      <div class="d-flex justify-content-between mt-2">
+        <small class="text-muted">Current balance</small>
+        <span class="font-mono">${{ "{:,.2f}".format(proj.current_balance) }}</span>
+      </div>
+      <div class="d-flex justify-content-between">
+        <small class="text-muted">Annual return</small>
+        <span class="font-mono text-muted">
+          {%- if proj.annual_return_rate is not none -%}
+            {{ "%.1f"|format(proj.annual_return_rate|to_percent) }}%
+          {%- else -%}
+            &mdash;
+          {%- endif %}
+        </span>
+      </div>
+      <div class="d-flex justify-content-between">
+        <small class="text-muted">Projected at retirement</small>
+        <span class="font-mono fw-bold">${{ "{:,.2f}".format(proj.projected_balance) }}</span>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
 </div>
