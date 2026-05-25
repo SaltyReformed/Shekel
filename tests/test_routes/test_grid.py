@@ -5092,6 +5092,36 @@ class TestMobileCardActionBar:
             assert 'id="mobile-prev-btn"' in pane
             assert 'id="mobile-next-btn"' in pane
 
+    def test_no_inline_style_attr_in_mobile_card_actions(self):
+        """Pin the no-inline-style invariant on every button in the
+        mobile card action bar.  The project's CSP at
+        ``app/__init__.py`` declares ``style-src 'self'`` without
+        ``'unsafe-inline'``, so any ``style="..."`` attribute is
+        silently dropped by the browser -- which previously left the
+        Mark Paid / Edit Amount / Open Full buttons at Bootstrap's
+        default ``btn-sm`` height (~38-40 px), 4-6 px short of the
+        WCAG 2.5.5 / Apple HIG 44 px touch-target floor enforced by
+        the mobile-first v3 plan hard-rule 7.
+
+        The 44 px floor now travels via the ``.btn-touch-44`` utility
+        class defined in ``app/static/css/app.css`` inside the
+        ``@media (max-width: 767.98px)`` block.  A regression that
+        re-introduced an inline ``style="..."`` would silently shrink
+        the buttons; this lock catches the regression at the source.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_card_actions.html"
+        )
+        src = partial.read_text(encoding="utf-8")
+        assert "style=" not in src, (
+            "Inline style= attribute reintroduced into "
+            "_mobile_card_actions.html; the project CSP blocks it. "
+            "Use the .btn-touch-44 utility class for the 44 px floor."
+        )
+
 
 class TestMobileSwipeAction:
     """Regression locks for the swipe-left Mark Paid affordance

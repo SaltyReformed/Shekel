@@ -62,8 +62,7 @@
             hx-target="#txn-cell-{{ txn.id }}"
             hx-swap="outerHTML"
             class="d-inline flex-fill">
-        <button type="submit" class="btn btn-success btn-sm w-100"
-                style="min-height: 44px;"
+        <button type="submit" class="btn btn-success btn-sm w-100 btn-touch-44"
                 aria-label="Mark {{ txn.name }} as paid">
           <i class="bi bi-check2"></i> Mark Paid
         </button>
@@ -71,8 +70,7 @@
     {% endif %}
 
     {% if can_edit %}
-      <button type="button" class="btn btn-outline-secondary btn-sm flex-fill"
-              style="min-height: 44px;"
+      <button type="button" class="btn btn-outline-secondary btn-sm flex-fill btn-touch-44"
               hx-get="{{ url_for('transactions.get_quick_edit', txn_id=txn.id) }}"
               hx-target="#txn-cell-{{ txn.id }}"
               hx-swap="innerHTML"
@@ -81,8 +79,7 @@
       </button>
 
       <button type="button"
-              class="btn btn-outline-secondary btn-sm flex-fill txn-expand-btn"
-              style="min-height: 44px;"
+              class="btn btn-outline-secondary btn-sm flex-fill txn-expand-btn btn-touch-44"
               data-txn-id="{{ txn.id }}"
               aria-label="Open full edit for {{ txn.name }}">
         <i class="bi bi-arrows-fullscreen"></i> Open Full

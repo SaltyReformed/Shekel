@@ -829,6 +829,19 @@ td.htmx-loading::after {
     justify-content: center;
   }
 
+  /* Touch target: stand-alone 44 px floor utility class for buttons that
+     need to clear the WCAG 2.5.5 / Apple HIG floor without scoping to a
+     parent selector.  Replaces the three CSP-blocked inline
+     ``style="min-height: 44px;"`` attributes formerly on the Mark Paid /
+     Edit Amount / Open Full buttons in
+     ``app/templates/grid/_mobile_card_actions.html``.  Mirrors the
+     stand-alone utility-class convention established by the C-02 inline-
+     style migration (.mw-px-*, .w-px-*, .fs-*).  Reusable: any future
+     button needing the floor adds ``btn-touch-44`` to its class list. */
+  .btn-touch-44 {
+    min-height: 44px;
+  }
+
   /* Navbar offcanvas drawer (mobile-first v3 commit 23 / D-H).  The
      navbar-toggler at < md opens #mainOffcanvas as a left-slide drawer;
      at >= md Bootstrap's .navbar-expand-md .offcanvas overrides render
