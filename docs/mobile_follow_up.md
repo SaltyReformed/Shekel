@@ -739,9 +739,28 @@ breakpoints.
 
 - **Surfaced during:** Commit 22
   (`feat(mobile-dashboard): order Bills Due first + (mark-paid removed)`).
-- **Status:** open. Q-1 disposition resolved at Commit 22 as REMOVE
-  (per memory `project_dashboard_redesign_or_remove.md`); the template
-  side is done, the route + schema + test side remain.
+- **Status:** closed (commit `5860fa6`,
+  `refactor(dashboard): retire dashboard.mark_paid route + tests + cross-refs`).
+  Q-1 disposition resolved at Commit 22 as REMOVE (per memory
+  ``project_dashboard_redesign_or_remove.md``); the template side
+  was done then, the route + tests + cross-refs side closed now.
+  Deleted: the ``mark_paid`` route handler in
+  ``app/routes/dashboard.py`` plus the now-orphan
+  ``_get_owned_transaction`` and ``_txn_to_bill`` helpers and 11
+  now-unused imports; the ``_mark_done_schema`` singleton; 13 tests
+  across 4 test files (``TestMarkPaid`` x 7, ``TestMarkPaidWithTrackedBill``
+  x 1, ``TestDashboardMarkPaidActualAmount`` x 2,
+  ``TestDashboardMarkPaidStateMachine`` x 3); 6 comment cross-refs.
+  Rewrote the vacuous ``"Already Paid" not in html or "mark-paid-btn"
+  not in html`` disjunction at ``test_dashboard.py:194`` to hit the
+  ``/dashboard/bills`` HTMX partial directly and assert the paid bill
+  name is absent (non-vacuous because the partial renders only the
+  upcoming-bills list).  Plan drift folded in: ``MarkPaidSchema``
+  never existed (only ``MarkDoneSchema``, shared with the surviving
+  ``transactions.mark_done``); the plan's R-6 undercounted the test
+  delta by 5 and missed one additional cross-ref at
+  ``tests/test_schemas/test_c27_input_validation_sweep.py:10``.
+  Pylint score went 9.58 -> 9.59.
 
 ### Problem
 
