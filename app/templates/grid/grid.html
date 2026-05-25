@@ -2,6 +2,7 @@
 {% block title %}Budget Grid -- Shekel{% endblock %}
 
 {% block content %}
+{% from "grid/_grid_row_macros.html" import render_row_cells %}
 {# --- Scenario Controls (Phase 7) --- #}
 <div class="d-none" id="scenario-controls-slot">{# Phase 7: Scenario controls will go here. This row will contain: (1) a scenario selector dropdown, (2) a "Compare" mode toggle button, and (3) when compare mode is active, a second scenario selector for the comparison target. This row is separate from period navigation to avoid crowding the header. #}</div>
 {# --- Anchor Balance Display --- #}
@@ -148,45 +149,8 @@
           </tr>
         {% endif %}
 
-        <tr>
-          <th scope="row" class="sticky-col row-label" title="{{ rk.group_name }}: {{ rk.item_name }}">
-            {{ rk.display_name }}
-          </th>
-          {% for period in periods %}
-            {% set period_txns = txn_by_period.get(period.id, []) %}
-            {% set matched = [] %}
-            {% for txn in period_txns %}
-              {# Match transaction to this row key: category must match,
-                 then prefer template_id match; fall back to name match
-                 only when the row key or transaction has no template. #}
-              {% if txn.category_id == rk.category_id and txn.is_income and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
-                {% if rk.template_id is not none and txn.template_id is not none %}
-                  {% if txn.template_id == rk.template_id %}
-                    {% if matched.append(txn) %}{% endif %}
-                  {% endif %}
-                {% else %}
-                  {% if txn.name == rk.txn_name %}
-                    {% if matched.append(txn) %}{% endif %}
-                  {% endif %}
-                {% endif %}
-              {% endif %}
-            {% endfor %}
-            <td class="text-end cell">
-              {% if matched %}
-                {% for txn in matched %}
-                  <div id="txn-cell-{{ txn.id }}">
-                    {% set found = namespace(txn=txn) %}
-                    {% include "grid/_transaction_cell.html" with context %}
-                  </div>
-                {% endfor %}
-              {% else %}
-                {% set category = rk.category %}
-                {% set txn_type_id = TXN_TYPE_INCOME %}
-                {% include "grid/_transaction_empty_cell.html" with context %}
-              {% endif %}
-            </td>
-          {% endfor %}
-        </tr>
+        {{ render_row_cells(rk, periods, matched_by_row_period,
+                             entry_sums, TXN_TYPE_INCOME, account, today) }}
       {% endfor %}
 
       {# --- Total Income Subtotal (server-side Decimal) --- #}
@@ -224,42 +188,8 @@
           </tr>
         {% endif %}
 
-        <tr>
-          <th scope="row" class="sticky-col row-label" title="{{ rk.group_name }}: {{ rk.item_name }}">
-            {{ rk.display_name }}
-          </th>
-          {% for period in periods %}
-            {% set period_txns = txn_by_period.get(period.id, []) %}
-            {% set matched = [] %}
-            {% for txn in period_txns %}
-              {% if txn.category_id == rk.category_id and txn.is_expense and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
-                {% if rk.template_id is not none and txn.template_id is not none %}
-                  {% if txn.template_id == rk.template_id %}
-                    {% if matched.append(txn) %}{% endif %}
-                  {% endif %}
-                {% else %}
-                  {% if txn.name == rk.txn_name %}
-                    {% if matched.append(txn) %}{% endif %}
-                  {% endif %}
-                {% endif %}
-              {% endif %}
-            {% endfor %}
-            <td class="text-end cell">
-              {% if matched %}
-                {% for txn in matched %}
-                  <div id="txn-cell-{{ txn.id }}">
-                    {% set found = namespace(txn=txn) %}
-                    {% include "grid/_transaction_cell.html" with context %}
-                  </div>
-                {% endfor %}
-              {% else %}
-                {% set category = rk.category %}
-                {% set txn_type_id = TXN_TYPE_EXPENSE %}
-                {% include "grid/_transaction_empty_cell.html" with context %}
-              {% endif %}
-            </td>
-          {% endfor %}
-        </tr>
+        {{ render_row_cells(rk, periods, matched_by_row_period,
+                             entry_sums, TXN_TYPE_EXPENSE, account, today) }}
       {% endfor %}
 
       {# --- Total Expenses Subtotal (server-side Decimal) --- #}
@@ -302,7 +232,7 @@
 
 {# --- Add Transaction Modal --- #}
 <div class="modal fade" id="addTransactionModal" tabindex="-1" aria-labelledby="addTransactionModalLabel">
-  <div class="modal-dialog">
+  <div class="modal-dialog modal-fullscreen-sm-down">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="addTransactionModalLabel">Add Transaction</h5>
@@ -321,7 +251,7 @@
           </div>
           <div class="mb-3">
             <label class="form-label">Amount</label>
-            <input type="number" step="0.01" name="estimated_amount"
+            <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
                    class="form-control" required>
           </div>
           <div class="mb-3">

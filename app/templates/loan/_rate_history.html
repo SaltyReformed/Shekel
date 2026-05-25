@@ -13,25 +13,47 @@
 
 <div class="card-body p-0">
   {% if rate_history %}
-  <div class="table-responsive">
-    <table class="table table-sm table-hover mb-0">
-      <thead>
-        <tr>
-          <th>Effective Date</th>
-          <th class="text-end">Interest Rate</th>
-          <th>Notes</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for entry in rate_history %}
-        <tr>
-          <td>{{ entry.effective_date.strftime('%b %-d, %Y') }}</td>
-          <td class="text-end font-mono">{{ "%.3f"|format(entry.interest_rate|to_percent) }}%</td>
-          <td><small class="text-muted">{{ entry.notes or '' }}</small></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  {# Desktop table (md+).  Mobile users see the card list below. #}
+  <div class="d-none d-md-block">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead>
+          <tr>
+            <th>Effective Date</th>
+            <th class="text-end">Interest Rate</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry in rate_history %}
+          <tr>
+            <td>{{ entry.effective_date.strftime('%b %-d, %Y') }}</td>
+            <td class="text-end font-mono">{{ "%.3f"|format(entry.interest_rate|to_percent) }}%</td>
+            <td><small class="text-muted">{{ entry.notes or '' }}</small></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {# Mobile card list (< md).  Mirrors the rate-history table's data:
+     effective date + rate prominent on the top row; notes (when present)
+     as secondary context below. #}
+  <div class="d-md-none p-2">
+    {% for entry in rate_history %}
+    <div class="card mb-2">
+      <div class="card-body py-2 px-3">
+        <div class="d-flex justify-content-between align-items-baseline">
+          <span class="fw-semibold">{{ entry.effective_date.strftime('%b %-d, %Y') }}</span>
+          <span class="font-mono fw-bold">{{ "%.3f"|format(entry.interest_rate|to_percent) }}%</span>
+        </div>
+        {% if entry.notes %}
+        <small class="text-muted d-block mt-1">{{ entry.notes }}</small>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
   </div>
   {% else %}
   <div class="p-3 text-muted">No rate changes recorded.</div>

@@ -6,10 +6,9 @@ Direct schema tests for the two schemas added in commit C-27 of the
 
   - :class:`app.schemas.validation.MarkDoneSchema` -- replaces the
     raw ``Decimal(request.form.get("actual_amount"))`` parse in
-    ``transactions.mark_done`` (both branches),
-    ``dashboard.mark_paid``, and (transitively) any future caller
-    that sets a transaction's actual amount via the mark-done
-    endpoint.
+    ``transactions.mark_done`` (both branches) and (transitively)
+    any future caller that sets a transaction's actual amount via
+    the mark-done endpoint.
 
   - :class:`app.schemas.validation.DebtStrategyCalculateSchema` --
     replaces the hand-parsed ``extra_monthly``, ``strategy``, and

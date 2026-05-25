@@ -818,7 +818,70 @@ td.htmx-loading::after {
     font-size: 16px; /* Prevents iOS Safari zoom on input focus */
   }
 
-  /* Bottom sheet: full-edit popover becomes a bottom-anchored panel on mobile */
+  /* Touch target: mobile-grid tab pills (This Period / Plan).  Bootstrap's
+     default nav-link is 0.5rem + 0.5rem + 1.5rem = 40px tall, 4px short of
+     the WCAG 2.5.5 / Apple HIG 44 px floor.  Flexbox centers the label
+     vertically once min-height takes effect. */
+  #mobile-grid .nav-pills .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Touch target: stand-alone 44 px floor utility class for buttons that
+     need to clear the WCAG 2.5.5 / Apple HIG floor without scoping to a
+     parent selector.  Replaces the three CSP-blocked inline
+     ``style="min-height: 44px;"`` attributes formerly on the Mark Paid /
+     Edit Amount / Open Full buttons in
+     ``app/templates/grid/_mobile_card_actions.html``.  Mirrors the
+     stand-alone utility-class convention established by the C-02 inline-
+     style migration (.mw-px-*, .w-px-*, .fs-*).  Reusable: any future
+     button needing the floor adds ``btn-touch-44`` to its class list. */
+  .btn-touch-44 {
+    min-height: 44px;
+  }
+
+  /* Navbar offcanvas drawer (mobile-first v3 commit 23 / D-H).  The
+     navbar-toggler at < md opens #mainOffcanvas as a left-slide drawer;
+     at >= md Bootstrap's .navbar-expand-md .offcanvas overrides render
+     the drawer inline as a regular navbar (header hidden, body flex
+     row), so the desktop nav is unchanged.  Width 280px: Bootstrap's
+     default 400px is too wide on a 375px viewport (leaves only 75px
+     visible for the dismiss-on-tap backdrop).  nav-link min-height
+     44px matches the WCAG 2.5.5 / Apple HIG touch-target floor that
+     #mobile-grid .nav-pills enforces just above. */
+  .offcanvas-start {
+    width: 280px;
+  }
+
+  .offcanvas-body .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
+  /* Touch target: horizontally-scrollable tab pills (analytics tabs,
+     loan dashboard tabs, settings sidebar at < md).  Bootstrap's
+     default .nav-link computes ~40 px tall (0.5rem + 0.5rem + 1.5rem
+     line-height); 4 px short of the WCAG 2.5.5 / Apple HIG floor.
+     Mirrors the #mobile-grid .nav-pills .nav-link rule above.
+     The non-mobile-only .shekel-scroll-pills .nav-link rule outside
+     this media query keeps white-space: nowrap at every width;
+     the 44 px floor + flex centering apply only at <= 767.98 px so
+     desktop pills retain Bootstrap's default. */
+  .shekel-scroll-pills .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Bottom sheet: full-edit popover becomes a bottom-anchored panel on mobile.
+     transform: translateY(0) gives the drag-to-dismiss handler (grid_edit.js)
+     an explicit baseline to interpolate from; the transition animates the
+     snap-back on a partial drag.  .dragging below disables the transition so
+     the sheet tracks the finger one-to-one during the gesture. */
   .txn-full-edit-popover {
     position: fixed !important;
     width: 100% !important;
@@ -831,7 +894,25 @@ td.htmx-loading::after {
     border-radius: 12px 12px 0 0;
     padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
     box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.3);
-    transition: transform 0.2s ease-out;
+    transform: translateY(0);
+    transition: transform 200ms ease-out;
+  }
+
+  .txn-full-edit-popover.dragging {
+    transition: none;
+  }
+
+  /* 32 x 4 px drag handle pill centered at the top of the bottom sheet.
+     touch-action: none prevents the browser from claiming the gesture for
+     vertical scroll while the drag-to-dismiss handler is tracking it. */
+  .txn-full-edit-popover .bottom-sheet-handle {
+    width: 32px;
+    height: 4px;
+    background: var(--bs-secondary-bg);
+    border-radius: 2px;
+    margin: 8px auto;
+    cursor: grab;
+    touch-action: none;
   }
 
   /* Backdrop behind the bottom sheet */
@@ -840,6 +921,23 @@ td.htmx-loading::after {
     inset: 0;
     background: rgba(0, 0, 0, 0.4);
     z-index: 99;
+  }
+
+  /* Sticky action footer for the full-edit popover (commit 12 of
+     mobile-first v3).  Pins the form's Save / Cancel buttons to the
+     bottom of the bottom-sheet's scroll area so they remain reachable
+     above the iOS on-screen keyboard.  No default rule outside this
+     media query: desktop popover is short enough that sticky has no
+     benefit, and the form's natural button position is preserved.
+     padding-bottom adds safe-area-inset-bottom on iPhones with no
+     physical home button so the buttons clear the home indicator. */
+  .popover-action-footer {
+    position: sticky;
+    bottom: 0;
+    padding: 8px 16px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    background: var(--bs-body-bg);
+    border-top: 1px solid var(--bs-border-color);
   }
 }
 
@@ -864,6 +962,22 @@ td.htmx-loading::after {
 
   .anchor-balance-display {
     font-size: 22px;
+  }
+
+  /* Sticky footer for any Bootstrap modal-fullscreen-sm-down modal
+     (commit 14 of mobile-first v3).  Bootstrap's fullscreen variant
+     stretches the dialog edge-to-edge at < 576 px but does not pin
+     the footer; on a 375 x 812 viewport with the iOS on-screen
+     keyboard up, the Save button can scroll out of reach.
+     position: sticky keeps it parked at the bottom of the modal's
+     scroll area.  padding-bottom adds env(safe-area-inset-bottom)
+     so the button clears the iPhone home indicator. */
+  .modal-fullscreen-sm-down .modal-footer {
+    position: sticky;
+    bottom: 0;
+    background: var(--bs-body-bg);
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--bs-border-color);
   }
 }
 
@@ -964,15 +1078,70 @@ td.htmx-loading::after {
 /* =============================================
    MOBILE GRID CARD VIEW
    ============================================= */
+/* The card itself must be opaque and relatively positioned so the
+   swipe-action button (absolute, anchored to the wrapper's right edge)
+   sits visually behind it.  When `.swiped` is added by mobile_grid.js
+   the card translates left -80 px, revealing the button underneath --
+   the iOS Mail "swipe-left for options" idiom.  Two values are folded
+   into the existing `transition` list (`background-color` + the new
+   `transform`) so the hover/focus background change keeps animating
+   alongside the swipe.  See Commit 9 of the mobile-first v3
+   implementation. */
 .mobile-txn-card {
   cursor: pointer;
-  transition: background-color 0.1s;
+  position: relative;
+  transition: background-color 0.1s, transform 150ms ease-out;
   min-height: 44px;
+  background: var(--bs-body-bg);
 }
 
 .mobile-txn-card:active,
 .mobile-txn-card:focus-visible {
   background-color: rgba(var(--shekel-accent-rgb), 0.10);
+}
+
+/* Per-card wrapper.  `position: relative` makes the wrapper the
+   containing block for `.swipe-action-mark-paid`'s absolute
+   positioning; `overflow: hidden` clips the card when it translates
+   off-screen left so the wrapper does not horizontally scroll the
+   page.  See `render_row_card` in `_grid_row_macros.html`. */
+.mobile-card-wrapper {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Swipe-revealed state -- mobile_grid.js adds `.swiped` when the
+   touchend handler detects a horizontal-dominant left swipe past the
+   50 px threshold (matching the existing period-nav swipe threshold).
+   `transform: translateX(-80px)` matches the swipe-action button's
+   80 px width so the button is fully exposed at rest. */
+.mobile-txn-card.swiped {
+  transform: translateX(-80px);
+}
+
+/* Swipe-action Mark Paid button.  Anchored to the wrapper's right
+   edge under the card; revealed by the card's swipe-left transform.
+   Width 80 px = the card's translateX magnitude.  height: 100 % so
+   the button fills the card vertically -- the card's min-height of
+   44 px is the floor (matching CLAUDE.md / WCAG 2.5.5 touch-target
+   minimum); height matches whatever the card grew to.  No inline
+   style attributes here -- CSP `style-src 'self'` blocks them.
+   `aria-label` on the button (set in `render_row_card`) is the
+   accessible name screen readers announce; the visible "Paid"
+   text and the bi-check2 icon are decorative redundancy. */
+.swipe-action-mark-paid {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 80px;
+  height: 100%;
+  background: var(--bs-success);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  font-size: 0.85rem;
 }
 
 #mobile-grid .card-header[data-bs-toggle="collapse"] {

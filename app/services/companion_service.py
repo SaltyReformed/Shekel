@@ -134,7 +134,18 @@ def get_visible_transactions(
             TransactionTemplate,
             Transaction.template_id == TransactionTemplate.id,
         )
-        .options(selectinload(Transaction.entries))
+        # Eager-load both the entries (for progress / pct totals) and
+        # the template (for ``txn.template.name`` and
+        # ``txn.template.is_envelope`` accesses from the shared
+        # ``render_row_card`` macro and ``grid_view_service.build_row_keys``
+        # introduced in mobile-first v3 plan Commit 13).  Without the
+        # template eager-load the macro would lazy-load each
+        # transaction's template individually, producing one SELECT per
+        # visible card.
+        .options(
+            selectinload(Transaction.entries),
+            selectinload(Transaction.template),
+        )
         .filter(
             Transaction.pay_period_id == period.id,
             TransactionTemplate.companion_visible.is_(True),

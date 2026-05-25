@@ -1,250 +1,66 @@
 {# Mobile card-based budget grid view -- shown only at <768px.
    Replaces the desktop table with period-by-period navigation,
-   collapsible income/expense sections, and tap-to-edit cards.
+   collapsible income/expense sections, and tap-to-toggle action-bar
+   cards (Commit 7 of the mobile-first v3 implementation).
 
-   IMPORTANT: The transaction matching logic in this template is
-   duplicated from grid/grid.html.  Any change to matching conditions
-   MUST be applied to both files to prevent data divergence.
+   Layout: nav-pills with two tabs --
+     - "This Period" (default active; populated by
+       grid/_mobile_this_period.html). Shows ONE period -- the current
+       one by default -- with URL-driven prev/next arrow navigation.
+     - "Plan" (populated by grid/_mobile_plan.html). Existing
+       multi-period card-scroll flow with prev/next panel buttons
+       managed by mobile_grid.js.
 
    Expected context (from grid.index route):
      periods           -- list of PayPeriod objects (visible window)
-     txn_by_period     -- dict[period_id -> list[Transaction]]
      income_row_keys   -- list[RowKey] (category_id, template_id, txn_name, group_name, display_name, ...)
      expense_row_keys  -- list[RowKey]
+     matched_by_row_period -- dict[(category_id, template_id, txn_name, period_id) -> list[Transaction]]
      subtotals         -- dict[period_id -> dict("income", "expense", "net")]
      balances          -- dict[period_id -> Decimal]
      low_balance_threshold -- int/Decimal
-   Jinja globals: STATUS_CANCELLED, STATUS_CREDIT
 #}
 <div class="d-md-none" id="mobile-grid">
 
-  {# --- Period Navigation Header --- #}
-  <div class="d-flex align-items-center justify-content-between mb-3" id="mobile-period-nav">
-    <button class="btn btn-sm btn-outline-secondary" id="mobile-prev-btn"
-            aria-label="Previous period" {% if periods|length <= 1 %}disabled{% endif %}>
-      <i class="bi bi-chevron-left"></i>
-    </button>
-    <div class="text-center">
-      <div class="fw-bold" id="mobile-period-label">
-        {% if periods %}{{ periods[0].label }}{% endif %}
-      </div>
-      <small class="text-muted" id="mobile-period-range">
-        {% if periods %}{{ periods[0].start_date.strftime('%-m/%-d') }} -- {{ periods[0].end_date.strftime('%-m/%-d') }}{% endif %}
-      </small>
+  {# --- Tab Navigation: This Period / Plan ---
+     Bootstrap nav-pills tab container. "This Period" is the default
+     active tab; mobile_grid.js reads location.hash on load to honor
+     `#this-period` / `#plan` deep links (used by the prev/next arrow
+     hrefs in the This Period partial). The tab JS is loaded via
+     bootstrap.bundle.min.js in base.html. #}
+  <ul class="nav nav-pills nav-fill mb-3" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="mobile-tab-this-period"
+              data-bs-toggle="tab" data-bs-target="#mobile-this-period"
+              type="button" role="tab"
+              aria-controls="mobile-this-period" aria-selected="true">
+        This Period
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="mobile-tab-plan"
+              data-bs-toggle="tab" data-bs-target="#mobile-plan"
+              type="button" role="tab"
+              aria-controls="mobile-plan" aria-selected="false">
+        Plan
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content">
+    {# --- This Period tab-pane: single-period view via the partial. --- #}
+    <div class="tab-pane fade show active" id="mobile-this-period"
+         role="tabpanel" aria-labelledby="mobile-tab-this-period">
+      {% include "grid/_mobile_this_period.html" %}
     </div>
-    <button class="btn btn-sm btn-outline-secondary" id="mobile-next-btn"
-            aria-label="Next period" {% if periods|length <= 1 %}disabled{% endif %}>
-      <i class="bi bi-chevron-right"></i>
-    </button>
+
+    {# --- Plan tab-pane: existing multi-period card flow via the
+         shared partial.  Same row-card shape as "This Period" (both
+         tabs render through `render_row_card`); only the period
+         navigation differs (panel-swap here, URL-driven there). --- #}
+    <div class="tab-pane fade" id="mobile-plan"
+         role="tabpanel" aria-labelledby="mobile-tab-plan">
+      {% include "grid/_mobile_plan.html" %}
+    </div>
   </div>
-
-  {# --- Period Panels --- #}
-  {% for period in periods %}
-  <div class="mobile-period-panel{% if not loop.first %} d-none{% endif %}"
-       data-period-index="{{ loop.index0 }}"
-       data-period-label="{{ period.label }}"
-       data-period-range="{{ period.start_date.strftime('%-m/%-d') }} -- {{ period.end_date.strftime('%-m/%-d') }}">
-
-    {# --- Income Section (collapsible) --- #}
-    <div class="card mb-3">
-      <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-income"
-           data-bs-toggle="collapse" data-bs-target="#mobile-income-{{ period.id }}"
-           aria-expanded="true" aria-controls="mobile-income-{{ period.id }}">
-        <span class="fw-bold small text-uppercase">
-          <i class="bi bi-chevron-down me-1"></i> Income
-        </span>
-        <span class="font-mono fw-bold">
-          {% set inc_total = subtotals[period.id].income %}
-          {% if inc_total %}${{ "{:,.0f}".format(inc_total) }}{% else %}$0{% endif %}
-        </span>
-      </div>
-      <div class="collapse show" id="mobile-income-{{ period.id }}">
-        <ul class="list-group list-group-flush">
-          {% set ns_inc = namespace(current_group='') %}
-          {% for rk in income_row_keys %}
-
-            {# --- Transaction Matching (DUPLICATED from grid.html income block) --- #}
-            {% set period_txns = txn_by_period.get(period.id, []) %}
-            {% set matched = [] %}
-            {% for txn in period_txns %}
-              {% if txn.category_id == rk.category_id and txn.is_income and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
-                {% if rk.template_id is not none and txn.template_id is not none %}
-                  {% if txn.template_id == rk.template_id %}
-                    {% if matched.append(txn) %}{% endif %}
-                  {% endif %}
-                {% else %}
-                  {% if txn.name == rk.txn_name %}
-                    {% if matched.append(txn) %}{% endif %}
-                  {% endif %}
-                {% endif %}
-              {% endif %}
-            {% endfor %}
-
-            {% if matched %}
-              {% if rk.group_name != ns_inc.current_group %}
-                {% set ns_inc.current_group = rk.group_name %}
-                <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
-                  {{ rk.group_name }}
-                </li>
-              {% endif %}
-
-              {% for txn in matched %}
-                {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
-                {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
-                {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
-                {% if show_progress %}
-                  {% set remaining = es.remaining %}
-                  {% set over_budget = es.over_budget %}
-                {% endif %}
-                <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
-                    data-mobile-txn-id="{{ txn.id }}"
-                    {% if txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
-                    role="button" tabindex="0"
-                    aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
-                  <span class="text-truncate me-2">
-                    {{ rk.display_name }}
-                    {% if txn.status %}
-                      {% if txn.status.is_settled %}
-                        <span class="badge-done ms-1">&#10003;</span>
-                      {% elif txn.status_id == STATUS_CREDIT %}
-                        <span class="badge-credit ms-1">CC</span>
-                      {% endif %}
-                    {% endif %}
-                    {% if txn.transfer_id %}
-                      <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
-                    {% endif %}
-                    {% if txn.credit_payback_for_id %}
-                      <span class="badge-credit ms-1">CC</span>
-                    {% endif %}
-                  </span>
-                  <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
-                    {% if show_progress %}
-                      ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
-                    {% else %}
-                      ${{ "{:,.0f}".format(display_amount) }}
-                    {% endif %}
-                  </span>
-                </li>
-              {% endfor %}
-            {% endif %}
-          {% endfor %}
-        </ul>
-      </div>
-    </div>
-
-    {# --- Expense Section (collapsible) --- #}
-    <div class="card mb-3">
-      <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-expense"
-           data-bs-toggle="collapse" data-bs-target="#mobile-expense-{{ period.id }}"
-           aria-expanded="true" aria-controls="mobile-expense-{{ period.id }}">
-        <span class="fw-bold small text-uppercase">
-          <i class="bi bi-chevron-down me-1"></i> Expenses
-        </span>
-        <span class="font-mono fw-bold">
-          {% set exp_total = subtotals[period.id].expense %}
-          {% if exp_total %}${{ "{:,.0f}".format(exp_total) }}{% else %}$0{% endif %}
-        </span>
-      </div>
-      <div class="collapse show" id="mobile-expense-{{ period.id }}">
-        <ul class="list-group list-group-flush">
-          {% set ns_exp = namespace(current_group='') %}
-          {% for rk in expense_row_keys %}
-
-            {# --- Transaction Matching (DUPLICATED from grid.html expense block) --- #}
-            {% set period_txns = txn_by_period.get(period.id, []) %}
-            {% set matched = [] %}
-            {% for txn in period_txns %}
-              {% if txn.category_id == rk.category_id and txn.is_expense and not txn.is_deleted and txn.status_id != STATUS_CANCELLED %}
-                {% if rk.template_id is not none and txn.template_id is not none %}
-                  {% if txn.template_id == rk.template_id %}
-                    {% if matched.append(txn) %}{% endif %}
-                  {% endif %}
-                {% else %}
-                  {% if txn.name == rk.txn_name %}
-                    {% if matched.append(txn) %}{% endif %}
-                  {% endif %}
-                {% endif %}
-              {% endif %}
-            {% endfor %}
-
-            {% if matched %}
-              {% if rk.group_name != ns_exp.current_group %}
-                {% set ns_exp.current_group = rk.group_name %}
-                <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
-                  {{ rk.group_name }}
-                </li>
-              {% endif %}
-
-              {% for txn in matched %}
-                {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
-                {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
-                {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
-                {% if show_progress %}
-                  {% set remaining = es.remaining %}
-                  {% set over_budget = es.over_budget %}
-                {% endif %}
-                <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
-                    data-mobile-txn-id="{{ txn.id }}"
-                    {% if txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
-                    role="button" tabindex="0"
-                    aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
-                  <span class="text-truncate me-2">
-                    {{ rk.display_name }}
-                    {% if txn.status %}
-                      {% if txn.status.is_settled %}
-                        <span class="badge-done ms-1">&#10003;</span>
-                      {% elif txn.status_id == STATUS_CREDIT %}
-                        <span class="badge-credit ms-1">CC</span>
-                      {% endif %}
-                    {% endif %}
-                    {% if txn.transfer_id %}
-                      <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
-                    {% endif %}
-                    {% if txn.credit_payback_for_id %}
-                      <span class="badge-credit ms-1">CC</span>
-                    {% endif %}
-                  </span>
-                  <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
-                    {% if show_progress %}
-                      ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
-                    {% else %}
-                      ${{ "{:,.0f}".format(display_amount) }}
-                    {% endif %}
-                  </span>
-                </li>
-              {% endfor %}
-            {% endif %}
-          {% endfor %}
-        </ul>
-      </div>
-    </div>
-
-    {# --- Net Cash Flow Bar --- #}
-    {% set net = subtotals[period.id].net %}
-    <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
-      <span class="fw-bold small">Net Cash Flow</span>
-      <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
-        {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
-        ${{ "{:,.0f}".format(net) }}
-      </span>
-    </div>
-
-    {# --- Projected End Balance --- #}
-    {% set bal = balances.get(period.id) %}
-    {% if bal is not none %}
-    <div class="card mb-3 {{ 'border-danger' if bal < 0 else '' }}">
-      <div class="card-body py-2 d-flex justify-content-between align-items-center">
-        <span class="fw-bold small">
-          {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
-          Projected Balance
-        </span>
-        <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
-          ${{ "{:,.2f}".format(bal) }}
-        </span>
-      </div>
-    </div>
-    {% endif %}
-
-  </div>
-  {% endfor %}
 </div>

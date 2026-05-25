@@ -5,6 +5,22 @@
  * This file provides the theme toggle and small UX helpers.
  */
 
+// --- Service Worker Registration ---
+// Registers the static-asset-only service worker shipped at
+// /sw.js (served by app/routes/static_pass.py at the root scope
+// so the worker can intercept fetches across the whole app, not
+// just under /static/).  The worker NEVER caches HTML or JSON --
+// see app/static/sw.js header for the financial-correctness
+// invariant.  Guarded so older / privacy-restricted browsers
+// without serviceWorker support degrade silently to plain network
+// fetches; registration is deferred to the load event so the SW
+// install never competes with the first paint of the page.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/sw.js').catch(function () {});
+  });
+}
+
 // --- Theme Toggle ---
 (function() {
   var saved = localStorage.getItem('shekel-theme');

@@ -1,8 +1,8 @@
 """
 Shekel Budget App -- Dashboard Route Tests
 
-Tests for the summary dashboard page, mark-paid interaction,
-HTMX section refreshes, alerts, and graceful degradation.
+Tests for the summary dashboard page, HTMX section refreshes,
+alerts, and graceful degradation.
 """
 
 from datetime import date, datetime, timedelta, timezone
@@ -186,12 +186,22 @@ class TestBillsDisplay:
 
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
-            # The paid bill should not be in the upcoming bills section.
-            # It might appear elsewhere but not as an actionable bill.
-            html = resp.data.decode()
-            # Check the bills section specifically -- paid bills have
-            # mark-paid buttons removed.
-            assert "Already Paid" not in html or "mark-paid-btn" not in html
+
+            # Query the bills-section HTMX partial directly -- it
+            # renders only the upcoming bills list (the same content
+            # the dashboard page's bills card body inlines), so the
+            # absence of the paid bill name proves the
+            # ``_get_upcoming_bills`` settled-status filter is doing
+            # its job.  The earlier form
+            # (``"Already Paid" not in html or "mark-paid-btn" not in
+            # html``) was vacuous after the mark-paid button was
+            # removed in v3 commit 22: the right disjunct was always
+            # true, so the assertion accepted any HTML.
+            bills_resp = auth_client.get(
+                "/dashboard/bills", headers={"HX-Request": "true"},
+            )
+            assert bills_resp.status_code == 200
+            assert "Already Paid" not in bills_resp.data.decode()
 
     def test_dashboard_bills_sorted(self, app, auth_client, seed_user, seed_periods_today, db):
         """Bills sorted by due_date ascending."""
@@ -210,142 +220,6 @@ class TestBillsDisplay:
             early_pos = html.find("Early Bill")
             late_pos = html.find("Late Bill")
             assert early_pos < late_pos
-
-
-# ── Mark-Paid Tests ─────────────────────────────────────────────────
-
-
-class TestMarkPaid:
-    """Tests for the mark-paid endpoint."""
-
-    def test_mark_paid(self, app, auth_client, seed_user, seed_periods_today, db):
-        """POST mark-paid changes transaction status to settled."""
-        with app.app_context():
-            txn = _add_txn(
-                db.session, seed_user, seed_periods_today[0],
-                "Test Bill", "500.00",
-                due_date=date(2026, 1, 5),
-            )
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/dashboard/mark-paid/{txn.id}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 200
-
-            db.session.refresh(txn)
-            done_id = ref_cache.status_id(StatusEnum.DONE)
-            assert txn.status_id == done_id
-
-    def test_mark_paid_with_actual(self, app, auth_client, seed_user, seed_periods_today, db):
-        """POST with actual_amount saves the actual amount."""
-        with app.app_context():
-            txn = _add_txn(
-                db.session, seed_user, seed_periods_today[0],
-                "Bill", "500.00",
-                due_date=date(2026, 1, 5),
-            )
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/dashboard/mark-paid/{txn.id}",
-                data={"actual_amount": "450.00"},
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 200
-
-            db.session.refresh(txn)
-            assert txn.actual_amount == Decimal("450.00")
-
-    def test_mark_paid_returns_paid_row(self, app, auth_client, seed_user, seed_periods_today, db):
-        """POST returns HTML with paid visual state."""
-        with app.app_context():
-            txn = _add_txn(
-                db.session, seed_user, seed_periods_today[0],
-                "Bill", "500.00",
-                due_date=date(2026, 1, 5),
-            )
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/dashboard/mark-paid/{txn.id}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 200
-            assert b"bill-row--paid" in resp.data
-
-    def test_mark_paid_htmx_trigger(self, app, auth_client, seed_user, seed_periods_today, db):
-        """POST sets HX-Trigger: dashboardRefresh header."""
-        with app.app_context():
-            txn = _add_txn(
-                db.session, seed_user, seed_periods_today[0],
-                "Bill", "500.00",
-                due_date=date(2026, 1, 5),
-            )
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/dashboard/mark-paid/{txn.id}",
-                headers={"HX-Request": "true"},
-            )
-            assert "dashboardRefresh" in resp.headers.get("HX-Trigger", "")
-
-    def test_mark_paid_sets_paid_at(self, app, auth_client, seed_user, seed_periods_today, db):
-        """After mark-paid, txn.paid_at is not None."""
-        with app.app_context():
-            txn = _add_txn(
-                db.session, seed_user, seed_periods_today[0],
-                "Bill", "500.00",
-                due_date=date(2026, 1, 5),
-            )
-            db.session.commit()
-
-            auth_client.post(
-                f"/dashboard/mark-paid/{txn.id}",
-                headers={"HX-Request": "true"},
-            )
-            db.session.refresh(txn)
-            assert txn.paid_at is not None
-
-    def test_mark_paid_wrong_user(self, app, auth_client, seed_second_user, db):
-        """POST on another user's transaction -> 404."""
-        with app.app_context():
-            # Create a period for the second user so ownership check fails.
-            other_periods = pay_period_service.generate_pay_periods(
-                user_id=seed_second_user["user"].id,
-                start_date=date(2026, 1, 2),
-                num_periods=2,
-                cadence_days=14,
-            )
-            db.session.commit()
-
-            txn = _add_txn(
-                db.session, seed_second_user, other_periods[0],
-                "Other Bill", "500.00",
-                due_date=date(2026, 1, 5),
-            )
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/dashboard/mark-paid/{txn.id}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 404
-
-    def test_mark_paid_requires_auth(self, app, client, seed_user, seed_periods_today, db):
-        """Unauthenticated POST -> 302 to login."""
-        with app.app_context():
-            txn = _add_txn(
-                db.session, seed_user, seed_periods_today[0],
-                "Bill", "500.00",
-                due_date=date(2026, 1, 5),
-            )
-            db.session.commit()
-
-            resp = client.post(f"/dashboard/mark-paid/{txn.id}")
-            assert resp.status_code == 302
-            assert "/login" in resp.headers["Location"]
 
 
 # ── HTMX Section Refresh Tests ──────────────────────────────────────

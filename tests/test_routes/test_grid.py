@@ -3889,6 +3889,355 @@ class TestGridPeriodSubtotalCanonical:
         )
 
 
+class TestGridMatchedByRowPeriod:
+    """Commit 2 (mobile-first v3): ``matched_by_row_period`` route context.
+
+    The matching predicate previously hand-coded in four blocks of
+    Jinja (``grid.html`` income + expense, ``_mobile_grid.html`` income +
+    expense) is precomputed once in the route as a dict keyed by
+    ``(category_id, template_id, txn_name, period_id)``.  Commit 1
+    introduced the macros that read it; Commit 2 (this commit) adds
+    the dict to the route context; Commits 3 and 4 wire the templates
+    to consume it.
+
+    These tests lock in the route contract: the dict is in the
+    rendered context, its keys are 4-tuples, its values are non-empty
+    lists of ``Transaction`` ORM objects, and its contents mirror the
+    Jinja predicate text-for-text (category match, income/expense per
+    section, not-deleted, not-cancelled, template-id-match-takes-
+    precedence with name-match fallback).
+    """
+
+    @staticmethod
+    def _capture_grid_context(app, auth_client):
+        """Return the (template, context) tuple captured from /grid.
+
+        Uses Flask's ``template_rendered`` signal to record what the
+        grid route handed to ``render_template`` so the test can
+        inspect ``matched_by_row_period`` (and any other context key)
+        without parsing rendered HTML.  Returns the first
+        ``grid/grid.html`` record; raises ``AssertionError`` if the
+        route rendered a different template (the ``no_setup`` or
+        ``no_periods`` branch) so the test fails loud rather than
+        silently inspecting the wrong context.
+        """
+        from flask import template_rendered  # pylint: disable=import-outside-toplevel
+
+        recorded: list[tuple] = []
+
+        def _record(sender, template, context, **extra):
+            recorded.append((template, context))
+
+        template_rendered.connect(_record, app)
+        try:
+            response = auth_client.get("/grid")
+        finally:
+            template_rendered.disconnect(_record, app)
+        assert response.status_code == 200, (
+            f"GET /grid returned {response.status_code}; expected 200"
+        )
+        grid_records = [
+            (t, c) for t, c in recorded if t.name == "grid/grid.html"
+        ]
+        assert grid_records, (
+            "GET /grid did not render grid/grid.html; templates "
+            f"rendered: {[t.name for t, _ in recorded]!r}"
+        )
+        return grid_records[0]
+
+    def test_index_renders_with_new_context(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C2-1: GET /grid still returns 200 with the new precomputation.
+
+        Pure smoke test that adding the precomputation and the new
+        ``matched_by_row_period`` kwarg to ``render_template`` did not
+        break the existing rendering pipeline.  No assertion on the
+        dict's contents -- C2-2 and C2-3 cover that.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            assert b"Checking Balance" in response.data
+            assert b"Projected End Balance" in response.data
+
+    def test_matched_by_row_period_in_context(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C2-2: ``matched_by_row_period`` is present in the render context.
+
+        Setup: seed one Projected expense in the current period so the
+        dict has at least one entry.  Asserts the dict exists, is a
+        ``dict``, every key is a 4-tuple of ``(int, int | None, str,
+        int)``, and every value is a non-empty list of ``Transaction``
+        ORM objects.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Weekly Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("123.45"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            _, context = self._capture_grid_context(app, auth_client)
+
+            assert "matched_by_row_period" in context, (
+                "render_template kwargs missing matched_by_row_period; "
+                "Commit 2 of mobile-first v3 adds it as the canonical "
+                "matching producer for the grid macros"
+            )
+            matched = context["matched_by_row_period"]
+            assert isinstance(matched, dict), (
+                f"matched_by_row_period must be a dict, got {type(matched)!r}"
+            )
+            assert matched, (
+                "Seeded one txn in the current period; "
+                "matched_by_row_period should be non-empty"
+            )
+            for key, value in matched.items():
+                assert isinstance(key, tuple) and len(key) == 4, (
+                    f"matched_by_row_period key {key!r} is not a 4-tuple"
+                )
+                category_id, template_id, txn_name, period_id = key
+                assert isinstance(category_id, int)
+                assert template_id is None or isinstance(template_id, int)
+                assert isinstance(txn_name, str)
+                assert isinstance(period_id, int)
+                assert isinstance(value, list) and value, (
+                    "matched_by_row_period values must be non-empty lists"
+                )
+                for matched_txn in value:
+                    assert isinstance(matched_txn, Transaction), (
+                        "matched_by_row_period values must contain "
+                        f"Transaction ORM objects, got {type(matched_txn)!r}"
+                    )
+
+    def test_matched_dict_mirrors_jinja_predicate(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C2-3: dict contents mirror the Jinja matching predicate.
+
+        Seeds four transactions exercising each predicate branch:
+          (a) a template-linked income (Salary template) in the
+              current period -- must match via the template-id branch.
+          (b) a standalone expense in Groceries by name -- must match
+              via the name-match fallback.
+          (c) a cancelled expense in Groceries -- must NOT appear (the
+              ``status_id != STATUS_CANCELLED`` guard).
+          (d) a soft-deleted expense in Groceries -- must NOT appear
+              (the ``not is_deleted`` guard).
+
+        Asserts: matched_by_row_period contains the expected keys for
+        (a) and (b); the matched lists include only the correct txn;
+        (c) and (d) do not appear in any matched list.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+            expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+            salary_cat = seed_user["categories"]["Salary"]
+            groceries_cat = seed_user["categories"]["Groceries"]
+
+            # (a) Template-linked income.
+            salary_template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=salary_cat.id,
+                transaction_type_id=income_type_id,
+                name="Biweekly Salary",
+                default_amount=Decimal("2500.00"),
+            )
+            db.session.add(salary_template)
+            db.session.flush()
+            txn_a = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_id,
+                name="Biweekly Salary",
+                category_id=salary_cat.id,
+                transaction_type_id=income_type_id,
+                estimated_amount=Decimal("2500.00"),
+                template_id=salary_template.id,
+            )
+            # (b) Standalone expense.
+            txn_b = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_id,
+                name="Adhoc Groceries",
+                category_id=groceries_cat.id,
+                transaction_type_id=expense_type_id,
+                estimated_amount=Decimal("85.00"),
+            )
+            # (c) Cancelled expense.
+            txn_c = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=cancelled_id,
+                name="Cancelled Groceries",
+                category_id=groceries_cat.id,
+                transaction_type_id=expense_type_id,
+                estimated_amount=Decimal("50.00"),
+            )
+            # (d) Soft-deleted expense.
+            txn_d = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=projected_id,
+                name="Deleted Groceries",
+                category_id=groceries_cat.id,
+                transaction_type_id=expense_type_id,
+                estimated_amount=Decimal("60.00"),
+                is_deleted=True,
+            )
+            db.session.add_all([txn_a, txn_b, txn_c, txn_d])
+            db.session.commit()
+            txn_a_id = txn_a.id
+            txn_b_id = txn_b.id
+            txn_c_id = txn_c.id
+            txn_d_id = txn_d.id
+            template_id = salary_template.id
+
+            _, context = self._capture_grid_context(app, auth_client)
+            matched = context["matched_by_row_period"]
+
+            # (a) Template-linked: key uses template_id, txn_name from row
+            # key is the template name; the matched list contains txn_a.
+            key_a = (
+                salary_cat.id, template_id, "Biweekly Salary", current.id,
+            )
+            assert key_a in matched, (
+                f"Template-linked match missing; expected key {key_a!r} "
+                f"in dict; got keys {list(matched.keys())!r}"
+            )
+            assert [t.id for t in matched[key_a]] == [txn_a_id], (
+                f"Template-linked match must contain only txn_a "
+                f"(id={txn_a_id}); got "
+                f"{[t.id for t in matched[key_a]]!r}"
+            )
+
+            # (b) Standalone: key uses template_id=None, txn_name from
+            # row key is the instance name; matched list contains txn_b.
+            key_b = (
+                groceries_cat.id, None, "Adhoc Groceries", current.id,
+            )
+            assert key_b in matched, (
+                f"Standalone match missing; expected key {key_b!r} "
+                f"in dict; got keys {list(matched.keys())!r}"
+            )
+            assert [t.id for t in matched[key_b]] == [txn_b_id], (
+                "Standalone match must contain only txn_b "
+                f"(id={txn_b_id}); got "
+                f"{[t.id for t in matched[key_b]]!r}"
+            )
+
+            # (c) Cancelled: must not appear in any matched list.  Also
+            # row-key for "Cancelled Groceries" should be absent because
+            # _build_row_keys filters cancelled txns at row-key time.
+            all_matched_ids = {
+                t.id for v in matched.values() for t in v
+            }
+            assert txn_c_id not in all_matched_ids, (
+                f"Cancelled txn (id={txn_c_id}) must not appear in "
+                "matched_by_row_period (status_id != STATUS_CANCELLED "
+                "guard)"
+            )
+
+            # (d) Soft-deleted: must not appear in any matched list.
+            assert txn_d_id not in all_matched_ids, (
+                f"Soft-deleted txn (id={txn_d_id}) must not appear in "
+                "matched_by_row_period (not is_deleted guard)"
+            )
+
+    def test_no_balance_resolver_reads(self):
+        """C2-4: no NEW direct reads of canonical-producer source columns.
+
+        Plan Section 1 rule 2 ("Canonical producers only for monetary
+        values"): the precomputation Commit 2 introduces must not read
+        ``Account.current_anchor_balance`` /
+        ``Account.current_anchor_period_id`` /
+        ``LoanParams.current_principal`` / ``LoanParams.interest_rate``
+        beyond the baseline that already exists in the route.
+
+        Baseline (pre-commit): exactly one read of
+        ``account.current_anchor_balance`` at the ``anchor_balance``
+        local in ``index()`` -- this is the existing display value
+        and is NOT a bypass of ``balance_resolver``.  After this
+        commit, that count must still be exactly one and the other
+        three symbols must still be zero.
+
+        Complements the existing
+        ``test_grid_balance_computation_routed_through_resolver``
+        (F-6 lock) by pinning the *count* of legacy reads rather
+        than the presence/absence of the canonical-producer symbol.
+        """
+        import re  # pylint: disable=import-outside-toplevel
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
+        current_anchor_balance_reads = len(
+            re.findall(r"\.current_anchor_balance\b", grid_source),
+        )
+        current_anchor_period_id_reads = len(
+            re.findall(r"\.current_anchor_period_id\b", grid_source),
+        )
+        current_principal_reads = len(
+            re.findall(r"\.current_principal\b", grid_source),
+        )
+        interest_rate_reads = len(
+            re.findall(r"\.interest_rate\b", grid_source),
+        )
+
+        assert current_anchor_balance_reads == 1, (
+            "app/routes/grid.py contains "
+            f"{current_anchor_balance_reads} reads of "
+            "``.current_anchor_balance`` (expected 1 baseline read at "
+            "``anchor_balance = account.current_anchor_balance ...``); "
+            "Commit 2 of mobile-first v3 must not add NEW direct reads "
+            "of canonical-producer source columns -- route all monetary "
+            "values through ``balance_resolver``"
+        )
+        assert current_anchor_period_id_reads == 0, (
+            "app/routes/grid.py reads "
+            "``.current_anchor_period_id`` directly; route through "
+            "``balance_resolver`` instead"
+        )
+        assert current_principal_reads == 0, (
+            "app/routes/grid.py reads ``.current_principal`` directly; "
+            "route through ``loan_resolver`` instead"
+        )
+        assert interest_rate_reads == 0, (
+            "app/routes/grid.py reads ``.interest_rate`` directly; "
+            "route through ``loan_resolver`` instead"
+        )
+
+
 class TestPaidAtLifecycle:
     """Tests for paid_at timestamp management during status changes."""
 
@@ -4124,3 +4473,1257 @@ class TestSchemaValidation:
             schema = TransactionUpdateSchema()
             data = schema.load({"paid_at": "2026-04-15T10:00:00"})
             assert "paid_at" not in data
+
+
+class TestMobileThisPeriodPartial:
+    """Regression locks for the mobile "This Period" tab partial.
+
+    The partial at ``app/templates/grid/_mobile_this_period.html`` is
+    rendered inside the ``#mobile-this-period`` tab-pane in
+    ``_mobile_grid.html``.  These tests assert structural invariants
+    of the rendered HTML so subsequent commits cannot silently regress
+    the tab layout (default-active flip, period nav arrow hrefs, the
+    presence of the income / expense / net / balance sections).
+
+    Mobile / desktop split: ``_mobile_grid.html`` is wrapped in
+    ``d-md-none`` and the desktop grid in ``d-none d-md-block``; both
+    render server-side regardless of the requesting client, so the
+    assertions can inspect the response body without simulating a
+    mobile user-agent or viewport.
+    """
+
+    def test_this_period_partial_exists(self):
+        """C6-1: the new partial file exists at the canonical path.
+
+        Filesystem check; ensures the file landed at the path the
+        ``{% include "grid/_mobile_this_period.html" %}`` reference in
+        ``_mobile_grid.html`` resolves to.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_this_period.html"
+        )
+        assert partial.is_file()
+
+    def test_default_active_tab_is_this_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-5: the "This Period" pill is the default-active tab.
+
+        The Commit 6 default-tab flip moves the ``active`` /
+        ``aria-selected="true"`` pair from "Plan" to "This Period";
+        the matching tab-pane carries ``show active``.  Lock both so
+        a later commit cannot silently flip the default back.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # Slice each button's full opening tag ('<button ... >') so
+            # the assertions span the template's multi-line attribute
+            # layout.
+            tp_id = 'id="mobile-tab-this-period"'
+            tp_open = body[body.rindex("<button", 0, body.index(tp_id)):
+                           body.index(">", body.index(tp_id))]
+            assert "nav-link active" in tp_open
+            assert 'aria-selected="true"' in tp_open
+
+            plan_id = 'id="mobile-tab-plan"'
+            plan_open = body[body.rindex("<button", 0, body.index(plan_id)):
+                             body.index(">", body.index(plan_id))]
+            # Plan tab carries the bare "nav-link" class (no "active").
+            assert "nav-link active" not in plan_open
+            assert 'aria-selected="false"' in plan_open
+
+            # The tab-pane carries "show active" via its outer class.
+            pane_id = 'id="mobile-this-period"'
+            pane_open = body[body.rindex("<div", 0, body.index(pane_id)):
+                             body.index(">", body.index(pane_id))]
+            assert "show active" in pane_open
+
+    def test_this_period_renders_current_period_by_default(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-2: the partial renders periods[0] (== current period when
+        start_offset == 0).
+
+        At the default URL ``/grid`` the visible window starts at
+        ``current_period`` (offset=0), so the period label inside the
+        partial's nav header equals ``current_period.label``.
+        """
+        with app.app_context():
+            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # The partial's header div is followed by the period
+            # label inside a fw-bold div.  Encode the label so non-ASCII
+            # whitespace and quoting are byte-stable.
+            assert current.label.encode("utf-8") in response.data
+            # The partial-specific collapse IDs prefix with mobile-tp-
+            # to avoid colliding with the Plan tab's mobile-income-/mobile-expense-.
+            assert f"mobile-tp-income-{current.id}".encode("utf-8") in response.data
+            assert f"mobile-tp-expense-{current.id}".encode("utf-8") in response.data
+
+    def test_this_period_includes_income_expense_net_balance(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-3: the partial emits the four expected sections.
+
+        Income card (header text "Income"), expense card (header text
+        "Expenses"), net cash flow bar ("Net Cash Flow"), projected
+        balance card ("Projected Balance").  The mobile-section classes
+        carry the brand colors so they double as section markers.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # Slice to just the This Period pane so the assertions do
+            # not leak through to the Plan pane's symmetric markup.
+            pane_start = body.index('id="mobile-this-period"')
+            # The pane ends at the next sibling tab-pane (mobile-plan).
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            assert "mobile-section-income" in pane
+            assert "mobile-section-expense" in pane
+            assert "Net Cash Flow" in pane
+            assert "Projected Balance" in pane
+
+    def test_this_period_arrows_link_to_offset_neighbors(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-4: the prev/next arrows link to offset-1 and offset+1.
+
+        At the default URL ``/grid`` (``start_offset == 0``), the
+        partial's ``[<]`` should link to
+        ``/grid?periods=1&offset=-1#this-period`` and ``[>]`` to
+        ``/grid?periods=1&offset=1#this-period``.  Both carry the
+        ``#this-period`` fragment so the page lands back on the same
+        tab after the GET.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            # Flask url_for renders integer query args inline; assert
+            # the canonical href tail rather than the full URL.
+            assert "/grid?periods=1&amp;offset=-1#this-period" in pane
+            assert "/grid?periods=1&amp;offset=1#this-period" in pane
+
+    def test_this_period_arrows_use_start_offset(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C6-4 (extended): arrows always step from ``start_offset``.
+
+        When the user is at ``?periods=1&offset=2``, the prev arrow
+        links to ``offset=1`` and the next arrow to ``offset=3``.  The
+        partial uses ``start_offset`` directly, so the formula must
+        survive non-zero starting offsets.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid?periods=1&offset=2")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            assert "/grid?periods=1&amp;offset=1#this-period" in pane
+            assert "/grid?periods=1&amp;offset=3#this-period" in pane
+
+
+class TestMobileCardActionBar:
+    """Regression locks for the per-card inline action bar (Commit 7
+    of the mobile-first v3 implementation).
+
+    The bar lives in ``app/templates/grid/_mobile_card_actions.html``
+    and is emitted by ``render_row_card`` as a sibling of each card
+    ``<li>``, wrapped together in
+    ``<div class="mobile-card-wrapper">``.  A delegated tap handler in
+    ``app/static/js/mobile_grid.js`` toggles the Bootstrap collapse so
+    the user sees ``[Mark Paid]``, ``[Edit Amount]``, and
+    ``[Open Full]`` directly under the tapped card.
+
+    These tests pin down the structural contract the JS handler and
+    the action-bar route consumers depend on:
+
+      - Both new partials (``_mobile_plan.html`` and
+        ``_mobile_card_actions.html``) exist at the canonical paths.
+      - The Mark Paid form is conditional on the transaction state -
+        Projected / Received and other non-terminal statuses get it;
+        Done and Settled (the two state-machine terminals for the
+        mark-done path) do not (mark_done would reject them via the
+        state machine, so omitting the affordance is the honest UX).
+      - ``can_edit=False`` (the companion contract per R-7 / D-B of
+        the v3 plan) drops the owner-only ``[Edit Amount]`` and
+        ``[Open Full]`` buttons while keeping ``[Mark Paid]``
+        (companions are allowed to mark paid per the existing
+        entries-blueprint precedent).
+      - The Mark Paid form posts to ``transactions.mark_done`` with
+        the swap target set to the row's ``#txn-cell-<id>``.
+    """
+
+    @staticmethod
+    def _render_action_bar(app, txn, can_edit=True):
+        """Render ``_mobile_card_actions.html`` directly with the given
+        ``txn`` and ``can_edit``.
+
+        Direct render (rather than scraping a full ``/grid`` response)
+        keeps the structural assertions immune to surrounding markup
+        drift: the test asserts what the partial emits, not where
+        it lands in the larger page.  ``app.test_request_context``
+        is what makes ``url_for`` resolve inside the template; the
+        ``app.jinja_env.globals`` registrations from
+        ``app.jinja_globals.register_ref_id_globals`` provide
+        ``STATUS_DONE`` / ``STATUS_SETTLED`` without further setup.
+        """
+        template = app.jinja_env.get_template("grid/_mobile_card_actions.html")
+        with app.test_request_context("/"):
+            return template.render(txn=txn, can_edit=can_edit)
+
+    def test_plan_partial_exists(self):
+        """C7-1: ``_mobile_plan.html`` exists at the canonical path.
+
+        Filesystem check; ensures the partial landed where the
+        ``{% include "grid/_mobile_plan.html" %}`` reference in
+        ``_mobile_grid.html`` resolves to.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_plan.html"
+        )
+        assert partial.is_file()
+
+    def test_mobile_card_actions_partial_exists(self):
+        """C7-2: ``_mobile_card_actions.html`` exists at the canonical path.
+
+        Filesystem check; ensures the partial landed where the
+        ``{% include "grid/_mobile_card_actions.html" %}`` reference
+        in ``_grid_row_macros.html``'s ``render_row_card`` resolves to.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_card_actions.html"
+        )
+        assert partial.is_file()
+
+    def test_action_bar_includes_mark_paid_when_not_settled(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-3: Projected txns get a ``[Mark Paid]`` form in the bar.
+
+        A Projected transaction is in scope for the mark-done state
+        transition, so the action bar offers the affordance.  The
+        rendered partial must contain a ``hx-post`` form to
+        ``transactions.mark_done`` plus the visible button label.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-3 Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("42.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'/transactions/{txn.id}/mark-done' in rendered
+            assert "Mark Paid" in rendered
+
+    def test_action_bar_excludes_mark_paid_when_settled(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-4: Settled txns do NOT get a ``[Mark Paid]`` form.
+
+        Settled is a state-machine terminal for the mark-done path;
+        offering the button would let the user fire a request the
+        route would reject with 400.  The partial's guard on
+        ``status_id`` is the source of truth here.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.SETTLED),
+                name="C7-4 Settled Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("42.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'/transactions/{txn.id}/mark-done' not in rendered
+            assert "Mark Paid" not in rendered
+
+    def test_action_bar_excludes_mark_paid_when_done(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-4 (sibling): Done txns also drop the ``[Mark Paid]`` form.
+
+        Mirrors the Settled guard: Done is the other terminal for the
+        mark-done path (Done -> Settled is a separate transition,
+        and the action bar does not currently expose a Settle action).
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                name="C7-4b Done Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("42.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'/transactions/{txn.id}/mark-done' not in rendered
+            assert "Mark Paid" not in rendered
+
+    def test_action_bar_excludes_mark_paid_when_received(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-4c: income txns marked Received also drop ``[Mark Paid]``.
+
+        Locks the fix for an income-specific bug that the Playwright
+        harness surfaced after a mark-done round-trip:
+        ``transactions.mark_done`` sets ``status_id = RECEIVED`` for
+        income (not DONE), so the spec's literal
+        ``status_id != STATUS_DONE and status_id != STATUS_SETTLED``
+        guard missed RECEIVED and kept the Mark Paid button visible
+        on already-received income.  Switched to the semantic
+        ``Status.is_settled`` boolean which covers Paid, Received,
+        and Settled uniformly.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            salary_cat = seed_user["categories"]["Salary"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.RECEIVED),
+                name="C7-4c Received Salary",
+                category_id=salary_cat.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                estimated_amount=Decimal("2500.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'/transactions/{txn.id}/mark-done' not in rendered
+            assert "Mark Paid" not in rendered
+
+    def test_action_bar_excludes_edit_when_can_edit_false(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-5: ``can_edit=False`` (companion) drops ``[Edit Amount]`` and
+        ``[Open Full]`` but keeps ``[Mark Paid]``.
+
+        The companion role can mark transactions paid (entries
+        blueprint precedent) but cannot open the desktop full-edit
+        form or the inline quick-edit popover.  The action bar
+        partial's ``{% if can_edit %}`` guard is the only thing
+        between the companion render path and the owner-only
+        affordances.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-5 Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("99.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=False)
+
+            # Mark Paid remains -- companions can mark paid.
+            assert f'/transactions/{txn.id}/mark-done' in rendered
+            assert "Mark Paid" in rendered
+            # Edit Amount and Open Full are gone for the companion path.
+            assert "Edit Amount" not in rendered
+            assert "Open Full" not in rendered
+            assert f'/transactions/{txn.id}/quick-edit' not in rendered
+            assert "txn-expand-btn" not in rendered
+
+    def test_action_bar_hx_post_target_is_cell(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-6: Mark Paid form posts to mark-done targeting ``#txn-cell-<id>``.
+
+        Locks the form attributes the action bar's HTMX wiring
+        depends on: ``hx-post`` URL, ``hx-target`` selector, and
+        ``hx-swap`` mode.  ``outerHTML`` is the spec'd swap mode for
+        the bar (the response also fires ``HX-Trigger: gridRefresh``
+        which causes a full page reload, so the swap target and
+        mode are only load-bearing if a future commit removes the
+        gridRefresh).
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-6 Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("42.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_action_bar(app, txn, can_edit=True)
+
+            assert f'hx-post="/transactions/{txn.id}/mark-done"' in rendered
+            assert f'hx-target="#txn-cell-{txn.id}"' in rendered
+            assert 'hx-swap="outerHTML"' in rendered
+
+    def test_card_wrapper_emits_bar_sibling_in_grid_page(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C7-integration: the full ``/grid`` page emits the action-bar
+        sibling next to each mobile card.
+
+        Asserts the macro-level wiring: ``render_row_card`` wraps
+        each ``<li>`` in ``<div class="mobile-card-wrapper">`` and
+        emits ``_mobile_card_actions.html`` after it.  Without this
+        integration, the unit-level checks above would pass while
+        the bar still never appears on the rendered page.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-integration Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("31.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+            txn_id = txn.id
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # Wrapper exists; action-bar id is per-tab-prefixed so the
+            # same txn rendered in both This Period and Plan tabs does
+            # not violate the HTML unique-id rule.  See the
+            # `id_prefix` param on render_row_card.
+            assert 'class="mobile-card-wrapper"' in body
+            assert f'id="card-actions-tp-{txn_id}"' in body
+            assert f'id="card-actions-plan-{txn_id}"' in body
+
+    def test_action_bar_id_uses_prefix_when_supplied(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C7-integration: ``id_prefix`` namespaces the action-bar element id.
+
+        The "This Period" and "Plan" tabs render the same window of
+        pay periods at the same time, so without per-tab namespacing
+        the same txn yields a duplicate ``id="card-actions-<id>"``
+        in two places.  The ``id_prefix`` parameter on
+        ``render_row_card`` (forwarded into the action-bar partial
+        via ``with context``) is the fix: This Period passes
+        ``id_prefix='tp'``, Plan passes ``id_prefix='plan'``, and an
+        empty prefix preserves the simpler legacy id form for the
+        direct-render unit tests above.
+
+        Locks the three branches explicitly so a future refactor of
+        the formula cannot regress one without flagging.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C7-prefix Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("17.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            template = app.jinja_env.get_template(
+                "grid/_mobile_card_actions.html",
+            )
+            with app.test_request_context("/"):
+                no_prefix = template.render(txn=txn, can_edit=True)
+                tp_prefix = template.render(
+                    txn=txn, can_edit=True, id_prefix="tp",
+                )
+                plan_prefix = template.render(
+                    txn=txn, can_edit=True, id_prefix="plan",
+                )
+
+            assert f'id="card-actions-{txn.id}"' in no_prefix
+            assert f'id="card-actions-tp-{txn.id}"' in tp_prefix
+            assert f'id="card-actions-plan-{txn.id}"' in plan_prefix
+            # Prefixed renders must NOT also emit the unprefixed form.
+            assert f'id="card-actions-{txn.id}"' not in tp_prefix
+            assert f'id="card-actions-{txn.id}"' not in plan_prefix
+
+    def test_mobile_grid_includes_plan_partial(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C7-integration: ``_mobile_grid.html`` Plan tab body is the
+        ``_mobile_plan.html`` include, not the inline scroll view.
+
+        Locks the Commit 7 refactor where the Plan tab body moved
+        out of ``_mobile_grid.html`` into its own partial.  Verified
+        by asserting that the Plan tab pane carries the rendered
+        contents of the partial (the period-nav button ids) and
+        that the inline content marker from before the refactor is
+        absent at the call site level.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # The Plan partial's period-nav controls are present.
+            pane_start = body.index('id="mobile-plan"')
+            pane = body[pane_start:]
+            assert 'id="mobile-prev-btn"' in pane
+            assert 'id="mobile-next-btn"' in pane
+
+    def test_no_inline_style_attr_in_mobile_card_actions(self):
+        """Pin the no-inline-style invariant on every button in the
+        mobile card action bar.  The project's CSP at
+        ``app/__init__.py`` declares ``style-src 'self'`` without
+        ``'unsafe-inline'``, so any ``style="..."`` attribute is
+        silently dropped by the browser -- which previously left the
+        Mark Paid / Edit Amount / Open Full buttons at Bootstrap's
+        default ``btn-sm`` height (~38-40 px), 4-6 px short of the
+        WCAG 2.5.5 / Apple HIG 44 px touch-target floor enforced by
+        the mobile-first v3 plan hard-rule 7.
+
+        The 44 px floor now travels via the ``.btn-touch-44`` utility
+        class defined in ``app/static/css/app.css`` inside the
+        ``@media (max-width: 767.98px)`` block.  A regression that
+        re-introduced an inline ``style="..."`` would silently shrink
+        the buttons; this lock catches the regression at the source.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_card_actions.html"
+        )
+        src = partial.read_text(encoding="utf-8")
+        assert "style=" not in src, (
+            "Inline style= attribute reintroduced into "
+            "_mobile_card_actions.html; the project CSP blocks it. "
+            "Use the .btn-touch-44 utility class for the 44 px floor."
+        )
+
+
+class TestMobileSwipeAction:
+    """Regression locks for the swipe-left Mark Paid affordance
+    (Commit 9 of the mobile-first v3 implementation).
+
+    The gesture itself lives in ``app/static/js/mobile_grid.js`` and
+    cannot run inside a pytest process (no real touch events, no
+    Bootstrap collapse JS).  These tests pin the SERVER-RENDERED
+    contract the gesture depends on:
+
+      - ``render_row_card`` emits a ``<button
+        class="swipe-action-mark-paid">`` as the first child of
+        ``.mobile-card-wrapper`` (DOM order so the card stacks
+        above the button when both share a stacking context).
+      - The button's HTMX wiring posts to ``transactions.mark_done``
+        with the row's cell as the swap target and ``outerHTML`` as
+        the swap mode -- the same shape the inline action bar's
+        Mark Paid form already uses, so both the gesture and the
+        non-gesture path commit through one endpoint.
+      - The button is preserved on the companion render
+        (``can_edit=False``) per R-7 / the existing entries-
+        blueprint precedent that companions are allowed to mark
+        paid; only the bottom-sheet / Edit Amount affordances on
+        the action bar are dropped for companions, not Mark Paid.
+      - The button is SUPPRESSED for already-settled
+        transactions, matching the action-bar Mark Paid guard at
+        ``_mobile_card_actions.html:60``.  Suppressing the button
+        rather than letting the user swipe and see a 400 from
+        ``mark_done`` aligns the gesture path with the inline
+        action-bar guard discovered in the action-bar fix that
+        landed in Commit 7.
+      - The JS swipe handler uses ``passive: true`` (R-8 of the
+        plan) and the same 50 px horizontal threshold as the
+        existing period-nav swipe at the top of ``init()``.
+
+    Direct-macro rendering (rather than scraping a full ``/grid``
+    response) is the right tool for the companion / settled
+    branches because the owner ``/grid`` route always passes
+    ``can_edit=True`` and the seeded settled-vs-projected mix in
+    ``seed_user`` is not load-bearing for the assertion.
+    """
+
+    @staticmethod
+    def _render_row_card(
+        app, *, txn, category, period, can_edit=True, id_prefix="",
+    ):
+        """Render ``render_row_card`` with a single matched txn.
+
+        Builds a ``RowKey`` and a ``matched_by_row_period`` dict
+        mirroring the shape ``grid.index`` would have produced for the
+        given txn, then renders the macro through a small
+        ``from_string`` wrapper.  Keeps the assertion target -- the
+        macro's HTML output -- in front of the test and not buried
+        inside a full ``/grid`` page.
+        """
+        from app.routes.grid import RowKey  # pylint: disable=import-outside-toplevel
+
+        rk = RowKey(
+            category_id=category.id,
+            template_id=txn.template_id,
+            txn_name=txn.name,
+            group_name=category.group_name,
+            item_name=category.item_name,
+            display_name=txn.name,
+            category=category,
+        )
+        matched_by_row_period = {
+            (rk.category_id, rk.template_id, rk.txn_name, period.id): [txn],
+        }
+        template = app.jinja_env.from_string(
+            "{% from 'grid/_grid_row_macros.html' import render_row_card %}"
+            "{{ render_row_card(rk, period, matched_by_row_period, "
+            "entry_sums, can_edit, id_prefix) }}"
+        )
+        with app.test_request_context("/"):
+            return template.render(
+                rk=rk,
+                period=period,
+                matched_by_row_period=matched_by_row_period,
+                entry_sums={},
+                can_edit=can_edit,
+                id_prefix=id_prefix,
+            )
+
+    def test_swipe_action_button_emitted(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C9-1: ``render_row_card`` emits a swipe-action button
+        sibling for a Projected txn on the live ``/grid`` page.
+
+        Integration check: locks the macro change against the
+        rendered page so a future refactor that drops the wrapper
+        emission would fail loudly here even if a unit-render test
+        somehow passed.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C9-1 Projected Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("23.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            # At least one swipe-action button exists on the page.
+            assert 'class="swipe-action-mark-paid"' in body
+            # That button targets the new txn's mark-done route.
+            assert f'/transactions/{txn.id}/mark-done' in body
+
+    def test_swipe_action_hx_post_targets_mark_done(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C9-2: the swipe-action button posts to ``mark_done`` and
+        swaps the row's cell ``outerHTML``.
+
+        Locks the three HTMX attributes the gesture depends on: the
+        post URL, the swap target (the row's ``#txn-cell-<id>``),
+        and the swap mode (``outerHTML``).  These mirror the inline
+        action bar's Mark Paid form so both paths produce the same
+        update on success.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            cat = seed_user["categories"]["Groceries"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C9-2 Projected Groceries",
+                category_id=cat.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("17.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_row_card(
+                app, txn=txn, category=cat, period=current,
+            )
+
+            assert 'class="swipe-action-mark-paid"' in rendered
+            assert f'hx-post="/transactions/{txn.id}/mark-done"' in rendered
+            assert f'hx-target="#txn-cell-{txn.id}"' in rendered
+            assert 'hx-swap="outerHTML"' in rendered
+
+    def test_swipe_action_present_for_companion(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C9-3: the swipe-action button is emitted for
+        ``can_edit=False`` (the companion render path per R-7).
+
+        Companions can mark paid via the existing entries-blueprint
+        precedent, so the gesture-shortcut Paid button must remain
+        available to them.  Only the owner-only buttons (Edit
+        Amount, Open Full -- both inside the inline action bar) are
+        dropped at ``can_edit=False``.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            cat = seed_user["categories"]["Groceries"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="C9-3 Companion Projected Groceries",
+                category_id=cat.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("19.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_row_card(
+                app, txn=txn, category=cat, period=current, can_edit=False,
+            )
+
+            assert 'class="swipe-action-mark-paid"' in rendered
+            assert f'/transactions/{txn.id}/mark-done' in rendered
+            # The wrapper exists even on companion path so the JS
+            # handler's `.mobile-card-wrapper` lookup succeeds.
+            assert 'class="mobile-card-wrapper"' in rendered
+
+    def test_swipe_action_suppressed_when_settled(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C9-discovered: settled txns do NOT get a swipe-action button.
+
+        Folded refinement (work summary section I): aligns the
+        gesture path with the action-bar Mark Paid guard at
+        ``_mobile_card_actions.html:60`` so a swipe on a settled
+        row stays a no-op rather than letting the user reveal a
+        button whose POST ``mark_done`` would reject with 400.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            cat = seed_user["categories"]["Groceries"]
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.SETTLED),
+                name="C9-discovered Settled Groceries",
+                category_id=cat.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("12.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            rendered = self._render_row_card(
+                app, txn=txn, category=cat, period=current,
+            )
+
+            # The wrapper still exists (so the card layout is
+            # unchanged) but the swipe-action button is absent.
+            assert 'class="mobile-card-wrapper"' in rendered
+            assert 'class="swipe-action-mark-paid"' not in rendered
+            # Defensive: the cell-targeting hx-post URL for the
+            # mark_done route must not appear in the rendered card
+            # wrapper (it only lives on the suppressed swipe button
+            # and the suppressed action-bar form).
+            assert f'/transactions/{txn.id}/mark-done' not in rendered
+
+    def test_swipe_threshold_matches_period_swipe(self):
+        """C9-4: card-swipe and period-swipe both use the 50 px
+        threshold (R-8 of the mobile-first v3 plan).
+
+        Re-scoped in mobile-first v3 plan Commit 13: the card-swipe
+        gesture moved from ``mobile_grid.js`` to the shared helper
+        ``app/static/js/swipe.js::attachSwipeAction`` so the
+        companion view (``companion.js``) can reuse it.  The
+        period-nav swipe stays in ``mobile_grid.js``.  Both files
+        must carry the literal ``50`` threshold to keep the gestures
+        consistent under the finger.
+
+        Three assertions:
+          1. ``mobile_grid.js`` still uses ``Math.abs(dx) > 50``
+             for the period-nav swipe at the top of ``init()``.
+          2. ``mobile_grid.js`` calls ``attachSwipeAction`` with
+             ``threshold: 50`` so the card gesture stays at the
+             same value the period-nav uses.
+          3. ``swipe.js`` carries the ``dx < -threshold`` (left-swipe
+             reveal) and ``dx > threshold`` (right-swipe un-swipe)
+             branches that consume the configured threshold.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        root = pathlib.Path(__file__).resolve().parents[2] / "app" / "static" / "js"
+        mobile_grid_src = (root / "mobile_grid.js").read_text(encoding="utf-8")
+        swipe_src = (root / "swipe.js").read_text(encoding="utf-8")
+
+        # Period-nav swipe at the top of init(): a horizontal motion
+        # past 50 px wins the gesture.
+        assert "Math.abs(dx) > 50" in mobile_grid_src
+        # Card-swipe threshold is supplied to the shared helper at
+        # 50 px so card-swipe matches period-nav under the finger.
+        assert "threshold: 50" in mobile_grid_src
+        # The shared helper consumes the threshold via these two
+        # comparisons (Commit 13 factoring preserves the original
+        # left-/right-swipe branches text-for-text up to the
+        # threshold variable).
+        assert "dx < -threshold" in swipe_src
+        assert "dx > threshold" in swipe_src
+
+    def test_swipe_handlers_are_passive(self):
+        """R-8 alignment: every touch listener uses ``passive: true``.
+
+        Passive listeners cannot ``preventDefault`` -- they cannot
+        block vertical scroll, which is the trade-off that lets
+        the swipe co-exist with normal page scrolling.  The
+        ``Math.abs(dy) > Math.abs(dx)`` cancel-on-vertical guard
+        inside touchmove is what makes the trade-off safe.
+
+        Re-scoped in mobile-first v3 plan Commit 13: the three
+        card touchstart/touchmove/touchend listeners moved from
+        ``mobile_grid.js`` to ``swipe.js`` along with the rest of
+        ``attachSwipeAction``.  The period-nav touchstart + touchend
+        listeners stay in ``mobile_grid.js``.  Both files together
+        must carry at least 5 ``passive: true`` listeners; either
+        file alone may carry fewer.  A regression that flipped any
+        of them to a default non-passive listener would silently
+        re-block scroll on iOS Safari.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        root = pathlib.Path(__file__).resolve().parents[2] / "app" / "static" / "js"
+        mobile_grid_src = (root / "mobile_grid.js").read_text(encoding="utf-8")
+        swipe_src = (root / "swipe.js").read_text(encoding="utf-8")
+
+        # 2 in mobile_grid.js (period-nav touchstart + touchend) +
+        # 3 in swipe.js (card touchstart + touchmove + touchend) = 5.
+        total = mobile_grid_src.count("passive: true") + swipe_src.count("passive: true")
+        assert total >= 5, (
+            f"expected at least 5 'passive: true' touch listeners across "
+            f"mobile_grid.js + swipe.js, found {total}"
+        )
+
+    def test_period_nav_swipe_scoped_to_plan_pane(self):
+        """F-1 lock: the period-nav swipe listener binds to
+        ``#mobile-plan`` (the Plan tab-pane), NOT ``#mobile-grid``
+        (the outer container that wraps both tabs).
+
+        Binding to the outer container caused a horizontal swipe on
+        the "This Period" tab to silently advance the Plan tab's
+        ``currentIndex`` because ``navigate()`` mutates display
+        state on Plan's ``.mobile-period-panel`` elements regardless
+        of which tab-pane is visible.  The user only discovered the
+        leak after switching to Plan and finding it on the wrong
+        period.  Per ``docs/mobile_follow_up.md`` F-1.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        mobile_grid_src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "static" / "js" / "mobile_grid.js"
+        ).read_text(encoding="utf-8")
+
+        # Positive: the Plan tab-pane is the binding site.
+        assert "document.getElementById('mobile-plan')" in mobile_grid_src
+        # Negative: the outer container must NOT be a binding site.
+        # The string `mobile-grid` is allowed in comments (e.g. the
+        # `Activate the mobile-grid tab` doc at the top of init());
+        # the `getElementById` call is what would re-introduce the
+        # cross-tab leak, so the assertion is on the call form.
+        assert "document.getElementById('mobile-grid')" not in mobile_grid_src
+
+    def test_no_inline_style_on_swipe_action(self):
+        """Pin the no-inline-style invariant on the swipe-action
+        button so a future refactor cannot bring back the
+        ``style="..."`` attribute that CSP ``style-src 'self'``
+        (without ``'unsafe-inline'``) silently rejects.
+
+        The button's visual sizing lives entirely in
+        ``app/static/css/app.css`` under the
+        ``.swipe-action-mark-paid`` selector.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        macros = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_grid_row_macros.html"
+        )
+        src = macros.read_text(encoding="utf-8")
+
+        # Grab the lines that emit the swipe-action button and assert
+        # no `style=` attribute travels with them.
+        button_block_start = src.index('class="swipe-action-mark-paid"')
+        button_block_end = src.index("</button>", button_block_start)
+        button_block = src[button_block_start:button_block_end]
+        assert "style=" not in button_block
+
+
+class TestMobileJumpToPeriod:
+    """Regression locks for the jump-to-period ``<select>`` in the
+    "This Period" tab header (Commit 10 of the mobile-first v3
+    implementation).
+
+    The select lives in ``app/templates/grid/_mobile_this_period.html``
+    below the ``[<] [>]`` arrow row and lets the user reach any
+    non-adjacent period in one tap, avoiding N taps on ``[<]``.
+    Picking a non-current option fires ``change``, which a delegated
+    listener in ``app/static/js/mobile_grid.js`` translates into a
+    full GET submit to ``/grid?periods=1&offset=N``.
+
+    These tests pin the structural contract the JS handler and the
+    grid route consume:
+
+      - The ``<select name="offset">`` is emitted exactly once per
+        page render, inside the ``#mobile-this-period`` tab-pane
+        (so the JS handler's ``.closest('#mobile-this-period')``
+        guard matches).
+      - One ``<option>`` per period in ``all_periods`` -- the option
+        list mirrors the user's full visible projection so the user
+        can jump to any of them.
+      - Option ``value`` is the period's offset relative to
+        ``current_period.period_index``, matching the desktop
+        selector convention at ``grid/grid.html:24-49`` and the
+        partial's own prev/next arrow hrefs.
+      - The option for the currently visible period
+        (``periods[0]`` / ``period``) carries the ``selected``
+        attribute so the picker opens on that row.
+      - Method is GET with a hidden ``periods=1`` input -- the GET
+        is read-only navigation (no state mutation), so no CSRF
+        token is required per CLAUDE.md "State-changing actions
+        must use POST".
+      - The JS file carries the delegated change handler with the
+        ``select[name="offset"]`` selector and the
+        ``#mobile-this-period`` scope guard.
+    """
+
+    def test_jump_to_select_present(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C10-1: a single ``<select name="offset">`` lives inside the
+        ``#mobile-this-period`` tab-pane.
+
+        The select is the jump-to control. Scoping the assertion to
+        the pane (not just the document) guards against a future
+        regression where a sibling ``<select name="offset">`` lands
+        in another tab and double-submits via the same delegated JS
+        handler.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            assert pane.count('<select name="offset"') == 1
+            # The hidden periods=1 input rides with the select so
+            # the GET lands at the single-period URL shape.
+            assert 'name="periods" value="1"' in pane
+            # GET form -- read-only navigation, no CSRF gate.
+            assert 'method="get"' in pane
+
+    def test_jump_to_options_match_all_periods(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C10-2: option count equals ``len(all_periods)``.
+
+        ``seed_periods_today`` provisions 10 biweekly periods
+        (indices 0..9); ``pay_period_service.get_all_periods``
+        returns all 10 to the route, so the rendered select carries
+        10 ``<option>`` elements. Each option's ``value`` is the
+        offset relative to the current period (period_index 4 under
+        ``seed_periods_today``), so the value set is
+        ``{-4, -3, -2, -1, 0, 1, 2, 3, 4, 5}``.
+        """
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            all_periods = pay_period_service.get_all_periods(
+                seed_user["user"].id,
+            )
+            assert len(all_periods) == 10
+            assert current.period_index == 4
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            # Slice down to the select's option block to keep the
+            # count immune to unrelated <option> elements elsewhere
+            # in the pane (none exist today, but the slice keeps
+            # future additions safe).
+            select_start = pane.index('<select name="offset"')
+            select_end = pane.index("</select>", select_start)
+            select_block = pane[select_start:select_end]
+            assert select_block.count("<option ") == len(all_periods)
+
+            # Spot-check the boundary offsets. period_index 0 -> -4,
+            # period_index 9 -> +5 (all under current.period_index=4).
+            assert 'value="-4"' in select_block
+            assert 'value="5"' in select_block
+            # And the current option must exist at value="0".
+            assert 'value="0"' in select_block
+
+    def test_jump_to_current_period_selected(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C10-3: the option for the currently visible period carries
+        ``selected``.
+
+        At the default ``/grid`` URL (``start_offset == 0``),
+        ``periods[0]`` (the partial's ``period`` local) equals
+        ``current_period``, so the offset-0 option is the selected
+        one. Verified by slicing the offset-0 option's opening
+        tag and asserting ``selected`` appears inside it.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            select_start = pane.index('<select name="offset"')
+            select_end = pane.index("</select>", select_start)
+            select_block = pane[select_start:select_end]
+
+            # Locate the offset=0 option (the current period under
+            # start_offset=0) and slice its full opening tag so the
+            # assertion spans the multi-line attribute layout.
+            opt_start = select_block.index('value="0"')
+            opt_tag_open = select_block.rindex("<option", 0, opt_start)
+            opt_tag_close = select_block.index(">", opt_start)
+            opt_open = select_block[opt_tag_open:opt_tag_close]
+            assert "selected" in opt_open
+
+    def test_jump_to_selected_follows_visible_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """C10-3 (extended): non-zero ``start_offset`` shifts the
+        selected option to the currently visible period.
+
+        At ``?periods=1&offset=2`` the visible period is the one
+        with ``period_index == current.period_index + 2 == 6``;
+        the select's ``selected`` must move to the offset=2 option
+        (and the offset=0 option must NOT carry ``selected``).
+        Locks the ``p.id == period.id`` predicate against drift
+        toward an unconditional or current-only selection rule.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid?periods=1&offset=2")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-this-period"')
+            pane_end = body.index('id="mobile-plan"', pane_start)
+            pane = body[pane_start:pane_end]
+
+            select_start = pane.index('<select name="offset"')
+            select_end = pane.index("</select>", select_start)
+            select_block = pane[select_start:select_end]
+
+            # offset=2 option carries selected.
+            opt2_start = select_block.index('value="2"')
+            opt2_open = select_block[
+                select_block.rindex("<option", 0, opt2_start)
+                :select_block.index(">", opt2_start)
+            ]
+            assert "selected" in opt2_open
+
+            # offset=0 option does NOT carry selected.
+            opt0_start = select_block.index('value="0"')
+            opt0_open = select_block[
+                select_block.rindex("<option", 0, opt0_start)
+                :select_block.index(">", opt0_start)
+            ]
+            assert "selected" not in opt0_open
+
+    def test_jump_to_delegated_handler_in_mobile_grid_js(self):
+        """C10 JS-side regression lock: the delegated change handler
+        in ``mobile_grid.js`` references the select selector and the
+        ``#mobile-this-period`` scope guard.
+
+        The CSP-friendly delegated handler replaces the inline
+        ``onchange="this.form.submit()"`` from the plan's draft
+        markup (per CLAUDE.md "No inline scripts"). Reading the JS
+        file directly (same pattern as
+        ``test_swipe_threshold_matches_period_swipe``) locks both
+        the selector and the scope so a future refactor cannot
+        silently drop either guard.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        js_path = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "static" / "js" / "mobile_grid.js"
+        )
+        src = js_path.read_text(encoding="utf-8")
+
+        # The selector targets the jump-to <select>.
+        assert 'select[name="offset"]' in src
+        # The scope guard limits the handler to the "This Period" pane.
+        assert "#mobile-this-period" in src
+        # form.submit() is what turns the change into a GET to /grid.
+        assert "form.submit()" in src

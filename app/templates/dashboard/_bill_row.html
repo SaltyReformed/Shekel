@@ -1,4 +1,6 @@
-{# Single bill row -- used for initial render and HTMX swap after mark-paid. #}
+{# Single bill row -- included by `_upcoming_bills.html` in a loop
+   and re-rendered by the `dashboard.bills_section` HTMX partial on a
+   ``dashboardRefresh`` event. #}
 {% set show_progress = (
      not bill.is_paid|default(false)
      and bill.is_tracked|default(false)
@@ -47,16 +49,6 @@
     {% endif %}
     {% if bill.due_date %}
     <small class="text-muted d-none d-md-inline">{{ bill.due_date.strftime('%b %-d') }}</small>
-    {% endif %}
-    {% if not bill.is_paid|default(false) %}
-    <button class="btn btn-sm btn-outline-success mark-paid-btn"
-            hx-post="{{ url_for('dashboard.mark_paid', txn_id=bill.id) }}"
-            hx-target="closest .bill-row"
-            hx-swap="outerHTML"
-            hx-disabled-elt="this"
-            title="Mark as paid">
-      <i class="bi bi-check-lg"></i>
-    </button>
     {% endif %}
   </div>
 </div>

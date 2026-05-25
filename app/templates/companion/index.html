@@ -5,7 +5,13 @@
 <div class="container px-2 mw-px-600">
 
   {% if period %}
-  {# Period navigation header #}
+  {# Period navigation header.  Stays in companion/index.html (not
+     in the shared partial) because companion's prev/next links
+     target ``/companion/period/<id>`` while the shared partial's
+     analogous header is hardcoded to ``/grid?periods=1&offset=N``.
+     The include below sets ``show_period_nav=False`` (via the
+     companion route's context build) to suppress the partial's
+     own header so this one is the sole period-nav source. #}
   <div class="d-flex justify-content-between align-items-center my-3">
     {% if prev_period %}
     <a href="{{ url_for('companion.period_view', period_id=prev_period.id) }}"
@@ -32,16 +38,21 @@
     {% endif %}
   </div>
 
-  {# Transaction cards #}
-  {% for txn in transactions %}
-    {% include "companion/_transaction_card.html" %}
-  {% endfor %}
-
-  {% if not transactions %}
-  <div class="text-center text-muted py-5">
-    <i class="bi bi-inbox fs-display"></i>
-    <p class="mt-2">No transactions for this period.</p>
-  </div>
+  {% if transactions %}
+    {# Shared "This Period" partial (mobile-first v3 plan Commit 13
+       / D-B).  Companion and owner mobile grid now consume the same
+       card markup via ``render_row_card`` / ``_mobile_card_actions``;
+       the route's ``_build_partial_context`` passes ``can_edit=False``
+       so the action bar drops Edit Amount / Open Full (R-7) and
+       ``show_period_nav=False`` so the partial's own period-nav
+       header is suppressed in favour of the companion-styled header
+       above. #}
+    {% include "grid/_mobile_this_period.html" with context %}
+  {% else %}
+    <div class="text-center text-muted py-5">
+      <i class="bi bi-inbox fs-display"></i>
+      <p class="mt-2">No transactions for this period.</p>
+    </div>
   {% endif %}
 
   {% else %}

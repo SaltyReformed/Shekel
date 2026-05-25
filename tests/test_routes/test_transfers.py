@@ -901,13 +901,13 @@ class TestAdHoc:
     ):
         """POST /transfers/instance/<id>/mark-done sets paid_at on both shadows.
 
-        F-048 / C-22: parity with ``transactions.mark_done`` and
-        ``dashboard.mark_paid``.  Settling a transfer must record
-        when it was settled so ``Transaction.days_paid_before_due``
-        analytics, the dashboard's "paid on time" indicator, and any
-        downstream report that joins on ``paid_at`` work.  Both
-        shadow transactions are checked because the parent transfer
-        has no ``paid_at`` column of its own.
+        F-048 / C-22: parity with ``transactions.mark_done``.
+        Settling a transfer must record when it was settled so
+        ``Transaction.days_paid_before_due`` analytics, the
+        dashboard's "paid on time" indicator, and any downstream
+        report that joins on ``paid_at`` work.  Both shadow
+        transactions are checked because the parent transfer has
+        no ``paid_at`` column of its own.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)

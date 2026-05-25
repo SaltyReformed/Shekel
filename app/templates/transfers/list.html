@@ -17,29 +17,32 @@
 </nav>
 {% endblock %}
 
-{# Macro for the recurrence description column to avoid duplication between active/archived tables. #}
+{# Macro for the recurrence description column to avoid duplication between active/archived tables.
+   Compares against integer pattern IDs (REC_* globals from app.jinja_globals) rather than against
+   the string ``pattern.name`` column, per CLAUDE.md "Reference Tables -- IDs for logic, strings
+   for display only".  The else branch is a defensive fallback for a future pattern row added to
+   the database without a matching REC_* constant; it reads ``rr.pattern.name`` for display only. #}
 {% macro recurrence_cell(t) %}
 {% if t.recurrence_rule %}
   {% set rr = t.recurrence_rule %}
-  {% set pname = rr.pattern.name %}
-  {% if pname == 'Every Period' %}
+  {% if rr.pattern_id == REC_EVERY_PERIOD %}
     Every paycheck
-  {% elif pname == 'Every N Periods' %}
+  {% elif rr.pattern_id == REC_EVERY_N_PERIODS %}
     Every {{ rr.interval_n }} paychecks
-  {% elif pname == 'Monthly' and rr.day_of_month %}
+  {% elif rr.pattern_id == REC_MONTHLY and rr.day_of_month %}
     Monthly (day {{ rr.day_of_month }})
-  {% elif pname == 'Monthly First' %}
+  {% elif rr.pattern_id == REC_MONTHLY_FIRST %}
     Monthly (first paycheck)
-  {% elif pname == 'Quarterly' %}
+  {% elif rr.pattern_id == REC_QUARTERLY %}
     Quarterly{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-  {% elif pname == 'Semi-Annual' %}
+  {% elif rr.pattern_id == REC_SEMI_ANNUAL %}
     Every 6 months{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-  {% elif pname == 'Annual' %}
+  {% elif rr.pattern_id == REC_ANNUAL %}
     Yearly{% if rr.month_of_year %} ({{ month_names[rr.month_of_year] }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
-  {% elif pname == 'Once' %}
+  {% elif rr.pattern_id == REC_ONCE %}
     One-time
   {% else %}
-    {{ recurrence_pattern_labels.get(pname, pname|replace('_', ' ')|title) }}
+    {{ recurrence_pattern_labels.get(rr.pattern.name, rr.pattern.name|replace('_', ' ')|title) }}
   {% endif %}
   {% if rr.end_date %}
     <br><small class="text-muted">until {{ rr.end_date.strftime('%b %d, %Y') }}</small>
@@ -59,6 +62,8 @@
 
 {# ── Active Templates ─────────────────────────────────────────────── #}
 {% if active_templates %}
+{# Desktop table (md+).  Mobile users see the card list below. #}
+<div class="d-none d-md-block">
 <div class="table-responsive">
 <table class="table table-hover table-sm">
   <caption class="visually-hidden">Active recurring transfers with recurrence rules</caption>
@@ -107,6 +112,61 @@
   </tbody>
 </table>
 </div>
+</div>
+
+{# Mobile card list (< md).  Mirrors the desktop table's data: transfer name
+   + amount prominent on the top row; from -> to accounts and the recurrence
+   description (via the shared recurrence_cell macro) as secondary context
+   below; the same Edit / Archive / Delete actions as the desktop row, sized
+   to the 44 px touch-target floor. #}
+<div class="d-md-none">
+  {% for t in active_templates %}
+  <div class="card mb-2">
+    <div class="card-body py-2 px-3">
+      <div class="d-flex justify-content-between align-items-baseline">
+        <h6 class="card-title mb-0">{{ t.name }}</h6>
+        <span class="font-mono fw-bold">${{ "%.2f"|format(t.default_amount) }}</span>
+      </div>
+      <small class="text-muted d-block mt-1">
+        {{ t.from_account.name if t.from_account else '--' }}
+        <i class="bi bi-arrow-right mx-1"></i>
+        {{ t.to_account.name if t.to_account else '--' }}
+      </small>
+      <small class="text-muted d-block">{{ recurrence_cell(t) }}</small>
+      <div class="mt-2 d-flex flex-wrap gap-2">
+        <a href="{{ url_for('transfers.edit_transfer_template', template_id=t.id) }}"
+           class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center"
+           style="min-height: 44px;"
+           aria-label="Edit {{ t.name }}">
+          <i class="bi bi-pencil me-1"></i> Edit
+        </a>
+        <form method="POST" action="{{ url_for('transfers.archive_transfer_template', template_id=t.id) }}"
+              class="m-0"
+              data-confirm="Archive this recurring transfer? All projected transfers will be removed.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit"
+                  class="btn btn-sm btn-outline-warning d-inline-flex align-items-center"
+                  style="min-height: 44px;"
+                  aria-label="Archive {{ t.name }}">
+            <i class="bi bi-archive me-1"></i> Archive
+          </button>
+        </form>
+        <form method="POST" action="{{ url_for('transfers.hard_delete_transfer_template', template_id=t.id) }}"
+              class="m-0"
+              data-confirm="Permanently delete this recurring transfer? This cannot be undone.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit"
+                  class="btn btn-sm btn-outline-danger d-inline-flex align-items-center"
+                  style="min-height: 44px;"
+                  aria-label="Delete {{ t.name }}">
+            <i class="bi bi-trash me-1"></i> Delete
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
 {% else %}
 <div class="alert alert-info">
   No active recurring transfers. Create one to auto-generate transfers each pay period.
@@ -125,6 +185,8 @@
     </a>
   </h6>
   <div class="collapse" id="archivedTransferTemplates">
+    {# Desktop table (md+).  Mobile users see the card list below. #}
+    <div class="d-none d-md-block">
     <table class="table table-hover table-sm">
       <caption class="visually-hidden">Archived recurring transfers</caption>
       <thead class="table-light">
@@ -166,6 +228,52 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
+
+    {# Mobile card list (< md).  Mirrors the archived table's data with the
+       same Unarchive / Delete actions as the desktop row, sized to the
+       44 px touch-target floor. #}
+    <div class="d-md-none">
+      {% for t in archived_templates %}
+      <div class="card mb-2 text-muted">
+        <div class="card-body py-2 px-3">
+          <div class="d-flex justify-content-between align-items-baseline">
+            <h6 class="card-title mb-0">{{ t.name }}</h6>
+            <span class="font-mono fw-bold">${{ "%.2f"|format(t.default_amount) }}</span>
+          </div>
+          <small class="text-muted d-block mt-1">
+            {{ t.from_account.name if t.from_account else '--' }}
+            <i class="bi bi-arrow-right mx-1"></i>
+            {{ t.to_account.name if t.to_account else '--' }}
+          </small>
+          <small class="text-muted d-block">{{ recurrence_cell(t) }}</small>
+          <div class="mt-2 d-flex flex-wrap gap-2">
+            <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
+                  class="m-0">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit"
+                      class="btn btn-sm btn-outline-success d-inline-flex align-items-center"
+                      style="min-height: 44px;"
+                      aria-label="Unarchive {{ t.name }}">
+                <i class="bi bi-arrow-counterclockwise me-1"></i> Unarchive
+              </button>
+            </form>
+            <form method="POST" action="{{ url_for('transfers.hard_delete_transfer_template', template_id=t.id) }}"
+                  class="m-0"
+                  data-confirm="Permanently delete this recurring transfer? This cannot be undone.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit"
+                      class="btn btn-sm btn-outline-danger d-inline-flex align-items-center"
+                      style="min-height: 44px;"
+                      aria-label="Delete {{ t.name }}">
+                <i class="bi bi-trash me-1"></i> Delete
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
   </div>
 </div>
 {% endif %}

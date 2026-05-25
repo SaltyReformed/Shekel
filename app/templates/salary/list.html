@@ -24,6 +24,8 @@
 </div>
 
 {% if profile_data %}
+{# Desktop table (md+).  Mobile users see the card list below. #}
+<div class="d-none d-md-block">
 <div class="table-responsive">
 <table class="table table-hover table-sm">
   <caption class="visually-hidden">Salary profiles with estimated net pay</caption>
@@ -66,50 +68,97 @@
         {% endif %}
       </td>
       <td>
-        {# Desktop action buttons #}
-        <span class="d-none d-md-inline">
-          <a href="{{ url_for('salary.edit_profile', profile_id=p.id) }}"
-             class="btn btn-sm btn-outline-secondary me-1" title="Edit">
-            <i class="bi bi-pencil"></i>
-          </a>
-          <a href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}"
-             class="btn btn-sm btn-outline-info me-1" title="Breakdown">
-            <i class="bi bi-receipt"></i>
-          </a>
-          <a href="{{ url_for('salary.projection', profile_id=p.id) }}"
-             class="btn btn-sm btn-outline-primary me-1" title="Projection">
-            <i class="bi bi-graph-up"></i>
-          </a>
-          {% if p.is_active %}
-          <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=p.id) }}"
-                class="d-inline"
-                data-confirm="Deactivate this salary profile?">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-danger" title="Deactivate">
-              <i class="bi bi-x-circle"></i>
-            </button>
-          </form>
+        {# Desktop action buttons.  The v1 in-table mobile dropdown has
+           moved into the d-md-none card sibling below -- the whole
+           table is d-none d-md-block now, so a d-md-none child inside
+           it would never render. #}
+        <a href="{{ url_for('salary.edit_profile', profile_id=p.id) }}"
+           class="btn btn-sm btn-outline-secondary me-1" title="Edit">
+          <i class="bi bi-pencil"></i>
+        </a>
+        <a href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}"
+           class="btn btn-sm btn-outline-info me-1" title="Breakdown">
+          <i class="bi bi-receipt"></i>
+        </a>
+        <a href="{{ url_for('salary.projection', profile_id=p.id) }}"
+           class="btn btn-sm btn-outline-primary me-1" title="Projection">
+          <i class="bi bi-graph-up"></i>
+        </a>
+        {% if p.is_active %}
+        <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=p.id) }}"
+              class="d-inline"
+              data-confirm="Deactivate this salary profile?">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-danger" title="Deactivate">
+            <i class="bi bi-x-circle"></i>
+          </button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+</div>
+
+{# Mobile card list (< md).  Mirrors the desktop table's data.  Net biweekly
+   is the prominent value -- it is the per-paycheck question the user is
+   answering, not the annual gross.  Annual salary and filing status sit
+   below as supporting context.  Actions reuse the v1 mobile dropdown
+   markup from commit a3e9467 (3-dots toggle -> menu with Edit /
+   Breakdown / Projection plus Deactivate when active); min-height inline
+   styles satisfy the 44 px touch-target floor on the toggle and each
+   menu item without altering the dropdown's DOM structure. #}
+<div class="d-md-none">
+  {% for item in profile_data %}
+  {% set p = item.profile %}
+  <div class="card mb-2 {{ 'text-muted' if not p.is_active }}">
+    <div class="card-body py-2 px-3">
+      <div class="d-flex justify-content-between align-items-baseline">
+        <h6 class="card-title mb-0">{{ p.name }}</h6>
+        <span class="font-mono fw-bold">
+          {% if item.net_pay is not none %}
+            <span class="text-success">${{ "%.2f"|format(item.net_pay) }}</span>
+            {% if p.calibration and p.calibration.is_active %}
+            <span class="badge bg-success ms-1" title="Calibrated from pay stub">Cal</span>
+            {% endif %}
+          {% else %}
+            --
           {% endif %}
         </span>
-        {# Mobile action dropdown #}
+      </div>
+      <small class="text-muted">
+        ${{ "%.2f"|format(p.annual_salary) }} annual{% if p.filing_status %} | {{ p.filing_status.name|replace('_', ' ')|title }}{% endif %}{% if not p.is_active %} | Inactive{% endif %}
+      </small>
+      <div class="mt-2">
+        {# Mobile action dropdown -- preserved from v1 commit a3e9467. #}
         <div class="dropdown d-md-none d-inline-block">
-          <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
-                  data-bs-toggle="dropdown" aria-expanded="false">
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle d-inline-flex align-items-center" type="button"
+                  data-bs-toggle="dropdown" aria-expanded="false"
+                  style="min-height: 44px;"
+                  aria-label="Actions for {{ p.name }}">
             <i class="bi bi-three-dots-vertical"></i>
           </button>
           <ul class="dropdown-menu">
             <li>
-              <a class="dropdown-item" href="{{ url_for('salary.edit_profile', profile_id=p.id) }}">
+              <a class="dropdown-item d-flex align-items-center"
+                 href="{{ url_for('salary.edit_profile', profile_id=p.id) }}"
+                 style="min-height: 44px;">
                 <i class="bi bi-pencil me-2"></i>Edit
               </a>
             </li>
             <li>
-              <a class="dropdown-item" href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}">
+              <a class="dropdown-item d-flex align-items-center"
+                 href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}"
+                 style="min-height: 44px;">
                 <i class="bi bi-receipt me-2"></i>Breakdown
               </a>
             </li>
             <li>
-              <a class="dropdown-item" href="{{ url_for('salary.projection', profile_id=p.id) }}">
+              <a class="dropdown-item d-flex align-items-center"
+                 href="{{ url_for('salary.projection', profile_id=p.id) }}"
+                 style="min-height: 44px;">
                 <i class="bi bi-graph-up me-2"></i>Projection
               </a>
             </li>
@@ -119,7 +168,9 @@
               <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=p.id) }}"
                     data-confirm="Deactivate this salary profile?">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="dropdown-item text-danger">
+                <button type="submit"
+                        class="dropdown-item d-flex align-items-center text-danger"
+                        style="min-height: 44px;">
                   <i class="bi bi-x-circle me-2"></i>Deactivate
                 </button>
               </form>
@@ -127,11 +178,10 @@
             {% endif %}
           </ul>
         </div>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
 </div>
 {% else %}
 <div class="alert alert-info">

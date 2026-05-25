@@ -417,7 +417,11 @@ def build_entry_sums_dict(
     Returns:
         dict mapping transaction ID to {"debit": Decimal, "credit": Decimal,
         "total": Decimal, "count": int, "remaining": Decimal,
-        "over_budget": bool}.  Empty dict if no transactions have entries.
+        "over_budget": bool, "pct": Decimal}.  Empty dict if no transactions
+        have entries.  ``pct`` is the entries-to-estimate ratio clamped
+        to [0, 100] via :func:`pct_complete`; it drives the mobile
+        progress-bar's ``data-progress-pct`` attribute on the unified
+        ``render_row_card`` macro per mobile-first v3 plan Commit 13.
     """
     result: dict[int, dict] = {}
     for txn in transactions:
@@ -433,6 +437,7 @@ def build_entry_sums_dict(
                 "count": len(txn.entries),
                 "remaining": remaining,
                 "over_budget": remaining < Decimal("0"),
+                "pct": pct_complete(total, estimated),
             }
     return result
 

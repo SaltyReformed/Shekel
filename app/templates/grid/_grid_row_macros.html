@@ -1,0 +1,246 @@
+{# Grid row macros -- single source for matching-driven row rendering.
+
+   Both macros consume `matched_by_row_period`, the precomputed
+   dict that app/routes/grid.py::index will build in Commit 2 of
+   the mobile-first v3 implementation; key shape is
+   `(category_id, template_id, txn_name, period_id) ->
+   list[Transaction]` with `.get(key, [])` for the empty case.
+   The macros reuse the existing cell partials
+   (grid/_transaction_cell.html for desktop matched cells,
+   grid/_transaction_empty_cell.html for empty desktop cells);
+   no cell markup is duplicated here.
+
+   This commit (Phase 1, Commit 1) adds the macros alongside the
+   inline matching loops in grid.html and _mobile_grid.html.  No
+   template imports them yet -- Commits 3 and 4 switch each side
+   to the macro.  Output stays byte-equivalent for now.
+
+   Jinja globals consumed (registered in app/jinja_globals.py):
+     STATUS_PROJECTED, STATUS_CREDIT.
+#}
+
+{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, txn_type_id, account, today) -%}
+{#- Desktop grid row.  Emits one <tr> containing the sticky row
+    label (<th scope="row">) followed by one <td class="text-end
+    cell"> per visible period.  Group-header rows are emitted by
+    the caller (the v1 grid.html convention: one
+    `<tr class="group-header-row">` per rk.group_name change,
+    outside this row).
+
+    Each matched transaction is wrapped in
+    `<div id="txn-cell-{{ txn.id }}">` so HTMX cell-swap targets
+    keep resolving once Commit 3 switches grid.html to call this
+    macro.
+
+    `today` is accepted for caller-shape parity with the grid
+    route's context; it is intentionally unread here.  The
+    today-dependent grid chrome (current-period highlight,
+    carry-forward button) lives in the <thead> rather than in
+    row cells, so the macro body has no use for it.
+-#}
+<tr>
+  <th scope="row" class="sticky-col row-label" title="{{ rk.group_name }}: {{ rk.item_name }}">
+    {{ rk.display_name }}
+  </th>
+  {% for period in periods %}
+    {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+    <td class="text-end cell">
+      {% if matched %}
+        {% for txn in matched %}
+          <div id="txn-cell-{{ txn.id }}">
+            {% set found = namespace(txn=txn) %}
+            {% include "grid/_transaction_cell.html" with context %}
+          </div>
+        {% endfor %}
+      {% else %}
+        {% set category = rk.category %}
+        {% include "grid/_transaction_empty_cell.html" with context %}
+      {% endif %}
+    </td>
+  {% endfor %}
+</tr>
+{%- endmacro %}
+
+
+{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True, id_prefix='') -%}
+{#- Mobile grid card.  Emits zero or more
+    `<div class="mobile-card-wrapper">` blocks, one per matched
+    transaction for the given (rk, period) cell.  Each wrapper holds
+    the visible card `<li>` plus a sibling collapsed action bar
+    (`_mobile_card_actions.html`).  The wrapper exists so the
+    tap-to-toggle handler in `app/static/js/mobile_grid.js` can find
+    "the action bar associated with this card" via
+    `card.closest('.mobile-card-wrapper').querySelector('.mobile-card-action-bar')`.
+
+    Group-header rows (the v1
+    `<li class="... mobile-group-header">` that appears once per
+    rk.group_name change) remain the caller's responsibility,
+    matching the v1 _mobile_grid.html pattern where the header
+    lives inside the `{% if matched %}` guard.
+
+    can_edit (default True): owner-side rendering.  Emits
+    `data-mobile-txn-id` plus -- for transfer shadows --
+    `data-mobile-xfer-id`; mobile_grid.js reads `data-mobile-txn-id`
+    to scope the tap-to-toggle handler to real txn cards (and not
+    accidentally fire on the static group-header `<li>`).  The
+    `data-mobile-xfer-id` attribute is preserved on transfer
+    shadows so a future swipe-to-mark-paid handler (Commit 9) or a
+    re-introduced bottom-sheet path can still tell shadows from
+    regular cards.
+
+    can_edit=False: companion read-only consumer (wired in
+    Commit 13 of the mobile-first v3 implementation).  Drops the
+    `data-mobile-*` attributes so the action bar's owner-only
+    buttons (Edit Amount, Open Full) are absent for companions.
+    The Mark Paid button is preserved through the
+    `_mobile_card_actions.html` partial because companions are
+    allowed to mark paid per the existing entries-blueprint
+    precedent.
+
+    id_prefix (default ''): per-tab namespace for the
+    action-bar element id so the same txn can render in multiple
+    visible tabs without violating the HTML unique-id rule.  The
+    "This Period" partial passes `id_prefix='tp'`, the "Plan"
+    partial passes `id_prefix='plan'`; an empty prefix omits the
+    extra segment entirely so direct-render call sites (the unit
+    tests in `TestMobileCardActionBar` that bypass the macro) keep
+    the simpler `card-actions-<id>` form.  Mirrors the existing
+    `mobile-tp-` vs `mobile-` collapse-id convention on the income
+    / expense section headers in the two partials.
+
+    NOTE: the `data-mobile-xfer-id` guard uses `txn.transfer_id`
+    rather than a (not-yet-defined) `txn.is_transfer_shadow`
+    property to preserve the v1 _mobile_grid.html:101 predicate
+    text-for-text.  Adding the property is a Transaction-model
+    change that is out of scope for this template-only commit;
+    if it lands later, swap the guard here in one place.
+
+    Swipe-action button (Commit 9): a `<button
+    class="swipe-action-mark-paid">` is emitted as the FIRST child
+    of `.mobile-card-wrapper` so it sits visually behind the card
+    (DOM order + no z-index = later siblings stack above).  The
+    card's `position: relative; background: var(--bs-body-bg)` in
+    `app.css` covers the button at rest; `.mobile-txn-card.swiped`
+    translates the card -80 px left to reveal it.  The button is
+    suppressed for any settled status (matching the action-bar
+    Mark Paid guard at `_mobile_card_actions.html:60`) -- mark_done
+    rejects settled transitions with a 400 and a swipe revealing a
+    button that 400s is worse UX than a swipe that does nothing.
+    The button is preserved for `can_edit=False` (companion render
+    path) per R-7 / the existing entries-blueprint precedent that
+    companions are allowed to mark paid.  CSRF rides on the
+    existing `htmx:configRequest` handler in `app/static/js/app.js`
+    (mobile-first v3 plan Section 1 rule 6); no inline token
+    needed.
+-#}
+{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+{% for txn in matched %}
+  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+  {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
+  {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
+  {% if show_progress %}
+    {% set remaining = es.remaining %}
+    {% set over_budget = es.over_budget %}
+  {% endif %}
+  {% set _aid = "card-actions-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
+  <div class="mobile-card-wrapper">
+    {% if txn.status and not txn.status.is_settled %}
+      <button type="button" class="swipe-action-mark-paid"
+              hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
+              hx-target="#txn-cell-{{ txn.id }}"
+              hx-swap="outerHTML"
+              aria-label="Mark {{ txn.name }} paid">
+        <i class="bi bi-check2" aria-hidden="true"></i> Paid
+      </button>
+    {% endif %}
+    <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
+        {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
+        {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
+        role="button" tabindex="0"
+        aria-expanded="false"
+        aria-controls="{{ _aid }}"
+        aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
+      <span class="text-truncate me-2">
+        {{ rk.display_name }}
+        {% if txn.status %}
+          {% if txn.status.is_settled %}
+            <span class="badge-done ms-1">&#10003;</span>
+          {% elif txn.status_id == STATUS_CREDIT %}
+            <span class="badge-credit ms-1">CC</span>
+          {% endif %}
+        {% endif %}
+        {% if txn.transfer_id %}
+          <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
+        {% endif %}
+        {% if txn.credit_payback_for_id %}
+          <span class="badge-credit ms-1">CC</span>
+        {% endif %}
+      </span>
+      <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
+        {% if show_progress %}
+          ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+        {% else %}
+          ${{ "{:,.0f}".format(display_amount) }}
+        {% endif %}
+      </span>
+    </li>
+    {# Progress detail (visual progress bar + "X entries / $Y left"
+       summary line).  Mirrors the legacy companion card design at
+       ``companion/_transaction_card.html`` for tracked envelope
+       transactions with entries.  Appears below the card header row
+       only when ``show_progress`` is true (Projected status + entries
+       present).  The unified macro (mobile-first v3 plan Commit 13)
+       now renders this for both owner mobile and companion mobile so
+       both surfaces share the same visual progress vocabulary.
+       The ``data-progress-pct`` attribute is consumed by
+       ``app/static/js/progress_bar.js`` to set the bar's width at
+       runtime (CSP ``style-src 'self'`` forbids inline ``style="..."``,
+       see F-036). #}
+    {% if show_progress %}
+      <div class="px-3 pb-2 mobile-txn-progress">
+        <div class="progress progress-h-4">
+          <div class="progress-bar{% if over_budget %} bg-danger{% endif %}"
+               role="progressbar"
+               data-progress-pct="{{ [es.pct, 100]|min }}"
+               aria-valuenow="{{ es.pct|int }}"
+               aria-valuemin="0"
+               aria-valuemax="100"></div>
+        </div>
+        <div class="d-flex justify-content-between small text-muted mt-1">
+          <span>{{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}</span>
+          <span class="font-mono{% if over_budget %} text-danger{% endif %}">
+            {% if remaining >= 0 %}
+              ${{ "{:,.0f}".format(remaining) }} left
+            {% else %}
+              ${{ "{:,.0f}".format(remaining|abs) }} over
+            {% endif %}
+          </span>
+        </div>
+      </div>
+    {% endif %}
+    {# Entries lazy-loader for tracked envelope transactions.  Mirrors
+       the legacy companion card's inline entries section: HTMX fetches
+       the per-transaction entries list on page load so the initial
+       grid response stays light.  Owner and companion both render this
+       once the macro is the unified producer (mobile-first v3 plan
+       Commit 13).  The unique id namespaces the loader by id_prefix
+       so the same txn can render in multiple tabs (This Period + Plan)
+       without violating HTML unique-id; bare id_prefix='' is the
+       direct-render path (e.g. unit tests bypassing the partial). #}
+    {% if txn.template and txn.template.is_envelope %}
+      <div hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"
+           hx-trigger="load"
+           hx-target="this"
+           hx-swap="innerHTML"
+           id="mobile-card-entries-{{ (id_prefix ~ '-' if id_prefix else '') }}{{ txn.id }}">
+        <div class="text-center py-2">
+          <span class="spinner-border spinner-border-sm" role="status">
+            <span class="visually-hidden">Loading entries...</span>
+          </span>
+        </div>
+      </div>
+    {% endif %}
+    {% include "grid/_mobile_card_actions.html" with context %}
+  </div>
+{% endfor %}
+{%- endmacro %}

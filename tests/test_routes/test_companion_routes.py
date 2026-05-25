@@ -754,12 +754,32 @@ class TestEmptyStates:
 
 
 class TestMarkPaidButtonVisibility:
-    """Verify the Mark as Paid button appears only for PROJECTED transactions."""
+    """Verify the Mark Paid affordance appears only for PROJECTED transactions.
+
+    Re-pinned in mobile-first v3 plan Commit 13 / D-B: companion adopted
+    the shared ``grid/_mobile_this_period.html`` partial + ``render_row_card``
+    macro + ``_mobile_card_actions.html`` action bar, which use the shorter
+    "Mark Paid" button label and the ``badge-done`` settled badge.  The
+    legacy companion ``_transaction_card.html`` (removed in the mobile
+    follow-up F-4 cleanup; preserved in git history) used
+    "Mark as Paid" + ``bi-check-circle-fill``; those strings no longer
+    render through the companion route's HTML so the assertions move to
+    the shared-design vocabulary.  The semantic contract (Projected =
+    action affordance present, Settled = badge only) is unchanged.
+    """
 
     def test_projected_transaction_shows_mark_paid_button(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """PROJECTED transaction shows the 'Mark as Paid' button."""
+        """PROJECTED transaction shows the 'Mark Paid' button.
+
+        The shared per-card action bar at
+        ``_mobile_card_actions.html:68`` reads ``<i class="bi bi-check2">
+        </i> Mark Paid`` (no "as") for any non-settled status -- the
+        text was shortened when the action bar was introduced in
+        mobile-first v3 plan Commit 7 and companion picked it up by
+        adopting the partial in Commit 13.
+        """
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
@@ -770,15 +790,21 @@ class TestMarkPaidButtonVisibility:
         resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Mark as Paid" in html
+        assert "Mark Paid" in html
 
     def test_paid_transaction_shows_paid_indicator(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """Paid (Done) transaction shows 'Paid' indicator, not button.
+        """Paid (Done) transaction shows the settled badge, not a button.
 
-        The Mark as Paid button should not appear for already-settled
-        transactions.
+        The shared ``render_row_card`` macro emits
+        ``<span class="badge-done">&#10003;</span>`` for any
+        ``status.is_settled`` row (see ``_grid_row_macros.html:166-170``)
+        instead of the legacy companion ``<i class="bi
+        bi-check-circle-fill"></i> Paid`` rendering; the action bar's
+        Mark Paid button is suppressed by the
+        ``txn.status and not txn.status.is_settled`` guard at
+        ``_mobile_card_actions.html:60``.
         """
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
@@ -791,10 +817,13 @@ class TestMarkPaidButtonVisibility:
         resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Should show the paid indicator, not the button.
-        assert "check-circle-fill" in html
-        # The button text should not appear (it's been replaced).
-        assert "Mark as Paid" not in html
+        # Settled rows render the shared ``badge-done`` checkmark
+        # span (the macro's settled-badge path) instead of the legacy
+        # ``bi-check-circle-fill`` Bootstrap icon.
+        assert "badge-done" in html
+        # The Mark Paid button must not appear -- the action bar guards
+        # against rendering it for settled statuses.
+        assert "Mark Paid" not in html
 
 
 # ── Entry List Lazy Loading ──────────────────────────────────────────

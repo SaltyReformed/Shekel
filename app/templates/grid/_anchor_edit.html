@@ -22,7 +22,7 @@
   <input type="hidden" name="version_id" value="{{ account.version_id }}">
   <div class="input-group input-group-sm mw-px-200">
     <span class="input-group-text">$</span>
-    <input type="number" step="0.01" name="anchor_balance"
+    <input type="number" step="0.01" inputmode="decimal" name="anchor_balance"
            value="{{ account.current_anchor_balance or 0 }}"
            class="form-control" autofocus
            aria-label="{{ account.name }} account balance"

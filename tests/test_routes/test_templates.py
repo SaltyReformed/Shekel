@@ -524,16 +524,23 @@ class TestTemplateUpdate:
 class TestGridRowKeyBuilder:
     """Defense-in-depth tests for the grid's row-key deduplication.
 
-    These tests hit _build_row_keys directly to verify the grid still
+    These tests hit ``build_row_keys`` directly to verify the grid still
     collapses template-linked rows even if stale names slip through
     (legacy data, direct DB edits, future bugs in the rename flow).
+
+    Import path updated in mobile-first v3 plan Commit 13: the helper
+    moved from the private ``app.routes.grid._build_row_keys`` to the
+    pure service module ``app.services.grid_view_service.build_row_keys``
+    (no leading underscore -- it is now a public service API per
+    plan Section 6.1).  Behaviour is unchanged; only the import path
+    moved.
     """
 
     def test_row_key_collapses_template_instances_with_drifted_names(
         self, app, seed_user, seed_periods_today,
     ):
         """Stale txn.name values must not split a template into two rows."""
-        from app.routes.grid import _build_row_keys
+        from app.services.grid_view_service import build_row_keys
         from app.models.category import Category
 
         with app.app_context():
@@ -564,7 +571,7 @@ class TestGridRowKeyBuilder:
                 user_id=seed_user["user"].id,
             ).all()
 
-            row_keys = _build_row_keys(
+            row_keys = build_row_keys(
                 instances, all_cats, is_income_section=False,
             )
 
@@ -582,7 +589,7 @@ class TestGridRowKeyBuilder:
         self, app, seed_user, seed_periods_today,
     ):
         """Non-template transactions still dedupe by (category, name)."""
-        from app.routes.grid import _build_row_keys
+        from app.services.grid_view_service import build_row_keys
         from app.models.category import Category
         from app.models.ref import Status as StatusModel
 
@@ -627,7 +634,7 @@ class TestGridRowKeyBuilder:
                 user_id=seed_user["user"].id,
             ).all()
 
-            row_keys = _build_row_keys(
+            row_keys = build_row_keys(
                 [txn_a, txn_b], all_cats, is_income_section=False,
             )
 
@@ -1792,3 +1799,92 @@ class TestEnvelopeIncomeRejection:
             db.session.refresh(template)
             assert template.is_envelope is False
             assert template.transaction_type_id == income_type.id
+
+
+class TestRecurrenceCellLock:
+    """C7 source-level locks for the ``recurrence_cell`` macros.
+
+    Guards CLAUDE.md "Reference Tables -- IDs for logic, strings for
+    display only" against silent regression.  The macros in
+    ``app/templates/templates/list.html`` and
+    ``app/templates/transfers/list.html`` historically compared
+    ``rr.pattern.name`` strings (via an intermediate ``pname`` set
+    variable) to drive eight elif branches.  Commit 7 of the
+    mobile-followup plan (F-8) rewired the comparisons onto integer
+    pattern IDs sourced from the ``REC_*`` Jinja globals registered
+    by ``app.jinja_globals.register_ref_id_globals``, sweeping both
+    files in one commit per F-8's "transfers/list.html if it carries
+    the same pattern" guidance.
+
+    These tests lock the post-commit state for both macros: no
+    ``.name ==`` or ``pname ==`` substrings (the comparison patterns
+    the rewrite eliminated), and every recurrence pattern enum
+    member has a matching ``REC_*`` comparison in each macro so a
+    future "added a new pattern but forgot to wire the branch"
+    regression fails the lock instead of silently falling through
+    to the else branch.
+    """
+
+    _MACRO_PATHS = (
+        ("templates/list.html", ("app", "templates", "templates", "list.html")),
+        ("transfers/list.html", ("app", "templates", "transfers", "list.html")),
+    )
+
+    _EXPECTED_REC_CONSTANTS = (
+        "REC_EVERY_PERIOD",
+        "REC_EVERY_N_PERIODS",
+        "REC_MONTHLY",
+        "REC_MONTHLY_FIRST",
+        "REC_QUARTERLY",
+        "REC_SEMI_ANNUAL",
+        "REC_ANNUAL",
+        "REC_ONCE",
+    )
+
+    def _read_macro_source(self, parts):
+        """Return the contents of a template file under ``app/templates``."""
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        path = pathlib.Path(__file__).resolve().parents[2].joinpath(*parts)
+        return path.read_text(encoding="utf-8")
+
+    def test_no_string_name_comparisons_in_recurrence_cells(self):
+        """Both macros must not equality-compare against pattern.name strings.
+
+        Locks the F-8 rewrite: each macro previously did
+        ``{% set pname = rr.pattern.name %}`` then compared
+        ``pname == 'Every Period'`` etc.  Both substrings must be
+        absent post-commit; comparisons drive off ``rr.pattern_id``.
+        """
+        for label, parts in self._MACRO_PATHS:
+            src = self._read_macro_source(parts)
+
+            assert ".name ==" not in src, (
+                f"{label} must not compare against pattern.name "
+                "strings; use the REC_* integer ID globals instead."
+            )
+            assert "pname ==" not in src, (
+                f"{label} must not compare against the pname "
+                "intermediate variable; use rr.pattern_id == REC_* "
+                "instead."
+            )
+
+    def test_recurrence_cells_use_rec_id_globals(self):
+        """Every RecurrencePatternEnum member maps to a REC_* lookup.
+
+        Positive complement of the no-strings lock: confirms the
+        rewrite did NOT collapse branches by removing comparisons
+        outright.  Each of the eight enum members must appear as a
+        ``rr.pattern_id == REC_<MEMBER>`` comparison in each macro;
+        a future refactor that drops one branch fails this test.
+        """
+        for label, parts in self._MACRO_PATHS:
+            src = self._read_macro_source(parts)
+
+            for constant in self._EXPECTED_REC_CONSTANTS:
+                assert f"rr.pattern_id == {constant}" in src, (
+                    f"{label} recurrence_cell macro must compare "
+                    f"rr.pattern_id against {constant}; missing "
+                    "branch would silently fall through to the else "
+                    "fallback."
+                )

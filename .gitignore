@@ -99,3 +99,12 @@ state/
 # .claude/settings.json.
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+
+# Manual verification harness (Playwright).  scripts under
+# tests/manual/ are runnable on demand against the dev server -- not
+# part of the pytest suite (the filename pattern verify_*.py /
+# save_*.py is outside pytest.ini's python_files = test_*.py).  The
+# state file holds a logged-in session cookie; the screenshots
+# directory holds per-run artefacts.  Both are operator-private.
+tests/manual/.dev_session_state.json
+tests/manual/screenshots/
