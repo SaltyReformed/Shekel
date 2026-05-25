@@ -457,6 +457,7 @@ def _register_blueprints(app):
     from app.routes.health import health_bp
     from app.routes.entries import entries_bp
     from app.routes.companion import companion_bp
+    from app.routes.static_pass import static_pass_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(grid_bp)
@@ -480,6 +481,7 @@ def _register_blueprints(app):
     app.register_blueprint(health_bp)
     app.register_blueprint(entries_bp)
     app.register_blueprint(companion_bp)
+    app.register_blueprint(static_pass_bp)
 
 
 def _register_error_handlers(app):
