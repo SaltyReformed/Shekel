@@ -97,6 +97,7 @@ def register_ref_id_globals(app: Flask) -> None:
     app.jinja_env.globals["ACCT_TYPE_529"] = ref_cache.acct_type_id(AcctTypeEnum.PLAN_529)
 
     # Recurrence pattern IDs
+    app.jinja_env.globals["REC_EVERY_PERIOD"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_PERIOD)
     app.jinja_env.globals["REC_EVERY_N_PERIODS"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS)
     app.jinja_env.globals["REC_MONTHLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
     app.jinja_env.globals["REC_MONTHLY_FIRST"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY_FIRST)
