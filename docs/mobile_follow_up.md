@@ -220,10 +220,16 @@ rather than papering over the divergence in the dev script.
 
 - **Surfaced during:** Commit 9
   (`feat(mobile-grid): swipe-left reveals Mark Paid button on cards`).
-- **Status:** open. Pre-existing from Commit 7
+- **Status:** closed (commit `c5de9e4`,
+  `style(mobile): btn-touch-44 utility + replace 3 inline styles in _mobile_card_actions`).
+  Pre-existing from Commit 7
   (`feat(mobile-grid): _mobile_plan.html + inline card action bar`).
-  Trivial to fold into any future commit that touches
-  `_mobile_card_actions.html` (or as a one-line follow-up commit).
+  Replaced the three inline ``style="min-height: 44px;"`` attributes
+  with a stand-alone ``.btn-touch-44`` utility class inside the
+  existing ``@media (max-width: 767.98px)`` block in
+  ``app/static/css/app.css``; added
+  ``TestMobileCardActionBar::test_no_inline_style_attr_in_mobile_card_actions``
+  as a regression lock.
 
 ### Problem
 
