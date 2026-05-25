@@ -366,9 +366,15 @@ becomes safe to delete in this follow-up.
 
 - **Surfaced during:** Commit 13
   (`refactor(grid): extract grid_view_service + companion uses This Period partial + swipe.js shared`).
-- **Status:** open. Pre-existing pylint warning, not introduced by
-  Commit 13; confirmed via `git stash` baseline check against
-  pre-refactor `dev`.
+- **Status:** closed (commit `26536fe`,
+  `style(grid): reorder third-party / first-party imports`).
+  Pre-existing pylint warning, not introduced by Commit 13;
+  confirmed via `git stash` baseline check against pre-refactor
+  `dev`.  Moved ``sqlalchemy.orm.selectinload`` into the
+  third-party block and re-anchored
+  ``app.utils.auth_helpers.require_owner`` at the alphabetical
+  end of the local block; ``grid.py``-local pylint score went
+  9.53 -> 9.72.
 
 ### Problem
 
