@@ -469,10 +469,38 @@ as a one-commit chore.
 
 - **Surfaced during:** Commit 13
   (`refactor(grid): extract grid_view_service + companion uses This Period partial + swipe.js shared`).
-- **Status:** open. Pre-existing pylint warning; Commit 13 lifted
-  three helper functions (~140 LOC) out of the file but the
-  `index()` view still trips the thresholds, so the partial cleanup
-  proved the decomposition is possible without changing behaviour.
+- **Status:** closed (commit `9fbd2f8`,
+  `refactor(grid): decompose index() into five private helpers`).
+  Extracted the five private helpers the plan named
+  (`_resolve_grid_context`, `_load_grid_transactions`,
+  `_build_grid_balances`, `_build_grid_subtotals`,
+  `_build_grid_row_data`); rewrote `index()` as a thin orchestrator
+  (~35 lines of logic plus the 24-kwarg `render_template` call).
+  Pylint R0914 (33/15), R0912 (15/12), R0915 (54/50) on `index()`
+  all cleared; `app/routes/grid.py` module score went 9.72 -> 10.00;
+  project-wide score unchanged at 9.59.  Canonical-producer wiring
+  preserved -- `balance_resolver.balances_for` still at
+  `_build_grid_balances` and `balance_resolver.period_subtotal`
+  still at `_build_grid_subtotals`; the three static-guard locks
+  (`TestGridPeriodSubtotalCanonical::test_grid_inline_subtotal_loop_removed`,
+  `::test_grid_balance_computation_routed_through_resolver`,
+  `TestCheckingDetailCanonicalProducer::test_accounts_checking_balance_routed_through_resolver`)
+  stay green by construction.  Two small plan deviations folded in
+  to clear the orchestrator's pylint counts:
+  (1) `_resolve_grid_context` returns a private `_GridContext`
+  NamedTuple rather than a bare tuple, so the orchestrator accesses
+  fields via attribute (`ctx.scenario`) instead of binding seven
+  separate locals from a tuple-unpack;
+  (2) `_build_grid_row_data` returns a 5-tuple instead of 4 -- the
+  per-period `txn_by_period` index loop was folded into the helper
+  to drop two locals (the dict + its loop var) from the orchestrator.
+  Plan Section 9 D step 5 explicitly anticipated helper-shape
+  adjustment as needed.  Behaviour preserved: 180 `test_grid.py`
+  tests pass, full suite 5660 pass (66 s).  Out-of-scope flag in
+  `J`: the `txn_by_period` kwarg passed to `render_template` is not
+  read by any template under `app/templates/`; the helper builds
+  and forwards it for behaviour-equivalence, candidate for a future
+  cleanup commit.
 
 ### Problem
 
