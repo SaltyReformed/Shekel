@@ -13,9 +13,6 @@ now goes through a Marshmallow schema and/or a per-FK
     rejected at the schema tier instead of the route's old
     ``InvalidOperation`` catch.
 
-  * ``dashboard.mark_paid`` -- same parse rule as
-    ``transactions.mark_done`` regular branch.
-
   * ``transfers.create_ad_hoc`` -- route-boundary FK ownership for
     ``from_account_id``, ``to_account_id``, ``pay_period_id``,
     ``scenario_id``, ``category_id`` collapsed into a single loop
@@ -326,57 +323,6 @@ class TestTransactionsMarkDoneActualAmount:
             assert txn.actual_amount == Decimal("90.00"), (
                 "mark-done with no body must not clear actual_amount"
             )
-
-
-# ── dashboard.mark_paid -- F-042 ────────────────────────────────────
-
-
-class TestDashboardMarkPaidActualAmount:
-    """``dashboard.mark_paid`` shares MarkDoneSchema with the grid path."""
-
-    def test_negative_actual_amount_rejected(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Negative ``actual_amount`` is rejected at the schema tier."""
-        with app.app_context():
-            txn = _add_txn(
-                db.session, seed_user, seed_periods_today[0],
-                "Bill", "100.00",
-            )
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/dashboard/mark-paid/{txn.id}",
-                data={"actual_amount": "-1.00"},
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 400
-
-            db.session.refresh(txn)
-            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED), (
-                "negative actual_amount must not transition the row"
-            )
-
-    def test_non_numeric_actual_amount_rejected(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Non-numeric ``actual_amount`` produces a per-field schema error."""
-        with app.app_context():
-            txn = _add_txn(
-                db.session, seed_user, seed_periods_today[0],
-                "Bill", "100.00",
-            )
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/dashboard/mark-paid/{txn.id}",
-                data={"actual_amount": "not-a-number"},
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 400
-            payload = resp.get_json()
-            assert payload is not None
-            assert "actual_amount" in payload["errors"]
 
 
 # ── transfers.create_ad_hoc -- F-043 ──────────────────────────────────

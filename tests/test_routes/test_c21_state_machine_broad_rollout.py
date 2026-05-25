@@ -3,9 +3,9 @@ Shekel Budget App -- C-21 Follow-up: Broad State Machine Rollout
 
 Verifies that ``verify_transition`` is wired into every state-changing
 endpoint that previously bypassed it: mark_done, cancel_transaction,
-dashboard.mark_paid, and unmark_credit.  Settled and Cancelled rows
-can no longer slip into Paid/Received via these endpoints; identity
-transitions still succeed so HTMX double-clicks remain idempotent.
+and unmark_credit.  Settled and Cancelled rows can no longer slip
+into Paid/Received via these endpoints; identity transitions still
+succeed so HTMX double-clicks remain idempotent.
 
 Audit reference: F-046 / F-047 / F-161 -- broad rollout following the
 2026-04-15 commit C-21.
@@ -222,55 +222,6 @@ class TestCancelTransactionStateMachine:
             assert resp.status_code == 200
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-
-
-# ══════════════════════════════════════════════════════════════════════
-# /dashboard/mark-paid/<id>
-# ══════════════════════════════════════════════════════════════════════
-
-
-class TestDashboardMarkPaidStateMachine:
-    """Dashboard mark-paid mirrors the grid's mark_done.  The state
-    machine guard sits on the direct branch; the transfer-shadow
-    branch already inherits enforcement through transfer_service."""
-
-    def test_settled_rejected(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A Settled row cannot be re-marked Paid via the dashboard."""
-        with app.app_context():
-            txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to_settled(txn)
-
-            resp = auth_client.post(f"/dashboard/mark-paid/{txn.id}")
-            assert resp.status_code == 400
-            db.session.refresh(txn)
-            assert txn.status.name == "Settled"
-
-    def test_cancelled_rejected(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A Cancelled row cannot be re-marked Paid via the dashboard."""
-        with app.app_context():
-            txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to(txn, "Cancelled")
-
-            resp = auth_client.post(f"/dashboard/mark-paid/{txn.id}")
-            assert resp.status_code == 400
-            db.session.refresh(txn)
-            assert txn.status.name == "Cancelled"
-
-    def test_projected_accepted(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """The legal projected -> paid path still returns 200."""
-        with app.app_context():
-            txn = _create_projected_expense(seed_user, seed_periods_today)
-
-            resp = auth_client.post(f"/dashboard/mark-paid/{txn.id}")
-            assert resp.status_code == 200
-            db.session.refresh(txn)
-            assert txn.status.name == "Paid"
 
 
 # ══════════════════════════════════════════════════════════════════════

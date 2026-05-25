@@ -388,13 +388,13 @@ class CategoryEditSchema(BaseSchema):
 
 
 class MarkDoneSchema(BaseSchema):
-    """Validates POST data for the mark-done / mark-paid status routes.
+    """Validates POST data for the mark-done status route.
 
     Used by ``transactions.mark_done`` (both transfer-shadow and
-    regular branches) and ``dashboard.mark_paid`` to replace the raw
-    ``Decimal(request.form.get("actual_amount"))`` parse the routes
+    regular branches) to replace the raw
+    ``Decimal(request.form.get("actual_amount"))`` parse the route
     previously used.  Marshmallow's Decimal field rejects malformed
-    numeric input with a clean field-level 400 instead of the routes'
+    numeric input with a clean field-level 400 instead of the route's
     catch-and-translate 400, and the ``Range(min=0)`` validator is
     the schema-tier counterpart to the DB CHECK
     ``actual_amount IS NULL OR actual_amount >= 0`` on

@@ -1,4 +1,6 @@
-{# Single bill row -- used for initial render and HTMX swap after mark-paid. #}
+{# Single bill row -- included by `_upcoming_bills.html` in a loop
+   and re-rendered by the `dashboard.bills_section` HTMX partial on a
+   ``dashboardRefresh`` event. #}
 {% set show_progress = (
      not bill.is_paid|default(false)
      and bill.is_tracked|default(false)
@@ -48,9 +50,5 @@
     {% if bill.due_date %}
     <small class="text-muted d-none d-md-inline">{{ bill.due_date.strftime('%b %-d') }}</small>
     {% endif %}
-    {# Mark-paid affordance removed in Commit 22 (Q-1 disposition: REMOVE).
-       The user marks bills paid from the grid (``transactions.mark_done``).
-       The ``dashboard.mark_paid`` route and its tests remain (orphaned
-       template-side); cleanup tracked in ``docs/mobile_follow_up.md`` F-9. #}
   </div>
 </div>

@@ -529,35 +529,3 @@ class TestDashboardRegressionWithEntries:
             # Balance section is always present when a default account
             # exists.  Confirm the section header and the amount area.
             assert "Balance" in html
-
-
-# -- Mark-paid regression -------------------------------------------
-
-
-class TestMarkPaidWithTrackedBill:
-    """Tests that mark_paid handles tracked transactions correctly."""
-
-    def test_mark_paid_tracked_returns_paid_row_without_progress(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Mark-paid on a tracked bill returns a paid row with no progress."""
-        with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods_today)
-            txn, _ = _create_tracked_txn_in_period(
-                seed_user, period, estimated=Decimal("500.00"),
-            )
-            _add_entry(txn, seed_user, Decimal("200.00"))
-            db.session.commit()
-            txn_id = txn.id
-
-            resp = auth_client.post(
-                f"/dashboard/mark-paid/{txn_id}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 200
-            assert b"bill-row--paid" in resp.data
-            html = resp.data.decode()
-            # Paid rows must not show the progress format even for
-            # tracked bills -- the status has left PROJECTED and the
-            # template suppresses the progress span.
-            assert " / $500.00" not in html

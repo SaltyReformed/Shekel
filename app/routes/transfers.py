@@ -1097,16 +1097,15 @@ def mark_done(xfer_id):
 
     done_id = ref_cache.status_id(StatusEnum.DONE)
     try:
-        # ``paid_at`` parity with ``transactions.mark_done`` and
-        # ``dashboard.mark_paid``: settling a transfer must record
-        # *when* it was settled.  Without this kwarg the shadow
-        # transactions reach Paid with NULL ``paid_at``, breaking
-        # ``Transaction.days_paid_before_due`` analytics, the
-        # dashboard's "paid on time" indicator, and any downstream
-        # report that joins on the timestamp.  The transfer service
-        # mirrors the same default (see ``update_transfer``) so any
-        # future caller that forgets the kwarg still produces a
-        # well-formed settled transfer.  Audit reference: F-048 /
+        # ``paid_at`` parity with ``transactions.mark_done``: settling
+        # a transfer must record *when* it was settled.  Without this
+        # kwarg the shadow transactions reach Paid with NULL
+        # ``paid_at``, breaking ``Transaction.days_paid_before_due``
+        # analytics, the dashboard's "paid on time" indicator, and any
+        # downstream report that joins on the timestamp.  The transfer
+        # service mirrors the same default (see ``update_transfer``)
+        # so any future caller that forgets the kwarg still produces
+        # a well-formed settled transfer.  Audit reference: F-048 /
         # commit C-22 of the 2026-04-15 security remediation plan.
         transfer_service.update_transfer(
             xfer.id, current_user.id,

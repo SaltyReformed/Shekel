@@ -503,11 +503,10 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
 
         # Defense-in-depth ``paid_at`` synchronization (F-048 / C-22):
         # the route layer (``transfers.mark_done``,
-        # ``transactions.mark_done`` shadow path,
-        # ``dashboard.mark_paid``) is expected to pass an explicit
-        # ``paid_at`` whenever it sets a settled status, but a future
-        # caller that forgets is still forced into a coherent state
-        # here.  Two cases:
+        # ``transactions.mark_done`` shadow path) is expected to pass
+        # an explicit ``paid_at`` whenever it sets a settled status,
+        # but a future caller that forgets is still forced into a
+        # coherent state here.  Two cases:
         #
         # * Transitioning to a settled status (``is_settled = TRUE``)
         #   without an explicit ``paid_at`` -> default to ``now()`` so
