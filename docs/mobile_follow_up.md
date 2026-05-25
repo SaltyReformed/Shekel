@@ -810,3 +810,49 @@ infrastructure the financial-calculation remediation depends on.
 The orphaned route is inert (no UI calls it; only its own tests
 do) and the vacuous assertion is degraded-not-broken, so deferring
 to a focused cleanup commit is the correct trade-off.
+
+---
+
+## F-10. Capture DevTools SW cache audit (Section 10 item 7 / Section 11)
+
+- **Surfaced during:** Commit 28
+  (`chore(release): mobile v3 full gate + verification appendix`).
+- **Status:** open.  Not blocking; the SW invariant is enforced by
+  construction (`app/static/sw.js`'s `STATIC_PREFIXES` allow-list +
+  the cache-first guard scope cache writes to `/static/*` only) and
+  the full pytest suite is green.  The DevTools capture is the
+  documented regression check, not a discovery step.
+
+### Problem
+
+`docs/implementation_plan_mobile_v3.md` Section 10 item 7 asks for a
+post-Commit-25 DevTools capture (Application -> Cache Storage ->
+`shekel-static-v1`) confirming every cached entry begins with
+`/static/`.  Commit 28 (this commit's session) elected to defer the
+capture because no SW change has landed since Commit 25 and the
+invariant is enforced statically.  The appendix in Section 11 of the
+plan records the deferral pointing at this entry.
+
+### Recommended capture (5 minutes)
+
+1. Open Firefox (Desktop) at `http://172.32.0.1:5000` (or the
+   dev origin).  Hard-reload to register the SW.
+2. DevTools (F12) -> Application tab (or "Storage" in Firefox) ->
+   Cache Storage -> `shekel-static-v1`.
+3. Inspect every entry; assert each `Request URL` starts with
+   `/static/`.  Screenshot the panel into
+   `tests/manual/screenshots/commit28_sw_cache_audit.png`.
+4. Re-run on the iPhone (XS or 16 Plus) in Firefox iOS / Safari
+   "Add to Home Screen" install context to confirm the same invariant
+   under WebKit.
+
+If any entry is *not* `/static/`-prefixed, treat it as a D-I
+regression: open a new follow-up, do not silently fold the audit.
+
+### When to do this
+
+Before any future commit that modifies `app/static/sw.js` (the SW
+fetch handler's cache-first branch is the load-bearing piece; a
+typo there could cache an HTML response).  Until then the static
+analysis (read of `STATIC_PREFIXES` + the cache-first guard) is
+sufficient evidence the invariant holds.

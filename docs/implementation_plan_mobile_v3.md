@@ -3164,7 +3164,178 @@ This section is appended at Commit 28 implementation time and records the final 
 which commits landed, which screenshots / DevTools captures were taken, which user acceptance tests
 passed, which OPT-* items were promoted (if any).
 
-(Section currently empty -- populated at the close-out commit.)
+Filled in: 2026-05-25 at Commit 28 (`chore(release): mobile v3 full gate +
+verification appendix`).  Resolved against the commit history via
+`git log --oneline --reverse 207e31c..HEAD` (the plan-document anchor SHA
+named in Section 1 rule 1).
+
+### Commits landed
+
+The Section 8 numbering and what shipped:
+
+| # | Commit message | SHA |
+|--:|---|---|
+| 1 | `feat(grid): add render_row_cells + render_row_card macros` | `21d39a5` |
+| 2 | `feat(grid): precompute matched_by_row_period in index route` | `2619c20` |
+| 3 | `refactor(grid): desktop grid uses render_row_cells macro` | `3bcc003` |
+| 4 | `refactor(grid): mobile grid uses render_row_card macro` | `7fa54a3` |
+| 5 | `feat(mobile-grid): nav-pills tab scaffold for This Period / Plan` | `b19aab7` |
+| 6 | `feat(mobile-grid): _mobile_this_period.html partial with arrows` | `3ea6960` |
+| 7 | `feat(mobile-grid): _mobile_plan.html + inline card action bar` | `3383df1` |
+| 8 | `feat(mobile-grid): bottom-sheet drag-to-dismiss + iOS keyboard avoidance` | `949a655` |
+| 9 | `feat(mobile-grid): swipe-left reveals Mark Paid button on cards` | `446684d` |
+| 10 | `feat(mobile-grid): jump-to period <select> in This Period header` | `9675b76` |
+| 11 | `feat(forms): inputmode="decimal" on 10 monetary inputs` | `ac470d2` |
+| 12 | `feat(mobile-sheet): sticky action footer in full-edit popover` | `1546c84` |
+| 13 | `refactor(grid): extract grid_view_service + companion uses This Period partial + swipe.js shared` | `f884fd0` |
+| 14 | `feat(mobile-modal): Add Transaction modal-fullscreen-sm-down` | `f12264d` |
+| 15 | (reserved -- unused) | -- |
+| 16 | `feat(mobile-settings): sidebar -> shekel-scroll-pills on mobile` | `6e807d8` |
+| 17 | `feat(mobile-accounts): cards on mobile in accounts/list.html` | `69fc665` |
+| 18 | `feat(mobile-salary): cards on mobile in salary/list.html` | `a5457af` |
+| 19 | `feat(mobile-templates): cards on mobile in templates/list.html` | `9771eb8` |
+| 20 | `feat(mobile-transfers): cards on mobile in transfers/list.html` | `95de055` |
+| 21 | `feat(mobile-retirement): cards + popover tap trigger on retirement account table` | `5f31d5b` |
+| 22 | `feat(mobile-dashboard): order Bills Due first + remove dashboard mark-paid form` | `e079a4e` |
+| 23 | `feat(mobile-nav): navbar -> offcanvas drawer at <md` | `9afa579` |
+| 24 | `refactor(mobile-dashboards): analytics/loan/retirement/investment/debt audit` | `7e65b9e` |
+| 25 | `feat(pwa): service worker + /sw.js passthrough route + registration` | `1c19cd6` |
+| 26 | (reserved -- unused) | -- |
+| 27 | `feat(pwa): manifest maskable icons + Apple-specific 180/167 sizes` | `96f7ed7` |
+
+Two supplementary commits landed outside the Section 8 numbering:
+
+- `13b9086` -- `chore(test): playwright manual verification harness`.
+  Landed between Commits 5 and 6.  Materialises the per-commit
+  Manual browser verification gate from
+  `docs/audits/financial_calculations/remediation_follow_up_common.md`
+  (storage_state login, headless Chromium at 375x812, `CheckResult`
+  dataclass, per-step screenshot under `tests/manual/screenshots/`).
+  Every subsequent commit with browser-visible UX (6, 7, 8, 9, 10,
+  14, 23) ships a sibling `verify_*.py` script.
+- `41ab404` -- `feat(mobile-retirement): convert gap-analysis title
+  tooltips to popovers`.  Landed between Commits 21 and 22.  Extends
+  Commit 21's popover-replacing-title pattern to the gap-analysis
+  info icons that the Commit 21 scope did not cover.  No new logic;
+  same Bootstrap popover wiring.
+
+Commit 28 (this commit, `chore(release): mobile v3 full gate +
+verification appendix`) lands the populated appendix only.  Its SHA
+is not pre-recordable.
+
+### Final test gate
+
+Captured in the Commit 28 work summary section E (the load-bearing
+evidence rows of the gate):
+
+- `./scripts/test.sh`:
+  `================= 5669 passed, 3 warnings in 67.02s (0:01:07) ==================`
+- `pylint app/ --fail-on=E,F`:
+  `Your code has been rated at 9.58/10 (previous run: 9.58/10, +0.00)`
+- Static guards (`SKIP_DB_RESTART=1 ./scripts/test.sh
+  tests/test_routes/test_grid.py::TestGridPeriodSubtotalCanonical::test_grid_inline_subtotal_loop_removed
+  tests/test_routes/test_grid.py::TestGridPeriodSubtotalCanonical::test_grid_balance_computation_routed_through_resolver
+  tests/test_routes/test_accounts.py::TestCheckingDetailCanonicalProducer::test_accounts_checking_balance_routed_through_resolver
+  -v`):
+  `============================== 3 passed in 1.63s ===============================`
+
+Note on Section 6.8 / Section 10 item 6 phrasing: those bullets refer
+to `tests/test_static_guards.py` as a standalone path.  No such file
+exists.  The three regression locks the F-6 commit (`842d415`) added
+live as test methods on `TestGridPeriodSubtotalCanonical` (in
+`tests/test_routes/test_grid.py`) and
+`TestCheckingDetailCanonicalProducer` (in
+`tests/test_routes/test_accounts.py`).  The lock semantics are
+unchanged -- `balance_resolver.balances_for` must appear in the
+route source, `balance_calculator.calculate_balances(` must not --
+and all three pass against the dev HEAD at Commit 27.
+
+A targeted grep of `app/routes/`, `app/templates/`, and
+`app/static/js/` for `current_anchor_balance`, `current_anchor_period_id`,
+`current_principal`, and `interest_rate` returns no new direct reads
+since the v3 work began (the single `app/routes/grid.py:127` site
+that surfaces is unchanged since `7e1ac9b`, the pre-v3
+canonical-producer landing).
+
+### Manual verification matrix
+
+All four daily workflows (Section 0) walked end-to-end on every
+viewport / device row:
+
+- Mark a transaction paid via the inline action bar AND via
+  swipe-left-to-reveal.
+- Edit a transaction's actual amount via `[Edit Amount]` AND via
+  `[Open Full]`.
+- Add an ad-hoc transaction through the `modal-fullscreen-sm-down`
+  Add Transaction modal (Commit 14 / `f12264d`).
+- Review upcoming bills and the projected end balance in both the
+  "This Period" and "Plan" tabs.
+
+| Viewport / device | Engine | Result |
+|---|---|---|
+| Firefox Desktop 1920x1080 | Gecko | PASS (zero desktop regression) |
+| Firefox Responsive 375x812 (iPhone XS sim) | Gecko | PASS |
+| Firefox Responsive 430x932 (iPhone 16 Plus sim) | Gecko | PASS |
+| Real iPhone XS, Firefox iOS | WebKit | PASS |
+| Real iPhone 16 Plus, Firefox iOS | WebKit | PASS |
+
+Per-commit screenshot evidence is preserved by the Playwright
+harness (`13b9086`) under `tests/manual/screenshots/commit{6,7,8,9,
+10,14,23}_*.png`.  Each `verify_*.py` exited 0 on its commit; the
+files remain as regression locks for later commits that touch the
+same surface.
+
+### SW cache audit (Section 10 item 7)
+
+Deferred at Commit 28 by user election.  Tracked as follow-up
+`F-10` in `docs/mobile_follow_up.md`.  The invariant is enforced
+statically by `app/static/sw.js`'s `STATIC_PREFIXES` allow-list plus
+the cache-first guard (only `/static/*` URLs reach `cache.put`); the
+DevTools capture is the documented regression check, not the
+enforcement point.  The capture should be taken before any future
+edit to `app/static/sw.js`.
+
+### OPT-* items promoted
+
+None.  OPT-M1 through OPT-M8 (Section 5) all remain listed-only.
+No commit body in 1-27 references an OPT-M item; no extension was
+folded into a commit during execution.
+
+### Open questions -- final state
+
+Resolved during commit execution:
+
+- **Q-1 (dashboard mark-paid disposition).** Resolved at Commit 22
+  (`e079a4e`) as option (c) REMOVE.  The `<button>` was deleted from
+  `dashboard/_bill_row.html`.  Bills are marked paid from the grid
+  (`transactions.mark_done`) going forward.  The orphaned
+  `dashboard.mark_paid` route, `MarkPaidSchema`, and seven
+  `TestMarkPaid` tests remain inert -- cleanup recipe captured in
+  `docs/mobile_follow_up.md` `F-9`.
+- **Q-2 (companion subtotals visibility).** Resolved at Commit 13
+  (`f884fd0`) as option (c) GRACEFUL-OMIT.  `_mobile_this_period.html`
+  checks for the presence of subtotal / balance keys in its context
+  and renders only what the caller supplies.  Companion preserves
+  its no-subtotals behaviour; the grid route continues to pass the
+  canonical-producer values.  If the user later wants subtotals
+  visible in companion, plumb `balance_resolver.period_subtotal`
+  through `app/routes/companion.py` (allowed per Rule 2).
+
+Resolved at plan-write time (recorded for completeness):
+
+- **Q-3 (bottom-tab-bar vs offcanvas drawer).** Resolved via
+  Section 2 D-H as offcanvas.  OPT-M8 (Section 5) keeps the
+  bottom-tab-bar option listed for a future iteration if usage data
+  suggests it.  Commit 23 (`9afa579`) shipped the offcanvas
+  implementation.
+- **Q-4 (push notifications).** Out of scope for v3 (Section 14).
+  The static-only service worker (D-I) does not preclude a v4
+  push-event handler.
+
+Carried forward into the next plan cycle:
+
+- None.  Section 12 still names Q-3 and Q-4 as forward candidates;
+  both are out of scope for v3 by design.
 
 ---
 
