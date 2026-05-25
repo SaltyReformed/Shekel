@@ -829,6 +829,25 @@ td.htmx-loading::after {
     justify-content: center;
   }
 
+  /* Navbar offcanvas drawer (mobile-first v3 commit 23 / D-H).  The
+     navbar-toggler at < md opens #mainOffcanvas as a left-slide drawer;
+     at >= md Bootstrap's .navbar-expand-md .offcanvas overrides render
+     the drawer inline as a regular navbar (header hidden, body flex
+     row), so the desktop nav is unchanged.  Width 280px: Bootstrap's
+     default 400px is too wide on a 375px viewport (leaves only 75px
+     visible for the dismiss-on-tap backdrop).  nav-link min-height
+     44px matches the WCAG 2.5.5 / Apple HIG touch-target floor that
+     #mobile-grid .nav-pills enforces just above. */
+  .offcanvas-start {
+    width: 280px;
+  }
+
+  .offcanvas-body .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
   /* Bottom sheet: full-edit popover becomes a bottom-anchored panel on mobile.
      transform: translateY(0) gives the drag-to-dismiss handler (grid_edit.js)
      an explicit baseline to interpolate from; the transition animates the
