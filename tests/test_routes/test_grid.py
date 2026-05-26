@@ -5134,8 +5134,14 @@ class TestMobileSwipeAction:
 
       - ``render_row_card`` emits a ``<button
         class="swipe-action-mark-paid">`` as the first child of
-        ``.mobile-card-wrapper`` (DOM order so the card stacks
-        above the button when both share a stacking context).
+        ``.mobile-card-row`` (the inner row container that holds the
+        card ``<li>``; itself the first child of
+        ``.mobile-card-wrapper``).  DOM order keeps the card stacking
+        above the button when both share a stacking context.  The
+        inner row also scopes the button's ``height: 100 %`` to just
+        the card row so the green strip does not extend down over the
+        entries list and the action-bar buttons on envelope-template
+        cards.
       - The button's HTMX wiring posts to ``transactions.mark_done``
         with the row's cell as the swap target and ``outerHTML`` as
         the swap mode -- the same shape the inline action bar's

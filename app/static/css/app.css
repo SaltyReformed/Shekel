@@ -1100,12 +1100,16 @@ td.htmx-loading::after {
   background-color: rgba(var(--shekel-accent-rgb), 0.10);
 }
 
-/* Per-card wrapper.  `position: relative` makes the wrapper the
-   containing block for `.swipe-action-mark-paid`'s absolute
-   positioning; `overflow: hidden` clips the card when it translates
-   off-screen left so the wrapper does not horizontally scroll the
-   page.  See `render_row_card` in `_grid_row_macros.html`. */
-.mobile-card-wrapper {
+/* Per-card row.  `position: relative` makes this the containing block
+   for `.swipe-action-mark-paid`'s absolute positioning so the button's
+   `height: 100 %` resolves against just the card row (the `<li>` plus
+   the button), not the enclosing `.mobile-card-wrapper` which for
+   envelope templates also contains the optional progress detail, the
+   lazy-loaded entries list, and the collapsed action bar.
+   `overflow: hidden` clips the card when it translates off-screen left
+   so the row does not horizontally scroll the page.  See
+   `render_row_card` in `_grid_row_macros.html`. */
+.mobile-card-row {
   position: relative;
   overflow: hidden;
 }
@@ -1119,15 +1123,20 @@ td.htmx-loading::after {
   transform: translateX(-80px);
 }
 
-/* Swipe-action Mark Paid button.  Anchored to the wrapper's right
-   edge under the card; revealed by the card's swipe-left transform.
+/* Swipe-action Mark Paid button.  Anchored to the row's right edge
+   under the card; revealed by the card's swipe-left transform.
    Width 80 px = the card's translateX magnitude.  height: 100 % so
-   the button fills the card vertically -- the card's min-height of
-   44 px is the floor (matching CLAUDE.md / WCAG 2.5.5 touch-target
-   minimum); height matches whatever the card grew to.  No inline
-   style attributes here -- CSP `style-src 'self'` blocks them.
-   `aria-label` on the button (set in `render_row_card`) is the
-   accessible name screen readers announce; the visible "Paid"
+   the button fills the row (the inner `.mobile-card-row`, not the
+   full wrapper) -- the card's min-height of 44 px is the floor
+   (matching CLAUDE.md / WCAG 2.5.5 touch-target minimum); height
+   matches whatever the card grew to (wrapping label, etc.).  Scoping
+   the offset parent to `.mobile-card-row` is what keeps the green
+   strip from extending down over the entries list and action-bar
+   buttons on envelope-template cards where the outer
+   `.mobile-card-wrapper` is much taller than just the card row.
+   No inline style attributes here -- CSP `style-src 'self'` blocks
+   them.  `aria-label` on the button (set in `render_row_card`) is
+   the accessible name screen readers announce; the visible "Paid"
    text and the bi-check2 icon are decorative redundancy. */
 .swipe-action-mark-paid {
   position: absolute;
