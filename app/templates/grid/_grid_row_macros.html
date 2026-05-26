@@ -66,11 +66,26 @@
 {#- Mobile grid card.  Emits zero or more
     `<div class="mobile-card-wrapper">` blocks, one per matched
     transaction for the given (rk, period) cell.  Each wrapper holds
-    the visible card `<li>` plus a sibling collapsed action bar
-    (`_mobile_card_actions.html`).  The wrapper exists so the
+    an inner `<div class="mobile-card-row">` (the card `<li>` plus its
+    sibling swipe-action button) followed by optional sibling sections
+    (progress detail, the lazy-loaded entries list for envelope
+    templates, and the collapsed action bar from
+    `_mobile_card_actions.html`).  The wrapper exists so the
     tap-to-toggle handler in `app/static/js/mobile_grid.js` can find
     "the action bar associated with this card" via
     `card.closest('.mobile-card-wrapper').querySelector('.mobile-card-action-bar')`.
+
+    Two-level wrapping is load-bearing for envelope templates: the
+    inner `.mobile-card-row` is the offset parent for the swipe-action
+    button's `position: absolute; height: 100 %`, so the green button
+    fills only the card-row height (matching the card's `min-height:
+    44 px` floor and the card's translateX magnitude) rather than the
+    full envelope wrapper height (card + progress + entries + action
+    bar).  Without the inner row, the swipe button stretches over the
+    entries list and action bar buttons for envelope cards, covering
+    the rightmost 80 px of each row's controls.  See
+    `app/static/css/app.css` `.mobile-card-row` and
+    `.swipe-action-mark-paid`.
 
     Group-header rows (the v1
     `<li class="... mobile-group-header">` that appears once per
@@ -117,19 +132,24 @@
 
     Swipe-action button (Commit 9): a `<button
     class="swipe-action-mark-paid">` is emitted as the FIRST child
-    of `.mobile-card-wrapper` so it sits visually behind the card
-    (DOM order + no z-index = later siblings stack above).  The
-    card's `position: relative; background: var(--bs-body-bg)` in
-    `app.css` covers the button at rest; `.mobile-txn-card.swiped`
-    translates the card -80 px left to reveal it.  The button is
-    suppressed for any settled status (matching the action-bar
-    Mark Paid guard at `_mobile_card_actions.html:60`) -- mark_done
-    rejects settled transitions with a 400 and a swipe revealing a
-    button that 400s is worse UX than a swipe that does nothing.
-    The button is preserved for `can_edit=False` (companion render
-    path) per R-7 / the existing entries-blueprint precedent that
-    companions are allowed to mark paid.  CSRF rides on the
-    existing `htmx:configRequest` handler in `app/static/js/app.js`
+    of `.mobile-card-row` (inside the wrapper) so it sits visually
+    behind the card (DOM order + no z-index = later siblings stack
+    above).  The card's `position: relative; background:
+    var(--bs-body-bg)` in `app.css` covers the button at rest;
+    `.mobile-txn-card.swiped` translates the card -80 px left to
+    reveal it.  Scoping the button inside `.mobile-card-row` rather
+    than directly under `.mobile-card-wrapper` keeps its `height:
+    100 %` resolving against just the card-row height, not the full
+    envelope wrapper -- see the row docstring above for the bug this
+    avoids.  The button is suppressed for any settled status
+    (matching the action-bar Mark Paid guard at
+    `_mobile_card_actions.html:60`) -- mark_done rejects settled
+    transitions with a 400 and a swipe revealing a button that 400s
+    is worse UX than a swipe that does nothing.  The button is
+    preserved for `can_edit=False` (companion render path) per R-7
+    / the existing entries-blueprint precedent that companions are
+    allowed to mark paid.  CSRF rides on the existing
+    `htmx:configRequest` handler in `app/static/js/app.js`
     (mobile-first v3 plan Section 1 rule 6); no inline token
     needed.
 -#}
@@ -144,46 +164,56 @@
   {% endif %}
   {% set _aid = "card-actions-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
   <div class="mobile-card-wrapper">
-    {% if txn.status and not txn.status.is_settled %}
-      <button type="button" class="swipe-action-mark-paid"
-              hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
-              hx-target="#txn-cell-{{ txn.id }}"
-              hx-swap="outerHTML"
-              aria-label="Mark {{ txn.name }} paid">
-        <i class="bi bi-check2" aria-hidden="true"></i> Paid
-      </button>
-    {% endif %}
-    <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
-        {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
-        {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
-        role="button" tabindex="0"
-        aria-expanded="false"
-        aria-controls="{{ _aid }}"
-        aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
-      <span class="text-truncate me-2">
-        {{ rk.display_name }}
-        {% if txn.status %}
-          {% if txn.status.is_settled %}
-            <span class="badge-done ms-1">&#10003;</span>
-          {% elif txn.status_id == STATUS_CREDIT %}
+    {# Inner row groups the card <li> and its sibling swipe-action
+       button.  `.mobile-card-row` is `position: relative; overflow:
+       hidden` in app.css so the swipe button's `height: 100 %` resolves
+       against just the row (matching the card's `min-height: 44 px`
+       floor), not the full envelope wrapper.  This is what keeps the
+       green strip from extending down over the entries list and the
+       action-bar buttons for envelope-style templates.  See
+       `render_row_card`'s docstring above for the bug context. #}
+    <div class="mobile-card-row">
+      {% if txn.status and not txn.status.is_settled %}
+        <button type="button" class="swipe-action-mark-paid"
+                hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
+                hx-target="#txn-cell-{{ txn.id }}"
+                hx-swap="outerHTML"
+                aria-label="Mark {{ txn.name }} paid">
+          <i class="bi bi-check2" aria-hidden="true"></i> Paid
+        </button>
+      {% endif %}
+      <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
+          {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
+          {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
+          role="button" tabindex="0"
+          aria-expanded="false"
+          aria-controls="{{ _aid }}"
+          aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
+        <span class="text-truncate me-2">
+          {{ rk.display_name }}
+          {% if txn.status %}
+            {% if txn.status.is_settled %}
+              <span class="badge-done ms-1">&#10003;</span>
+            {% elif txn.status_id == STATUS_CREDIT %}
+              <span class="badge-credit ms-1">CC</span>
+            {% endif %}
+          {% endif %}
+          {% if txn.transfer_id %}
+            <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
+          {% endif %}
+          {% if txn.credit_payback_for_id %}
             <span class="badge-credit ms-1">CC</span>
           {% endif %}
-        {% endif %}
-        {% if txn.transfer_id %}
-          <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
-        {% endif %}
-        {% if txn.credit_payback_for_id %}
-          <span class="badge-credit ms-1">CC</span>
-        {% endif %}
-      </span>
-      <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
-        {% if show_progress %}
-          ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
-        {% else %}
-          ${{ "{:,.0f}".format(display_amount) }}
-        {% endif %}
-      </span>
-    </li>
+        </span>
+        <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
+          {% if show_progress %}
+            ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+          {% else %}
+            ${{ "{:,.0f}".format(display_amount) }}
+          {% endif %}
+        </span>
+      </li>
+    </div>
     {# Progress detail (visual progress bar + "X entries / $Y left"
        summary line).  Mirrors the legacy companion card design at
        ``companion/_transaction_card.html`` for tracked envelope
