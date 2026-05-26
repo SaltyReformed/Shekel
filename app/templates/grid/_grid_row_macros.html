@@ -282,3 +282,70 @@
   </div>
 {% endfor %}
 {%- endmacro %}
+
+
+{% macro render_row_static(rk, period, matched_by_row_period) -%}
+{#- Mobile Plan tab static row.  Emits zero or more non-interactive
+    `<li class="list-group-item">` rows, one per matched transaction
+    for the given (rk, period) cell.  Used exclusively by the read-
+    only Plan tab in `_mobile_plan.html` to surface upcoming line
+    items inside a period accordion body.
+
+    The Plan tab answers "what does the next half-year look like
+    from today?" -- a planning / affordability view.  Future periods
+    by design carry no envelope entries (entries are a current /
+    past concept) and the Plan tab carries no editing affordances,
+    so this macro is intentionally narrower than `render_row_card`:
+
+      - No `role="button"` / `aria-controls` on the `<li>`; tap is a
+        no-op so screen readers and pointer users see a static row.
+      - No `data-mobile-txn-id` / `data-mobile-xfer-id`, so the
+        delegated tap-to-toggle handler in `mobile_grid.js` is not
+        triggered by Plan rows.
+      - No `.mobile-card-expansion` collapse wrapper, no progress
+        detail, no envelope entries list, no add-purchase form, no
+        Mark Paid / Edit Amount / Open Full action row.
+
+    Carry-forward preservation: if `matched_by_row_period[(rk, period)]`
+    contains more than one transaction (the carry-forward case where
+    a leftover envelope amount is split into a sibling row), the
+    macro emits one static `<li>` per match -- same shape as
+    `render_row_card` -- so the Plan view does not silently flatten
+    the multi-row reality.
+
+    Badges preserved from the interactive card header so a glance at
+    the Plan tab still distinguishes transfer-shadow rows
+    (`bi-arrow-left-right`) and CC-payback rows (`badge-credit`) from
+    plain expenses.  The settled checkmark and the CC status badge
+    only fire on non-Projected statuses; future-period transactions
+    are normally Projected so those branches are usually dormant, but
+    the conditional is kept so the rare edge (a Projected transaction
+    in a "future" period that has nevertheless been advanced) renders
+    consistently with This Period.
+-#}
+{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+{% for txn in matched %}
+  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+  <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3">
+    <span class="text-truncate me-2">
+      {{ rk.display_name }}
+      {% if txn.status %}
+        {% if txn.status.is_settled %}
+          <span class="badge-done ms-1">&#10003;</span>
+        {% elif txn.status_id == STATUS_CREDIT %}
+          <span class="badge-credit ms-1">CC</span>
+        {% endif %}
+      {% endif %}
+      {% if txn.transfer_id %}
+        <i class="bi bi-arrow-left-right text-muted ms-1 small"></i>
+      {% endif %}
+      {% if txn.credit_payback_for_id %}
+        <span class="badge-credit ms-1">CC</span>
+      {% endif %}
+    </span>
+    <span class="font-mono fw-semibold text-nowrap">
+      ${{ "{:,.0f}".format(display_amount) }}
+    </span>
+  </li>
+{% endfor %}
+{%- endmacro %}

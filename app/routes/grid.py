@@ -43,6 +43,15 @@ grid_bp = Blueprint("grid", __name__)
 __all__ = ["RowKey", "grid_bp"]
 
 
+# Forward-looking window for the mobile "Plan" tab.  13 biweekly pay
+# periods ~= 6 months, matching the desktop selector's `6M` option
+# (`grid/grid.html:34`).  Fixed for phase 1; configurability is a
+# follow-up.  Decoupled from the URL's `periods` / `offset` so Plan
+# always answers "what does the next half-year look like from today?"
+# regardless of how the user is navigating in This Period.
+PLAN_WINDOW_PERIODS = 13
+
+
 class _GridContext(NamedTuple):
     """Request-derived context for the grid view.
 
@@ -324,6 +333,92 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     )
 
 
+def _build_plan_view(
+    user_id, account, scenario, all_transactions, balances,
+    current_period, all_categories,
+):
+    """Build the read-only "Plan" tab context window.
+
+    The Plan tab on the mobile grid answers "what does the next half-
+    year look like from today?" regardless of how the user is
+    navigating in This Period (which can leave the URL at
+    ``?periods=1&offset=N``).  This helper computes a parallel data
+    slice anchored at ``current_period`` and walking forward
+    :data:`PLAN_WINDOW_PERIODS` periods.
+
+    No entry sums or entry lists are computed -- Plan renders future
+    periods read-only and envelope entries are by design a current /
+    past concept.  The interactive helper :func:`_build_grid_row_data`
+    still produces those values for the rest of the page; we discard
+    them here.
+
+    Args:
+        user_id: The owning user's id.  Drives the pay-period query.
+        account: The active grid account (may be ``None`` for the
+            user-with-zero-accounts edge case).  Forwarded to the
+            subtotal builder.
+        scenario: The baseline scenario.  Forwarded to the subtotal
+            builder.
+        all_transactions: The list already loaded by
+            :func:`_load_grid_transactions`.  Re-used here instead of
+            re-querying; ``_build_grid_row_data`` filters by visible
+            window internally so the same list works for the wider
+            Plan window.
+        balances: The full anchor-forward balance map produced by
+            :func:`_build_grid_balances`.  Sliced to plan periods
+            without recomputing.
+        current_period: The pay period containing today, used as the
+            window's leftmost anchor.
+        all_categories: User's full category set (active + archived).
+            Forwarded to the row-key builder so archived-category
+            transactions still render.
+
+    Returns:
+        Dict with eight ``plan_*`` keys ready to splice into the
+        ``render_template`` kwargs of :func:`index`:
+
+          - ``plan_periods``: list[PayPeriod], up to
+            :data:`PLAN_WINDOW_PERIODS` long starting at
+            ``current_period``.  May be shorter when the user has
+            fewer remaining generated periods.
+          - ``plan_income_row_keys`` / ``plan_expense_row_keys``:
+            row-key lists scoped to the plan window.
+          - ``plan_matched_by_row_period``: same shape as the
+            interactive ``matched_by_row_period`` -- keys are
+            ``(category_id, template_id, txn_name, period_id)``.
+          - ``plan_subtotals``: dict[period_id -> PeriodSubtotal].
+          - ``plan_balances``: dict[period_id -> Decimal | None],
+            sliced from the global balance map.
+    """
+    plan_periods = pay_period_service.get_periods_in_range(
+        user_id, current_period.period_index, PLAN_WINDOW_PERIODS,
+    )
+
+    (
+        plan_income_row_keys,
+        plan_expense_row_keys,
+        plan_matched_by_row_period,
+        _entry_sums_unused,
+        _entry_lists_unused,
+        _txn_by_period_unused,
+    ) = _build_grid_row_data(
+        all_transactions, plan_periods, False, all_categories,
+    )
+
+    plan_subtotals = _build_grid_subtotals(account, scenario, plan_periods)
+
+    plan_balances = {p.id: balances.get(p.id) for p in plan_periods}
+
+    return {
+        "plan_periods": plan_periods,
+        "plan_income_row_keys": plan_income_row_keys,
+        "plan_expense_row_keys": plan_expense_row_keys,
+        "plan_matched_by_row_period": plan_matched_by_row_period,
+        "plan_subtotals": plan_subtotals,
+        "plan_balances": plan_balances,
+    }
+
+
 @grid_bp.route("/grid")
 @login_required
 @require_owner
@@ -375,6 +470,19 @@ def index():
         all_transactions, ctx.periods, show_all, all_categories,
     )
 
+    # Build the parallel context for the mobile "Plan" tab.  Decoupled
+    # from ctx.periods so a `?periods=1&offset=N` URL (driven by the
+    # This Period arrow nav) does not starve Plan of forward visibility.
+    plan_view = _build_plan_view(
+        user_id,
+        ctx.account,
+        ctx.scenario,
+        all_transactions,
+        balances,
+        ctx.current_period,
+        all_categories,
+    )
+
     return render_template(
         "grid/grid.html",
         scenario=ctx.scenario,
@@ -412,6 +520,7 @@ def index():
         entry_sums=entry_sums,
         entry_lists=entry_lists,
         matched_by_row_period=matched_by_row_period,
+        **plan_view,
     )
 
 

@@ -37,65 +37,16 @@
     }
 
     function init() {
+        // The Plan tab no longer hosts the panel-swap navigation that
+        // used to live here -- it is now a read-only multi-period
+        // accordion (Bootstrap `data-bs-parent` handles mutual
+        // exclusion declaratively, so no per-card JS is required).
+        // Period navigation lives on the This Period tab via URL-
+        // driven prev/next arrows + a jump-to <select>, neither of
+        // which needs setup here.  This function is reserved for any
+        // page-load JS that does need an init hook; today the only
+        // such hook is the hash-driven tab activation.
         activateTabFromHash();
-
-        var panels = document.querySelectorAll('.mobile-period-panel');
-        if (!panels.length) return;
-
-        var currentIndex = 0;
-        var prevBtn = document.getElementById('mobile-prev-btn');
-        var nextBtn = document.getElementById('mobile-next-btn');
-
-        function updateLabel() {
-            var panel = panels[currentIndex];
-            var labelEl = document.getElementById('mobile-period-label');
-            var rangeEl = document.getElementById('mobile-period-range');
-            if (labelEl) labelEl.textContent = panel.dataset.periodLabel;
-            if (rangeEl) rangeEl.textContent = panel.dataset.periodRange;
-            if (prevBtn) prevBtn.disabled = (currentIndex === 0);
-            if (nextBtn) nextBtn.disabled = (currentIndex === panels.length - 1);
-        }
-
-        function navigate(delta) {
-            var newIndex = currentIndex + delta;
-            if (newIndex < 0 || newIndex >= panels.length) return;
-            panels[currentIndex].style.display = 'none';
-            currentIndex = newIndex;
-            panels[currentIndex].style.display = '';
-            updateLabel();
-        }
-
-        if (prevBtn) prevBtn.addEventListener('click', function() { navigate(-1); });
-        if (nextBtn) nextBtn.addEventListener('click', function() { navigate(1); });
-
-        // Swipe detection scoped to the Plan tab-pane.  Binding to
-        // the outer `#mobile-grid` container would silently advance
-        // the Plan tab's `currentIndex` on a swipe from the "This
-        // Period" tab (the panels[] writes have no visual effect
-        // while the Plan tab-pane is `display:none`, so the user
-        // only discovers the leak when they switch to Plan and find
-        // it on the wrong period).  See `docs/mobile_follow_up.md` F-1.
-        var planPane = document.getElementById('mobile-plan');
-        if (planPane) {
-            var touchStartX = 0;
-            var touchStartY = 0;
-
-            planPane.addEventListener('touchstart', function(e) {
-                touchStartX = e.changedTouches[0].clientX;
-                touchStartY = e.changedTouches[0].clientY;
-            }, { passive: true });
-
-            planPane.addEventListener('touchend', function(e) {
-                var dx = e.changedTouches[0].clientX - touchStartX;
-                var dy = e.changedTouches[0].clientY - touchStartY;
-                // Only trigger on horizontal swipes exceeding 50px threshold.
-                if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
-                    navigate(dx < 0 ? 1 : -1);
-                }
-            }, { passive: true });
-        }
-
-        updateLabel();
     }
 
     // Tap-to-toggle card expansion: delegated click handler for mobile
