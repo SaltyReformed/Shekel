@@ -96,17 +96,6 @@
         updateLabel();
     }
 
-    // Swipe-left to reveal Mark Paid button on a card.  The gesture
-    // logic factored out to ``app/static/js/swipe.js::attachSwipeAction``
-    // in mobile-first v3 plan Commit 13 so the companion view (which
-    // also wants this gesture) can reuse it without duplication.  The
-    // helper owns touch handling, click-suppression for the synthetic
-    // click after touchend, and the "tap outside un-swipes" branch
-    // -- this module no longer carries any of that state.  Threshold
-    // is 50 px to match the period-nav swipe at the top of ``init()``
-    // (R-8 alignment).
-    window.attachSwipeAction(document, { threshold: 50 });
-
     // Tap-to-toggle action bar: delegated click handler for mobile
     // transaction cards (Commit 7).  Tapping a `.mobile-txn-card`
     // expands the sibling `.mobile-card-action-bar` (the per-card
@@ -122,30 +111,21 @@
     // listener.
     //
     // Guards (top-to-bottom, short-circuit on the first hit):
-    //   - taps on `.swipe-action-mark-paid` are commit edges; the
-    //     button's `hx-post` issues the mark-done request directly
-    //     and this handler must not intercept.
     //   - taps that originated inside the action bar itself are
     //     ignored (otherwise a tap on [Mark Paid] would re-toggle
     //     the bar shut as the bubble climbed past the card).
-    //   - swipe.js's capture-phase click handler absorbs the
-    //     synthetic click that follows touchend and the
-    //     tap-outside-to-unswipe click via
-    //     ``stopImmediatePropagation``, so by the time this
-    //     bubble-phase handler sees a click the swipe state has
-    //     already been resolved.
     //   - `data-mobile-txn-id` scopes the selector to real txn
     //     cards so the group-header `<li>` (no data attr in the
     //     owner render path) cannot accidentally trigger; companion
     //     cards omit the attribute so the action bar there stays
-    //     collapsed and the swipe-action is the only Mark Paid path.
+    //     collapsed (companions reach Mark Paid through the
+    //     companion-specific UI rendered by `companion/index.html`).
     //   - missing wrapper / bar / Bootstrap is a hard no-op rather
     //     than a console error -- the action bar's absence on a
     //     server-render path (companion read-only edge cases,
     //     test scaffolding) should not break tap handling
     //     elsewhere on the page.
     document.addEventListener('click', function(e) {
-        if (e.target.closest('.swipe-action-mark-paid')) return;
         if (e.target.closest('.mobile-card-action-bar')) return;
 
         var card = e.target.closest('.mobile-txn-card[data-mobile-txn-id]');
