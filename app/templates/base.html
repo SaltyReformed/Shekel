@@ -300,6 +300,12 @@
   <!-- App JS -->
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
   <script src="{{ url_for('static', filename='js/grid_edit.js') }}"></script>
+  {# Transitional no-op stub: must load BEFORE mobile_grid.js so any
+     pre-removal mobile_grid.js still in the SW cache finds
+     window.attachSwipeAction defined.  Delete this tag (and the
+     file) once the SW cache bump (shekel-static-v1 -> v2) has
+     propagated to all clients -- safe ~2 weeks after 2026-05-26. #}
+  <script src="{{ url_for('static', filename='js/swipe.js') }}"></script>
   <script src="{{ url_for('static', filename='js/mobile_grid.js') }}"></script>
   <script src="{{ url_for('static', filename='js/progress_bar.js') }}"></script>
   <script src="{{ url_for('static', filename='js/categories.js') }}"></script>

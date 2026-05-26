@@ -17,7 +17,12 @@
  * connection error for app pages, not a stale projection.
  */
 
-const CACHE = 'shekel-static-v1';
+// v2 (2026-05-26): bumped to evict the pre-swipe-removal mobile_grid.js
+// that lived in v1 and called window.attachSwipeAction at module-init.
+// The activate handler purges any cache name starting with
+// `shekel-static-` that does not equal CACHE, so renaming the constant
+// here is the entire eviction mechanism -- no manual delete loop needed.
+const CACHE = 'shekel-static-v2';
 const STATIC_PREFIXES = [
   '/static/vendor/',
   '/static/css/',

@@ -66,14 +66,21 @@ class TestServiceWorkerPassthrough:
     ):
         """The served worker enforces the static-only cache invariant.
 
-        Asserts the response body declares the ``shekel-static-v1``
-        cache name and lists the ``/static/`` prefix array.  This is
-        a regression lock against any future edit that switches the
-        worker to a stale-while-revalidate strategy for HTML or to a
-        broader cache scope -- both of which would re-open the
-        financial-correctness hole D-I in
+        Asserts the response body declares a versioned
+        ``shekel-static-v*`` cache name and lists the ``/static/``
+        prefix array.  Regression lock against any future edit that
+        switches the worker to a stale-while-revalidate strategy for
+        HTML or to a broader cache scope -- both of which would
+        re-open the financial-correctness hole D-I in
         ``docs/implementation_plan_mobile_v3.md`` Section 2 closes.
+
+        Matches the cache name on a prefix so a future bump
+        (``shekel-static-v3``, etc.) does not require a paired
+        test edit; the name is allowed to evolve so long as the
+        ``shekel-static-v`` prefix stays and the activate handler
+        evicts every previous version.
         """
+        import re  # pylint: disable=import-outside-toplevel
         body = client.get("/sw.js").data.decode("utf-8")
-        assert "shekel-static-v1" in body
+        assert re.search(r"shekel-static-v\d+", body) is not None
         assert "/static/" in body
