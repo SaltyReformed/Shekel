@@ -5,7 +5,7 @@ local dev Flask server and asserts the per-card action bar behaviour
 introduced in Commit 7 of the mobile-first v3 implementation:
 
   - Tap on a ``.mobile-txn-card`` opens its sibling
-    ``.mobile-card-action-bar`` collapse (no longer opens the bottom
+    ``.mobile-card-expansion`` collapse (no longer opens the bottom
     sheet directly).
   - The bar shows ``[Mark Paid]`` ``[Edit Amount]`` ``[Open Full]``
     on a Projected expense card; ``[Mark Paid]`` is absent on a
@@ -131,7 +131,7 @@ def _find_projected_card_id(page: Page, pane_selector: str) -> str:
     nothing in the pane qualifies.
     """
     cards = page.locator(
-        f"{pane_selector} .mobile-card-wrapper:has(.mobile-card-action-bar form) "
+        f"{pane_selector} .mobile-card-wrapper:has(.mobile-card-expansion form) "
         ".mobile-txn-card[data-mobile-txn-id]"
     )
     count = cards.count()
@@ -166,14 +166,14 @@ def _action_bar_for(card):
     """Return the action-bar locator that is the sibling of the given card.
 
     Mirrors the DOM walk that `mobile_grid.js`'s tap handler uses:
-    `card.closest('.mobile-card-wrapper').querySelector('.mobile-card-action-bar')`.
+    `card.closest('.mobile-card-wrapper').querySelector('.mobile-card-expansion')`.
     This is ID-agnostic so it works regardless of the per-tab
     `id_prefix` (`tp` / `plan`) on the bar element.
     """
     wrapper = card.locator(
         'xpath=ancestor::div[contains(concat(" ", @class, " "), " mobile-card-wrapper ")][1]'
     )
-    return wrapper.locator(".mobile-card-action-bar").first
+    return wrapper.locator(".mobile-card-expansion").first
 
 
 def _button_in_bar(card, button_selector: str):
@@ -181,7 +181,7 @@ def _button_in_bar(card, button_selector: str):
 
     Keeps the harness independent of the per-tab `id_prefix` on the
     bar element by walking up to the wrapper and back down to the
-    bar, rather than constructing `#card-actions-<prefix>-<id>`
+    bar, rather than constructing `#card-expansion-<prefix>-<id>`
     directly.
     """
     return _action_bar_for(card).locator(button_selector)
@@ -198,10 +198,10 @@ def verify_tap_opens_action_bar(page: Page, results: list[CheckResult]) -> None:
     check(
         results,
         "action_bar_markup_present",
-        lambda: f"count={page.locator('.mobile-card-action-bar').count()}"
-        if page.locator(".mobile-card-action-bar").count() >= 1
+        lambda: f"count={page.locator('.mobile-card-expansion').count()}"
+        if page.locator(".mobile-card-expansion").count() >= 1
         else (_ for _ in ()).throw(
-            AssertionError("no .mobile-card-action-bar in rendered DOM"),
+            AssertionError("no .mobile-card-expansion in rendered DOM"),
         ),
     )
 
@@ -261,7 +261,7 @@ def verify_second_tap_collapses_first(
     page.wait_for_selector("#mobile-this-period", state="attached")
 
     cards = page.locator(
-        "#mobile-this-period .mobile-card-wrapper:has(.mobile-card-action-bar) "
+        "#mobile-this-period .mobile-card-wrapper:has(.mobile-card-expansion) "
         ".mobile-txn-card[data-mobile-txn-id]"
     )
     if cards.count() < 2:

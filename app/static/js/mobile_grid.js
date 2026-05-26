@@ -5,10 +5,12 @@
  *
  * Tap on a `.mobile-txn-card` no longer opens the bottom sheet
  * directly (Commit 7 of the mobile-first v3 implementation).  It now
- * toggles a sibling `.mobile-card-action-bar` collapse via the
- * Bootstrap Collapse API; the bar exposes `[Mark Paid]`,
- * `[Edit Amount]`, and `[Open Full]` buttons.  The bottom sheet is
- * still reachable, but explicitly via the `[Open Full]` button, which
+ * toggles a sibling `.mobile-card-expansion` collapse via the
+ * Bootstrap Collapse API.  The expansion bundles every per-card
+ * detail block: any progress detail, the inline entries list for
+ * envelope templates, and the action buttons (`[Mark Paid]`,
+ * `[Edit Amount]`, `[Open Full]`).  The bottom sheet is still
+ * reachable, but explicitly via the `[Open Full]` button, which
  * carries the `txn-expand-btn` + `data-txn-id` attributes that
  * `grid_edit.js`'s delegated handler picks up.
  */
@@ -35,72 +37,25 @@
     }
 
     function init() {
+        // The Plan tab no longer hosts the panel-swap navigation that
+        // used to live here -- it is now a read-only multi-period
+        // accordion (Bootstrap `data-bs-parent` handles mutual
+        // exclusion declaratively, so no per-card JS is required).
+        // Period navigation lives on the This Period tab via URL-
+        // driven prev/next arrows + a jump-to <select>, neither of
+        // which needs setup here.  This function is reserved for any
+        // page-load JS that does need an init hook; today the only
+        // such hook is the hash-driven tab activation.
         activateTabFromHash();
-
-        var panels = document.querySelectorAll('.mobile-period-panel');
-        if (!panels.length) return;
-
-        var currentIndex = 0;
-        var prevBtn = document.getElementById('mobile-prev-btn');
-        var nextBtn = document.getElementById('mobile-next-btn');
-
-        function updateLabel() {
-            var panel = panels[currentIndex];
-            var labelEl = document.getElementById('mobile-period-label');
-            var rangeEl = document.getElementById('mobile-period-range');
-            if (labelEl) labelEl.textContent = panel.dataset.periodLabel;
-            if (rangeEl) rangeEl.textContent = panel.dataset.periodRange;
-            if (prevBtn) prevBtn.disabled = (currentIndex === 0);
-            if (nextBtn) nextBtn.disabled = (currentIndex === panels.length - 1);
-        }
-
-        function navigate(delta) {
-            var newIndex = currentIndex + delta;
-            if (newIndex < 0 || newIndex >= panels.length) return;
-            panels[currentIndex].style.display = 'none';
-            currentIndex = newIndex;
-            panels[currentIndex].style.display = '';
-            updateLabel();
-        }
-
-        if (prevBtn) prevBtn.addEventListener('click', function() { navigate(-1); });
-        if (nextBtn) nextBtn.addEventListener('click', function() { navigate(1); });
-
-        // Swipe detection scoped to the Plan tab-pane.  Binding to
-        // the outer `#mobile-grid` container would silently advance
-        // the Plan tab's `currentIndex` on a swipe from the "This
-        // Period" tab (the panels[] writes have no visual effect
-        // while the Plan tab-pane is `display:none`, so the user
-        // only discovers the leak when they switch to Plan and find
-        // it on the wrong period).  See `docs/mobile_follow_up.md` F-1.
-        var planPane = document.getElementById('mobile-plan');
-        if (planPane) {
-            var touchStartX = 0;
-            var touchStartY = 0;
-
-            planPane.addEventListener('touchstart', function(e) {
-                touchStartX = e.changedTouches[0].clientX;
-                touchStartY = e.changedTouches[0].clientY;
-            }, { passive: true });
-
-            planPane.addEventListener('touchend', function(e) {
-                var dx = e.changedTouches[0].clientX - touchStartX;
-                var dy = e.changedTouches[0].clientY - touchStartY;
-                // Only trigger on horizontal swipes exceeding 50px threshold.
-                if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
-                    navigate(dx < 0 ? 1 : -1);
-                }
-            }, { passive: true });
-        }
-
-        updateLabel();
     }
 
-    // Tap-to-toggle action bar: delegated click handler for mobile
+    // Tap-to-toggle card expansion: delegated click handler for mobile
     // transaction cards (Commit 7).  Tapping a `.mobile-txn-card`
-    // expands the sibling `.mobile-card-action-bar` (the per-card
-    // [Mark Paid] / [Edit Amount] / [Open Full] row).  At most one
-    // bar is open at a time -- opening one collapses any other.
+    // expands the sibling `.mobile-card-expansion` (the per-card
+    // panel that bundles progress detail, the envelope entries list,
+    // and the [Mark Paid] / [Edit Amount] / [Open Full] action row).
+    // At most one expansion is open at a time -- opening one collapses
+    // any other.
     //
     // Registered at module scope (not inside `init`) so it survives
     // HTMX swaps that re-render parts of the grid: HTMX never
@@ -111,62 +66,63 @@
     // listener.
     //
     // Guards (top-to-bottom, short-circuit on the first hit):
-    //   - taps that originated inside the action bar itself are
-    //     ignored (otherwise a tap on [Mark Paid] would re-toggle
-    //     the bar shut as the bubble climbed past the card).
+    //   - taps that originated inside the expansion itself are
+    //     ignored (otherwise a tap on [Mark Paid] or an entry-list
+    //     button would re-toggle the panel shut as the bubble
+    //     climbed past the card).
     //   - `data-mobile-txn-id` scopes the selector to real txn
     //     cards so the group-header `<li>` (no data attr in the
     //     owner render path) cannot accidentally trigger; companion
-    //     cards omit the attribute so the action bar there stays
+    //     cards omit the attribute so the expansion there stays
     //     collapsed (companions reach Mark Paid through the
     //     companion-specific UI rendered by `companion/index.html`).
-    //   - missing wrapper / bar / Bootstrap is a hard no-op rather
-    //     than a console error -- the action bar's absence on a
-    //     server-render path (companion read-only edge cases,
-    //     test scaffolding) should not break tap handling
-    //     elsewhere on the page.
+    //   - missing wrapper / expansion / Bootstrap is a hard no-op
+    //     rather than a console error -- the expansion's absence on
+    //     a server-render path (companion read-only edge cases,
+    //     test scaffolding) should not break tap handling elsewhere
+    //     on the page.
     document.addEventListener('click', function(e) {
-        if (e.target.closest('.mobile-card-action-bar')) return;
+        if (e.target.closest('.mobile-card-expansion')) return;
 
         var card = e.target.closest('.mobile-txn-card[data-mobile-txn-id]');
         if (!card) return;
 
         var wrapper = card.closest('.mobile-card-wrapper');
         if (!wrapper) return;
-        var bar = wrapper.querySelector('.mobile-card-action-bar');
-        if (!bar) return;
+        var expansion = wrapper.querySelector('.mobile-card-expansion');
+        if (!expansion) return;
         if (typeof bootstrap === 'undefined' || !bootstrap.Collapse) return;
 
-        document.querySelectorAll('.mobile-card-action-bar.show').forEach(function(other) {
-            if (other !== bar) {
+        document.querySelectorAll('.mobile-card-expansion.show').forEach(function(other) {
+            if (other !== expansion) {
                 bootstrap.Collapse.getOrCreateInstance(other).hide();
             }
         });
 
-        bootstrap.Collapse.getOrCreateInstance(bar).toggle();
+        bootstrap.Collapse.getOrCreateInstance(expansion).toggle();
     });
 
-    // Sync the card's `aria-expanded` with its action bar's
-    // open/closed state.  The card emits `aria-controls="<bar id>"`
-    // (set by `render_row_card`); we resolve it back via that
-    // attribute rather than DOM proximity so any future trigger
-    // pointing at the same bar would also get its aria-expanded
-    // maintained.  Bootstrap fires `shown.bs.collapse` /
-    // `hidden.bs.collapse` on the collapsed element after its CSS
-    // transition completes, which is the right moment to flip the
-    // attribute (matches screen-reader expectations for "the
-    // disclosure has finished opening").
-    function _syncAriaExpanded(barEl, value) {
-        if (!barEl || !barEl.id) return;
-        var trigger = document.querySelector('[aria-controls="' + barEl.id + '"]');
+    // Sync the card's `aria-expanded` with its expansion's
+    // open/closed state.  The card emits
+    // `aria-controls="<expansion id>"` (set by `render_row_card`);
+    // we resolve it back via that attribute rather than DOM
+    // proximity so any future trigger pointing at the same expansion
+    // would also get its aria-expanded maintained.  Bootstrap fires
+    // `shown.bs.collapse` / `hidden.bs.collapse` on the collapsed
+    // element after its CSS transition completes, which is the right
+    // moment to flip the attribute (matches screen-reader
+    // expectations for "the disclosure has finished opening").
+    function _syncAriaExpanded(expansionEl, value) {
+        if (!expansionEl || !expansionEl.id) return;
+        var trigger = document.querySelector('[aria-controls="' + expansionEl.id + '"]');
         if (trigger) trigger.setAttribute('aria-expanded', value);
     }
     document.addEventListener('shown.bs.collapse', function(e) {
-        if (!e.target.classList.contains('mobile-card-action-bar')) return;
+        if (!e.target.classList.contains('mobile-card-expansion')) return;
         _syncAriaExpanded(e.target, 'true');
     });
     document.addEventListener('hidden.bs.collapse', function(e) {
-        if (!e.target.classList.contains('mobile-card-action-bar')) return;
+        if (!e.target.classList.contains('mobile-card-expansion')) return;
         _syncAriaExpanded(e.target, 'false');
     });
 

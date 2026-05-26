@@ -4964,17 +4964,19 @@ class TestMobileCardActionBar:
             assert f'hx-target="#txn-cell-{txn.id}"' in rendered
             assert 'hx-swap="outerHTML"' in rendered
 
-    def test_card_wrapper_emits_bar_sibling_in_grid_page(
+    def test_card_wrapper_emits_expansion_sibling_in_grid_page(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """C7-integration: the full ``/grid`` page emits the action-bar
+        """C7-integration: the full ``/grid`` page emits the expansion
         sibling next to each mobile card.
 
         Asserts the macro-level wiring: ``render_row_card`` wraps
         each ``<li>`` in ``<div class="mobile-card-wrapper">`` and
-        emits ``_mobile_card_actions.html`` after it.  Without this
-        integration, the unit-level checks above would pass while
-        the bar still never appears on the rendered page.
+        emits a sibling ``<div class="collapse mobile-card-expansion">``
+        bundling progress detail, envelope entries, and the action
+        button row.  Without this integration, the unit-level checks
+        above would pass while the expansion still never appears on
+        the rendered page.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
@@ -5002,32 +5004,45 @@ class TestMobileCardActionBar:
             assert response.status_code == 200
             body = response.data.decode("utf-8")
 
-            # Wrapper exists; action-bar id is per-tab-prefixed so the
-            # same txn rendered in both This Period and Plan tabs does
-            # not violate the HTML unique-id rule.  See the
-            # `id_prefix` param on render_row_card.
+            # Wrapper exists; This Period tab carries the
+            # per-tab-prefixed expansion id (`tp` prefix).  The Plan
+            # tab no longer renders cards via ``render_row_card`` --
+            # it uses the narrower ``render_row_static`` (no
+            # expansion wrapper, no per-card collapse) -- so the
+            # ``plan`` prefix variant is no longer emitted on the
+            # rendered page.  The ``id_prefix`` parameter on the
+            # macro itself still supports a ``plan`` value (locked
+            # by ``test_card_expansion_id_uses_prefix_when_supplied``)
+            # in case a future caller needs it; the integration test
+            # here pins only the live page contract.
             assert 'class="mobile-card-wrapper"' in body
-            assert f'id="card-actions-tp-{txn_id}"' in body
-            assert f'id="card-actions-plan-{txn_id}"' in body
+            assert f'id="card-expansion-tp-{txn_id}"' in body
 
-    def test_action_bar_id_uses_prefix_when_supplied(
+    def test_card_expansion_id_uses_prefix_when_supplied(
         self, app, seed_user, seed_periods_today,
     ):
-        """C7-integration: ``id_prefix`` namespaces the action-bar element id.
+        """C7-integration: ``id_prefix`` namespaces the expansion wrapper id.
 
         The "This Period" and "Plan" tabs render the same window of
         pay periods at the same time, so without per-tab namespacing
-        the same txn yields a duplicate ``id="card-actions-<id>"``
+        the same txn yields a duplicate ``id="card-expansion-<id>"``
         in two places.  The ``id_prefix`` parameter on
-        ``render_row_card`` (forwarded into the action-bar partial
-        via ``with context``) is the fix: This Period passes
+        ``render_row_card`` is the fix: This Period passes
         ``id_prefix='tp'``, Plan passes ``id_prefix='plan'``, and an
-        empty prefix preserves the simpler legacy id form for the
-        direct-render unit tests above.
+        empty prefix preserves the simpler unprefixed form for
+        direct-render call sites.
 
         Locks the three branches explicitly so a future refactor of
-        the formula cannot regress one without flagging.
+        the formula cannot regress one without flagging.  Renders the
+        macro through a tiny ``from_string`` template because the
+        per-tab id wiring now lives on the wrapper emitted by
+        ``render_row_card`` rather than the inner action-button
+        partial (the partial used to host its own collapse; the
+        unified collapse covers progress + entries + actions and is
+        owned by the macro).
         """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
@@ -5049,48 +5064,69 @@ class TestMobileCardActionBar:
             db.session.add(txn)
             db.session.commit()
 
-            template = app.jinja_env.get_template(
-                "grid/_mobile_card_actions.html",
+            rk = SimpleNamespace(
+                category_id=txn.category_id,
+                template_id=None,
+                txn_name=txn.name,
+                display_name=txn.name,
+            )
+            period = SimpleNamespace(id=current.id)
+            matched = {
+                (rk.category_id, rk.template_id, rk.txn_name, period.id): [txn],
+            }
+
+            tmpl = app.jinja_env.from_string(
+                "{% from 'grid/_grid_row_macros.html'"
+                " import render_row_card %}"
+                "{{ render_row_card(rk, period, matched, {},"
+                " can_edit, prefix) }}",
             )
             with app.test_request_context("/"):
-                no_prefix = template.render(txn=txn, can_edit=True)
-                tp_prefix = template.render(
-                    txn=txn, can_edit=True, id_prefix="tp",
+                no_prefix = tmpl.render(
+                    rk=rk, period=period, matched=matched,
+                    can_edit=True, prefix="",
                 )
-                plan_prefix = template.render(
-                    txn=txn, can_edit=True, id_prefix="plan",
+                tp_prefix = tmpl.render(
+                    rk=rk, period=period, matched=matched,
+                    can_edit=True, prefix="tp",
+                )
+                plan_prefix = tmpl.render(
+                    rk=rk, period=period, matched=matched,
+                    can_edit=True, prefix="plan",
                 )
 
-            assert f'id="card-actions-{txn.id}"' in no_prefix
-            assert f'id="card-actions-tp-{txn.id}"' in tp_prefix
-            assert f'id="card-actions-plan-{txn.id}"' in plan_prefix
+            assert f'id="card-expansion-{txn.id}"' in no_prefix
+            assert f'id="card-expansion-tp-{txn.id}"' in tp_prefix
+            assert f'id="card-expansion-plan-{txn.id}"' in plan_prefix
             # Prefixed renders must NOT also emit the unprefixed form.
-            assert f'id="card-actions-{txn.id}"' not in tp_prefix
-            assert f'id="card-actions-{txn.id}"' not in plan_prefix
+            assert f'id="card-expansion-{txn.id}"' not in tp_prefix
+            assert f'id="card-expansion-{txn.id}"' not in plan_prefix
 
     def test_mobile_grid_includes_plan_partial(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """C7-integration: ``_mobile_grid.html`` Plan tab body is the
-        ``_mobile_plan.html`` include, not the inline scroll view.
+        """``_mobile_grid.html`` Plan tab body is the
+        ``_mobile_plan.html`` include, not inline content.
 
-        Locks the Commit 7 refactor where the Plan tab body moved
-        out of ``_mobile_grid.html`` into its own partial.  Verified
-        by asserting that the Plan tab pane carries the rendered
-        contents of the partial (the period-nav button ids) and
-        that the inline content marker from before the refactor is
-        absent at the call site level.
+        The Plan tab body lives in its own partial (Commit 7 of the
+        mobile-first v3 implementation; the partial's shape was later
+        replaced with a read-only multi-period summary accordion).
+        This test pins the call-site wiring by looking for the
+        accordion container the partial emits when there is at least
+        one plan period.
         """
         with app.app_context():
             response = auth_client.get("/grid")
             assert response.status_code == 200
             body = response.data.decode("utf-8")
 
-            # The Plan partial's period-nav controls are present.
             pane_start = body.index('id="mobile-plan"')
             pane = body[pane_start:]
-            assert 'id="mobile-prev-btn"' in pane
-            assert 'id="mobile-next-btn"' in pane
+            # The Plan accordion container is the partial's load-
+            # bearing identifier: every plan-period card carries
+            # ``data-bs-parent="#plan-accordion"`` and the mutual-
+            # exclusion behavior depends on this id being present.
+            assert 'id="plan-accordion"' in pane
 
     def test_no_inline_style_attr_in_mobile_card_actions(self):
         """Pin the no-inline-style invariant on every button in the
@@ -5123,35 +5159,31 @@ class TestMobileCardActionBar:
         )
 
 
-class TestMobilePeriodNavSwipe:
-    """Regression locks for the PERIOD-navigation swipe gesture in
-    ``mobile_grid.js``'s ``init()``.
+class TestMobileNoSwipeAffordances:
+    """Negative regression locks: swipe-driven affordances are gone.
 
-    The per-card swipe-to-mark-paid affordance that originally lived
-    alongside this gesture (Commit 9 of the mobile-first v3
-    implementation) was removed because Firefox iOS leaked the
-    reveal button at rest, WebKit-based browsers layered it behind
-    the amount text mid-swipe, and the accidental-tap risk on a
-    state-mutating button outweighed the one-tap shortcut.  Mark
-    Paid is reachable through the inline action bar that expands
-    when the user taps a card.
+    Two swipe-driven behaviors used to live in ``mobile_grid.js``:
 
-    What survives, and what these tests cover, is the PERIOD-nav
-    swipe on the Plan tab-pane (swipe-left advances to the next
-    pay period, swipe-right goes back).  Tests pin three
-    contracts:
+      - **swipe-to-mark-paid** on individual cards (Commit 9 of the
+        mobile-first v3 implementation), removed after Firefox iOS
+        leaked the reveal button at rest, WebKit-based browsers
+        layered it behind the amount text mid-swipe, and the
+        accidental-tap risk on a state-mutating button outweighed
+        the one-tap shortcut.  Mark Paid is reachable through the
+        inline action bar that expands when the user taps a card.
+      - **period-navigation swipe** on the Plan tab-pane, removed
+        when the Plan tab was rebuilt as a read-only multi-period
+        accordion (the panel-swap logic the gesture drove was the
+        broken bit -- a single Next tap left the next panel hidden
+        behind a ``d-none`` class that ``style.display=''`` could
+        not override).  Period navigation now lives on the This
+        Period tab via URL-driven arrows + a jump-to ``<select>``.
 
-      - the gesture uses ``Math.abs(dx) > 50`` for the threshold,
-      - the touch listeners are ``passive: true`` so vertical
-        scroll wins when the user is scrolling rather than swiping,
-      - the listeners bind to ``#mobile-plan`` rather than the
-        outer ``#mobile-grid`` container so a horizontal swipe on
-        the "This Period" tab does not silently advance the Plan
-        tab's panel index (per ``docs/mobile_follow_up.md`` F-1).
-
-    The ``test_no_swipe_action_button`` test is a negative lock --
-    the removed swipe-action-mark-paid button must not reappear
-    via a future refactor.
+    These tests pin the negative contract: neither affordance
+    re-appears via a future refactor.  Lifecycle artifacts
+    (panel-swap state, swipe handlers, ``Math.abs(dx) > 50``
+    threshold, ``.mobile-period-panel`` containers) are all gone
+    from ``mobile_grid.js`` and the Plan partial.
     """
 
     def test_no_swipe_action_button(
@@ -5198,58 +5230,18 @@ class TestMobilePeriodNavSwipe:
             # card grouping div.
             assert 'class="mobile-card-row"' not in body
 
-    def test_period_nav_swipe_threshold(self):
-        """The period-nav swipe uses ``Math.abs(dx) > 50`` as the
-        horizontal-motion threshold.
+    def test_no_panel_swap_artifacts_in_mobile_grid_js(self):
+        """The panel-swap navigation that used to drive the Plan tab
+        is gone from ``mobile_grid.js``.
 
-        Pinned literally so a refactor that changes the gesture
-        threshold lands as a deliberate edit visible in this test
-        rather than a silent feel change.
-        """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        mobile_grid_src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "static" / "js" / "mobile_grid.js"
-        ).read_text(encoding="utf-8")
-        assert "Math.abs(dx) > 50" in mobile_grid_src
-
-    def test_period_nav_swipe_handlers_passive(self):
-        """The period-nav touchstart + touchend listeners are
-        ``passive: true``.
-
-        Passive listeners cannot ``preventDefault`` -- they cannot
-        block vertical scroll, which is the trade-off that lets
-        the swipe coexist with normal page scrolling.  The
-        ``Math.abs(dy) > Math.abs(dx)`` cancel-on-vertical guard
-        inside the period-nav handler is what makes the trade-off
-        safe.
-
-        Counts the literal ``passive: true`` occurrences in
-        ``mobile_grid.js``: two for the period-nav (touchstart +
-        touchend).  Any regression that drops one would silently
-        re-block scroll on iOS Safari.
-        """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        mobile_grid_src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "static" / "js" / "mobile_grid.js"
-        ).read_text(encoding="utf-8")
-        assert mobile_grid_src.count("passive: true") >= 2
-
-    def test_period_nav_swipe_scoped_to_plan_pane(self):
-        """F-1 lock: the period-nav swipe listener binds to
-        ``#mobile-plan`` (the Plan tab-pane), NOT ``#mobile-grid``
-        (the outer container that wraps both tabs).
-
-        Binding to the outer container caused a horizontal swipe on
-        the "This Period" tab to silently advance the Plan tab's
-        ``currentIndex`` because ``navigate()`` mutates display
-        state on Plan's ``.mobile-period-panel`` elements regardless
-        of which tab-pane is visible.  The user only discovered the
-        leak after switching to Plan and finding it on the wrong
-        period.  Per ``docs/mobile_follow_up.md`` F-1.
+        The Plan tab is now a read-only multi-period accordion -- a
+        Bootstrap collapse stack with ``data-bs-parent`` handling
+        mutual exclusion declaratively.  No panel index, no
+        ``navigate()`` function, no ``updateLabel()``, no
+        ``mobile-prev-btn`` / ``mobile-next-btn`` handlers, no
+        ``passive: true`` touch listeners, no ``Math.abs(dx) > 50``
+        swipe threshold.  This lock catches a revert that
+        re-introduces any of those artifacts.
         """
         import pathlib  # pylint: disable=import-outside-toplevel
 
@@ -5258,14 +5250,472 @@ class TestMobilePeriodNavSwipe:
             / "app" / "static" / "js" / "mobile_grid.js"
         ).read_text(encoding="utf-8")
 
-        # Positive: the Plan tab-pane is the binding site.
-        assert "document.getElementById('mobile-plan')" in mobile_grid_src
-        # Negative: the outer container must NOT be a binding site.
-        # The string `mobile-grid` is allowed in comments (e.g. the
-        # `Activate the mobile-grid tab` doc at the top of init());
-        # the `getElementById` call is what would re-introduce the
-        # cross-tab leak, so the assertion is on the call form.
-        assert "document.getElementById('mobile-grid')" not in mobile_grid_src
+        # Negative lock on every artifact of the dead panel-swap nav.
+        assert "Math.abs(dx) > 50" not in mobile_grid_src
+        assert "passive: true" not in mobile_grid_src
+        assert "mobile-prev-btn" not in mobile_grid_src
+        assert "mobile-next-btn" not in mobile_grid_src
+        assert ".mobile-period-panel" not in mobile_grid_src
+        assert "navigate(" not in mobile_grid_src
+        assert "updateLabel" not in mobile_grid_src
+
+    def test_no_panel_swap_markup_in_mobile_plan_partial(self):
+        """The ``.mobile-period-panel`` containers and prev/next
+        buttons are gone from the Plan partial.
+
+        Before the read-only summary accordion landed, the partial
+        rendered one ``<div class="mobile-period-panel">`` per
+        period with sibling ``[<]`` / ``[>]`` arrow buttons; the
+        broken panel-swap JS toggled their visibility.  Removing the
+        JS without also removing the markup would leave orphaned DOM
+        with no handler, so this lock pins the cleanup at both
+        layers.
+        """
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        partial = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "_mobile_plan.html"
+        ).read_text(encoding="utf-8")
+        assert "mobile-period-panel" not in partial
+        assert 'id="mobile-prev-btn"' not in partial
+        assert 'id="mobile-next-btn"' not in partial
+
+
+class TestMobilePlanTab:
+    """Regression locks for the read-only Plan tab on the mobile grid.
+
+    Plan is the forward-looking summary view: a stack of period cards
+    showing projected end balances and (on tap) the static line
+    items behind each balance.  It is decoupled from the URL's
+    ``periods`` / ``offset`` params -- always anchored at
+    ``current_period`` and walking forward
+    :data:`app.routes.grid.PLAN_WINDOW_PERIODS` periods regardless of
+    how the user is navigating in This Period.
+
+    Pinned contracts:
+
+      - The route emits ``plan_periods`` anchored at
+        ``current_period`` and ignores the URL's ``offset``.
+      - The partial wraps cards in ``id="plan-accordion"`` and every
+        card body carries ``data-bs-parent="#plan-accordion"`` so
+        opening one auto-closes the others.
+      - Balance class follows the existing ``_balance_row.html``
+        pattern: ``balance-negative`` for ``< 0``, ``balance-low``
+        for ``0 <= bal < low_balance_threshold``, no class
+        otherwise.
+      - Row lines inside Plan use ``render_row_static`` -- no
+        ``data-mobile-txn-id``, no ``.mobile-card-expansion``, no
+        ``_mobile_card_actions.html`` include.
+      - Empty income / expense sections are hidden (less clutter on
+        a scan-oriented view).
+      - Carry-forward: when one ``(rk, period)`` cell matches
+        multiple transactions, each renders as its own static
+        ``<li>``.
+    """
+
+    @staticmethod
+    def _render_plan_partial(app, **ctx):
+        """Render ``_mobile_plan.html`` with the given context.
+
+        Direct render keeps the structural assertions immune to
+        surrounding-page markup drift.  ``app.test_request_context``
+        is what makes any ``url_for`` resolve inside the partial
+        chain; the macro imports its STATUS_* globals from
+        ``app.jinja_globals.register_ref_id_globals``.
+        """
+        template = app.jinja_env.get_template("grid/_mobile_plan.html")
+        with app.test_request_context("/"):
+            return template.render(**ctx)
+
+    def test_plan_window_anchored_at_current_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The first Plan card's collapse id targets ``current_period.id``.
+
+        Plan walks forward from ``current_period`` regardless of the
+        URL.  This test hits ``/grid`` with the default URL state
+        and verifies the leftmost Plan card points at the current
+        period's id.
+        """
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-plan"')
+            pane = body[pane_start:]
+            # The first plan card collapse target id is the partial's
+            # explicit anchor on `current_period`.
+            assert f'id="plan-period-{current.id}"' in pane
+            assert f'data-bs-target="#plan-period-{current.id}"' in pane
+
+    def test_plan_window_decoupled_from_url_offset(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Plan ignores ``?offset=N`` and stays anchored at current.
+
+        The This Period arrow nav drives the URL to
+        ``periods=1&offset=N``; Plan would be useless if it followed
+        that lead, so the route builds a dedicated ``plan_*`` context
+        window independent of ``ctx.start_offset``.  This test pins
+        the decoupling by hitting ``/grid?periods=1&offset=2`` (a
+        realistic post-arrow URL state) and asserting the leftmost
+        Plan card is still the current period.
+        """
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+
+            response = auth_client.get("/grid?periods=1&offset=2")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-plan"')
+            pane = body[pane_start:]
+            # Current period is still the leftmost Plan card even
+            # though the URL is asking This Period to start two
+            # periods out.
+            assert f'data-bs-target="#plan-period-{current.id}"' in pane
+
+    def test_plan_accordion_uses_data_bs_parent(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Each Plan card collapse carries ``data-bs-parent="#plan-accordion"``.
+
+        Bootstrap's accordion behaviour -- opening one card auto-
+        closes the others -- is delivered declaratively via this
+        attribute.  Removing it would break the mutual-exclusion
+        contract the design depends on; this test catches the
+        regression.
+        """
+        with app.app_context():
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-plan"')
+            pane = body[pane_start:]
+            assert 'id="plan-accordion"' in pane
+            assert 'data-bs-parent="#plan-accordion"' in pane
+
+    def test_plan_balance_classes_per_threshold(self, app):
+        """Balance color class follows the desktop ``_balance_row.html`` pattern.
+
+        Pins the three branches by rendering the partial against
+        controlled ``plan_balances`` values.  No database setup --
+        the partial is template logic only for the class assignment.
+        """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        from datetime import date as _date  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            p_neg = SimpleNamespace(
+                id=101, start_date=_date(2026, 6, 1),
+                end_date=_date(2026, 6, 14), period_index=10,
+            )
+            p_low = SimpleNamespace(
+                id=102, start_date=_date(2026, 6, 15),
+                end_date=_date(2026, 6, 28), period_index=11,
+            )
+            p_ok = SimpleNamespace(
+                id=103, start_date=_date(2026, 6, 29),
+                end_date=_date(2026, 7, 12), period_index=12,
+            )
+            plan_balances = {
+                p_neg.id: Decimal("-150.00"),
+                p_low.id: Decimal("250.00"),
+                p_ok.id: Decimal("4200.00"),
+            }
+            plan_subtotals = {
+                p.id: SimpleNamespace(
+                    income=Decimal("0"), expense=Decimal("0"),
+                    net=Decimal("0"),
+                )
+                for p in (p_neg, p_low, p_ok)
+            }
+
+            html = self._render_plan_partial(
+                app,
+                plan_periods=[p_neg, p_low, p_ok],
+                plan_income_row_keys=[],
+                plan_expense_row_keys=[],
+                plan_matched_by_row_period={},
+                plan_subtotals=plan_subtotals,
+                plan_balances=plan_balances,
+                low_balance_threshold=500,
+            )
+
+            # Slice the rendered HTML into three per-card chunks so
+            # the class assertions stay scoped to the right balance.
+            def card_chunk(period_id):
+                start = html.index(f'id="plan-period-{period_id}"')
+                # Trigger button is rendered ABOVE the collapse body
+                # -- back up to find the surrounding accordion-item.
+                item_start = html.rfind("accordion-item", 0, start)
+                # End of this card = start of the next id="plan-period-..." or end of html.
+                item_end = len(html)
+                for other_id in (101, 102, 103):
+                    if other_id == period_id:
+                        continue
+                    needle = f'id="plan-period-{other_id}"'
+                    pos = html.find(needle)
+                    if pos > start and pos < item_end:
+                        next_item = html.rfind(
+                            "accordion-item", 0, pos,
+                        )
+                        if next_item > item_start:
+                            item_end = next_item
+                return html[item_start:item_end]
+
+            neg_chunk = card_chunk(p_neg.id)
+            low_chunk = card_chunk(p_low.id)
+            ok_chunk = card_chunk(p_ok.id)
+
+            assert "balance-negative" in neg_chunk
+            assert "bi-exclamation-triangle-fill" in neg_chunk
+
+            assert "balance-low" in low_chunk
+            assert "bi-exclamation-circle" in low_chunk
+
+            assert "balance-negative" not in ok_chunk
+            assert "balance-low" not in ok_chunk
+
+    def test_plan_rows_have_no_card_expansion_or_action_bar(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Inside the Plan accordion, no row carries the interactive
+        affordances that the This Period rows have.
+
+        Plan is read-only: no Mark Paid form, no Edit Amount button,
+        no Open Full button, no per-card expansion collapse, no
+        ``data-mobile-txn-id`` (the tap-to-expand attribute).  This
+        test seeds a Projected expense in the current period and
+        verifies the Plan accordion body for that period is free of
+        all interactive markers.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Plan-readonly Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(
+                    TxnTypeEnum.EXPENSE,
+                ),
+                estimated_amount=Decimal("88.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            response = auth_client.get("/grid")
+            assert response.status_code == 200
+            body = response.data.decode("utf-8")
+
+            pane_start = body.index('id="mobile-plan"')
+            # End the slice at the partial's accordion wrapper close
+            # so the negative assertions cannot accidentally pick up
+            # markup from elsewhere on the page.
+            pane_end_marker = '</div>\n{% else %}'  # not present in rendered output
+            pane = body[pane_start:]
+            # Find the close of the plan-accordion div; the lookup
+            # below targets the rendered "no future pay periods"
+            # else-branch marker which is absent when periods exist,
+            # so pane is the full Plan-tab body.
+            del pane_end_marker
+
+            assert "mobile-card-expansion" not in pane
+            assert "data-mobile-txn-id" not in pane
+            assert "Mark Paid" not in pane
+            assert "Edit Amount" not in pane
+            assert "Open Full" not in pane
+            # Sanity: the static row is still rendering this txn.
+            assert "Plan-readonly Groceries" in pane
+
+    def test_plan_hides_empty_income_section(self, app):
+        """When a Plan period has no income rows, no Income section
+        card renders -- the partial omits the entire ``<div class="card">``
+        rather than emitting an empty list.
+
+        Same principle for expenses (covered by the next test).
+        Skipping empty sections keeps the scan-oriented Plan view
+        from carrying placeholder noise.
+        """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        from datetime import date as _date  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            period = SimpleNamespace(
+                id=200, start_date=_date(2026, 6, 1),
+                end_date=_date(2026, 6, 14), period_index=10,
+            )
+            rk_exp = SimpleNamespace(
+                category_id=1, template_id=None,
+                txn_name="Rent", display_name="Rent",
+                group_name="Housing",
+            )
+            txn_exp = SimpleNamespace(
+                id=1, name="Rent", actual_amount=None,
+                estimated_amount=Decimal("1200.00"),
+                status=SimpleNamespace(is_settled=False),
+                status_id=99, transfer_id=None,
+                credit_payback_for_id=None,
+            )
+            html = self._render_plan_partial(
+                app,
+                plan_periods=[period],
+                plan_income_row_keys=[],
+                plan_expense_row_keys=[rk_exp],
+                plan_matched_by_row_period={
+                    (rk_exp.category_id, rk_exp.template_id,
+                     rk_exp.txn_name, period.id): [txn_exp],
+                },
+                plan_subtotals={
+                    period.id: SimpleNamespace(
+                        income=Decimal("0"),
+                        expense=Decimal("1200"),
+                        net=Decimal("-1200"),
+                    ),
+                },
+                plan_balances={period.id: Decimal("3000.00")},
+                low_balance_threshold=500,
+            )
+
+            # Income section card is absent; Expense section card and
+            # its row are present.
+            assert "mobile-section-income" not in html
+            assert "mobile-section-expense" in html
+            assert "Rent" in html
+
+    def test_plan_hides_empty_expense_section(self, app):
+        """Empty expense section is also hidden; only the Income
+        section renders when there are no expense rows.
+
+        Mirrors the income-empty test for the other half of the
+        ``if _income_rows`` / ``if _expense_rows`` symmetry in the
+        partial.
+        """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        from datetime import date as _date  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            period = SimpleNamespace(
+                id=201, start_date=_date(2026, 6, 1),
+                end_date=_date(2026, 6, 14), period_index=10,
+            )
+            rk_inc = SimpleNamespace(
+                category_id=2, template_id=None,
+                txn_name="Salary", display_name="Salary",
+                group_name="Income",
+            )
+            txn_inc = SimpleNamespace(
+                id=2, name="Salary", actual_amount=None,
+                estimated_amount=Decimal("2500.00"),
+                status=SimpleNamespace(is_settled=False),
+                status_id=99, transfer_id=None,
+                credit_payback_for_id=None,
+            )
+            html = self._render_plan_partial(
+                app,
+                plan_periods=[period],
+                plan_income_row_keys=[rk_inc],
+                plan_expense_row_keys=[],
+                plan_matched_by_row_period={
+                    (rk_inc.category_id, rk_inc.template_id,
+                     rk_inc.txn_name, period.id): [txn_inc],
+                },
+                plan_subtotals={
+                    period.id: SimpleNamespace(
+                        income=Decimal("2500"),
+                        expense=Decimal("0"),
+                        net=Decimal("2500"),
+                    ),
+                },
+                plan_balances={period.id: Decimal("3000.00")},
+                low_balance_threshold=500,
+            )
+
+            assert "mobile-section-income" in html
+            assert "mobile-section-expense" not in html
+            assert "Salary" in html
+
+    def test_plan_preserves_carry_forward(self, app):
+        """A ``(rk, period)`` cell with multiple matched transactions
+        renders each as its own static ``<li>`` row.
+
+        Carry-forward and similar multi-txn-per-cell scenarios are
+        load-bearing for envelope reporting (a period can hold both
+        the canonical envelope row and a sibling carry-forward
+        sweep).  ``render_row_static`` iterates the matched list
+        rather than flattening it, mirroring the interactive
+        ``render_row_card`` contract.
+        """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        from datetime import date as _date  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            period = SimpleNamespace(
+                id=300, start_date=_date(2026, 6, 1),
+                end_date=_date(2026, 6, 14), period_index=10,
+            )
+            rk = SimpleNamespace(
+                category_id=3, template_id=42,
+                txn_name="Groceries", display_name="Groceries",
+                group_name="Food",
+            )
+            txn_a = SimpleNamespace(
+                id=10, name="Groceries", actual_amount=None,
+                estimated_amount=Decimal("100.00"),
+                status=SimpleNamespace(is_settled=False),
+                status_id=99, transfer_id=None,
+                credit_payback_for_id=None,
+            )
+            txn_b = SimpleNamespace(
+                id=11, name="Groceries", actual_amount=None,
+                estimated_amount=Decimal("25.00"),
+                status=SimpleNamespace(is_settled=False),
+                status_id=99, transfer_id=None,
+                credit_payback_for_id=None,
+            )
+            html = self._render_plan_partial(
+                app,
+                plan_periods=[period],
+                plan_income_row_keys=[],
+                plan_expense_row_keys=[rk],
+                plan_matched_by_row_period={
+                    (rk.category_id, rk.template_id,
+                     rk.txn_name, period.id): [txn_a, txn_b],
+                },
+                plan_subtotals={
+                    period.id: SimpleNamespace(
+                        income=Decimal("0"),
+                        expense=Decimal("125"),
+                        net=Decimal("-125"),
+                    ),
+                },
+                plan_balances={period.id: Decimal("3000.00")},
+                low_balance_threshold=500,
+            )
+
+            # Each amount renders separately -- one <li> per match.
+            assert "$100" in html
+            assert "$25" in html
 
 
 class TestMobileJumpToPeriod:

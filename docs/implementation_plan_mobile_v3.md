@@ -206,12 +206,39 @@ transcript.
 - **D-A. Mobile grid layout is "This Period" / "Plan" tabs, not
   a chronological feed.** "This Period" defaults to today's pay
   period with `[<] [>]` arrows stepping to adjacent periods.
-  "Plan" is the existing multi-period card-scroll view. Both
-  tabs reuse the same `render_row_card` macro from Phase 1.
-  Rationale: the user picked this layout over a flat
-  chronological feed because the affordability question
+  "Plan" is a read-only multi-period summary accordion anchored
+  at `current_period` and walking forward `PLAN_WINDOW_PERIODS`
+  (13, ~6 months biweekly) periods, decoupled from the URL's
+  `periods` / `offset` state.  Tabs share the `render_row_card`
+  macro **only** for the interactive This Period view; Plan
+  rows use the narrower `render_row_static` macro (no tap-to-
+  expand, no envelope entries, no action bar -- entries are by
+  design a current / past concept and Plan has no daily-driver
+  affordances).  Rationale: the user picked this layout over a
+  flat chronological feed because the affordability question
   ("can I pay this bill today?") is period-anchored, not
   date-anchored.
+
+  **Plan tab supersedes the original "multi-period card-scroll
+  view" design** (recorded here for the record because the
+  original D-A description matched what shipped as Commit 7 of
+  this plan).  The original Plan tab rendered N
+  `<div class="mobile-period-panel">` siblings with prev/next
+  buttons and a planPane swipe handler; only the first panel was
+  visible by default, the rest hidden behind a Bootstrap `d-none`
+  class.  The panel-swap JS in `mobile_grid.js::navigate()` set
+  `style.display = ''` to reveal a sibling panel, which silently
+  failed because `d-none`'s `display: none !important` outranked
+  the inline-style clear.  After a single Next tap the user saw
+  nothing, and the tab also offered no view that was meaningfully
+  different from This Period when it did work.  The
+  Plan-as-summary-accordion replacement collapses that whole
+  subsystem (markup + JS + swipe handler + the matching-loop fan-
+  out per panel) into a Bootstrap declarative accordion with
+  `data-bs-parent` mutual exclusion.  See
+  `app/routes/grid.py::_build_plan_view` for the parallel data
+  slice and `app/templates/grid/_mobile_plan.html` for the new
+  partial.
 
 - **D-B. Companion view shares the "This Period" partial via a
   shared service-layer helper.** Rather than copy the card

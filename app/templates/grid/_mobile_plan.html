@@ -1,184 +1,196 @@
-{# Mobile "Plan" partial -- multi-period card-scroll view.
+{# Mobile "Plan" partial -- read-only multi-period summary accordion.
 
-   Renders the visible window of pay periods (`periods`) as a stack
-   of one-period panels.  Each panel carries an income card, an
-   expense card, a net cash flow bar, and a projected balance card.
-   The first panel is visible by default; the others are hidden via
-   `d-none` and surfaced one at a time by the prev/next handler in
-   `app/static/js/mobile_grid.js`.
+   Renders the next `PLAN_WINDOW_PERIODS` (13 ~= 6 months biweekly)
+   pay periods starting at `current_period` as a vertical stack of
+   collapsible cards.  Each card's collapsed state shows the period's
+   projected end balance prominently with smaller income / expense /
+   net stats; expanding the card reveals static line-item lists for
+   income and expense.  Mutual exclusion is delivered by Bootstrap's
+   `data-bs-parent="#plan-accordion"` -- opening one card closes any
+   other.  No custom JS is needed for the open/close behavior.
 
-   Used by:
-     - the "Plan" tab in `grid/_mobile_grid.html` (owner).
+   Distinct from "This Period":
+     - This Period focuses on a single pay period with prev/next
+       arrows and full edit affordances (Mark Paid, Edit Amount,
+       Open Full, envelope entries with an add-purchase form).
+     - Plan focuses on the forward horizon: balance trajectory across
+       N periods, no edit affordances, no envelope entries (entries
+       are by design a current / past concept).  Tap a card to drill
+       into the line items behind a future balance.
 
-   This partial extracts the multi-period flow that used to live
-   inline inside `_mobile_grid.html`'s Plan tab body.  The
-   extraction keeps the row-card render path on the shared
-   `render_row_card` macro (Phase 1 Commit 1 / refactor Commit 4),
-   so any future card-shape change lands in exactly one place and
-   the "This Period" / "Plan" tabs stay byte-equivalent at the card
-   layer.
+   Decoupled from URL state: the route's `plan_*` context is built
+   from a fixed window anchored at `current_period` regardless of the
+   URL's `periods` / `offset` params (which the This Period arrow
+   nav can drive to `periods=1`).
 
    Expected Jinja context (* required):
-     periods *           -- list[PayPeriod]; the visible window from
-                            the grid route.
-     income_row_keys *   -- list[RowKey] in render order.
-     expense_row_keys *  -- list[RowKey] in render order.
-     matched_by_row_period * -- precomputed
-                            `(category_id, template_id, txn_name,
-                            period_id) -> list[Transaction]` dict
-                            from the grid route (Phase 1, Commit 2).
-     subtotals *         -- dict[period_id -> PeriodSubtotal] for the
-                            per-period income / expense / net headers.
-     balances            -- (optional) dict[period_id -> Decimal].
-                            When undefined or missing the key for
-                            `period.id`, the Projected Balance card
-                            is gracefully omitted.
-     entry_sums          -- (optional) dict[txn_id -> entry summary];
-                            consumed by `render_row_card` for the
-                            progress-bar render path on Projected
-                            envelopes with entries.
-     entry_lists         -- (optional) dict from
-                            `entry_service.build_entry_lists_dict`
-                            mapping envelope txn_id ->
-                            {entries, remaining, out_of_period_ids}.
-                            Forwarded to `render_row_card` so the
-                            inline `_transaction_entries.html`
-                            renders server-side rather than via the
-                            per-card HTMX `hx-trigger="load"`
-                            fan-out.  Skipped silently when missing.
-     today               -- (optional) `datetime.date` used as the
-                            add-entry form's default `entry_date`
-                            inside the inline entries include.
-                            Forwarded to `render_row_card`.
-     can_edit            -- (optional) bool, default True; forwarded
-                            to `render_row_card` so future companion
-                            consumers can drop the bottom-sheet /
-                            action-bar owner-only paths.
+     plan_periods *            -- list[PayPeriod] in period-index
+                                  order, up to PLAN_WINDOW_PERIODS
+                                  long, starting at `current_period`.
+     plan_income_row_keys *    -- list[RowKey] for income across the
+                                  plan window.
+     plan_expense_row_keys *   -- list[RowKey] for expense across the
+                                  plan window.
+     plan_matched_by_row_period * -- dict[(category_id, template_id,
+                                  txn_name, period_id) -> list[Transaction]]
+                                  scoped to plan_periods.
+     plan_subtotals *          -- dict[period_id -> PeriodSubtotal]
+                                  for the income / expense / net
+                                  headline per card.
+     plan_balances             -- (optional) dict[period_id ->
+                                  Decimal | None].  When the value
+                                  is None for a given period_id, the
+                                  balance line is omitted.
+     low_balance_threshold     -- (optional) int/Decimal.  When the
+                                  projected balance is below this
+                                  but >= 0, the balance gets the
+                                  `balance-low` class; below 0 it
+                                  gets `balance-negative`.  Mirrors
+                                  the desktop `_balance_row.html`
+                                  pattern.
 #}
-{% from "grid/_grid_row_macros.html" import render_row_card %}
-{% set can_edit = can_edit | default(True) %}
+{% from "grid/_grid_row_macros.html" import render_row_static %}
 
-{# --- Period Navigation Header --
-     Prev / next button pair driven by mobile_grid.js's panel
-     indexing.  The label and date-range spans are populated from
-     the current panel's `data-period-*` attributes; mobile_grid.js
-     rewrites them in `updateLabel()` whenever the active panel
-     changes. #}
-<div class="d-flex align-items-center justify-content-between mb-3" id="mobile-period-nav">
-  <button class="btn btn-sm btn-outline-secondary" id="mobile-prev-btn"
-          aria-label="Previous period" {% if periods|length <= 1 %}disabled{% endif %}>
-    <i class="bi bi-chevron-left"></i>
-  </button>
-  <div class="text-center">
-    <div class="fw-bold" id="mobile-period-label">
-      {% if periods %}{{ periods[0].label }}{% endif %}
-    </div>
-    <small class="text-muted" id="mobile-period-range">
-      {% if periods %}{{ periods[0].start_date.strftime('%-m/%-d') }} -- {{ periods[0].end_date.strftime('%-m/%-d') }}{% endif %}
-    </small>
-  </div>
-  <button class="btn btn-sm btn-outline-secondary" id="mobile-next-btn"
-          aria-label="Next period" {% if periods|length <= 1 %}disabled{% endif %}>
-    <i class="bi bi-chevron-right"></i>
-  </button>
-</div>
-
-{# --- Period Panels --- #}
-{% for period in periods %}
-<div class="mobile-period-panel{% if not loop.first %} d-none{% endif %}"
-     data-period-index="{{ loop.index0 }}"
-     data-period-label="{{ period.label }}"
-     data-period-range="{{ period.start_date.strftime('%-m/%-d') }} -- {{ period.end_date.strftime('%-m/%-d') }}">
-
-  {# --- Income Section (collapsible) --- #}
-  <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-income"
-         data-bs-toggle="collapse" data-bs-target="#mobile-income-{{ period.id }}"
-         aria-expanded="true" aria-controls="mobile-income-{{ period.id }}">
-      <span class="fw-bold small text-uppercase">
-        <i class="bi bi-chevron-down me-1"></i> Income
-      </span>
-      <span class="font-mono fw-bold">
-        {% set inc_total = subtotals[period.id].income %}
-        {% if inc_total %}${{ "{:,.0f}".format(inc_total) }}{% else %}$0{% endif %}
-      </span>
-    </div>
-    <div class="collapse show" id="mobile-income-{{ period.id }}">
-      <ul class="list-group list-group-flush">
-        {% set ns_inc = namespace(current_group='') %}
-        {% for rk in income_row_keys %}
-          {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
-          {% if matched %}
-            {% if rk.group_name != ns_inc.current_group %}
-              {% set ns_inc.current_group = rk.group_name %}
-              <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
-                {{ rk.group_name }}
-              </li>
+{% if plan_periods %}
+<div class="accordion" id="plan-accordion">
+  {% for period in plan_periods %}
+    {% set subtotal = plan_subtotals[period.id] if plan_subtotals is defined and period.id in plan_subtotals else none %}
+    {% set bal = plan_balances.get(period.id) if plan_balances is defined else none %}
+    {% set _bal_class = '' %}
+    {% if bal is not none %}
+      {% if bal < 0 %}
+        {% set _bal_class = 'balance-negative' %}
+      {% elif low_balance_threshold is defined and bal < low_balance_threshold %}
+        {% set _bal_class = 'balance-low' %}
+      {% endif %}
+    {% endif %}
+    {% set _income_rows = [] %}
+    {% if plan_income_row_keys is defined %}
+      {% for rk in plan_income_row_keys %}
+        {% if plan_matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id)) %}
+          {% set _ = _income_rows.append(rk) %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {% set _expense_rows = [] %}
+    {% if plan_expense_row_keys is defined %}
+      {% for rk in plan_expense_row_keys %}
+        {% if plan_matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id)) %}
+          {% set _ = _expense_rows.append(rk) %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    <div class="accordion-item mb-2 border rounded">
+      {# Accordion header: a button collapsed by default so every Plan
+         visit starts with a compact scan.  Layout puts the period
+         label / income+expense recap on the left and the projected
+         balance on the right (the headline number the user came here
+         for).  No Bootstrap `.accordion-button` class because that
+         class injects a built-in chevron and tightens padding in a
+         way that fights the balance-right layout; the lighter
+         `.btn` shell keeps the collapse toggle while leaving the
+         visual to our utility classes. #}
+      <button type="button"
+              class="btn w-100 text-start p-3 collapsed plan-period-toggle"
+              data-bs-toggle="collapse"
+              data-bs-target="#plan-period-{{ period.id }}"
+              aria-expanded="false"
+              aria-controls="plan-period-{{ period.id }}">
+        <div class="d-flex justify-content-between align-items-center w-100">
+          <div class="text-start">
+            <div class="fw-bold">
+              {{ period.start_date.strftime('%b %-d') }} -- {{ period.end_date.strftime('%b %-d') }}
+            </div>
+            {% if subtotal is not none %}
+              <small class="text-muted">
+                Income ${{ "{:,.0f}".format(subtotal.income) }}
+                &middot;
+                Expense ${{ "{:,.0f}".format(subtotal.expense) }}
+                &middot;
+                Net
+                <span class="{{ 'balance-negative' if subtotal.net < 0 else '' }}">
+                  ${{ "{:,.0f}".format(subtotal.net) }}
+                </span>
+              </small>
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'plan', entry_lists, today) }}
+          </div>
+          {% if bal is not none %}
+            <div class="text-end ms-2">
+              <div class="font-mono fw-bold fs-5 {{ _bal_class }}">
+                {% if bal < 0 %}
+                  <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+                {% elif low_balance_threshold is defined and bal < low_balance_threshold %}
+                  <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
+                {% endif %}
+                ${{ "{:,.2f}".format(bal) }}
+              </div>
+              <small class="text-muted">Projected</small>
+            </div>
           {% endif %}
-        {% endfor %}
-      </ul>
-    </div>
-  </div>
+        </div>
+      </button>
 
-  {# --- Expense Section (collapsible) --- #}
-  <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-expense"
-         data-bs-toggle="collapse" data-bs-target="#mobile-expense-{{ period.id }}"
-         aria-expanded="true" aria-controls="mobile-expense-{{ period.id }}">
-      <span class="fw-bold small text-uppercase">
-        <i class="bi bi-chevron-down me-1"></i> Expenses
-      </span>
-      <span class="font-mono fw-bold">
-        {% set exp_total = subtotals[period.id].expense %}
-        {% if exp_total %}${{ "{:,.0f}".format(exp_total) }}{% else %}$0{% endif %}
-      </span>
-    </div>
-    <div class="collapse show" id="mobile-expense-{{ period.id }}">
-      <ul class="list-group list-group-flush">
-        {% set ns_exp = namespace(current_group='') %}
-        {% for rk in expense_row_keys %}
-          {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
-          {% if matched %}
-            {% if rk.group_name != ns_exp.current_group %}
-              {% set ns_exp.current_group = rk.group_name %}
-              <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
-                {{ rk.group_name }}
-              </li>
-            {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'plan', entry_lists, today) }}
+      {# Accordion body: collapsed by default.  `data-bs-parent` is
+         what gives the stack mutually-exclusive expansion -- opening
+         one card auto-closes any other open card under
+         `#plan-accordion`. #}
+      <div id="plan-period-{{ period.id }}"
+           class="collapse"
+           data-bs-parent="#plan-accordion">
+        <div class="p-2">
+          {% if _income_rows %}
+            <div class="card mb-2">
+              <div class="card-header py-2 mobile-section-income">
+                <span class="fw-bold small text-uppercase">Income</span>
+              </div>
+              <ul class="list-group list-group-flush">
+                {% set ns_inc = namespace(current_group='') %}
+                {% for rk in _income_rows %}
+                  {% if rk.group_name != ns_inc.current_group %}
+                    {% set ns_inc.current_group = rk.group_name %}
+                    <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
+                      {{ rk.group_name }}
+                    </li>
+                  {% endif %}
+                  {{ render_row_static(rk, period, plan_matched_by_row_period) }}
+                {% endfor %}
+              </ul>
+            </div>
           {% endif %}
-        {% endfor %}
-      </ul>
+
+          {% if _expense_rows %}
+            <div class="card mb-2">
+              <div class="card-header py-2 mobile-section-expense">
+                <span class="fw-bold small text-uppercase">Expenses</span>
+              </div>
+              <ul class="list-group list-group-flush">
+                {% set ns_exp = namespace(current_group='') %}
+                {% for rk in _expense_rows %}
+                  {% if rk.group_name != ns_exp.current_group %}
+                    {% set ns_exp.current_group = rk.group_name %}
+                    <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
+                      {{ rk.group_name }}
+                    </li>
+                  {% endif %}
+                  {{ render_row_static(rk, period, plan_matched_by_row_period) }}
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+
+          {% if not _income_rows and not _expense_rows %}
+            <div class="text-center text-muted small py-3">
+              No scheduled transactions for this period.
+            </div>
+          {% endif %}
+        </div>
+      </div>
     </div>
-  </div>
-
-  {# --- Net Cash Flow Bar --- #}
-  {% set net = subtotals[period.id].net %}
-  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
-    <span class="fw-bold small">Net Cash Flow</span>
-    <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
-      {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
-      ${{ "{:,.0f}".format(net) }}
-    </span>
-  </div>
-
-  {# --- Projected End Balance --- #}
-  {% set bal = balances.get(period.id) %}
-  {% if bal is not none %}
-  <div class="card mb-3 {{ 'border-danger' if bal < 0 else '' }}">
-    <div class="card-body py-2 d-flex justify-content-between align-items-center">
-      <span class="fw-bold small">
-        {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
-        Projected Balance
-      </span>
-      <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
-        ${{ "{:,.2f}".format(bal) }}
-      </span>
-    </div>
-  </div>
-  {% endif %}
-
+  {% endfor %}
 </div>
-{% endfor %}
+{% else %}
+<div class="text-center text-muted py-5">
+  <i class="bi bi-calendar-x fs-display"></i>
+  <p class="mt-2">No future pay periods generated yet.</p>
+</div>
+{% endif %}
