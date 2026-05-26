@@ -300,10 +300,6 @@
   <!-- App JS -->
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
   <script src="{{ url_for('static', filename='js/grid_edit.js') }}"></script>
-  {# swipe.js exposes window.attachSwipeAction and must load before
-     mobile_grid.js and companion.js, both of which call it during
-     module init (mobile-first v3 plan Commit 13). #}
-  <script src="{{ url_for('static', filename='js/swipe.js') }}"></script>
   <script src="{{ url_for('static', filename='js/mobile_grid.js') }}"></script>
   <script src="{{ url_for('static', filename='js/progress_bar.js') }}"></script>
   <script src="{{ url_for('static', filename='js/categories.js') }}"></script>
