@@ -4964,17 +4964,19 @@ class TestMobileCardActionBar:
             assert f'hx-target="#txn-cell-{txn.id}"' in rendered
             assert 'hx-swap="outerHTML"' in rendered
 
-    def test_card_wrapper_emits_bar_sibling_in_grid_page(
+    def test_card_wrapper_emits_expansion_sibling_in_grid_page(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """C7-integration: the full ``/grid`` page emits the action-bar
+        """C7-integration: the full ``/grid`` page emits the expansion
         sibling next to each mobile card.
 
         Asserts the macro-level wiring: ``render_row_card`` wraps
         each ``<li>`` in ``<div class="mobile-card-wrapper">`` and
-        emits ``_mobile_card_actions.html`` after it.  Without this
-        integration, the unit-level checks above would pass while
-        the bar still never appears on the rendered page.
+        emits a sibling ``<div class="collapse mobile-card-expansion">``
+        bundling progress detail, envelope entries, and the action
+        button row.  Without this integration, the unit-level checks
+        above would pass while the expansion still never appears on
+        the rendered page.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
@@ -5002,32 +5004,39 @@ class TestMobileCardActionBar:
             assert response.status_code == 200
             body = response.data.decode("utf-8")
 
-            # Wrapper exists; action-bar id is per-tab-prefixed so the
+            # Wrapper exists; expansion id is per-tab-prefixed so the
             # same txn rendered in both This Period and Plan tabs does
             # not violate the HTML unique-id rule.  See the
             # `id_prefix` param on render_row_card.
             assert 'class="mobile-card-wrapper"' in body
-            assert f'id="card-actions-tp-{txn_id}"' in body
-            assert f'id="card-actions-plan-{txn_id}"' in body
+            assert f'id="card-expansion-tp-{txn_id}"' in body
+            assert f'id="card-expansion-plan-{txn_id}"' in body
 
-    def test_action_bar_id_uses_prefix_when_supplied(
+    def test_card_expansion_id_uses_prefix_when_supplied(
         self, app, seed_user, seed_periods_today,
     ):
-        """C7-integration: ``id_prefix`` namespaces the action-bar element id.
+        """C7-integration: ``id_prefix`` namespaces the expansion wrapper id.
 
         The "This Period" and "Plan" tabs render the same window of
         pay periods at the same time, so without per-tab namespacing
-        the same txn yields a duplicate ``id="card-actions-<id>"``
+        the same txn yields a duplicate ``id="card-expansion-<id>"``
         in two places.  The ``id_prefix`` parameter on
-        ``render_row_card`` (forwarded into the action-bar partial
-        via ``with context``) is the fix: This Period passes
+        ``render_row_card`` is the fix: This Period passes
         ``id_prefix='tp'``, Plan passes ``id_prefix='plan'``, and an
-        empty prefix preserves the simpler legacy id form for the
-        direct-render unit tests above.
+        empty prefix preserves the simpler unprefixed form for
+        direct-render call sites.
 
         Locks the three branches explicitly so a future refactor of
-        the formula cannot regress one without flagging.
+        the formula cannot regress one without flagging.  Renders the
+        macro through a tiny ``from_string`` template because the
+        per-tab id wiring now lives on the wrapper emitted by
+        ``render_row_card`` rather than the inner action-button
+        partial (the partial used to host its own collapse; the
+        unified collapse covers progress + entries + actions and is
+        owned by the macro).
         """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
@@ -5049,24 +5058,43 @@ class TestMobileCardActionBar:
             db.session.add(txn)
             db.session.commit()
 
-            template = app.jinja_env.get_template(
-                "grid/_mobile_card_actions.html",
+            rk = SimpleNamespace(
+                category_id=txn.category_id,
+                template_id=None,
+                txn_name=txn.name,
+                display_name=txn.name,
+            )
+            period = SimpleNamespace(id=current.id)
+            matched = {
+                (rk.category_id, rk.template_id, rk.txn_name, period.id): [txn],
+            }
+
+            tmpl = app.jinja_env.from_string(
+                "{% from 'grid/_grid_row_macros.html'"
+                " import render_row_card %}"
+                "{{ render_row_card(rk, period, matched, {},"
+                " can_edit, prefix) }}",
             )
             with app.test_request_context("/"):
-                no_prefix = template.render(txn=txn, can_edit=True)
-                tp_prefix = template.render(
-                    txn=txn, can_edit=True, id_prefix="tp",
+                no_prefix = tmpl.render(
+                    rk=rk, period=period, matched=matched,
+                    can_edit=True, prefix="",
                 )
-                plan_prefix = template.render(
-                    txn=txn, can_edit=True, id_prefix="plan",
+                tp_prefix = tmpl.render(
+                    rk=rk, period=period, matched=matched,
+                    can_edit=True, prefix="tp",
+                )
+                plan_prefix = tmpl.render(
+                    rk=rk, period=period, matched=matched,
+                    can_edit=True, prefix="plan",
                 )
 
-            assert f'id="card-actions-{txn.id}"' in no_prefix
-            assert f'id="card-actions-tp-{txn.id}"' in tp_prefix
-            assert f'id="card-actions-plan-{txn.id}"' in plan_prefix
+            assert f'id="card-expansion-{txn.id}"' in no_prefix
+            assert f'id="card-expansion-tp-{txn.id}"' in tp_prefix
+            assert f'id="card-expansion-plan-{txn.id}"' in plan_prefix
             # Prefixed renders must NOT also emit the unprefixed form.
-            assert f'id="card-actions-{txn.id}"' not in tp_prefix
-            assert f'id="card-actions-{txn.id}"' not in plan_prefix
+            assert f'id="card-expansion-{txn.id}"' not in tp_prefix
+            assert f'id="card-expansion-{txn.id}"' not in plan_prefix
 
     def test_mobile_grid_includes_plan_partial(
         self, app, auth_client, seed_user, seed_periods_today,

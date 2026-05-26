@@ -128,7 +128,7 @@ def _find_projected_card_id(page: Page, pane_selector: str) -> str:
     ``AssertionError`` if nothing in the pane qualifies.
     """
     cards = page.locator(
-        f"{pane_selector} .mobile-card-wrapper:has(.mobile-card-action-bar form) "
+        f"{pane_selector} .mobile-card-wrapper:has(.mobile-card-expansion form) "
         ".mobile-txn-card[data-mobile-txn-id]"
     )
     if cards.count() == 0:
@@ -163,7 +163,7 @@ def _open_bottom_sheet_mobile(page: Page, txn_id: str) -> None:
         card.locator(
             'xpath=ancestor::div[contains(concat(" ", @class, " "), " mobile-card-wrapper ")][1]'
         )
-        .locator(".mobile-card-action-bar")
+        .locator(".mobile-card-expansion")
         .first.locator(f'button.txn-expand-btn[data-txn-id="{txn_id}"]')
     )
     if open_full_btn.count() != 1:

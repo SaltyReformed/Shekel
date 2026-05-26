@@ -66,12 +66,22 @@
 {#- Mobile grid card.  Emits zero or more
     `<div class="mobile-card-wrapper">` blocks, one per matched
     transaction for the given (rk, period) cell.  Each wrapper holds
-    the card `<li>` plus optional sibling sections (progress detail,
-    the inline entries list for envelope templates, and the collapsed
-    action bar from `_mobile_card_actions.html`).  The wrapper exists
-    so the tap-to-toggle handler in `app/static/js/mobile_grid.js`
-    can find "the action bar associated with this card" via
-    `card.closest('.mobile-card-wrapper').querySelector('.mobile-card-action-bar')`.
+    the card `<li>` plus a single sibling
+    `<div class="collapse mobile-card-expansion">` that bundles all
+    detail blocks (progress detail, the inline entries list for
+    envelope templates, and the action button row from
+    `_mobile_card_actions.html`) behind one tap-to-toggle.  The
+    wrapper exists so the tap-to-toggle handler in
+    `app/static/js/mobile_grid.js` can find "the expansion associated
+    with this card" via
+    `card.closest('.mobile-card-wrapper').querySelector('.mobile-card-expansion')`.
+
+    Before this change every envelope card rendered the progress bar,
+    the entries list, and the add-purchase form expanded by default,
+    while regular cards rendered just name + amount.  The asymmetry
+    made the mobile grid feel cluttered and disjointed; folding all
+    detail content into one collapse gives every card the same
+    collapsed shape (header only) regardless of template type.
 
     Group-header rows (the v1
     `<li class="... mobile-group-header">` that appears once per
@@ -87,7 +97,7 @@
 
     can_edit=False: companion read-only consumer (wired in
     Commit 13 of the mobile-first v3 implementation).  Drops the
-    `data-mobile-*` attributes so the action bar's owner-only
+    `data-mobile-*` attributes so the expansion's owner-only
     buttons (Edit Amount, Open Full) are absent for companions.
     The Mark Paid button is preserved through the
     `_mobile_card_actions.html` partial because companions are
@@ -95,13 +105,13 @@
     precedent.
 
     id_prefix (default ''): per-tab namespace for the
-    action-bar element id so the same txn can render in multiple
+    expansion wrapper id so the same txn can render in multiple
     visible tabs without violating the HTML unique-id rule.  The
     "This Period" partial passes `id_prefix='tp'`, the "Plan"
     partial passes `id_prefix='plan'`; an empty prefix omits the
-    extra segment entirely so direct-render call sites (the unit
-    tests in `TestMobileCardActionBar` that bypass the macro) keep
-    the simpler `card-actions-<id>` form.  Mirrors the existing
+    extra segment entirely so direct-render call sites (unit tests
+    that render the macro without specifying a prefix) keep the
+    simpler `card-expansion-<id>` form.  Mirrors the existing
     `mobile-tp-` vs `mobile-` collapse-id convention on the income
     / expense section headers in the two partials.
 
@@ -109,15 +119,15 @@
     `entry_service.build_entry_lists_dict` keyed by txn_id with
     `entries` / `remaining` / `out_of_period_ids` per envelope
     transaction.  When provided, the macro renders
-    `grid/_transaction_entries.html` inline below the progress
-    detail for any matched envelope txn whose id appears in the
-    dict; when omitted (or empty), the inline entries section is
-    skipped entirely.  Server-side render replaces the per-card
-    HTMX `hx-trigger="load"` lazy-loader that landed in Commit 13
-    -- that fan-out (~60 parallel GETs on a 6-period grid with
-    ~10 envelopes per period) blew past the `RATELIMIT_DEFAULT`
-    ceiling of "30 per minute" and left the over-limit cards
-    stuck on a never-resolving loading spinner.
+    `grid/_transaction_entries.html` inline inside the expansion
+    for any matched envelope txn whose id appears in the dict; when
+    omitted (or empty), the inline entries section is skipped
+    entirely.  Server-side render replaces the per-card HTMX
+    `hx-trigger="load"` lazy-loader that landed in Commit 13 --
+    that fan-out (~60 parallel GETs on a 6-period grid with ~10
+    envelopes per period) blew past the `RATELIMIT_DEFAULT` ceiling
+    of "30 per minute" and left the over-limit cards stuck on a
+    never-resolving loading spinner.
 
     today (default none): a `datetime.date` (or ISO string) used
     by `_transaction_entries.html` as the default value of the
@@ -139,8 +149,8 @@
     the green button at rest; WebKit-based browsers occasionally
     layered it behind the amount text mid-swipe), plus the user
     feedback that an accidental swipe could mutate state, outweighed
-    the one-tap shortcut.  Mark Paid still lives in the inline
-    action bar one tap below the card.
+    the one-tap shortcut.  Mark Paid still lives in the action
+    button row inside the expansion one tap below the card.
 -#}
 {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
 {% for txn in matched %}
@@ -151,7 +161,7 @@
     {% set remaining = es.remaining %}
     {% set over_budget = es.over_budget %}
   {% endif %}
-  {% set _aid = "card-actions-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
+  {% set _aid = "card-expansion-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
   <div class="mobile-card-wrapper">
     <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
         {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
@@ -184,71 +194,91 @@
         {% endif %}
       </span>
     </li>
-    {# Progress detail (visual progress bar + "X entries / $Y left"
-       summary line).  Mirrors the legacy companion card design at
-       ``companion/_transaction_card.html`` for tracked envelope
-       transactions with entries.  Appears below the card header row
-       only when ``show_progress`` is true (Projected status + entries
-       present).  The unified macro (mobile-first v3 plan Commit 13)
-       now renders this for both owner mobile and companion mobile so
-       both surfaces share the same visual progress vocabulary.
-       The ``data-progress-pct`` attribute is consumed by
-       ``app/static/js/progress_bar.js`` to set the bar's width at
-       runtime (CSP ``style-src 'self'`` forbids inline ``style="..."``,
-       see F-036). #}
-    {% if show_progress %}
-      <div class="px-3 pb-2 mobile-txn-progress">
-        <div class="progress progress-h-4">
-          <div class="progress-bar{% if over_budget %} bg-danger{% endif %}"
-               role="progressbar"
-               data-progress-pct="{{ [es.pct, 100]|min }}"
-               aria-valuenow="{{ es.pct|int }}"
-               aria-valuemin="0"
-               aria-valuemax="100"></div>
+    {# Unified expansion -- one Bootstrap collapse holding every
+       detail block (progress detail, envelope entries list, action
+       button row).  Before this commit the progress and entries
+       sections rendered expanded by default, leaving envelope cards
+       visually heavier than regular cards.  Folding everything into
+       one tap-to-reveal panel gives every card the same collapsed
+       shape (header `<li>` only) regardless of template type and
+       keeps the tap-to-toggle wiring single-source: one collapse
+       per card, one delegated click handler in
+       `app/static/js/mobile_grid.js`.
+
+       HTMX swaps on `#entry-list-<txn.id>` keep working because
+       Bootstrap collapse state lives on this parent div; the
+       swap replaces only the inner entries div, leaving the
+       `.show` class intact on the wrapper.  When the entries list
+       grows or shrinks after a swap, the collapse's auto-height
+       (CSS `height: auto` when `.show` is applied) naturally
+       reflows without recomputing the transition. #}
+    <div class="collapse mobile-card-expansion" id="{{ _aid }}">
+      {# Progress detail (visual progress bar + "X entries / $Y left"
+         summary line).  Mirrors the legacy companion card design at
+         ``companion/_transaction_card.html`` for tracked envelope
+         transactions with entries.  Appears only when
+         ``show_progress`` is true (Projected status + entries
+         present).  The unified macro (mobile-first v3 plan Commit 13)
+         renders this for both owner mobile and companion mobile so
+         both surfaces share the same visual progress vocabulary.
+         The ``data-progress-pct`` attribute is consumed by
+         ``app/static/js/progress_bar.js`` to set the bar's width at
+         runtime (CSP ``style-src 'self'`` forbids inline ``style="..."``,
+         see F-036). #}
+      {% if show_progress %}
+        <div class="px-3 pb-2 mobile-txn-progress">
+          <div class="progress progress-h-4">
+            <div class="progress-bar{% if over_budget %} bg-danger{% endif %}"
+                 role="progressbar"
+                 data-progress-pct="{{ [es.pct, 100]|min }}"
+                 aria-valuenow="{{ es.pct|int }}"
+                 aria-valuemin="0"
+                 aria-valuemax="100"></div>
+          </div>
+          <div class="d-flex justify-content-between small text-muted mt-1">
+            <span>{{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}</span>
+            <span class="font-mono{% if over_budget %} text-danger{% endif %}">
+              {% if remaining >= 0 %}
+                ${{ "{:,.0f}".format(remaining) }} left
+              {% else %}
+                ${{ "{:,.0f}".format(remaining|abs) }} over
+              {% endif %}
+            </span>
+          </div>
         </div>
-        <div class="d-flex justify-content-between small text-muted mt-1">
-          <span>{{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}</span>
-          <span class="font-mono{% if over_budget %} text-danger{% endif %}">
-            {% if remaining >= 0 %}
-              ${{ "{:,.0f}".format(remaining) }} left
-            {% else %}
-              ${{ "{:,.0f}".format(remaining|abs) }} over
-            {% endif %}
-          </span>
-        </div>
-      </div>
-    {% endif %}
-    {# Inline entries list for envelope-template transactions.  Owner
-       and companion both render this once the macro is the unified
-       producer (mobile-first v3 plan Commit 13).  Server-side render
-       (no HTMX ``hx-trigger="load"`` fan-out) -- with 6 visible periods
-       and ~10 envelope templates each, one grid page load fanned out
-       to ~60 parallel GETs on ``entries.list_entries`` and blew past
-       the ``RATELIMIT_DEFAULT`` ceiling of "30 per minute", leaving
-       the over-limit cards stuck on the loading spinner forever.
-       ``entry_lists`` (built by ``entry_service.build_entry_lists_dict``
-       on the route, passed via ``render_template`` context) carries
-       ``entries`` / ``remaining`` / ``out_of_period_ids`` for every
-       envelope txn; the include uses those plus ``today`` (also from
-       context) and the default ``editing_id=None`` to mirror what
-       ``_render_entry_list`` in ``app/routes/entries.py`` produces per
-       HTMX request.  The inner ``entry-list-<id>`` ID on the rendered
-       template still doubles up when the same txn appears in both
-       This Period and Plan tabs -- that pre-existing duplicate-ID
-       concern is left as-is; the entries-CRUD HTMX swaps still resolve
-       the first match on the page, matching the prior HTMX-loaded
-       behavior. #}
-    {% if txn.template and txn.template.is_envelope and entry_lists %}
-      {% set _entry_data = entry_lists.get(txn.id) %}
-      {% if _entry_data is not none %}
-        {% set entries = _entry_data.entries %}
-        {% set remaining = _entry_data.remaining %}
-        {% set out_of_period_ids = _entry_data.out_of_period_ids %}
-        {% set editing_id = none %}
-        {% include "grid/_transaction_entries.html" %}
       {% endif %}
-    {% endif %}
-    {% include "grid/_mobile_card_actions.html" with context %}
+      {# Inline entries list for envelope-template transactions.  Owner
+         and companion both render this once the macro is the unified
+         producer (mobile-first v3 plan Commit 13).  Server-side render
+         (no HTMX ``hx-trigger="load"`` fan-out) -- with 6 visible periods
+         and ~10 envelope templates each, one grid page load fanned out
+         to ~60 parallel GETs on ``entries.list_entries`` and blew past
+         the ``RATELIMIT_DEFAULT`` ceiling of "30 per minute", leaving
+         the over-limit cards stuck on the loading spinner forever.
+         ``entry_lists`` (built by ``entry_service.build_entry_lists_dict``
+         on the route, passed via ``render_template`` context) carries
+         ``entries`` / ``remaining`` / ``out_of_period_ids`` for every
+         envelope txn; the include uses those plus ``today`` (also from
+         context) and the default ``editing_id=None`` to mirror what
+         ``_render_entry_list`` in ``app/routes/entries.py`` produces per
+         HTMX request.  The inner ``entry-list-<id>`` ID on the rendered
+         template still doubles up when the same txn appears in both
+         This Period and Plan tabs -- that pre-existing duplicate-ID
+         concern is left as-is; the entries-CRUD HTMX swaps still resolve
+         the first match on the page, matching the prior HTMX-loaded
+         behavior. #}
+      {% if txn.template and txn.template.is_envelope and entry_lists %}
+        {% set _entry_data = entry_lists.get(txn.id) %}
+        {% if _entry_data is not none %}
+          {% set entries = _entry_data.entries %}
+          {% set remaining = _entry_data.remaining %}
+          {% set out_of_period_ids = _entry_data.out_of_period_ids %}
+          {% set editing_id = none %}
+          {% include "grid/_transaction_entries.html" %}
+        {% endif %}
+      {% endif %}
+      {% include "grid/_mobile_card_actions.html" with context %}
+    </div>
   </div>
 {% endfor %}
 {%- endmacro %}
