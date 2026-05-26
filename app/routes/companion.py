@@ -33,6 +33,7 @@ Rendering pipeline (mobile-first v3 plan Commit 13):
 """
 
 import logging
+from datetime import date
 
 from flask import Blueprint, redirect, render_template, url_for
 from flask_login import current_user, login_required
@@ -42,7 +43,7 @@ from app.enums import RoleEnum
 from app.extensions import db
 from app.models.category import Category
 from app.services import companion_service, grid_view_service, pay_period_service
-from app.services.entry_service import build_entry_sums_dict
+from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.exceptions import NotFoundError
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,12 @@ def _build_partial_context(transactions: list, period) -> dict:
         income_row_keys, expense_row_keys, [period], transactions,
     )
     entry_sums = build_entry_sums_dict(transactions)
+    # Pre-render context for the inline envelope entries list -- see
+    # the matching comment in app/routes/grid.py::_build_grid_row_data
+    # for the rate-limit rationale.  Companion shares the macro with
+    # owner mobile (mobile-first v3 plan Commit 13), so it needs the
+    # same context shape.
+    entry_lists = build_entry_lists_dict(transactions)
     return {
         "periods": [period],
         "current_period": period,
@@ -111,6 +118,8 @@ def _build_partial_context(transactions: list, period) -> dict:
         "expense_row_keys": expense_row_keys,
         "matched_by_row_period": matched_by_row_period,
         "entry_sums": entry_sums,
+        "entry_lists": entry_lists,
+        "today": date.today(),
         "can_edit": False,
         "show_period_nav": False,
     }

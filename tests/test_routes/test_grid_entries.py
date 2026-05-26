@@ -22,7 +22,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transaction_entry import TransactionEntry
 from app.models.ref import Status, TransactionType
-from app.services.entry_service import build_entry_sums_dict
+from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services import pay_period_service
 
 
@@ -248,6 +248,168 @@ class TestBuildEntrySumsDict:
             sums = build_entry_sums_dict([txn])[txn.id]
             assert sums["remaining"] == Decimal("-100.00")
             assert sums["over_budget"] is True
+
+
+class TestBuildEntryListsDict:
+    """Unit tests for the ``build_entry_lists_dict`` helper.
+
+    The helper pre-computes the entry-list rendering inputs that the
+    grid + companion routes feed to ``render_row_card`` so the
+    inline ``_transaction_entries.html`` include can render on the
+    initial response instead of fanning out to one ``/entries`` GET
+    per envelope card (which blew past ``RATELIMIT_DEFAULT`` of
+    "30 per minute" on a 6-period grid).  Tests mirror the
+    ``TestBuildEntrySumsDict`` shape above.
+    """
+
+    def test_envelope_with_entries_has_data(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Envelope txn with entries appears in result with full data.
+
+        Arithmetic: $500 estimated, two debit entries $150 + $80 =
+        $230; remaining = 500 - 230 = 270.
+        """
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            _add_entry(txn, seed_user, Decimal("150.00"))
+            _add_entry(txn, seed_user, Decimal("80.00"))
+            db.session.commit()
+
+            result = build_entry_lists_dict([txn])
+
+            assert txn.id in result
+            data = result[txn.id]
+            assert len(data["entries"]) == 2
+            assert data["remaining"] == Decimal("270.00")
+            assert isinstance(data["remaining"], Decimal)
+            # The seeded entries are dated 2026-04-12; whether they
+            # fall inside the seed_periods_today range depends on the
+            # period dates -- assert the set is well-formed without
+            # over-constraining the membership.
+            assert isinstance(data["out_of_period_ids"], set)
+
+    def test_envelope_without_entries_still_included(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Envelope txn with zero entries is included with empty list.
+
+        Mirrors the macro's expectation: an envelope card without
+        entries still renders the entries section (showing "No
+        purchases recorded yet" + the add-entry form), so the dict
+        must carry the empty-list entry rather than excluding the
+        txn.  Remaining equals the full estimated amount.
+        """
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            db.session.commit()
+
+            result = build_entry_lists_dict([txn])
+
+            assert txn.id in result
+            data = result[txn.id]
+            assert data["entries"] == []
+            assert data["remaining"] == Decimal("500.00")
+            assert data["out_of_period_ids"] == set()
+
+    def test_non_envelope_excluded(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Non-envelope (no template) txn is NOT in the result dict.
+
+        The macro's ``txn.template.is_envelope`` guard means the
+        inline entries section is only rendered for envelope
+        templates.  Pre-computing entries for non-envelopes would
+        waste work and leak a misleading entry record.
+        """
+        with app.app_context():
+            txn = _create_plain_txn(seed_user, seed_periods_today)
+            db.session.commit()
+
+            result = build_entry_lists_dict([txn])
+
+            assert txn.id not in result
+
+    def test_non_envelope_template_excluded(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Txn whose template has is_envelope=False is NOT in the result.
+
+        A template can exist without enabling envelope tracking
+        (recurring bills, e.g. mortgage).  Such transactions do not
+        get inline entries.
+        """
+        with app.app_context():
+            expense_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Expense").one()
+            )
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                name="Mortgage",
+                default_amount=Decimal("2000.00"),
+                is_envelope=False,
+            )
+            db.session.add(template)
+            db.session.flush()
+            txn = Transaction(
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Mortgage",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                template_id=template.id,
+                estimated_amount=Decimal("2000.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            result = build_entry_lists_dict([txn])
+
+            assert txn.id not in result
+
+    def test_multiple_envelopes_independent(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Each envelope txn's data is computed independently.
+
+        Two envelope txns with different entry counts and remaining
+        balances must produce two independent dict entries with the
+        correct per-txn values.
+        """
+        with app.app_context():
+            txn1, _ = _create_tracked_txn(
+                seed_user, seed_periods_today, estimated=Decimal("500.00"),
+            )
+            _add_entry(txn1, seed_user, Decimal("100.00"))
+
+            txn2, _ = _create_tracked_txn(
+                seed_user, seed_periods_today, period_index=1,
+                estimated=Decimal("300.00"),
+            )
+            _add_entry(txn2, seed_user, Decimal("250.00"))
+            db.session.commit()
+
+            result = build_entry_lists_dict([txn1, txn2])
+
+            assert result[txn1.id]["remaining"] == Decimal("400.00")
+            assert len(result[txn1.id]["entries"]) == 1
+            assert result[txn2.id]["remaining"] == Decimal("50.00")
+            assert len(result[txn2.id]["entries"]) == 1
+
+    def test_empty_list_returns_empty_dict(self, app):
+        """Empty transaction list returns empty dict, no errors."""
+        with app.app_context():
+            result = build_entry_lists_dict([])
+            assert result == {}
 
 
 class TestCellProgressDisplay:

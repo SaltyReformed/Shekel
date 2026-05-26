@@ -37,6 +37,19 @@
                             consumed by `render_row_card` for the
                             progress-bar render path on Projected
                             envelopes with entries.
+     entry_lists         -- (optional) dict from
+                            `entry_service.build_entry_lists_dict`
+                            mapping envelope txn_id ->
+                            {entries, remaining, out_of_period_ids}.
+                            Forwarded to `render_row_card` so the
+                            inline `_transaction_entries.html`
+                            renders server-side rather than via the
+                            per-card HTMX `hx-trigger="load"`
+                            fan-out.  Skipped silently when missing.
+     today               -- (optional) `datetime.date` used as the
+                            add-entry form's default `entry_date`
+                            inside the inline entries include.
+                            Forwarded to `render_row_card`.
      can_edit            -- (optional) bool, default True; forwarded
                             to `render_row_card` so future companion
                             consumers can drop the bottom-sheet /
@@ -102,7 +115,7 @@
                 {{ rk.group_name }}
               </li>
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'plan') }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'plan', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>
@@ -134,7 +147,7 @@
                 {{ rk.group_name }}
               </li>
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'plan') }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'plan', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>
