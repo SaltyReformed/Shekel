@@ -25,7 +25,7 @@ from app.models.category import Category
 from app.models.ref import Status, TransactionType
 from app.services import balance_resolver, grid_view_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
-from app.services.entry_service import build_entry_sums_dict
+from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
@@ -301,6 +301,14 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     )
 
     entry_sums = build_entry_sums_dict(transactions)
+    # Pre-render context for the inline mobile entries list on envelope
+    # cards.  Computed here (server-side) rather than via per-card HTMX
+    # ``hx-trigger="load"`` fan-out to keep one grid page load from
+    # blowing past the ``RATELIMIT_DEFAULT`` ceiling of "30 per minute"
+    # on the entries endpoint -- with 6 visible periods and ~10 envelope
+    # templates each, the lazy-load shape generated ~60 parallel GETs
+    # and the over-limit cards stuck on the loading spinner forever.
+    entry_lists = build_entry_lists_dict(transactions)
 
     txn_by_period = {}
     for txn in transactions:
@@ -311,6 +319,7 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
         expense_row_keys,
         matched_by_row_period,
         entry_sums,
+        entry_lists,
         txn_by_period,
     )
 
@@ -360,6 +369,7 @@ def index():
         expense_row_keys,
         matched_by_row_period,
         entry_sums,
+        entry_lists,
         txn_by_period,
     ) = _build_grid_row_data(
         all_transactions, ctx.periods, show_all, all_categories,
@@ -400,6 +410,7 @@ def index():
         ),
         stale_anchor_warning=stale_anchor_warning,
         entry_sums=entry_sums,
+        entry_lists=entry_lists,
         matched_by_row_period=matched_by_row_period,
     )
 

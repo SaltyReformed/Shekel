@@ -442,6 +442,70 @@ def build_entry_sums_dict(
     return result
 
 
+def build_entry_lists_dict(
+    transactions: list,
+) -> dict[int, dict]:
+    """Build a {txn_id: entry_list_data} mapping for envelope transactions.
+
+    Pre-computes the entry-list rendering inputs that
+    ``_render_entry_list`` in ``app/routes/entries.py`` produces per
+    HTMX request, so the mobile grid macro can render entries inline
+    on the initial grid response instead of lazy-loading them one
+    request per envelope card.  With 6 visible pay periods and ~10
+    envelope templates each, the lazy-load fan-out is ~60 parallel
+    GETs on the entries endpoint, which exceeds the
+    ``RATELIMIT_DEFAULT`` ceiling of ``30 per minute`` and leaves the
+    over-limit cards stuck on the loading spinner.  Server-side
+    rendering eliminates the fan-out entirely.
+
+    Only envelope templates (``txn.template.is_envelope``) get an
+    entry, matching the macro's ``is_envelope`` guard for whether to
+    render the inline entries section.  Non-envelope transactions
+    and orphans (no template) are silently skipped.
+
+    Pure function -- expects ``entries`` and ``template`` to be eager-
+    loaded on the Transaction objects.  Mirrors
+    ``build_entry_sums_dict``'s pure-function contract above.
+
+    Args:
+        transactions: List of Transaction objects with ``entries`` and
+            ``template`` accessible.
+
+    Returns:
+        dict mapping envelope transaction ID to a dict with three
+        keys consumed by ``grid/_transaction_entries.html``:
+
+          - ``entries`` (list[TransactionEntry]): the entries ordered
+            by entry_date, matching the order the entries relationship
+            already enforces on the Transaction model.
+          - ``remaining`` (Decimal): estimated_amount minus the sum of
+            all entries (debit + credit), via :func:`compute_remaining`.
+          - ``out_of_period_ids`` (set[int]): entry IDs whose
+            ``entry_date`` falls outside the parent pay period's date
+            range, surfacing the OP-4 date-awareness warning that
+            ``_render_entry_list`` would emit.
+
+        Empty dict when no transaction in the input has an envelope
+        template.
+    """
+    result: dict[int, dict] = {}
+    for txn in transactions:
+        if not (txn.template and txn.template.is_envelope):
+            continue
+        entries = list(txn.entries)
+        remaining = compute_remaining(txn.estimated_amount, entries)
+        out_of_period_ids = {
+            e.id for e in entries
+            if not check_entry_date_in_period(e.entry_date, txn)
+        }
+        result[txn.id] = {
+            "entries": entries,
+            "remaining": remaining,
+            "out_of_period_ids": out_of_period_ids,
+        }
+    return result
+
+
 def compute_remaining(
     estimated_amount: Decimal,
     entries: list[TransactionEntry],

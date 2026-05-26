@@ -62,7 +62,7 @@
 {%- endmacro %}
 
 
-{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True, id_prefix='') -%}
+{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
 {#- Mobile grid card.  Emits zero or more
     `<div class="mobile-card-wrapper">` blocks, one per matched
     transaction for the given (rk, period) cell.  Each wrapper holds
@@ -122,6 +122,27 @@
     the simpler `card-actions-<id>` form.  Mirrors the existing
     `mobile-tp-` vs `mobile-` collapse-id convention on the income
     / expense section headers in the two partials.
+
+    entry_lists (default none): dict from
+    `entry_service.build_entry_lists_dict` keyed by txn_id with
+    `entries` / `remaining` / `out_of_period_ids` per envelope
+    transaction.  When provided, the macro renders
+    `grid/_transaction_entries.html` inline below the progress
+    detail for any matched envelope txn whose id appears in the
+    dict; when omitted (or empty), the inline entries section is
+    skipped entirely.  This replaces the per-card HTMX
+    `hx-trigger="load"` lazy-loader that landed in Commit 13 --
+    that fan-out (~60 parallel GETs on a 6-period grid with ~10
+    envelopes per period) blew past the `RATELIMIT_DEFAULT`
+    ceiling of "30 per minute" and left the over-limit cards
+    stuck on a never-resolving loading spinner.
+
+    today (default none): a `datetime.date` (or ISO string) used
+    by `_transaction_entries.html` as the default value of the
+    add-entry form's hidden `entry_date` input.  The grid and
+    companion routes pass `date.today()`; macro callers that
+    don't render entries (e.g. unit tests that pass no
+    `entry_lists`) can leave this `none`.
 
     NOTE: the `data-mobile-xfer-id` guard uses `txn.transfer_id`
     rather than a (not-yet-defined) `txn.is_transfer_shadow`
@@ -248,27 +269,35 @@
         </div>
       </div>
     {% endif %}
-    {# Entries lazy-loader for tracked envelope transactions.  Mirrors
-       the legacy companion card's inline entries section: HTMX fetches
-       the per-transaction entries list on page load so the initial
-       grid response stays light.  Owner and companion both render this
-       once the macro is the unified producer (mobile-first v3 plan
-       Commit 13).  The unique id namespaces the loader by id_prefix
-       so the same txn can render in multiple tabs (This Period + Plan)
-       without violating HTML unique-id; bare id_prefix='' is the
-       direct-render path (e.g. unit tests bypassing the partial). #}
-    {% if txn.template and txn.template.is_envelope %}
-      <div hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"
-           hx-trigger="load"
-           hx-target="this"
-           hx-swap="innerHTML"
-           id="mobile-card-entries-{{ (id_prefix ~ '-' if id_prefix else '') }}{{ txn.id }}">
-        <div class="text-center py-2">
-          <span class="spinner-border spinner-border-sm" role="status">
-            <span class="visually-hidden">Loading entries...</span>
-          </span>
-        </div>
-      </div>
+    {# Inline entries list for envelope-template transactions.  Owner
+       and companion both render this once the macro is the unified
+       producer (mobile-first v3 plan Commit 13).  Server-side render
+       (no HTMX ``hx-trigger="load"`` fan-out) -- with 6 visible periods
+       and ~10 envelope templates each, one grid page load fanned out
+       to ~60 parallel GETs on ``entries.list_entries`` and blew past
+       the ``RATELIMIT_DEFAULT`` ceiling of "30 per minute", leaving
+       the over-limit cards stuck on the loading spinner forever.
+       ``entry_lists`` (built by ``entry_service.build_entry_lists_dict``
+       on the route, passed via ``render_template`` context) carries
+       ``entries`` / ``remaining`` / ``out_of_period_ids`` for every
+       envelope txn; the include uses those plus ``today`` (also from
+       context) and the default ``editing_id=None`` to mirror what
+       ``_render_entry_list`` in ``app/routes/entries.py`` produces per
+       HTMX request.  The inner ``entry-list-<id>`` ID on the rendered
+       template still doubles up when the same txn appears in both
+       This Period and Plan tabs -- that pre-existing duplicate-ID
+       concern is left as-is; the entries-CRUD HTMX swaps still resolve
+       the first match on the page, matching the prior HTMX-loaded
+       behavior. #}
+    {% if txn.template and txn.template.is_envelope and entry_lists %}
+      {% set _entry_data = entry_lists.get(txn.id) %}
+      {% if _entry_data is not none %}
+        {% set entries = _entry_data.entries %}
+        {% set remaining = _entry_data.remaining %}
+        {% set out_of_period_ids = _entry_data.out_of_period_ids %}
+        {% set editing_id = none %}
+        {% include "grid/_transaction_entries.html" %}
+      {% endif %}
     {% endif %}
     {% include "grid/_mobile_card_actions.html" with context %}
   </div>

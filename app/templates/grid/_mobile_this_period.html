@@ -41,6 +41,26 @@
                             by `render_row_card` for the progress-bar
                             render path on Projected envelopes with
                             entries.
+     entry_lists         -- (optional) dict from
+                            `entry_service.build_entry_lists_dict`
+                            mapping envelope txn_id ->
+                            {entries, remaining, out_of_period_ids}.
+                            Forwarded to `render_row_card` so the
+                            inline `_transaction_entries.html`
+                            renders server-side instead of the
+                            per-card HTMX `hx-trigger="load"`
+                            fan-out that blew past the 30-per-minute
+                            rate-limit ceiling.  When undefined or
+                            missing the txn's id, the inline entries
+                            section is skipped (matching the
+                            non-envelope render path).
+     today               -- (optional) `datetime.date` used as the
+                            default value of the add-entry form's
+                            hidden `entry_date` input inside
+                            `_transaction_entries.html`.  Only
+                            consumed indirectly through
+                            `render_row_card`; required whenever
+                            `entry_lists` is provided.
      subtotals           -- (optional) dict[period_id -> PeriodSubtotal].
                             When undefined (companion contract per
                             Section 12 Q-2 of the v3 plan), the
@@ -154,7 +174,7 @@
                 {{ rk.group_name }}
               </li>
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp') }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>
@@ -188,7 +208,7 @@
                 {{ rk.group_name }}
               </li>
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp') }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>

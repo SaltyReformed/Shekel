@@ -826,20 +826,37 @@ class TestMarkPaidButtonVisibility:
         assert "Mark Paid" not in html
 
 
-# ── Entry List Lazy Loading ──────────────────────────────────────────
+# ── Entry List Inline Rendering ──────────────────────────────────────
 
 
-class TestEntryListLazyLoading:
-    """Verify tracked transactions include HTMX entry list loading."""
+class TestEntryListInlineRendering:
+    """Verify envelope transactions render the entries list inline.
 
-    def test_tracked_txn_has_entry_list_loader(
+    The per-card HTMX ``hx-trigger="load"`` lazy-loader was replaced
+    by a server-side ``{% include %}`` of
+    ``grid/_transaction_entries.html`` because the lazy-load shape
+    fanned out to ~60 parallel GETs on ``entries.list_entries`` per
+    grid page load (6 visible periods x ~10 envelope templates),
+    which exceeds the ``RATELIMIT_DEFAULT`` ceiling of "30 per
+    minute" and left the over-limit cards stuck on a never-
+    resolving loading spinner.  The macro now consumes
+    ``entry_lists`` (built by
+    ``entry_service.build_entry_lists_dict`` and passed by both
+    the grid and companion routes via ``render_template``) plus
+    ``today``, and includes the entries template inline.
+    """
+
+    def test_envelope_txn_renders_entries_inline(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """Tracked transaction card includes hx-get for entry list.
+        """Envelope transaction card renders the entries list server-side.
 
-        The entry list is lazy-loaded via HTMX on page load.  Verify
-        the HTML contains the hx-get attribute pointing to the
-        entries.list_entries endpoint.
+        Asserts the inline ``entry-list-<id>`` div is in the response
+        body and that the entries route URL appears (used by the
+        add-entry form's ``hx-post`` inside the inline include).
+        The old ``hx-trigger="load"`` lazy-load attribute MUST NOT
+        be present -- its presence on a recurring envelope card would
+        re-introduce the rate-limit storm.
         """
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
@@ -851,16 +868,24 @@ class TestEntryListLazyLoading:
         resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # The entry list loader points to the entries route.
+        # Inline entries section is in the DOM (the add-entry form
+        # inside _transaction_entries.html hx-posts to the entries
+        # route, so the URL appears).
+        assert f'id="entry-list-{txn.id}"' in html
         assert f"/transactions/{txn.id}/entries" in html
-        assert 'hx-trigger="load"' in html
+        # No HTMX load-trigger -- the macro no longer emits the
+        # lazy-loader wrapper.
+        assert 'hx-trigger="load"' not in html
 
-    def test_non_tracked_txn_has_no_entry_loader(
+    def test_non_envelope_txn_has_no_entries_section(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """Non-tracked transaction card does NOT include entry list loader.
+        """Non-envelope transaction card does NOT render an entries section.
 
-        Only tracked transactions get the inline entry CRUD UI.
+        Only envelope templates (``is_envelope=True``) get the inline
+        entries section.  A non-envelope txn must produce neither
+        the ``entry-list-<id>`` div nor any ``/entries`` URL in the
+        response.
         """
         template = _make_template(
             seed_user, companion_visible=True, track=False, name="Birthday",
@@ -872,4 +897,5 @@ class TestEntryListLazyLoading:
         resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
+        assert f'id="entry-list-{txn.id}"' not in html
         assert f"/transactions/{txn.id}/entries" not in html
