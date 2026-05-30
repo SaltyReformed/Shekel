@@ -89,20 +89,26 @@
     matching the v1 _mobile_grid.html pattern where the header
     lives inside the `{% if matched %}` guard.
 
-    can_edit (default True): owner-side rendering.  Emits
-    `data-mobile-txn-id` plus -- for transfer shadows --
-    `data-mobile-xfer-id`; mobile_grid.js reads `data-mobile-txn-id`
-    to scope the tap-to-toggle handler to real txn cards (and not
-    accidentally fire on the static group-header `<li>`).
+    Tap-to-expand is universal.  Every card -- owner and companion --
+    emits `data-mobile-txn-id`; mobile_grid.js reads it to scope the
+    tap-to-toggle handler to real txn cards (and not fire on the
+    static group-header `<li>`, which carries no such attribute).
+    Both roles need to open the expansion: it holds the progress
+    detail, the inline entries list, the add-purchase form, and the
+    Mark Paid button, all of which the companion is permitted to use
+    (the entries blueprint and `transactions.mark_done` both
+    authorise companion access to `companion_visible` transactions).
 
-    can_edit=False: companion read-only consumer (wired in
-    Commit 13 of the mobile-first v3 implementation).  Drops the
-    `data-mobile-*` attributes so the expansion's owner-only
-    buttons (Edit Amount, Open Full) are absent for companions.
-    The Mark Paid button is preserved through the
-    `_mobile_card_actions.html` partial because companions are
-    allowed to mark paid per the existing entries-blueprint
-    precedent.
+    can_edit (default True): owner-side rendering.  Additionally
+    emits the transfer-shadow `data-mobile-xfer-id` and -- via
+    `_mobile_card_actions.html` -- the owner-only Edit Amount and
+    Open Full buttons.
+
+    can_edit=False: companion consumer (wired in Commit 13 of the
+    mobile-first v3 implementation).  Drops `data-mobile-xfer-id`
+    and the Edit Amount / Open Full buttons (the owner-only
+    affordances) while keeping tap-to-expand, the entries list, the
+    add-purchase form, and Mark Paid.
 
     id_prefix (default ''): per-tab namespace for the
     expansion wrapper id so the same txn can render in multiple
@@ -164,7 +170,7 @@
   {% set _aid = "card-expansion-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
   <div class="mobile-card-wrapper">
     <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
-        {% if can_edit %}data-mobile-txn-id="{{ txn.id }}"{% endif %}
+        data-mobile-txn-id="{{ txn.id }}"
         {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
         role="button" tabindex="0"
         aria-expanded="false"
