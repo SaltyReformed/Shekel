@@ -4927,15 +4927,20 @@ class TestMobileCardActionBar:
     def test_action_bar_hx_post_target_is_cell(
         self, app, seed_user, seed_periods_today,
     ):
-        """C7-6: Mark Paid form posts to mark-done targeting ``#txn-cell-<id>``.
+        """Mark Paid form posts to mark-done targeting the card wrapper.
 
-        Locks the form attributes the action bar's HTMX wiring
-        depends on: ``hx-post`` URL, ``hx-target`` selector, and
-        ``hx-swap`` mode.  ``outerHTML`` is the spec'd swap mode for
-        the bar (the response also fires ``HX-Trigger: gridRefresh``
-        which causes a full page reload, so the swap target and
-        mode are only load-bearing if a future commit removes the
-        gridRefresh).
+        Locks the form attributes the action bar's HTMX wiring depends
+        on: the ``hx-post`` URL, the ``hx-target`` (the card wrapper id
+        ``#card-<prefix-><id>`` -- here prefix-less because
+        ``_render_action_bar`` renders the macro without an
+        ``id_prefix``), the ``outerHTML`` swap mode, and the hidden
+        ``render=mobile_card`` field that routes the response to the
+        in-place single-card render (+ ``HX-Trigger: mobileCardSettled``)
+        instead of the desktop cell + full-page-reload ``gridRefresh``.
+        The old ``#txn-cell-<id>`` target only existed in the
+        CSS-hidden desktop table on /grid (and not at all on the
+        companion page), so the swap was effectively dead before this
+        change.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
@@ -4961,8 +4966,11 @@ class TestMobileCardActionBar:
             rendered = self._render_action_bar(app, txn, can_edit=True)
 
             assert f'hx-post="/transactions/{txn.id}/mark-done"' in rendered
-            assert f'hx-target="#txn-cell-{txn.id}"' in rendered
+            # Prefix-less wrapper id (the helper renders the macro with
+            # no id_prefix); the This Period tab uses card-tp-<id>.
+            assert f'hx-target="#card-{txn.id}"' in rendered
             assert 'hx-swap="outerHTML"' in rendered
+            assert 'name="render" value="mobile_card"' in rendered
 
     def test_card_wrapper_emits_expansion_sibling_in_grid_page(
         self, app, auth_client, seed_user, seed_periods_today,

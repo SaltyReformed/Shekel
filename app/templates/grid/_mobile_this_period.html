@@ -156,7 +156,9 @@
         <i class="bi bi-chevron-down me-1"></i> Income
       </span>
       {% if subtotals is defined %}
-        <span class="font-mono fw-bold">
+        {# Span id lets the self-refreshing _mobile_tp_summary partial
+           update this header total out-of-band on mobileCardSettled. #}
+        <span id="mobile-tp-income-total-{{ period.id }}" class="font-mono fw-bold">
           {% set inc_total = subtotals[period.id].income %}
           {% if inc_total %}${{ "{:,.0f}".format(inc_total) }}{% else %}$0{% endif %}
         </span>
@@ -190,7 +192,9 @@
         <i class="bi bi-chevron-down me-1"></i> Expenses
       </span>
       {% if subtotals is defined %}
-        <span class="font-mono fw-bold">
+        {# Span id lets the self-refreshing _mobile_tp_summary partial
+           update this header total out-of-band on mobileCardSettled. #}
+        <span id="mobile-tp-expense-total-{{ period.id }}" class="font-mono fw-bold">
           {% set exp_total = subtotals[period.id].expense %}
           {% if exp_total %}${{ "{:,.0f}".format(exp_total) }}{% else %}$0{% endif %}
         </span>
@@ -215,34 +219,13 @@
     </div>
   </div>
 
-  {# --- Net Cash Flow Bar (requires subtotals) --- #}
-  {% if subtotals is defined %}
-    {% set net = subtotals[period.id].net %}
-    <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
-      <span class="fw-bold small">Net Cash Flow</span>
-      <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
-        {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
-        ${{ "{:,.0f}".format(net) }}
-      </span>
-    </div>
-  {% endif %}
-
-  {# --- Projected End Balance (requires balances) --- #}
-  {% if balances is defined %}
-    {% set bal = balances.get(period.id) %}
-    {% if bal is not none %}
-      <div class="card mb-3 {{ 'border-danger' if bal < 0 else '' }}">
-        <div class="card-body py-2 d-flex justify-content-between align-items-center">
-          <span class="fw-bold small">
-            {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
-            Projected Balance
-          </span>
-          <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
-            ${{ "{:,.2f}".format(bal) }}
-          </span>
-        </div>
-      </div>
-    {% endif %}
-  {% endif %}
+  {# --- Net Cash Flow + Projected End Balance ---
+       Extracted into the self-refreshing _mobile_tp_summary partial so
+       a mobile/companion Mark Paid (which swaps one card in place and
+       fires mobileCardSettled instead of reloading) keeps these
+       totals -- plus the income/expense header totals above, via OOB
+       swap -- current.  Renders nothing when subtotals is undefined
+       (the companion contract). #}
+  {% include "grid/_mobile_tp_summary.html" %}
 
 </div>

@@ -1,0 +1,99 @@
+{# Mobile "This Period" summary -- self-refreshing money totals.
+
+   Owner-only.  The companion route passes no ``subtotals`` /
+   ``balances`` (Q-2 (c) of the mobile-first v3 plan), so the
+   ``{% if subtotals is defined %}`` guard makes this partial render
+   nothing on the companion page -- there the card swap alone is the
+   whole update.
+
+   Why it self-refreshes: the mobile / companion Mark Paid path swaps a
+   single card in place and fires ``HX-Trigger: mobileCardSettled``
+   instead of the desktop ``gridRefresh`` (which reloads the whole
+   page).  Settling a transaction changes the projected balance and the
+   period subtotals, so without a refresh these numbers would go stale.
+   The root element below mirrors the desktop ``_balance_row.html``
+   self-refresh convention: ``hx-get`` its own route on
+   ``mobileCardSettled from:body`` and ``outerHTML``-swap itself, which
+   re-arms the trigger each cycle.
+
+   All four owner-mobile money figures stay correct on one request:
+     - Net Cash Flow and Projected Balance render inline here (the
+       primary swap body).
+     - The Income and Expense section-header totals live in
+       ``_mobile_this_period.html`` (inside the collapsible card
+       headers).  This partial refreshes them via ``hx-swap-oob``
+       fragments keyed to their span ids -- emitted ONLY when the route
+       sets ``oob`` true, never on the initial page-load include (where
+       HTMX ignores ``hx-swap-oob`` and the duplicate spans would
+       otherwise double the totals on screen).
+
+   Expected context (* required):
+     period *     -- the PayPeriod being summarised.
+     subtotals    -- dict[period_id -> PeriodSubtotal].  Absent ->
+                     whole partial renders nothing.
+     balances     -- (optional) dict[period_id -> Decimal | None].
+                     Absent or missing the key -> the Projected
+                     Balance card is omitted.
+     account      -- (optional) the grid Account, for the self-refresh
+                     url_for's ``account_id``.  ``None`` for the
+                     zero-accounts edge.
+     oob          -- (optional) bool, default false.  True only when
+                     rendered as the ``grid.mobile_this_period_summary``
+                     HTMX response, so the OOB header-total fragments
+                     are emitted for the refresh but not the initial
+                     include.
+#}
+{% if subtotals is defined %}
+<div id="mobile-tp-summary-{{ period.id }}"
+     hx-get="{{ url_for('grid.mobile_this_period_summary', period_id=period.id, account_id=account.id) if account else url_for('grid.mobile_this_period_summary', period_id=period.id) }}"
+     hx-trigger="mobileCardSettled from:body"
+     hx-swap="outerHTML"
+     aria-live="polite"
+     aria-atomic="true">
+
+  {# --- Net Cash Flow Bar --- #}
+  {% set net = subtotals[period.id].net %}
+  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
+    <span class="fw-bold small">Net Cash Flow</span>
+    <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
+      {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
+      ${{ "{:,.0f}".format(net) }}
+    </span>
+  </div>
+
+  {# --- Projected End Balance (requires balances) --- #}
+  {% if balances is defined %}
+    {% set bal = balances.get(period.id) %}
+    {% if bal is not none %}
+      <div class="card mb-3 {{ 'border-danger' if bal < 0 else '' }}">
+        <div class="card-body py-2 d-flex justify-content-between align-items-center">
+          <span class="fw-bold small">
+            {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
+            Projected Balance
+          </span>
+          <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
+            ${{ "{:,.2f}".format(bal) }}
+          </span>
+        </div>
+      </div>
+    {% endif %}
+  {% endif %}
+
+  {# --- Out-of-band refresh of the section-header totals ---
+       Only on the HTMX response (oob=true); on the initial include
+       these are skipped so the header totals are not duplicated. #}
+  {% if oob %}
+    {% set inc_total = subtotals[period.id].income %}
+    <span id="mobile-tp-income-total-{{ period.id }}"
+          hx-swap-oob="true" class="font-mono fw-bold">
+      {% if inc_total %}${{ "{:,.0f}".format(inc_total) }}{% else %}$0{% endif %}
+    </span>
+    {% set exp_total = subtotals[period.id].expense %}
+    <span id="mobile-tp-expense-total-{{ period.id }}"
+          hx-swap-oob="true" class="font-mono fw-bold">
+      {% if exp_total %}${{ "{:,.0f}".format(exp_total) }}{% else %}$0{% endif %}
+    </span>
+  {% endif %}
+
+</div>
+{% endif %}

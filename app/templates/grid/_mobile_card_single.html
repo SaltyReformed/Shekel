@@ -1,0 +1,17 @@
+{# Single mobile transaction card -- HTMX response fragment.
+
+   Rendered by ``transactions.mark_done`` (via ``_render_mobile_card``)
+   when the Mark Paid request came from a mobile / companion card.  The
+   form in ``_mobile_card_actions.html`` targets the card wrapper
+   (``hx-target="#card-<prefix-><id>"``, ``hx-swap="outerHTML"``), so
+   the response replaces exactly that one card in place -- the settled
+   badge appears and the Mark Paid button disappears -- without the
+   full-page reload the desktop ``gridRefresh`` path uses.
+
+   This is a thin wrapper around the ``render_one_card`` macro so the
+   route and the page share one card producer.  All required context
+   (``rk``, ``period``, ``txn``, ``entry_sums``, ``can_edit``,
+   ``id_prefix``, ``entry_lists``, ``today``) is supplied by the route.
+#}
+{% from "grid/_grid_row_macros.html" import render_one_card %}
+{{ render_one_card(rk, period, txn, entry_sums, can_edit, id_prefix, entry_lists, today) }}

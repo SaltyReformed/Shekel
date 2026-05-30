@@ -80,7 +80,29 @@ def _get_accessible_transaction(txn_id):
     return txn
 
 
-def _render_entry_list(txn, editing_id=None, conflict=False):
+def _entry_list_host_id(txn_id, host):
+    """Compose the entry-list root DOM id from a txn id and host prefix.
+
+    Single Python-side source of truth that mirrors the Jinja default in
+    ``grid/_transaction_entries.html`` (and the inline-card host set in
+    ``_grid_row_macros.html``).  ``host=""`` yields the bare
+    ``entry-list-<txn_id>`` (the full-edit popover's id); a non-empty
+    host (e.g. ``"tp"``) yields ``entry-list-<host>-<txn_id>`` so the
+    inline mobile-card list and the popover list never collide.  The
+    route reconstructs the id this way so an entries-CRUD re-render
+    lands on the same element the request's ``hx-target`` named.
+
+    Args:
+        txn_id: The parent transaction id.
+        host: The host prefix segment (``""`` for the bare popover id).
+
+    Returns:
+        The DOM id string for the entry-list root element.
+    """
+    return "entry-list-" + (host + "-" if host else "") + str(txn_id)
+
+
+def _render_entry_list(txn, editing_id=None, conflict=False, host=""):
     """Render the entry list partial for a transaction.
 
     Loads entries, computes remaining balance, and checks for
@@ -117,6 +139,8 @@ def _render_entry_list(txn, editing_id=None, conflict=False):
         editing_id=editing_id,
         out_of_period_ids=out_of_period_ids,
         conflict=conflict,
+        entry_list_host=host,
+        entry_list_host_id=_entry_list_host_id(txn.id, host),
     )
 
 

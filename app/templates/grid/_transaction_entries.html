@@ -13,9 +13,23 @@
                           See commit C-18 of the 2026-04-15 security
                           remediation plan.
 
-   HTMX swap target: #entry-list-{txn.id} with outerHTML.
+   HTMX swap target: #{entry_list_host_id} with outerHTML.
+
+   entry_list_host_id -- (optional) the DOM id of the root element and
+     the ``hx-target`` of every CRUD control below.  Single source of
+     truth so the list and its six self-targeting controls cannot
+     drift.  Defaults to ``entry-list-<txn.id>`` (the bare form the
+     full-edit popover uses).  The inline mobile card sets it to
+     ``entry-list-<prefix-><txn.id>`` (e.g. ``entry-list-tp-42``) so the
+     inline list and the popover list for the same txn do not collide.
+   entry_list_host -- (optional) the prefix segment (e.g. ``tp``)
+     appended as ``?host=`` to every CRUD ``url_for`` so the route's
+     re-render reconstructs the same ``entry_list_host_id`` and the
+     swap lands on the right element.  Defaults to ``""`` (bare id).
 #}
-<div id="entry-list-{{ txn.id }}">
+{% set entry_list_host_id = entry_list_host_id | default("entry-list-" ~ txn.id) %}
+{% set entry_list_host = entry_list_host | default("") %}
+<div id="{{ entry_list_host_id }}">
   {% if conflict is defined and conflict %}
   {# Stale-form / StaleDataError banner.  Refreshes are pulled
      in by the inline add/edit forms below; this banner just
@@ -31,8 +45,8 @@
   {% if editing_id == entry.id %}
   {# Inline edit form -- replaces the display row for the entry being edited #}
   <div class="py-1 border-bottom">
-    <form hx-patch="{{ url_for('entries.update_entry', txn_id=txn.id, entry_id=entry.id) }}"
-          hx-target="#entry-list-{{ txn.id }}"
+    <form hx-patch="{{ url_for('entries.update_entry', txn_id=txn.id, entry_id=entry.id, host=entry_list_host) }}"
+          hx-target="#{{ entry_list_host_id }}"
           hx-swap="outerHTML"
           hx-disabled-elt="find button[type=submit]">
       {# Optimistic-locking pin: handler compares against
@@ -62,8 +76,8 @@
           <i class="bi bi-check"></i>
         </button>
         <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
-                hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"
-                hx-target="#entry-list-{{ txn.id }}"
+                hx-get="{{ url_for('entries.list_entries', txn_id=txn.id, host=entry_list_host) }}"
+                hx-target="#{{ entry_list_host_id }}"
                 hx-swap="outerHTML">
           <i class="bi bi-x"></i>
         </button>
@@ -98,8 +112,8 @@
          debits).  Hidden for credit entries -- those are handled by
          the CC Payback workflow and the flag is ignored there. #}
       <button class="btn btn-link btn-sm p-0 {% if entry.is_cleared %}text-success{% else %}text-muted{% endif %}"
-              hx-patch="{{ url_for('entries.toggle_cleared', txn_id=txn.id, entry_id=entry.id) }}"
-              hx-target="#entry-list-{{ txn.id }}"
+              hx-patch="{{ url_for('entries.toggle_cleared', txn_id=txn.id, entry_id=entry.id, host=entry_list_host) }}"
+              hx-target="#{{ entry_list_host_id }}"
               hx-swap="outerHTML"
               title="{% if entry.is_cleared %}Reconciled with checking anchor -- click to mark as not reconciled{% else %}Not yet reconciled with checking anchor -- click to mark as reconciled{% endif %}"
               aria-label="{% if entry.is_cleared %}Mark entry as not reconciled{% else %}Mark entry as reconciled{% endif %}">
@@ -107,15 +121,15 @@
       </button>
       {% endif %}
       <button class="btn btn-link btn-sm p-0 text-primary"
-              hx-get="{{ url_for('entries.list_entries', txn_id=txn.id, editing=entry.id) }}"
-              hx-target="#entry-list-{{ txn.id }}"
+              hx-get="{{ url_for('entries.list_entries', txn_id=txn.id, editing=entry.id, host=entry_list_host) }}"
+              hx-target="#{{ entry_list_host_id }}"
               hx-swap="outerHTML"
               aria-label="Edit entry">
         <i class="bi bi-pencil"></i>
       </button>
       <button class="btn btn-link btn-sm p-0 text-danger"
-              hx-delete="{{ url_for('entries.delete_entry', txn_id=txn.id, entry_id=entry.id) }}"
-              hx-target="#entry-list-{{ txn.id }}"
+              hx-delete="{{ url_for('entries.delete_entry', txn_id=txn.id, entry_id=entry.id, host=entry_list_host) }}"
+              hx-target="#{{ entry_list_host_id }}"
               hx-swap="outerHTML"
               hx-confirm="Delete this entry?"
               aria-label="Delete entry">
@@ -139,8 +153,8 @@
 
   {# Add entry form #}
   <form class="mt-2"
-        hx-post="{{ url_for('entries.create_entry', txn_id=txn.id) }}"
-        hx-target="#entry-list-{{ txn.id }}"
+        hx-post="{{ url_for('entries.create_entry', txn_id=txn.id, host=entry_list_host) }}"
+        hx-target="#{{ entry_list_host_id }}"
         hx-swap="outerHTML"
         hx-disabled-elt="find button[type=submit]">
     <div class="d-flex gap-1 align-items-end">

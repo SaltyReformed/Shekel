@@ -615,3 +615,66 @@ def balance_row():
         start_offset=start_offset,
         low_balance_threshold=low_balance_threshold,
     )
+
+
+@grid_bp.route("/grid/this-period-summary")
+@login_required
+@require_owner
+def mobile_this_period_summary():
+    """HTMX partial: the mobile "This Period" money summary for one period.
+
+    Recomputes the period's Net Cash Flow + Projected Balance and the
+    Income / Expense section-header totals, then returns
+    ``grid/_mobile_tp_summary.html`` with ``oob=True`` so the response
+    refreshes all four figures (the balance + net inline, the two
+    header totals out-of-band) in a single swap.  The self-refreshing
+    ``#mobile-tp-summary-<period_id>`` element on the mobile grid fires
+    this on ``mobileCardSettled from:body`` after a mobile Mark Paid,
+    which swaps one card in place rather than reloading the page.
+
+    Owner-only (``@require_owner``): the companion view shows no
+    subtotal / balance blocks, so it has nothing to refresh.
+
+    Returns 204 No Content -- a swap-nothing no-op that leaves the
+    existing summary DOM untouched -- when the user has no baseline
+    scenario, no ``period_id`` is supplied, or the period does not
+    exist or belongs to another user.  204 (rather than 404) keeps an
+    idempotent GET refresh from blanking the summary on a transient
+    miss, mirroring :func:`balance_row`'s no-op contract.
+    """
+    user_id = current_user.id
+
+    scenario = get_baseline_scenario(user_id)
+    if scenario is None:
+        return "", 204
+
+    period_id = request.args.get("period_id", type=int)
+    if period_id is None:
+        return "", 204
+    period = db.session.get(PayPeriod, period_id)
+    if period is None or period.user_id != user_id:
+        return "", 204
+
+    account = resolve_grid_account(
+        user_id, current_user.settings,
+        request.args.get("account_id", type=int),
+    )
+
+    all_periods = pay_period_service.get_all_periods(user_id)
+    if account is not None:
+        balances = balance_resolver.balances_for(
+            account, scenario.id, all_periods,
+        ).balances
+    else:
+        balances = OrderedDict()
+
+    subtotals = _build_grid_subtotals(account, scenario, [period])
+
+    return render_template(
+        "grid/_mobile_tp_summary.html",
+        period=period,
+        subtotals=subtotals,
+        balances=balances,
+        account=account,
+        oob=True,
+    )
