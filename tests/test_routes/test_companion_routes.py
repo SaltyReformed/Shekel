@@ -899,3 +899,71 @@ class TestEntryListInlineRendering:
         html = resp.data.decode()
         assert f'id="entry-list-{txn.id}"' not in html
         assert f"/transactions/{txn.id}/entries" not in html
+
+
+# ── Card Tap-to-Expand Reachability ──────────────────────────────────
+
+
+class TestCardTapToExpand:
+    """Verify companion cards are tappable so the action bar is reachable.
+
+    The Mark Paid button, the inline entries list, and the add-purchase
+    form all live inside the collapsed ``.mobile-card-expansion`` that
+    opens only when the delegated tap handler in
+    ``app/static/js/mobile_grid.js`` matches
+    ``.mobile-txn-card[data-mobile-txn-id]``.  The companion route
+    renders the shared card with ``can_edit=False``; before the fix that
+    flag suppressed ``data-mobile-txn-id``, so companion cards emitted
+    the action bar into the HTML but the card could never be tapped
+    open -- the spouse saw the line items yet could not view existing
+    purchases, add a purchase, or mark anything paid.
+
+    These tests assert the tappability precondition (the attribute)
+    rather than mere string presence.  The string-presence assertions
+    in the other companion tests pass even when the card is sealed shut,
+    which is exactly why the interactivity regression slipped through.
+    """
+
+    def test_companion_card_has_tap_to_expand_attribute(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """Companion (can_edit=False) card carries data-mobile-txn-id.
+
+        Without the attribute the tap handler in mobile_grid.js skips
+        the card and the expansion never opens, sealing the entries
+        list, the add-purchase form, and Mark Paid behind a collapse
+        the companion cannot trigger.
+        """
+        template = _make_template(
+            seed_user, companion_visible=True, track=True, name="Groceries",
+        )
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        db.session.commit()
+
+        comp = _login_companion(app)
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert f'data-mobile-txn-id="{txn.id}"' in html
+
+    def test_companion_card_keeps_owner_only_controls_hidden(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """can_edit=False still drops the owner-only Edit/Open buttons.
+
+        Tap-to-expand is universal, but the owner-only affordances
+        (Edit Amount, Open Full) must remain absent for the companion
+        even though the card is now reachable.
+        """
+        template = _make_template(
+            seed_user, companion_visible=True, name="Groceries",
+        )
+        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        db.session.commit()
+
+        comp = _login_companion(app)
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Edit Amount" not in html
+        assert "Open Full" not in html

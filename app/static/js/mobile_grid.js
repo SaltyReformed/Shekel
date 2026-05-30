@@ -71,11 +71,12 @@
     //     button would re-toggle the panel shut as the bubble
     //     climbed past the card).
     //   - `data-mobile-txn-id` scopes the selector to real txn
-    //     cards so the group-header `<li>` (no data attr in the
-    //     owner render path) cannot accidentally trigger; companion
-    //     cards omit the attribute so the expansion there stays
-    //     collapsed (companions reach Mark Paid through the
-    //     companion-specific UI rendered by `companion/index.html`).
+    //     cards so the group-header `<li>` (which carries no data
+    //     attr) cannot accidentally trigger.  Both owner and
+    //     companion cards carry the attribute: the companion needs
+    //     to open the expansion too, since it holds the entries
+    //     list, the add-purchase form, and the Mark Paid button the
+    //     companion is permitted to use.
     //   - missing wrapper / expansion / Bootstrap is a hard no-op
     //     rather than a console error -- the expansion's absence on
     //     a server-render path (companion read-only edge cases,
