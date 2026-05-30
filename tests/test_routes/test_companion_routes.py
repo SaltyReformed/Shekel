@@ -886,12 +886,17 @@ class TestEntryListInlineRendering:
     ):
         """Envelope transaction card renders the entries list server-side.
 
-        Asserts the inline ``entry-list-<id>`` div is in the response
-        body and that the entries route URL appears (used by the
-        add-entry form's ``hx-post`` inside the inline include).
-        The old ``hx-trigger="load"`` lazy-load attribute MUST NOT
-        be present -- its presence on a recurring envelope card would
-        re-introduce the rate-limit storm.
+        Asserts the inline entries list div is in the response body and
+        that the entries route URL appears (used by the add-entry form's
+        ``hx-post`` inside the inline include).  The companion view
+        renders through the This Period partial (``id_prefix='tp'``), so
+        the inline list carries the per-tab-namespaced id
+        ``entry-list-tp-<id>`` -- distinct from the full-edit popover's
+        bare ``entry-list-<id>`` so the two never collide.  The CRUD
+        url_for output carries ``host=tp`` so the namespace survives the
+        round-trip.  The old ``hx-trigger="load"`` lazy-load attribute
+        MUST NOT be present -- its presence on a recurring envelope card
+        would re-introduce the rate-limit storm.
         """
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
@@ -903,11 +908,13 @@ class TestEntryListInlineRendering:
         resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Inline entries section is in the DOM (the add-entry form
-        # inside _transaction_entries.html hx-posts to the entries
-        # route, so the URL appears).
-        assert f'id="entry-list-{txn.id}"' in html
+        # Inline entries section is in the DOM, namespaced to the
+        # This Period tab (the add-entry form inside
+        # _transaction_entries.html hx-posts to the entries route, so
+        # the URL appears and carries the host prefix).
+        assert f'id="entry-list-tp-{txn.id}"' in html
         assert f"/transactions/{txn.id}/entries" in html
+        assert "host=tp" in html
         # No HTMX load-trigger -- the macro no longer emits the
         # lazy-loader wrapper.
         assert 'hx-trigger="load"' not in html

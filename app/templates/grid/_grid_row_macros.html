@@ -294,12 +294,22 @@
          envelope txn; the include uses those plus ``today`` (also from
          context) and the default ``editing_id=None`` to mirror what
          ``_render_entry_list`` in ``app/routes/entries.py`` produces per
-         HTMX request.  The inner ``entry-list-<id>`` ID on the rendered
-         template still doubles up when the same txn appears in both
-         This Period and Plan tabs -- that pre-existing duplicate-ID
-         concern is left as-is; the entries-CRUD HTMX swaps still resolve
-         the first match on the page, matching the prior HTMX-loaded
-         behavior. #}
+         HTMX request.
+
+         Per-host id namespacing: the inline entries list and the
+         full-edit bottom-sheet popover's lazy-loaded list
+         (``_transaction_full_edit.html``) both render
+         ``_transaction_entries.html`` for the same txn, so both would
+         otherwise emit ``id="entry-list-<txn.id>"`` and an entries-CRUD
+         swap would hit the first match in DOM order (the wrong list).
+         Passing ``entry_list_host = id_prefix`` namespaces the inline
+         list to ``entry-list-<prefix-><id>`` (e.g. ``entry-list-tp-42``)
+         while the popover keeps the bare ``entry-list-<id>``.  The host
+         is threaded back through the six entries-CRUD ``url_for``s (as
+         ``?host=<prefix>``) so the route's re-render lands on the same
+         element.  (The earlier "This Period vs Plan" framing of this
+         duplicate was inaccurate -- the Plan tab uses
+         ``render_row_static`` and emits no entries list at all.) #}
       {% if txn.template and txn.template.is_envelope and entry_lists %}
         {% set _entry_data = entry_lists.get(txn.id) %}
         {% if _entry_data is not none %}
@@ -307,6 +317,8 @@
           {% set remaining = _entry_data.remaining %}
           {% set out_of_period_ids = _entry_data.out_of_period_ids %}
           {% set editing_id = none %}
+          {% set entry_list_host = id_prefix %}
+          {% set entry_list_host_id = "entry-list-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
           {% include "grid/_transaction_entries.html" %}
         {% endif %}
       {% endif %}
