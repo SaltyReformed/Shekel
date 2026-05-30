@@ -63,10 +63,45 @@
 
 
 {% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
-{#- Mobile grid card.  Emits zero or more
-    `<div class="mobile-card-wrapper">` blocks, one per matched
-    transaction for the given (rk, period) cell.  Each wrapper holds
-    the card `<li>` plus a single sibling
+{#- Mobile grid cards for one (rk, period) cell.
+
+    Looks up the matched transactions for the cell and emits one card
+    per match by delegating to `render_one_card` (the per-transaction
+    body lives there so a single card can also be re-rendered on its
+    own by the mark-done response path; see that macro's docstring).
+    Emits nothing when the cell has no matched transactions.
+
+    Group-header rows (the v1
+    `<li class="... mobile-group-header">` that appears once per
+    rk.group_name change) remain the caller's responsibility,
+    matching the v1 _mobile_grid.html pattern where the header
+    lives inside the `{% if matched %}` guard.
+
+    All parameters are forwarded verbatim to `render_one_card`; see
+    that macro for `can_edit` / `id_prefix` / `entry_lists` / `today`
+    semantics.
+-#}
+{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+{% for txn in matched %}
+{{ render_one_card(rk, period, txn, entry_sums, can_edit, id_prefix, entry_lists, today) }}
+{% endfor %}
+{%- endmacro %}
+
+
+{% macro render_one_card(rk, period, txn, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
+{#- Render exactly one mobile transaction card.
+
+    The per-transaction body extracted out of `render_row_card`: that
+    macro looks up the matched list for a (row-key, period) cell and
+    calls this once per matched transaction.  The extraction exists so
+    a single card can also be re-rendered on its own -- the
+    `transactions.mark_done` mobile/companion response path renders one
+    card through `grid/_mobile_card_single.html` so a Mark Paid tap
+    swaps that one card in place (`hx-target="#card-<prefix-><id>"`,
+    `hx-swap="outerHTML"`) instead of triggering a full-page reload.
+
+    Emits one `<div class="mobile-card-wrapper">` holding the card
+    `<li>` plus a single sibling
     `<div class="collapse mobile-card-expansion">` that bundles all
     detail blocks (progress detail, the inline entries list for
     envelope templates, and the action button row from
@@ -76,18 +111,11 @@
     with this card" via
     `card.closest('.mobile-card-wrapper').querySelector('.mobile-card-expansion')`.
 
-    Before this change every envelope card rendered the progress bar,
-    the entries list, and the add-purchase form expanded by default,
-    while regular cards rendered just name + amount.  The asymmetry
-    made the mobile grid feel cluttered and disjointed; folding all
-    detail content into one collapse gives every card the same
-    collapsed shape (header only) regardless of template type.
-
-    Group-header rows (the v1
-    `<li class="... mobile-group-header">` that appears once per
-    rk.group_name change) remain the caller's responsibility,
-    matching the v1 _mobile_grid.html pattern where the header
-    lives inside the `{% if matched %}` guard.
+    Wrapper id: the outer `<div class="mobile-card-wrapper">` carries
+    `id="card-<prefix-><txn.id>"` (e.g. `card-tp-42`; bare `card-42`
+    when no prefix) -- the per-tab-namespaced sibling of the expansion
+    id `_aid`.  The Mark Paid form in `_mobile_card_actions.html`
+    targets this id for the in-place outerHTML swap.
 
     Tap-to-expand is universal.  Every card -- owner and companion --
     emits `data-mobile-txn-id`; mobile_grid.js reads it to scope the
@@ -110,16 +138,16 @@
     affordances) while keeping tap-to-expand, the entries list, the
     add-purchase form, and Mark Paid.
 
-    id_prefix (default ''): per-tab namespace for the
-    expansion wrapper id so the same txn can render in multiple
-    visible tabs without violating the HTML unique-id rule.  The
-    "This Period" partial passes `id_prefix='tp'`, the "Plan"
-    partial passes `id_prefix='plan'`; an empty prefix omits the
-    extra segment entirely so direct-render call sites (unit tests
-    that render the macro without specifying a prefix) keep the
-    simpler `card-expansion-<id>` form.  Mirrors the existing
-    `mobile-tp-` vs `mobile-` collapse-id convention on the income
-    / expense section headers in the two partials.
+    id_prefix (default ''): per-tab namespace for the wrapper id and
+    the expansion id so the same txn can render in multiple visible
+    tabs without violating the HTML unique-id rule.  The "This Period"
+    partial passes `id_prefix='tp'`; an empty prefix omits the extra
+    segment entirely so direct-render call sites (unit tests that
+    render the macro without specifying a prefix) keep the simpler
+    `card-<id>` / `card-expansion-<id>` form.  It also namespaces the
+    inline entries list host id (`entry-list-<prefix-><id>`) so the
+    inline list never collides with the full-edit popover's bare
+    `entry-list-<id>` for the same txn.
 
     entry_lists (default none): dict from
     `entry_service.build_entry_lists_dict` keyed by txn_id with
@@ -158,8 +186,6 @@
     the one-tap shortcut.  Mark Paid still lives in the action
     button row inside the expansion one tap below the card.
 -#}
-{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
-{% for txn in matched %}
   {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
   {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
   {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
@@ -167,8 +193,9 @@
     {% set remaining = es.remaining %}
     {% set over_budget = es.over_budget %}
   {% endif %}
-  {% set _aid = "card-expansion-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
-  <div class="mobile-card-wrapper">
+  {% set _cardns = (id_prefix ~ "-" if id_prefix else "") %}
+  {% set _aid = "card-expansion-" ~ _cardns ~ txn.id %}
+  <div class="mobile-card-wrapper" id="card-{{ _cardns }}{{ txn.id }}">
     <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
         data-mobile-txn-id="{{ txn.id }}"
         {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}
@@ -286,7 +313,6 @@
       {% include "grid/_mobile_card_actions.html" with context %}
     </div>
   </div>
-{% endfor %}
 {%- endmacro %}
 
 

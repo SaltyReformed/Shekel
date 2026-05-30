@@ -501,6 +501,41 @@ class TestMarkDoneIntegration:
         resp = comp.post(f"/transactions/{txn.id}/mark-done")
         assert resp.status_code == 404
 
+    def test_companion_mark_paid_returns_card_with_trigger(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """Companion mobile Mark Paid swaps the card in place, no reload.
+
+        The companion action bar posts ``render=mobile_card`` with
+        ``can_edit=0``, so mark_done returns the re-rendered companion
+        card (settled badge, no Mark Paid, and -- because can_edit is
+        false -- no owner-only Edit Amount / Open Full) plus
+        ``HX-Trigger: mobileCardSettled`` rather than the full-reload
+        ``gridRefresh``.
+        """
+        template = _make_template(
+            seed_user, companion_visible=True, name="Groceries",
+        )
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        db.session.commit()
+        txn_id = txn.id
+
+        comp = _login_companion(app)
+        resp = comp.post(
+            f"/transactions/{txn_id}/mark-done",
+            data={"render": "mobile_card", "card_prefix": "tp", "can_edit": "0"},
+        )
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert 'class="mobile-card-wrapper"' in body
+        assert f'id="card-tp-{txn_id}"' in body
+        assert "badge-done" in body
+        assert "Mark Paid" not in body
+        # can_edit=0 keeps the owner-only affordances out of the swap.
+        assert "Edit Amount" not in body
+        assert "Open Full" not in body
+        assert resp.headers.get("HX-Trigger") == "mobileCardSettled"
+
     def test_companion_view_shows_paid_indicator_after_mark_done(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):

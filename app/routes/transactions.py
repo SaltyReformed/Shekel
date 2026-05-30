@@ -7,6 +7,8 @@ Returns HTMX fragments for inline editing in the grid.
 
 import logging
 
+from datetime import date
+
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import current_user, login_required
 from marshmallow import ValidationError as MarshmallowValidationError
@@ -32,11 +34,15 @@ from app.schemas.validation import (
 from app.services import (
     credit_workflow,
     carry_forward_service,
+    grid_view_service,
     pay_period_service,
     transaction_service,
     transfer_service,
 )
-from app.services.entry_service import build_entry_sums_dict
+from app.services.entry_service import (
+    build_entry_lists_dict,
+    build_entry_sums_dict,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import verify_transition
 from app.exceptions import NotFoundError, ValidationError
@@ -90,6 +96,99 @@ def _render_cell(txn, **extra):
     )
 
 
+def _render_mobile_card(txn, *, card_prefix, can_edit):
+    """Render a single mobile transaction card for an HTMX swap.
+
+    The mobile / companion Mark Paid form targets the card wrapper
+    (``hx-target="#card-<prefix-><id>"``, ``hx-swap="outerHTML"``), so
+    this returns exactly that one card re-rendered in its post-action
+    state -- the settled badge shows and the Mark Paid button drops --
+    without the full-page reload the desktop ``gridRefresh`` path uses.
+
+    Reuses the canonical producers so the swapped-in card is identical
+    to the page-load card: :func:`grid_view_service.build_row_keys` for
+    the row label, :func:`build_entry_sums_dict` for the progress
+    aggregate, and :func:`build_entry_lists_dict` for the inline
+    envelope entries.  Ownership scoping uses ``txn.pay_period.user_id``
+    (the data owner) so the companion path resolves the linked owner's
+    categories, not the companion's own (empty) set.
+
+    Args:
+        txn: The Transaction just settled, with ``entries`` and
+            ``template`` accessible.
+        card_prefix: The per-tab id namespace the requesting card used
+            (``"tp"`` for This Period and the companion view; ``""`` for
+            prefix-less direct renders).  Drives the wrapper id so the
+            outerHTML swap resolves.
+        can_edit: ``True`` for the owner card, ``False`` for companion.
+
+    Returns:
+        Rendered HTML string for one ``grid/_mobile_card_single.html``.
+    """
+    owner_id = txn.pay_period.user_id
+    categories = (
+        db.session.query(Category)
+        .filter_by(user_id=owner_id)
+        .order_by(Category.group_name, Category.item_name)
+        .all()
+    )
+    row_keys = grid_view_service.build_row_keys(
+        [txn], categories, is_income_section=txn.is_income,
+    )
+    # A just-settled transaction is neither cancelled nor deleted, so
+    # build_row_keys always yields its row; guard defensively so an
+    # unexpected empty result degrades to the desktop cell rather than
+    # raising IndexError.
+    if not row_keys:
+        return _render_cell(txn)
+    return render_template(
+        "grid/_mobile_card_single.html",
+        rk=row_keys[0],
+        period=txn.pay_period,
+        txn=txn,
+        entry_sums=build_entry_sums_dict([txn]),
+        entry_lists=build_entry_lists_dict([txn]),
+        can_edit=can_edit,
+        id_prefix=card_prefix,
+        today=date.today(),
+    )
+
+
+def _mark_done_success_response(txn, render_mode, card_prefix, can_edit):
+    """Build the success response tuple for a mark_done request.
+
+    Forks on the rendering surface the request came from:
+
+      * ``render_mode == "mobile_card"``: return the single re-rendered
+        mobile card + ``HX-Trigger: mobileCardSettled``.  The card swaps
+        in place (no reload); the owner This Period summary blocks
+        listen for ``mobileCardSettled`` and self-refresh, while the
+        companion page has no summary blocks so only the card updates.
+      * otherwise (desktop grid / full-edit popover): the desktop cell +
+        ``HX-Trigger: gridRefresh`` -- the existing reload-driven path,
+        unchanged.
+
+    Args:
+        txn: The settled Transaction.
+        render_mode: The ``render`` form field (``"mobile_card"`` or
+            absent/empty).
+        card_prefix: The ``card_prefix`` form field (per-tab id
+            namespace) -- only meaningful for the mobile_card path.
+        can_edit: The ``can_edit`` form field as a bool -- only
+            meaningful for the mobile_card path.
+
+    Returns:
+        A Flask ``(html, status, headers)`` response tuple.
+    """
+    if render_mode == "mobile_card":
+        return (
+            _render_mobile_card(txn, card_prefix=card_prefix, can_edit=can_edit),
+            200,
+            {"HX-Trigger": "mobileCardSettled"},
+        )
+    return _render_cell(txn), 200, {"HX-Trigger": "gridRefresh"}
+
+
 def _credit_payback_idempotent_response(exc, txn_id):
     """Translate a credit-payback unique-index violation into a 200.
 
@@ -119,7 +218,9 @@ def _credit_payback_idempotent_response(exc, txn_id):
     )
 
 
-def _stale_transaction_response(txn_id):
+def _stale_transaction_response(
+    txn_id, render_mode="", card_prefix="", can_edit=False,
+):
     """Roll back the session and render the cell in conflict mode + 409.
 
     Used by every PATCH/POST/DELETE handler that can race a
@@ -130,10 +231,25 @@ def _stale_transaction_response(txn_id):
     indicator.  Returns a 404 if the row was hard-deleted by the
     winning request.
 
+    The mobile/companion Mark Paid path passes ``render_mode=
+    "mobile_card"`` so the 409 body is the re-rendered mobile card
+    (latest state) rather than the desktop cell; the card's
+    ``hx-target`` is the card wrapper, so a desktop-cell body would not
+    swap.  That path re-fetches through
+    :func:`_get_accessible_transaction_for_status` so a companion's
+    conflict resolves against the linked owner's row (the desktop path
+    uses :func:`_get_owned_transaction`, which is owner-only).
+
     Args:
         txn_id: Primary key of the transaction the route was trying
             to mutate.  Used to re-fetch under ownership checks so
             the conflict UI renders the correct row.
+        render_mode: ``"mobile_card"`` to return a mobile card body;
+            anything else returns the desktop cell.
+        card_prefix: Per-tab id namespace for the mobile card wrapper
+            id (only used when ``render_mode == "mobile_card"``).
+        can_edit: Owner-vs-companion flag forwarded to the mobile card
+            render (only used for the mobile_card path).
 
     Returns:
         Flask response tuple ``(html, 409)`` or ``("Not found", 404)``
@@ -141,6 +257,14 @@ def _stale_transaction_response(txn_id):
     """
     db.session.rollback()
     db.session.expire_all()
+    if render_mode == "mobile_card":
+        txn = _get_accessible_transaction_for_status(txn_id)
+        if txn is None:
+            return "Not found", 404
+        return (
+            _render_mobile_card(txn, card_prefix=card_prefix, can_edit=can_edit),
+            409,
+        )
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
@@ -530,6 +654,18 @@ def mark_done(txn_id):
         return jsonify(errors=exc.messages), 400
     actual_amount = mark_done_data.get("actual_amount")
 
+    # Rendering surface for the response.  The mobile / companion card
+    # action bar posts ``render=mobile_card`` plus the per-tab
+    # ``card_prefix`` and the ``can_edit`` flag so the response is a
+    # single re-rendered card (in-place swap, no reload); the desktop
+    # grid and full-edit popover omit these, so the response defaults
+    # to the cell + gridRefresh reload.  Read off ``request.form``
+    # directly -- these are render-routing fields, not part of the
+    # money-only ``MarkDoneSchema``.
+    render_mode = request.form.get("render", "")
+    card_prefix = request.form.get("card_prefix", "")
+    card_can_edit = request.form.get("can_edit") == "1"
+
     # Income uses 'received', expenses use 'done'.
     if txn.is_income:
         status_id = ref_cache.status_id(StatusEnum.RECEIVED)
@@ -558,7 +694,9 @@ def mark_done(txn_id):
             logger.info(
                 "Stale-data conflict on mark_done shadow id=%d", txn_id,
             )
-            return _stale_transaction_response(txn_id)
+            return _stale_transaction_response(
+                txn_id, render_mode, card_prefix, card_can_edit,
+            )
         except IntegrityError:
             db.session.rollback()
             return "Invalid reference. Check that all referenced records exist.", 400
@@ -619,14 +757,17 @@ def mark_done(txn_id):
         logger.info(
             "Stale-data conflict on mark_done id=%d", txn_id,
         )
-        return _stale_transaction_response(txn_id)
+        return _stale_transaction_response(
+            txn_id, render_mode, card_prefix, card_can_edit,
+        )
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
 
-    response = _render_cell(txn)
-    return response, 200, {"HX-Trigger": "gridRefresh"}
+    return _mark_done_success_response(
+        txn, render_mode, card_prefix, card_can_edit,
+    )
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])

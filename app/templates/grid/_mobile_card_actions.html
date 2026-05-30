@@ -52,10 +52,28 @@
      400 for those state-machine transitions and the user sees
      the error text.  Tightening that is out of scope here. #}
   {% if txn.status and not txn.status.is_settled %}
+    {# Mark Paid posts to mark_done and swaps THIS card in place.  The
+       target is the card wrapper id `card-<prefix-><id>` emitted by
+       `render_one_card` (the per-tab-namespaced sibling of the
+       expansion id), so the in-place outerHTML swap resolves on the
+       mobile grid AND the companion page -- the old `#txn-cell-<id>`
+       target only existed in the CSS-hidden desktop table on /grid and
+       not at all on companion.  The hidden inputs tell the route to
+       return one re-rendered card (+ `HX-Trigger: mobileCardSettled`,
+       which the owner This Period summary blocks self-refresh on)
+       instead of the desktop cell + full-page-reload `gridRefresh`.
+       `id_prefix` may be undefined when this partial is included
+       outside the macro (legacy test scaffolding); the guards default
+       to the bare `card-<id>` form. #}
+    {% set _card_ns = (id_prefix ~ "-" if id_prefix is defined and id_prefix else "") %}
     <form hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
-          hx-target="#txn-cell-{{ txn.id }}"
+          hx-target="#card-{{ _card_ns }}{{ txn.id }}"
           hx-swap="outerHTML"
           class="d-inline flex-fill">
+      <input type="hidden" name="render" value="mobile_card">
+      <input type="hidden" name="card_prefix"
+             value="{{ id_prefix if id_prefix is defined and id_prefix else '' }}">
+      <input type="hidden" name="can_edit" value="{{ '1' if can_edit else '0' }}">
       <button type="submit" class="btn btn-success btn-sm w-100 btn-touch-44"
               aria-label="Mark {{ txn.name }} as paid">
         <i class="bi bi-check2"></i> Mark Paid
