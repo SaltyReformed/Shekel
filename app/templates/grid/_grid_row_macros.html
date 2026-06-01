@@ -186,7 +186,11 @@
     the one-tap shortcut.  Mark Paid still lives in the action
     button row inside the expansion one tap below the card.
 -#}
-  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+  {# Workstream B: live projected salary income via the route-set
+     txn.live_estimated_amount, with a safe fallback to the stored
+     estimated_amount wherever it is absent. #}
+  {% set est_display = txn.live_estimated_amount if txn.live_estimated_amount is defined else txn.estimated_amount %}
+  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else est_display %}
   {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
   {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
   {% if show_progress %}
@@ -369,7 +373,11 @@
 -#}
 {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
 {% for txn in matched %}
-  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else txn.estimated_amount %}
+  {# Workstream B: live projected salary income via the route-set
+     txn.live_estimated_amount, with a safe fallback to the stored
+     estimated_amount wherever it is absent. #}
+  {% set est_display = txn.live_estimated_amount if txn.live_estimated_amount is defined else txn.estimated_amount %}
+  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else est_display %}
   <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3">
     <span class="text-truncate me-2">
       {{ rk.display_name }}

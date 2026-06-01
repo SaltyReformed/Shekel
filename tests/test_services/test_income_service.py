@@ -28,14 +28,20 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.ref import FilingStatus, RaiseType
+from app.models.ref import FilingStatus, RaiseType, Status, TransactionType
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
+from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.services import (
+    balance_resolver,
     income_service,
+    pay_period_service,
+    paycheck_calculator,
     savings_dashboard_service,
     year_end_summary_service,
 )
+from app.services.tax_config_service import load_tax_configs
 
 
 # Hand-computed expected values (see module docstring for derivation).
@@ -86,6 +92,313 @@ def _add_one_time_raise(
     db.session.add(salary_raise)
     db.session.flush()
     return salary_raise
+
+
+def _make_salary_template(seed_user, profile, *, name="Paycheck"):
+    """Create an Income template and link ``profile`` to it.
+
+    The producer treats a transaction as salary-linked iff its
+    ``template_id`` maps to an active SalaryProfile for the scenario, so
+    the test must set ``profile.template_id`` to the created template.
+    """
+    income_type = (
+        db.session.query(TransactionType).filter_by(name="Income").one()
+    )
+    category = next(iter(seed_user["categories"].values()))
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=category.id,
+        transaction_type_id=income_type.id,
+        name=name,
+        default_amount=Decimal("4000.00"),
+    )
+    db.session.add(template)
+    db.session.flush()
+    profile.template_id = template.id
+    db.session.flush()
+    return template
+
+
+def _make_txn(
+    seed_user, period, *, template=None, type_name="Income",
+    status_name="Projected", is_override=False, estimated_amount="1.00",
+):
+    """Create a single Transaction in ``period`` for the producer tests."""
+    txn_type = (
+        db.session.query(TransactionType).filter_by(name=type_name).one()
+    )
+    status = db.session.query(Status).filter_by(name=status_name).one()
+    category = next(iter(seed_user["categories"].values()))
+    txn = Transaction(
+        account_id=seed_user["account"].id,
+        template_id=template.id if template is not None else None,
+        pay_period_id=period.id,
+        scenario_id=seed_user["scenario"].id,
+        status_id=status.id,
+        name="producer-test txn",
+        category_id=category.id,
+        transaction_type_id=txn_type.id,
+        estimated_amount=Decimal(estimated_amount),
+        is_override=is_override,
+    )
+    db.session.add(txn)
+    db.session.flush()
+    return txn
+
+
+class TestLiveProjectedNet:
+    """Unit tests for ``income_service.live_projected_net`` (Workstream B).
+
+    Locks the two properties the live-recompute relies on: the producer
+    (a) recomputes the net LIVE from the salary profile, ignoring the
+    stored ``estimated_amount`` (so a stale cache cannot leak through),
+    and (b) filters to exactly the Projected, non-overridden,
+    salary-linked income rows.
+    """
+
+    @staticmethod
+    def _expected_net(user_id, profile, period_id):
+        """Net the salary projection page would show for ``period_id``.
+
+        Mirrors the producer's own path (project_salary over the full
+        pay-period set, current-year tax configs, the profile's
+        calibration) so the assertion pins the producer to the exact
+        canonical value rather than re-deriving the engine arithmetic.
+        """
+        periods = pay_period_service.get_all_periods(user_id)
+        tax_configs = load_tax_configs(user_id, profile)
+        breakdowns = paycheck_calculator.project_salary(
+            profile, periods, tax_configs, calibration=profile.calibration,
+        )
+        return {bd.period_id: bd.net_pay for bd in breakdowns}[period_id]
+
+    def test_recomputes_live_ignoring_stored_amount(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A Projected salary-linked income row maps to the LIVE net.
+
+        The transaction's stored ``estimated_amount`` is deliberately set
+        to $1.00 (a stale/wrong value).  The producer must return the
+        live net for the transaction's period -- proving it recomputes
+        from the profile and never trusts the cached column.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            profile = _create_profile(user_id, scenario_id)
+            template = _make_salary_template(seed_user, profile)
+            db.session.commit()
+
+            period = pay_period_service.get_all_periods(user_id)[5]
+            txn = _make_txn(
+                seed_user, period, template=template,
+                estimated_amount="1.00",
+            )
+            db.session.commit()
+
+            overrides = income_service.live_projected_net(
+                user_id, scenario_id, [txn],
+            )
+
+            expected = self._expected_net(user_id, profile, period.id)
+            assert overrides == {txn.id: expected}
+            assert overrides[txn.id] != Decimal("1.00")
+
+    def test_filters_to_projected_nonoverride_salary_income(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Only Projected, non-overridden, salary-linked income is overridden.
+
+        Builds five rows and asserts the override dict contains exactly
+        the one Projected non-override income row linked to the salary
+        profile -- Received income (historical), an overridden row (user
+        value respected), non-salary income (template has no profile),
+        and an expense are all omitted, so a caller's fallback to the
+        stored amount applies to them.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            profile = _create_profile(user_id, scenario_id)
+            template = _make_salary_template(seed_user, profile)
+            income_type = (
+                db.session.query(TransactionType).filter_by(name="Income").one()
+            )
+            category = next(iter(seed_user["categories"].values()))
+            other_template = TransactionTemplate(
+                user_id=user_id,
+                account_id=seed_user["account"].id,
+                category_id=category.id,
+                transaction_type_id=income_type.id,
+                name="Non-salary income",
+                default_amount=Decimal("50.00"),
+            )
+            db.session.add(other_template)
+            db.session.commit()
+
+            periods = pay_period_service.get_all_periods(user_id)
+            # Distinct periods avoid the (template, period, scenario)
+            # non-override unique index.
+            wanted = _make_txn(seed_user, periods[5], template=template)
+            received = _make_txn(
+                seed_user, periods[6], template=template,
+                status_name="Received",
+            )
+            overridden = _make_txn(
+                seed_user, periods[7], template=template, is_override=True,
+            )
+            non_salary = _make_txn(
+                seed_user, periods[5], template=other_template,
+            )
+            expense = _make_txn(
+                seed_user, periods[5], template=None, type_name="Expense",
+            )
+            db.session.commit()
+
+            overrides = income_service.live_projected_net(
+                user_id, scenario_id,
+                [wanted, received, overridden, non_salary, expense],
+            )
+
+            assert set(overrides) == {wanted.id}, (
+                "Only the Projected, non-override, salary-linked income "
+                f"row should be overridden; got ids {sorted(overrides)}"
+            )
+
+    def test_empty_when_no_candidates(self, app, db, seed_user, seed_periods):
+        """No salary-linked Projected income -> empty dict (fast no-op)."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            # Empty transaction list.
+            assert income_service.live_projected_net(
+                user_id, scenario_id, [],
+            ) == {}
+
+            # An income row whose template has no SalaryProfile -> omitted.
+            income_type = (
+                db.session.query(TransactionType).filter_by(name="Income").one()
+            )
+            category = next(iter(seed_user["categories"].values()))
+            unlinked = TransactionTemplate(
+                user_id=user_id,
+                account_id=seed_user["account"].id,
+                category_id=category.id,
+                transaction_type_id=income_type.id,
+                name="Unlinked income",
+                default_amount=Decimal("100.00"),
+            )
+            db.session.add(unlinked)
+            db.session.commit()
+            txn = _make_txn(
+                seed_user, pay_period_service.get_all_periods(user_id)[3],
+                template=unlinked,
+            )
+            db.session.commit()
+            assert income_service.live_projected_net(
+                user_id, scenario_id, [txn],
+            ) == {}
+
+
+class TestLiveIncomeThroughBalanceResolver:
+    """Workstream B integration: balance surfaces recompute projected salary
+    income live, so a stale stored ``estimated_amount`` never reaches a
+    balance or subtotal.  This is the drift-without-regeneration lock -- the
+    exact failure mode (a code change staling the grid) that motivated the
+    income resolver.
+    """
+
+    def test_stale_stored_income_overridden_by_live_net(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A projected salary income row with a stale $1.00 stored amount
+        contributes its LIVE net to both ``period_subtotal`` and
+        ``balances_for`` -- never the stale stored value.
+
+        $104,000 profile, no deductions, no tax configs seeded -> net =
+        gross = 104000/26 = $4,000.00.  The transaction is stored at $1.00
+        (simulating a cache invalidated by a profile/code change with no
+        regeneration); both balance surfaces must show $4,000.00.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            profile = _create_profile(user_id, scenario.id)
+            template = _make_salary_template(seed_user, profile)
+            db.session.commit()
+
+            periods = pay_period_service.get_all_periods(user_id)
+            period = periods[5]
+            _make_txn(
+                seed_user, period, template=template,
+                estimated_amount="1.00",
+            )
+            db.session.commit()
+
+            tax_configs = load_tax_configs(user_id, profile)
+            breakdowns = paycheck_calculator.project_salary(
+                profile, periods, tax_configs, calibration=profile.calibration,
+            )
+            expected_net = {
+                bd.period_id: bd.net_pay for bd in breakdowns
+            }[period.id]
+            # Sanity: the live net genuinely differs from the stale stored.
+            assert expected_net == Decimal("4000.00")
+            assert expected_net != Decimal("1.00")
+
+            # period_subtotal income line reflects the live net.
+            subtotal = balance_resolver.period_subtotal(
+                account, scenario.id, period,
+            )
+            assert subtotal.income == expected_net, (
+                f"period_subtotal.income should be live {expected_net}, "
+                f"got {subtotal.income} (stale stored was 1.00)"
+            )
+
+            # balances_for: the income period's balance moves by the live net.
+            result = balance_resolver.balances_for(
+                account, scenario.id, periods,
+            )
+            idx = next(i for i, p in enumerate(periods) if p.id == period.id)
+            prior = result.balances[periods[idx - 1].id]
+            assert result.balances[period.id] - prior == expected_net, (
+                "balances_for income-period delta should be the live net "
+                f"{expected_net}, got {result.balances[period.id] - prior}"
+            )
+
+    def test_overridden_income_row_keeps_user_value(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A user-overridden salary income row is NOT recomputed.
+
+        ``is_override=True`` means the user deliberately set the amount;
+        the resolver must respect it (the producer excludes it), so the
+        subtotal reflects the stored $1234.56, not the live net.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = seed_user["scenario"]
+            account = seed_user["account"]
+            profile = _create_profile(user_id, scenario.id)
+            template = _make_salary_template(seed_user, profile)
+            db.session.commit()
+
+            period = pay_period_service.get_all_periods(user_id)[5]
+            _make_txn(
+                seed_user, period, template=template, is_override=True,
+                estimated_amount="1234.56",
+            )
+            db.session.commit()
+
+            subtotal = balance_resolver.period_subtotal(
+                account, scenario.id, period,
+            )
+            assert subtotal.income == Decimal("1234.56"), (
+                "An overridden income row must keep the user's amount, "
+                f"got {subtotal.income}"
+            )
 
 
 class TestGetCurrentGrossBiweekly:

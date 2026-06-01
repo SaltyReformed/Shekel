@@ -30,7 +30,8 @@ from app.utils.balance_predicates import is_projected
 logger = logging.getLogger(__name__)
 
 
-def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
+def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
+                       income_overrides=None):
     """Compute projected end balances from the anchor forward.
 
     Args:
@@ -42,6 +43,12 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
                            Should exclude is_deleted=True rows before passing in.
                            Shadow transactions (transfer_id IS NOT NULL) participate
                            identically to regular transactions.
+        income_overrides:  Optional dict mapping transaction id -> Decimal
+                           (the live projected-net seam, Workstream B).  An
+                           income transaction whose id is a key uses the
+                           override in place of its stored effective_amount;
+                           default None preserves the prior behavior
+                           byte-identical.
 
     Returns:
         (balances, stale_anchor_warning) where:
@@ -69,12 +76,12 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
 
         if period.id == anchor_period_id:
             # Anchor period: start from the real balance, add only remaining items.
-            income, expenses = _sum_remaining(period_txns)
+            income, expenses = _sum_remaining(period_txns, income_overrides)
             running_balance = anchor_balance + income - expenses
 
         elif running_balance is not None:
             # Post-anchor: roll forward from previous end balance.
-            income, expenses = _sum_all(period_txns)
+            income, expenses = _sum_all(period_txns, income_overrides)
             running_balance = running_balance + income - expenses
 
         else:
@@ -109,8 +116,15 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions):
 
 def calculate_balances_with_interest(
     anchor_balance, anchor_period_id, periods, transactions,
-    interest_params=None,
+    interest_params=None, income_overrides=None,
 ):
+    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    # The six inputs are cohesive balance-projection parameters (anchor
+    # balance, anchor period id, period list, transactions, interest config,
+    # and the Workstream B income-override seam forwarded verbatim to
+    # calculate_balances).  A params object would be gratuitous churn across
+    # every caller of a pure function; the arg/local counts are inherent to
+    # a balance projection, not a decomposition smell.
     """Same as calculate_balances but also returns interest earned per period.
 
     When interest_params is provided (an object with .apy and
@@ -123,6 +137,10 @@ def calculate_balances_with_interest(
         periods:           List of PayPeriod objects, ordered by period_index.
         transactions:      List of Transaction objects (including shadow transactions).
         interest_params:   Object with .apy (Decimal) and .compounding_frequency (str).
+        income_overrides:  Optional ``{transaction_id: Decimal}`` map (the live
+                           projected-net seam, Workstream B), forwarded verbatim
+                           to :func:`calculate_balances`.  Default None
+                           preserves the prior behavior byte-identical.
 
     Returns:
         (balances, interest_by_period) where:
@@ -132,6 +150,7 @@ def calculate_balances_with_interest(
     # First compute base balances without interest.
     base_balances, _ = calculate_balances(
         anchor_balance, anchor_period_id, periods, transactions,
+        income_overrides=income_overrides,
     )
 
     interest_by_period = {}
@@ -295,7 +314,37 @@ def _entry_aware_amount(txn):
     )
 
 
-def _sum_remaining(transactions):
+def _income_amount(txn, income_overrides):
+    """Return the income contribution for ``txn``, honoring a live override.
+
+    ``income_overrides`` is the live projected-net seam (Workstream B):
+    a dict mapping transaction id -> Decimal produced by
+    :func:`app.services.income_service.live_projected_net`.  When the
+    transaction's id is present, the live-recomputed net is used in
+    place of the stored ``effective_amount`` so a projected salary
+    paycheck reflects the current salary profile rather than a cached
+    amount a later profile/calibration/code change may have invalidated.
+    ``income_overrides=None`` (the default everywhere this module is
+    called without the seam) returns ``effective_amount`` unchanged, so
+    the pre-seam behavior is byte-identical.
+
+    Args:
+        txn: An income Transaction.
+        income_overrides: Optional ``{transaction_id: Decimal}`` map, or
+            None.
+
+    Returns:
+        Decimal -- the override amount when present, else
+        ``txn.effective_amount``.
+    """
+    if income_overrides is not None:
+        override = income_overrides.get(txn.id)
+        if override is not None:
+            return override
+    return txn.effective_amount
+
+
+def _sum_remaining(transactions, income_overrides=None):
     """Sum only REMAINING (projected) transactions for the anchor period.
 
     Items marked done/received are already reflected in the anchor balance
@@ -323,14 +372,14 @@ def _sum_remaining(transactions):
             continue
 
         if txn.is_income:
-            income += txn.effective_amount
+            income += _income_amount(txn, income_overrides)
         elif txn.is_expense:
             expenses += _entry_aware_amount(txn)
 
     return income, expenses
 
 
-def _sum_all(transactions):
+def _sum_all(transactions, income_overrides=None):
     """Sum remaining (projected) transactions for a non-anchor period.
 
     Only projected items contribute to the projected balance.  Settled,
@@ -357,7 +406,7 @@ def _sum_all(transactions):
             continue
 
         if txn.is_income:
-            income += txn.effective_amount
+            income += _income_amount(txn, income_overrides)
         elif txn.is_expense:
             expenses += _entry_aware_amount(txn)
 
