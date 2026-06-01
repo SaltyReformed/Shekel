@@ -7,7 +7,7 @@ bracket-based estimates for more accurate projections.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin, TimestampMixin
+from app.models.mixins import TimestampMixin
 
 
 class CalibrationOverride(TimestampMixin, db.Model):
@@ -104,73 +104,9 @@ class CalibrationOverride(TimestampMixin, db.Model):
         "SalaryProfile",
         backref=db.backref("calibration", uselist=False, lazy="joined"),
     )
-    deduction_overrides = db.relationship(
-        "CalibrationDeductionOverride",
-        back_populates="calibration",
-        cascade="all, delete-orphan",
-        lazy="select",
-    )
 
     def __repr__(self):
         return (
             f"<CalibrationOverride profile_id={self.salary_profile_id} "
             f"date={self.pay_stub_date}>"
-        )
-
-
-class CalibrationDeductionOverride(CreatedAtMixin, db.Model):
-    """Actual deduction amount from a pay stub, linked to a calibration.
-
-    Allows the user to record what each deduction actually was on the
-    pay stub so the paycheck calculator can use the real amount instead
-    of the configured amount.
-    """
-
-    __tablename__ = "calibration_deduction_overrides"
-    __table_args__ = (
-        db.UniqueConstraint(
-            "calibration_id", "deduction_id",
-            name="uq_calibration_ded_overrides_cal_ded",
-        ),
-        db.CheckConstraint(
-            "actual_amount >= 0",
-            name="ck_calibration_ded_overrides_nonneg_amount",
-        ),
-        # F-140 / C-42: FK-column index on ``deduction_id``.  The
-        # paycheck calculator joins this override table by
-        # ``deduction_id`` to look up the calibrated amount for each
-        # deduction; without this index the join falls back to a
-        # sequential scan.  ``calibration_id`` is already covered by
-        # the unique constraint (it leads the composite uq), so a
-        # separate index on it would be redundant.
-        db.Index(
-            "idx_calibration_deduction_overrides_deduction",
-            "deduction_id",
-        ),
-        {"schema": "salary"},
-    )
-
-    id = db.Column(db.Integer, primary_key=True)
-    calibration_id = db.Column(
-        db.Integer,
-        db.ForeignKey("salary.calibration_overrides.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    deduction_id = db.Column(
-        db.Integer,
-        db.ForeignKey("salary.paycheck_deductions.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    actual_amount = db.Column(db.Numeric(10, 2), nullable=False)
-
-    # Relationships.
-    calibration = db.relationship(
-        "CalibrationOverride", back_populates="deduction_overrides"
-    )
-    deduction = db.relationship("PaycheckDeduction", lazy="joined")
-
-    def __repr__(self):
-        return (
-            f"<CalibrationDeductionOverride cal_id={self.calibration_id} "
-            f"ded_id={self.deduction_id} actual={self.actual_amount}>"
         )

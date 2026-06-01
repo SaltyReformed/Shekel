@@ -252,7 +252,7 @@ class TestPostUpgradeDbShape:
     def test_index_present(
         self, app, db, seed_user, name, schema, _table, _columns,
     ):
-        """Each of the seven C-42 indexes exists in pg_indexes."""
+        """Each of the six C-42 indexes exists in pg_indexes."""
         with app.app_context():
             assert _index_exists(db.session, schema, name), (
                 f"Test template precondition broken: "

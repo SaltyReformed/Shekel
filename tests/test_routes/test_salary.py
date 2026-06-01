@@ -2674,10 +2674,12 @@ class TestCalibrationServerDerivedSnapshot:
       under $176,100 wage base at this salary):
         federal = 2884.62 * 0.0693332224 = 200.0000 -> 200.00
         state   = 2884.62 * 0.0346666112 = 100.0000 -> 100.00
-        ss      = capped_social_security(2884.62, 0, fica)
-                = 2884.62 * 0.062 = 178.8464 -> 178.85
-                (calibrated effective_ss_rate stored but not consumed,
-                 CRIT-03 / F-037 fix in apply_calibration)
+        ss      = capped_social_security(2884.62, 0, fica,
+                                         ss_rate=0.0620012341)
+                = 2884.62 * 0.0620012341 = 178.8500 -> 178.85
+                (effective_ss_rate IS consumed as the per-period SS rate
+                 -- SS calibration fix 2026-06-01, symmetric with medicare;
+                 the statutory cap still bounds the annual total)
         medicare= 2884.62 * 0.0145010435 = 41.8302 -> 41.83
     """
 

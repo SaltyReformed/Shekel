@@ -94,7 +94,6 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     # in the seed script's write semantics.
     ("ref", "account_types"),
     # ── salary schema ────────────────────────────────────────────────
-    ("salary", "calibration_deduction_overrides"),
     ("salary", "calibration_overrides"),
     ("salary", "fica_configs"),
     ("salary", "paycheck_deductions"),
