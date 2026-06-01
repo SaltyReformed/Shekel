@@ -2639,6 +2639,107 @@ class TestCalibrationIntegration:
         )
         assert result.net_pay == expected_net
 
+    def test_calibration_reproduces_cafeteria_reduced_paycheck(
+        self, simple_tax_configs
+    ):
+        """Production-path lock: calculate_paycheck with an active calibration
+        reproduces a real pay stub whose Social Security is assessed on a
+        Section 125 cafeteria-reduced base (SS calibration fix, 2026-06-01).
+
+        This is the assertion that was ABSENT and let the SS regression
+        ship.  The prior code forced statutory 6.2% on the full gross in the
+        calibration path, so calculate_paycheck overstated SS and understated
+        net by the cafeteria gap; no test exercised the production path
+        against a non-statutory effective_ss_rate.
+
+        Developer's real 2026 pay stub:
+          annual_salary $91,675, 26 periods -> gross 91675/26 = $3,525.96
+          pre-tax deductions  = $706.95 -> taxable = $2,819.01
+          post-tax deductions = $21.82
+          actual stub: federal $0, state $84.00, SS $194.36 (5.51% of gross,
+            NOT statutory $218.61), medicare $45.45.
+          Net on Shekel's computed gross:
+            3525.96 - 706.95 - 0 - 84.00 - 194.36 - 45.45 - 21.82 = 2473.38
+          (the stub's own net is $2,473.42; the $0.04 gap is a separate,
+          trivial salary-rounding item -- 91675/26 = 3525.96 vs the stub's
+          $3,526.00 gross.)
+
+        Rates are derived exactly as calibrate_confirm does (against the
+        ACTUAL stub gross/taxable) then applied by calculate_paycheck
+        (against the computed gross), exercising the real derive -> apply
+        path end to end.
+        """
+        from app.services.calibration_service import (  # pylint: disable=import-outside-toplevel
+            derive_effective_rates,
+        )
+
+        # Derived against the ACTUAL stub gross 3526.00 and taxable
+        # 3526.00 - 706.95 = 2819.05 (the basis calibrate_confirm uses).
+        rates = derive_effective_rates(
+            actual_gross_pay=Decimal("3526.00"),
+            actual_federal_tax=Decimal("0.00"),
+            actual_state_tax=Decimal("84.00"),
+            actual_social_security=Decimal("194.36"),
+            actual_medicare=Decimal("45.45"),
+            taxable_income=Decimal("2819.05"),
+        )
+        cal = FakeCalibration(
+            federal_rate=rates.effective_federal_rate,
+            state_rate=rates.effective_state_rate,
+            ss_rate=rates.effective_ss_rate,
+            medicare_rate=rates.effective_medicare_rate,
+        )
+
+        deductions = [
+            FakeDeduction(name="FSA", amount="133.33", deduction_timing="pre_tax"),
+            FakeDeduction(name="Vision", amount="12.06", deduction_timing="pre_tax"),
+            FakeDeduction(name="Dental", amount="40.00", deduction_timing="pre_tax"),
+            FakeDeduction(name="Health", amount="310.00", deduction_timing="pre_tax"),
+            FakeDeduction(
+                name="State Retirement", amount="211.56",
+                deduction_timing="pre_tax",
+            ),
+            FakeDeduction(name="Child AD&D", amount="0.13", deduction_timing="post_tax"),
+            FakeDeduction(name="Spouse VTL", amount="2.16", deduction_timing="post_tax"),
+            FakeDeduction(name="Child VTL", amount="1.50", deduction_timing="post_tax"),
+            FakeDeduction(name="EE AD&D", amount="5.40", deduction_timing="post_tax"),
+            FakeDeduction(name="Spouse AD&D", amount="1.08", deduction_timing="post_tax"),
+            FakeDeduction(name="EE VTL", amount="10.80", deduction_timing="post_tax"),
+            FakeDeduction(
+                name="Dependent Basic Term Life", amount="0.75",
+                deduction_timing="post_tax",
+            ),
+        ]
+        profile = FakeProfile(
+            annual_salary=91675,
+            deductions=deductions,
+            created_at=date(2026, 1, 1),
+        )
+        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+
+        result = calculate_paycheck(
+            profile, period, [period], simple_tax_configs,
+            calibration=cal,
+        )
+
+        # Computed gross 91675/26 = 3525.96 (single-period half-up fallback).
+        assert result.gross_biweekly == Decimal("3525.96")
+        assert result.total_pre_tax == Decimal("706.95")
+        assert result.total_post_tax == Decimal("21.82")
+        assert result.federal_tax == Decimal("0.00")
+        assert result.state_tax == Decimal("84.00")
+        assert result.medicare == Decimal("45.45")
+        # SS uses effective_ss_rate (cafeteria-reduced), NOT statutory 6.2%.
+        assert result.social_security == Decimal("194.36"), (
+            f"SS must reproduce the stub's $194.36, got {result.social_security}"
+        )
+        # Regression guard: statutory 6.2% would be 3525.96 * 0.062 = 218.61,
+        # the wrong value the pre-fix calibration path produced.
+        assert result.social_security != Decimal("218.61")
+        assert result.net_pay == Decimal("2473.38"), (
+            f"Net must reproduce 2473.38, got {result.net_pay}"
+        )
+
     def test_calibrated_paycheck_differs_from_bracket_based(
         self, simple_tax_configs
     ):

@@ -224,19 +224,22 @@ class TestApplyCalibration:
         assert result["ss"] == Decimal("143.08")
         assert result["medicare"] == Decimal("33.46")
 
-    def test_zero_rates_produce_zero_taxes_except_statutory_ss(self):
-        """All-zero calibrated rates zero federal/state/medicare.
+    def test_zero_rates_produce_zero_taxes_including_ss(self):
+        """All-zero calibrated rates zero every tax line, SS included.
 
-        Re-pinned (CRIT-03 / F-037, audit 2026-05-19): the SS line is no
-        longer driven by the calibration's effective_ss_rate; it is
-        delegated to capped_social_security using the statutory rate from
-        fica_config.  Under the new (correct) behaviour the SS line is
-        gross * 0.062 even when the calibrated effective_ss_rate is 0,
-        because SS is a statutory federal tax and a calibrated rate of
-        zero would silently violate the IRS withholding rule.  The prior
-        assertion (SS == 0.00) pinned the F-037 bug.
-        Arithmetic: 3000.00 * 0.062 = 186.00 (under wage base, so full
-        statutory rate applies).
+        Re-pinned (SS calibration fix, 2026-06-01; supersedes the prior
+        CRIT-03 / F-037 re-pin): apply_calibration now passes the
+        calibration's effective_ss_rate to capped_social_security as the
+        per-period rate (symmetric with effective_medicare_rate), instead
+        of forcing the statutory 6.2%.  A zero effective_ss_rate therefore
+        yields zero SS -- the CORRECT result for a non-SS-covered employee
+        (e.g. some government workers whose pay stub shows $0 Social
+        Security).  The statutory cap ceiling still bounds the annual total
+        for covered employees; it never manufactures a withholding line the
+        employer did not levy.  The prior assertion (SS == 186.00) pinned
+        the regression that forced statutory 6.2% on the full gross and so
+        overstated SS for every cafeteria-deduction filer.
+        Arithmetic: effective_ss_rate 0 * gross 3000.00 = 0.00.
         """
         cal = FakeCalibration(
             federal_rate="0",
@@ -255,8 +258,8 @@ class TestApplyCalibration:
 
         assert result["federal"] == Decimal("0.00")
         assert result["state"] == Decimal("0.00")
-        # 3000.00 * 0.062 = 186.00 (statutory IRS SS rate via helper).
-        assert result["ss"] == Decimal("186.00")
+        # effective_ss_rate 0 * gross 3000.00 = 0.00 (non-SS-covered employee).
+        assert result["ss"] == Decimal("0.00")
         assert result["medicare"] == Decimal("0.00")
 
     def test_federal_and_state_use_taxable_not_gross(self):
@@ -351,14 +354,13 @@ class TestRoundTrip:
     def _assert_round_trip(self, gross, federal, state, ss, medicare, taxable):
         """Helper: derive rates from actuals, apply back, verify penny match.
 
-        Federal, state, and medicare round-trip through the calibrated
-        effective rates.  The SS line is delegated to
-        capped_social_security (CRIT-03 / F-037): apply uses the statutory
-        IRS rate from fica_config, NOT the derived effective_ss_rate.
-        Callers must pass an `ss` value that matches gross * 0.062 to the
-        cent (true of every real pay stub at typical biweekly grosses;
-        manufactured precision-stress values must be updated alongside the
-        round-trip helper).
+        All four lines -- federal, state, SS, and medicare -- round-trip
+        through their calibrated effective rates (SS calibration fix,
+        2026-06-01): apply_calibration now passes effective_ss_rate to
+        capped_social_security as the per-period rate, so SS reproduces the
+        actual stub value for ANY rate, not only gross * 0.062.  The SS cap
+        ceiling (statutory_rate * ss_wage_base) does not bite here because
+        cumulative_wages is zero and the grosses are well below the base.
         """
         rates = derive_effective_rates(
             actual_gross_pay=gross,
@@ -514,6 +516,27 @@ class TestRoundTrip:
             ss=Decimal("476.92"),
             medicare=Decimal("111.54"),
             taxable=Decimal("6942.31"),
+        )
+
+    def test_round_trip_cafeteria_reduced_ss(self):
+        """Cafeteria-reduced SS round-trips via effective_ss_rate.
+
+        The developer's real pay stub (2026-06-01): gross $3,526.00 with
+        Section 125 cafeteria pre-tax deductions, so the employer assesses
+        Social Security on a reduced base and withholds $194.36 -- 5.51% of
+        gross, NOT the statutory 6.2% ($218.61).  Before the SS calibration
+        fix apply_calibration forced 6.2% and overstated SS by $24.25 per
+        paycheck; it now uses effective_ss_rate and reproduces the actual
+        $194.36 to the cent, exactly as Medicare already did.  This is the
+        precise scenario the regression shipped on.
+        """
+        self._assert_round_trip(
+            gross=Decimal("3526.00"),
+            federal=Decimal("0.00"),
+            state=Decimal("84.00"),
+            ss=Decimal("194.36"),
+            medicare=Decimal("45.45"),
+            taxable=Decimal("2819.05"),
         )
 
 
