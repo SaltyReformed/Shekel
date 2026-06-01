@@ -25,7 +25,7 @@ Three groups of operations:
          ``salary.tax_brackets(bracket_set_id, sort_order)``
 
   2. **Missing-FK-index sweep (F-139 / F-140).**  Live-DB
-     ``pg_indexes`` shows four additional FK columns the original
+     ``pg_indexes`` showed four additional FK columns the original
      CREATE TABLEs left unindexed despite being the primary join /
      filter columns for their respective routes (loan amortisation,
      retirement dashboard, pension gap analysis, calibration
@@ -40,8 +40,11 @@ Three groups of operations:
          ``salary.pension_profiles(user_id)``
        * ``idx_pension_profiles_salary_profile`` ON
          ``salary.pension_profiles(salary_profile_id)``
-       * ``idx_calibration_deduction_overrides_deduction`` ON
-         ``salary.calibration_deduction_overrides(deduction_id)``
+
+     A fourth index here originally covered
+     ``salary.calibration_deduction_overrides(deduction_id)``; it was
+     removed from ``INDEX_SPECS`` when that orphaned table was dropped
+     (migration 78782c6ac75e).  See the ``INDEX_SPECS`` comment below.
 
   3. **FK naming convention sweep (F-072 / F-137 / F-138).**  Three
      FK constraints carry Alembic's default
@@ -173,12 +176,15 @@ INDEX_SPECS: tuple[tuple[str, str, str, list], ...] = (
         "pension_profiles",
         ["salary_profile_id"],
     ),
-    (
-        "idx_calibration_deduction_overrides_deduction",
-        "salary",
-        "calibration_deduction_overrides",
-        ["deduction_id"],
-    ),
+    # NOTE: idx_calibration_deduction_overrides_deduction (originally a
+    # seventh F-140 index) was removed when its table,
+    # salary.calibration_deduction_overrides, was dropped as an orphaned
+    # never-written feature (migration 78782c6ac75e).  Dropping the entry
+    # here keeps this migration replayable end-to-end: a fresh chain no
+    # longer creates an index on a table a later migration deletes, and
+    # the C-42 regression tests that iterate INDEX_SPECS no longer assert
+    # on a now-absent artifact.  c42 still ran in production with this
+    # index; that index is cascaded away by the table drop on upgrade.
 )
 
 
@@ -460,9 +466,11 @@ def upgrade():
     Three-step pattern:
 
       1. Idempotency-guarded :func:`_create_index_if_missing` for
-         each of seven indexes -- the three F-071 / F-079 indexes
-         dropped by 22b3dd9d9ed3 and the four F-139 / F-140 indexes
-         that were never declared.  Indexes that already exist
+         each of six indexes -- the three F-071 / F-079 indexes
+         dropped by 22b3dd9d9ed3 and the three F-139 / F-140 indexes
+         that were never declared (a fourth, on the since-dropped
+         calibration_deduction_overrides table, was removed from
+         INDEX_SPECS).  Indexes that already exist
          (forward-migrated DBs replaying the chain) are skipped.
       2. Idempotency-guarded :func:`_rename_constraint_if_legacy` for
          each of three FK renames.  Constraints already under the new
@@ -490,7 +498,7 @@ def upgrade():
 
 
 def downgrade():
-    """Reverse the renames and drop the seven indexes.
+    """Reverse the renames and drop the six indexes.
 
     The downgrade is symmetric.  FK renames are reversed first
     (restoring the immediately-prior names that 44893a9dbcc3 and the
@@ -519,7 +527,7 @@ def downgrade():
             new_name=old_name,
         )
 
-    # Reverse step 1: drop the seven indexes.  ``DROP INDEX IF
+    # Reverse step 1: drop the six indexes.  ``DROP INDEX IF
     # EXISTS`` is the simplest idempotency form -- op.drop_index
     # raises if the index is absent, whereas the IF EXISTS form
     # tolerates that state.  Indexes belong to schemas; ``DROP INDEX``
