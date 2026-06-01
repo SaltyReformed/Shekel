@@ -41,6 +41,7 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services import pay_period_service, paycheck_calculator
 from app.services.tax_config_service import load_tax_configs
+from app.utils.balance_predicates import is_projected
 
 logger = logging.getLogger(__name__)
 
@@ -126,3 +127,116 @@ def get_current_gross_biweekly(
         profile, current_period, all_periods, tax_configs,
     )
     return breakdown.gross_biweekly
+
+
+def live_projected_net(
+    user_id: int,
+    scenario_id: int,
+    transactions: list,
+) -> dict[int, Decimal]:
+    """Return ``{transaction_id: live_net_pay}`` for salary-linked Projected income.
+
+    The read-time analogue of the recurrence engine's generation-time
+    amount: for every Projected, non-overridden income transaction in
+    ``transactions`` whose template is linked to an active
+    :class:`SalaryProfile` in ``scenario_id``, recompute the net
+    paycheck LIVE from that profile -- the same path the salary
+    projection page uses (:func:`paycheck_calculator.project_salary`
+    over the full pay-period set, current-year tax configs, the
+    profile's calibration).  The result lets a balance/display consumer
+    treat the stored ``Transaction.estimated_amount`` as a cache that
+    cannot silently disagree with the salary page after a profile,
+    calibration, or financial-calc CODE change that did not fire a
+    regeneration (the staleness gap that shipped the SS regression).
+
+    Only transactions that are ALL of:
+
+      * income (:attr:`Transaction.is_income`),
+      * Projected (:func:`~app.utils.balance_predicates.is_projected` --
+        Received / Settled income carries a realized ``actual_amount``
+        that is a historical fact, never a recomputable projection),
+      * NOT user-overridden (``is_override`` -- a manual amount the user
+        deliberately set is respected, mirroring the recurrence engine),
+      * linked to a template that maps to an active ``SalaryProfile`` in
+        ``scenario_id``,
+
+    appear in the result.  Every other transaction is omitted, so a
+    caller's ``overrides.get(txn.id, txn.effective_amount)`` falls back
+    to the stored value for non-salary income, overridden rows, and
+    expenses.
+
+    Boundary discipline: no Flask import; inputs are plain data
+    (ids + an already-loaded transaction list), output is a plain dict.
+    The full-period ``project_salary`` call is what makes the per-period
+    gross reconcile exactly (:func:`paycheck_calculator._gross_biweekly_for_period`),
+    so callers pass the transactions they have loaded -- this helper
+    sources the canonical full pay-period set itself.
+
+    Args:
+        user_id: Owning user; scopes the SalaryProfile and pay-period
+            queries.
+        scenario_id: Scenario to resolve salary profiles against; the
+            grid and every balance surface are scenario-scoped, and a
+            profile drives income only within its own scenario.
+        transactions: Already-loaded :class:`Transaction` rows (the
+            caller's balance or display set).  Each must expose
+            ``is_income``, ``status`` (for ``is_projected``),
+            ``is_override``, ``template_id``, ``pay_period_id``, ``id``.
+
+    Returns:
+        ``dict`` mapping transaction id to the live net pay
+        (:class:`~decimal.Decimal`) for the transaction's period.
+        Empty when there are no salary-linked Projected income rows --
+        the common case for non-salary accounts and expense-only sets,
+        and a fast no-op (no query) when no candidate rows exist.
+    """
+    candidates = [
+        txn for txn in transactions
+        if txn.is_income
+        and is_projected(txn)
+        and not txn.is_override
+        and txn.template_id is not None
+    ]
+    if not candidates:
+        return {}
+
+    template_ids = {txn.template_id for txn in candidates}
+    profiles = (
+        db.session.query(SalaryProfile)
+        .filter(
+            SalaryProfile.user_id == user_id,
+            SalaryProfile.scenario_id == scenario_id,
+            SalaryProfile.is_active.is_(True),
+            SalaryProfile.template_id.in_(template_ids),
+        )
+        .all()
+    )
+    profile_by_template = {p.template_id: p for p in profiles}
+    if not profile_by_template:
+        return {}
+
+    # Compute each profile's live per-period net ONCE.  The full
+    # pay-period set is required so the biweekly residue reconciliation
+    # anchors against the complete annual figure, exactly as the salary
+    # projection page does.
+    all_periods = pay_period_service.get_all_periods(user_id)
+    net_by_period_per_profile: dict[int, dict[int, Decimal]] = {}
+    for profile in profile_by_template.values():
+        tax_configs = load_tax_configs(user_id, profile)
+        breakdowns = paycheck_calculator.project_salary(
+            profile, all_periods, tax_configs,
+            calibration=profile.calibration,
+        )
+        net_by_period_per_profile[profile.id] = {
+            bd.period_id: bd.net_pay for bd in breakdowns
+        }
+
+    overrides: dict[int, Decimal] = {}
+    for txn in candidates:
+        profile = profile_by_template.get(txn.template_id)
+        if profile is None:
+            continue
+        net = net_by_period_per_profile[profile.id].get(txn.pay_period_id)
+        if net is not None:
+            overrides[txn.id] = net
+    return overrides

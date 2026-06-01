@@ -368,10 +368,33 @@ def _load_balance_transactions(
     )
 
 
+def _live_income_overrides(account, scenario_id, transactions):
+    """Build the live projected-net override map for ``transactions`` (Workstream B).
+
+    Delegates to :func:`app.services.income_service.live_projected_net`
+    so projected salary income on every balance surface reflects the
+    current salary profile, not a stored ``estimated_amount`` a later
+    profile / calibration / financial-calc CODE change may have
+    invalidated without firing a regeneration.  Imported locally to keep
+    ``income_service`` (which pulls in the paycheck / tax stack) off
+    ``balance_resolver``'s module-load path and out of any import cycle.
+
+    Returns an empty dict when there is no salary-linked Projected income
+    -- the common case for non-salary accounts -- so the override
+    threading is a structural no-op for those surfaces.
+    """
+    from app.services import income_service  # pylint: disable=import-outside-toplevel
+    return income_service.live_projected_net(
+        account.user_id, scenario_id, transactions,
+    )
+
+
 def balances_for(
     account: Account,
     scenario_id: int,
     periods: list[PayPeriod],
+    *,
+    income_overrides: dict[int, Decimal] | None = None,
 ) -> BalanceResult:
     """Project end balances for ``account`` across ``periods`` (E-25 SoT).
 
@@ -422,6 +445,13 @@ def balances_for(
             engine carries the running balance forward from the
             anchor period only); pre-anchor periods in the list are
             ignored by the engine and absent from the result.
+        income_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net map (Workstream B).  When None (the default,
+            and what every single-call consumer passes), it is built
+            here via :func:`_live_income_overrides` so the surface gets
+            live salary income for free; the grid builds it once and
+            threads it to avoid recomputing across its per-period
+            subtotal calls.
 
     Returns:
         :class:`BalanceResult` -- the period-id -> ``Decimal`` map
@@ -432,11 +462,23 @@ def balances_for(
     period_ids = [p.id for p in periods]
     transactions = _load_balance_transactions(account, scenario_id, period_ids)
 
+    # Workstream B: projected salary income is recomputed live from the
+    # salary profile; the stored estimated_amount is a cache.  Built here
+    # when the caller did not supply one, so single-call consumers
+    # (/savings, /accounts, dashboard, net worth) get live income for
+    # free; the grid builds it once and threads it to avoid recomputing
+    # across its per-period subtotal calls.
+    if income_overrides is None:
+        income_overrides = _live_income_overrides(
+            account, scenario_id, transactions,
+        )
+
     raw_balances, stale_anchor_warning = balance_calculator.calculate_balances(
         anchor_balance=anchor.balance,
         anchor_period_id=anchor.period.id,
         periods=periods,
         transactions=transactions,
+        income_overrides=income_overrides,
     )
 
     quantized: OrderedDict[int, Decimal] = OrderedDict(
@@ -453,6 +495,8 @@ def period_subtotal(
     account: Account,
     scenario_id: int,
     period: PayPeriod,
+    *,
+    income_overrides: dict[int, Decimal] | None = None,
 ) -> PeriodSubtotal:
     """Entries-aware income / expense / net subtotal for one period (E-25).
 
@@ -485,6 +529,10 @@ def period_subtotal(
         period: The :class:`~app.models.pay_period.PayPeriod` to
             sum.  Can be the anchor period or any post-anchor period
             -- the same Projected-only entries-aware sum applies.
+        income_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net map (Workstream B); built here when None so
+            the subtotal's income line reflects the live paycheck
+            consistently with the balance row.
 
     Returns:
         :class:`PeriodSubtotal` -- the three Decimals (income,
@@ -494,12 +542,20 @@ def period_subtotal(
     transactions = _load_balance_transactions(
         account, scenario_id, [period.id],
     )
+    # Workstream B: live projected income (built here when not supplied,
+    # so the same Projected-only, entries-aware subtotal the balance row
+    # uses also reflects the live paycheck -- keeping the F-002 Pair C
+    # invariant ``balances[p] - balances[p-1] == subtotal.net`` true).
+    if income_overrides is None:
+        income_overrides = _live_income_overrides(
+            account, scenario_id, transactions,
+        )
     # pylint: disable=protected-access
     # ``_sum_all`` is an internal helper of ``balance_calculator``;
     # the resolver is its sibling canonical producer (see module
     # docstring) and the audit's E-25 mandate explicitly reuses the
     # engine's math rather than rewriting it (CLAUDE.md rule 10).
-    income, expense = balance_calculator._sum_all(transactions)
+    income, expense = balance_calculator._sum_all(transactions, income_overrides)
     rounded_income = round_money(income)
     rounded_expense = round_money(expense)
     return PeriodSubtotal(
@@ -591,15 +647,17 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
 def _sum_period_as_of(
     transactions: list[Transaction],
     as_of: date,
+    income_overrides: dict[int, Decimal] | None = None,
 ) -> tuple[Decimal, Decimal]:
     """Sum Projected income / expense for the as-of period (E-27).
 
     Mirrors :func:`~app.services.balance_calculator._sum_all` but
     routes expense impact through :func:`_entry_aware_amount_dated`
     so the entry-date cut applies inside the period containing
-    ``as_of``.  Income still uses ``effective_amount`` -- income
-    transactions do not carry entries (entries live on expense
-    envelopes), so the date cut is a no-op for income.
+    ``as_of``.  Income uses the live projected-net override when present
+    (Workstream B), else ``effective_amount`` -- income transactions do
+    not carry entries (entries live on expense envelopes), so the
+    entry-date cut is a no-op for income either way.
 
     Transactions are NOT filtered by ``due_date`` here.  ``balance
     as of date D`` is the projected balance once the period
@@ -615,6 +673,9 @@ def _sum_period_as_of(
         transactions: The Projected-gated, entries-loaded transaction
             list for the period containing ``as_of``.
         as_of: The calendar date that bounds entry inclusion.
+        income_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net map (Workstream B); the income line uses it
+            via :func:`~app.services.balance_calculator._income_amount`.
 
     Returns:
         ``(income, expense)`` as a ``Decimal`` tuple, both unquantized.
@@ -628,7 +689,10 @@ def _sum_period_as_of(
         if not is_projected(txn):
             continue
         if txn.is_income:
-            income += txn.effective_amount
+            # Workstream B live projected-net seam; reuse the engine
+            # helper so the date-cut path and ``_sum_all`` cannot drift.
+            # pylint: disable=protected-access
+            income += balance_calculator._income_amount(txn, income_overrides)
         elif txn.is_expense:
             expense += _entry_aware_amount_dated(txn, as_of)
     return income, expense
@@ -759,7 +823,11 @@ def balance_as_of_date(
     target_txns = _load_balance_transactions(
         account, scenario_id, [target_period.id],
     )
-    income, expense = _sum_period_as_of(target_txns, as_of)
+    # Workstream B: live projected income for the target period.
+    income_overrides = _live_income_overrides(
+        account, scenario_id, target_txns,
+    )
+    income, expense = _sum_period_as_of(target_txns, as_of, income_overrides)
 
     return round_money(prior_balance + income - expense)
 
@@ -794,11 +862,17 @@ def _project_to_period_before(
     prefix_txns = _load_balance_transactions(
         account, scenario_id, [p.id for p in prefix_periods],
     )
+    # Workstream B: live projected income for the prefix span, so the
+    # calendar's prior_balance reflects the live paycheck.
+    income_overrides = _live_income_overrides(
+        account, scenario_id, prefix_txns,
+    )
     raw_balances, _ = balance_calculator.calculate_balances(
         anchor_balance=anchor.balance,
         anchor_period_id=anchor_period.id,
         periods=prefix_periods,
         transactions=prefix_txns,
+        income_overrides=income_overrides,
     )
     # The prefix walk always produces an end-balance for its last
     # period: it starts at the anchor period (so ``running_balance``
