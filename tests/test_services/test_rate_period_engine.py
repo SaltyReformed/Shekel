@@ -128,6 +128,59 @@ class TestBuildRatePeriods:
         # The origination period has no recorded recast -> still derived.
         assert periods[0].period_pi == Decimal("2398.20")
 
+    def test_recorded_rate_change_starts_period_without_arm_cadence(self):
+        """A recorded rate change is a boundary even when ARM cadence is unset.
+
+        Regression for a real-loan bug: a 30-year loan flagged is_arm but
+        with arm_first_adjustment_months / arm_adjustment_interval_months
+        both None, whose rate adjusted from 4.875% to 6.875% (recorded in
+        RateHistory).  Before the fix the engine had no boundary for the
+        change, stayed in the origination period, and showed the 4.875%
+        origination payment ($1,069.00) instead of recasting at 6.875%.
+
+        origination 2018-12-01, $202,000, 360 months:
+          period 0 [2018-12-01, 2023-12-01) @ 4.875%:
+            pi = amortize(202000, 0.04875, 360) = 1,069.00
+          period 1 [2023-12-01, ...) @ 6.875%, term_at_start = 300:
+            pi = amortize(~185,162 month-60 balance, 0.06875, 300)
+               = 1,293.96  (the lender's recast)
+        """
+        terms = LoanTerms(
+            origination_date=date(2018, 12, 1),
+            original_principal=Decimal("202000.00"),
+            base_rate=Decimal("0.04875"),
+            term_months=360,
+            is_arm=True,
+            arm_first_adjustment_months=None,
+            arm_adjustment_interval_months=None,
+        )
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=date(2018, 12, 1),
+                interest_rate=Decimal("0.04875"),
+            ),
+            RateChangeRecord(
+                effective_date=date(2023, 12, 1),
+                interest_rate=Decimal("0.06875"),
+            ),
+        ]
+        periods = build_rate_periods(
+            terms=terms, rate_changes=rate_changes, recorded_period_pi=None,
+        )
+        assert [p.start_date for p in periods] == [
+            date(2018, 12, 1), date(2023, 12, 1),
+        ]
+        assert periods[0].annual_rate == Decimal("0.04875")
+        assert periods[0].period_pi == Decimal("1069.00")
+        assert periods[1].annual_rate == Decimal("0.06875")
+        assert periods[1].term_months_at_start == 300
+        assert periods[1].period_pi == Decimal("1293.96")
+        # The current period recasts at 6.875% -> the real statement P&I.
+        assert (
+            period_for_date(periods, date(2026, 6, 2)).period_pi
+            == Decimal("1293.96")
+        )
+
 
 class TestPeriodForDate:
     """period_for_date locates the governing period."""

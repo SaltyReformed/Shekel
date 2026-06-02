@@ -314,46 +314,56 @@ def _amortize_forward(
     return round_money(balance)
 
 
-def _period_boundary_offsets(
-    term_months: int,
-    is_arm: bool,
-    arm_first_adjustment_months: int | None,
-    arm_adjustment_interval_months: int | None,
-) -> list[int]:
-    """Return month offsets (from origination) where a rate period starts.
+def _period_boundary_dates(
+    terms: "LoanTerms",
+    rate_changes: list | None,
+) -> list[date]:
+    """Return the dates (ascending) where a fixed-rate period starts.
 
-    Always begins with ``0`` (the origination period).  For an ARM with
-    a positive ``arm_first_adjustment_months`` it adds that offset and
-    then one per ``arm_adjustment_interval_months`` until the term ends.
-    A non-ARM loan (or an ARM with no usable cadence) is a single period.
+    Always begins with the origination date.  Two sources add further
+    boundaries:
+
+    * **Recorded rate changes.**  A rate change recasts the payment, so
+      each :class:`RateChangeRecord` whose ``effective_date`` is strictly
+      after origination and before the term end begins a new period.
+      This is what makes a loan whose rate history is recorded -- but
+      whose ARM cadence columns are unset -- recast correctly at the
+      adjustment instead of staying frozen at the origination payment.
+    * **ARM cadence.**  For an ARM, ``arm_first_adjustment_months`` and
+      ``arm_adjustment_interval_months`` project FUTURE boundaries past
+      the last recorded rate change (where no rate-change row exists
+      yet), so the forward schedule still recasts on schedule.
+
+    A fixed-rate loan with no rate changes is a single period spanning
+    the full term.  Boundaries are deduplicated, so a rate change that
+    coincides with a cadence adjustment date counts once.
 
     Args:
-        term_months: Original loan term.
-        is_arm: Whether the loan is adjustable-rate.
-        arm_first_adjustment_months: Months from origination to the
-            first adjustment (e.g. 60 for a 5/x ARM).
-        arm_adjustment_interval_months: Months between subsequent
-            adjustments (e.g. 60 for a 5/5 ARM).  When ``None``/<=0 only
-            the first adjustment is modeled.
+        terms: The loan's :class:`LoanTerms`.
+        rate_changes: Optional :class:`RateChangeRecord` list; each
+            change's ``effective_date`` (after origination, within term)
+            begins a period.
 
     Returns:
-        Ascending month offsets, starting at 0, all ``< term_months``.
+        Ascending, deduplicated list of boundary dates beginning with
+        the origination date.
     """
-    offsets = [0]
-    if not is_arm:
-        return offsets
-    first = arm_first_adjustment_months
-    if first is None or first <= 0 or first >= term_months:
-        return offsets
-    offsets.append(first)
-    interval = arm_adjustment_interval_months
-    if interval is None or interval <= 0:
-        return offsets
-    offset = first + interval
-    while offset < term_months:
-        offsets.append(offset)
-        offset += interval
-    return offsets
+    origination = terms.origination_date
+    term_end = _add_months(origination, terms.term_months)
+    boundaries = {origination}
+    for change in (rate_changes or []):
+        if origination < change.effective_date < term_end:
+            boundaries.add(change.effective_date)
+    first = terms.arm_first_adjustment_months
+    if terms.is_arm and first is not None and 0 < first < terms.term_months:
+        interval = terms.arm_adjustment_interval_months
+        offset = first
+        while offset < terms.term_months:
+            boundaries.add(_add_months(origination, offset))
+            if interval is None or interval <= 0:
+                break
+            offset += interval
+    return sorted(boundaries)
 
 
 def build_rate_periods(
@@ -364,10 +374,12 @@ def build_rate_periods(
 ) -> list[RatePeriod]:
     """Build the ordered fixed-rate periods spanning the whole loan term.
 
-    Period boundaries come from the ARM cadence
-    (``arm_first_adjustment_months`` + ``arm_adjustment_interval_months``),
-    making both columns load-bearing.  Each period's rate is sampled at
-    its start via :func:`_rate_at_date`.  Each period's level P&I is the
+    Period boundaries come from the recorded rate changes (each recast
+    is a boundary) and, for an ARM, the cadence
+    (``arm_first_adjustment_months`` + ``arm_adjustment_interval_months``)
+    for future boundaries -- see :func:`_period_boundary_dates`.  Each
+    period's rate is sampled at its start via :func:`_rate_at_date`.
+    Each period's level P&I is the
     recorded recast (:func:`_recorded_pi_at_date`) when supplied, else
     the amortization of the period's contractual start balance over the
     term remaining at the start.  Start balances are produced by walking
@@ -390,19 +402,13 @@ def build_rate_periods(
     Returns:
         A non-empty list of :class:`RatePeriod` in start-date order.
     """
-    offsets = _period_boundary_offsets(
-        terms.term_months, terms.is_arm,
-        terms.arm_first_adjustment_months, terms.arm_adjustment_interval_months,
-    )
+    boundaries = _period_boundary_dates(terms, rate_changes)
     periods: list[RatePeriod] = []
     balance = Decimal(str(terms.original_principal))
-    for index, offset in enumerate(offsets):
-        start_date = (
-            terms.origination_date if offset == 0
-            else _add_months(terms.origination_date, offset)
-        )
+    for index, start_date in enumerate(boundaries):
         annual_rate = _rate_at_date(rate_changes, start_date, terms.base_rate)
-        term_at_start = terms.term_months - offset
+        start_month_index = _months_between(terms.origination_date, start_date)
+        term_at_start = terms.term_months - start_month_index
         recorded = _recorded_pi_at_date(recorded_period_pi, start_date)
         if recorded is not None:
             period_pi = round_money(Decimal(str(recorded)))
@@ -415,14 +421,16 @@ def build_rate_periods(
             start_date=start_date,
             annual_rate=annual_rate,
             period_pi=period_pi,
-            start_month_index=offset,
+            start_month_index=start_month_index,
             term_months_at_start=term_at_start,
         ))
         # Advance the contractual balance to the next period start so the
         # next period's derived recast amortizes the right remaining
         # balance.  Skipped after the final period.
-        if index + 1 < len(offsets):
-            months_in_period = offsets[index + 1] - offset
+        if index + 1 < len(boundaries):
+            months_in_period = _months_between(
+                start_date, boundaries[index + 1],
+            )
             balance = _amortize_forward(
                 balance, annual_rate, period_pi, months_in_period,
             )
