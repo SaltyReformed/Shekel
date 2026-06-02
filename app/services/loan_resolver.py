@@ -81,9 +81,98 @@ from app.services.amortization_engine import (
     project_forward,
     replay_confirmed_history,
 )
+from app.services.rate_period_engine import (
+    LoanTerms,
+    build_rate_periods,
+    period_for_date,
+)
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
 ZERO_MONEY = Decimal("0.00")
+
+
+def _loan_terms_from(loan_params) -> LoanTerms:
+    """Build the rate-period engine's :class:`LoanTerms` from a LoanParams.
+
+    Reads the immutable origination fields a loan's amortization is
+    defined by.  ``interest_rate`` is the engine's base rate (the
+    :class:`RateHistory`-layered rate changes override it per period);
+    the ARM cadence columns drive the fixed-rate period boundaries.
+
+    Args:
+        loan_params: A LoanParams-shaped object exposing
+            ``origination_date``, ``original_principal``,
+            ``interest_rate``, ``term_months``, ``is_arm``,
+            ``arm_first_adjustment_months``, and
+            ``arm_adjustment_interval_months``.
+
+    Returns:
+        The corresponding :class:`LoanTerms`.
+    """
+    return LoanTerms(
+        origination_date=loan_params.origination_date,
+        original_principal=Decimal(str(loan_params.original_principal)),
+        base_rate=Decimal(str(loan_params.interest_rate)),
+        term_months=loan_params.term_months,
+        is_arm=bool(getattr(loan_params, "is_arm", False)),
+        arm_first_adjustment_months=getattr(
+            loan_params, "arm_first_adjustment_months", None,
+        ),
+        arm_adjustment_interval_months=getattr(
+            loan_params, "arm_adjustment_interval_months", None,
+        ),
+    )
+
+
+def _recorded_pi_from(
+    rate_changes: list[RateChangeRecord] | None,
+) -> dict[date, Decimal]:
+    """Extract the recorded recast-P&I map from the rate-change feed.
+
+    A rate change's ``monthly_pi`` (when present) is the lender's
+    recorded recast payment for the fixed-rate period that change
+    begins.  Keying by ``effective_date`` lets
+    :func:`rate_period_engine.build_rate_periods` hold that exact figure
+    constant for the period instead of deriving it.
+
+    Args:
+        rate_changes: Optional :class:`RateChangeRecord` list; entries
+            without a ``monthly_pi`` are omitted (their period's P&I is
+            derived).
+
+    Returns:
+        A ``{effective_date: monthly_pi}`` dict (empty when none recorded).
+    """
+    if not rate_changes:
+        return {}
+    return {
+        change.effective_date: Decimal(str(change.monthly_pi))
+        for change in rate_changes
+        if change.monthly_pi is not None
+    }
+
+
+def _resolve_periods(loan_params, rate_changes):
+    """Build the loan's rate periods from its params and rate-change feed.
+
+    One construction shared by every resolver entry point
+    (:func:`resolve_loan`, :func:`compute_monthly_payment_baseline`,
+    :func:`compute_payoff_scenarios`) so the period set they read cannot
+    drift apart.
+
+    Args:
+        loan_params: The loan's :class:`LoanParams`-shaped object.
+        rate_changes: Optional :class:`RateChangeRecord` feed.
+
+    Returns:
+        The ordered :class:`~app.services.rate_period_engine.RatePeriod`
+        list for the loan.
+    """
+    return build_rate_periods(
+        terms=_loan_terms_from(loan_params),
+        rate_changes=rate_changes,
+        recorded_period_pi=_recorded_pi_from(rate_changes),
+    )
 
 
 @dataclass(frozen=True)
@@ -622,40 +711,15 @@ def compute_monthly_payment_baseline(
         ValueError: When ``anchor_events`` is empty (via
             :func:`_select_latest_anchor`).
     """
-    anchor = _select_latest_anchor(anchor_events)
-    anchor_balance = Decimal(str(anchor.anchor_balance))
-    anchor_date = anchor.anchor_date
-    base_rate = Decimal(str(loan_params.interest_rate))
-    in_window = _is_in_arm_fixed_window(loan_params, anchor_date, as_of)
-
-    if payments:
-        # Conservative current-balance approximation.  See docstring
-        # for why over-counting principal is the right tradeoff here.
-        confirmed_after_anchor = [
-            payment
-            for payment in payments
-            if payment.is_confirmed and payment.payment_date > anchor_date
-        ]
-        approximate_current_balance = _replay_balance_from_anchor(
-            anchor_balance,
-            confirmed_after_anchor,
-            rate_changes,
-            base_rate,
-            as_of,
-        )
-    else:
-        approximate_current_balance = anchor_balance
-
-    return _compute_monthly_payment(
-        loan_params,
-        anchor_balance,
-        anchor_date,
-        approximate_current_balance,
-        rate_changes,
-        as_of,
-        base_rate,
-        in_window,
-    )
+    # ``anchor_events`` and ``payments`` are unused: the current
+    # period's level P&I is anchor-independent -- a property of the
+    # loan's contractual rate-period structure, not of the running
+    # balance.  Both stay in the signature for caller compatibility
+    # (loan_payment_service.compute_contractual_pi passes them).
+    # pylint: disable=unused-argument
+    return period_for_date(
+        _resolve_periods(loan_params, rate_changes), as_of,
+    ).period_pi
 
 
 def resolve_loan(
@@ -790,17 +854,13 @@ def resolve_loan(
         as_of,
     )
 
-    in_window = _is_in_arm_fixed_window(loan_params, anchor_date, as_of)
-    monthly_payment = _compute_monthly_payment(
-        loan_params,
-        anchor_balance,
-        anchor_date,
-        current_balance_full,
-        rate_changes,
-        as_of,
-        base_rate,
-        in_window,
-    )
+    # Monthly P&I is the current rate period's level payment, held
+    # constant within the period and recast only at an adjustment
+    # boundary -- independent of the anchor balance, so a balance
+    # true-up never moves the displayed payment.
+    monthly_payment = period_for_date(
+        _resolve_periods(loan_params, rate_changes), as_of,
+    ).period_pi
 
     # Derive payoff_date and total_interest from the single
     # schedule generation (DRY -- no second engine call).
@@ -1044,25 +1104,13 @@ def compute_payoff_scenarios(
     rate_changes_remaining = _remaining_rate_changes(
         rate_changes, replay.next_pay_date,
     )
-    # Contractual P&I baseline for the forward projection is the
-    # SAME number that drives ``LoanState.monthly_payment`` on the
-    # loan card.  Routing both through ``_compute_monthly_payment``
-    # makes overview ($1,293.96-style) and schedule rows agree by
-    # construction; the prior ``_contractual_payment_for_projection``
-    # helper used ``replay.balance_as_of`` for ARM but
-    # ``original_principal`` for fixed-rate, which could not match
-    # the resolver's branching rules.
-    in_window = _is_in_arm_fixed_window(loan_params, anchor_date, as_of)
-    contractual = _compute_monthly_payment(
-        loan_params,
-        anchor_balance,
-        anchor_date,
-        replay.balance_as_of,
-        rate_changes,
-        as_of,
-        base_rate,
-        in_window,
-    )
+    # Contractual P&I for the forward projection is the SAME current-
+    # period level payment that drives ``LoanState.monthly_payment`` on
+    # the loan card, so the card and the schedule's projected rows agree
+    # by construction (both read the rate-period engine via ``as_of``).
+    contractual = period_for_date(
+        _resolve_periods(loan_params, rate_changes), as_of,
+    ).period_pi
 
     # Surface historical overpayments via the ``extra_payment`` field
     # without coupling replay back to the threshold/preparation cycle.

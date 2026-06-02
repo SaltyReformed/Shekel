@@ -54,6 +54,7 @@ class FakeLoanParams:
     payment_day: int
     is_arm: bool = False
     arm_first_adjustment_months: int | None = None
+    arm_adjustment_interval_months: int | None = None
 
 
 @dataclass
@@ -361,22 +362,24 @@ def test_anchor_trueup_resets_replay():
 
 
 def test_rate_change_after_window_applied():
-    """C13-7: After the ARM window ends, the resolver re-amortizes at new rate.
+    """C13-7 (re-pinned): post-adjustment ARM holds the period recast, constant.
 
-    Setup: 5/5 ARM, $400k / 6% / 360mo, origination 2026-01-01.
-    Window ends at 2031-01-01 (origination + 60 months).  A rate
-    change to 7% takes effect 2031-01-01.  No confirmed payments
-    (balance = anchor_balance = $400,000).
+    Re-pinned under the rate-period model (CLAUDE rule 5 exception; the
+    developer chose to hold the ARM payment constant within each
+    fixed-rate period).  The prior assertion pinned $2,830.61 -- the
+    payment from re-amortizing the FROZEN original $400,000 over a
+    calendar-shrinking term every month (the symptom-#4 creep).  That
+    behavior is gone.
 
-    For as_of = 2031-02-01 (one month past window end):
+    Setup: 5/5 ARM, $400k / 6% / 360mo, origination 2026-01-01, first
+    adjustment at month 60 (2031-01-01), rate change to 7% effective
+    2031-01-01.  No confirmed payments.
 
-        rate_at_as_of = 0.07 (post-window rate change applies)
-        remaining = 360 - 61 = 299 months
-        payment  = amortize(400000, 0.07, 299) = $2,830.61
-
-    The in-window constant ($2,398.20) does not apply because both
-    in-window-membership conditions (anchor AND as_of) must hold;
-    here as_of is past the window.
+    For any as_of inside the second period, the monthly payment is the
+    period's level recast: amortize(the contractual balance at month 60,
+    7%, 300).  A $400k/6%/360 loan paid on schedule sits at ~$372,217 at
+    month 60, and amortize(~$372,217, 7%, 300) = $2,630.76.  Critically
+    it is held CONSTANT for every as_of in the period -- no creep.
     """
     params = _arm_400k_params()
     anchor = _origination_anchor(params)
@@ -387,11 +390,18 @@ def test_rate_change_after_window_applied():
         ),
     ]
 
-    state = resolve_loan(
+    state_feb = resolve_loan(
         params, [anchor], None, rate_changes, date(2031, 2, 1),
     )
+    state_later = resolve_loan(
+        params, [anchor], None, rate_changes, date(2033, 6, 1),
+    )
 
-    assert state.monthly_payment == Decimal("2830.61")
+    # Period recast of the reduced month-60 balance at 7% (NOT the old
+    # $2,830.61 re-amortization of the frozen original principal).
+    assert state_feb.monthly_payment == Decimal("2630.76")
+    # Held constant across the period -- the anti-creep guarantee.
+    assert state_feb.monthly_payment == state_later.monthly_payment
 
 
 # -- C13-8 -- resolver module is pure (no Flask, no db.session) -------------
@@ -644,32 +654,22 @@ def test_loan_state_is_frozen():
         state.current_balance = Decimal("0")  # type: ignore[misc]
 
 
-def test_arm_trueup_in_window_produces_new_constant():
-    """A user_trueup inside the ARM window resets the in-window constant.
+def test_arm_trueup_does_not_change_payment():
+    """A balance true-up corrects the balance only -- the payment is unchanged.
 
-    The "held constant for every as_of inside the window" invariant
-    is anchor-scoped: a new trueup anchor IS the moment a new
-    constant payment is born for the rest of the window.  Verifies
-    the in-window logic uses the latest anchor's balance (not the
-    origination balance).
+    Re-pinned under the decided "balance-only true-up" behavior (CLAUDE
+    rule 5 exception; developer decision).  The prior test asserted a
+    true-up BORN a new constant payment ($2,337.47, from re-amortizing
+    the trued-up $380,000); that coupling is exactly what made the
+    displayed payment wander every time the user corrected the balance,
+    and it is gone.  The monthly P&I is the current rate period's
+    contractual level payment, independent of the anchor balance.
 
     Setup: 5/5 ARM, $400k/6%/360mo, origination 2026-01-01.  A
-    user_trueup at 2028-01-01 (month 24, still inside the window)
-    with anchor_balance = $380,000.  Inside the window from
-    2028-01-01 onward, the constant payment is:
-
-        months_to_anchor = 24
-        remaining_at_anchor = 360 - 24 = 336
-        payment = amortize(380000, 0.06, 336) = $2,337.47
-
-    (Decimal arithmetic with full precision: i = 0.005;
-    (1.005)^336 = 5.343142418...; denom = (1.005)^336 - 1 = 4.343142...;
-    num = 380000 * 0.005 * 5.343142... = 10152.97...;
-    M = num / denom = 2337.471263... -> $2,337.47 HALF_UP.  The
-    05_symptoms.md worked example uses rounded intermediates
-    (5.343555 vs the exact 5.343142) which round-trip to a near
-    but not byte-identical value; the engine uses full-precision
-    Decimal, so the pinned value here is the engine's exact output.)
+    user_trueup at 2028-01-01 (month 24) sets the balance to $380,000.
+    The origination-period P&I is amortize($400,000, 6%, 360) =
+    $2,398.20 and stays that for every in-period as_of; only the
+    balance reflects the true-up.
     """
     params = _arm_400k_params()
     origination_anchor = _origination_anchor(params)
@@ -679,7 +679,7 @@ def test_arm_trueup_in_window_produces_new_constant():
         created_at=datetime(2028, 1, 1, tzinfo=timezone.utc),
     )
 
-    # Resolve at two as_of dates inside the window past the trueup.
+    # Resolve at two as_of dates past the trueup.
     state_a = resolve_loan(
         params,
         [origination_anchor, trueup_anchor],
@@ -695,9 +695,63 @@ def test_arm_trueup_in_window_produces_new_constant():
         date(2030, 6, 1),
     )
 
-    assert state_a.monthly_payment == Decimal("2337.47")
-    # In-window constant must hold across both as_of dates.
+    # Payment unchanged by the true-up: the origination-period level P&I.
+    assert state_a.monthly_payment == Decimal("2398.20")
     assert state_a.monthly_payment == state_b.monthly_payment
+    # The true-up DID move the balance (no confirmed payments after it).
+    assert state_a.current_balance == Decimal("380000.00")
+
+
+def test_arm_second_period_uses_recorded_recast_held_constant():
+    """A 5/5 ARM's second fixed period uses its recorded recast, held constant.
+
+    Exercises ``arm_adjustment_interval_months`` (now load-bearing) and
+    the recorded-recast path end to end through ``resolve_loan``: the
+    lender's stated P&I at the adjustment is held flat for the whole
+    period, and the origination period is unaffected.  This is the
+    production shape for a mid-life 5/5 ARM whose current P&I was
+    recorded at setup.
+
+    Setup: 5/5 ARM, $400k/6%/360mo, origination 2026-01-01, first
+    adjustment at month 60 then every 60 (interval).  At 2031-01-01 the
+    rate adjusts to 7% with a recorded recast P&I of $2,500.00.  No
+    confirmed payments.  The second period is [2031-01-01, 2036-01-01).
+    """
+    params = FakeLoanParams(
+        origination_date=date(2026, 1, 1),
+        term_months=360,
+        original_principal=Decimal("400000.00"),
+        interest_rate=Decimal("0.06"),
+        payment_day=1,
+        is_arm=True,
+        arm_first_adjustment_months=60,
+        arm_adjustment_interval_months=60,
+    )
+    anchor = _origination_anchor(params)
+    rate_changes = [
+        RateChangeRecord(
+            effective_date=date(2031, 1, 1),
+            interest_rate=Decimal("0.07"),
+            monthly_pi=Decimal("2500.00"),
+        ),
+    ]
+
+    # Two as_of dates inside the second period -> the recorded recast,
+    # held constant (no month-to-month re-amortization).
+    state_early = resolve_loan(
+        params, [anchor], None, rate_changes, date(2032, 6, 1),
+    )
+    state_late = resolve_loan(
+        params, [anchor], None, rate_changes, date(2035, 6, 1),
+    )
+    assert state_early.monthly_payment == Decimal("2500.00")
+    assert state_early.monthly_payment == state_late.monthly_payment
+
+    # The origination period is unaffected: still the contractual P&I.
+    state_p0 = resolve_loan(
+        params, [anchor], None, rate_changes, date(2028, 1, 1),
+    )
+    assert state_p0.monthly_payment == Decimal("2398.20")
 
 
 # -- C6-8 -- resolver chokepoint: no direct generate_schedule reference -----

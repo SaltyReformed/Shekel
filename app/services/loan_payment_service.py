@@ -128,6 +128,10 @@ def load_loan_context(
                 RateChangeRecord(
                     effective_date=rh.effective_date,
                     interest_rate=Decimal(str(rh.interest_rate)),
+                    monthly_pi=(
+                        Decimal(str(rh.monthly_pi))
+                        if rh.monthly_pi is not None else None
+                    ),
                 )
                 for rh in rate_history_records
             ]
