@@ -674,6 +674,62 @@ class TestRateHistory:
         params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
         assert params.interest_rate == Decimal("0.07000")
 
+    def test_rate_change_records_monthly_pi(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An optional monthly_pi pins the period's recast P&I (E-18 setup capture).
+
+        The lender's stated recast payment is stored on the RateHistory
+        row so the rate-period engine holds the period's P&I at that
+        exact figure instead of deriving it from origination.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={
+                "effective_date": "2026-04-01",
+                "interest_rate": "7.000",
+                "monthly_pi": "2600.00",
+            },
+        )
+        assert resp.status_code == 200
+
+        entry = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .order_by(RateHistory.effective_date.desc())
+            .first()
+        )
+        assert entry is not None
+        assert entry.interest_rate == Decimal("0.07000")
+        assert entry.monthly_pi == Decimal("2600.00")
+
+    def test_rate_change_without_monthly_pi_is_null(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Omitting monthly_pi leaves it NULL so the period P&I is derived."""
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2026-05-01", "interest_rate": "7.500"},
+        )
+        assert resp.status_code == 200
+        entry = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .order_by(RateHistory.effective_date.desc())
+            .first()
+        )
+        assert entry.monthly_pi is None
+
     def test_rate_change_validation(self, auth_client, seed_user, db, seed_periods):
         """Invalid rate returns 400."""
         acct = _create_mortgage(seed_user, db.session)

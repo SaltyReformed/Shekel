@@ -1065,6 +1065,7 @@ def add_rate_change(account_id):
         account_id=account.id,
         effective_date=data["effective_date"],
         interest_rate=data["interest_rate"],
+        monthly_pi=data.get("monthly_pi"),
         notes=data.get("notes"),
     )
     db.session.add(entry)

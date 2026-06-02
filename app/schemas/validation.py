@@ -1663,6 +1663,16 @@ class RateChangeSchema(BaseSchema):
         required=True, places=5, as_string=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
+    # Optional recorded recast P&I (principal + interest, no escrow)
+    # the lender set when this rate took effect.  When provided, the
+    # rate-period engine holds it constant for the period this change
+    # begins, so a mid-life ARM shows the lender's exact statement
+    # payment instead of the from-origination derived approximation.
+    # Matches the DB CHECK ``monthly_pi IS NULL OR monthly_pi > 0``.
+    monthly_pi = fields.Decimal(
+        allow_none=True, places=2, as_string=True,
+        validate=validate.Range(min=Decimal("0"), min_inclusive=False),
+    )
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
 
