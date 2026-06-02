@@ -2431,3 +2431,83 @@ class TestBalanceCalcIgnoresDueDate:
                     f"Period {period.id}: due_date affected balance "
                     f"({bal_early[period.id]} vs {bal_late[period.id]})"
                 )
+
+
+class TestIncomeOverridesSeam:
+    """The ``income_overrides`` seam (Workstream B): live projected net.
+
+    ``income_overrides=None`` is exercised pervasively by every other
+    test in this module (byte-identical pre-seam behavior); these pin the
+    override-applied path threaded through ``calculate_balances`` /
+    ``_sum_remaining`` / ``_sum_all``.
+    """
+
+    @staticmethod
+    def _income(txn_id, period_id, estimated):
+        """Build a Projected income FakeTxn with an explicit id."""
+        txn = FakeTxn(
+            pay_period_id=period_id, status_name="Projected",
+            type_name="Income", estimated_amount=estimated,
+        )
+        txn.id = txn_id
+        return txn
+
+    def test_override_replaces_income_amount(self):
+        """An income txn whose id is in the map contributes the override.
+
+        Anchor $100.00 + override income $2473.38 = $2573.38; the stored
+        $2000.00 is ignored.
+        """
+        balances, _ = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("100.00"),
+            anchor_period_id=1,
+            periods=[FakePeriod(1)],
+            transactions=[self._income(101, 1, "2000.00")],
+            income_overrides={101: Decimal("2473.38")},
+        )
+        assert balances[1] == Decimal("2573.38")
+
+    def test_none_overrides_uses_stored_amount(self):
+        """income_overrides=None -> stored effective_amount (byte-identical).
+
+        Anchor $100.00 + stored income $2000.00 = $2100.00.
+        """
+        balances, _ = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("100.00"),
+            anchor_period_id=1,
+            periods=[FakePeriod(1)],
+            transactions=[self._income(101, 1, "2000.00")],
+        )
+        assert balances[1] == Decimal("2100.00")
+
+    def test_unlisted_txn_falls_back_to_stored(self):
+        """A non-empty map overrides only listed ids; others use stored.
+
+        The map keys id 999 (absent), so income txn 101 uses its stored
+        $2000.00: $100 + $2000 = $2100.00.
+        """
+        balances, _ = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("100.00"),
+            anchor_period_id=1,
+            periods=[FakePeriod(1)],
+            transactions=[self._income(101, 1, "2000.00")],
+            income_overrides={999: Decimal("5.00")},
+        )
+        assert balances[1] == Decimal("2100.00")
+
+    def test_override_applies_in_post_anchor_period(self):
+        """The seam also applies in post-anchor periods (_sum_all path).
+
+        Period 1 is the anchor (empty), period 2 post-anchor with the
+        overridden income: anchor $0 -> p1 $0 -> p2 $0 + override
+        $1500.00 = $1500.00 (stored $999.00 ignored).
+        """
+        balances, _ = balance_calculator.calculate_balances(
+            anchor_balance=Decimal("0.00"),
+            anchor_period_id=1,
+            periods=[FakePeriod(1), FakePeriod(2)],
+            transactions=[self._income(202, 2, "999.00")],
+            income_overrides={202: Decimal("1500.00")},
+        )
+        assert balances[1] == Decimal("0.00")
+        assert balances[2] == Decimal("1500.00")
