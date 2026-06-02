@@ -26,7 +26,6 @@ from app.models.ref import Status, TransactionType
 from app.services import (
     balance_resolver,
     grid_view_service,
-    income_service,
     pay_period_service,
 )
 from app.services.account_resolver import resolve_grid_account
@@ -191,7 +190,7 @@ def _load_grid_transactions(account, scenario, all_periods):
     )
 
 
-def _build_grid_balances(account, scenario, all_periods, income_overrides=None):
+def _build_grid_balances(account, scenario, all_periods, amount_overrides=None):
     """Compute the anchor balance and the period-end balance projection.
 
     Routes through the canonical entries-aware producer
@@ -220,7 +219,7 @@ def _build_grid_balances(account, scenario, all_periods, income_overrides=None):
     if account is not None:
         balance_result = balance_resolver.balances_for(
             account, scenario.id, all_periods,
-            income_overrides=income_overrides,
+            amount_overrides=amount_overrides,
         )
         return (
             balance_result.balances,
@@ -231,7 +230,7 @@ def _build_grid_balances(account, scenario, all_periods, income_overrides=None):
     return OrderedDict(), False, anchor_balance
 
 
-def _build_grid_subtotals(account, scenario, periods, income_overrides=None):
+def _build_grid_subtotals(account, scenario, periods, amount_overrides=None):
     """Compute per-period subtotals via the canonical entries-aware producer.
 
     Routing the on-screen subtotal row through
@@ -264,7 +263,7 @@ def _build_grid_subtotals(account, scenario, periods, income_overrides=None):
         else:
             subtotals[period.id] = balance_resolver.period_subtotal(
                 account, scenario.id, period,
-                income_overrides=income_overrides,
+                amount_overrides=amount_overrides,
             )
     return subtotals
 
@@ -342,7 +341,7 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
 
 def _build_plan_view(
     user_id, account, scenario, all_transactions, balances,
-    current_period, all_categories, income_overrides=None,
+    current_period, all_categories, amount_overrides=None,
 ):
     """Build the read-only "Plan" tab context window.
 
@@ -413,7 +412,7 @@ def _build_plan_view(
     )
 
     plan_subtotals = _build_grid_subtotals(
-        account, scenario, plan_periods, income_overrides,
+        account, scenario, plan_periods, amount_overrides,
     )
 
     plan_balances = {p.id: balances.get(p.id) for p in plan_periods}
@@ -461,16 +460,16 @@ def index():
     # is a transient (non-mapped) attribute the cell templates read with a
     # safe ``is defined`` fallback, so it never persists and never affects
     # render paths that do not set it.
-    income_overrides = income_service.live_projected_net(
-        user_id, ctx.scenario.id, all_transactions,
+    amount_overrides = balance_resolver.live_amount_overrides(
+        ctx.account, ctx.scenario.id, all_transactions,
     )
     for txn in all_transactions:
-        txn.live_estimated_amount = income_overrides.get(
+        txn.live_estimated_amount = amount_overrides.get(
             txn.id, txn.estimated_amount,
         )
     balances, stale_anchor_warning, anchor_balance = _build_grid_balances(
         ctx.account, ctx.scenario, ctx.all_periods,
-        income_overrides=income_overrides,
+        amount_overrides=amount_overrides,
     )
 
     # Load ALL categories (including archived) for row-key building so
@@ -506,7 +505,7 @@ def index():
         balances,
         ctx.current_period,
         all_categories,
-        income_overrides,
+        amount_overrides,
     )
 
     return render_template(
@@ -519,7 +518,7 @@ def index():
         txn_by_period=txn_by_period,
         subtotals=_build_grid_subtotals(
             ctx.account, ctx.scenario, ctx.periods,
-            income_overrides=income_overrides,
+            amount_overrides=amount_overrides,
         ),
         categories=[c for c in all_categories if c.is_active],
         income_row_keys=income_row_keys,
