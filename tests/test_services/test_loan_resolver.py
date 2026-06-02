@@ -195,15 +195,29 @@ def test_arm_no_creep_month_24_vs_25():
 
 
 def test_confirmed_payment_reduces_balance():
-    """C13-3: One confirmed $1,888.36 P&I reduces balance by principal portion.
+    """C13-3 (re-pinned): a confirmed payment reduces the balance by the
+    SCHEDULED principal, independent of the cash amount paid.
 
-    Setup: $300k fixed-rate loan, 6%, 360mo, origination 2026-01-01.
-    One confirmed payment on 2026-02-15 of $1,888.36.  Hand-computed
-    balance reduction:
+    Re-pinned under the decided contractual-schedule model (CLAUDE rule
+    5 exception; the developer chose "each confirmed payment reduces
+    principal by period P&I - interest; deliberate extra principal is an
+    explicit event").  The prior assertion ($299,611.64) reduced the
+    balance by the cash amount ($1,888.36 - interest), so escrow or an
+    overpayment bundled into the transfer leaked into principal.  Now
+    only the payment's occurrence (date) matters; its amount does not.
 
-        interest = 300000 * (0.06 / 12) = 300000 * 0.005 = 1,500.00
-        principal_portion = 1888.36 - 1500.00 = 388.36
-        balance = 300000.00 - 388.36 = 299,611.64
+    Setup: $300k fixed-rate, 6%, 360mo, origination 2026-01-01.  One
+    confirmed payment on 2026-02-15 (cash $1,888.36, deliberately above
+    the contractual P&I to show the excess is ignored):
+
+        period P&I = amortize(300000, 0.06, 360) = 1,798.65
+        interest   = 300000 * 0.005 = 1,500.00
+        principal  = 1,798.65 - 1,500.00 = 298.65
+        balance    = 300,000.00 - 298.65 = 299,701.35
+
+    The $89.71 paid above the contractual P&I is NOT auto-applied to
+    principal (that requires an explicit prepayment event); the balance
+    follows the contractual schedule.
     """
     params = FakeLoanParams(
         origination_date=date(2026, 1, 1),
@@ -224,7 +238,7 @@ def test_confirmed_payment_reduces_balance():
         params, [anchor], [payment], None, date(2026, 3, 1),
     )
 
-    assert state.current_balance == Decimal("299611.64")
+    assert state.current_balance == Decimal("299701.35")
 
 
 # -- C13-4 -- projected payment is not replayed -----------------------------

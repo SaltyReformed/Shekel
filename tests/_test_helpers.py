@@ -245,3 +245,51 @@ def insert_origination_event(loan_params):
     )
     db.session.add(event)
     return event
+
+
+def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
+    """Append a user-trueup :class:`LoanAnchorEvent` asserting a balance.
+
+    Mirrors the production balance-trueup path
+    (:func:`app.services.anchor_service.apply_loan_anchor_true_up`,
+    E-18 / Commit 16): the operator asserts a new dated balance and the
+    resolver replays forward from this latest event.  Under the
+    contractual-schedule balance model, a cash overpayment does NOT
+    auto-reduce the balance, so a fixture that needs a loan in a known
+    state -- in particular paid off (``anchor_balance`` of
+    ``Decimal("0.00")``) -- records it as the explicit operator action
+    it now is: a balance true-up, exactly as the user does after making
+    an extra or lump-sum payment.
+
+    Args:
+        loan_params: The :class:`LoanParams` ORM instance, already
+            flushed (``account_id`` populated).
+        anchor_balance: The asserted balance (Decimal); ``0.00`` marks
+            the loan paid off.
+        anchor_date: The date the balance was asserted.  Defaults to
+            ``origination_date + 1 day`` so it sorts strictly after the
+            origination event and becomes the resolver's latest anchor.
+
+    Returns:
+        The newly added :class:`LoanAnchorEvent` (added, not committed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as insert_origination_event above.
+    from datetime import timedelta
+    from app import ref_cache
+    from app.enums import LoanAnchorSourceEnum
+    from app.extensions import db
+    from app.models.loan_anchor_event import LoanAnchorEvent
+
+    if anchor_date is None:
+        anchor_date = loan_params.origination_date + timedelta(days=1)
+    event = LoanAnchorEvent(
+        account_id=loan_params.account_id,
+        anchor_date=anchor_date,
+        anchor_balance=anchor_balance,
+        source_id=ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.USER_TRUEUP,
+        ),
+    )
+    db.session.add(event)
+    return event

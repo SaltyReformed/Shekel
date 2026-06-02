@@ -2032,6 +2032,10 @@ class TestPaidOffBadge:
             _make_confirmed_transfer(
                 seed_user, acct, seed_periods[7], Decimal("1100.00"),
             )
+            # Payoff recorded as a balance true-up to $0 (cash lump sums
+            # no longer auto-pay-off under the contractual schedule).
+            from tests._test_helpers import insert_trueup_event  # pylint: disable=import-outside-toplevel
+            insert_trueup_event(acct.loan_params, Decimal("0.00"))
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -2109,6 +2113,9 @@ class TestPaidOffBadge:
             _make_confirmed_transfer(
                 seed_user, acct, seed_periods[7], Decimal("600.00"),
             )
+            # Payoff recorded as a balance true-up to $0.
+            from tests._test_helpers import insert_trueup_event  # pylint: disable=import-outside-toplevel
+            insert_trueup_event(acct.loan_params, Decimal("0.00"))
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -2133,6 +2140,10 @@ class TestPaidOffBadge:
                 seed_user, name="Unpaid Loan",
                 principal=Decimal("5000.00"),
             )
+            # Payoff recorded as a balance true-up to $0; the $5,000 loan
+            # stays active (no true-up), so only one Paid Off badge.
+            from tests._test_helpers import insert_trueup_event  # pylint: disable=import-outside-toplevel
+            insert_trueup_event(paid_off.loan_params, Decimal("0.00"))
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -2326,6 +2337,9 @@ class TestAccountArchivalDashboard:
             _make_confirmed_transfer(
                 seed_user, acct, seed_periods[7], Decimal("1100.00"),
             )
+            # Payoff recorded as a balance true-up to $0.
+            from tests._test_helpers import insert_trueup_event  # pylint: disable=import-outside-toplevel
+            insert_trueup_event(acct.loan_params, Decimal("0.00"))
             db.session.commit()
 
             resp = auth_client.get("/savings")
