@@ -678,6 +678,14 @@ class TestPaidOffFlag:
             )
             db.session.commit()
 
+            # Under the contractual-schedule model a cash lump sum does
+            # not auto-pay-off; the operator records the payoff as a
+            # balance true-up to $0 (the explicit-event path the user now
+            # follows after an extra/lump-sum payment).
+            from tests._test_helpers import insert_trueup_event  # pylint: disable=import-outside-toplevel
+            insert_trueup_event(acct.loan_params, Decimal("0.00"))
+            db.session.commit()
+
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
@@ -1068,6 +1076,13 @@ class TestDebtSummary:
             )
             db.session.commit()
 
+            # Payoff is recorded as a balance true-up to $0 (the cash
+            # lump sum no longer auto-pays-off under the contractual
+            # schedule model).
+            from tests._test_helpers import insert_trueup_event  # pylint: disable=import-outside-toplevel
+            insert_trueup_event(paid_off.loan_params, Decimal("0.00"))
+            db.session.commit()
+
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
@@ -1099,6 +1114,12 @@ class TestDebtSummary:
                 status_id=rc.status_id(StatusEnum.DONE),
                 category_id=seed_user["categories"]["Rent"].id,
             )
+            db.session.commit()
+
+            # Payoff is recorded as a balance true-up to $0 (cash lump
+            # sums no longer auto-pay-off under the contractual schedule).
+            from tests._test_helpers import insert_trueup_event  # pylint: disable=import-outside-toplevel
+            insert_trueup_event(acct.loan_params, Decimal("0.00"))
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -1354,6 +1375,11 @@ class TestDTI:
                 status_id=rc.status_id(StatusEnum.DONE),
                 category_id=seed_user["categories"]["Rent"].id,
             )
+            db.session.commit()
+
+            # All debt paid off -> recorded as a balance true-up to $0.
+            from tests._test_helpers import insert_trueup_event  # pylint: disable=import-outside-toplevel
+            insert_trueup_event(acct.loan_params, Decimal("0.00"))
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(

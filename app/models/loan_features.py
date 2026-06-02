@@ -47,6 +47,17 @@ class RateHistory(CreatedAtMixin, db.Model):
             "interest_rate >= 0 AND interest_rate <= 1",
             name="ck_rate_history_valid_interest_rate",
         ),
+        # The recorded recast P&I is a strictly-positive monetary
+        # amount when present; NULL means "derive" (see the column
+        # comment).  ``IS NULL OR ...`` preserves the nullable
+        # demotion exactly as ``loan_params.interest_rate_upper`` does:
+        # PostgreSQL treats NULL as unknown under the predicate, so the
+        # CHECK permits NULL and rejects any non-NULL non-positive
+        # amount a raw-SQL writer might attempt.
+        db.CheckConstraint(
+            "monthly_pi IS NULL OR monthly_pi > 0",
+            name="ck_rate_history_monthly_pi_positive",
+        ),
         # F-139 / C-42: composite index on
         # ``(account_id, effective_date DESC)`` matches the
         # predominant query in ``app/routes/loan.py``:
@@ -75,6 +86,18 @@ class RateHistory(CreatedAtMixin, db.Model):
     )
     effective_date = db.Column(db.Date, nullable=False)
     interest_rate = db.Column(db.Numeric(7, 5), nullable=False)
+    # Recast P&I (principal + interest, no escrow) that took effect on
+    # ``effective_date`` -- the level payment the lender fixed for the
+    # rate period this row begins.  NULL means "derive": the
+    # rate-period engine amortizes the period-start balance over the
+    # remaining term, which is exact only for the origination period or
+    # a loan whose full payment history is present.  A mid-life ARM
+    # whose period-start balance predates the app's recorded history
+    # MUST record this value (it is printed on every statement) so the
+    # period's monthly payment is held constant at the lender's figure
+    # instead of being re-derived from a balance that may have drifted.
+    # Consumed by ``app/services/rate_period_engine.py``.
+    monthly_pi = db.Column(db.Numeric(12, 2), nullable=True)
     notes = db.Column(db.Text, nullable=True)
 
     # Relationships

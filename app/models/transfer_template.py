@@ -68,6 +68,18 @@ class TransferTemplate(TimestampMixin, db.Model):
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
+    # When TRUE, this template's recurring transfers are a loan payment
+    # whose cash amount (P&I + escrow/components) is derived LIVE from
+    # the destination loan account on every balance render, so it tracks
+    # the loan's monthly payment after an escrow or rate change rather
+    # than staying frozen at ``default_amount`` (E-18 loan model).  Set by
+    # ``app.routes.loan.create_payment_transfer`` for new loan-payment
+    # transfers; FALSE for every other template and for all pre-existing
+    # rows, so the live-derive override is dormant unless enabled.
+    derive_from_loan = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     # Optimistic-locking version counter.  See class docstring and
     # commit C-18.
     version_id = db.Column(

@@ -2434,9 +2434,9 @@ class TestBalanceCalcIgnoresDueDate:
 
 
 class TestIncomeOverridesSeam:
-    """The ``income_overrides`` seam (Workstream B): live projected net.
+    """The ``amount_overrides`` seam (Workstream B): live projected net.
 
-    ``income_overrides=None`` is exercised pervasively by every other
+    ``amount_overrides=None`` is exercised pervasively by every other
     test in this module (byte-identical pre-seam behavior); these pin the
     override-applied path threaded through ``calculate_balances`` /
     ``_sum_remaining`` / ``_sum_all``.
@@ -2463,12 +2463,12 @@ class TestIncomeOverridesSeam:
             anchor_period_id=1,
             periods=[FakePeriod(1)],
             transactions=[self._income(101, 1, "2000.00")],
-            income_overrides={101: Decimal("2473.38")},
+            amount_overrides={101: Decimal("2473.38")},
         )
         assert balances[1] == Decimal("2573.38")
 
     def test_none_overrides_uses_stored_amount(self):
-        """income_overrides=None -> stored effective_amount (byte-identical).
+        """amount_overrides=None -> stored effective_amount (byte-identical).
 
         Anchor $100.00 + stored income $2000.00 = $2100.00.
         """
@@ -2491,7 +2491,7 @@ class TestIncomeOverridesSeam:
             anchor_period_id=1,
             periods=[FakePeriod(1)],
             transactions=[self._income(101, 1, "2000.00")],
-            income_overrides={999: Decimal("5.00")},
+            amount_overrides={999: Decimal("5.00")},
         )
         assert balances[1] == Decimal("2100.00")
 
@@ -2507,7 +2507,7 @@ class TestIncomeOverridesSeam:
             anchor_period_id=1,
             periods=[FakePeriod(1), FakePeriod(2)],
             transactions=[self._income(202, 2, "999.00")],
-            income_overrides={202: Decimal("1500.00")},
+            amount_overrides={202: Decimal("1500.00")},
         )
         assert balances[1] == Decimal("0.00")
         assert balances[2] == Decimal("1500.00")

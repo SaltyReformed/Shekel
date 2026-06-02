@@ -26,6 +26,7 @@ from app.services import account_service
 from tests._test_helpers import (
     freeze_today,
     insert_origination_event,
+    insert_trueup_event,
     select_option_values,
 )
 
@@ -672,6 +673,62 @@ class TestRateHistory:
         db.session.expire_all()
         params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
         assert params.interest_rate == Decimal("0.07000")
+
+    def test_rate_change_records_monthly_pi(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An optional monthly_pi pins the period's recast P&I (E-18 setup capture).
+
+        The lender's stated recast payment is stored on the RateHistory
+        row so the rate-period engine holds the period's P&I at that
+        exact figure instead of deriving it from origination.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={
+                "effective_date": "2026-04-01",
+                "interest_rate": "7.000",
+                "monthly_pi": "2600.00",
+            },
+        )
+        assert resp.status_code == 200
+
+        entry = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .order_by(RateHistory.effective_date.desc())
+            .first()
+        )
+        assert entry is not None
+        assert entry.interest_rate == Decimal("0.07000")
+        assert entry.monthly_pi == Decimal("2600.00")
+
+    def test_rate_change_without_monthly_pi_is_null(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Omitting monthly_pi leaves it NULL so the period P&I is derived."""
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2026-05-01", "interest_rate": "7.500"},
+        )
+        assert resp.status_code == 200
+        entry = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .order_by(RateHistory.effective_date.desc())
+            .first()
+        )
+        assert entry.monthly_pi is None
 
     def test_rate_change_validation(self, auth_client, seed_user, db, seed_periods):
         """Invalid rate returns 400."""
@@ -2888,45 +2945,28 @@ class TestAmortizationSchedule:
             f"Expected total payment {formatted_payment} not found"
         )
 
-    def test_schedule_extra_payment_displayed(
+    def test_schedule_overpayment_not_shown_as_extra(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C-5.13-12: Extra payments show as dollar amounts when present.
+        """C-5.13-12 (re-pinned): a confirmed overpayment is NOT auto-shown as Extra.
 
-        Creates a mortgage with a confirmed transfer that overpays
-        the standard P&I.  The row matching that month should show a
-        non-zero Extra column.
-
-        Re-pinned for Commit 5 of the amortization engine split
-        (``docs/plans/2026-05-21-amortization-engine-split-implementation.md``).
-        Pre-Commit-5 the dashboard called ``generate_schedule``,
-        which computed ``extra = max(total - contractual, 0)`` for
-        ANY payment record (confirmed or projected) above
-        contractual.  Post-Commit-5 the dashboard routes through
-        ``compute_payoff_scenarios``: only the REPLAY side (confirmed
-        payments dated <= as_of) breaks out an overpayment as Extra;
-        projected payments are routed through ``monthly_override``
-        whose rows are locked to ``extra_payment=0`` by C2-4 (the
-        override IS the user's planned outlay, not "extra beyond
-        plan").  The previous fixture used a PROJECTED $2080.17
-        transfer, which under the new architecture produces an
-        override row with extra=0 and the column disappears.  This
-        rewrite uses a DONE $2080.17 transfer dated before today so
-        replay sees the overpayment and breaks out the $500 above
-        contractual ($2080.17 - $1580.17 = $500.00).
+        Re-pinned under the contractual-schedule balance model (CLAUDE
+        rule 5 exception; the developer chose "deliberate extra principal
+        is recorded as an explicit event").  The prior test created a
+        DONE transfer above the contractual P&I and expected the schedule
+        to break out the difference as an "Extra" column.  Under the new
+        model the historical balance follows the contractual schedule and
+        the cash overage is ignored -- extra principal is now an explicit
+        balance true-up, not an amount inferred from a transfer's cash --
+        so every schedule row carries ``extra_payment=0``,
+        ``schedule_totals.has_extra`` is False, and the Extra column is
+        hidden.
         """
-        # Origination 2026-01-01 -> first scheduled payment month
-        # is February 2026.  seed_periods[3] starts 2026-02-13
-        # (Feb 2026); the DONE transfer falls in the replay window
-        # (payment_date 2026-02-13 <= frozen today 2026-03-20).
-        # Replay computes:
-        #   total_payment = $2080.17
-        #   monthly_payment (contractual) = $1580.17
-        #   extra = max(2080.17 - 1580.17, 0) = $500.00
-        # which the schedule template renders in the Extra column.
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
         )
+        # A DONE transfer above the contractual P&I ($2080.17 vs
+        # $1580.17).  The $500 overage is no longer auto-applied.
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[3], Decimal("2080.17"),
             status_enum=StatusEnum.DONE,
@@ -2936,10 +2976,10 @@ class TestAmortizationSchedule:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Extra column should appear when overpayments exist.
-        assert ">Extra</th>" in html, "Expected Extra column for overpayment"
-        # Rows without extra show "--".
-        assert "--" in html, "Expected dashes for zero-extra rows"
+        # No row carries extra, so the Extra column does not render.
+        assert ">Extra</th>" not in html, (
+            "A historical overpayment must not auto-populate an Extra column"
+        )
 
     def test_schedule_uses_committed_schedule(
         self, auth_client, seed_user, db, seed_periods,
@@ -3868,11 +3908,16 @@ class TestRecurrenceEndDateUpdate:
             Decimal("1000.00"), Decimal("0.00"),
             Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
-        # Large confirmed payment in Feb covers the full balance.
+        # Large confirmed payment in Feb, then the operator records the
+        # payoff as a balance true-up to $0.  Under the contractual-
+        # schedule model a cash lump sum does not auto-pay-off; the
+        # true-up is the explicit-event path, and the recurrence engine
+        # sets end_date once the loan is paid off.
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[3], Decimal("1100.00"),
             status_enum=StatusEnum.DONE,
         )
+        insert_trueup_event(acct.loan_params, Decimal("0.00"))
         db.session.commit()
         _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
 

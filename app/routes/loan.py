@@ -1065,6 +1065,7 @@ def add_rate_change(account_id):
         account_id=account.id,
         effective_date=data["effective_date"],
         interest_rate=data["interest_rate"],
+        monthly_pi=data.get("monthly_pi"),
         notes=data.get("notes"),
     )
     db.session.add(entry)
@@ -1617,9 +1618,14 @@ def create_payment_transfer(account_id):
         flash("Source and destination accounts must be different.", "danger")
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    # Determine the transfer amount: user override or computed default.
+    # Determine the transfer amount and whether it auto-derives.  A
+    # user-supplied amount is respected verbatim (no live derivation);
+    # the computed default opts into live derivation so the projected
+    # cash debit tracks the loan's monthly payment after an escrow or
+    # rate change instead of staying frozen at default_amount.
     if "amount" in data and data["amount"] is not None:
         transfer_amount = data["amount"]
+        derive_from_loan = False
     else:
         # P&I + escrow as the full monthly payment.  Resolver state
         # owns the P&I figure for both ARM (re-amortized from the
@@ -1637,6 +1643,7 @@ def create_payment_transfer(account_id):
         transfer_amount = escrow_calculator.calculate_total_payment(
             monthly_pi, escrow_components,
         )
+        derive_from_loan = True
 
     # Create monthly recurrence rule.
     monthly_pattern_id = ref_cache.recurrence_pattern_id(
@@ -1659,6 +1666,7 @@ def create_payment_transfer(account_id):
         recurrence_rule_id=rule.id,
         name=template_name,
         default_amount=transfer_amount,
+        derive_from_loan=derive_from_loan,
     )
     db.session.add(template)
 

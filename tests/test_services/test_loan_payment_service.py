@@ -527,27 +527,25 @@ class TestComputeContractualPiArmAware:
             self.anchor_date = anchor_date
             self.created_at = created_at
 
-    def test_arm_out_of_window_uses_anchor_balance_and_current_rate(
+    def test_arm_post_adjustment_holds_level_period_payment(
         self,
     ):
-        """C1-3: post-adjustment ARM returns the re-amortized P&I.
+        """C1-3 (re-pinned): post-adjustment ARM holds the level period payment.
 
-        Hand-computed: anchor $177,999.54 at 6.875% over the
-        remaining contractual months (loan originated 2018-12-01,
-        360-month term, as_of 2026-05-21):
+        Re-pinned under the rate-period model (CLAUDE rule 5 exception;
+        the developer chose to hold the ARM payment constant within each
+        fixed-rate period).  The prior test pinned $1,295.19 -- the
+        payment from re-amortizing the reduced anchor balance
+        ($177,999.54) over the remaining term.  A lender does NOT recast
+        the payment unless the rate actually adjusts, so that was the
+        symptom-#4 error; the anchor balance no longer influences the
+        payment.
 
-            r = 0.06875 / 12 = 0.0057291666...
-            n = calculate_remaining_months(2018-12-01, 360,
-                as_of=2026-05-21)  -- the resolver's helper, which
-                counts calendar months from origination
-            M = 177999.54 * r * (1+r)^n / ((1+r)^n - 1)
-              approx $1,295.19
-
-        Pinning the engine's exact output here; the closed-form
-        derivation above matches within rounding.  A regression
-        that ignored anchor + rate_changes and returned the
-        original-terms value ($1,327.00 from
-        $202000/6.875%/360) would be the user-reported bug.
+        Here the recorded rate never changes (a single 6.875% entry at
+        origination), so by the amortization identity the period recast
+        reproduces the original level payment: amortize($202,000,
+        6.875%, 360) ~= $1,327, which the from-origination period walk
+        reproduces to $1,326.99 (a cent of walk rounding).
         """
         from app.services.amortization_engine import RateChangeRecord
         params = LoanParams(
@@ -566,7 +564,7 @@ class TestComputeContractualPiArmAware:
             anchor_date=date(2026, 2, 15),
             created_at=date(2026, 2, 15),
         )
-        # ARM rate at 6.875% since origination.
+        # ARM rate at 6.875% since origination (no recorded adjustment).
         rate_changes = [
             RateChangeRecord(
                 effective_date=date(2018, 12, 1),
@@ -579,12 +577,10 @@ class TestComputeContractualPiArmAware:
             rate_changes=rate_changes,
             as_of=date(2026, 5, 21),
         )
-        # NOT $1,327.00 (the original-terms value).  The new path
-        # re-amortizes the anchor balance over remaining months at
-        # the current rate.
-        assert result != Decimal("1327.00")
-        # Tight pin: engine returns $1,295.19 to the cent.
-        assert result == Decimal("1295.19")
+        # The level period payment -- with the recorded rate unchanged it
+        # equals the original-terms payment within the walk's rounding,
+        # NOT the old $1,295.19 re-amortization of the reduced balance.
+        assert result == Decimal("1326.99")
 
     def test_fixed_rate_with_anchor_still_returns_original_terms(self):
         """C1-4: fixed-rate loans return original-terms regardless of anchor.

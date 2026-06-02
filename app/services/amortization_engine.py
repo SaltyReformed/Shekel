@@ -95,10 +95,16 @@ class RateChangeRecord:
             effective_date <= payment_date.
         interest_rate: The new annual interest rate as a Decimal
             (e.g., Decimal("0.065") for 6.5%).  Must be >= 0.
+        monthly_pi: Optional recorded recast P&I (principal + interest,
+            no escrow) the lender set when this rate took effect.  The
+            rate-period engine holds it constant for the period this
+            change begins; ``None`` means that period's P&I is derived
+            by amortization instead.  Must be > 0 when present.
     """
 
     effective_date: date
     interest_rate: Decimal
+    monthly_pi: Decimal | None = None
 
     def __post_init__(self):
         """Validate rate change record fields at construction time.
@@ -125,6 +131,16 @@ class RateChangeRecord:
             raise ValueError(
                 f"interest_rate must be >= 0, got {self.interest_rate}"
             )
+        if self.monthly_pi is not None:
+            if not isinstance(self.monthly_pi, Decimal):
+                raise TypeError(
+                    f"monthly_pi must be a Decimal or None, "
+                    f"got {type(self.monthly_pi).__name__}"
+                )
+            if self.monthly_pi <= 0:
+                raise ValueError(
+                    f"monthly_pi must be > 0 when present, got {self.monthly_pi}"
+                )
 
 
 def calculate_remaining_months(

@@ -43,7 +43,10 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import amortization_engine, escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
-from app.utils.balance_predicates import balance_excluded_status_ids
+from app.utils.balance_predicates import (
+    balance_excluded_status_ids,
+    is_projected,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +131,10 @@ def load_loan_context(
                 RateChangeRecord(
                     effective_date=rh.effective_date,
                     interest_rate=Decimal(str(rh.interest_rate)),
+                    monthly_pi=(
+                        Decimal(str(rh.monthly_pi))
+                        if rh.monthly_pi is not None else None
+                    ),
                 )
                 for rh in rate_history_records
             ]
@@ -441,3 +448,112 @@ def prepare_payments_for_engine(
             allocated_months.add((y, m))
 
     return result
+
+
+def live_loan_transfer_amounts(
+    scenario_id: int,
+    transactions: list,
+) -> dict[int, Decimal]:
+    """Return ``{transaction_id: live PITI}`` for derive-from-loan transfer shadows.
+
+    The read-time analogue of a recurring loan payment's stored
+    ``TransferTemplate.default_amount``: for every Projected,
+    non-overridden shadow transaction whose parent transfer's template
+    has ``derive_from_loan=True``, recompute the full monthly payment
+    LIVE from the destination loan -- ``resolve_loan(...).monthly_payment``
+    (the rate-period P&I) plus the loan's monthly escrow/components.  A
+    balance/display consumer can then treat the stored transfer amount as
+    a cache that cannot silently disagree with the loan card after an
+    escrow or rate change.  Directly mirrors the salary-income
+    live-recompute, :func:`app.services.income_service.live_projected_net`.
+
+    Both shadow legs of a transfer (the checking-side expense and the
+    loan-side income) share the transfer id, so both receive the same
+    PITI -- preserving Transfer Invariant 3 in the projection.  The
+    checking expense leg moves the checking balance; the loan income leg
+    does not affect the loan balance (that is resolver-derived), but
+    keeping both equal avoids any surface showing mismatched shadows.
+
+    Boundary discipline: no Flask import; inputs are plain data, output a
+    plain dict.  Returns an empty dict when no candidate transfer targets
+    a derive-from-loan template -- the common case for non-loan transfers
+    and every pre-existing template (the flag defaults False) -- after at
+    most one transfer/template lookup, so the balance render is unchanged
+    for loans that have not opted in.
+
+    Args:
+        scenario_id: Scenario to resolve each loan against.
+        transactions: Already-loaded (user-scoped) :class:`Transaction`
+            rows.  Each must expose ``transfer_id``, ``status`` (for
+            ``is_projected``), ``is_override``, and ``id``.
+
+    Returns:
+        ``dict`` mapping transaction id to the live PITI Decimal; empty
+        when no derive-from-loan transfer is present.
+    """
+    # pylint: disable=import-outside-toplevel  -- one-way policy boundary;
+    # the local import documents that loan_resolver imports nothing here.
+    from app.models.transfer import Transfer
+    from app.services import loan_resolver
+
+    candidates = [
+        txn for txn in transactions
+        if txn.transfer_id is not None
+        and is_projected(txn)
+        and not txn.is_override
+    ]
+    if not candidates:
+        return {}
+
+    transfer_ids = {txn.transfer_id for txn in candidates}
+    transfers = (
+        db.session.query(Transfer)
+        .options(joinedload(Transfer.template))
+        .filter(Transfer.id.in_(transfer_ids))
+        .all()
+    )
+    loan_by_transfer = {
+        xfer.id: xfer.to_account_id
+        for xfer in transfers
+        if xfer.template is not None and xfer.template.derive_from_loan
+    }
+    if not loan_by_transfer:
+        return {}
+
+    # Resolve each distinct loan's full monthly payment (P&I + escrow)
+    # once, then map it onto every candidate shadow of that loan.
+    today = date.today()
+    piti_by_loan: dict[int, Decimal] = {}
+    for loan_account_id in set(loan_by_transfer.values()):
+        params = (
+            db.session.query(LoanParams)
+            .filter_by(account_id=loan_account_id)
+            .first()
+        )
+        if params is None:
+            continue
+        context = load_loan_context(loan_account_id, scenario_id, params)
+        anchor_events = (
+            db.session.query(LoanAnchorEvent)
+            .filter_by(account_id=loan_account_id)
+            .all()
+        )
+        if not anchor_events:
+            continue
+        state = loan_resolver.resolve_loan(
+            params, anchor_events, context.payments,
+            context.rate_changes, today,
+        )
+        piti_by_loan[loan_account_id] = (
+            state.monthly_payment + context.monthly_escrow
+        )
+
+    overrides: dict[int, Decimal] = {}
+    for txn in candidates:
+        loan_account_id = loan_by_transfer.get(txn.transfer_id)
+        if loan_account_id is None:
+            continue
+        piti = piti_by_loan.get(loan_account_id)
+        if piti is not None:
+            overrides[txn.id] = piti
+    return overrides
