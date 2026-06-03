@@ -583,6 +583,88 @@ class TestTransactionCRUD:
             db.session.refresh(txn)
             assert txn.due_date == date(2026, 2, 20)
 
+    def test_full_edit_period_selector_renders_and_moves_transaction(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The full-edit popover renders a pay-period selector and saving a
+        different period reassigns the transaction (F1 -- change pay period).
+
+        The dropdown is filtered to current + future periods, but always
+        includes the row's own period so a row sitting in a past period
+        stays selected.  seed_periods_today places today in period index
+        4, so index 0 is past (the row's own, included) and index 5 is
+        future (a valid move target); index 2 is past and NOT the row's
+        own, so it must be excluded.
+
+        The non-transfer update path applies pay_period_id via its
+        generic setattr loop after re-verifying ownership (F-029), so the
+        move sticks; a period move returns gridRefresh, an in-place edit
+        balanceChanged.
+        """
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            source_period = seed_periods_today[0]   # past -- the row's own
+            target_period = seed_periods_today[5]   # future -- valid target
+            excluded_past = seed_periods_today[2]   # past, not the row's own
+            auth_client.post("/transactions", data={
+                "name": "Movable Expense",
+                "estimated_amount": "120.00",
+                "pay_period_id": source_period.id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "transaction_type_id": expense_type.id,
+                "status_id": projected.id,
+                "account_id": str(seed_user["account"].id),
+            })
+            txn = db.session.query(Transaction).filter_by(
+                name="Movable Expense"
+            ).one()
+            assert txn.pay_period_id == source_period.id
+
+            # The selector renders with the row's own (past) period
+            # included and pre-selected, a future period offered, and a
+            # different past period excluded.  Isolate the pay-period
+            # <select> so option-value assertions cannot collide with the
+            # status select (whose ids overlap the period ids).
+            edit_resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert edit_resp.status_code == 200
+            html = edit_resp.data.decode()
+            assert 'name="pay_period_id"' in html
+            sel_start = html.index('name="pay_period_id"')
+            period_select = html[sel_start:html.index("</select>", sel_start)]
+            # Own past period present and selected.
+            assert source_period.label in period_select
+            assert f'value="{source_period.id}" selected' in period_select
+            # Future period offered.
+            assert target_period.label in period_select
+            # A past period that is not the row's own is excluded.
+            assert excluded_past.label not in period_select
+
+            # Saving a future period reassigns the transaction and asks
+            # the client for a full grid refresh so the row relocates to
+            # the new period (an in-place cell swap cannot move it).
+            save_resp = auth_client.patch(f"/transactions/{txn.id}", data={
+                "pay_period_id": target_period.id,
+                "version_id": txn.version_id,
+            })
+            assert save_resp.status_code == 200
+            assert save_resp.headers.get("HX-Trigger") == "gridRefresh"
+            db.session.refresh(txn)
+            assert txn.pay_period_id == target_period.id
+
+            # An edit that does NOT move the period keeps the lightweight
+            # balanceChanged trigger (no full reload).
+            inplace_resp = auth_client.patch(f"/transactions/{txn.id}", data={
+                "estimated_amount": "130.00",
+                "pay_period_id": target_period.id,
+                "version_id": txn.version_id,
+            })
+            assert inplace_resp.status_code == 200
+            assert inplace_resp.headers.get("HX-Trigger") == "balanceChanged"
+
     def test_create_inline_no_scenario(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transactions/new/quick with no baseline scenario returns 400.
 

@@ -1001,3 +1001,63 @@ class TestEntryBreakdownPerformance:
         )
         # Sanity check: the aggregation produced the expected breakdowns.
         assert len(breakdowns) == 4
+
+
+# ── Ad-hoc Envelope Rows (F3) ────────────────────────────────────
+
+
+class TestEntryBreakdownAdhocEnvelope:
+    """Ad-hoc envelope rows (template_id IS NULL) appear in the breakdown.
+
+    The breakdown query was switched from an inner join on the template
+    to an outer join + OR predicate so a template-less row carrying its
+    own is_envelope flag is included alongside template-generated ones.
+    """
+
+    def test_adhoc_envelope_entries_included(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A settled ad-hoc envelope's purchases appear in the breakdown.
+
+        Two debit entries (60.00 + 40.00) on a template-less is_envelope
+        row -> entry_count 2, entry_total 100.00, debit_total 100.00,
+        credit_total 0, one transaction with entries.
+        """
+        user = seed_user["user"]
+        account = seed_user["account"]
+        scenario = seed_user["scenario"]
+        groceries = seed_user["categories"]["Groceries"]
+        expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+        done_id = ref_cache.status_id(StatusEnum.DONE)
+
+        txn = Transaction(
+            account_id=account.id,
+            scenario_id=scenario.id,
+            pay_period_id=seed_periods[0].id,
+            template_id=None,
+            status_id=done_id,
+            transaction_type_id=expense_type_id,
+            name="Ad-hoc Groceries",
+            estimated_amount=Decimal("100.00"),
+            actual_amount=Decimal("100.00"),
+            category_id=groceries.id,
+            is_envelope=True,
+        )
+        db.session.add(txn)
+        db.session.flush()
+        _add_entries(txn, user, [Decimal("60.00"), Decimal("40.00")])
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        item = _find_item(
+            result["spending_by_category"], "Family", "Groceries",
+        )
+        assert item is not None, "Groceries item missing from spending"
+        assert "entry_breakdown" in item
+
+        bd = item["entry_breakdown"]
+        assert bd["entry_count"] == 2
+        assert bd["entry_total"] == Decimal("100.00")  # 60.00 + 40.00
+        assert bd["debit_total"] == Decimal("100.00")
+        assert bd["credit_total"] == ZERO
+        assert bd["transaction_count_with_entries"] == 1

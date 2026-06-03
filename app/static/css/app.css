@@ -733,6 +733,28 @@ td.htmx-loading::after {
   to { transform: rotate(360deg); }
 }
 
+/* HTMX request indicators (e.g. the analytics tab spinner, the
+   debt-strategy refresh spinner).  These rules normally ship inside
+   HTMX as an inline <style> block injected at startup, but the app's
+   Content-Security-Policy sets `style-src 'self'` with no
+   'unsafe-inline' and no nonce (see app/__init__.py), so that injected
+   stylesheet is blocked.  Without these rules every .htmx-indicator
+   stays at full opacity permanently -- the "stuck" spinner.  HTMX is
+   told not to re-inject its own copy via the htmx-config meta tag in
+   base.html. */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+
+.htmx-request .htmx-indicator {
+  opacity: 1;
+}
+
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
 /* =============================================
    TOAST NOTIFICATIONS
    ============================================= */

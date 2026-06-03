@@ -60,11 +60,35 @@ document.body.addEventListener("gridRefresh", function() {
 
 // Reset the Add Transaction form whenever its modal opens.
 var addModal = document.getElementById("addTransactionModal");
+
+// Purchase tracking is expense-only, so the "Track individual purchases"
+// row is hidden (and unchecked) whenever the modal's Type select is set
+// to a non-expense type.  The expense type id is published on the row as
+// a data attribute by the template.  Companion visibility applies to all
+// types and is never hidden.
+function syncAddEnvelopeVisibility() {
+  if (!addModal) return;
+  var row = addModal.querySelector("[data-adhoc-envelope-row]");
+  var typeSel = addModal.querySelector('select[name="transaction_type_id"]');
+  if (!row || !typeSel) return;
+  var isExpense = typeSel.value === row.getAttribute("data-expense-type-id");
+  row.classList.toggle("d-none", !isExpense);
+  if (!isExpense) {
+    var cb = row.querySelector('input[name="is_envelope"]');
+    if (cb) cb.checked = false;
+  }
+}
+
 if (addModal) {
   addModal.addEventListener("show.bs.modal", function() {
     var form = addModal.querySelector("form");
     if (form) form.reset();
+    syncAddEnvelopeVisibility();
   });
+  var addTypeSel = addModal.querySelector('select[name="transaction_type_id"]');
+  if (addTypeSel) {
+    addTypeSel.addEventListener("change", syncAddEnvelopeVisibility);
+  }
 }
 
 // Inject CSRF token into all HTMX requests.

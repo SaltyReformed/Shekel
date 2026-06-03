@@ -53,6 +53,25 @@
       </select>
     </div>
 
+    {# Pay period selector -- move this transaction to a different period.
+       The PATCH handler re-verifies ownership of the submitted id (F-029)
+       and flags template-generated rows as overrides when the period
+       changes so the recurrence engine does not regenerate over the
+       moved row.  Not rendered for transfer shadows: those edit through
+       transfers/_transfer_full_edit.html instead. #}
+    {% if periods %}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Pay Period</label>
+      <select name="pay_period_id" class="form-select form-select-sm">
+        {% for p in periods %}
+        <option value="{{ p.id }}" {{ 'selected' if txn.pay_period_id == p.id else '' }}>
+          {{ p.label }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+
     {# Notes #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Notes</label>
@@ -72,6 +91,38 @@
              value="{{ txn.due_date.isoformat() if txn.due_date is not none else '' }}"
              class="form-control form-control-sm">
     </div>
+
+    {# Ad-hoc tracking / visibility flags.  Only ad-hoc rows
+       (template_id IS NULL) carry their own flags; template-generated
+       rows inherit them from the template, so the controls are hidden
+       for those.  Each checkbox is followed by a hidden "false" input so
+       an explicit value is always submitted: werkzeug's MultiDict keeps
+       the FIRST value, so a checked box yields "true" (checkbox first)
+       and an unchecked box yields only the hidden "false".  This lets
+       TransactionUpdateSchema apply the flag without a load_default that
+       would otherwise let a quick-edit silently clear it. #}
+    {% if txn.template_id is none %}
+    {% if txn.is_expense %}
+    <div class="form-check mb-2">
+      <input type="checkbox" class="form-check-input" id="is_envelope"
+             name="is_envelope" value="true"
+             {{ 'checked' if txn.is_envelope else '' }}>
+      <input type="hidden" name="is_envelope" value="false">
+      <label class="form-check-label small" for="is_envelope">
+        Track individual purchases
+      </label>
+    </div>
+    {% endif %}
+    <div class="form-check mb-2">
+      <input type="checkbox" class="form-check-input" id="companion_visible"
+             name="companion_visible" value="true"
+             {{ 'checked' if txn.companion_visible else '' }}>
+      <input type="hidden" name="companion_visible" value="false">
+      <label class="form-check-label small" for="companion_visible">
+        Visible to companion
+      </label>
+    </div>
+    {% endif %}
 
     {# Save / Cancel buttons -- wrapped in .popover-action-footer so the
        primary form-submit actions stay pinned above the iOS on-screen
@@ -103,7 +154,7 @@
     {% endif %}
 
     {% if not txn.transfer_id and txn.is_expense and txn.status_id == STATUS_PROJECTED
-       and not (txn.template and txn.template.is_envelope) %}
+       and not txn.tracks_purchases %}
     <button type="button" class="btn btn-xs btn-warning flex-grow-1"
             hx-post="{{ url_for('transactions.mark_credit', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
@@ -143,7 +194,7 @@
   </div>
 
   {# Entry tracking section -- lazy-loaded for tracked transactions #}
-  {% if txn.template and txn.template.is_envelope %}
+  {% if txn.tracks_purchases %}
   <hr class="my-2">
   <div class="small fw-semibold mb-1">Purchases</div>
   <div hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"

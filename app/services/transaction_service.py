@@ -69,9 +69,10 @@ def settle_from_entries(
 
       1. ``txn.is_deleted`` is False.  Soft-deleted rows must not be
          resurrected via a status change.
-      2. ``txn.template`` is not None and ``txn.template.is_envelope``
-         is True.  Envelope semantics are the contract this helper
-         relies on; calling on a non-envelope or template-less row is
+      2. ``txn.tracks_purchases`` is True -- the row is purchase-tracked,
+         either via its template's ``is_envelope`` flag or, for an ad-hoc
+         row, its own ``is_envelope`` column.  Envelope semantics are the
+         contract this helper relies on; calling on a non-tracked row is
          a programming error and surfaces as a ``ValidationError``.
       3. ``txn.transfer_id`` is None.  Transfer shadows must settle
          through ``app.services.transfer_service.update_transfer`` so
@@ -113,15 +114,16 @@ def settle_from_entries(
             f"Transaction {txn.id} is a transfer shadow; "
             "transfers settle via transfer_service.update_transfer.",
         )
-    if txn.template_id is None:
-        raise ValidationError(
-            f"Transaction {txn.id} has no template; "
-            "settle_from_entries requires an envelope-tracked template.",
-        )
-    if txn.template is None or not txn.template.is_envelope:
+    # Resolved purchase-tracking check: covers template-generated rows
+    # (template.is_envelope) and ad-hoc rows (own is_envelope flag).  For
+    # an ad-hoc row tracks_purchases reads a column only -- no relationship
+    # access -- so the cheap-first / autoflush-safe ordering holds; for a
+    # template row it accesses the template exactly as the prior guard did.
+    if not txn.tracks_purchases:
         raise ValidationError(
             f"Transaction {txn.id} is not envelope-tracked; "
-            "settle_from_entries requires template.is_envelope is True.",
+            "settle_from_entries requires individual purchase tracking "
+            "(template.is_envelope, or is_envelope on an ad-hoc row).",
         )
     # Guard against settling an already-finalised row.  ``status`` may
     # be unloaded if the caller passed a detached or freshly-constructed

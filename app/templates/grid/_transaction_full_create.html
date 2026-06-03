@@ -66,6 +66,28 @@
              placeholder="Notes">
     </div>
 
+    {# Tracking / visibility flags for the new ad-hoc transaction.  Plain
+       checkboxes are correct here: this form posts to create_inline,
+       whose InlineTransactionCreateSchema defaults both flags to False,
+       so an unchecked (absent) box yields False.  Purchase tracking is
+       expense-only, so is_envelope renders only for the expense type. #}
+    {% if transaction_type_id == TXN_TYPE_EXPENSE %}
+    <div class="form-check mb-2">
+      <input type="checkbox" class="form-check-input" id="is_envelope"
+             name="is_envelope" value="true">
+      <label class="form-check-label small" for="is_envelope">
+        Track individual purchases
+      </label>
+    </div>
+    {% endif %}
+    <div class="form-check mb-2">
+      <input type="checkbox" class="form-check-input" id="companion_visible"
+             name="companion_visible" value="true">
+      <label class="form-check-label small" for="companion_visible">
+        Visible to companion
+      </label>
+    </div>
+
     {# Create / Cancel buttons -- wrapped in .popover-action-footer so
        the primary form-submit actions stay pinned above the iOS
        on-screen keyboard on mobile.  The sticky rule lives inside the

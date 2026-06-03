@@ -12,10 +12,16 @@ from decimal import Decimal
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
-from app.models.mixins import SoftDeleteOverridableMixin, TimestampMixin
+from app.models.mixins import (
+    SoftDeleteOverridableMixin,
+    TimestampMixin,
+    TrackingVisibilityMixin,
+)
 
 
-class Transaction(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
+class Transaction(
+    SoftDeleteOverridableMixin, TrackingVisibilityMixin, TimestampMixin, db.Model
+):
     """A single income or expense entry within a pay period.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -179,6 +185,12 @@ class Transaction(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)
     paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # is_envelope and companion_visible are provided by
+    # TrackingVisibilityMixin.  On an ad-hoc (template_id IS NULL) row
+    # they carry the row's own setting; on a template-generated row they
+    # are inert -- the resolved ``tracks_purchases`` /
+    # ``visible_to_companion`` properties below defer to the template so
+    # the template stays the single source of truth.
     # Optimistic-locking version counter.  See class docstring and
     # commit C-18.  NOT NULL with server_default="1" so existing
     # production rows are filled at ALTER TABLE time and new rows
@@ -253,6 +265,37 @@ class Transaction(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     def is_expense(self):
         """True if this transaction is an expense."""
         return self.transaction_type_id == ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+
+    @property
+    def tracks_purchases(self):
+        """True if individual purchase entries apply to this transaction.
+
+        Single source of truth for the "is this an envelope / entry-
+        capable row?" question across services, routes, and templates.
+        Resolution rule: a template-generated transaction defers to its
+        template's ``is_envelope`` flag (the template owns the setting for
+        every instance it generates); an ad-hoc transaction (no template)
+        uses its own ``is_envelope`` column.  Accesses the template
+        relationship only when ``template_id`` is set, so ad-hoc rows
+        never trigger a lazy load.
+        """
+        if self.template_id is None:
+            return self.is_envelope
+        return self.template.is_envelope
+
+    @property
+    def visible_to_companion(self):
+        """True if a companion of the owner may see this transaction.
+
+        Mirrors :attr:`tracks_purchases`: a template-generated
+        transaction defers to its template's ``companion_visible`` flag;
+        an ad-hoc transaction uses its own ``companion_visible`` column.
+        Accesses the template relationship only when ``template_id`` is
+        set.
+        """
+        if self.template_id is None:
+            return self.companion_visible
+        return self.template.companion_visible
 
     @property
     def days_until_due(self):

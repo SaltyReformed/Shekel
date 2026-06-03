@@ -7,6 +7,12 @@
   <title>{% block title %}Shekel{% endblock %}</title>
   <meta name="csrf-token" content="{{ csrf_token() }}">
 
+  {# HTMX reads its config from this meta tag at startup.  includeIndicatorStyles
+     is disabled because the CSP (style-src 'self', no 'unsafe-inline'/nonce)
+     blocks the inline <style> block HTMX would otherwise inject; the
+     .htmx-indicator rules live in css/app.css instead. #}
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+
   {# Vendored front-end assets -- pinned in app/static/vendor/VERSIONS.txt.
      The CSP forbids external origins (audit F-037), so every CSS/JS/font
      reference must resolve via url_for('static', ...). #}

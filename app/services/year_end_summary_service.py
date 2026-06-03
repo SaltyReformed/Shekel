@@ -20,7 +20,7 @@ from collections import OrderedDict, defaultdict
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import case
+from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import joinedload, subqueryload
 
 from app import ref_cache
@@ -446,9 +446,10 @@ def _compute_spending_by_category(
     Queries settled expense transactions in the year's pay periods,
     attributes each to the year using COALESCE(due_date,
     pay_period.start_date), and groups by category group_name then
-    item_name.  Items whose parent template has is_envelope=True
-    receive an entry_breakdown sub-dict with per-purchase aggregates
-    queried from TransactionEntry (OP-3).
+    item_name.  Purchase-tracked items (a parent template with
+    is_envelope=True, or an ad-hoc row carrying its own is_envelope
+    flag) receive an entry_breakdown sub-dict with per-purchase
+    aggregates queried from TransactionEntry (OP-3).
 
     Args:
         user_id: User ID for ownership filtering.
@@ -505,10 +506,11 @@ def _compute_entry_breakdowns(
     """Aggregate transaction entries for tracked categories in the year.
 
     Runs one SQL query that joins TransactionEntry through Transaction
-    to its template, account, pay period, and category.  Filters with
-    the same predicates as _query_settled_expenses (settled expenses
-    in the user's year period_ids on the baseline scenario) plus
-    is_envelope=True on the parent template.  Aggregates per parent
+    to its template (outer-joined), account, pay period, and category.
+    Filters with the same predicates as _query_settled_expenses (settled
+    expenses in the user's year period_ids on the baseline scenario) plus
+    purchase tracking enabled -- is_envelope=True on the parent template,
+    or on the transaction itself for an ad-hoc row.  Aggregates per parent
     transaction so the same _attribution_year filter used by
     _compute_spending_by_category can be applied in Python -- this
     handles transactions whose due_date crosses a calendar year
@@ -555,7 +557,11 @@ def _compute_entry_breakdowns(
             Transaction,
             TransactionEntry.transaction_id == Transaction.id,
         )
-        .join(
+        # OUTER join so ad-hoc (template_id IS NULL) rows survive; the
+        # envelope predicate below accepts either a template with
+        # is_envelope set or an ad-hoc row carrying its own is_envelope
+        # flag, mirroring Transaction.tracks_purchases at the SQL tier.
+        .outerjoin(
             TransactionTemplate,
             Transaction.template_id == TransactionTemplate.id,
         )
@@ -569,7 +575,13 @@ def _compute_entry_breakdowns(
             Transaction.is_deleted.is_(False),
             Transaction.transaction_type_id == expense_type_id,
             Transaction.status_id.in_(settled_status_ids),
-            TransactionTemplate.is_envelope.is_(True),
+            or_(
+                TransactionTemplate.is_envelope.is_(True),
+                and_(
+                    Transaction.template_id.is_(None),
+                    Transaction.is_envelope.is_(True),
+                ),
+            ),
         )
         .group_by(
             Category.group_name,

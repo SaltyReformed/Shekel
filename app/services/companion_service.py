@@ -18,6 +18,7 @@ Architecture:
 
 import logging
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import selectinload
 
 from app.extensions import db
@@ -95,8 +96,10 @@ def get_visible_transactions(
 ) -> tuple[list[Transaction], PayPeriod]:
     """Get transactions visible to a companion user for a pay period.
 
-    Queries the linked owner's transactions filtered to those from
-    templates with ``companion_visible=True``.  Eager-loads entries
+    Queries the linked owner's transactions filtered to those marked
+    companion-visible: either generated from a template with
+    ``companion_visible=True``, or an ad-hoc (template_id IS NULL) row
+    whose own ``companion_visible`` flag is set.  Eager-loads entries
     for progress computation.
 
     Defense-in-depth: verifies the user is a companion with a valid
@@ -130,13 +133,18 @@ def get_visible_transactions(
 
     transactions = (
         db.session.query(Transaction)
-        .join(
+        # OUTER join so ad-hoc (template_id IS NULL) rows survive the
+        # join -- an inner join would silently drop them.  The
+        # visibility predicate below accepts either a companion-visible
+        # template or an ad-hoc row whose own companion_visible flag is
+        # set.
+        .outerjoin(
             TransactionTemplate,
             Transaction.template_id == TransactionTemplate.id,
         )
         # Eager-load both the entries (for progress / pct totals) and
         # the template (for ``txn.template.name`` and
-        # ``txn.template.is_envelope`` accesses from the shared
+        # ``txn.tracks_purchases`` accesses from the shared
         # ``render_row_card`` macro and ``grid_view_service.build_row_keys``
         # introduced in mobile-first v3 plan Commit 13).  Without the
         # template eager-load the macro would lazy-load each
@@ -148,7 +156,13 @@ def get_visible_transactions(
         )
         .filter(
             Transaction.pay_period_id == period.id,
-            TransactionTemplate.companion_visible.is_(True),
+            or_(
+                TransactionTemplate.companion_visible.is_(True),
+                and_(
+                    Transaction.template_id.is_(None),
+                    Transaction.companion_visible.is_(True),
+                ),
+            ),
             Transaction.is_deleted.is_(False),
         )
         .order_by(Transaction.name)

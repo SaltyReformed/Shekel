@@ -167,11 +167,14 @@ def create_entry(
     if txn.pay_period.user_id != owner_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
-    # Entry-capable: template must exist and have tracking enabled.
-    if txn.template is None or not txn.template.is_envelope:
+    # Entry-capable: purchase tracking must be enabled, via the template
+    # (template-generated rows) or the row's own is_envelope flag (ad-hoc
+    # rows).  Resolved by Transaction.tracks_purchases.
+    if not txn.tracks_purchases:
         raise ValidationError(
             "This transaction does not support individual purchase tracking. "
-            "Enable 'Track individual purchases' on the template first."
+            "Enable 'Track individual purchases' on the transaction "
+            "or its template first."
         )
 
     # Transfer guard (mirrors credit_workflow.py line 59).
@@ -458,10 +461,11 @@ def build_entry_lists_dict(
     over-limit cards stuck on the loading spinner.  Server-side
     rendering eliminates the fan-out entirely.
 
-    Only envelope templates (``txn.template.is_envelope``) get an
-    entry, matching the macro's ``is_envelope`` guard for whether to
-    render the inline entries section.  Non-envelope transactions
-    and orphans (no template) are silently skipped.
+    Only purchase-tracking rows (``txn.tracks_purchases`` -- a template
+    with ``is_envelope`` set, or an ad-hoc row carrying its own
+    ``is_envelope`` flag) get an entry, matching the macro's guard for
+    whether to render the inline entries section.  Non-tracking
+    transactions are silently skipped.
 
     Pure function -- expects ``entries`` and ``template`` to be eager-
     loaded on the Transaction objects.  Mirrors
@@ -490,7 +494,7 @@ def build_entry_lists_dict(
     """
     result: dict[int, dict] = {}
     for txn in transactions:
-        if not (txn.template and txn.template.is_envelope):
+        if not txn.tracks_purchases:
             continue
         entries = list(txn.entries)
         remaining = compute_remaining(txn.estimated_amount, entries)

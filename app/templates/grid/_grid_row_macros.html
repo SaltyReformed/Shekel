@@ -314,7 +314,7 @@
          element.  (The earlier "This Period vs Plan" framing of this
          duplicate was inaccurate -- the Plan tab uses
          ``render_row_static`` and emits no entries list at all.) #}
-      {% if txn.template and txn.template.is_envelope and entry_lists %}
+      {% if txn.tracks_purchases and entry_lists %}
         {% set _entry_data = entry_lists.get(txn.id) %}
         {% if _entry_data is not none %}
           {% set entries = _entry_data.entries %}
