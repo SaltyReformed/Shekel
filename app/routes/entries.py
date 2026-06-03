@@ -51,7 +51,10 @@ def _get_accessible_transaction(txn_id):
 
     Owners access transactions belonging to their own pay periods.
     Companions access transactions belonging to their linked owner's
-    pay periods, restricted to templates flagged companion_visible.
+    pay periods, restricted to companion-visible rows (a template
+    flagged companion_visible, or an ad-hoc row whose own
+    companion_visible flag is set -- resolved by
+    Transaction.visible_to_companion).
 
     Follows the security response rule: returns None for both
     "not found" and "not yours" so the caller returns 404 in
@@ -68,10 +71,10 @@ def _get_accessible_transaction(txn_id):
         return None
     companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
     if current_user.role_id == companion_role_id:
-        # Companion path: must be linked owner's data + visible template.
+        # Companion path: must be linked owner's data + companion-visible
+        # (resolved from the template, or the row's own flag for ad-hoc).
         if (txn.pay_period.user_id != current_user.linked_owner_id
-                or txn.template is None
-                or not txn.template.companion_visible):
+                or not txn.visible_to_companion):
             return None
     else:
         # Owner path: standard pay-period ownership check.

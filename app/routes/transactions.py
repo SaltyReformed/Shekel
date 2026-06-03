@@ -336,7 +336,10 @@ def _get_accessible_transaction_for_status(txn_id):
 
     Owners access their own transactions.  Companions access
     transactions belonging to their linked owner's pay periods,
-    restricted to templates flagged ``companion_visible``.
+    restricted to companion-visible rows (a template flagged
+    ``companion_visible``, or an ad-hoc row whose own
+    ``companion_visible`` flag is set -- resolved by
+    ``Transaction.visible_to_companion``).
 
     Used by mark_done to allow companions to mark visible
     transactions as Paid.  Follows the security response rule:
@@ -353,10 +356,10 @@ def _get_accessible_transaction_for_status(txn_id):
         return None
     companion_id = ref_cache.role_id(RoleEnum.COMPANION)
     if current_user.role_id == companion_id:
-        # Companion path: linked owner's data + visible template.
+        # Companion path: linked owner's data + companion-visible
+        # (resolved from the template, or the row's own flag for ad-hoc).
         if (txn.pay_period.user_id != current_user.linked_owner_id
-                or txn.template is None
-                or not txn.template.companion_visible):
+                or not txn.visible_to_companion):
             return None
     else:
         # Owner path: standard pay-period ownership check.
@@ -581,9 +584,7 @@ def update_transaction(txn_id):
         # Block Credit status on entry-capable transactions -- credit
         # handling is per-entry, not per-transaction (scope doc section 5.2).
         credit_id = ref_cache.status_id(StatusEnum.CREDIT)
-        if (data["status_id"] == credit_id
-                and txn.template is not None
-                and txn.template.is_envelope):
+        if data["status_id"] == credit_id and txn.tracks_purchases:
             return (
                 "Cannot set Credit status on transactions with individual "
                 "purchase tracking. Use entry-level credit instead."
@@ -592,6 +593,14 @@ def update_transaction(txn_id):
         new_status = db.session.get(Status, data["status_id"])
         if new_status and not new_status.is_settled and txn.paid_at is not None:
             revert_paid_at = True
+
+    # Purchase tracking is expense-only.  The popover only renders the
+    # is_envelope checkbox for ad-hoc expense rows, but guard the route
+    # too (defense in depth) so a crafted request cannot enable tracking
+    # on an income transaction.  Checked against the stored type because
+    # TransactionUpdateSchema carries no transaction_type_id.
+    if data.get("is_envelope") and txn.is_income:
+        return "Purchase tracking is only available for expenses.", 400
 
     # Detect a period move before the setattr loop mutates the row.  A
     # move relocates the row to a different period in the grid, which an
@@ -754,9 +763,7 @@ def mark_done(txn_id):
     # source of truth for "settle a tracked row at sum(entries)."  The
     # helper writes ``status_id``, ``paid_at``, and ``actual_amount``
     # together; the route does not need to set them itself in this branch.
-    if (txn.template is not None
-            and txn.template.is_envelope
-            and txn.entries):
+    if txn.tracks_purchases and txn.entries:
         try:
             transaction_service.settle_from_entries(txn)
         except ValidationError as exc:

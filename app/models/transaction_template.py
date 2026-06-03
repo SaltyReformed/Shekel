@@ -8,10 +8,10 @@ pay periods.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import TimestampMixin, TrackingVisibilityMixin
 
 
-class TransactionTemplate(TimestampMixin, db.Model):
+class TransactionTemplate(TrackingVisibilityMixin, TimestampMixin, db.Model):
     """Blueprint for a recurring income or expense line item.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -64,12 +64,8 @@ class TransactionTemplate(TimestampMixin, db.Model):
     sort_order = db.Column(
         db.Integer, nullable=False, default=0, server_default=db.text("0"),
     )
-    is_envelope = db.Column(
-        db.Boolean, nullable=False, default=False, server_default="false",
-    )
-    companion_visible = db.Column(
-        db.Boolean, nullable=False, default=False, server_default="false",
-    )
+    # is_envelope and companion_visible are provided by
+    # TrackingVisibilityMixin (shared with Transaction).
     # Optimistic-locking version counter.  See class docstring and
     # commit C-18.
     version_id = db.Column(

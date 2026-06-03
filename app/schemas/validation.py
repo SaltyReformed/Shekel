@@ -150,6 +150,44 @@ class BaseSchema(Schema):
         unknown = EXCLUDE
 
 
+def _reject_envelope_on_income(data, message):
+    """Raise ValidationError when ``is_envelope`` is set on an income payload.
+
+    Shared cross-field rule for the template and transaction create
+    schemas (DRY -- one implementation of the check).  Envelope /
+    purchase-tracking semantics only apply to expenses: an income flow
+    has no per-period budget to track individual purchases against, and
+    the carry-forward ``settle-and-roll`` branch that envelope tracking
+    feeds is expense-only.
+
+    Runs only when both ``is_envelope`` and ``transaction_type_id`` are
+    present in the deserialized payload.  Partial updates that omit the
+    type skip the schema check and rely on a route-layer fallback
+    against the stored type.
+
+    Args:
+        data: The deserialized schema payload.
+        message: The error message to raise.  Passed in so each caller
+            can phrase it for its own entity (template vs ad-hoc
+            transaction) without forking the check logic.
+
+    Raises:
+        ValidationError: If ``is_envelope`` is True and
+            ``transaction_type_id`` resolves to the Income type.  The
+            error is attached to the ``is_envelope`` field for
+            consistency with the other cross-field validators here.
+    """
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+
+    if not data.get("is_envelope"):
+        return
+    txn_type_id = data.get("transaction_type_id")
+    if txn_type_id is None:
+        return
+    if ref_cache.transaction_type_is_income(txn_type_id):
+        raise ValidationError(message, field_name="is_envelope")
+
+
 class TransactionUpdateSchema(BaseSchema):
     """Validates PATCH data for updating a transaction.
 
@@ -179,6 +217,16 @@ class TransactionUpdateSchema(BaseSchema):
     category_id = fields.Integer()
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
+    # Ad-hoc tracking / visibility flags.  Deliberately NO load_default:
+    # this schema is shared across the quick-edit, full-edit, and inline
+    # PATCH forms, and only the full-edit popover renders these controls
+    # (for ad-hoc rows).  Without a default, a PATCH that omits them
+    # leaves the columns untouched, so a quick-edit cannot silently
+    # clear an ad-hoc row's flags.  The popover uses a checkbox + hidden
+    # "false" field so an explicit true/false is always submitted when
+    # the controls are present.
+    is_envelope = fields.Boolean()
+    companion_visible = fields.Boolean()
     paid_at = fields.DateTime(allow_none=True, dump_only=True)
     version_id = fields.Integer(validate=validate.Range(min=1))
 
@@ -197,6 +245,18 @@ class TransactionCreateSchema(BaseSchema):
     status_id = fields.Integer()
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
+    # Ad-hoc tracking / visibility flags.  load_default=False so a create
+    # that omits them (e.g. the Add Transaction modal) defaults to off,
+    # which is the correct baseline for a brand-new transaction.
+    is_envelope = fields.Boolean(load_default=False)
+    companion_visible = fields.Boolean(load_default=False)
+
+    @validates_schema
+    def validate_envelope_only_on_expense(self, data, **kwargs):
+        """Reject ``is_envelope=True`` on an ad-hoc income transaction."""
+        _reject_envelope_on_income(
+            data, "Purchase tracking is only available for expenses."
+        )
 
 
 class InlineTransactionCreateSchema(BaseSchema):
@@ -215,11 +275,22 @@ class InlineTransactionCreateSchema(BaseSchema):
     scenario_id = fields.Integer(required=True)
     status_id = fields.Integer()
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+    # Ad-hoc tracking / visibility flags.  load_default=False so the
+    # quick-create form (which omits these controls) defaults to off.
+    is_envelope = fields.Boolean(load_default=False)
+    companion_visible = fields.Boolean(load_default=False)
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
         """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
+
+    @validates_schema
+    def validate_envelope_only_on_expense(self, data, **kwargs):
+        """Reject ``is_envelope=True`` on an ad-hoc income transaction."""
+        _reject_envelope_on_income(
+            data, "Purchase tracking is only available for expenses."
+        )
 
 
 class TemplateCreateSchema(BaseSchema):
@@ -298,18 +369,10 @@ class TemplateCreateSchema(BaseSchema):
             ValidationError: If ``is_envelope`` is True and
                 ``transaction_type_id`` resolves to the Income type.
         """
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
-
-        if not data.get("is_envelope"):
-            return
-        txn_type_id = data.get("transaction_type_id")
-        if txn_type_id is None:
-            return
-        if ref_cache.transaction_type_is_income(txn_type_id):
-            raise ValidationError(
-                "Purchase tracking is only available for expense templates.",
-                field_name="is_envelope",
-            )
+        _reject_envelope_on_income(
+            data,
+            "Purchase tracking is only available for expense templates.",
+        )
 
 
 class TemplateUpdateSchema(TemplateCreateSchema):

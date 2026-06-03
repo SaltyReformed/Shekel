@@ -15,10 +15,13 @@ each:
     perfect agreement.  See ``docs/carry-forward-aftermath-design.md``
     Option F for the rationale.
 
-  * **Discrete templates / ad-hoc rows** (no envelope flag) -- the
-    pre-existing 33cd21e behaviour: relocate the row to the target
+  * **Discrete templates / ad-hoc rows** (no recurring envelope template)
+    -- the pre-existing 33cd21e behaviour: relocate the row to the target
     period and set ``is_override = True`` if template-linked so the
-    recurrence engine does not regenerate over the moved row.
+    recurrence engine does not regenerate over the moved row.  Ad-hoc
+    envelope rows (``is_envelope`` set, no template) land here too: they
+    move whole and carry their entries, because there is no recurring
+    canonical to roll an unspent leftover into.
 
   * **Transfer shadows** (``transfer_id IS NOT NULL``) -- delegate to
     ``transfer_service.update_transfer`` so the parent transfer and
@@ -274,6 +277,14 @@ def _build_carry_forward_context(source_period_id, target_period_id,
         if txn.transfer_id is not None:
             shadow_txns.append(txn)
         elif txn.template is not None and txn.template.is_envelope:
+            # Envelope ROLLOVER folds the unspent leftover into the
+            # template's next-period canonical (created via
+            # recurrence_engine.generate_for_template).  An ad-hoc
+            # envelope row (is_envelope set, no template) has no next
+            # canonical, so it intentionally falls through to the
+            # discrete bucket and moves whole, carrying its entries.
+            # Keep this check template-gated -- do NOT switch it to
+            # txn.tracks_purchases.
             envelope_txns.append(txn)
         else:
             discrete_txns.append(txn)

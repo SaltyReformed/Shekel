@@ -184,10 +184,11 @@ def _is_entry_tracked(txn: Transaction) -> bool:
             accessible (eager-loaded by the caller for collections).
 
     Returns:
-        True when the transaction's template exists and has
-        ``is_envelope = True``; otherwise False.
+        True when the transaction is purchase-tracked -- either its
+        template has ``is_envelope = True`` or, for an ad-hoc row, its
+        own ``is_envelope`` flag is set; otherwise False.
     """
-    return txn.template is not None and txn.template.is_envelope
+    return txn.tracks_purchases
 
 
 def txn_to_bill_dict(txn: Transaction, today: date) -> dict:

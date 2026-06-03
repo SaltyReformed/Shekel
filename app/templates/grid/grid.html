@@ -281,6 +281,27 @@
               {% endfor %}
             </select>
           </div>
+
+          {# Tracking & visibility flags.  Both post to create_transaction,
+             whose schema defaults them off and rejects is_envelope on
+             income.  Purchase tracking is expense-only, so app.js hides
+             the tracking row (data-adhoc-envelope-row) whenever Type is
+             set to Income. #}
+          <div class="form-check mb-2" data-adhoc-envelope-row
+               data-expense-type-id="{{ TXN_TYPE_EXPENSE }}">
+            <input type="checkbox" class="form-check-input"
+                   id="add_is_envelope" name="is_envelope" value="true">
+            <label class="form-check-label" for="add_is_envelope">
+              Track individual purchases
+            </label>
+          </div>
+          <div class="form-check mb-3">
+            <input type="checkbox" class="form-check-input"
+                   id="add_companion_visible" name="companion_visible" value="true">
+            <label class="form-check-label" for="add_companion_visible">
+              Visible to companion
+            </label>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
