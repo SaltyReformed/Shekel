@@ -213,6 +213,48 @@ def _advance_one_month(reference: date, payment_day: int) -> date:
     return date(target_year, target_month, min(payment_day, last_day))
 
 
+def monthly_due_date(period_start: date, payment_day: int) -> date:
+    """Return a loan payment's true monthly due date from its pay-period start.
+
+    A recurring loan payment is recorded against the pay period whose
+    range contains its real monthly due date, but the resolver keys the
+    :class:`~app.services.amortization_engine.PaymentRecord` to the
+    pay-period START -- a biweekly date that can fall up to ~2 weeks
+    before the contractual due date.  The pay-period start is too coarse
+    for the anchor-boundary comparison ("did this payment come due after
+    the balance was last verified?"): a balance true-up dated between a
+    pay period's start and that period's payment due date would otherwise
+    strand the payment in the gap, excluding it from the replay forever
+    even after the user marks it paid.
+
+    This recovers the contractual due date: the first ``payment_day`` of
+    the month on or after ``period_start``, clamping ``payment_day`` to
+    the month's length for short months (a ``payment_day`` of 31 resolves
+    to Feb 28/29).  Because the payment's pay period was chosen to contain
+    that due date, the first ``payment_day`` at or after the period start
+    is exactly the due date.
+
+    Args:
+        period_start: The pay-period start date the PaymentRecord is keyed
+            to (``PaymentRecord.payment_date``).
+        payment_day: The loan's contractual day-of-month due day
+            (``LoanParams.payment_day``), 1-31.
+
+    Returns:
+        The first date on or after ``period_start`` whose day equals
+        ``payment_day`` (day-clamped to the month length).
+    """
+    last_day = calendar.monthrange(period_start.year, period_start.month)[1]
+    candidate = date(
+        period_start.year, period_start.month, min(payment_day, last_day),
+    )
+    if candidate >= period_start:
+        return candidate
+    # payment_day already passed in period_start's own month -- the due
+    # date is the same day in the following month.
+    return _advance_one_month(period_start, payment_day)
+
+
 def _rate_at_date(
     rate_changes: list | None,
     target_date: date,
@@ -525,24 +567,45 @@ def replay_schedule(
 ) -> ScheduleReplay:
     """Replay confirmed payments forward from the anchor along the schedule.
 
-    Advances one scheduled step per confirmed payment dated strictly
-    after ``anchor.as_of_date`` and at or before ``as_of``, in date
-    order (see :func:`_replay_payment_row` for the per-step math).  The
-    cash amount and escrow are NOT inputs -- only the COUNT and dates of
-    the confirmed payments matter, so a payment that bundled escrow
+    Advances one scheduled step per confirmed payment that clears two
+    boundaries, in pay-period-start order (see :func:`_replay_payment_row`
+    for the per-step math):
+
+    * its true monthly due date (see :func:`monthly_due_date`) is strictly
+      after ``anchor.as_of_date`` -- the payment came due after the
+      balance was last verified, so it is not already baked into the
+      anchor; and
+    * its pay-period start is at or before ``as_of`` -- its pay period has
+      begun, so it is historical rather than a forward projection.
+
+    The cash amount and escrow are NOT inputs -- only the COUNT and dates
+    of the confirmed payments matter, so a payment that bundled escrow
     cannot over-reduce principal.
+
+    The anchor boundary uses the due date while the as_of cap uses the
+    pay-period start, and the replay STEP walks the pay-period-start date
+    each entry is keyed to, so the schedule rows and the forward
+    projection stay aligned in their shared (pay-period-keyed) date space.
+    Using the due date for the anchor boundary is what lets a true-up
+    dated mid-pay-period (one day after a period's biweekly start but
+    before that period's monthly payment is due) still replay that
+    payment.
 
     Args:
         periods: Non-empty list from :func:`build_rate_periods`.
             ``periods[0].start_date`` is the origination date and
             ``periods[0].term_months_at_start`` is the original term.
         anchor: The :class:`BalanceAnchor` to start from (the latest
-            ``LoanAnchorEvent``).  Payments at or before its date are
-            already reflected in its balance and are skipped.
-        confirmed_payment_dates: Dates of confirmed (settled) payments;
-            filtered to ``(anchor.as_of_date, as_of]`` internally.
-        payment_day: Day of month payments are due (for ``next_pay_date``).
-        as_of: Evaluation date; payments after it are not replayed.
+            ``LoanAnchorEvent``).  Payments whose due date is at or before
+            its date are already reflected in its balance and are skipped.
+        confirmed_payment_dates: Pay-period-start dates of confirmed
+            (settled) payments.  Kept when the true monthly due date is
+            after ``anchor.as_of_date`` and the pay-period start is at or
+            before ``as_of``.
+        payment_day: Day of month payments are due.  Drives the due-date
+            classification and ``next_pay_date``.
+        as_of: Evaluation date; payments whose pay period has not begun by
+            it are not replayed.
 
     Returns:
         A :class:`ScheduleReplay` with the consumed rows, the balance as
@@ -556,8 +619,23 @@ def replay_schedule(
         raise ValueError("replay_schedule requires a non-empty period list.")
 
     origination_date = periods[0].start_date
+    # Two different dates govern the two boundaries:
+    #   * Anchor (lower) boundary -- the true monthly DUE date.  A payment
+    #     due after the anchor but whose biweekly pay period started on or
+    #     before it must still be replayed; comparing the pay-period start
+    #     here would strand it (the mid-period-true-up bug).
+    #   * as_of (upper) cap -- the PAY-PERIOD START.  This is the
+    #     replay-vs-projection split: a confirmed payment whose pay period
+    #     has begun is historical, even if pre-paid a few days before its
+    #     due date.  ``_build_monthly_override`` uses the same pay-period
+    #     start so the two partitions stay exact complements.
+    # The yielded value (and the replay step below) stays the pay-period
+    # start, preserving alignment with the forward projection's
+    # pay-period-keyed overrides.
     eligible = sorted(
-        d for d in confirmed_payment_dates if anchor.as_of_date < d <= as_of
+        d for d in confirmed_payment_dates
+        if anchor.as_of_date < monthly_due_date(d, payment_day)
+        and d <= as_of
     )
 
     balance = Decimal(str(anchor.balance))

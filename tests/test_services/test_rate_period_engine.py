@@ -16,6 +16,7 @@ from app.services.rate_period_engine import (
     BalanceAnchor,
     LoanTerms,
     build_rate_periods,
+    monthly_due_date,
     period_for_date,
     replay_schedule,
 )
@@ -404,3 +405,116 @@ class TestReplaySchedule:
         )
         assert result.rows == []
         assert result.balance_as_of == Decimal("300000.00")
+
+    def test_due_date_after_anchor_replayed_though_period_start_before(self):
+        """A payment due after the anchor replays even if its pay period began before it.
+
+        The production bug (mortgage account 3): a balance true-up dated
+        2026-05-22 lands one day after the biweekly pay period that begins
+        2026-05-21 and carries the 2026-06-01 mortgage payment.  Keyed to
+        the pay-period START (05-21), the payment is "before" the anchor
+        and was wrongly stranded; keyed to its true monthly DUE date
+        (06-01, payment_day=1) it is correctly after the anchor.
+
+          due date  = first 1st on/after 05-21 = 2026-06-01 (> 05-22, <= 06-02)
+          interest  = 300000 * 0.06/12 = 1500.00
+          principal = 1798.65 - 1500.00 = 298.65
+          balance   = 300000.00 - 298.65 = 299701.35
+
+        The replayed row's date stays the pay-period start (05-21): the
+        due date governs eligibility, the pay-period start governs the
+        step, preserving forward-projection alignment.
+        """
+        periods = _fixed_loan_periods()
+        result = replay_schedule(
+            periods=periods,
+            anchor=BalanceAnchor(
+                balance=Decimal("300000.00"), as_of_date=date(2026, 5, 22),
+            ),
+            confirmed_payment_dates=[date(2026, 5, 21)],
+            payment_day=1,
+            as_of=date(2026, 6, 2),
+        )
+        assert len(result.rows) == 1
+        assert result.balance_as_of == Decimal("299701.35")
+        # Eligibility used the due date; the step used the pay-period start.
+        assert result.rows[0].payment_date == date(2026, 5, 21)
+
+    def test_prepaid_payment_replayed_when_period_started(self):
+        """The as-of cap is the pay-period START, not the due date (asymmetry).
+
+        A payment keyed to 2026-05-21 (due 2026-06-01) is evaluated on
+        2026-05-31 -- before its 06-01 due date but after its pay period
+        began (05-21).  The user marked it paid, so it is a real historical
+        payment and replays: the as_of cap tests the pay-period start
+        (05-21 <= 05-31), NOT the due date (which is still ahead).  The
+        anchor boundary still uses the due date; only the as_of cap uses
+        the pay-period start.
+
+          interest  = 300000 * 0.06/12 = 1500.00
+          principal = 1798.65 - 1500.00 = 298.65
+          balance   = 300000.00 - 298.65 = 299701.35
+        """
+        periods = _fixed_loan_periods()
+        result = replay_schedule(
+            periods=periods,
+            anchor=BalanceAnchor(
+                balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
+            ),
+            confirmed_payment_dates=[date(2026, 5, 21)],
+            payment_day=1,
+            as_of=date(2026, 5, 31),
+        )
+        assert len(result.rows) == 1
+        assert result.balance_as_of == Decimal("299701.35")
+
+    def test_payment_whose_period_has_not_begun_not_replayed(self):
+        """A confirmed payment whose pay period starts after as_of is excluded.
+
+        Pay-period start 2026-06-15 is after the 2026-06-02 evaluation
+        date, so the payment's period has not begun and it is held for the
+        forward projection, not the historical replay -- even though its
+        due date (07-01) is well after the anchor.
+        """
+        periods = _fixed_loan_periods()
+        result = replay_schedule(
+            periods=periods,
+            anchor=BalanceAnchor(
+                balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
+            ),
+            confirmed_payment_dates=[date(2026, 6, 15)],
+            payment_day=1,
+            as_of=date(2026, 6, 2),
+        )
+        assert result.rows == []
+        assert result.balance_as_of == Decimal("300000.00")
+
+
+class TestMonthlyDueDate:
+    """monthly_due_date: recover a payment's contractual due date."""
+
+    def test_next_payment_day_after_period_start(self):
+        """The due date is the first payment_day on or after the period start."""
+        # Pay period begins 05-21; payment_day 1 -> next 1st is 06-01.
+        assert monthly_due_date(date(2026, 5, 21), 1) == date(2026, 6, 1)
+        # Pay period begins 03-26; payment_day 1 -> 04-01.
+        assert monthly_due_date(date(2026, 3, 26), 1) == date(2026, 4, 1)
+
+    def test_period_start_on_payment_day_returns_same_day(self):
+        """When the period starts on payment_day, that day is the due date."""
+        assert monthly_due_date(date(2026, 6, 1), 1) == date(2026, 6, 1)
+
+    def test_payment_day_later_in_same_month(self):
+        """A payment_day still ahead in the start month stays in that month."""
+        # Period begins 05-10; payment_day 15 -> 05-15 (same month).
+        assert monthly_due_date(date(2026, 5, 10), 15) == date(2026, 5, 15)
+
+    def test_payment_day_clamped_to_short_month(self):
+        """payment_day past the month length clamps to the last day."""
+        # Period begins 02-05; payment_day 31 -> 02-28 (2026 not a leap year).
+        assert monthly_due_date(date(2026, 2, 5), 31) == date(2026, 2, 28)
+
+    def test_rolls_into_next_year(self):
+        """A December period start rolls the due date into January."""
+        # Period begins 12-20; payment_day 1 -> 2027-01-01.
+        assert monthly_due_date(date(2026, 12, 20), 1) == date(2027, 1, 1)

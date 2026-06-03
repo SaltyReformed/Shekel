@@ -333,8 +333,10 @@ def test_anchor_trueup_resets_replay():
         p = 1798.65 - 1250.00   = 548.65
         balance = 250000.00 - 548.65 = 249,451.35
 
-    Pre-trueup payments (2026-02 and 2026-03) are filtered by the
-    "payment_date > anchor_date" guard and never enter the replay.
+    Pre-trueup payments (2026-02 and 2026-03) are filtered out by
+    replay_schedule's due-date boundary -- their monthly due dates
+    (payment_day=1, so 2026-02-01 and 2026-03-01) fall on or before the
+    2026-04-01 trueup anchor -- and never enter the replay.
     """
     params = FakeLoanParams(
         origination_date=date(2026, 1, 1),
@@ -370,6 +372,70 @@ def test_anchor_trueup_resets_replay():
     )
 
     assert state.current_balance == Decimal("249451.35")
+
+
+def test_payment_due_after_trueup_replays_though_pay_period_started_before():
+    """Regression: a payment keyed to a pay-period start before a mid-period
+    true-up still replays, because the boundary uses its real due date.
+
+    The production bug (mortgage account 3): a balance true-up entered
+    2026-05-22 ($177,829.83, the pre-payment statement balance) lands one
+    day after the biweekly pay period that begins 2026-05-21 and carries
+    the 2026-06-01 mortgage payment.  The PaymentRecord is keyed to the
+    pay-period START (05-21), so the old "payment_date > anchor_date"
+    boundary stranded it (05-21 is not after 05-22) -- the loan card froze
+    at the anchor and marking the payment paid never moved it.  Keyed to
+    its true monthly DUE date (payment_day=1 -> 06-01), it is correctly
+    after the anchor and replays.
+
+    Setup: $300k / 6% / 360mo, contractual P&I $1,798.65.  Two earlier
+    confirmed payments (keyed 03-26 -> due 04-01 and 04-23 -> due 05-01)
+    are already baked into the trued-up balance and stay excluded; only
+    the 06-01 payment replays:
+
+        anchor    = 177,829.83 (trueup, 2026-05-22)
+        i         = 177829.83 * 0.06/12 = 889.15 (889.14915 -> HALF_UP)
+        p         = 1798.65 - 889.15    = 909.50
+        balance   = 177829.83 - 909.50  = 176,920.33
+    """
+    params = FakeLoanParams(
+        origination_date=date(2020, 1, 1),
+        term_months=360,
+        original_principal=Decimal("300000.00"),
+        interest_rate=Decimal("0.06"),
+        payment_day=1,
+    )
+    origination_anchor = FakeAnchorEvent(
+        anchor_date=date(2020, 1, 1),
+        anchor_balance=Decimal("300000.00"),
+        created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    trueup_anchor = FakeAnchorEvent(
+        anchor_date=date(2026, 5, 22),
+        anchor_balance=Decimal("177829.83"),
+        created_at=datetime(2026, 5, 22, tzinfo=timezone.utc),
+    )
+    payments = [
+        # Already reflected in the trueup balance (due 04-01, 05-01).
+        PaymentRecord(date(2026, 3, 26), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 4, 23), Decimal("1798.65"), True),
+        # Keyed to its pay-period start 05-21; due 06-01, after the
+        # 05-22 trueup -- must replay.
+        PaymentRecord(date(2026, 5, 21), Decimal("1798.65"), True),
+    ]
+
+    state = resolve_loan(
+        params,
+        [origination_anchor, trueup_anchor],
+        payments,
+        None,
+        date(2026, 6, 2),
+    )
+
+    # The 06-01 payment reduced the balance; the card is NOT frozen at the
+    # anchor (the bug) and the two pre-trueup payments did not double-count.
+    assert state.current_balance == Decimal("176920.33")
+    assert state.current_balance != trueup_anchor.anchor_balance
 
 
 # -- C13-7 -- rate change after window applied ------------------------------

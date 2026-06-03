@@ -34,9 +34,13 @@ The resolver collapses both onto a single derivation:
 
 1. Pick the latest ``LoanAnchorEvent`` (Commit 12 guarantees every
    loan has at least one -- the origination event).
-2. Replay only ``is_confirmed`` payments whose ``payment_date`` is
-   strictly after the anchor date.  Projected (unconfirmed)
-   payments do not reduce the balance -- they are future
+2. Replay only ``is_confirmed`` payments whose true monthly due date
+   (``rate_period_engine.monthly_due_date`` of the pay-period-start the
+   payment is keyed to) is strictly after the anchor date.  Comparing
+   the due date rather than the pay-period start keeps a payment whose
+   biweekly pay period began on or before a mid-period balance true-up
+   but whose monthly payment is not due until after it.  Projected
+   (unconfirmed) payments do not reduce the balance -- they are future
    commitments, not historical fact.
 3. For an ARM whose anchor and as_of both fall inside
    ``[origination_date, origination_date + arm_first_adjustment_months)``
@@ -402,8 +406,9 @@ def resolve_loan(
     Algorithm (see module docstring for the full rationale):
 
     1. Pick the latest anchor by ``(anchor_date, created_at)`` DESC.
-    2. Filter ``payments`` to confirmed entries whose
-       ``payment_date`` is strictly after the anchor date.  Projected
+    2. Filter ``payments`` to confirmed entries; ``replay_schedule``
+       then keeps those whose true monthly due date is after the anchor
+       date and whose pay period has begun by ``as_of``.  Projected
        (unconfirmed) payments are NOT replayed -- they are future
        commitments, not historical fact.
     3. Generate the schedule via :func:`compute_payoff_scenarios`
@@ -437,8 +442,8 @@ def resolve_loan(
         payments: Prepared list of :class:`PaymentRecord` from
             :func:`loan_payment_service.prepare_payments_for_engine`
             (escrow subtracted, biweekly redistributed).  May be
-            ``None`` or empty.  Only confirmed entries with
-            ``payment_date > anchor_date`` are replayed.
+            ``None`` or empty.  Only confirmed entries whose true
+            monthly due date is after the anchor date are replayed.
         rate_changes: Optional list of :class:`RateChangeRecord`
             for ARM rate-history.  ``None`` or empty for fixed-rate
             loans and for ARMs still inside their first
@@ -458,14 +463,16 @@ def resolve_loan(
     anchor_balance = Decimal(str(anchor.anchor_balance))
     anchor_date = anchor.anchor_date
 
-    # Filter payments: confirmed and strictly after the anchor.
-    # An unconfirmed payment is a Projected transfer the user has
-    # not yet marked received/settled; it is a future commitment,
-    # not a historical fact, so it must not reduce the principal.
-    confirmed_after_anchor = [
-        payment
-        for payment in (payments or [])
-        if payment.is_confirmed and payment.payment_date > anchor_date
+    # Filter payments to confirmed only.  An unconfirmed payment is a
+    # Projected transfer the user has not yet marked received/settled; it
+    # is a future commitment, not a historical fact, so it must not reduce
+    # the principal.  The anchor boundary itself (and the as-of cap) is
+    # owned by replay_schedule, which classifies each payment by its true
+    # monthly due date: a pay-period start can fall up to ~2 weeks before
+    # the contractual due date, so filtering on it HERE would strand a
+    # payment whose pay period straddles a mid-period balance true-up.
+    confirmed = [
+        payment for payment in (payments or []) if payment.is_confirmed
     ]
 
     periods = _resolve_periods(loan_params, rate_changes)
@@ -481,16 +488,16 @@ def resolve_loan(
     # anchor handling is owned by the composer (it inspects
     # ``loan_params.is_arm`` and forwards the anchor to replay for ARM
     # only -- the same is_arm-gated passthrough the prior direct
-    # engine call implemented inline above).  Passing
-    # only ``confirmed_after_anchor`` keeps the resolver's confirmed-
-    # only contract intact: every entry feeds replay, none becomes a
-    # forward override.  Fixed-rate trueups remain a follow-up: see
-    # F-8 in
+    # engine call implemented inline above).  Passing only ``confirmed``
+    # keeps the resolver's confirmed-only contract intact: every entry
+    # feeds replay (which drops pre-anchor entries by due date), none
+    # becomes a forward override.  Fixed-rate trueups remain a follow-up:
+    # see F-8 in
     # ``docs/audits/financial_calculations/remediation_follow_up.md``.
     scenarios = compute_payoff_scenarios(
         loan_params=loan_params,
         anchor_events=anchor_events,
-        payments=confirmed_after_anchor,
+        payments=confirmed,
         rate_changes=rate_changes,
         extra_monthly=ZERO_MONEY,
         as_of=as_of,
@@ -509,7 +516,7 @@ def resolve_loan(
         periods=periods,
         anchor=BalanceAnchor(balance=anchor_balance, as_of_date=anchor_date),
         confirmed_payment_dates=[
-            payment.payment_date for payment in confirmed_after_anchor
+            payment.payment_date for payment in confirmed
         ],
         payment_day=loan_params.payment_day,
         as_of=as_of,
@@ -554,10 +561,16 @@ def _build_monthly_override(
       date.  These are the user's planned future outlays from
       recurring transfer templates; they belong on the forward side
       because they have not actually happened yet.
-    * Confirmed payments dated strictly after ``as_of``.  Rare data
-      hygiene case (a user marked a future payment as settled);
+    * Confirmed payments whose pay-period start is after ``as_of``.  Rare
+      data hygiene case (a user marked a future payment as settled);
       treated as a projection so the replay window stops cleanly at
       ``as_of`` and the forward slice picks the payment up.
+
+    The replay/projection split keys on the pay-period-start date, the
+    same date ``replay_schedule`` uses for its ``as_of`` cap, so the two
+    partitions are exact complements: a confirmed payment is in replay
+    XOR projection, never both and never neither.  (Only the anchor
+    boundary -- a different question -- uses the true monthly due date.)
 
     Payments with multiple entries in the same calendar month are
     summed so the override map is a "total planned outlay for this
@@ -569,8 +582,9 @@ def _build_monthly_override(
             Mixed confirmed/projected; the function filters
             internally.
         as_of: Cutoff date used to separate replay history from
-            forward projection.  Confirmed payments at or before
-            ``as_of`` are consumed by replay and excluded here.
+            forward projection.  Confirmed payments whose pay-period
+            start is at or before ``as_of`` are consumed by replay and
+            excluded here.
 
     Returns:
         A dict mapping ``(year, month) -> Decimal`` total payment.
@@ -578,10 +592,12 @@ def _build_monthly_override(
     """
     override: dict[tuple[int, int], Decimal] = {}
     for payment in payments:
-        # Confirmed payments at or before as_of belong to replay,
-        # not projection -- exclude them.  Everything else
-        # (projected payments + confirmed payments past as_of) is a
-        # forward-only concept.
+        # Confirmed payments whose pay period has begun by as_of belong to
+        # replay, not projection -- exclude them.  Everything else
+        # (projected payments + confirmed payments whose period has not
+        # begun) is a forward-only concept.  The pay-period-start test
+        # mirrors replay_schedule's as_of cap so the two are exact
+        # complements.
         if payment.is_confirmed and payment.payment_date <= as_of:
             continue
         key = (payment.payment_date.year, payment.payment_date.month)
