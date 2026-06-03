@@ -425,11 +425,16 @@ def get_full_edit(txn_id):
         )
 
     statuses = db.session.query(Status).all()
-    # Pay periods power the in-popover period-move selector.  Periods are
-    # per-user (no scenario dimension), so the owner's full list is the
-    # set a transaction may be reassigned to.  The PATCH handler re-checks
-    # ownership of the submitted pay_period_id (F-029).
-    periods = pay_period_service.get_all_periods(current_user.id)
+    # Pay periods power the in-popover period-move selector.  Only the
+    # current and future periods are offered -- moving an expense into an
+    # already-closed period is not a supported workflow -- but the row's
+    # own period is always included so a transaction that currently sits
+    # in a past period stays selected (and is not silently re-pointed at
+    # the first current period on save).  Periods are per-user; the PATCH
+    # handler re-checks ownership of the submitted id (F-029).
+    periods = pay_period_service.get_current_and_future_periods(
+        current_user.id, include_period_id=txn.pay_period_id,
+    )
     return render_template(
         "grid/_transaction_full_edit.html",
         txn=txn,

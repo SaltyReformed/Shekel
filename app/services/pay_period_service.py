@@ -9,6 +9,8 @@ payday).
 import logging
 from datetime import date, timedelta
 
+from sqlalchemy import or_
+
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.exceptions import ValidationError
@@ -152,6 +154,46 @@ def get_all_periods(user_id):
     return (
         db.session.query(PayPeriod)
         .filter_by(user_id=user_id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
+
+
+def get_current_and_future_periods(user_id, as_of=None, include_period_id=None):
+    """Return pay periods that have not yet ended, plus an optional extra.
+
+    "Current and future" means every period whose ``end_date`` is on or
+    after ``as_of`` (defaults to today): the period containing today and
+    every later one.  Periods that have already ended are excluded.
+
+    ``include_period_id`` forces one specific period into the result even
+    if it has already ended.  The transaction-move UI passes the moved
+    row's current ``pay_period_id`` so a row that currently sits in a
+    past period stays selectable -- and stays the selected option --
+    instead of the dropdown silently defaulting to the first current
+    period and re-pointing the row on save.
+
+    Args:
+        user_id: The user's ID.
+        as_of: Reference date for the "has ended" test (default: today).
+        include_period_id: Optional pay_period id to always include,
+            even when it has ended.
+
+    Returns:
+        List of PayPeriod objects ordered by period_index.
+    """
+    if as_of is None:
+        as_of = date.today()
+
+    not_ended = PayPeriod.end_date >= as_of
+    if include_period_id is not None:
+        clause = or_(not_ended, PayPeriod.id == include_period_id)
+    else:
+        clause = not_ended
+
+    return (
+        db.session.query(PayPeriod)
+        .filter(PayPeriod.user_id == user_id, clause)
         .order_by(PayPeriod.period_index)
         .all()
     )
