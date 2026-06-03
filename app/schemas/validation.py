@@ -996,6 +996,7 @@ class TransferCreateSchema(BaseSchema):
     name = fields.String(validate=validate.Length(max=200))
     category_id = fields.Integer(required=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+    due_date = fields.Date(allow_none=True)
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):
@@ -1022,6 +1023,7 @@ class TransferUpdateSchema(BaseSchema):
     name = fields.String(validate=validate.Length(max=200))
     category_id = fields.Integer(allow_none=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+    due_date = fields.Date(allow_none=True)
 
     # Optimistic-locking pin (commit C-18).
     version_id = fields.Integer(validate=validate.Range(min=1))

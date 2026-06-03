@@ -24,7 +24,7 @@ from app.services._recurrence_common import (
     log_resource_access_denied,
     log_template_cross_user_blocked,
 )
-from app.services.recurrence_engine import _match_periods
+from app.services.recurrence_engine import _compute_due_date, _match_periods
 from app.services import transfer_service
 from app.exceptions import RecurrenceConflict
 from app import ref_cache
@@ -108,9 +108,17 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             continue
 
         # Delegate to the transfer service so shadow transactions are
-        # created atomically alongside the transfer record.
-        # Transfer shadows use the paycheck date (period start) as
-        # due date since transfers typically happen on payday.
+        # created atomically alongside the transfer record.  The due
+        # date is computed from the recurrence rule via the same shared
+        # helper the transaction engine uses (recurrence_engine.
+        # _compute_due_date): a rule with a day_of_month (monthly,
+        # quarterly, and -- via routes/loan.py -- the mortgage payment,
+        # whose rule carries day_of_month=LoanParams.payment_day) yields
+        # that calendar day placed in the period's month, so the
+        # calendar/dashboard match the loan card's true monthly due
+        # date.  Rules without a day_of_month (every-paycheck, every-N)
+        # fall back to period.start_date inside the helper, preserving
+        # the payday-dated behaviour for those patterns.
         xfer = transfer_service.create_transfer(
             user_id=template.user_id,
             from_account_id=template.from_account_id,
@@ -122,7 +130,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             category_id=template.category_id,
             name=template.name,
             transfer_template_id=template.id,
-            due_date=period.start_date,
+            due_date=_compute_due_date(rule, period),
         )
         created.append(xfer)
 

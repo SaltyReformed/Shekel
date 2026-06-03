@@ -25,6 +25,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, loan_payment_service, transfer_recurrence
+from app.services.rate_period_engine import monthly_due_date
 from tests._test_helpers import insert_origination_event
 
 
@@ -194,3 +195,49 @@ def test_non_derived_transfer_has_no_live_override(
             scenario_id, shadows,
         )
         assert overrides == {}
+
+
+def test_derived_transfer_due_date_matches_loan_due_date(
+    app, db, seed_user, seed_periods,
+):
+    """A derive_from_loan transfer is due on the loan's true monthly due date.
+
+    The loan card derives its due dates from LoanParams.payment_day via
+    rate_period_engine.monthly_due_date.  The transfer recurrence now uses the
+    shared _compute_due_date, and the loan template's rule carries
+    day_of_month = payment_day (1), so the transfer's parent + both shadows
+    land on the 1st of each month -- matching the loan card -- rather than the
+    pay-period start (~2 weeks early) they used before.  Over seed_periods
+    (biweekly from 2026-01-02), day 1 falls in P2/P4/P6/P8, giving due dates
+    2026-02-01, 03-01, 04-01, 05-01.
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        created = transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        assert sorted(x.due_date for x in created) == [
+            date(2026, 2, 1),
+            date(2026, 3, 1),
+            date(2026, 4, 1),
+            date(2026, 5, 1),
+        ]
+        for xfer in created:
+            # Parent due date equals the loan's contractual monthly due date.
+            assert xfer.due_date == monthly_due_date(
+                xfer.pay_period.start_date, 1,
+            )
+            assert xfer.due_date.day == 1
+            # Both shadows mirror the parent (Transfer Invariant 3).
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.due_date == xfer.due_date

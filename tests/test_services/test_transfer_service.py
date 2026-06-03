@@ -1358,7 +1358,7 @@ class TestDueDateAndPaidAtShadows:
     """Tests for due_date and paid_at propagation to shadow transactions."""
 
     def test_shadow_due_date_propagation(self, app, db, transfer_data):
-        """create_transfer with due_date propagates to both shadows."""
+        """create_transfer with due_date sets the parent and both shadows."""
         from datetime import date
 
         with app.app_context():
@@ -1375,6 +1375,9 @@ class TestDueDateAndPaidAtShadows:
                 due_date=date(2026, 1, 15),
             )
             db.session.flush()
+
+            # Parent is canonical and carries the due date.
+            assert xfer.due_date == date(2026, 1, 15)
 
             shadows = (
                 db.session.query(Transaction)
@@ -1402,6 +1405,8 @@ class TestDueDateAndPaidAtShadows:
             )
             db.session.flush()
 
+            assert xfer.due_date is None
+
             shadows = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id)
@@ -1412,7 +1417,7 @@ class TestDueDateAndPaidAtShadows:
                 assert s.due_date is None
 
     def test_shadow_due_date_update(self, app, db, transfer_data):
-        """update_transfer with due_date propagates to both shadows."""
+        """update_transfer with due_date sets the parent and both shadows."""
         from datetime import date
 
         with app.app_context():
@@ -1423,6 +1428,9 @@ class TestDueDateAndPaidAtShadows:
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, due_date=date(2026, 2, 1)
             )
+
+            # Parent mirrors the new due date alongside the shadows.
+            assert xfer.due_date == date(2026, 2, 1)
 
             shadows = (
                 db.session.query(Transaction)
