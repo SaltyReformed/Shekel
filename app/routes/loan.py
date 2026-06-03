@@ -53,6 +53,7 @@ from app.services.loan_payment_service import (
     load_loan_context,
 )
 from app.services.loan_resolver import LoanState
+from app.services.rate_period_engine import payment_number
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.db_errors import is_unique_violation
 from app.utils.log_events import BUSINESS, EVT_LOAN_RECURRENCE_END_DATE_UPDATED, log_event
@@ -756,6 +757,17 @@ def dashboard(account_id):
         * Decimal("100")
         for row in amortization_schedule
     ] if show_rate_column else None
+    # Continuous payment number from origination for the "#" column, so a
+    # mid-life loan's schedule reflects total payments made (e.g. 90) and
+    # the projected slice keeps counting up instead of restarting at 1.
+    # The replay already stamps this on confirmed rows' ``month``; the
+    # projected rows carry ``project_forward``'s local 1..N count, so this
+    # parallel list renumbers the whole schedule on one scale.  Parallel to
+    # ``amortization_schedule``; consumed via ``loop.index0``.
+    schedule_row_numbers = [
+        payment_number(params.origination_date, row.payment_date)
+        for row in amortization_schedule
+    ]
 
     return render_template(
         "loan/dashboard.html",
@@ -782,6 +794,7 @@ def dashboard(account_id):
         amortization_schedule=amortization_schedule,
         schedule_row_totals=schedule_row_totals,
         schedule_row_rates_pct=schedule_row_rates_pct,
+        schedule_row_numbers=schedule_row_numbers,
         show_rate_column=show_rate_column,
         schedule_totals=schedule_totals,
         # E-18 / Commit 16: pass today's ISO date as a string so the

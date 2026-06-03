@@ -17,6 +17,7 @@ from app.services.rate_period_engine import (
     LoanTerms,
     build_rate_periods,
     monthly_due_date,
+    payment_number,
     period_for_date,
     replay_schedule,
 )
@@ -421,9 +422,10 @@ class TestReplaySchedule:
           principal = 1798.65 - 1500.00 = 298.65
           balance   = 300000.00 - 298.65 = 299701.35
 
-        The replayed row's date stays the pay-period start (05-21): the
-        due date governs eligibility, the pay-period start governs the
-        step, preserving forward-projection alignment.
+        The replayed row is dated by the true monthly due date (06-01),
+        not the pay-period start (05-21): the rate/balance math is selected
+        by the pay-period start (so the balance is unchanged) while the row
+        carries the real statement date for the schedule display.
         """
         periods = _fixed_loan_periods()
         result = replay_schedule(
@@ -437,8 +439,9 @@ class TestReplaySchedule:
         )
         assert len(result.rows) == 1
         assert result.balance_as_of == Decimal("299701.35")
-        # Eligibility used the due date; the step used the pay-period start.
-        assert result.rows[0].payment_date == date(2026, 5, 21)
+        # The row is dated by the true monthly due date (06-01), not the
+        # pay-period start (05-21) it was keyed to.
+        assert result.rows[0].payment_date == date(2026, 6, 1)
 
     def test_prepaid_payment_replayed_when_period_started(self):
         """The as-of cap is the pay-period START, not the due date (asymmetry).
@@ -488,6 +491,26 @@ class TestReplaySchedule:
         )
         assert result.rows == []
         assert result.balance_as_of == Decimal("300000.00")
+
+
+class TestPaymentNumber:
+    """payment_number: continuous payment count from origination."""
+
+    def test_first_payment_is_one(self):
+        """The first contractual payment (one month after origination) is #1."""
+        assert payment_number(date(2018, 12, 1), date(2019, 1, 1)) == 1
+
+    def test_counts_whole_months_from_origination(self):
+        """A payment N whole months after origination is payment N."""
+        # 2018-12 origination -> 2026-06 is 90 months later (mortgage
+        # account 3 in its 90th month / ~7.5 years).
+        assert payment_number(date(2018, 12, 1), date(2026, 6, 1)) == 90
+        # The following month continues the count, not restarting.
+        assert payment_number(date(2018, 12, 1), date(2026, 7, 1)) == 91
+
+    def test_origination_month_is_zero(self):
+        """A payment in the origination month itself is payment 0 (day ignored)."""
+        assert payment_number(date(2024, 1, 1), date(2024, 1, 15)) == 0
 
 
 class TestMonthlyDueDate:

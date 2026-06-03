@@ -1110,6 +1110,56 @@ class TestComputePayoffScenarios:
         assert scenarios.committed_forward[0].payment_date == expected_first
         assert scenarios.accelerated_forward[0].payment_date == expected_first
 
+    def test_schedule_rows_dated_by_monthly_due_date(self):
+        """Schedule rows show the true monthly due date, not the pay-period start.
+
+        Regression for the user-reported display bug (mortgage account 3):
+        a confirmed payment keyed to its biweekly pay-period START
+        (2026-05-21) was printed on the schedule as "May 21" and the
+        projection then began one month early (the next Projected row read
+        "Jun 1" when the borrower's next payment is Jul 1).  The schedule
+        now dates each row by the true monthly DUE date: the confirmed
+        payment shows Jun 1 (its real statement date) and the first
+        projected row shows Jul 1 (the following month).
+
+        A user_trueup anchor on 2026-05-22 makes only the 2026-05-21 pay
+        period (due 2026-06-01) post-anchor; the 2026-06-18 pay period
+        (due 2026-07-01) is a Projected forward payment.  Both pay-period
+        starts precede their monthly due dates, so the old pay-period-start
+        dating mislabeled both rows.
+        """
+        params = _fixed_rate_300k_params()
+        anchors = [
+            _origination_anchor(params),
+            FakeAnchorEvent(
+                anchor_date=date(2026, 5, 22),
+                anchor_balance=Decimal("200000.00"),
+                created_at=datetime(2026, 5, 22, tzinfo=timezone.utc),
+            ),
+        ]
+        payments = [
+            # Confirmed, keyed to its pay-period start 2026-05-21; due 06-01.
+            PaymentRecord(date(2026, 5, 21), Decimal("1798.65"), True),
+            # Projected, keyed to pay-period start 2026-06-18; due 07-01.
+            PaymentRecord(date(2026, 6, 18), Decimal("1798.65"), False),
+        ]
+        scenarios = compute_payoff_scenarios(
+            loan_params=params,
+            anchor_events=anchors,
+            payments=payments,
+            rate_changes=None,
+            extra_monthly=Decimal("0.00"),
+            as_of=date(2026, 6, 2),
+        )
+        # Confirmed history row carries the true due date (06-01), not the
+        # pay-period start (05-21) it was keyed to.
+        assert len(scenarios.history_rows) == 1
+        assert scenarios.history_rows[0].is_confirmed is True
+        assert scenarios.history_rows[0].payment_date == date(2026, 6, 1)
+        # The projection picks up the FOLLOWING month (07-01), not 06-01.
+        assert scenarios.committed_forward[0].is_confirmed is False
+        assert scenarios.committed_forward[0].payment_date == date(2026, 7, 1)
+
     def test_history_byte_identical_across_scenarios(self):
         """C3-4: history_rows prefix is shared (same list reference).
 

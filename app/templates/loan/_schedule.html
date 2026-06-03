@@ -50,7 +50,7 @@
           {% set ns.prev_year = row.payment_date.year %}
           {% endif %}
           <tr class="{% if row.is_confirmed %}table-success{% endif %}">
-            <td>{{ row.month }}</td>
+            <td>{{ schedule_row_numbers[loop.index0] }}</td>
             <td>{{ row.payment_date.strftime('%b %-d, %Y') }}</td>
             <td class="text-end font-mono">${{ "{:,.2f}".format(schedule_row_totals[loop.index0]) }}</td>
             <td class="text-end font-mono">${{ "{:,.2f}".format(row.principal) }}</td>

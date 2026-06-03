@@ -185,6 +185,31 @@ def _months_between(start: date, end: date) -> int:
     return (end.year - start.year) * 12 + (end.month - start.month)
 
 
+def payment_number(origination_date: date, payment_date: date) -> int:
+    """Return the scheduled-payment number (from origination) for a payment date.
+
+    Payment N falls N whole calendar months after origination -- the first
+    contractual payment, one month after origination, is payment 1.  Used
+    to number the amortization schedule CONTINUOUSLY from origination so a
+    mid-life loan's rows reflect total payments made (e.g. payment 90 for a
+    loan in its 90th month) rather than the projected slice restarting at 1.
+
+    This is the same figure the replay already stamps on each confirmed
+    row's ``month``; exposing it lets the dashboard renumber the projected
+    rows on the same scale.
+
+    Args:
+        origination_date: The loan's origination date.
+        payment_date: The payment's date (true monthly due date).
+
+    Returns:
+        The 1-based payment number.  A payment dated in the origination
+        month itself returns 0; callers display contractual schedules
+        whose first row is one month after origination (payment 1).
+    """
+    return _months_between(origination_date, payment_date)
+
+
 def _add_months(start: date, months: int) -> date:
     """Return ``start`` advanced by ``months`` calendar months, day-clamped.
 
@@ -568,8 +593,8 @@ def replay_schedule(
     """Replay confirmed payments forward from the anchor along the schedule.
 
     Advances one scheduled step per confirmed payment that clears two
-    boundaries, in pay-period-start order (see :func:`_replay_payment_row`
-    for the per-step math):
+    eligibility boundaries, in due-date order (see
+    :func:`_replay_payment_row` for the per-step math):
 
     * its true monthly due date (see :func:`monthly_due_date`) is strictly
       after ``anchor.as_of_date`` -- the payment came due after the
@@ -582,14 +607,21 @@ def replay_schedule(
     of the confirmed payments matter, so a payment that bundled escrow
     cannot over-reduce principal.
 
-    The anchor boundary uses the due date while the as_of cap uses the
-    pay-period start, and the replay STEP walks the pay-period-start date
-    each entry is keyed to, so the schedule rows and the forward
-    projection stay aligned in their shared (pay-period-keyed) date space.
-    Using the due date for the anchor boundary is what lets a true-up
-    dated mid-pay-period (one day after a period's biweekly start but
-    before that period's monthly payment is due) still replay that
-    payment.
+    Three dates with distinct jobs:
+
+    * The RATE (and therefore the interest/principal split and the running
+      balance) is selected by the pay-period start, so this function's
+      ``balance_as_of`` is independent of the dating choices below.
+    * Each replayed ROW is dated by the true monthly due date, so the
+      schedule shows real statement dates and ``next_pay_date`` advances to
+      the correct following month (a pay-period-start dating would print
+      the biweekly date and land the projection one month early).
+    * The as_of cap uses the pay-period start (the replay-vs-projection
+      split), matching :func:`_build_monthly_override`.
+
+    Using the due date for the anchor boundary is what lets a true-up dated
+    mid-pay-period (one day after a period's biweekly start but before that
+    period's monthly payment is due) still replay that payment.
 
     Args:
         periods: Non-empty list from :func:`build_rate_periods`.
@@ -603,7 +635,7 @@ def replay_schedule(
             after ``anchor.as_of_date`` and the pay-period start is at or
             before ``as_of``.
         payment_day: Day of month payments are due.  Drives the due-date
-            classification and ``next_pay_date``.
+            classification, the replayed row dates, and ``next_pay_date``.
         as_of: Evaluation date; payments whose pay period has not begun by
             it are not replayed.
 
@@ -619,7 +651,7 @@ def replay_schedule(
         raise ValueError("replay_schedule requires a non-empty period list.")
 
     origination_date = periods[0].start_date
-    # Two different dates govern the two boundaries:
+    # Two different dates govern the two eligibility boundaries:
     #   * Anchor (lower) boundary -- the true monthly DUE date.  A payment
     #     due after the anchor but whose biweekly pay period started on or
     #     before it must still be replayed; comparing the pay-period start
@@ -629,9 +661,6 @@ def replay_schedule(
     #     has begun is historical, even if pre-paid a few days before its
     #     due date.  ``_build_monthly_override`` uses the same pay-period
     #     start so the two partitions stay exact complements.
-    # The yielded value (and the replay step below) stays the pay-period
-    # start, preserving alignment with the forward projection's
-    # pay-period-keyed overrides.
     eligible = sorted(
         d for d in confirmed_payment_dates
         if anchor.as_of_date < monthly_due_date(d, payment_day)
@@ -640,11 +669,18 @@ def replay_schedule(
 
     balance = Decimal(str(anchor.balance))
     rows: list[AmortizationRow] = []
-    for pay_date in eligible:
+    for period_start in eligible:
         if balance <= 0:
             break
-        period = period_for_date(periods, pay_date)
-        row = _replay_payment_row(balance, period, pay_date, origination_date)
+        # Rate (and therefore the interest/principal split and the running
+        # balance) is selected by the pay-period start, so the replayed
+        # balance is unchanged by this dating.  The ROW is dated by the
+        # true monthly due date, so the schedule shows the real statement
+        # date and ``next_pay_date`` advances to the correct following
+        # month rather than landing one month early.
+        period = period_for_date(periods, period_start)
+        due_date = monthly_due_date(period_start, payment_day)
+        row = _replay_payment_row(balance, period, due_date, origination_date)
         balance = row.remaining_balance
         rows.append(row)
 

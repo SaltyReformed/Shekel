@@ -695,9 +695,13 @@ class TestPreparePaymentsForEngine:
         assert result[0].amount == Decimal("1500.00")
 
     def test_biweekly_redistribution(self):
-        """C1-5: Two payments in the same month are redistributed.
+        """C1-5: Two payments due the same month are spread to consecutive months.
 
-        Two payments in January -> second shifts to February.
+        With payment_day=1, pay periods starting 2026-01-02 and
+        2026-01-16 both fall before 2026-02-01, so both have a true
+        monthly DUE date of 2026-02-01 (the schedule keys rows by due
+        date).  The first keeps its slot (due Feb 1); the second is
+        redistributed to the next free due month, 2026-03-01.
         """
         payments = [
             PaymentRecord(date(2026, 1, 2), Decimal("1517.00"), True),
@@ -711,11 +715,10 @@ class TestPreparePaymentsForEngine:
         )
 
         assert len(result) == 2
-        # First stays in January.
-        assert result[0].payment_date.month == 1
-        # Second is redistributed to February.
-        assert result[1].payment_date.month == 2
-        assert result[1].payment_date.day == 1
+        # First keeps its original pay-period-start date (due Feb 1).
+        assert result[0].payment_date == date(2026, 1, 2)
+        # Second is redistributed to the next free due month (Mar 1).
+        assert result[1].payment_date == date(2026, 3, 1)
 
     def test_empty_payments_passthrough(self):
         """Empty payment list returns unchanged."""
@@ -758,7 +761,14 @@ class TestPreparePaymentsForEngine:
         assert result[1].is_confirmed is False
 
     def test_december_to_january_rollover(self):
-        """Two payments in December: second rolls to January next year."""
+        """Two payments both due Jan 1 2027 (year rollover): second to Feb 2027.
+
+        With payment_day=1, pay periods starting 2026-12-05 and
+        2026-12-19 both fall before 2027-01-01, so both have a true
+        monthly due date of 2027-01-01 (the due date crosses the year
+        boundary).  The second is redistributed to the next free due
+        month, 2027-02-01.
+        """
         payments = [
             PaymentRecord(date(2026, 12, 5), Decimal("1517.00"), True),
             PaymentRecord(date(2026, 12, 19), Decimal("1517.00"), True),
@@ -772,4 +782,4 @@ class TestPreparePaymentsForEngine:
 
         assert len(result) == 2
         assert result[0].payment_date == date(2026, 12, 5)
-        assert result[1].payment_date == date(2027, 1, 1)
+        assert result[1].payment_date == date(2027, 2, 1)
