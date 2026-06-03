@@ -38,6 +38,7 @@ from app.schemas.validation import (
 from app.services import transfer_recurrence, transfer_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
+from app.services.recurrence_engine import _compute_due_date
 from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
 from app.utils.balance_predicates import is_projected_clause
@@ -244,6 +245,12 @@ def create_transfer_template():
                     category_id=template.category_id,
                     name=template.name,
                     transfer_template_id=template.id,
+                    # Compute the due date from the rule via the same
+                    # shared helper the recurrence engine uses.  A ONCE
+                    # rule carries no day_of_month, so this resolves to
+                    # period.start_date -- an improvement on the prior
+                    # NULL and consistent with every other transfer path.
+                    due_date=_compute_due_date(rule, period),
                 )
             except (NotFoundError, ShekelValidationError) as exc:
                 db.session.rollback()
@@ -955,6 +962,7 @@ def create_ad_hoc():
             category_id=data["category_id"],
             name=data.get("name"),
             notes=data.get("notes"),
+            due_date=data.get("due_date"),
         )
     except NotFoundError:
         return "Not found", 404

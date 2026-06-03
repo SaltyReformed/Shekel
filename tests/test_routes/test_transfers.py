@@ -5,6 +5,7 @@ Tests for transfer template CRUD, grid cell endpoints, transfer instance
 operations, and ad-hoc transfer creation (§2.3 of the test plan).
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
@@ -545,6 +546,31 @@ class TestGridCells:
             assert b"Monthly Savings" in response.data
             assert b'name="amount"' in response.data
 
+    def test_full_edit_renders_due_date_input_for_transfer_shadow(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """GET /transactions/<shadow>/full-edit renders an editable due_date field.
+
+        The transfer here has no due date, yet the input renders (empty) so the
+        user can add one; get_full_edit detects the shadow and returns the
+        transfer edit form, which posts to the transfer update route and
+        mirrors the value to both shadows.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .first()
+            )
+
+            response = auth_client.get(f"/transactions/{shadow.id}/full-edit")
+
+            assert response.status_code == 200
+            assert b'name="due_date"' in response.data
+            assert b'type="date"' in response.data
+
     def test_get_cell_other_users_transfer(self, app, auth_client, seed_user):
         """GET /transfers/cell/<id> for another user's transfer returns 404.
 
@@ -583,6 +609,57 @@ class TestTransferInstance:
 
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("250.00")
+
+    def test_update_transfer_due_date(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH /transfers/instance/<id> with due_date updates parent and shadows."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"due_date": "2026-04-22"},
+            )
+
+            assert response.status_code == 200
+            db.session.refresh(xfer)
+            assert xfer.due_date == date(2026, 4, 22)
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            assert all(s.due_date == date(2026, 4, 22) for s in shadows)
+
+    def test_update_transfer_blank_due_date_does_not_clobber(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A blank due_date on the edit form leaves an existing due date intact.
+
+        The empty-string due_date is stripped by TransferUpdateSchema's
+        strip_empty_strings pre_load, so saving another field with an
+        untouched (empty) date input cannot null out the stored due date.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, due_date=date(2026, 5, 1),
+            )
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"amount": "300.00", "due_date": ""},
+            )
+
+            assert response.status_code == 200
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("300.00")
+            assert xfer.due_date == date(2026, 5, 1)
 
     def test_mark_done(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/instance/<id>/mark-done sets status to done."""
@@ -726,6 +803,39 @@ class TestAdHoc:
 
             assert response.status_code == 201
             assert response.headers.get("HX-Trigger") == "balanceChanged"
+
+    def test_create_ad_hoc_transfer_with_due_date(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """POST /transfers/ad-hoc with due_date sets it on the parent and both shadows."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+
+            response = auth_client.post("/transfers/ad-hoc", data={
+                "pay_period_id": seed_periods_today[0].id,
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "amount": "50.00",
+                "scenario_id": seed_user["scenario"].id,
+                "name": "Dated Transfer",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "due_date": "2026-03-15",
+            })
+
+            assert response.status_code == 201
+            xfer = (
+                db.session.query(Transfer)
+                .filter_by(name="Dated Transfer")
+                .one()
+            )
+            assert xfer.due_date == date(2026, 3, 15)
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            assert all(s.due_date == date(2026, 3, 15) for s in shadows)
 
     def test_create_ad_hoc_validation_error(self, app, auth_client, seed_user):
         """POST /transfers/ad-hoc with missing fields returns 400."""

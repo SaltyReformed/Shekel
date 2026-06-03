@@ -145,6 +145,17 @@ class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
     notes = db.Column(db.Text)
+    # Calendar date the transfer is due.  Nullable, matching
+    # ``Transaction.due_date`` (ad-hoc transfers may omit it; recurrence
+    # places it from the rule's ``day_of_month``).  The parent is the
+    # canonical value: the transfer service mirrors it to both shadow
+    # transactions so the two stay equal (Transfer Invariant 3), and the
+    # balance/loan engines never read it (they query only shadows and
+    # derive loan dates from ``LoanParams.payment_day``).  Consumers of a
+    # due date (calendar, dashboard, year-end, spending-trend) read the
+    # shadow ``Transaction.due_date``; this column exists so the parent is
+    # a complete record and so edits/display have one source of truth.
+    due_date = db.Column(db.Date, nullable=True)
     # Optimistic-locking version counter.  See class docstring and
     # commit C-18.  NOT NULL with server_default="1" so existing
     # production rows are filled at ALTER TABLE time and new rows

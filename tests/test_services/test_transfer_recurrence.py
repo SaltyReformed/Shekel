@@ -48,6 +48,8 @@ def _assert_shadows_valid(xfer):
         assert s.estimated_amount == xfer.amount
         assert s.status_id == xfer.status_id
         assert s.pay_period_id == xfer.pay_period_id
+        # due_date mirrors the parent (Transfer Invariant 3).
+        assert s.due_date == xfer.due_date
 
     expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
     income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
@@ -120,6 +122,46 @@ class TestTransferGeneration:
             for xfer in created:
                 assert xfer.amount == Decimal("100.00")
                 assert xfer.name == "Test Transfer"
+                # Every-period has no day_of_month, so the due date falls
+                # back to the pay-period start (payday) -- the prior
+                # behaviour is preserved for day-less patterns.
+                assert xfer.due_date == xfer.pay_period.start_date
+                _assert_shadows_valid(xfer)
+
+    def test_monthly_due_date_placed_on_day_of_month(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Monthly transfers are due on the rule's day_of_month, not payday.
+
+        seed_periods is 10 biweekly periods from 2026-01-02, each spanning
+        [start, start+13].  A Monthly rule with day_of_month=15 matches the
+        period containing the 15th of each month:
+            P0 [01-02..01-15] -> 2026-01-15
+            P3 [02-13..02-26] -> 2026-02-15
+            P5 [03-13..03-26] -> 2026-03-15
+            P7 [04-10..04-23] -> 2026-04-15
+            P9 [05-08..05-21] -> 2026-05-15
+        so the shadows land on the true monthly due date (matching a loan
+        card's monthly_due_date) instead of the pay-period start.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=15,
+            )
+            created = transfer_recurrence.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+
+            assert sorted(x.due_date for x in created) == [
+                date(2026, 1, 15),
+                date(2026, 2, 15),
+                date(2026, 3, 15),
+                date(2026, 4, 15),
+                date(2026, 5, 15),
+            ]
+            for xfer in created:
+                assert xfer.due_date.day == 15
+                # Parent and both shadows carry the same due date.
                 _assert_shadows_valid(xfer)
 
     def test_no_rule_returns_empty(self, app, db, seed_user, seed_periods):
@@ -300,6 +342,44 @@ class TestTransferRegeneration:
                     transfer_id=old_id
                 ).count()
                 assert orphans == 0
+
+    def test_regenerate_produces_computed_due_dates(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Regenerated monthly transfers carry the computed day_of_month due date.
+
+        Regeneration delegates to generate_for_template, so the recomputed
+        rows pick up the same day_of_month placement as initial generation
+        (here the 15th of each month -- see
+        test_monthly_due_date_placed_on_day_of_month for the period math).
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=15,
+            )
+            transfer_recurrence.generate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            template.default_amount = Decimal("200.00")
+            db.session.flush()
+
+            new_created = transfer_recurrence.regenerate_for_template(
+                template, seed_periods, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert sorted(x.due_date for x in new_created) == [
+                date(2026, 1, 15),
+                date(2026, 2, 15),
+                date(2026, 3, 15),
+                date(2026, 4, 15),
+                date(2026, 5, 15),
+            ]
+            for xfer in new_created:
+                assert xfer.amount == Decimal("200.00")
+                _assert_shadows_valid(xfer)
 
     def test_regenerate_raises_conflict_for_overridden(
         self, app, db, seed_user, seed_periods

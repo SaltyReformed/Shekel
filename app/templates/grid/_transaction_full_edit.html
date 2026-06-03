@@ -62,15 +62,16 @@
              placeholder="Notes">
     </div>
 
-    {# Due Date #}
-    {% if txn.due_date is not none %}
+    {# Due Date -- always rendered (empty when unset) so a user can add a
+       due date to a transaction or transfer that lacks one.  An untouched
+       empty field submits "" which TransactionUpdateSchema.strip_empty_strings
+       drops, so saving another field cannot clobber an existing due date. #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Due Date</label>
       <input type="date" name="due_date"
-             value="{{ txn.due_date.isoformat() }}"
+             value="{{ txn.due_date.isoformat() if txn.due_date is not none else '' }}"
              class="form-control form-control-sm">
     </div>
-    {% endif %}
 
     {# Save / Cancel buttons -- wrapped in .popover-action-footer so the
        primary form-submit actions stay pinned above the iOS on-screen

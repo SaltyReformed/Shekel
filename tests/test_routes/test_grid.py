@@ -538,6 +538,51 @@ class TestTransactionCRUD:
             assert txn.pay_period_id == seed_periods_today[2].id
             assert txn.category_id == seed_user["categories"]["Car Payment"].id
 
+    def test_full_edit_due_date_input_renders_and_persists_when_unset(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A transaction with no due date renders an editable due_date input,
+        and saving a date through the full-edit form persists it.
+
+        Guards the un-gated due_date field in grid/_transaction_full_edit.html:
+        before, the input was hidden whenever due_date was NULL, so a user
+        could never add one.  The non-transfer update path applies due_date via
+        its generic setattr loop, so the saved value sticks.
+        """
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            auth_client.post("/transactions", data={
+                "name": "No Due Date Yet",
+                "estimated_amount": "75.00",
+                "pay_period_id": seed_periods_today[0].id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "transaction_type_id": expense_type.id,
+                "status_id": projected.id,
+                "account_id": str(seed_user["account"].id),
+            })
+            txn = db.session.query(Transaction).filter_by(
+                name="No Due Date Yet"
+            ).one()
+            assert txn.due_date is None
+
+            # The input renders even though due_date is NULL.
+            edit_resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert edit_resp.status_code == 200
+            assert b'name="due_date"' in edit_resp.data
+
+            # Saving a date persists it on this non-transfer transaction.
+            save_resp = auth_client.patch(f"/transactions/{txn.id}", data={
+                "due_date": "2026-02-20",
+                "version_id": txn.version_id,
+            })
+            assert save_resp.status_code == 200
+            db.session.refresh(txn)
+            assert txn.due_date == date(2026, 2, 20)
+
     def test_create_inline_no_scenario(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transactions/new/quick with no baseline scenario returns 400.
 

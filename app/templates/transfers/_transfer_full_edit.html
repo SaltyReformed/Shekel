@@ -75,6 +75,18 @@
              placeholder="Notes">
     </div>
 
+    {# Due Date -- empty when unset, so a user can add one to a transfer that
+       lacks it.  An untouched empty field submits "" which
+       TransferUpdateSchema.strip_empty_strings drops, so saving another field
+       cannot clobber an existing due date.  The service mirrors the value to
+       both shadow transactions. #}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Due Date</label>
+      <input type="date" name="due_date"
+             value="{{ xfer.due_date.isoformat() if xfer.due_date is not none else '' }}"
+             class="form-control form-control-sm">
+    </div>
+
     {# Save / Cancel buttons #}
     <div class="d-flex gap-1 mb-2">
       <button type="submit" class="btn btn-sm btn-primary flex-grow-1">

@@ -316,8 +316,9 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
                               transfer template (for recurrence).
         name:                 Optional name.  If omitted, generated
                               from account names.
-        due_date:             Optional due date for both shadow
-                              transactions (Date or None).
+        due_date:             Optional due date stored on the transfer
+                              and mirrored to both shadow transactions
+                              (Date or None).
 
     Returns:
         The created Transfer object (shadows accessible via
@@ -370,6 +371,7 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
         amount=amount,
         category_id=category_id,
         notes=notes,
+        due_date=due_date,
         is_override=False,
         is_deleted=False,
     )
@@ -456,7 +458,8 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         actual_amount  -- Actual settled amount (both shadows only;
                           the Transfer model has no actual_amount
                           column).
-        due_date       -- Due date for both shadows (Date or None).
+        due_date       -- Due date for the transfer and both shadows
+                          (Date or None).
         paid_at        -- Payment timestamp for both shadows
                           (DateTime or None).
         is_override    -- Override flag (transfer and both shadows).
@@ -580,8 +583,11 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         income_shadow.actual_amount = actual
 
     # ── due_date ──────────────────────────────────────────────────
+    # The parent transfer is canonical; mirror to both shadows so the
+    # three rows stay equal (Transfer Invariant 3).
     if "due_date" in kwargs:
         new_due = kwargs["due_date"]
+        xfer.due_date = new_due
         expense_shadow.due_date = new_due
         income_shadow.due_date = new_due
 
