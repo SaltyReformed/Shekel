@@ -53,6 +53,25 @@
       </select>
     </div>
 
+    {# Pay period selector -- move this transaction to a different period.
+       The PATCH handler re-verifies ownership of the submitted id (F-029)
+       and flags template-generated rows as overrides when the period
+       changes so the recurrence engine does not regenerate over the
+       moved row.  Not rendered for transfer shadows: those edit through
+       transfers/_transfer_full_edit.html instead. #}
+    {% if periods %}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Pay Period</label>
+      <select name="pay_period_id" class="form-select form-select-sm">
+        {% for p in periods %}
+        <option value="{{ p.id }}" {{ 'selected' if txn.pay_period_id == p.id else '' }}>
+          {{ p.label }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+
     {# Notes #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Notes</label>

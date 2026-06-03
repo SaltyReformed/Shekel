@@ -422,7 +422,17 @@ def get_full_edit(txn_id):
         )
 
     statuses = db.session.query(Status).all()
-    return render_template("grid/_transaction_full_edit.html", txn=txn, statuses=statuses)
+    # Pay periods power the in-popover period-move selector.  Periods are
+    # per-user (no scenario dimension), so the owner's full list is the
+    # set a transaction may be reassigned to.  The PATCH handler re-checks
+    # ownership of the submitted pay_period_id (F-029).
+    periods = pay_period_service.get_all_periods(current_user.id)
+    return render_template(
+        "grid/_transaction_full_edit.html",
+        txn=txn,
+        statuses=statuses,
+        periods=periods,
+    )
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
@@ -583,6 +593,18 @@ def update_transaction(txn_id):
         if new_status and not new_status.is_settled and txn.paid_at is not None:
             revert_paid_at = True
 
+    # Detect a period move before the setattr loop mutates the row.  A
+    # move relocates the row to a different period in the grid, which an
+    # in-place cell swap (hx-target="#txn-cell-<id>") cannot express --
+    # the cell would re-render in its old position.  When the period
+    # actually changes the response triggers a full grid refresh (see
+    # the ``HX-Trigger`` selection at the end of the handler), matching
+    # the ``gridRefresh`` pattern carry-forward uses for cross-period
+    # moves.
+    period_changed = (
+        "pay_period_id" in data and data["pay_period_id"] != txn.pay_period_id
+    )
+
     # Apply updates (regular transactions only).
     for field, value in data.items():
         setattr(txn, field, value)
@@ -607,9 +629,14 @@ def update_transaction(txn_id):
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
 
-    # Return the updated cell with a trigger to refresh balances.
+    # A period move needs a full grid refresh so the row appears under
+    # its new period; an in-place edit only needs the balance rows
+    # recomputed.  ``gridRefresh`` reloads the page (app.js); the
+    # returned cell still swaps first, which is harmless before reload.
     response = _render_cell(txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return response, 200, {
+        "HX-Trigger": "gridRefresh" if period_changed else "balanceChanged",
+    }
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-done", methods=["POST"])
