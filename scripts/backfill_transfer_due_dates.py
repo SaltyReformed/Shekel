@@ -1,8 +1,15 @@
 """
 Shekel Budget App -- Backfill Transfer Due Dates
 
-One-time data migration script that aligns existing recurring transfers with
-the unified due-date computation introduced alongside ``budget.transfers.due_date``.
+Aligns existing recurring transfers with the unified due-date computation
+introduced alongside ``budget.transfers.due_date``.
+
+NOTE: the production deploy already performs this backfill automatically --
+migration ``48e2c7ee593d`` recomputes eligible transfers as part of
+``flask db upgrade``.  This script is the manual re-run / dry-run / diagnostic
+equivalent: it is idempotent and a no-op once the migration has run, useful for
+verifying state or re-applying after data edits made outside the recurrence
+engine.
 
 Background
 ----------
