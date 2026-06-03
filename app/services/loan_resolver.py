@@ -86,6 +86,7 @@ from app.services.rate_period_engine import (
     BalanceAnchor,
     LoanTerms,
     build_rate_periods,
+    monthly_due_date,
     period_for_date,
     replay_schedule,
 )
@@ -551,6 +552,7 @@ def resolve_loan(
 def _build_monthly_override(
     payments: list[PaymentRecord],
     as_of: date,
+    payment_day: int,
 ) -> dict[tuple[int, int], Decimal]:
     """Group projection-eligible payments into a (year, month) sum.
 
@@ -566,11 +568,18 @@ def _build_monthly_override(
       treated as a projection so the replay window stops cleanly at
       ``as_of`` and the forward slice picks the payment up.
 
-    The replay/projection split keys on the pay-period-start date, the
-    same date ``replay_schedule`` uses for its ``as_of`` cap, so the two
-    partitions are exact complements: a confirmed payment is in replay
-    XOR projection, never both and never neither.  (Only the anchor
-    boundary -- a different question -- uses the true monthly due date.)
+    Two dates with distinct jobs (the same split ``replay_schedule`` makes):
+
+    * The replay/projection CUT keys on the pay-period-start date, the same
+      date ``replay_schedule`` uses for its ``as_of`` cap, so the two
+      partitions are exact complements: a confirmed payment is in replay
+      XOR projection, never both and never neither.
+    * The override MONTH is the payment's true monthly due month (see
+      :func:`app.services.rate_period_engine.monthly_due_date`), matching
+      the due-date dating ``replay_schedule`` gives its rows and
+      ``project_forward`` its forward rows.  Keying on the pay-period-start
+      month instead would land each planned amount one month early -- a
+      latent error whenever planned amounts vary month to month.
 
     Payments with multiple entries in the same calendar month are
     summed so the override map is a "total planned outlay for this
@@ -585,6 +594,8 @@ def _build_monthly_override(
             forward projection.  Confirmed payments whose pay-period
             start is at or before ``as_of`` are consumed by replay and
             excluded here.
+        payment_day: The loan's contractual day-of-month due day, used to
+            derive each payment's true monthly due month for the key.
 
     Returns:
         A dict mapping ``(year, month) -> Decimal`` total payment.
@@ -600,7 +611,11 @@ def _build_monthly_override(
         # complements.
         if payment.is_confirmed and payment.payment_date <= as_of:
             continue
-        key = (payment.payment_date.year, payment.payment_date.month)
+        # Key on the true monthly due month so the planned amount lands on
+        # the same forward row project_forward generates (it advances from
+        # replay's due-date-derived next_pay_date).
+        due_date = monthly_due_date(payment.payment_date, payment_day)
+        key = (due_date.year, due_date.month)
         override[key] = override.get(key, ZERO_MONEY) + payment.amount
     return override
 
@@ -758,7 +773,9 @@ def compute_payoff_scenarios(
         as_of=as_of,
     )
 
-    monthly_override = _build_monthly_override(payments or [], as_of)
+    monthly_override = _build_monthly_override(
+        payments or [], as_of, loan_params.payment_day,
+    )
     rate_changes_remaining = _remaining_rate_changes(
         rate_changes, replay.next_pay_date,
     )

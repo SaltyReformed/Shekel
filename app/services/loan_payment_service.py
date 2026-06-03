@@ -43,6 +43,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import amortization_engine, escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
+from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import (
     balance_excluded_status_ids,
     is_projected,
@@ -415,15 +416,23 @@ def prepare_payments_for_engine(
             ))
         sorted_payments = adjusted
 
-    # Step 2: Redistribute same-month payments to consecutive months.
-    # Biweekly pay periods produce at most one extra payment per month
-    # (~2 times per year), so cascading collisions are not expected,
-    # but the while-loop handles them defensively.
+    # Step 2: Redistribute payments that share a monthly DUE month to
+    # consecutive months.  Biweekly pay periods produce at most one extra
+    # payment per month (~2 times per year), so cascading collisions are
+    # not expected, but the while-loop handles them defensively.  The
+    # collision key is the true monthly due month (``monthly_due_date`` of
+    # the pay-period start), NOT the pay-period-start month: two pay
+    # periods that both fall before the same payment_day (e.g. Apr 10 and
+    # Apr 24, both due May 1) collide on the May schedule row, and the
+    # schedule/override key everything by due month -- so a pay-period-
+    # start-month key would leave that collision unresolved and the
+    # override would sum both into a single double payment.
     result = []
     allocated_months: set[tuple[int, int]] = set()
 
     for p in sorted_payments:
-        ym = (p.payment_date.year, p.payment_date.month)
+        due = monthly_due_date(p.payment_date, payment_day)
+        ym = (due.year, due.month)
         if ym not in allocated_months:
             result.append(p)
             allocated_months.add(ym)

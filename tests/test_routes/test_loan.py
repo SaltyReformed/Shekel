@@ -2722,6 +2722,55 @@ class TestAmortizationSchedule:
         # from the last data row's remaining_balance.
         assert "$0.00" in html
 
+    def test_schedule_numbering_continuous_from_origination(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The # column counts total payments from origination, not 1..N per slice.
+
+        Regression for the user request: a mid-life loan's schedule must
+        number rows by total payments made -- a loan in its 26th month
+        shows #25 for its Feb 1 2026 payment -- and the projected slice
+        must keep counting up (#26, #27, ...) instead of restarting at 1
+        (the projected slice's pre-fix project_forward-local numbering).
+        """
+        # Origination 2024-01-01 -> the Feb 1 2026 payment is the 25th
+        # (25 whole months after origination) at the frozen today
+        # (2026-03-20).  seed_periods[2] (2026-01-30 .. 2026-02-12)
+        # contains 2/1, so its confirmed payment IS the Feb 1 payment.
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2024, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # The first <td> of each schedule data row is the payment number;
+        # year-header rows use <td colspan> and the totals row a label, so
+        # this matches only data rows.
+        row_numbers = [
+            int(n) for n in re.findall(
+                r'<tr class="(?:table-success)?">\s*<td>(\d+)</td>', html
+            )
+        ]
+        assert row_numbers, "No schedule data rows parsed from the table"
+        # Starts at the true payment number (25), NOT 1.
+        assert row_numbers[0] == 25, (
+            f"Expected first schedule row #25 (payments from origination), "
+            f"got {row_numbers[0]}"
+        )
+        # Continuous +1 across the confirmed/projected boundary -- the
+        # projected slice does not restart at 1.
+        for i in range(1, len(row_numbers)):
+            assert row_numbers[i] == row_numbers[i - 1] + 1, (
+                f"Numbering restarted or jumped at index {i}: "
+                f"{row_numbers[i - 1]} -> {row_numbers[i]}"
+            )
+
     def test_schedule_early_payoff_fewer_rows(
         self, auth_client, seed_user, db, seed_periods,
     ):
@@ -3273,9 +3322,16 @@ class TestDashboardChartComposer:
         """C5-1: Dashboard chart arrays match composer-derived expected.
 
         Fixture: 30-yr / $250k / 6.5% mortgage originated 2026-01-01,
-        one confirmed payment in Feb 2026 (seed_periods[3], replay
-        window), one projected payment in May 2026 (seed_periods[9],
-        forward window via monthly_override).
+        one confirmed payment due Feb 1 2026 (seed_periods[2], the pay
+        period that CONTAINS 2/1 -- the loan's first contractual payment
+        and the replay window), one projected payment in May 2026
+        (seed_periods[9], forward window via monthly_override).
+
+        seed_periods[2] (2026-01-30 .. 2026-02-12) is used rather than
+        [3] (2026-02-13 ..) because the schedule keys rows by the true
+        monthly DUE date: [2] contains 2/1 so its payment IS the Feb 1
+        payment; [3] contains no 1st, so its payment is due 3/1, which
+        would skip the 2/1 payment and yield a 359-row schedule.
 
         Asserts the dashboard's data-original / data-committed /
         data-floor arrays come from the composer:
@@ -3291,10 +3347,10 @@ class TestDashboardChartComposer:
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
         )
-        # Confirmed Feb 2026 (before today=2026-03-20) -- goes to
+        # Confirmed Feb 1 2026 (before today=2026-03-20) -- goes to
         # replay's history_rows.
         _create_transfer_to_loan(
-            seed_user, acct, seed_periods[3], Decimal("1580.17"),
+            seed_user, acct, seed_periods[2], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
         )
         # Projected May 2026 (after today) -- goes to monthly_override.
@@ -3340,18 +3396,21 @@ class TestDashboardChartComposer:
 
         Uses the same fixture as C5-1.  The amortization tab
         renders ``planned_schedule = history_rows + committed_forward``
-        from the composer.  History contributes one row (the Feb 2026
+        from the composer.  History contributes one row (the Feb 1 2026
         confirmed payment); the forward slice contributes 359
         contractual rows.  Total: 360 rows.
 
-        Re-pinned for Commit 5 (one row per remaining_months, no
-        residue artifact).
+        The confirmed payment is placed in seed_periods[2] (the pay
+        period containing 2/1, the loan's first payment) so the
+        due-date-keyed schedule starts at the Feb 1 payment and spans the
+        full 360-month term.  Re-pinned for Commit 5 (one row per
+        remaining_months, no residue artifact).
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
         )
         _create_transfer_to_loan(
-            seed_user, acct, seed_periods[3], Decimal("1580.17"),
+            seed_user, acct, seed_periods[2], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
         )
         _create_transfer_to_loan(
@@ -3744,12 +3803,16 @@ class TestRecurrenceEndDateUpdate:
         The recurrence rule end_date should be None (indefinite).
 
         Setup: ARM loan with 60% rate, 1-month term originating in
-        March 2026 so the only payment month is April (seed_periods[7]).
-        The $100 payment is far below the monthly interest of $5,000,
-        producing negative amortization and a remaining balance > $0.
+        March 2026 so the only payment month is April (due 4/1).
+        seed_periods[6] (2026-03-27 .. 2026-04-09) CONTAINS 4/1, so its
+        payment is the April 1 payment that the schedule's only row
+        expects -- the due-date-keyed override and the projection row
+        line up.  The $100 payment is far below the monthly interest of
+        $5,000, producing negative amortization and a remaining balance
+        > $0.
         """
         # ARM loan: origination Mar 2026, term 1 month.
-        # First (and only) payment month = April 2026.
+        # First (and only) payment month = April 2026 (due 4/1).
         # 60% annual rate, $100K principal, monthly interest = $5,000.
         acct = _create_loan_account(
             seed_user, db.session, "Auto Loan", "Neg Am Loan",
@@ -3762,9 +3825,11 @@ class TestRecurrenceEndDateUpdate:
 
         # Create a transfer with amount ($100) far below monthly
         # interest ($5,000).  The engine uses this instead of the
-        # contractual payment, so the balance stays at ~$100K.
+        # contractual payment, so the balance stays at ~$100K.  Placed in
+        # the pay period containing 4/1 so it funds the loan's April
+        # payment (the schedule's single row).
         _create_transfer_to_loan(
-            seed_user, acct, seed_periods[7], Decimal("100.00"),
+            seed_user, acct, seed_periods[6], Decimal("100.00"),
             status_enum=StatusEnum.PROJECTED,
         )
         db.session.commit()
