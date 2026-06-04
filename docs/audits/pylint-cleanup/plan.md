@@ -1,18 +1,25 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-1 DONE. Phase 2 (duplicate-code) IN PROGRESS.
-As of 2026-06-04 app/ is 9.75/10 with 335 visible messages (baseline 9.68/10 / 423). Disables
-74 -> 61: 13 removed (root-cause fixes), 46 documented KEEP, 15 smell-disables deferred to Phase 3.
-Phase 2 progress: batch 1 (`7ed84c7`) recurrence fork -> `_recurrence_common.py`; batch 2
-(`d806eab`) `OptimisticLockMixin` for the 10-model `version_id` block; P-2 fix (`a608d77`)
-`account_service.list_active_accounts`; batch 3 (`b58adf1`) `category_service.list_active_categories`
-deduping the 5 category dropdowns. R0801 clusters 76 -> 62. Open: 1 residual recurrence
-regenerate-tail + the templates<->transfers call-site residue, both deferred to the
-call-site-residue decision; remaining model boilerplate (`user_id` FK, `sort_order`/`is_active`)
-= future mixin batches. **RECOMMENDED NEXT BATCH: `UserScopedMixin`** (the `user_id -> auth.users`
-CASCADE FK across ~15 models -- same pattern + DDL-verification recipe as `OptimisticLockMixin`;
-biggest remaining single cluster-dissolver). Read "Phase 2 working notes" below before starting a
-disable-based or mixin-based batch. See [Phase 1 closeout](#phase-1-closeout) and the
+**Status: Phases 0-1 DONE. Phase 2 (duplicate-code) IN PROGRESS -- ALL MODEL CLUSTERS DONE.
+As of 2026-06-04 app/ is 9.76/10. Disables 74 -> 61 (Phase 1) -> 67 (Phase 2: +1 `no-self-argument`
+from the batch-2 `OptimisticLockMixin` `@declared_attr`, +5 documented bipartite model-pair
+disables). Phase 2 progress: batch 1 (`7ed84c7`) recurrence fork ->
+`_recurrence_common.py`; batch 2 (`d806eab`) `OptimisticLockMixin`; P-2 fix (`a608d77`)
+`account_service.list_active_accounts`; batch 3 (`b58adf1`) `category_service.list_active_categories`.
+**Model-boilerplate batches (`57cf12d`/`ae815bc`/`561a369`) NOW DONE:** `UserScopedMixin` (15
+tables), `SortOrderMixin`+`IsActiveMixin`, `AccountScopedMixin`+`SalaryProfileScopedMixin`, and 5
+documented one-sided disables for the genuinely-bipartite coincidental pairs. **R0801 clusters
+76 -> 42; all 20 model<->model clusters resolved (0 remain).** Key finding (verified): the FK
+mixins reorder the mid-table column to the table tail, which is SAFE here (column order is
+load-bearing nowhere -- test suite clones the Alembic template, no positional access, create_all
+alignment is about constraint NAMES); verification standard relaxed from byte-identical DDL to
+**order-independent equivalence + empty autogenerate diff** for these mixins. Second finding: a
+non-bipartite FK clique (`account_id`, `salary_profile_id`) CANNOT be resolved by one-sided
+disables (a triangle re-fires), so it MUST be a mixin. Full suite 5766 passed.
+**REMAINING: 42 route/service clusters** (developer direction: "extract clean, document rest") --
+`templates`<->`transfers` (~13), `investment`<->`loan` (~5), the optimistic-lock commit pattern
+(~10), scattered query/util pairs, + the recurrence regenerate-tail residual. Read "Phase 2
+working notes" below before starting. See [Phase 1 closeout](#phase-1-closeout) and the
 [Progress Log](#progress-log).**
 
 This document is the single system of record for driving `app/` (then `scripts/`) to a clean
@@ -124,7 +131,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 |---|---|---|---|
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
-| 2 | duplicate-code / DRY | 75 clusters | **IN PROGRESS** (`7ed84c7`: 76->70; recurrence fork) |
+| 2 | duplicate-code / DRY | 75 clusters | **IN PROGRESS** (76->42; all 20 model clusters DONE via 5 mixins + 5 disables `57cf12d`/`ae815bc`/`561a369`; 42 route/service clusters remain) |
 | 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | NOT STARTED |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
@@ -362,15 +369,17 @@ in some output formats; that file is NOT the problem. The real sites are the fil
   module.
 - **`services/recurrence_engine.py` <-> `services/transfer_recurrence.py`** -- ~7 clusters
   (#57, #70-#75), including 35-, 33-, 28-line blocks. Likely a forked engine; extract shared core.
-- **Model boilerplate** (#1-#21) -- declarative column-group clones. **Developer decision
-  (2026-06-04): extend the `app/models/mixins.py` mixin pattern** for genuinely-shared groups
-  (byte-identical DDL / empty autogenerate diff), document only coincidental domain-column
-  similarity. **Batch 2 (`d806eab`) DONE:** `OptimisticLockMixin` hoisted the `version_id` +
-  `__mapper_args__` block out of 10 models. Remaining shared groups for follow-up mixin batches:
-  the `user_id -> auth.users` CASCADE FK (`UserScopedMixin`) and the `sort_order` + `is_active`
-  pair. The rest (e.g. `investment_params` <-> `loan_params` domain columns) are coincidental ->
-  document. NOTE: line numbers in the #1-#21 table below predate batch 2 and have re-paired;
-  re-run the cluster command for current ranges.
+- **Model boilerplate** (#1-#21) -- **ALL DONE (`57cf12d`/`ae815bc`/`561a369`).** Developer
+  decision (2026-06-04): extend the `app/models/mixins.py` mixin pattern for genuinely-shared
+  groups, document only coincidental similarity. `mixins.py` now carries SIX shared mixins:
+  `OptimisticLockMixin` (batch 2 `d806eab`), `UserScopedMixin`, `SortOrderMixin`, `IsActiveMixin`,
+  `AccountScopedMixin`, `SalaryProfileScopedMixin`. Two findings recorded in the working notes
+  below: (a) FK/flag mixins REORDER the mid-table column to the table tail -- safe here, verified
+  via order-independent equivalence (column order is load-bearing nowhere); (b) a non-bipartite
+  FK clique (`account_id`, `salary_profile_id`) CANNOT be one-sided-disabled (a triangle re-fires)
+  so it MUST be a mixin. The 5 genuinely-bipartite coincidental pairs carry documented one-sided
+  disables. The #1-#21 table below is STALE (line numbers predate the mixin batches and the
+  clusters are now all resolved) -- kept only for historical decode.
 
 ### Phase 2 working notes (methods + empirical findings, 2026-06-04)
 
@@ -407,6 +416,35 @@ STRONGER than "empty autogenerate diff" and means no migration + no test-templat
 `@declared_attr` form was required for `__mapper_args__` (a plain dict captures the mixin's unmapped
 column); a class-level Column keeps DDL identical. Same caution applies to any `version_id_col`- or
 column-referencing mapper option in a new mixin.
+
+**REFINEMENT (model batches M1-M3, 2026-06-04).** Byte-identical holds ONLY when the extracted
+column already sat at the table tail (true for `version_id`/`created_at`/`updated_at`). The
+`user_id`/`account_id`/`salary_profile_id`/`sort_order`/`is_active` columns are MID-table, and
+SQLAlchemy renders mixin columns AFTER a class's own columns -- so extracting them REORDERS the
+column to the tail and `CreateTable` is NOT byte-identical. Verified safe and adopted the weaker
+but sufficient standard **order-independent equivalence + empty autogenerate diff**: compare the
+SORTED set of normalized `CreateTable` lines before vs after (column position is the only thing
+that changes; columns/types/constraints/FK-names all match), so Alembic autogenerate (which
+compares by NAME) emits no migration. Justification that order is non-load-bearing here: the test
+suite clones the Alembic-migrated template (order comes from migrations, not the model); no code
+or test does positional row/column access; the documented `create_all`<->migration alignment
+invariant is about constraint NAMES, never order; no `ordinal_position` assertion exists. Recipe
+(offline, no DB/app context needed -- compile against a bare dialect):
+```python
+from sqlalchemy.schema import CreateTable
+from sqlalchemy.dialects import postgresql
+import app.models                      # registers every model on db.metadata
+from app.extensions import db
+dl = postgresql.dialect()
+sig = lambda t: sorted(l.strip().rstrip(',')
+                       for l in str(CreateTable(t).compile(dialect=dl)).splitlines() if l.strip())
+# capture {t.fullname: sig(t)} BEFORE (pre-change tree) and AFTER; assert equal per table.
+```
+Also: a NON-BIPARTITE FK clique (3+ tables sharing a byte-identical FK block) CANNOT be resolved
+with one-sided disables -- a triangle either fires (un-disabled edge) or re-fires (both-sides), so
+it MUST be dissolved with a mixin. `account_id` (CASCADE) and `salary_profile_id` (CASCADE) were
+exactly such cliques. And watch FLASK-LOGIN: `User` inherits `UserMixin` whose `is_active`
+property would shadow a mixin Column via the MRO -- keep `User.is_active` inline.
 
 **3. `too-many-arguments` watch.** Extracting a `log_event(...)` call into a named helper with one
 param per field tripped `too-many-arguments` (10 params) AND dissolved no cluster -- reverted in
@@ -847,3 +885,6 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `d806eab` | 2 | **Batch 2 (model boilerplate -- OptimisticLockMixin):** developer chose "extend the mixin pattern" for the genuinely-shared optimistic-lock block. Hoisted `version_id` + `__mapper_args__` out of 10 models (account, paycheck_deduction, transaction_entry, savings_goal, salary_raise, transfer, transfer_template, transaction_template, transaction, salary_profile) into `OptimisticLockMixin`. Column at class level (byte-identical DDL); `__mapper_args__` via `@declared_attr` so each subclass binds its own `version_id_col`. Per-table `ck_*_version_id_positive` CHECKs stay in `__table_args__`. **Verified: CreateTable DDL byte-identical for all 10 tables vs baseline (empty autogenerate diff -- no migration, no test-template rebuild); `version_id_col` resolves to `<table>.version_id` on all 10.** Clusters 70->69 net (version_id dup eliminated; model boilerplate re-paired into remaining `user_id`/`sort_order`/`is_active` groups). No new pylint messages (5 line-too-long on those files are pre-existing Phase 4 items). **Full suite 5766 passed.** | 9.74/10 | 342 |
 | 2026-06-04 | `a608d77` | 2 | **P-2 fix + account-dropdown dedupe:** added `account_service.list_active_accounts(user_id)` (Flask-isolated, ordered by `sort_order, name`, `is_active` only); routed all six form sites through it (templates x2 -- now ordered, fixing P-2; transfers x2; savings; settings). Dissolved the account-dropdown R0801 clusters (`savings<->transfers`, `settings<->transfers`); the templates<->transfers CATEGORY-dropdown clusters remain (separate follow-on). Clusters 69->66. No new pylint messages; `create_app` OK (no cycle). **Full suite 5766 passed.** | 9.74/10 | 339 |
 | 2026-06-04 | `b58adf1` | 2 | **Batch 3 (category-dropdown dedupe):** new `app/services/category_service.py` with `list_active_categories(user_id)` (Flask-isolated, parallel to `account_service.list_active_accounts`); routed the 5 active-category form sites through it (templates x2, transfers x3). Pure refactor -- all 5 already used the identical `is_active` + `group_name, item_name` query, so no behavior change. The grid/transactions/companion category queries use a different (all-categories) semantic and are intentionally untouched. Clusters 66->62; **score 9.74 -> 9.75** (cumulative cluster removals crossed a rounding boundary). No new messages; `create_app` OK. **Full suite 5766 passed.** | 9.75/10 | 335 |
+| 2026-06-04 | `57cf12d` | 2 | **Model batch M1 (`UserScopedMixin`):** extracted the `user_id -> auth.users` CASCADE NOT-NULL FK (byte-identical across 15 tables) into `UserScopedMixin`; applied to Account, Category, PayPeriod, PensionProfile, RecurrenceRule, SalaryProfile, SavingsGoal, Scenario, TransactionEntry, TransactionTemplate, Transfer, TransferTemplate + tax_config x3. Excludes ref.* (RESTRICT/nullable), auth satellites (unique), Transaction (no user_id). **KEY: mixin columns render AFTER own columns, so user_id moves to the table tail -- NOT byte-identical, unlike OptimisticLockMixin. Verified SAFE: order-independent-equivalent for all 44 tables (no migration), because column order is load-bearing nowhere (test suite clones the Alembic template; no positional access; create_all alignment is about constraint NAMES not order).** Clusters 62->56; model<->model 20->14. No new messages. | 9.75/10 | -- |
+| 2026-06-04 | `ae815bc` | 2 | **Model batch M2 (`SortOrderMixin`+`IsActiveMixin`):** extracted the two cross-cutting flag columns. SortOrder -> 7 tables, IsActive -> 10 tables. **IsActive EXCLUDES User** (Flask-Login `UserMixin.is_active` property would shadow a mixin Column via MRO; User keeps it inline). Same mid-table reorder, order-independent-verified (no migration). Clusters 56->53; model<->model 14->11 (the 11th is a harmless base-list re-pairing, dissolved by the compact 2-line base-class form). | 9.75/10 | -- |
+| 2026-06-04 | `561a369` | 2 | **Model batch M3 (FK mixins + bipartite disables):** `AccountScopedMixin` (account_id CASCADE non-unique: RateHistory, EscrowComponent, LoanAnchorEvent, SavingsGoal, AccountAnchorHistory) + `SalaryProfileScopedMixin` (salary_profile_id CASCADE: SalaryRaise, PaycheckDeduction, CalibrationOverride). **KEY FINDING: the account_id + salary_profile_id FK groups form NON-BIPARTITE cliques (3+ byte-identical blocks); a one-sided `disable=duplicate-code` provably cannot cover a triangle without a both-sides re-fire, so these MUST be mixins.** The 5 genuinely-bipartite coincidental pairs documented with one-sided disables (rule 13): transaction<->transfer scenario+status, transfer<->transfer_template from/to-account, investment_params<->loan_params unique-account_id, transaction<->transaction_template RESTRICT-account_id, account_anchor_history<->loan_anchor_event UTC-day index. **All 20 model<->model clusters now resolved (model 11->0; total 53->42).** All 44 tables order-independent-equivalent (no migration). Disables 62->67 (+5 documented bipartite-pair). **Full suite 5766 passed.** | 9.76/10 | -- |
