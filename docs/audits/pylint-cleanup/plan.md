@@ -207,9 +207,35 @@ swept a batch. Remaining ones are more likely real circular breaks -- but verify
   (`pension_calculator:97` -- "keeps this module a stdlib-only leaf"; the `paycheck_calculator` /
   `tax_config_service` imports in dashboard/savings/recurrence). `app/__init__.py` (~19 sites, app
   factory) not yet classified -- factory-pattern deferrals are a separate, generally-justified case.
-- **POLICY PENDING:** whether non-circular deliberate deferrals are KEEP-and-document or hoist is a
-  design decision for the developer (collides with the Phase 0 "only exclude what is unavoidable"
-  directive). Awaiting decision before touching the 19 + the app-factory sites.
+- **POLICY (decided 2026-06-04): "Keep deliberate, document each."** Keep a deferral only when it
+  serves a real purpose (one-way boundary OR measurably-heavy lazy-load OR leaf-purity OR
+  init-timing); add a factual why-comment where missing; hoist genuine cargo-cult (cheap target,
+  no purpose), verifying each by hoist + app construct + tests.
+
+**Heaviness measurement (`/tmp/measure_import_cost.py`):** import TIME is a flat ~220ms for every
+target (the unavoidable `app.extensions`/SQLAlchemy init, paid as soon as any service imports), so
+deferral saves no meaningful startup time. Marginal `app.*` modules pulled (baseline 34): only
+`savings_dashboard_service` is structurally heavy (+27); all others +0..+10
+(`income_service` +10, `transaction_service` +9, `paycheck_calculator` +6, `loan_resolver` +5,
+`account_service`/`recurrence_engine` +4, `interest_projection` +3, `tax_config_service`/`growth_engine` +2,
+`models.user`/`models.ref` +0).
+
+**Classification of the 21 service/util sites (policy A):**
+- **KEEP (10):** circular -> `ref_cache:132`, `logging_config:543`; one-way boundary (developer's
+  documented intent) -> `carry_forward:734/881/882`, `loan_payment:347/506`; leaf-purity ->
+  `pension_calculator:97` (keeps a stdlib-only leaf); structurally heavy -> `dashboard_service:592`
+  (`savings_dashboard_service` +27); init-timing (documented) -> `ref_seeds:154`. Action: ensure
+  each carries a factual why-comment.
+- **HOIST candidate / verify (cargo-cult: cheap target, no boundary/leaf/heavy purpose):**
+  `settings:153` (`MfaConfig` +0), `investment_projection:250` (`growth_engine` +2),
+  `year_end_summary_service:1877` (`interest_projection` +3), `auth_service:804`
+  (`account_service` +4). Each: full-file read -> hoist -> `create_app()` import + targeted tests.
+- **DEFER decision (revisit per-file):** the `paycheck_calculator`+`tax_config_service` lazy pairs
+  (`dashboard:524/525`, `recurrence:736/737`, `savings:647/648`, `retirement:186`) and
+  `balance_resolver:393` (critical financial core, +10). The developer consistently defers the
+  paycheck/tax subsystem as a unit; lean KEEP+document, but confirm per file (the `recurrence:736`
+  site sits inside a `try:` -- inspect before deciding). `app/__init__.py` (~19 factory sites) still
+  to classify.
 
 | file:line | Verdict | Reason / commit |
 |---|---|---|
@@ -678,4 +704,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `10936f4` | 0 | Audited + re-baselined `.pylintrc`: removed `import-error` & `missing-module-docstring` disables (0 violations each), added `missing-type-doc`/`redundant-returns-doc` disables (hints are source of truth), reverted `max-attributes` 15->7 (surfaced 13 service-class smells). `.pylintrc` only; no code changed. | 9.74/10 | 349 |
 | 2026-06-04 | `a28aea5` | 1 | Batch 1 (disables): removed 3 (`models/__init__`->`__all__`; `loan_anchor_event` listeners->`_mapper`/`_connection`). Audited `health.py:52` + `loan_resolver.py:377` as verified KEEP. Surfaced problem P-1. Disables 74->71; score/msgs unchanged (removals emit nothing). | 9.74/10 | 349 |
 | 2026-06-04 | `a6ec28a` | 1 | Batch 2 (disables): obligations `_FREQUENCY_LABELS` global -> `@functools.cache` (removed global-statement); audited balance_resolver protected-access x2 as KEEP (engine-math reuse, E-25). Disables 71->70; score/msgs unchanged. | 9.74/10 | 349 |
-| 2026-06-04 | `<pending: next commit>` | 1 | import-outside-toplevel classifier: 2/21 service-util pairs genuinely circular (`ref_cache`, `logging_config` -> KEEP); 19 non-circular (deliberate boundary/lazy-load per their comments). Policy decision pending before touching the 19 + ~19 app-factory sites. No code change. | 9.74/10 | 349 |
+| 2026-06-04 | `fb394c0` | 1 | import-outside-toplevel classifier: 2/21 service-util pairs genuinely circular (`ref_cache`, `logging_config` -> KEEP); 19 non-circular (deliberate boundary/lazy-load per their comments). Policy decision pending before touching the 19 + ~19 app-factory sites. No code change. | 9.74/10 | 349 |
