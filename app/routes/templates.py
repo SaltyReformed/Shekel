@@ -26,7 +26,7 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
-from app.services import recurrence_engine, pay_period_service
+from app.services import account_service, pay_period_service, recurrence_engine
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.exceptions import RecurrenceConflict
@@ -154,11 +154,7 @@ def new_template():
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
-    accounts = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .all()
-    )
+    accounts = account_service.list_active_accounts(current_user.id)
     patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
     periods = pay_period_service.get_all_periods(current_user.id)
@@ -264,11 +260,7 @@ def edit_template(template_id):
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
-    accounts = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .all()
-    )
+    accounts = account_service.list_active_accounts(current_user.id)
     patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
 

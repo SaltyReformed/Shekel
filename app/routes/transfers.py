@@ -33,7 +33,12 @@ from app.schemas.validation import (
     TransferCreateSchema,
     TransferUpdateSchema,
 )
-from app.services import transfer_recurrence, transfer_service, pay_period_service
+from app.services import (
+    account_service,
+    pay_period_service,
+    transfer_recurrence,
+    transfer_service,
+)
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
 from app.services.recurrence_engine import _compute_due_date
@@ -106,12 +111,7 @@ def list_transfer_templates():
 @require_owner
 def new_transfer_template():
     """Display the transfer template creation form."""
-    accounts = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Account.sort_order, Account.name)
-        .all()
-    )
+    accounts = account_service.list_active_accounts(current_user.id)
     categories = (
         db.session.query(Category)
         .filter_by(user_id=current_user.id, is_active=True)
@@ -284,12 +284,7 @@ def edit_transfer_template(template_id):
     if template is None:
         abort(404)
 
-    accounts = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Account.sort_order, Account.name)
-        .all()
-    )
+    accounts = account_service.list_active_accounts(current_user.id)
     categories = (
         db.session.query(Category)
         .filter_by(user_id=current_user.id, is_active=True)

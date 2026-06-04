@@ -187,3 +187,28 @@ def create_account(
         name, account.id, user_id, anchor_period_id, anchor_balance,
     )
     return account
+
+
+def list_active_accounts(user_id: int) -> list[Account]:
+    """Return a user's active accounts ordered for display dropdowns.
+
+    Shared by every form route that renders an account picker (the
+    transaction-template, transfer-template, savings-goal, and settings
+    forms) so the option list is consistently ordered by
+    ``(sort_order, name)`` -- the arrangement the user set on the
+    accounts page.  Archived accounts (``is_active = False``) are
+    excluded because they are not selectable targets for new rows.
+
+    Args:
+        user_id: ``auth.users.id`` of the owner whose accounts to list.
+
+    Returns:
+        The owner's active :class:`Account` rows, ordered by
+        ``sort_order`` then ``name``.
+    """
+    return (
+        db.session.query(Account)
+        .filter_by(user_id=user_id, is_active=True)
+        .order_by(Account.sort_order, Account.name)
+        .all()
+    )

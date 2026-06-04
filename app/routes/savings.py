@@ -21,7 +21,7 @@ from app.models.account import Account
 from app.models.ref import GoalMode, IncomeUnit
 from app.models.savings_goal import SavingsGoal
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
-from app.services import savings_dashboard_service
+from app.services import account_service, savings_dashboard_service
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,7 @@ def _goal_form_context(goal=None):
     Returns:
         dict with keys: goal, accounts, goal_modes, income_units.
     """
-    accounts = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Account.sort_order, Account.name)
-        .all()
-    )
+    accounts = account_service.list_active_accounts(current_user.id)
     goal_modes = GoalMode.query.order_by(GoalMode.id).all()
     income_units = IncomeUnit.query.order_by(IncomeUnit.id).all()
     return {

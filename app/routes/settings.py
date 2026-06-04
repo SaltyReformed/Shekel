@@ -25,6 +25,7 @@ from app.models.category import Category
 from app.models.ref import AccountType, AccountTypeCategory, FilingStatus, TaxType
 from app.models.tax_config import TaxBracketSet, FicaConfig, StateTaxConfig
 from app.models.user import MfaConfig, User, UserSettings
+from app.services import account_service
 from app.services.auth_service import hash_password
 
 logger = logging.getLogger(__name__)
@@ -71,12 +72,7 @@ def show():
     mfa_enabled = False
 
     if section == "general":
-        accounts = (
-            db.session.query(Account)
-            .filter_by(user_id=current_user.id, is_active=True)
-            .order_by(Account.sort_order, Account.name)
-            .all()
-        )
+        accounts = account_service.list_active_accounts(current_user.id)
     elif section == "categories":
         all_categories = (
             db.session.query(Category)
