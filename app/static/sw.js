@@ -17,7 +17,14 @@
  * connection error for app pages, not a stale projection.
  */
 
-const CACHE = 'shekel-static-v1';
+// IMPORTANT: bump this version string whenever a cached /static asset
+// (CSS, JS, fonts, images) changes.  This worker is cache-first for the
+// STATIC_PREFIXES below, so without a bump a returning user keeps being
+// served the old file from Cache Storage; the activate handler evicts
+// the prior version on the next load.  v2: htmx-indicator rules added to
+// app.css (the CSP spinner fix) and the grid pay-period-change handlers
+// added to app.js.
+const CACHE = 'shekel-static-v2';
 const STATIC_PREFIXES = [
   '/static/vendor/',
   '/static/css/',
