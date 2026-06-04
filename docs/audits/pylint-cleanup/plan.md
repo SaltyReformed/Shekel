@@ -1,26 +1,29 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-1 DONE. Phase 2 (duplicate-code) IN PROGRESS -- ALL MODEL CLUSTERS DONE.
-As of 2026-06-04 app/ is 9.76/10. Disables 74 -> 61 (Phase 1) -> 67 (Phase 2: +1 `no-self-argument`
-from the batch-2 `OptimisticLockMixin` `@declared_attr`, +5 documented bipartite model-pair
-disables). Phase 2 progress: batch 1 (`7ed84c7`) recurrence fork ->
-`_recurrence_common.py`; batch 2 (`d806eab`) `OptimisticLockMixin`; P-2 fix (`a608d77`)
-`account_service.list_active_accounts`; batch 3 (`b58adf1`) `category_service.list_active_categories`.
-**Model-boilerplate batches (`57cf12d`/`ae815bc`/`561a369`) NOW DONE:** `UserScopedMixin` (15
-tables), `SortOrderMixin`+`IsActiveMixin`, `AccountScopedMixin`+`SalaryProfileScopedMixin`, and 5
-documented one-sided disables for the genuinely-bipartite coincidental pairs. **R0801 clusters
-76 -> 42; all 20 model<->model clusters resolved (0 remain).** Key finding (verified): the FK
-mixins reorder the mid-table column to the table tail, which is SAFE here (column order is
-load-bearing nowhere -- test suite clones the Alembic template, no positional access, create_all
-alignment is about constraint NAMES); verification standard relaxed from byte-identical DDL to
-**order-independent equivalence + empty autogenerate diff** for these mixins. Second finding: a
-non-bipartite FK clique (`account_id`, `salary_profile_id`) CANNOT be resolved by one-sided
-disables (a triangle re-fires), so it MUST be a mixin. Full suite 5766 passed.
-**REMAINING: 42 route/service clusters** (developer direction: "extract clean, document rest") --
-`templates`<->`transfers` (~13), `investment`<->`loan` (~5), the optimistic-lock commit pattern
-(~10), scattered query/util pairs, + the recurrence regenerate-tail residual. Read "Phase 2
-working notes" below before starting. See [Phase 1 closeout](#phase-1-closeout) and the
-[Progress Log](#progress-log).**
+**Status: Phases 0-2 DONE. As of 2026-06-04 app/ is 9.79/10 with ZERO `duplicate-code` (R0801)
+clusters, zero `useless-suppression`, zero E/F. Full suite 5766 passed.** Phase 2 resolved every
+one of the original 75 clusters by honest extraction or a documented one-sided disable (rule 13).
+**Model clusters (20):** dissolved via six `app/models/mixins.py` mixins + 5 documented bipartite
+disables (`57cf12d`/`ae815bc`/`561a369`/`d806eab`). **Route/service clusters (the rest):** five
+commits this session --
+`e2dc36a` route-fork dedup (`_recurrence_form_helpers` +commit_or_handle_stale /
+update_recurrence_rule_from_form / resolve_recurrence_rule_for_update; new
+`_transfer_creation_helpers.py`; templates/transfers/investment/loan routed through them);
+`7b1236d` service helpers (`utils/dates.add_months`, `utils/money.percent_complete`,
+`credit_workflow.create_cc_payback_transaction`, recurrence-tail disable);
+`86eb309` access + account/period helpers (`auth_helpers.get_accessible_transaction`,
+`account_service.get_account_type_ids_in_use` / `list_retirement_investment_account_types`,
+new `utils/period_projections.project_balance_horizons`);
+`6475429` documented 13 incidental clusters (divergent queries, parallel error-renders, domain
+dataclass validation, the dated balance-bucketing variant);
+`eb56235` the cross-route stale-data commit CLIQUE -- extracted to new
+`app/routes/_commit_helpers.py` (commit_or_handle_stale + handle_stale_conflict moved out of
+`_recurrence_form_helpers`; +regenerate_and_commit_or_stale for the flush-in-try case) and routed
+the plain salary/savings/account handlers through it. **Key finding: a stale-handler CLIQUE (like
+the FK cliques) cannot be one-sided-disabled -- disabled-vs-disabled pairs re-fire -- so it MUST be
+extracted.** Disables 67 -> 83 (+16 documented one-sided R0801 disables for the genuinely-incidental
+pairs; each scoped + rule-named + why-commented). Phase 3 (design smells) is next. See
+[Phase 1 closeout](#phase-1-closeout) and the [Progress Log](#progress-log).**
 
 This document is the single system of record for driving `app/` (then `scripts/`) to a clean
 `pylint` 10.00/10. It exists so any session -- including a fresh one with no memory of this
@@ -131,7 +134,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 |---|---|---|---|
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
-| 2 | duplicate-code / DRY | 75 clusters | **IN PROGRESS** (76->42; all 20 model clusters DONE via 5 mixins + 5 disables `57cf12d`/`ae815bc`/`561a369`; 42 route/service clusters remain) |
+| 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
 | 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | NOT STARTED |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
@@ -888,3 +891,8 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `57cf12d` | 2 | **Model batch M1 (`UserScopedMixin`):** extracted the `user_id -> auth.users` CASCADE NOT-NULL FK (byte-identical across 15 tables) into `UserScopedMixin`; applied to Account, Category, PayPeriod, PensionProfile, RecurrenceRule, SalaryProfile, SavingsGoal, Scenario, TransactionEntry, TransactionTemplate, Transfer, TransferTemplate + tax_config x3. Excludes ref.* (RESTRICT/nullable), auth satellites (unique), Transaction (no user_id). **KEY: mixin columns render AFTER own columns, so user_id moves to the table tail -- NOT byte-identical, unlike OptimisticLockMixin. Verified SAFE: order-independent-equivalent for all 44 tables (no migration), because column order is load-bearing nowhere (test suite clones the Alembic template; no positional access; create_all alignment is about constraint NAMES not order).** Clusters 62->56; model<->model 20->14. No new messages. | 9.75/10 | -- |
 | 2026-06-04 | `ae815bc` | 2 | **Model batch M2 (`SortOrderMixin`+`IsActiveMixin`):** extracted the two cross-cutting flag columns. SortOrder -> 7 tables, IsActive -> 10 tables. **IsActive EXCLUDES User** (Flask-Login `UserMixin.is_active` property would shadow a mixin Column via MRO; User keeps it inline). Same mid-table reorder, order-independent-verified (no migration). Clusters 56->53; model<->model 14->11 (the 11th is a harmless base-list re-pairing, dissolved by the compact 2-line base-class form). | 9.75/10 | -- |
 | 2026-06-04 | `561a369` | 2 | **Model batch M3 (FK mixins + bipartite disables):** `AccountScopedMixin` (account_id CASCADE non-unique: RateHistory, EscrowComponent, LoanAnchorEvent, SavingsGoal, AccountAnchorHistory) + `SalaryProfileScopedMixin` (salary_profile_id CASCADE: SalaryRaise, PaycheckDeduction, CalibrationOverride). **KEY FINDING: the account_id + salary_profile_id FK groups form NON-BIPARTITE cliques (3+ byte-identical blocks); a one-sided `disable=duplicate-code` provably cannot cover a triangle without a both-sides re-fire, so these MUST be mixins.** The 5 genuinely-bipartite coincidental pairs documented with one-sided disables (rule 13): transaction<->transfer scenario+status, transfer<->transfer_template from/to-account, investment_params<->loan_params unique-account_id, transaction<->transaction_template RESTRICT-account_id, account_anchor_history<->loan_anchor_event UTC-day index. **All 20 model<->model clusters now resolved (model 11->0; total 53->42).** All 44 tables order-independent-equivalent (no migration). Disables 62->67 (+5 documented bipartite-pair). **Full suite 5766 passed.** | 9.76/10 | -- |
+| 2026-06-04 | `e2dc36a` | 2 | **Route-fork dedup:** templates<->transfers + investment<->loan. New `_recurrence_form_helpers` helpers (`commit_or_handle_stale`, `update_recurrence_rule_from_form`, `resolve_recurrence_rule_for_update` -- the last reverses the F-24 Section-2 inline acceptance per developer direction); new `_transfer_creation_helpers.py` (validate_and_resolve_source_account, build_recurring_transfer_template, flush_template_or_namedup_redirect, generate_transfers_for_all_periods); routed templates/transfers/investment/loan through them. Remaining parallel-route call sequences documented one-sided (rule 13). Clusters 42->23. Targeted 182+326 passed. | 9.78/10 | -- |
+| 2026-06-04 | `7b1236d` | 2 | **Service helpers:** new `utils/dates.add_months` (deduped debt_strategy + savings_goal; rate_period_engine's overflow-guardless variant left separate); `utils/money.percent_complete` (deduped dashboard `_safe_pct_complete` + entry_service `pct_complete`, now a thin delegate); `credit_workflow.create_cc_payback_transaction` (deduped the two CC-payback factories); recurrence regenerate-tail one-sided disable (plan note #3: a log helper trips too-many-args + dissolves no cluster). Clusters 23->19. Targeted 79+10+68 passed. | 9.78/10 | -- |
+| 2026-06-04 | `86eb309` | 2 | **Access + account/period helpers:** `auth_helpers.get_accessible_transaction` (centralised the owner/companion access check copy-pasted in entries + transactions -- security-critical single definition); `account_service.get_account_type_ids_in_use` + `list_retirement_investment_account_types`; new `utils/period_projections.project_balance_horizons` (deduped the 3/6/12-month horizon loop). Clusters 22->15. Targeted 204+320+62 passed. | 9.78/10 | -- |
+| 2026-06-04 | `6475429` | 2 | **Documented 13 incidental clusters:** one-sided scoped why-commented `duplicate-code` disables where extraction would couple unrelated domains or equal the inline form (rule 13): obligations pattern-id preamble, growth_engine dataclass `__post_init__`, calendar/budget-variance divergent queries, balance_resolver dated entry-bucketing (E-25), debt_strategy/year_end LoanParams idiom, retirement error-render, accounts.detail/savings_dashboard, spending_trend, loan_payment, dashboard expense-sum. Clusters 15->2. Comment-only (no behavior change). | 9.79/10 | -- |
+| 2026-06-04 | `eb56235` | 2 | **Stale-data commit CLIQUE consolidation (Phase 2 CLOSE):** the cross-route stale handler was a clique across salary/savings/accounts (cliques can't be one-sided-disabled -- both-sides re-fire), so extracted to new `app/routes/_commit_helpers.py` (commit_or_handle_stale + handle_stale_conflict moved out of `_recurrence_form_helpers`; templates/transfers re-pointed; +regenerate_and_commit_or_stale for the flush-must-stay-in-the-try case -- update_account, salary). Routed the plain salary/savings/account handlers through it; the salary update_profile/raise/deduction two-branch (StaleDataError + SQLAlchemyError C-46/F-145) handlers verified to no longer cluster and left inline. **Clusters 2->0. PHASE 2 COMPLETE: 0 R0801 clusters, 0 useless-suppression, 0 E/F. Disables 67->83. Full suite 5766 passed.** | 9.79/10 | -- |
