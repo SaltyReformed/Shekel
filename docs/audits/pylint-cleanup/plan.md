@@ -268,8 +268,8 @@ reconcile against `grep -rn "pylint: disable" app/` when working this register.)
 | file:line | Rule | Verdict | Reason / commit |
 |---|---|---|---|
 | app/routes/health.py:52 | broad-except | **KEEP** (`10936f4`+) | Verified 2026-06-04 against code + test. Deliberate and test-locked: a health endpoint must convert ANY failure (DB/driver/pool exhaustion) into a controlled "unhealthy" JSON, never a 500 traceback, and must not leak `str(exc)` (audit M5). `tests/test_routes/test_health.py` lines 33/51/75 inject a bare `Exception()` and assert status=="unhealthy" + no credential leak; narrowing to `SQLAlchemyError` breaks all three. Disable is already scoped + rule-named + commented per coding-standards. NO CHANGE. (Corrects this register's earlier pre-read "FIX" guess.) |
-| app/services/balance_resolver.py:565 | protected-access | - | expose public accessor or document |
-| app/services/balance_resolver.py:706 | protected-access | - | expose public accessor or document |
+| app/services/balance_resolver.py:565 | protected-access | **KEEP** | Reuses `balance_calculator._sum_all` so the resolver's math cannot drift from the engine's (audit E-25; CLAUDE.md rule 10). Considered promoting `_sum_all`/`_income_amount` to public, but that weakens a deliberate encapsulation boundary (the engine owns the math; the resolver is the one sanctioned reuse) and touches the critical financial core. Usage verified: `_sum_all` used 1 internal + 1 external (this), `_income_amount` 2 internal + 1 external (706); no test calls them by name. Disable is scoped + named + thoroughly commented. |
+| app/services/balance_resolver.py:706 | protected-access | **KEEP** | Same rationale as :565 (reuses `balance_calculator._income_amount`). |
 | app/models/__init__.py:9 | unused-import | **REMOVED** | Replaced the blanket module-level disable with an explicit `__all__` (43 re-exported models). Verified: pylint 10.00/10 on the file; all 43 names resolve (no typos/dupes). More precise than the disable -- a stray accidental unused import is still flagged. Confirmed `app.models` is not used as a class re-export API today (only `from app.models import ref`), so these are side-effect/Alembic-discovery imports. |
 | app/models/loan_anchor_event.py:168 (_block_update) | unused-argument | **REMOVED** | Renamed the SQLAlchemy-mandated unused `mapper, connection` -> `_mapper, _connection` (matches `.pylintrc ignored-argument-names=_.*`); disable no longer needed. 13 immutability tests pass; pylint 10.00 on file. |
 | app/models/loan_anchor_event.py:183 (_block_delete) | unused-argument | **REMOVED** | Same rename as `_block_update`. |
@@ -279,7 +279,7 @@ reconcile against `grep -rn "pylint: disable" app/` when working this register.)
 | app/ref_cache.py:149 | global-statement | - | lazy-cache init; likely KEEP+DOC |
 | app/ref_cache.py:150 | global-statement | - | lazy-cache init; likely KEEP+DOC |
 | app/ref_cache.py:151 | global-statement | - | lazy-cache init; likely KEEP+DOC |
-| app/routes/obligations.py:54 | global-statement | - | `_FREQUENCY_LABELS` mutable global; evaluate build-once |
+| app/routes/obligations.py:54 | global-statement | **REMOVED** | Replaced the hand-rolled module-global lazy-init (`_FREQUENCY_LABELS = None` + `global` + null-check) with `@functools.cache` on `_get_frequency_labels()`. Behaviorally identical (memoize once per process; pattern IDs stable across cloned test DBs). Only referenced inside this module; 18 obligations route tests pass; pylint file 9.80->9.85. |
 | app/ref_seeds.py:31 | line-too-long | - | long data literal; reflow or KEEP+DOC. NB: 6 other long lines in this file are visible (Phase 4) |
 | app/routes/accounts/__init__.py:57 | wrong-import-position | - | blueprint registration order; verify, KEEP+DOC |
 | app/routes/accounts/__init__.py:58 | wrong-import-position | - | |
@@ -659,5 +659,6 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | Date | Commit | Phase | What changed | app/ score after | Visible msgs after |
 |---|---|---|---|---|---|
 | 2026-06-04 | `591264f` | -- | Baseline recorded. No code changed. | 9.68/10 | 423 |
-| 2026-06-04 | `<pending: next commit>` | 1 | Batch 1 (disables): removed 3 (`models/__init__`->`__all__`; `loan_anchor_event` listeners->`_mapper`/`_connection`). Audited `health.py:52` + `loan_resolver.py:377` as verified KEEP. Surfaced problem P-1. Disables 74->71; score/msgs unchanged (removals emit nothing). | 9.74/10 | 349 |
 | 2026-06-04 | `10936f4` | 0 | Audited + re-baselined `.pylintrc`: removed `import-error` & `missing-module-docstring` disables (0 violations each), added `missing-type-doc`/`redundant-returns-doc` disables (hints are source of truth), reverted `max-attributes` 15->7 (surfaced 13 service-class smells). `.pylintrc` only; no code changed. | 9.74/10 | 349 |
+| 2026-06-04 | `a28aea5` | 1 | Batch 1 (disables): removed 3 (`models/__init__`->`__all__`; `loan_anchor_event` listeners->`_mapper`/`_connection`). Audited `health.py:52` + `loan_resolver.py:377` as verified KEEP. Surfaced problem P-1. Disables 74->71; score/msgs unchanged (removals emit nothing). | 9.74/10 | 349 |
+| 2026-06-04 | `<pending: next commit>` | 1 | Batch 2 (disables): obligations `_FREQUENCY_LABELS` global -> `@functools.cache` (removed global-statement); audited balance_resolver protected-access x2 as KEEP (engine-math reuse, E-25). Disables 71->70; score/msgs unchanged. | 9.74/10 | 349 |

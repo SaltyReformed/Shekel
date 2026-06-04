@@ -11,6 +11,7 @@ obligation is never two different numbers on two pages.
 """
 
 import calendar
+import functools
 import logging
 from datetime import date
 from decimal import Decimal
@@ -37,25 +38,20 @@ logger = logging.getLogger(__name__)
 
 obligations_bp = Blueprint("obligations", __name__)
 
-# Human-readable labels for recurrence patterns, keyed by pattern ID.
-# Built lazily on first use since ref_cache is not available at import time.
-_FREQUENCY_LABELS = None
-
-
+@functools.cache
 def _get_frequency_labels():
     """Build the pattern-ID-to-label mapping from ref_cache.
 
-    Lazily initialized because ref_cache is populated at app startup,
-    not at module import time.
+    Memoized for the process lifetime on the first call.  ref_cache is
+    populated at app startup (not at module import time), so the mapping
+    cannot be built at import; the pattern IDs are stable thereafter, so
+    caching once is safe.  ``functools.cache`` replaces a hand-rolled
+    module-global lazy-init (and its ``global`` statement).
 
     Returns:
         Dict mapping int pattern_id to str label.
     """
-    global _FREQUENCY_LABELS  # pylint: disable=global-statement
-    if _FREQUENCY_LABELS is not None:
-        return _FREQUENCY_LABELS
-
-    _FREQUENCY_LABELS = {
+    return {
         ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_PERIOD):
             "Biweekly",
         ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS):
@@ -73,7 +69,6 @@ def _get_frequency_labels():
         ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
             "One-Time",
     }
-    return _FREQUENCY_LABELS
 
 
 def _frequency_label(rule):
