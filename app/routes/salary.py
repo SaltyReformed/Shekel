@@ -36,7 +36,6 @@ from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.ref import (
-    AccountType,
     CalcMethod,
     DeductionTiming,
     FilingStatus,
@@ -44,7 +43,7 @@ from app.models.ref import (
 )
 from app import ref_cache
 from app.enums import (
-    AcctCategoryEnum, CalcMethodEnum, RecurrencePatternEnum,
+    CalcMethodEnum, RecurrencePatternEnum,
     TaxTypeEnum, TxnTypeEnum,
 )
 from app.routes._commit_helpers import commit_or_handle_stale
@@ -506,9 +505,7 @@ def add_raise(profile_id):
             "exists on this profile.",
             "info",
         )
-        if request.headers.get("HX-Request"):
-            return _render_raises_partial(profile)
-        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+        return _respond_after_raise_change(profile)
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): the IntegrityError branch
         # above covers unique-constraint and other constraint
@@ -524,9 +521,7 @@ def add_raise(profile_id):
     logger.info("user_id=%d added raise to profile %d", current_user.id, profile_id)
     flash("Raise added.", "success")
 
-    if request.headers.get("HX-Request"):
-        return _render_raises_partial(profile)
-    return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+    return _respond_after_raise_change(profile)
 
 
 @salary_bp.route("/salary/raises/<int:raise_id>/delete", methods=["POST"])
@@ -577,15 +572,13 @@ def delete_raise(raise_id):
     logger.info("user_id=%d deleted raise %d from profile %d", current_user.id, raise_id, profile.id)
     flash("Raise removed.", "info")
 
-    if request.headers.get("HX-Request"):
-        return _render_raises_partial(profile)
-    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    return _respond_after_raise_change(profile)
 
 
 @salary_bp.route("/salary/raises/<int:raise_id>/edit", methods=["POST"])
 @login_required
 @require_owner
-def update_raise(raise_id):
+def update_raise(raise_id):  # pylint: disable=too-many-return-statements
     """Update an existing raise on a salary profile.
 
     Optimistic locking (commit C-18 / F-010): the edit form ships
@@ -594,6 +587,15 @@ def update_raise(raise_id):
     SQLAlchemy-tier check catches the truly-concurrent case at
     flush time and produces the same response.
     """
+    # ``too-many-return-statements`` disabled above: the seven exits are
+    # all coding-standards-mandated guard clauses or audit-documented
+    # error paths -- input validation, the C-18/F-010 stale-form
+    # pre-check, then the flush-time StaleDataError (C-18/F-010),
+    # duplicate-key IntegrityError (F-051/C-23), and SQLAlchemyError
+    # (C-46/F-145) catches, each surfacing a distinct user-facing flash.
+    # Collapsing them into one exit (or a Response-or-None commit helper)
+    # would obscure those distinct messages or trip too-many-arguments on
+    # the helper (plan.md Phase 2 note #3); the guard-clause form is kept.
     salary_raise = get_owned_via_parent(
         SalaryRaise, raise_id, "salary_profile",
     )
@@ -694,9 +696,7 @@ def update_raise(raise_id):
     logger.info("user_id=%d updated raise %d on profile %d", current_user.id, raise_id, profile.id)
     flash("Raise updated.", "success")
 
-    if request.headers.get("HX-Request"):
-        return _render_raises_partial(profile)
-    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    return _respond_after_raise_change(profile)
 
 
 # ── Deductions ─────────────────────────────────────────────────────
@@ -762,9 +762,7 @@ def add_deduction(profile_id):
             f"creating a duplicate.",
             "info",
         )
-        if request.headers.get("HX-Request"):
-            return _render_deductions_partial(profile)
-        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+        return _respond_after_deduction_change(profile)
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): the IntegrityError branch
         # above covers unique-constraint and other constraint
@@ -780,9 +778,7 @@ def add_deduction(profile_id):
     logger.info("user_id=%d added deduction to profile %d", current_user.id, profile_id)
     flash(f"Deduction '{deduction.name}' added.", "success")
 
-    if request.headers.get("HX-Request"):
-        return _render_deductions_partial(profile)
-    return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+    return _respond_after_deduction_change(profile)
 
 
 @salary_bp.route("/salary/deductions/<int:ded_id>/delete", methods=["POST"])
@@ -833,15 +829,13 @@ def delete_deduction(ded_id):
     logger.info("user_id=%d deleted deduction %d from profile %d", current_user.id, ded_id, profile.id)
     flash("Deduction removed.", "info")
 
-    if request.headers.get("HX-Request"):
-        return _render_deductions_partial(profile)
-    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    return _respond_after_deduction_change(profile)
 
 
 @salary_bp.route("/salary/deductions/<int:ded_id>/edit", methods=["POST"])
 @login_required
 @require_owner
-def update_deduction(ded_id):
+def update_deduction(ded_id):  # pylint: disable=too-many-return-statements
     """Update an existing deduction on a salary profile.
 
     Optimistic locking (commit C-18 / F-010): the edit form ships
@@ -850,6 +844,15 @@ def update_deduction(ded_id):
     SQLAlchemy-tier check catches the truly-concurrent case at
     flush time and produces the same response.
     """
+    # ``too-many-return-statements`` disabled above: the seven exits are
+    # all coding-standards-mandated guard clauses or audit-documented
+    # error paths -- input validation, the C-18/F-010 stale-form
+    # pre-check, then the flush-time StaleDataError (C-18/F-010),
+    # name-collision IntegrityError (F-052/C-23), and SQLAlchemyError
+    # (C-46/F-145) catches, each surfacing a distinct user-facing flash.
+    # Collapsing them into one exit (or a Response-or-None commit helper)
+    # would obscure those distinct messages or trip too-many-arguments on
+    # the helper (plan.md Phase 2 note #3); the guard-clause form is kept.
     deduction = get_owned_via_parent(
         PaycheckDeduction, ded_id, "salary_profile",
     )
@@ -951,9 +954,7 @@ def update_deduction(ded_id):
     logger.info("user_id=%d updated deduction %d on profile %d", current_user.id, ded_id, profile.id)
     flash(f"Deduction '{deduction.name}' updated.", "success")
 
-    if request.headers.get("HX-Request"):
-        return _render_deductions_partial(profile)
-    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    return _respond_after_deduction_change(profile)
 
 
 # ── Views: Breakdown & Projection ──────────────────────────────────
@@ -1537,6 +1538,19 @@ def _render_raises_partial(profile):
     )
 
 
+def _respond_after_raise_change(profile):
+    """Respond after a raise mutation succeeds (or is idempotently absorbed).
+
+    Returns the raises-section partial for an in-page HTMX swap, or a
+    full-page redirect to the profile edit view for a normal form post.
+    Centralises the response branch shared by the add/update/delete raise
+    handlers so each has a single success exit point.
+    """
+    if request.headers.get("HX-Request"):
+        return _render_raises_partial(profile)
+    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+
 def _render_deductions_partial(profile):
     """Return the deductions table partial for HTMX updates."""
     db.session.refresh(profile)
@@ -1550,6 +1564,19 @@ def _render_deductions_partial(profile):
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
     )
+
+
+def _respond_after_deduction_change(profile):
+    """Respond after a deduction mutation succeeds (or is idempotently absorbed).
+
+    Returns the deductions-section partial for an in-page HTMX swap, or a
+    full-page redirect to the profile edit view for a normal form post.
+    Counterpart to :func:`_respond_after_raise_change` for the add/update/
+    delete deduction handlers.
+    """
+    if request.headers.get("HX-Request"):
+        return _render_deductions_partial(profile)
+    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
 def _get_investment_accounts(user_id):
