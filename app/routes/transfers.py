@@ -769,9 +769,16 @@ def get_full_edit(xfer_id):
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
+    # Current + future periods power the in-popover period-move selector,
+    # always including the transfer's own period so a transfer sitting in
+    # a past period stays selected.  The service re-validates ownership of
+    # the submitted id and moves the transfer plus both shadows together.
+    periods = pay_period_service.get_current_and_future_periods(
+        current_user.id, include_period_id=xfer.pay_period_id,
+    )
     return render_template(
         "transfers/_transfer_full_edit.html",
-        xfer=xfer, statuses=statuses, categories=categories,
+        xfer=xfer, statuses=statuses, categories=categories, periods=periods,
     )
 
 
@@ -840,8 +847,28 @@ def update_transfer(xfer_id):
     ):
         return "Not found", 404
 
-    # Auto-set is_override when a template-linked transfer's amount changes.
-    if xfer.transfer_template_id and "amount" in data:
+    # Route-boundary ownership for the period FK (same C-27 / F-043
+    # pattern as category above).  The service's _get_owned_period
+    # re-checks, but enforcing it here keeps the boundary visible and
+    # guards a future refactor that bypasses the service helper.
+    if data.get("pay_period_id") is not None and not _user_owns(
+        PayPeriod, data["pay_period_id"],
+    ):
+        return "Not found", 404
+
+    # A period move relocates the transfer (and both shadows) to another
+    # period in the grid, which an in-place cell swap cannot express --
+    # the response triggers a full grid refresh instead.  Computed before
+    # the service call, while xfer.pay_period_id still holds the old value.
+    period_changed = (
+        "pay_period_id" in data and data["pay_period_id"] != xfer.pay_period_id
+    )
+
+    # Auto-set is_override when a template-linked transfer's amount or
+    # period changes, so transfer_recurrence does not regenerate over the
+    # edited instance (mirrors the transaction move in
+    # transactions.update_transaction and the carry-forward transfer move).
+    if xfer.transfer_template_id and ("amount" in data or "pay_period_id" in data):
         data["is_override"] = True
 
     try:
@@ -864,6 +891,11 @@ def update_transfer(xfer_id):
     # When opened from a shadow transaction cell in the grid, render the
     # transaction cell template so the cell remains interactive.  When
     # opened from the transfer management page, render the transfer cell.
+    # A period move needs a full grid refresh so the relocated rows
+    # appear under the new period; an in-place edit only needs balances
+    # recomputed (gridRefresh reloads the page via app.js).
+    trigger = "gridRefresh" if period_changed else "balanceChanged"
+
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
@@ -872,13 +904,13 @@ def update_transfer(xfer_id):
             txn=shadow,
             entry_sums=build_entry_sums_dict([shadow]),
         )
-        return response, 200, {"HX-Trigger": "balanceChanged"}
+        return response, 200, {"HX-Trigger": trigger}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account,
     )
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return response, 200, {"HX-Trigger": trigger}
 
 
 @transfers_bp.route("/transfers/ad-hoc", methods=["POST"])

@@ -1083,6 +1083,7 @@ class TransferUpdateSchema(BaseSchema):
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
     )
     status_id = fields.Integer()
+    pay_period_id = fields.Integer()
     name = fields.String(validate=validate.Length(max=200))
     category_id = fields.Integer(allow_none=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
