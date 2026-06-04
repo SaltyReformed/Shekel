@@ -17,7 +17,7 @@ Architecture:
 
 import logging
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -48,18 +48,12 @@ from app.utils.log_events import (
     EVT_ENTRY_UPDATED,
     log_event,
 )
+from app.utils.money import percent_complete
 
 logger = logging.getLogger(__name__)
 
 # Fields that can be updated on an entry via update_entry().
 _UPDATABLE_FIELDS = frozenset({"amount", "description", "entry_date", "is_credit"})
-
-# Quantisation + bounds for ``pct_complete``.  Mirrors the constants
-# in ``app.services.dashboard_service`` so the two surfaces that feed
-# progress-bar widths share one numeric contract.
-_TWO_PLACES = Decimal("0.01")
-_ZERO = Decimal("0")
-_HUNDRED = Decimal("100")
 
 
 def _update_actual_if_paid(txn: Transaction) -> None:
@@ -556,9 +550,9 @@ def pct_complete(total: Decimal, target: Decimal) -> Decimal:
     the route layer (MED-04 / E-16): the companion route used to
     ``float(total / estimated * Decimal("100"))`` inline, which violated
     the "money math is service-layer Decimal, not route-layer float"
-    standard.  Mirrors the shape of
-    :func:`app.services.dashboard_service._safe_pct_complete` so the
-    dashboard and companion surfaces share one numeric contract.
+    standard.  Thin domain-named wrapper over
+    :func:`app.utils.money.percent_complete` -- the single numeric
+    contract the dashboard and companion progress surfaces both share.
 
     The two-decimal-place result is safe to render as-is in CSS width
     values: ``data-progress-pct="55.50"`` is parsed by
@@ -576,16 +570,7 @@ def pct_complete(total: Decimal, target: Decimal) -> Decimal:
         Decimal in [0, 100] quantised to two decimal places when the
         guard does not fire; ``Decimal("0")`` when ``target <= 0``.
     """
-    if target <= _ZERO:
-        return _ZERO
-    pct = (total / target * _HUNDRED).quantize(
-        _TWO_PLACES, rounding=ROUND_HALF_UP,
-    )
-    if pct > _HUNDRED:
-        return Decimal("100.00")
-    if pct < _ZERO:
-        return _ZERO
-    return pct
+    return percent_complete(total, target)
 
 
 def compute_actual_from_entries(

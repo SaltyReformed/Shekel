@@ -5,13 +5,13 @@ Pure functions for savings goal calculations. No database writes, no
 Flask imports -- called by the savings route to compute metrics.
 """
 
-import calendar
 import logging
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum
+from app.utils.dates import add_months
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
 
 logger = logging.getLogger(__name__)
@@ -350,7 +350,7 @@ def calculate_trajectory(
         )
     )
 
-    projected = _add_months(today, months)
+    projected = add_months(today, months)
     pace = _compute_pace(projected, target_date) if actionable_target else None
 
     return {
@@ -418,27 +418,3 @@ def _compute_required_monthly(
     return (remaining / Decimal(str(months_available))).quantize(
         _TWO_PLACES, rounding=ROUND_CEILING
     )
-
-
-def _add_months(start: date, months: int) -> date:
-    """Add N months to a date, clamping day to the month's last day.
-
-    Returns date.max if the result would exceed year 9999 (Python's
-    maximum representable year).
-
-    Args:
-        start: The starting date.
-        months: Number of months to add (non-negative).
-
-    Returns:
-        A new date N months in the future, or date.max on overflow.
-    """
-    total_months = start.month - 1 + months
-    year = start.year + total_months // 12
-    month = total_months % 12 + 1
-
-    if year > 9999:
-        return date.max
-
-    day = min(start.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)

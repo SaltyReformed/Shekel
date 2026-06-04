@@ -21,11 +21,11 @@ ARM rate adjustments during the payoff period are not incorporated into
 the strategy projection.  The current rate from LoanParams is used as-is.
 """
 
-import calendar
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.utils.dates import add_months
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
 # Constants for Decimal arithmetic -- avoids constructing these per call.
@@ -345,30 +345,6 @@ def _sort_debts(
     return sorted(debts, key=lambda d: position[d.account_id])
 
 
-def _add_months(start: date, months: int) -> date:
-    """Add N months to a date, clamping day to the month's max days.
-
-    Returns date.max if the result would exceed year 9999 (Python's
-    maximum representable year).
-
-    Args:
-        start: The starting date.
-        months: Number of months to add (non-negative).
-
-    Returns:
-        A new date N months in the future, or date.max on overflow.
-    """
-    total_months = start.month - 1 + months
-    year = start.year + total_months // 12
-    month = total_months % 12 + 1
-
-    if year > 9999:
-        return date.max
-
-    day = min(start.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
-
-
 def _snap_to_zero(balance: Decimal) -> Decimal:
     """Round a balance to cents and clamp negatives to zero.
 
@@ -682,7 +658,7 @@ def _build_result(
             account_id=debt.account_id,
             name=debt.name,
             payoff_month=payoff_months[i],
-            payoff_date=_add_months(start_date, payoff_months[i]),
+            payoff_date=add_months(start_date, payoff_months[i]),
             total_interest=round_money(interest_totals[i]),
             total_paid=round_money(paid_totals[i]),
             balance_timeline=timelines[i],
@@ -699,7 +675,7 @@ def _build_result(
         per_account=per_account,
         total_interest=result_interest,
         total_paid=result_paid,
-        debt_free_date=_add_months(start_date, final_month),
+        debt_free_date=add_months(start_date, final_month),
         total_months=final_month,
         strategy_name=strategy,
         horizon_reached=horizon_reached,

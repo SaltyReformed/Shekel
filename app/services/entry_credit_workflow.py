@@ -20,10 +20,9 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
 from app.services.credit_workflow import (
+    create_cc_payback_transaction,
     get_or_create_cc_category,
     lock_source_transaction_for_payback,
 )
@@ -200,23 +199,11 @@ def _create_payback(
         )
 
     cc_category = get_or_create_cc_category(owner_id)
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
-    payback = Transaction(
-        account_id=txn.account_id,
-        template_id=None,
-        pay_period_id=next_period.id,
-        scenario_id=txn.scenario_id,
-        status_id=projected_id,
-        name=f"CC Payback: {txn.name}",
-        category_id=cc_category.id,
-        transaction_type_id=expense_type_id,
-        estimated_amount=total_credit,
-        credit_payback_for_id=txn.id,
+    # Shared factory; see credit_workflow for the transaction-level twin.
+    payback = create_cc_payback_transaction(
+        txn, next_period, cc_category, total_credit,
     )
-    db.session.add(payback)
-    db.session.flush()
 
     # Link all credit entries to the new payback.
     for entry in credit_entries:

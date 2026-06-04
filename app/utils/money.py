@@ -35,6 +35,8 @@ of D6-05.
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 CENTS = Decimal("0.01")
+ZERO = Decimal("0")
+HUNDRED = Decimal("100")
 
 PAY_PERIODS_PER_YEAR = Decimal("26")
 MONTHS_PER_YEAR = Decimal("12")
@@ -99,3 +101,33 @@ def round_money_ceiling(value: Decimal) -> Decimal:
             f"round_money_ceiling expects Decimal, got {type(value).__name__}: {value!r}"
         )
     return value.quantize(CENTS, rounding=ROUND_CEILING)
+
+
+def percent_complete(total: Decimal, target: Decimal) -> Decimal:
+    """Compute ``total`` as a percentage of ``target``, clamped to [0, 100].
+
+    The single numeric contract behind every "percent funded" / progress-
+    bar surface (the budget dashboard's savings-goal cards, the companion
+    entry view).  Guards against division by zero and clamps the result so
+    a render never receives a negative width or one exceeding 100%.
+
+    Args:
+        total: The amount accumulated so far (sum of entries / balance).
+        target: The budgeted or goal amount.  When ``<= 0`` the function
+            returns ``Decimal("0")`` rather than dividing by zero or
+            producing a misleading negative percentage.
+
+    Returns:
+        A Decimal in ``[0, 100]`` quantized to two decimal places with
+        ``ROUND_HALF_UP`` for the in-range case; the un-quantized
+        ``Decimal("0")`` when ``target <= 0`` or the ratio is negative,
+        and ``Decimal("100.00")`` when the ratio exceeds 100%.
+    """
+    if target <= ZERO:
+        return ZERO
+    pct = (total / target * HUNDRED).quantize(CENTS, rounding=ROUND_HALF_UP)
+    if pct > HUNDRED:
+        return Decimal("100.00")
+    if pct < ZERO:
+        return ZERO
+    return pct

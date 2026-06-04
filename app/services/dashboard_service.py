@@ -31,6 +31,7 @@ from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.utils.balance_predicates import is_projected_clause
+from app.utils.money import percent_complete
 
 logger = logging.getLogger(__name__)
 
@@ -549,7 +550,7 @@ def _get_savings_goals(user_id: int) -> list[dict]:
     for goal in goals:
         current = goal.account.current_anchor_balance or _ZERO
         target = goal.target_amount or _ZERO
-        pct = _safe_pct_complete(current, target)
+        pct = percent_complete(current, target)
 
         result.append({
             "name": goal.name,
@@ -561,21 +562,6 @@ def _get_savings_goals(user_id: int) -> list[dict]:
         })
 
     return result
-
-
-def _safe_pct_complete(current: Decimal, target: Decimal) -> Decimal:
-    """Compute percentage complete, clamped to 0-100.
-
-    Guards against division by zero when target is 0.
-    """
-    if target <= _ZERO:
-        return _ZERO
-    pct = (current / target * _HUNDRED).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
-    if pct > _HUNDRED:
-        return Decimal("100.00")
-    if pct < _ZERO:
-        return _ZERO
-    return pct
 
 
 # ── Section 6: Debt Summary ───────────────────────────────────────

@@ -165,6 +165,18 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
 
     created = generate_for_template(template, periods, scenario_id, effective_from)
 
+    # Regenerate audit-log + conflict-raise tail.  This is the parallel
+    # twin of ``recurrence_engine.regenerate_for_template``: the model-
+    # agnostic core (ownership check, partition, effective-date query) was
+    # already hoisted into ``_recurrence_common`` (commit 7ed84c7); what
+    # remains is the per-engine tail, which differs only in the audit event
+    # constant + message.  Extracting it into a shared log helper was tried
+    # and REVERTED (plan.md Phase 2 working note #3): one param per
+    # ``log_event`` field trips ``too-many-arguments`` and -- because the
+    # helper call site re-duplicates the identical kwargs -- dissolves no
+    # cluster.  Documented one-sided ``duplicate-code`` disable instead;
+    # the partner engine stays un-disabled.
+    # pylint: disable=duplicate-code
     log_event(
         logger, logging.INFO, EVT_TRANSFER_RECURRENCE_REGENERATED, BUSINESS,
         "Transfer recurrence regenerated for template",
@@ -181,6 +193,7 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
         raise RecurrenceConflict(overridden=overridden_ids, deleted=deleted_ids)
 
     return created
+    # pylint: enable=duplicate-code
 
 
 def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
