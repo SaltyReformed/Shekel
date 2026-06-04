@@ -1,12 +1,13 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
 **Status: Phases 0-1 DONE. Phase 2 (duplicate-code) IN PROGRESS.
-As of 2026-06-04 app/ is 9.74/10 with 343 visible messages (baseline 9.68/10 / 423). Disables
+As of 2026-06-04 app/ is 9.74/10 with 342 visible messages (baseline 9.68/10 / 423). Disables
 74 -> 61: 13 removed (root-cause fixes), 46 documented KEEP, 15 smell-disables deferred to Phase 3.
-Phase 2 batch 1 (`7ed84c7`): recurrence_engine <-> transfer_recurrence shared logic hoisted to
-`_recurrence_common.py` + `_resolve_generation_plan`; R0801 clusters 76 -> 70 (1 residual
-regenerate-tail call-site deferred to the call-site-residue decision). See [Phase 1
-closeout](#phase-1-closeout) and the [Progress Log](#progress-log).**
+Phase 2 progress: batch 1 (`7ed84c7`) recurrence fork -> `_recurrence_common.py`; batch 2
+(`d806eab`) `OptimisticLockMixin` for the 10-model `version_id` block. R0801 clusters 76 -> 69
+(1 residual recurrence regenerate-tail deferred to the call-site decision; model clusters
+re-paired -- remaining boilerplate is `user_id` FK + `sort_order`/`is_active`, future mixin
+batches). See [Phase 1 closeout](#phase-1-closeout) and the [Progress Log](#progress-log).**
 
 This document is the single system of record for driving `app/` (then `scripts/`) to a clean
 `pylint` 10.00/10. It exists so any session -- including a fresh one with no memory of this
@@ -355,8 +356,15 @@ in some output formats; that file is NOT the problem. The real sites are the fil
   module.
 - **`services/recurrence_engine.py` <-> `services/transfer_recurrence.py`** -- ~7 clusters
   (#57, #70-#75), including 35-, 33-, 28-line blocks. Likely a forked engine; extract shared core.
-- **Model boilerplate** (#1-#21) -- many 2-site model<->model clones (`__repr__`/serialization/
-  validation patterns). Judge case-by-case: a mixin/base may help, or they may be incidental.
+- **Model boilerplate** (#1-#21) -- declarative column-group clones. **Developer decision
+  (2026-06-04): extend the `app/models/mixins.py` mixin pattern** for genuinely-shared groups
+  (byte-identical DDL / empty autogenerate diff), document only coincidental domain-column
+  similarity. **Batch 2 (`d806eab`) DONE:** `OptimisticLockMixin` hoisted the `version_id` +
+  `__mapper_args__` block out of 10 models. Remaining shared groups for follow-up mixin batches:
+  the `user_id -> auth.users` CASCADE FK (`UserScopedMixin`) and the `sort_order` + `is_active`
+  pair. The rest (e.g. `investment_params` <-> `loan_params` domain columns) are coincidental ->
+  document. NOTE: line numbers in the #1-#21 table below predate batch 2 and have re-paired;
+  re-run the cluster command for current ranges.
 
 Status values: `-` (unreviewed), `EXTRACT` (done via extraction), `DISABLE` (documented incidental),
 with commit SHA.
@@ -754,6 +762,22 @@ CLAUDE.md rules 3, 4, 6, 8.
   the caller docstring) or whether `payments` was meant to tighten the threshold (then it is a
   calculation bug to fix). Status: OPEN, reported 2026-06-04.
 
+### P-2 -- account-dropdown query orders inconsistently across form routes
+
+- **Where:** `app/routes/templates.py:157-161` and `:267-271` build the account dropdown with
+  `db.session.query(Account).filter_by(user_id=current_user.id, is_active=True).all()` -- NO
+  `order_by`. Every other account dropdown orders by `(sort_order, name)`:
+  `transfers.py:109-113` / `:287-291`, `savings.py:54-58`, `settings.py:75-78`.
+- **Found via:** Phase 2 route-query cluster investigation (the would-be `list_active_accounts`
+  helper has two divergent forms).
+- **Impact (UX, not financial):** the template create/edit form lists accounts in arbitrary
+  (effectively insertion/PK) order while every sibling form honours the user's `sort_order`. Low
+  severity, but it blocks a clean shared `list_active_accounts(user_id)` extraction: unifying on
+  the ordered form is a (minor) behaviour change to the template form's dropdown order.
+- **Recommendation:** align `templates.py` to `.order_by(Account.sort_order, Account.name)` (fixes
+  the inconsistency AND unblocks the shared helper) -- but it changes a user-visible dropdown
+  order, so confirm before changing (rules 5/6). Status: OPEN, reported 2026-06-04.
+
 ## Progress Log
 
 Append one row per commit that changes the score or completes register items. Newest at bottom.
@@ -770,3 +794,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `2bd8c90` | 1 | Batch 3 (hoists): 4 cargo-cult import-outside-toplevel hoisted to module top (`investment_projection`, `settings`, `year_end`, `auth_service`). `create_app()` OK (no cycle); 335 area tests pass. Disables 70->66; import-outside-toplevel 41->37. Visible 349->350 is a pylint R0801 re-pairing artifact (a pre-existing 3-way `Account`-query duplication in savings/settings/transfers got re-reported as 2 pairings instead of 1 after a 1-line shift), NOT new duplication; Phase 2 dedupes it; score unchanged. | 9.74/10 | 350 |
 | 2026-06-04 | `fb394c0` | 1 | import-outside-toplevel classifier: 2/21 service-util pairs genuinely circular (`ref_cache`, `logging_config` -> KEEP); 19 non-circular (deliberate boundary/lazy-load per their comments). Policy decision pending before touching the 19 + ~19 app-factory sites. No code change. | 9.74/10 | 349 |
 | 2026-06-04 | `7ed84c7` | 2 | **Batch 1 (recurrence fork):** hoisted the model-agnostic halves of the two recurrence engines into `_recurrence_common.py` (`check_scenario_ownership`, `should_skip_period`, `partition_regeneration_rows`, `query_rows_from_effective_date`) + `recurrence_engine._resolve_generation_plan`/`_GenerationPlan` (gating + pattern-match preamble; kept there for `_match_periods` access). Model-specific halves (Transaction build vs `transfer_service.create_transfer` shadow atomicity; transfer regenerate delete path) stay per-engine. Tried+reverted a `log_recurrence_regenerated` helper (added too-many-arguments, dissolved nothing). Transfer engine sheds 7 imports. Clusters 76->70 (rows 57/70/71/72/74/75 EXTRACT; row 73 PARTIAL -- regenerate-tail call-SEQUENCE residual `recurrence_engine:333-368 <-> transfer_recurrence:168-204` left live, deferred to the call-site-residue decision). No new pylint messages. **Full suite 5766 passed.** | 9.74/10 | 343 |
+| 2026-06-04 | `d806eab` | 2 | **Batch 2 (model boilerplate -- OptimisticLockMixin):** developer chose "extend the mixin pattern" for the genuinely-shared optimistic-lock block. Hoisted `version_id` + `__mapper_args__` out of 10 models (account, paycheck_deduction, transaction_entry, savings_goal, salary_raise, transfer, transfer_template, transaction_template, transaction, salary_profile) into `OptimisticLockMixin`. Column at class level (byte-identical DDL); `__mapper_args__` via `@declared_attr` so each subclass binds its own `version_id_col`. Per-table `ck_*_version_id_positive` CHECKs stay in `__table_args__`. **Verified: CreateTable DDL byte-identical for all 10 tables vs baseline (empty autogenerate diff -- no migration, no test-template rebuild); `version_id_col` resolves to `<table>.version_id` on all 10.** Clusters 70->69 net (version_id dup eliminated; model boilerplate re-paired into remaining `user_id`/`sort_order`/`is_active` groups). No new pylint messages (5 line-too-long on those files are pre-existing Phase 4 items). **Full suite 5766 passed.** | 9.74/10 | 342 |
