@@ -20,6 +20,7 @@ from typing import Optional
 
 from app import ref_cache
 from app.enums import CalcMethodEnum
+from app.services.growth_engine import ContributionRecord
 from app.utils.balance_predicates import status_contributes_to_balance
 
 
@@ -247,7 +248,6 @@ def build_contribution_timeline(
         list[ContributionRecord] sorted by contribution_date.  Empty
         list if no deductions and no qualifying transactions exist.
     """
-    from app.services.growth_engine import ContributionRecord  # pylint: disable=import-outside-toplevel
     # Centralized ``status_contributes_to_balance`` helper
     # (D6-09 / MED-02); see ``calculate_investment_inputs`` above
     # for why the status-only variant is the right primitive here.

@@ -24,7 +24,7 @@ from app.schemas.validation import (
 from app.models.category import Category
 from app.models.ref import AccountType, AccountTypeCategory, FilingStatus, TaxType
 from app.models.tax_config import TaxBracketSet, FicaConfig, StateTaxConfig
-from app.models.user import User, UserSettings
+from app.models.user import MfaConfig, User, UserSettings
 from app.services.auth_service import hash_password
 
 logger = logging.getLogger(__name__)
@@ -150,7 +150,6 @@ def show():
     # -- no per-branch locals are needed because _load_companions_context
     # returns the four template variables as a single dict.
     elif section == "security":
-        from app.models.user import MfaConfig  # pylint: disable=import-outside-toplevel
         mfa_config = (
             db.session.query(MfaConfig)
             .filter_by(user_id=current_user.id)

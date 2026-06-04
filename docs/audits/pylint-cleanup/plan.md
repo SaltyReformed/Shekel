@@ -260,8 +260,8 @@ deferral saves no meaningful startup time. Marginal `app.*` modules pulled (base
 | app/__init__.py:845 | - | |
 | app/ref_cache.py:132 | **KEEP** | Classifier: CIRCULAR (`models.ref`->`extensions` must init before cache loads). Commented. KEEP under any policy. |
 | app/ref_seeds.py:154 | - | |
-| app/routes/settings.py:153 | - | |
-| app/services/auth_service.py:804 | - | |
+| app/routes/settings.py:153 | **REMOVED (hoist)** | Cargo-cult: `app.models.user` already imported at top (line 27 for `User, UserSettings`); merged `MfaConfig` in. create_app() OK; 335 area tests pass. |
+| app/services/auth_service.py:804 | **REMOVED (hoist)** | Reassessed boundary->cargo-cult: no cycle, cheap target (+4), `auth_service` imported in only 2 files (so "keep path light" is weak), no explicit boundary comment. `account_service` used only in sign-up. Hoisted to top; create_app() OK; auth + registration tests pass. |
 | app/services/balance_resolver.py:393 | - | |
 | app/services/carry_forward_service.py:734 | - | |
 | app/services/carry_forward_service.py:881 | - | |
@@ -269,7 +269,7 @@ deferral saves no meaningful startup time. Marginal `app.*` modules pulled (base
 | app/services/dashboard_service.py:524 | - | |
 | app/services/dashboard_service.py:525 | - | |
 | app/services/dashboard_service.py:592 | - | |
-| app/services/investment_projection.py:250 | - | |
+| app/services/investment_projection.py:250 | **REMOVED (hoist)** | Cargo-cult: module already has 3 top-level `app.*` imports (not a leaf, despite a stale comment at 140-141 claiming a "no-top-level-app-imports convention"). Hoisted `growth_engine.ContributionRecord`. create_app() OK; tests pass. |
 | app/services/loan_payment_service.py:347 | - | |
 | app/services/loan_payment_service.py:506 | - | |
 | app/services/pension_calculator.py:97 | - | |
@@ -278,7 +278,7 @@ deferral saves no meaningful startup time. Marginal `app.*` modules pulled (base
 | app/services/retirement_dashboard_service.py:186 | - | |
 | app/services/savings_dashboard_service.py:647 | - | |
 | app/services/savings_dashboard_service.py:648 | - | |
-| app/services/year_end_summary_service.py:1877 | - | |
+| app/services/year_end_summary_service.py:1877 | **REMOVED (hoist)** | Cargo-cult: `year_end` already imports `paycheck_calculator` + many services at top (line 42-59); `interest_projection.calculate_interest` is a low-level pure-math dep. Hoisted. create_app() OK; tests pass. |
 | app/utils/logging_config.py:543 | **KEEP** | Classifier: CIRCULAR (`app.extensions` pulls in this module during logging setup). KEEP under any policy; consider adding a one-line "deferred: circular via extensions" note. |
 
 (41 rows = the exact count of `disable=import-outside-toplevel` lines, verified via
@@ -704,4 +704,5 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `10936f4` | 0 | Audited + re-baselined `.pylintrc`: removed `import-error` & `missing-module-docstring` disables (0 violations each), added `missing-type-doc`/`redundant-returns-doc` disables (hints are source of truth), reverted `max-attributes` 15->7 (surfaced 13 service-class smells). `.pylintrc` only; no code changed. | 9.74/10 | 349 |
 | 2026-06-04 | `a28aea5` | 1 | Batch 1 (disables): removed 3 (`models/__init__`->`__all__`; `loan_anchor_event` listeners->`_mapper`/`_connection`). Audited `health.py:52` + `loan_resolver.py:377` as verified KEEP. Surfaced problem P-1. Disables 74->71; score/msgs unchanged (removals emit nothing). | 9.74/10 | 349 |
 | 2026-06-04 | `a6ec28a` | 1 | Batch 2 (disables): obligations `_FREQUENCY_LABELS` global -> `@functools.cache` (removed global-statement); audited balance_resolver protected-access x2 as KEEP (engine-math reuse, E-25). Disables 71->70; score/msgs unchanged. | 9.74/10 | 349 |
+| 2026-06-04 | `<pending: next commit>` | 1 | Batch 3 (hoists): 4 cargo-cult import-outside-toplevel hoisted to module top (`investment_projection`, `settings`, `year_end`, `auth_service`). `create_app()` OK (no cycle); 335 area tests pass. Disables 70->66; import-outside-toplevel 41->37. Visible 349->350 is a pylint R0801 re-pairing artifact (a pre-existing 3-way `Account`-query duplication in savings/settings/transfers got re-reported as 2 pairings instead of 1 after a 1-line shift), NOT new duplication; Phase 2 dedupes it; score unchanged. | 9.74/10 | 350 |
 | 2026-06-04 | `fb394c0` | 1 | import-outside-toplevel classifier: 2/21 service-util pairs genuinely circular (`ref_cache`, `logging_config` -> KEEP); 19 non-circular (deliberate boundary/lazy-load per their comments). Policy decision pending before touching the 19 + ~19 app-factory sites. No code change. | 9.74/10 | 349 |

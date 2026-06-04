@@ -52,6 +52,7 @@ from app.services.account_projection import (
     classify_account,
     compute_loan_period_balance_map,
 )
+from app.services.interest_projection import calculate_interest
 from app.services.investment_projection import (
     adapt_deductions,
     build_contribution_timeline,
@@ -1874,8 +1875,6 @@ def _compute_pre_anchor_interest(
     Returns:
         Decimal estimated interest for pre-anchor year periods.
     """
-    from app.services.interest_projection import calculate_interest  # pylint: disable=import-outside-toplevel
-
     anchor_pid = account.current_anchor_period_id
     if anchor_pid is None:
         return ZERO

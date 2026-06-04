@@ -34,6 +34,7 @@ from app.models.ref import FilingStatus
 from app.models.scenario import Scenario
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
 from app.exceptions import AuthError, ConflictError, ValidationError
+from app.services import account_service
 from app.utils.log_events import (
     AUTH,
     EVT_ACCOUNT_LOCKED,
@@ -801,7 +802,6 @@ def register_user(email, password, display_name):
     # enforced in exactly one place across every Account-creating
     # path (this service, the /accounts route, scripts, fixtures).
     # Decimal("0.00") is a real value per E-12, not "missing".
-    from app.services import account_service  # pylint: disable=import-outside-toplevel
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     account_service.create_account(
         user_id=user.id,
