@@ -7,6 +7,7 @@ paycheck breakdown, and salary projection views.
 
 import logging
 from datetime import date
+from decimal import Decimal as D
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -36,6 +37,7 @@ from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.ref import (
+    AccountType,
     CalcMethod,
     DeductionTiming,
     FilingStatus,
@@ -452,7 +454,6 @@ def add_raise(profile_id):
 
     # Convert percentage input (e.g. 3 → 0.03) for storage.
     if data.get("percentage") is not None:
-        from decimal import Decimal as D
         data["percentage"] = D(str(data["percentage"])) / D("100")
 
     salary_raise = SalaryRaise(salary_profile_id=profile.id, **data)
@@ -610,7 +611,6 @@ def update_raise(raise_id):
 
     # Convert percentage input (e.g. 3 → 0.03) for storage.
     if data.get("percentage") is not None:
-        from decimal import Decimal as D
         data["percentage"] = D(str(data["percentage"])) / D("100")
 
     _RAISE_UPDATE_FIELDS = {
@@ -708,7 +708,6 @@ def add_deduction(profile_id):
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
-    from decimal import Decimal as D
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = D(str(data["amount"])) / D("100")
     if data.get("inflation_rate"):
@@ -871,7 +870,6 @@ def update_deduction(ded_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
-    from decimal import Decimal as D
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = D(str(data["amount"])) / D("100")
     if data.get("inflation_rate"):
@@ -1075,7 +1073,6 @@ def calibrate_preview(profile_id):
     data = _calibration_schema.load(request.form)
 
     # Calculate taxable income from the profile's current pre-tax deductions.
-    from decimal import Decimal as D
     gross = D(str(data["actual_gross_pay"]))
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -1174,7 +1171,6 @@ def calibrate_confirm(profile_id):
     # against a posted rate the client could have tampered with or
     # whose source taxable base could have shifted between preview and
     # confirm.
-    from decimal import Decimal as D  # pylint: disable=import-outside-toplevel
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
     if current_period:
@@ -1375,7 +1371,6 @@ def update_tax_config():
     tax_year = data["tax_year"]
 
     # Convert percentage input (e.g. 3.99 → 0.0399) for storage.
-    from decimal import Decimal as D
     flat_rate = None
     if data.get("flat_rate") is not None:
         flat_rate = D(str(data["flat_rate"])) / D("100")
@@ -1432,7 +1427,6 @@ def update_fica_config():
     tax_year = data.pop("tax_year")
 
     # Convert percentage inputs (e.g. 6.2 → 0.062) for storage.
-    from decimal import Decimal as D
     for rate_field in ("ss_rate", "medicare_rate", "medicare_surtax_rate"):
         if rate_field in data and data[rate_field] is not None:
             data[rate_field] = D(str(data[rate_field])) / D("100")
@@ -1553,12 +1547,11 @@ def _render_deductions_partial(profile):
 
 def _get_investment_accounts(user_id):
     """Load retirement/investment accounts for the target account dropdown."""
-    from app.models.ref import AccountType as AT  # pylint: disable=import-outside-toplevel
     retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
     investment_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
     retirement_types = (
-        db.session.query(AT)
-        .filter(AT.category_id.in_([retirement_cat_id, investment_cat_id]))
+        db.session.query(AccountType)
+        .filter(AccountType.category_id.in_([retirement_cat_id, investment_cat_id]))
         .all()
     )
     type_ids = {rt.id for rt in retirement_types}

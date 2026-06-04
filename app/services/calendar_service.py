@@ -160,7 +160,7 @@ def get_month_detail(
 
     return _build_month_summary(
         year, month, account, periods, transactions,
-        large_threshold, user_id, scenario,
+        large_threshold, scenario,
     )
 
 
@@ -208,7 +208,7 @@ def get_year_overview(
     months = [
         _build_month_summary(
             year, m, account, periods, all_txns,
-            large_threshold, user_id, scenario,
+            large_threshold, scenario,
         )
         for m in range(1, 13)
     ]
@@ -379,7 +379,6 @@ def _build_month_summary(  # pylint: disable=too-many-arguments,too-many-positio
     periods: list[PayPeriod],
     transactions: list[Transaction],
     large_threshold: int,
-    user_id: int,
     scenario: Scenario,
 ) -> MonthSummary:
     """Assemble a MonthSummary from pre-queried data.
@@ -395,7 +394,6 @@ def _build_month_summary(  # pylint: disable=too-many-arguments,too-many-positio
         periods: All periods overlapping the date range.
         transactions: All transactions across those periods.
         large_threshold: Amount threshold for large flags.
-        user_id: The user's ID (for balance calculation).
         scenario: The baseline scenario.
 
     Returns:
@@ -409,7 +407,7 @@ def _build_month_summary(  # pylint: disable=too-many-arguments,too-many-positio
         e for entries in day_entries.values() for e in entries if e.is_large
     ]
 
-    end_balance = _compute_month_end_balance(account, year, month, user_id, scenario)
+    end_balance = _compute_month_end_balance(account, year, month, scenario)
     third_paycheck_months = _detect_third_paycheck_months(periods, year)
 
     paycheck_days = sorted({
@@ -498,7 +496,6 @@ def _compute_month_end_balance(
     account: Account,
     year: int,
     month: int,
-    user_id: int,  # pylint: disable=unused-argument
     scenario: Scenario,
 ) -> Decimal:
     """Project the checking balance at the true calendar month-end (E-27).
@@ -518,10 +515,6 @@ def _compute_month_end_balance(
         account: The :class:`~app.models.account.Account` to summarize.
         year: Target calendar year.
         month: Target calendar month (1-12).
-        user_id: The user's id.  Unused after the route through
-            ``balance_as_of_date`` (the producer reads
-            ``account.user_id`` directly); retained in the signature
-            so :func:`_build_month_summary` callers do not change.
         scenario: The baseline :class:`~app.models.scenario.Scenario`.
 
     Returns:

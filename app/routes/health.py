@@ -44,6 +44,11 @@ def health_check():
         # Verify database connectivity with a lightweight query.
         db.session.execute(db.text("SELECT 1"))
         return jsonify({"status": "healthy", "database": "connected"}), 200
+    # A health endpoint must convert ANY failure (DB connectivity, driver,
+    # connection-pool exhaustion) into a controlled "unhealthy" response
+    # rather than propagate a 500.  The broad catch is deliberate and is
+    # locked by tests/test_routes/test_health.py (which inject a bare
+    # Exception); do not narrow it to SQLAlchemyError.
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("Health check failed: %s", exc)
         # Do NOT include str(exc) in the response -- it may contain

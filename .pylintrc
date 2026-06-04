@@ -20,3 +20,13 @@ max-attributes=15
 [BASIC]
 # Allow short variable names common in Flask (db, bp, app, etc.)
 good-names=id,db,bp,app,fs,e,f,i,j,k,n,v
+
+[VARIABLES]
+# Marshmallow schema hooks (@validates_schema, @post_load, @pre_load,
+# @validates) receive framework-passed keyword arguments (many, partial,
+# data_key, ...) through a mandatory **kwargs that the hook body legitimately
+# ignores.  The parameter is required by Marshmallow's dispatch contract, so it
+# is not dead code.  Extend pylint's default ignored-argument-names
+# (_.*|^ignored_|^unused_) with kwargs so these framework-mandated parameters
+# do not raise unused-argument.
+ignored-argument-names=_.*|^ignored_|^unused_|^kwargs$

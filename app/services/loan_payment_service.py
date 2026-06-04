@@ -500,8 +500,9 @@ def live_loan_transfer_amounts(
         ``dict`` mapping transaction id to the live PITI Decimal; empty
         when no derive-from-loan transfer is present.
     """
-    # pylint: disable=import-outside-toplevel  -- one-way policy boundary;
-    # the local import documents that loan_resolver imports nothing here.
+    # loan_resolver imports nothing from this module, so resolving it here
+    # rather than at module top keeps the dependency one-directional.
+    # pylint: disable=import-outside-toplevel
     from app.models.transfer import Transfer
     from app.services import loan_resolver
 
