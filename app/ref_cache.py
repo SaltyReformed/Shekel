@@ -527,11 +527,11 @@ def recurrence_pattern_id(member):
     return _recurrence_pattern_map[member]
 
 
-def acct_type_icon(acct_type_id):
+def acct_type_icon(type_id):
     """Return the Bootstrap icon class for an account type, or a default.
 
     Args:
-        acct_type_id: The integer primary key of a ``ref.account_types`` row.
+        type_id: The integer primary key of a ``ref.account_types`` row.
 
     Returns:
         str -- the ``icon_class`` value, or ``'bi-bank'`` if unset.
@@ -541,15 +541,15 @@ def acct_type_icon(acct_type_id):
     """
     if not _initialized:
         raise RuntimeError("ref_cache not initialized -- call init() first.")
-    meta = _acct_type_meta.get(acct_type_id, {})
+    meta = _acct_type_meta.get(type_id, {})
     return meta.get("icon_class") or "bi-bank"
 
 
-def acct_type_max_term(acct_type_id):
+def acct_type_max_term(type_id):
     """Return the max term months for an account type, or None if no limit.
 
     Args:
-        acct_type_id: The integer primary key of a ``ref.account_types`` row.
+        type_id: The integer primary key of a ``ref.account_types`` row.
 
     Returns:
         int or None -- the ``max_term_months`` value.
@@ -559,7 +559,7 @@ def acct_type_max_term(acct_type_id):
     """
     if not _initialized:
         raise RuntimeError("ref_cache not initialized -- call init() first.")
-    meta = _acct_type_meta.get(acct_type_id, {})
+    meta = _acct_type_meta.get(type_id, {})
     return meta.get("max_term_months")
 
 

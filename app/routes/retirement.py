@@ -30,6 +30,18 @@ from app.services import retirement_dashboard_service
 
 logger = logging.getLogger(__name__)
 
+# Field allowlists for the retirement update routes: which submitted form
+# fields may be written back to each model via setattr.
+_PENSION_FIELDS = {
+    "salary_profile_id", "name", "benefit_multiplier",
+    "consecutive_high_years", "hire_date",
+    "earliest_retirement_date", "planned_retirement_date",
+}
+_SETTINGS_FIELDS = {
+    "safe_withdrawal_rate", "planned_retirement_date",
+    "estimated_retirement_tax_rate",
+}
+
 # Name of the composite unique constraint that backstops the
 # pension-profile double-submit fix (F-105 / C-22).  Mirrors the
 # literal in ``app/models/pension_profile.py:PensionProfile.__table_args__``
@@ -246,11 +258,6 @@ def update_pension(pension_id):
             errors=date_errors,
         ), 422
 
-    _PENSION_FIELDS = {
-        "salary_profile_id", "name", "benefit_multiplier",
-        "consecutive_high_years", "hire_date",
-        "earliest_retirement_date", "planned_retirement_date",
-    }
     for field_name, value in data.items():
         if field_name in _PENSION_FIELDS:
             setattr(pension, field_name, value)
@@ -388,10 +395,6 @@ def update_settings():
         flash("Settings not found.", "danger")
         return redirect(url_for("settings.show", section="retirement"))
 
-    _SETTINGS_FIELDS = {
-        "safe_withdrawal_rate", "planned_retirement_date",
-        "estimated_retirement_tax_rate",
-    }
     for field_name, value in data.items():
         if field_name in _SETTINGS_FIELDS:
             setattr(settings, field_name, value)

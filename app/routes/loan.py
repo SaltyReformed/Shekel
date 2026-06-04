@@ -59,6 +59,16 @@ from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
+# Field allowlist for the loan-params update route.  E-18 / D-C:
+# ``current_principal`` is intentionally excluded -- it is non-authoritative
+# seed and the resolver derives the displayed balance from
+# :class:`LoanAnchorEvent`; ``LoanParamsUpdateSchema`` no longer declares
+# the field, so a stale client submitting it via this form is a silent no-op.
+_PARAM_FIELDS = {
+    "interest_rate", "payment_day", "term_months",
+    "is_arm", "arm_first_adjustment_months", "arm_adjustment_interval_months",
+}
+
 # Name of the composite unique constraint that backstops the
 # loan rate-history double-submit fix (F-104 / C-22).  Mirrors the
 # literal in ``app/models/loan_features.py:RateHistory.__table_args__``
@@ -915,18 +925,6 @@ def update_params(account_id):
     # converted the form percent to the storage-domain fraction, so
     # ``data["interest_rate"]`` is stored verbatim.
 
-    # E-18 / Commit 16, decision D-C: ``current_principal`` is no
-    # longer editable through the params form.  The column is
-    # non-authoritative seed (the loan resolver derives the displayed
-    # balance from :class:`LoanAnchorEvent`), and the user-facing
-    # edit path is the dated balance true-up (:func:`true_up_balance`
-    # below).  ``LoanParamsUpdateSchema`` no longer declares the
-    # field, so a stale client submitting it via this form is a
-    # silent no-op (``BaseSchema`` ``unknown = EXCLUDE``).
-    _PARAM_FIELDS = {
-        "interest_rate", "payment_day", "term_months",
-        "is_arm", "arm_first_adjustment_months", "arm_adjustment_interval_months",
-    }
     for field, value in data.items():
         if field in _PARAM_FIELDS:
             setattr(params, field, value)
@@ -1363,7 +1361,7 @@ def payoff_calculate(account_id):
             committed_interest_saved=committed_interest_saved,
         )
 
-    elif mode == "target_date":
+    if mode == "target_date":
         target_date = data.get("target_date")
         if not target_date:
             return render_template(

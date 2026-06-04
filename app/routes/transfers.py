@@ -52,6 +52,13 @@ from app.routes._recurrence_form_helpers import (
 
 logger = logging.getLogger(__name__)
 
+# Field allowlist for the transfer-template update route: which submitted
+# form fields may be written back to the template via setattr.
+_TEMPLATE_UPDATE_FIELDS = {
+    "name", "default_amount", "from_account_id", "to_account_id",
+    "category_id", "is_active", "sort_order",
+}
+
 # Name of the partial unique index that backstops the ad-hoc transfer
 # double-submit fix (F-050 / C-22).  Mirrors the literal in
 # ``app/models/transfer.py:Transfer.__table_args__`` and
@@ -412,7 +419,6 @@ def update_transfer_template(template_id):
             "transfers.edit_transfer_template", template_id=template_id,
         ))
 
-    _TEMPLATE_UPDATE_FIELDS = {"name", "default_amount", "from_account_id", "to_account_id", "category_id", "is_active", "sort_order"}
     for field, value in data.items():
         if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)

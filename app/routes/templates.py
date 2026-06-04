@@ -41,6 +41,14 @@ from app.routes._recurrence_form_helpers import (
 
 logger = logging.getLogger(__name__)
 
+# Field allowlist for the template update route: which submitted form
+# fields may be written back to the template via setattr.
+_TEMPLATE_UPDATE_FIELDS = {
+    "name", "default_amount", "category_id", "transaction_type_id",
+    "account_id", "is_active", "sort_order",
+    "is_envelope", "companion_visible",
+}
+
 templates_bp = Blueprint("templates", __name__)
 
 _create_schema = TemplateCreateSchema()
@@ -381,11 +389,6 @@ def update_template(template_id):
         return redirect(url_for("templates.edit_template", template_id=template_id))
 
     # Apply remaining field updates to the template.
-    _TEMPLATE_UPDATE_FIELDS = {
-        "name", "default_amount", "category_id", "transaction_type_id",
-        "account_id", "is_active", "sort_order",
-        "is_envelope", "companion_visible",
-    }
     old_name = template.name
     for field, value in data.items():
         if field in _TEMPLATE_UPDATE_FIELDS:

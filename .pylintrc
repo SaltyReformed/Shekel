@@ -19,7 +19,10 @@ max-attributes=15
 
 [BASIC]
 # Allow short variable names common in Flask (db, bp, app, etc.)
-good-names=id,db,bp,app,fs,e,f,i,j,k,n,v
+# _initialized: module-private mutable cache-ready flag in ref_cache.py
+# (the cache maps beside it are lowercase too; pylint only flags the bool
+# because it reads as a constant assignment).
+good-names=id,db,bp,app,fs,e,f,i,j,k,n,v,_initialized
 
 [VARIABLES]
 # Marshmallow schema hooks (@validates_schema, @post_load, @pre_load,

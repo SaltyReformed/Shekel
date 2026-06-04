@@ -61,6 +61,10 @@ from app.utils.auth_helpers import fresh_login_required, get_or_404, require_own
 
 logger = logging.getLogger(__name__)
 
+# Field allowlist for the account update route: which submitted form
+# fields may be written back to the Account via setattr.
+_ACCOUNT_UPDATE_FIELDS = {"name", "account_type_id", "sort_order", "is_active"}
+
 
 # ── Account CRUD ───────────────────────────────────────────────────
 
@@ -326,7 +330,6 @@ def update_account(account_id):
                 )
                 db.session.add(history)
 
-    _ACCOUNT_UPDATE_FIELDS = {"name", "account_type_id", "sort_order", "is_active"}
     for field, value in data.items():
         if field in _ACCOUNT_UPDATE_FIELDS:
             setattr(account, field, value)

@@ -68,6 +68,24 @@ from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
 
+# Field allowlists for the update routes: which submitted form fields may
+# be written back to each model via setattr.  Defined at module scope so
+# each set is built once per process rather than on every request.
+_PROFILE_UPDATE_FIELDS = {
+    "name", "annual_salary", "filing_status_id", "state_code",
+    "pay_periods_per_year", "qualifying_children", "other_dependents",
+    "additional_income", "additional_deductions", "extra_withholding",
+}
+_RAISE_UPDATE_FIELDS = {
+    "raise_type_id", "effective_month", "effective_year",
+    "percentage", "flat_amount", "is_recurring", "notes",
+}
+_DEDUCTION_UPDATE_FIELDS = {
+    "name", "deduction_timing_id", "calc_method_id", "amount",
+    "deductions_per_year", "annual_cap", "inflation_enabled",
+    "inflation_rate", "inflation_effective_month", "target_account_id",
+}
+
 # Names of the composite unique constraints that backstop the
 # raise / deduction double-submit fixes (F-051 + F-052 / C-23).
 # Each literal mirrors the model declaration in
@@ -116,11 +134,11 @@ def list_profiles():
         net_pay = None
         if current_period and profile.is_active:
             tax_configs = load_tax_configs(current_user.id, profile)
-            breakdown = paycheck_calculator.calculate_paycheck(
+            pay_breakdown = paycheck_calculator.calculate_paycheck(
                 profile, current_period, periods, tax_configs,
                 calibration=profile.calibration,
             )
-            net_pay = breakdown.net_pay
+            net_pay = pay_breakdown.net_pay
         profile_data.append({"profile": profile, "net_pay": net_pay})
 
     return render_template("salary/list.html", profile_data=profile_data)
@@ -346,11 +364,6 @@ def update_profile(profile_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     try:
-        _PROFILE_UPDATE_FIELDS = {
-            "name", "annual_salary", "filing_status_id", "state_code",
-            "pay_periods_per_year", "qualifying_children", "other_dependents",
-            "additional_income", "additional_deductions", "extra_withholding",
-        }
         for field_name, value in data.items():
             if field_name in _PROFILE_UPDATE_FIELDS:
                 setattr(profile, field_name, value)
@@ -611,10 +624,6 @@ def update_raise(raise_id):
     if data.get("percentage") is not None:
         data["percentage"] = Decimal(str(data["percentage"])) / Decimal("100")
 
-    _RAISE_UPDATE_FIELDS = {
-        "raise_type_id", "effective_month", "effective_year",
-        "percentage", "flat_amount", "is_recurring", "notes",
-    }
     for field_name, value in data.items():
         if field_name in _RAISE_UPDATE_FIELDS:
             setattr(salary_raise, field_name, value)
@@ -873,11 +882,6 @@ def update_deduction(ded_id):
     if data.get("inflation_rate"):
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
-    _DEDUCTION_UPDATE_FIELDS = {
-        "name", "deduction_timing_id", "calc_method_id", "amount",
-        "deductions_per_year", "annual_cap", "inflation_enabled",
-        "inflation_rate", "inflation_effective_month", "target_account_id",
-    }
     for field_name, value in data.items():
         if field_name in _DEDUCTION_UPDATE_FIELDS:
             setattr(deduction, field_name, value)
@@ -1472,11 +1476,11 @@ def _regenerate_salary_transactions(profile):
     # Update the template's default_amount to the current net pay
     current_period = pay_period_service.get_current_period(current_user.id)
     if current_period:
-        breakdown = paycheck_calculator.calculate_paycheck(
+        pay_breakdown = paycheck_calculator.calculate_paycheck(
             profile, current_period, periods, tax_configs,
             calibration=profile.calibration,
         )
-        profile.template.default_amount = breakdown.net_pay
+        profile.template.default_amount = pay_breakdown.net_pay
 
     # Regenerate transactions
     try:

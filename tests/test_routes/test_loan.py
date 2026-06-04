@@ -1229,7 +1229,7 @@ class TestPayoffChartShape:
         only the extra_payment branch of ``payoff_calculate`` has
         been migrated in this commit.  Slice the function source
         between the ``mode == "extra_payment"`` guard and the
-        ``elif mode == "target_date"`` guard and assert the slice
+        ``mode == "target_date"`` guard and assert the slice
         contains no direct engine call.
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
@@ -1237,7 +1237,7 @@ class TestPayoffChartShape:
         loan_py = Path(__file__).resolve().parents[2] / "app" / "routes" / "loan.py"
         text = loan_py.read_text(encoding="utf-8")
         start_marker = 'if mode == "extra_payment":'
-        end_marker = 'elif mode == "target_date":'
+        end_marker = 'mode == "target_date":'
         start = text.find(start_marker)
         end = text.find(end_marker, start)
         assert start != -1 and end != -1 and end > start, (
