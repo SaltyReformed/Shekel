@@ -9,7 +9,9 @@ pay periods.
 
 from app.extensions import db
 from app.models.mixins import (
+    IsActiveMixin,
     OptimisticLockMixin,
+    SortOrderMixin,
     TimestampMixin,
     TrackingVisibilityMixin,
     UserScopedMixin,
@@ -17,8 +19,8 @@ from app.models.mixins import (
 
 
 class TransactionTemplate(
-    UserScopedMixin, OptimisticLockMixin, TrackingVisibilityMixin, TimestampMixin,
-    db.Model,
+    UserScopedMixin, IsActiveMixin, SortOrderMixin, OptimisticLockMixin,
+    TrackingVisibilityMixin, TimestampMixin, db.Model,
 ):
     """Blueprint for a recurring income or expense line item.
 
@@ -61,13 +63,7 @@ class TransactionTemplate(
     )
     name = db.Column(db.String(200), nullable=False)
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
+    # is_active + sort_order: from IsActiveMixin / SortOrderMixin.
     # is_envelope and companion_visible are provided by
     # TrackingVisibilityMixin (shared with Transaction).
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.

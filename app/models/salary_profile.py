@@ -6,10 +6,19 @@ state tax config, and links to raises and deductions for paycheck calculation.
 """
 
 from app.extensions import db
-from app.models.mixins import OptimisticLockMixin, TimestampMixin, UserScopedMixin
+from app.models.mixins import (
+    IsActiveMixin,
+    OptimisticLockMixin,
+    SortOrderMixin,
+    TimestampMixin,
+    UserScopedMixin,
+)
 
 
-class SalaryProfile(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
+class SalaryProfile(
+    UserScopedMixin, IsActiveMixin, SortOrderMixin, OptimisticLockMixin,
+    TimestampMixin, db.Model,
+):
     """A salary income profile used for net paycheck calculation.
 
     Optimistic locking: see :class:`Transaction` for the
@@ -94,13 +103,7 @@ class SalaryProfile(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Mod
         server_default=db.text("0"),
     )  # W-4 Step 4(c): extra withholding per period
 
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
+    # is_active + sort_order: from IsActiveMixin / SortOrderMixin.
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships

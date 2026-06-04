@@ -6,10 +6,17 @@ profile's gross pay to arrive at net pay.
 """
 
 from app.extensions import db
-from app.models.mixins import OptimisticLockMixin, TimestampMixin
+from app.models.mixins import (
+    IsActiveMixin,
+    OptimisticLockMixin,
+    SortOrderMixin,
+    TimestampMixin,
+)
 
 
-class PaycheckDeduction(OptimisticLockMixin, TimestampMixin, db.Model):
+class PaycheckDeduction(
+    SortOrderMixin, IsActiveMixin, OptimisticLockMixin, TimestampMixin, db.Model,
+):
     """A payroll deduction (e.g., 401k, health insurance, Roth IRA).
 
     Optimistic locking: see :class:`Transaction` for the
@@ -127,13 +134,7 @@ class PaycheckDeduction(OptimisticLockMixin, TimestampMixin, db.Model):
         db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
         nullable=True,
     )
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
+    # sort_order + is_active: from SortOrderMixin / IsActiveMixin.
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships

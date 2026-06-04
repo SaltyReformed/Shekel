@@ -8,13 +8,18 @@ for the true-up workflow.
 from app.extensions import db
 from app.models.mixins import (
     CreatedAtMixin,
+    IsActiveMixin,
     OptimisticLockMixin,
+    SortOrderMixin,
     TimestampMixin,
     UserScopedMixin,
 )
 
 
-class Account(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
+class Account(
+    UserScopedMixin, SortOrderMixin, IsActiveMixin, OptimisticLockMixin,
+    TimestampMixin, db.Model,
+):
     """A financial account (checking or savings) owned by a user.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -78,13 +83,7 @@ class Account(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
         nullable=False,
     )
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
+    # sort_order + is_active: from SortOrderMixin / IsActiveMixin.
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships

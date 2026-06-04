@@ -6,7 +6,7 @@ used by the paycheck calculator to compute tax withholdings.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin, UserScopedMixin
+from app.models.mixins import CreatedAtMixin, SortOrderMixin, UserScopedMixin
 
 
 class TaxBracketSet(UserScopedMixin, CreatedAtMixin, db.Model):
@@ -74,7 +74,7 @@ class TaxBracketSet(UserScopedMixin, CreatedAtMixin, db.Model):
         return f"<TaxBracketSet year={self.tax_year} status_id={self.filing_status_id}>"
 
 
-class TaxBracket(db.Model):
+class TaxBracket(SortOrderMixin, db.Model):
     """A single tax bracket within a bracket set."""
 
     __tablename__ = "tax_brackets"
@@ -109,9 +109,7 @@ class TaxBracket(db.Model):
     min_income = db.Column(db.Numeric(12, 2), nullable=False)
     max_income = db.Column(db.Numeric(12, 2))
     rate = db.Column(db.Numeric(5, 4), nullable=False)
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
+    # sort_order: from SortOrderMixin.
 
     # Relationships
     bracket_set = db.relationship("TaxBracketSet", back_populates="brackets")

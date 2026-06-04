@@ -7,10 +7,10 @@ bracket-based estimates for more accurate projections.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import IsActiveMixin, TimestampMixin
 
 
-class CalibrationOverride(TimestampMixin, db.Model):
+class CalibrationOverride(IsActiveMixin, TimestampMixin, db.Model):
     """Effective tax rates derived from a real pay stub.
 
     One calibration per salary profile.  Stores both the raw actual
@@ -93,10 +93,7 @@ class CalibrationOverride(TimestampMixin, db.Model):
 
     # Metadata.
     pay_stub_date = db.Column(db.Date, nullable=False)
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
+    # is_active: from IsActiveMixin.
     notes = db.Column(db.Text)
 
     # Relationships.

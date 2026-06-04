@@ -11,10 +11,17 @@ Supports two goal modes:
 """
 
 from app.extensions import db
-from app.models.mixins import OptimisticLockMixin, TimestampMixin, UserScopedMixin
+from app.models.mixins import (
+    IsActiveMixin,
+    OptimisticLockMixin,
+    TimestampMixin,
+    UserScopedMixin,
+)
 
 
-class SavingsGoal(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
+class SavingsGoal(
+    UserScopedMixin, IsActiveMixin, OptimisticLockMixin, TimestampMixin, db.Model,
+):
     """A savings goal with target amount, target date, and contribution plan.
 
     Goal modes:
@@ -71,10 +78,7 @@ class SavingsGoal(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model
     target_amount = db.Column(db.Numeric(12, 2), nullable=True)
     target_date = db.Column(db.Date)
     contribution_per_period = db.Column(db.Numeric(12, 2))
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
+    # is_active: from IsActiveMixin.
 
     # Income-relative goal columns (5.4-2).
     # goal_mode_id defaults to Fixed (ID 1) so existing goals are unaffected.

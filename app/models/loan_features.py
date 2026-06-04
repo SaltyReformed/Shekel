@@ -7,7 +7,7 @@ Both FK to account_id, not to any params table.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin, TimestampMixin
+from app.models.mixins import CreatedAtMixin, IsActiveMixin, TimestampMixin
 
 
 class RateHistory(CreatedAtMixin, db.Model):
@@ -113,7 +113,7 @@ class RateHistory(CreatedAtMixin, db.Model):
         )
 
 
-class EscrowComponent(TimestampMixin, db.Model):
+class EscrowComponent(IsActiveMixin, TimestampMixin, db.Model):
     """An escrow line item (property tax, insurance, etc.) for a loan account."""
 
     __tablename__ = "escrow_components"
@@ -152,10 +152,7 @@ class EscrowComponent(TimestampMixin, db.Model):
     name = db.Column(db.String(100), nullable=False)
     annual_amount = db.Column(db.Numeric(12, 2), nullable=False)
     inflation_rate = db.Column(db.Numeric(5, 4), nullable=True)
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
+    # is_active: from IsActiveMixin.
 
     # Relationships
     account = db.relationship(

@@ -69,6 +69,61 @@ class UserScopedMixin:
     )
 
 
+class SortOrderMixin:
+    """User-controlled display-ordering column.
+
+    Adds one column:
+
+      ``sort_order`` -- INTEGER NOT NULL DEFAULT 0.  A user-assignable
+                        rank used to order rows in dropdowns and lists;
+                        lower sorts first, ties broken by name.
+
+    Applied to every table whose ``sort_order`` is exactly this shape
+    (accounts, categories, salary profiles, both template tables,
+    paycheck deductions, tax brackets).  Like :class:`UserScopedMixin`
+    this is a mid-table column, so extracting it reorders the column to
+    the table tail; the same order-independence argument applies (see
+    :class:`UserScopedMixin` -- order is load-bearing nowhere here, so
+    the standard is order-independent equivalence + empty autogenerate
+    diff, not byte-identical DDL).
+    """
+
+    sort_order = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
+
+
+class IsActiveMixin:
+    """Soft-enable / archive flag.
+
+    Adds one column:
+
+      ``is_active`` -- BOOLEAN NOT NULL DEFAULT TRUE.  False archives the
+                       row: it stops driving new work (an inactive
+                       template generates nothing; an inactive account is
+                       hidden) while its historical rows remain valid.
+
+    Distinct from :class:`SoftDeleteOverridableMixin`'s ``is_deleted``:
+    ``is_active`` is a forward-looking enable switch the user toggles,
+    whereas ``is_deleted`` is a soft-delete tombstone.  Applied to every
+    table whose ``is_active`` is exactly this shape.  Same mid-table
+    reorder + order-independence argument as :class:`UserScopedMixin`.
+
+    EXCLUDES :class:`~app.models.user.User`.  ``User`` inherits
+    Flask-Login's ``UserMixin``, which defines ``is_active`` as a
+    property returning ``True``.  ``User`` declares its ``is_active``
+    Column inline so the class attribute overrides that property; routing
+    it through this mixin instead would put ``UserMixin.is_active`` ahead
+    of the mixin Column in the MRO and silently shadow the database
+    column.  ``User.is_active`` therefore stays inline by design.
+    """
+
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True,
+        server_default=db.text("true"),
+    )
+
+
 class TimestampMixin:
     """Audit-trail timestamps for mutable rows.
 
