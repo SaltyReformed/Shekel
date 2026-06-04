@@ -16,6 +16,7 @@ Federal withholding follows the IRS Publication 15-T Percentage Method:
 import logging
 from decimal import Decimal, ROUND_HALF_UP
 
+from app import ref_cache
 from app.enums import TaxTypeEnum
 from app.services.exceptions import (
     InvalidDependentCountError,
@@ -227,7 +228,6 @@ def calculate_state_tax(annual_gross, state_config):
     if state_config is None:
         return ZERO
 
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
 
     if state_config.tax_type_id == ref_cache.tax_type_id(TaxTypeEnum.NONE):
         return ZERO

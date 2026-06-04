@@ -18,6 +18,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
+from app import ref_cache
 from app.enums import CalcMethodEnum
 from app.utils.balance_predicates import status_contributes_to_balance
 
@@ -128,7 +129,6 @@ def calculate_investment_inputs(
     periodic_contribution = ZERO
     gross_biweekly = ZERO
 
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
     # Routed through the centralized ``status_contributes_to_balance``
     # helper (D6-09 / MED-02) so the "is this contribution counted"
     # rule shares one definition with the SQL filters in
@@ -247,7 +247,6 @@ def build_contribution_timeline(
         list[ContributionRecord] sorted by contribution_date.  Empty
         list if no deductions and no qualifying transactions exist.
     """
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.services.growth_engine import ContributionRecord  # pylint: disable=import-outside-toplevel
     # Centralized ``status_contributes_to_balance`` helper
     # (D6-09 / MED-02); see ``calculate_investment_inputs`` above

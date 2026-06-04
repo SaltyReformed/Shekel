@@ -56,6 +56,7 @@ from decimal import Decimal, InvalidOperation
 
 from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError, EXCLUDE
 
+from app import ref_cache
 from app.enums import (
     AcctCategoryEnum,
     CalcMethodEnum,
@@ -184,7 +185,6 @@ def _reject_envelope_on_income(data, message):
             error is attached to the ``is_envelope`` field for
             consistency with the other cross-field validators here.
     """
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
 
     if not data.get("is_envelope"):
         return
@@ -845,7 +845,6 @@ class DeductionCreateSchema(BaseSchema):
             ValidationError: When ``calc_method_id`` resolves to
                 ``PERCENTAGE`` and ``amount`` is greater than 100.
         """
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
 
         calc_method_id = data.get("calc_method_id")
         amount = data.get("amount")
@@ -1153,7 +1152,6 @@ class SavingsGoalCreateSchema(BaseSchema):
     @validates_schema
     def validate_goal_mode_fields(self, data, **kwargs):
         """Enforce cross-field constraints between goal mode and income fields."""
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
 
         goal_mode_id = data.get("goal_mode_id", 1)
         income_unit_id = data.get("income_unit_id")
@@ -1259,7 +1257,6 @@ class SavingsGoalUpdateSchema(BaseSchema):
         Only validates when goal_mode_id is present in the update payload.
         Partial updates that omit goal_mode_id skip cross-field checks.
         """
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
 
         goal_mode_id = data.get("goal_mode_id")
         if goal_mode_id is None:
@@ -1378,7 +1375,6 @@ class AccountTypeCreateSchema(BaseSchema):
     @validates_schema
     def validate_flag_combinations(self, data, **kwargs):
         """Enforce category-flag consistency rules."""
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
 
         cat_id = data.get("category_id")
         liability_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
@@ -1465,7 +1461,6 @@ class AccountTypeUpdateSchema(BaseSchema):
         dependency checks fire whenever both relevant fields are
         present.
         """
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
 
         cat_id = data.get("category_id")
 

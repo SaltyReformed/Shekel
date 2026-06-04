@@ -59,6 +59,7 @@ import logging
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
+from app import ref_cache
 from app.enums import CalcMethodEnum, DeductionTimingEnum
 from app.services import tax_calculator
 from app.services.calibration_service import apply_calibration
@@ -175,7 +176,6 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     is_third = _is_third_paycheck(period, all_periods)
 
     # Resolve deduction timing and calc method IDs from the startup cache.
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
 
     pre_tax_id = ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
     post_tax_id = ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
