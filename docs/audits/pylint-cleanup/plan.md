@@ -1,0 +1,631 @@
+# Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
+
+**Status: Phase 0 DONE (`.pylintrc` audited + re-baselined; uncommitted). Phases 1-5 pending.
+As of 2026-06-04 app/ is 9.74/10 with 349 visible messages; baseline was 9.68/10 / 423.**
+
+This document is the single system of record for driving `app/` (then `scripts/`) to a clean
+`pylint` 10.00/10. It exists so any session -- including a fresh one with no memory of this
+conversation -- can determine exactly what has and has not been done, and verify every claim
+against the actual code.
+
+## Ground rule for this document
+
+**If you cannot cite it, you cannot claim it.** Every status entry must be backed by either
+(a) a `file:line` reference that exists in the tree, or (b) a command in the
+[Verification](#verification-commands) appendix whose output you actually ran. No guesses, no
+assumptions, no "should be done." When you complete work, record the commit SHA and the
+re-measured number. When in doubt, re-run pylint -- the live tool output is ground truth, this
+document is the decision log and worklist around it.
+
+## How a new session determines current status (do this first)
+
+1. Read the [Progress Log](#progress-log) at the bottom -- it lists every commit that moved the
+   needle, newest last.
+2. Re-run the baseline measurement commands in [Verification](#verification-commands) and compare
+   to the [Baseline snapshot](#baseline-snapshot). The deltas tell you what has actually changed
+   in the tree, independent of what this document claims.
+3. For per-item status, the registers below (Phase 1 disables, Phase 2 clusters, Phase 3 smells)
+   carry a Status column. A blank/`-` means not started. Trust pylint's live output over a stale
+   checkbox: if the register says "done" but the message still fires, the register is wrong --
+   fix it.
+
+---
+
+## Baseline snapshot
+
+Measured at the state below. Reproduce with the [Verification](#verification-commands) commands.
+
+| Field | Value |
+|---|---|
+| Date measured | 2026-06-04 |
+| Git commit (HEAD) | `591264fb5f311847fd504ff7c32a6a32cd636692` (branch `dev`, tree clean) |
+| pylint | 4.0.5 |
+| astroid | 4.0.4 |
+| Python (local lint env) | 3.14.5 |
+| **`app/` score** | **9.68/10** |
+| Visible messages (`app/`) | **423** |
+| Inline `# pylint: disable=` directives (`app/`) | **74**, across 28 files |
+| `scripts/` score (out of scope until app/ is done) | 9.27/10 |
+
+### Visible message breakdown (the 423)
+
+By type: `refactor` 224, `convention` 102, `warning` 97.
+
+By symbol:
+
+| Count | Symbol | Resolved primarily in |
+|---:|---|---|
+| 83 | `missing-type-doc` | Phase 0 (config: hints are source of truth) |
+| 75 | `duplicate-code` | Phase 2 (DRY) |
+| 71 | `line-too-long` | Phase 4 (mechanical) |
+| 54 | `too-many-locals` | Phase 3 (refactor) |
+| 32 | `too-many-arguments` | Phase 3 |
+| 21 | `too-many-return-statements` | Phase 3 |
+| 21 | `missing-function-docstring` | Phase 4 |
+| 17 | `too-many-positional-arguments` | Phase 3 |
+| 13 | `too-many-branches` | Phase 3 |
+| 11 | `too-many-statements` | Phase 3 |
+| 9 | `too-many-lines` | Phase 3 (file splits) |
+| 7 | `unused-argument` | Phase 1 (framework-mandated; mostly keep+document) |
+| 4 | `redundant-returns-doc` | Phase 0 (config) |
+| 2 | `missing-param-doc` | Phase 4 |
+| 1 | `protected-access` | Phase 4 / Phase 1 |
+| 1 | `missing-class-docstring` | Phase 4 |
+| 1 | `too-many-nested-blocks` | Phase 3 |
+
+### CRITICAL note on counting (read before trusting any total)
+
+The **423 visible messages exclude anything currently suppressed by the 74 inline disables.**
+Some of those 74 disables hide real design smells (e.g. `auth.py` `too-many-*`,
+`transfer_service.py` `too-many-arguments`). When Phase 1 removes or re-scopes a disable, the
+underlying message becomes visible again, so **the visible count can rise after Phase 1 before
+Phase 3 drives it back down.** Do not treat a temporary increase as a regression. The only
+terminal success metric is: `pylint app/` reports 10.00/10 with zero messages AND every
+surviving disable is justified per `docs/coding-standards.md`.
+
+---
+
+## Ratified decisions (locked 2026-06-04)
+
+These four were decided with the developer. Do not silently revisit them.
+
+1. **Scope:** `app/` to 10/10 first; `scripts/` (currently 9.27) as a follow-on pass. `tests/`
+   and `migrations/` are out of scope.
+2. **Type docs:** signature type hints are the single source of truth. Phase 0 disables
+   `missing-type-doc` and `redundant-returns-doc` in `.pylintrc`; `missing-param-doc` /
+   `missing-return-doc` stay enabled so params still require a description, just not a redundant
+   type restatement. This is a DRY policy, documented in `.pylintrc`, not a suppression of signal.
+3. **Smell bar:** refactor genuinely where it improves the code; for genuinely irreducible
+   complexity, replace blanket disables with **scoped + rule-named + why-commented** disables per
+   `docs/coding-standards.md`. **Never raise a `.pylintrc` design threshold to win a smell.**
+4. **CI:** once `app/` is clean, change CI to gate the full run (fail on any message) so 10/10
+   cannot silently regress. See Phase 5 for the exact command.
+
+---
+
+## The six phases
+
+Ordering rationale: remove redundant noise first (Phase 0) so real signal stands out; do the
+highest-goal-value work (disables, DRY, complexity) in the middle; lock in via CI last.
+
+| Phase | Title | Primary target | Status |
+|---|---|---|---|
+| 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (uncommitted) |
+| 1 | Audit all 74 inline disables | the disables themselves | NOT STARTED |
+| 2 | duplicate-code / DRY | 75 clusters | NOT STARTED |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | NOT STARTED |
+| 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
+| 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
+
+Work cadence (all phases): batch by file-cluster, one coherent commit per cluster in
+`<type>(<scope>): ...` format; run targeted tests for touched files per batch; full suite at
+phase boundaries and as the final gate; show actual pylint + pytest output per batch
+(coding-standards rule 9). Update this document's registers and the Progress Log as you go.
+
+---
+
+## Phase 0 -- Re-baseline the config
+
+**Goal:** ratify decision #2 in `.pylintrc`, removing the 87 messages that duplicate type-hint
+information (`missing-type-doc` 83 + `redundant-returns-doc` 4). This is the only phase that
+changes config rather than code.
+
+**Action (expanded per developer directive 2026-06-04):** the original action was only to add the
+two type-doc disables. The developer directed a full audit of `.pylintrc` itself for exclusions
+that hide handleable issues, keeping only those that genuinely cannot be handled another way. Both
+were done together.
+
+**`.pylintrc` audit + changes (every row verified by measurement; commands in
+[Verification](#verification-commands)):**
+
+| Setting | Finding | Action |
+|---|---|---|
+| `disable=missing-module-docstring` | 0 current violations; contradicts coding-standards ("docstrings on every module, no exceptions") | **REMOVED** -- it only hid future regressions, costs 0 now |
+| `disable=import-error` | 0 violations locally; CI installs full deps (`requirements-dev.txt` has `-r requirements.txt`), so resolution matches | **REMOVED** -- now catches genuinely broken imports |
+| `disable=too-few-public-methods` | 52 hits, all legitimate: 43 SQLAlchemy models, 4 Flask config classes, 1 Marshmallow schema, 2 result dataclasses (pension_calculator), 2 logging filter/formatter subclasses | **KEPT** + documented; no real smell hidden, 52 inline disables would be noise |
+| add `missing-type-doc` (83) + `redundant-returns-doc` (4) | type info lives in signature hints (ratified decision #2); docstring type = DRY duplication | **ADDED** to disable; param/return DESCRIPTIONS still enforced via missing-param-doc/return-doc |
+| `[DESIGN] max-attributes=15` | hid 13 service-class smells (8-13 attrs each); "SQLAlchemy models" justification factually wrong -- NONE of the 13 are models | **REVERTED** to default 7; 13 surfaced -> Phase 3 |
+| `[BASIC] good-names`; `[VARIABLES] ^kwargs$` | conventional / framework-mandated (removing `^kwargs$` surfaces 69 Marshmallow `**kwargs`) | **KEPT** (genuinely unavoidable) |
+
+Confirmed only `max-attributes` was a relaxed `[DESIGN]` threshold; max-args/locals/branches/
+statements/returns/nested-blocks are all at pylint defaults, so every Phase 3 smell is real at
+standard thresholds (not a relaxation artifact).
+
+**Result (measured 2026-06-04, full config, `pylint app/ --reports=n`):**
+- Score: baseline 9.68 -> **9.74/10**. (pylint may print "previous run: 9.94" -- a stale cache
+  artifact from the isolated `--enable=X` audit runs, not a real prior full-config score.)
+- Visible messages: 423 -> **349** (delta -74 = -83 type-doc - 4 returns-doc + 13 instance-attrs).
+- Verified zero: `missing-type-doc`, `redundant-returns-doc`, `import-error`,
+  `missing-module-docstring`. New: `too-many-instance-attributes` 13 (the surfaced smells).
+- Files changed: **`.pylintrc` only.** No application code changed, so the test suite is unaffected
+  (a lint-config edit cannot change runtime behavior).
+
+**Status:** DONE, uncommitted as of this writing. Commit SHA recorded in the Progress Log on commit.
+
+---
+
+## Phase 1 -- Audit all 74 inline disables
+
+**Goal:** every disable is either removed (root cause fixed) or conforms to coding-standards
+(one line, names the specific rule, has a why-comment). This is the highest-value phase for the
+stated goal: surfacing code hidden behind a disable.
+
+**Method per disable:** classify into one of:
+- **KEEP+DOC** -- legitimate and essential (e.g. framework-mandated signature, real circular-import
+  break). Ensure it is scoped, rule-named, and carries a why-comment. Verify the claim (for
+  imports: actually try hoisting; if it breaks on a real cycle, it stays).
+- **REMOVE** -- the suppression is unnecessary (cargo-cult import deferral, re-export better
+  expressed with `__all__`). Fix the root cause and delete the disable.
+- **FIX** -- the disable hides a defect to repair now (`broad-except`, `protected-access`).
+- **-> PHASE 3** -- the disable hides a design smell; classification happens here, the actual
+  refactor-or-justify is tracked in Phase 3.
+
+Status values: `-` (unreviewed), `KEEP`, `REMOVED`, `FIXED`, `P3` (handed to Phase 3).
+
+**Rule occurrences across the 74 disable lines** (sums to 85 because 11 lines disable 2+ rules;
+verify with `grep -rhno "disable=[a-z,-]*" app/ | sed 's/.*disable=//' | tr ',' '\n' | sort | uniq -c`):
+`import-outside-toplevel` 41, `too-many-positional-arguments` 7, `too-many-arguments` 7,
+`global-statement` 6, `wrong-import-position` 4, `too-many-return-statements` 4,
+`unused-argument` 3, `too-many-locals` 3, `too-many-branches` 3, `protected-access` 2,
+`unused-import` 1, `too-many-statements` 1, `too-many-lines` 1, `line-too-long` 1,
+`broad-except` 1.
+
+### Register: import-outside-toplevel (41 sites)
+
+Prior art: commits `9971094` (hoisted 37) and `6dcc503` (removed cargo-cult in 5 modules) already
+swept a batch. Remaining ones are more likely real circular breaks -- but verify each by hoisting.
+
+| file:line | Verdict | Reason / commit |
+|---|---|---|
+| app/__init__.py:67 | - | |
+| app/__init__.py:187 | - | |
+| app/__init__.py:188 | - | |
+| app/__init__.py:212 | - | |
+| app/__init__.py:223 | - | |
+| app/__init__.py:224 | - | |
+| app/__init__.py:235 | - | |
+| app/__init__.py:236 | - | |
+| app/__init__.py:237 | - | |
+| app/__init__.py:238 | - | |
+| app/__init__.py:239 | - | |
+| app/__init__.py:240 | - | |
+| app/__init__.py:273 | - | |
+| app/__init__.py:274 | - | |
+| app/__init__.py:329 | - | |
+| app/__init__.py:398 | - | |
+| app/__init__.py:437 | - | |
+| app/__init__.py:675 | - | |
+| app/__init__.py:845 | - | |
+| app/ref_cache.py:132 | - | |
+| app/ref_seeds.py:154 | - | |
+| app/routes/settings.py:153 | - | |
+| app/services/auth_service.py:804 | - | |
+| app/services/balance_resolver.py:393 | - | |
+| app/services/carry_forward_service.py:734 | - | |
+| app/services/carry_forward_service.py:881 | - | |
+| app/services/carry_forward_service.py:882 | - | |
+| app/services/dashboard_service.py:524 | - | |
+| app/services/dashboard_service.py:525 | - | |
+| app/services/dashboard_service.py:592 | - | |
+| app/services/investment_projection.py:250 | - | |
+| app/services/loan_payment_service.py:347 | - | |
+| app/services/loan_payment_service.py:506 | - | |
+| app/services/pension_calculator.py:97 | - | |
+| app/services/recurrence_engine.py:736 | - | |
+| app/services/recurrence_engine.py:737 | - | |
+| app/services/retirement_dashboard_service.py:186 | - | |
+| app/services/savings_dashboard_service.py:647 | - | |
+| app/services/savings_dashboard_service.py:648 | - | |
+| app/services/year_end_summary_service.py:1877 | - | |
+| app/utils/logging_config.py:543 | - | |
+
+(41 rows = the exact count of `disable=import-outside-toplevel` lines, verified via
+`grep -rn "disable=import-outside-toplevel" app/ | wc -l`. The raw grep is the authority;
+reconcile against `grep -rn "pylint: disable" app/` when working this register.)
+
+### Register: design-smell disables (hand to Phase 3)
+
+| file:line | Rule(s) disabled | Verdict | Reason / commit |
+|---|---|---|---|
+| app/routes/auth.py:23 | too-many-lines | - | file split candidate |
+| app/routes/auth.py:357 (login) | too-many-return-statements | - | security-critical; understand before touch |
+| app/routes/auth.py:627 (reauth) | too-many-return-statements | - | |
+| app/routes/auth.py:738 (mfa_verify) | too-many-return-statements, too-many-branches | - | |
+| app/routes/auth.py:969 (mfa_confirm) | too-many-return-statements | - | |
+| app/services/balance_calculator.py:121 | too-many-arguments, too-many-positional-arguments, too-many-locals | - | |
+| app/services/budget_variance_service.py:98 (compute_variance) | too-many-arguments, too-many-positional-arguments | - | |
+| app/services/budget_variance_service.py:176 | too-many-arguments, too-many-positional-arguments | - | |
+| app/services/budget_variance_service.py:261 | too-many-arguments, too-many-positional-arguments | - | |
+| app/services/calendar_service.py:375 | too-many-arguments, too-many-positional-arguments | - | |
+| app/services/dashboard_service.py:306 (_compute_alerts) | too-many-arguments, too-many-positional-arguments | - | |
+| app/services/spending_trend_service.py:296 | too-many-locals | - | |
+| app/services/transfer_service.py:283 (create_transfer) | too-many-arguments, too-many-positional-arguments, too-many-locals | - | TRANSFER INVARIANTS apply |
+| app/services/transfer_service.py:445 (update_transfer) | too-many-branches, too-many-statements | - | TRANSFER INVARIANTS apply |
+| app/services/transfer_service.py:693 (restore_transfer) | too-many-branches | - | TRANSFER INVARIANTS apply |
+
+### Register: fix-now and other disables
+
+| file:line | Rule | Verdict | Reason / commit |
+|---|---|---|---|
+| app/routes/health.py:52 | broad-except | - | **FIX**: CLAUDE.md bans broad-except. Catch specific exceptions. |
+| app/services/balance_resolver.py:565 | protected-access | - | expose public accessor or document |
+| app/services/balance_resolver.py:706 | protected-access | - | expose public accessor or document |
+| app/models/__init__.py:9 | unused-import | - | re-export; prefer `__all__` then remove disable |
+| app/models/loan_anchor_event.py:168 (_block_update) | unused-argument | - | SQLAlchemy event signature; KEEP+DOC |
+| app/models/loan_anchor_event.py:183 (_block_delete) | unused-argument | - | SQLAlchemy event signature; KEEP+DOC |
+| app/services/loan_resolver.py:377 | unused-argument | - | verify; KEEP+DOC or remove |
+| app/ref_cache.py:147 | global-statement | - | lazy-cache init; likely KEEP+DOC |
+| app/ref_cache.py:148 | global-statement | - | lazy-cache init; likely KEEP+DOC |
+| app/ref_cache.py:149 | global-statement | - | lazy-cache init; likely KEEP+DOC |
+| app/ref_cache.py:150 | global-statement | - | lazy-cache init; likely KEEP+DOC |
+| app/ref_cache.py:151 | global-statement | - | lazy-cache init; likely KEEP+DOC |
+| app/routes/obligations.py:54 | global-statement | - | `_FREQUENCY_LABELS` mutable global; evaluate build-once |
+| app/ref_seeds.py:31 | line-too-long | - | long data literal; reflow or KEEP+DOC. NB: 6 other long lines in this file are visible (Phase 4) |
+| app/routes/accounts/__init__.py:57 | wrong-import-position | - | blueprint registration order; verify, KEEP+DOC |
+| app/routes/accounts/__init__.py:58 | wrong-import-position | - | |
+| app/routes/accounts/__init__.py:59 | wrong-import-position | - | |
+| app/routes/accounts/__init__.py:60 | wrong-import-position | - | |
+
+**Status:** NOT STARTED. The authoritative list of all 74 raw disable lines is
+`grep -rn "pylint: disable" app/` -- reconcile the registers above against it before declaring
+Phase 1 complete (no orphaned or newly added disable left unreviewed).
+
+---
+
+## Phase 2 -- duplicate-code / DRY (75 clusters)
+
+**Goal:** resolve every `duplicate-code` (R0801) cluster, each one either by honest extraction
+(shared helper / base / mapping) or, where the similarity is genuinely incidental and extraction
+would wrongly couple unrelated modules (coding-standards rule 13), a documented
+`# pylint: disable=duplicate-code` with a why-comment.
+
+**Note on attribution:** pylint anchors all 75 R0801 messages to `app/utils/logging_config.py:1`
+in some output formats; that file is NOT the problem. The real sites are the file pairs below.
+
+**High-value structural duplications to look at first** (largest / most systemic):
+- **`routes/templates.py` <-> `routes/transfers.py`** -- ~18 clusters (#39-#56). The transfers
+  route appears to be a near-fork of the templates route. Strong candidate for a shared helper
+  module.
+- **`services/recurrence_engine.py` <-> `services/transfer_recurrence.py`** -- ~7 clusters
+  (#57, #70-#75), including 35-, 33-, 28-line blocks. Likely a forked engine; extract shared core.
+- **Model boilerplate** (#1-#21) -- many 2-site model<->model clones (`__repr__`/serialization/
+  validation patterns). Judge case-by-case: a mixin/base may help, or they may be incidental.
+
+Status values: `-` (unreviewed), `EXTRACT` (done via extraction), `DISABLE` (documented incidental),
+with commit SHA.
+
+| # | ~lines | Site A | Site B | Status |
+|---:|---:|---|---|---|
+| 1 | 8 | models/account:161-169 | models/loan_anchor_event:100-108 | - |
+| 2 | 9 | models/account:45-54 | models/transfer:86-95 | - |
+| 3 | 25 | models/account:78-103 | models/paycheck_deduction:128-146 | - |
+| 4 | 8 | models/category:21-29 | models/savings_goal:60-68 | - |
+| 5 | 11 | models/category:31-42 | models/paycheck_deduction:129-138 | - |
+| 6 | 20 | models/investment_params:89-109 | models/loan_params:83-94 | - |
+| 7 | 9 | models/investment_params:89-98 | models/loan_anchor_event:102-111 | - |
+| 8 | 10 | models/loan_anchor_event:102-112 | models/loan_features:76-86 | - |
+| 9 | 6 | models/loan_features:146-152 | models/savings_goal:68-74 | - |
+| 10 | 9 | models/loan_features:76-85 | models/loan_params:83-92 | - |
+| 11 | 8 | models/pay_period:20-28 | models/recurrence_rule:18-26 | - |
+| 12 | 13 | models/paycheck_deduction:80-93 | models/salary_raise:85-98 | - |
+| 13 | 9 | models/salary_profile:100-109 | models/transfer_template:60-67 | - |
+| 14 | 17 | models/salary_profile:100-117 | models/transaction_template:59-78 | - |
+| 15 | 9 | models/salary_profile:37-46 | models/tax_config:29-41 | - |
+| 16 | 9 | models/savings_goal:59-68 | models/scenario:31-40 | - |
+| 17 | 10 | models/savings_goal:59-69 | models/transaction_template:33-43 | - |
+| 18 | 8 | models/scenario:32-40 | models/transfer_template:39-47 | - |
+| 19 | 11 | models/transaction:144-155 | models/transfer:125-136 | - |
+| 20 | 14 | models/transaction_template:56-70 | models/transfer_template:57-67 | - |
+| 21 | 31 | models/transfer:87-118 | models/transfer_template:39-55 | - |
+| 22 | 5 | routes/accounts/crud:404-409 | routes/savings:270-275 | - |
+| 23 | 8 | routes/accounts/crud:96-104 | routes/settings:128-135 | - |
+| 24 | 7 | routes/accounts/detail:109-116 | services/savings_dashboard_service:105-122 | - |
+| 25 | 8 | routes/accounts/detail:145-153 | services/savings_dashboard_service:490-502 | - |
+| 26 | 9 | routes/debt_strategy:102-111 | services/year_end_summary_service:1538-1546 | - |
+| 27 | 29 | routes/entries:75-104 | routes/transactions:360-375 | - |
+| 28 | 11 | routes/investment:151-162 | routes/loan:1612-1623 | - |
+| 29 | 7 | routes/investment:219-226 | routes/loan:1670-1677 | - |
+| 30 | 7 | routes/investment:226-233 | routes/loan:1678-1685 | - |
+| 31 | 9 | routes/investment:242-251 | routes/transfers:265-273 | - |
+| 32 | 10 | routes/investment:242-252 | routes/loan:1689-1699 | - |
+| 33 | 5 | routes/loan:1681-1686 | routes/transfers:427-432 | - |
+| 34 | 22 | routes/obligations:120-142 | services/savings_goal_service:235-256 | - |
+| 35 | 7 | routes/retirement:376-383 | routes/settings:363-370 | - |
+| 36 | 7 | routes/salary:1551-1558 | services/retirement_dashboard_service:193-200 | - |
+| 37 | 5 | routes/salary:426-431 | routes/savings:236-241 | - |
+| 38 | 6 | routes/savings:53-59 | routes/settings:73-79 | - |
+| 39 | 14 | routes/templates:142-156 | routes/transfers:113-120 | - |
+| 40 | 6 | routes/templates:150-156 | routes/transfers:769-779 | - |
+| 41 | 15 | routes/templates:206-221 | routes/transfers:183-199 | - |
+| 42 | 6 | routes/templates:260-266 | routes/transfers:114-120 | - |
+| 43 | 10 | routes/templates:311-321 | routes/transfers:335-345 | - |
+| 44 | 21 | routes/templates:329-350 | routes/transfers:353-371 | - |
+| 45 | 8 | routes/templates:356-364 | routes/transfers:376-384 | - |
+| 46 | 9 | routes/templates:429-438 | routes/transfers:450-459 | - |
+| 47 | 7 | routes/templates:431-438 | routes/transfers:579-586 | - |
+| 48 | 5 | routes/templates:433-438 | routes/transfers:516-521 | - |
+| 49 | 5 | routes/templates:478-483 | routes/transfers:454-459 | - |
+| 50 | 7 | routes/templates:528-535 | routes/transfers:452-459 | - |
+| 51 | 5 | routes/templates:530-535 | routes/transfers:667-672 | - |
+| 52 | 10 | routes/templates:584-594 | routes/transfers:645-656 | - |
+| 53 | 5 | routes/templates:599-604 | routes/transfers:581-586 | - |
+| 54 | 6 | routes/templates:629-635 | routes/transfers:714-720 | - |
+| 55 | 5 | routes/transactions:409-414 | routes/transfers:766-771 | - |
+| 56 | 11 | routes/transactions:415-426 | routes/transfers:772-784 | - |
+| 57 | 12 | routes/transfers:247-259 | services/transfer_recurrence:127-134 | - |
+| 58 | 11 | services/amortization_engine:68-79 | services/growth_engine:74-85 | - |
+| 59 | 7 | services/balance_calculator:292-299 | services/balance_resolver:626-632 | - |
+| 60 | 10 | services/balance_calculator:300-310 | services/balance_resolver:637-644 | - |
+| 61 | 6 | services/budget_variance_service:245-251 | services/loan_payment_service:248-254 | - |
+| 62 | 5 | services/budget_variance_service:248-253 | services/dashboard_service:674-679 | - |
+| 63 | 8 | services/budget_variance_service:273-281 | services/calendar_service:259-267 | - |
+| 64 | 20 | services/budget_variance_service:288-308 | services/calendar_service:276-302 | - |
+| 65 | 7 | services/credit_workflow:238-245 | services/entry_credit_workflow:205-212 | - |
+| 66 | 6 | services/dashboard_service:143-149 | services/spending_trend_service:251-257 | - |
+| 67 | 12 | services/dashboard_service:515-527 | services/savings_dashboard_service:638-650 | - |
+| 68 | 18 | services/dashboard_service:575-593 | services/entry_service:583-608 | - |
+| 69 | 30 | services/debt_strategy_service:360-390 | services/savings_goal_service:435-444 | - |
+| 70 | 11 | services/recurrence_engine:134-145 | services/transfer_recurrence:100-121 | - |
+| 71 | 11 | services/recurrence_engine:282-293 | services/transfer_recurrence:169-179 | - |
+| 72 | 9 | services/recurrence_engine:298-307 | services/transfer_recurrence:184-193 | - |
+| 73 | 35 | services/recurrence_engine:336-371 | services/transfer_recurrence:223-259 | - |
+| 74 | 28 | services/recurrence_engine:51-79 | services/transfer_recurrence:39-62 | - |
+| 75 | 33 | services/recurrence_engine:80-113 | services/transfer_recurrence:63-87 | - |
+
+**Status:** NOT STARTED. Re-run the cluster extraction command (Verification) after Phase 3 too:
+refactors shift line ranges and can create or dissolve clusters.
+
+---
+
+## Phase 3 -- Design-smell refactors (158 visible + the Phase 1 smell-disables)
+
+**Goal:** every `too-many-*` / `too-many-nested-blocks` resolved by genuine decomposition, or, if
+irreducible, a scoped+named+commented disable per decision #3. Scope = the 158 visible items below
+PLUS the smell-disables handed over from Phase 1 (`auth.py`, `balance_calculator.py`,
+`budget_variance_service.py`, `calendar_service.py`, `dashboard_service.py`,
+`spending_trend_service.py`, `transfer_service.py`).
+
+Worked file-by-file, ordered by smell density (most first). `tm-` = `too-many-`.
+
+Status per file: `-` (not started), `WIP`, `DONE` (file emits zero smell messages, or only
+documented disables), with commit SHA.
+
+### Tier 1 -- densest
+
+- **services/year_end_summary_service.py** (module tm-lines; `_compute_net_worth`:728 tm-args;
+  `_build_account_data`:803 tm-args; `_compute_savings_progress`:952 tm-args/pos/locals;
+  `_project_investment_for_year`:1106 tm-args/pos/locals; `_build_investment_balance_map`:1598
+  tm-args/locals; `_get_account_balance_map`:2052 tm-args) -- Status: `-`
+- **services/savings_dashboard_service.py** (module tm-lines; `compute_dashboard_data`:72 tm-locals;
+  `_load_account_params`:252 tm-locals; `_compute_account_projections`:334
+  tm-args/pos/locals/branches/statements + tm-nested-blocks:359; `_project_investment`:559
+  tm-args/pos/locals; `_compute_goal_progress`:656 tm-locals; `_compute_avg_monthly_expenses`:786
+  tm-locals; `_compute_debt_summary`:867 tm-locals) -- Status: `-`
+- **services/amortization_engine.py** (module tm-lines; `replay_confirmed_history`:422
+  tm-args/locals/branches/statements; `project_forward`:751 tm-args/locals/branches/statements;
+  `calculate_payoff_by_date`:1007 tm-args/pos/locals/return/branches) -- Status: `-`
+- **routes/loan.py** (module tm-lines; `_compute_payment_breakdown`:179 tm-locals; `dashboard`:532
+  tm-locals/statements; `payoff_calculate`:1242 tm-locals; `refinance_calculate`:1425 tm-locals;
+  `create_payment_transfer`:1590 tm-locals) -- Status: `-`
+- **routes/transactions.py** (module tm-lines; `update_transaction`:456 tm-return/branches/statements;
+  `mark_done`:665 tm-return/branches/statements; `cancel_transaction`:903 tm-return;
+  `create_inline`:1099 tm-return) -- Status: `-`
+- **routes/transfers.py** (module tm-lines; `create_transfer_template`:145 tm-locals/return;
+  `update_transfer_template`:315 tm-locals/return/branches/statements; `update_transfer`:792
+  tm-return; `create_ad_hoc`:923 tm-return) -- TRANSFER INVARIANTS apply -- Status: `-`
+
+### Tier 2
+
+- **routes/salary.py** (module tm-lines; `add_raise`:451, `update_raise`:583, `add_deduction`:703,
+  `update_deduction`:839 all tm-return; `calibrate_confirm`:1126 tm-locals/statements) -- Status: `-`
+- **services/investment_dashboard_service.py** (`compute_dashboard_data`:299 tm-locals;
+  `_project_dashboard_balances`:424 tm-args/locals; `_compute_contribution_prompt`:488 tm-args;
+  `compute_growth_chart_data`:558 tm-locals; `_compute_what_if_overlay`:698 tm-args) -- Status: `-`
+- **services/debt_strategy_service.py** (`_cascade_extra_payments`:476 tm-args/pos;
+  `calculate_strategy`:528 tm-args/pos/locals; `_build_result`:649 tm-args/pos) -- Status: `-`
+- **routes/templates.py** (`update_template`:290 tm-locals/return/branches/statements;
+  `preview_recurrence`:651 tm-locals) -- Status: `-`
+- **services/retirement_dashboard_service.py** (`compute_gap_data`:114 tm-locals/statements;
+  `_project_retirement_accounts`:432 tm-args/pos/locals) -- Status: `-`
+- **routes/_recurrence_form_helpers.py** (`build_recurrence_rule_from_form`:100 tm-args/locals;
+  `handle_stale_conflict`:213 tm-args; `handle_stale_form_conflict`:263 tm-args) -- Status: `-`
+- **routes/grid.py** (`_build_plan_view`:342 tm-args/pos/locals; `index`:433 tm-locals) -- Status: `-`
+- **services/paycheck_calculator.py** (`calculate_paycheck`:125 tm-locals;
+  `_gross_biweekly_for_period`:319 tm-locals; `_calculate_deductions`:559 tm-args/pos) -- Status: `-`
+
+### Tier 3 -- single-function or low-count files
+
+- services/investment_projection.py: `calculate_investment_inputs`:104 tm-args/pos/locals -- `-`
+- routes/debt_strategy.py: `calculate`:252 tm-locals/return/branches -- `-`
+- services/loan_resolver.py: `resolve_loan`:383 tm-locals; `compute_payoff_scenarios`:658 tm-args/locals -- `-`
+- services/retirement_gap_calculator.py: `calculate_gap`:39 tm-args/pos/locals -- `-`
+- services/calibration_service.py: `derive_effective_rates`:35 tm-args/pos/locals -- `-`
+- services/growth_engine.py: `project_balance`:206 tm-args/pos/locals -- `-`
+- services/recurrence_engine.py: `generate_for_template`:55 tm-locals; `_match_periods`:453 tm-return -- `-`
+- app/ref_cache.py: `init`:101 tm-locals/branches/statements -- `-`
+- app/ref_seeds.py: `seed_reference_data`:114 tm-locals/branches -- `-`
+- routes/accounts/detail.py: `interest_detail`:50 tm-locals; `checking_detail`:237 tm-locals -- `-`
+- services/loan_payment_service.py: `prepare_payments_for_engine`:362 tm-locals; `live_loan_transfer_amounts`:463 tm-locals -- `-`
+- app/__init__.py: `_register_blueprints`:435 tm-locals -- `-`
+- routes/accounts/anchor.py: `true_up`:206 tm-return -- `-`
+- routes/categories.py: `create_category`:38 tm-return -- `-`
+- routes/entries.py: `update_entry`:287 tm-return -- `-`
+- routes/obligations.py: `_next_occurrence`:102 tm-return; `summary`:324 tm-locals -- `-`
+- routes/settings.py: `show`:43 tm-locals; `update`:191 tm-branches -- `-`
+- services/account_service.py: `create_account`:86 tm-args -- `-`
+- services/balance_calculator.py: `calculate_balances`:33 tm-branches -- `-`
+- services/entry_service.py: `create_entry`:129 tm-args/pos -- `-`
+- services/interest_projection.py: `calculate_interest`:81 tm-locals -- `-`
+- services/projection_inputs.py: `build_investment_projection_inputs`:207 tm-args/pos -- `-`
+- services/savings_goal_service.py: `amount_to_monthly`:201 tm-return -- `-`
+- services/tax_calculator.py: `calculate_federal_withholding`:37 tm-args/locals -- `-`
+- services/transfer_service.py: `update_transfer`:445 tm-locals (plus Phase 1 disables here) -- `-`
+- schemas/validation.py: module tm-lines -- `-`
+- services/carry_forward_service.py: module tm-lines -- `-`
+
+### too-many-instance-attributes (13 -- surfaced by the Phase 0 max-attributes 15->7 revert)
+
+NOT part of the original 158 count; these were hidden by the old `max-attributes=15`. All are
+`app/services/` classes (none are ORM models). Each is a per-class call: refactor a genuine
+god-object, or -- if it is a legitimate Parameter Object / result aggregate -- a scoped +
+rule-named + commented inline disable. Count/limit shown as reported at the default max=7.
+
+| file:line | attrs/limit | Status |
+|---|---|---|
+| services/paycheck_calculator.py:83 | 13/7 | - |
+| services/spending_trend_service.py:52 | 11/7 | - |
+| services/spending_trend_service.py:81 | 8/7 | - |
+| services/retirement_gap_calculator.py:24 | 11/7 | - |
+| services/loan_resolver.py:224 | 10/7 | - |
+| services/calendar_service.py:71 | 10/7 | - |
+| services/calendar_service.py:87 | 10/7 | - |
+| services/carry_forward_service.py:87 | 10/7 | - |
+| services/budget_variance_service.py:41 | 8/7 | - |
+| services/budget_variance_service.py:55 | 9/7 | - |
+| services/budget_variance_service.py:82 | 8/7 | - |
+| services/growth_engine.py:24 | 9/7 | - |
+| services/amortization_engine.py:164 | 9/7 | - |
+
+**Common refactor moves** (apply judgement, not mechanically): bundle cohesive args into a
+dataclass/params object (the many tm-args calculators); extract cohesive sub-steps (tm-locals);
+guard clauses + dispatch maps (tm-branches / tm-return); split oversized modules (tm-lines:
+`auth.py`, `loan.py`, `salary.py`, `transactions.py`, `transfers.py`, `amortization_engine.py`,
+`savings_dashboard_service.py`, `year_end_summary_service.py`, `carry_forward_service.py`,
+`schemas/validation.py`). Trace every signature change to all callers/tests/templates first
+(coding-standards rule 7). Understand any >20-line function before changing it (rule 10);
+`auth.py` and `transfer_service.py` are security-/invariant-critical -- do not rewrite from scratch.
+
+**Status:** NOT STARTED.
+
+---
+
+## Phase 4 -- Mechanical residue sweep
+
+**Goal:** clear what survives Phases 0-3. Real reflow (never `# noqa`); substantive docstrings
+(business purpose, not a name restatement -- coding-standards). Do last: Phase 3 refactors create
+and destroy some of these.
+
+Per-file residue at baseline (re-measure before starting; Phase 1-3 will have changed it):
+
+| File | Residue |
+|---|---|
+| app/schemas/validation.py | line-too-long:12, missing-function-docstring:18, missing-class-docstring:1 |
+| app/jinja_globals.py | line-too-long:19 |
+| app/routes/salary.py | line-too-long:8 |
+| app/ref_seeds.py | line-too-long:6 |
+| app/routes/transactions.py | line-too-long:4 |
+| app/models/tax_config.py | line-too-long:4 |
+| app/services/investment_projection.py | line-too-long:3, missing-param-doc:1, unused-argument:1 |
+| app/models/salary_profile.py | line-too-long:2 |
+| app/models/salary_raise.py | line-too-long:2 |
+| app/routes/templates.py | line-too-long:2, protected-access:1 |
+| app/routes/transfers.py | line-too-long:2 |
+| app/services/paycheck_calculator.py | missing-function-docstring:3 |
+| app/__init__.py | unused-argument:5 |
+| app/models/investment_params.py | line-too-long:1 |
+| app/models/paycheck_deduction.py | line-too-long:1 |
+| app/models/user.py | line-too-long:1 |
+| app/ref_cache.py | line-too-long:1 |
+| app/routes/auth.py | line-too-long:1 |
+| app/services/balance_calculator.py | line-too-long:1 |
+| app/services/retirement_gap_calculator.py | line-too-long:1 |
+| app/services/retirement_dashboard_service.py | unused-argument:1 |
+| app/services/transfer_service.py | missing-param-doc:1 |
+
+(`unused-argument` and `protected-access` rows overlap with Phase 1 handling; resolve in whichever
+phase touches the file first and note it.)
+
+**Status:** NOT STARTED.
+
+---
+
+## Phase 5 -- Lock it in (CI), then scripts/
+
+**Goal:** make 10/10 a hard pre-merge invariant for `app/`, then repeat the method for `scripts/`.
+
+**Steps:**
+1. Confirm `pylint app/` reports **10.00/10, zero messages**. Re-run the Phase 2 cluster command
+   (refactors shift duplicate-code).
+2. **CI change** in `.github/workflows/ci.yml`. Current command (line 114):
+   `pylint app/ --fail-under=9.0 --fail-on=E,F --output-format=colorized`
+   Change `--fail-under=9.0` to `--fail-under=10` (keep `--fail-on=E,F` for explicit error
+   catching). Update the explanatory comment block (lines 106-112) so it states the gate is now a
+   full 10.00 floor. Re-confirm the developer wants the threshold flipped before committing (it is
+   the ratified decision #4, but it changes the merge gate).
+3. One-time sanity check: run `pylint app/ --enable=import-error` inside the venv to confirm the
+   config-level `import-error` disable in `.pylintrc` is not masking a genuinely broken import.
+4. Full test suite green (`./scripts/test.sh`) as the final gate.
+5. Repeat Phases 0-4 for `scripts/` (baseline 9.27/10). Build its own register if needed.
+
+**Status:** NOT STARTED.
+
+---
+
+## Verification commands
+
+Run from repo root (`/home/josh/projects/Shekel`). These reproduce every number in this document.
+
+```bash
+# Baseline metadata
+git rev-parse HEAD && git rev-parse --abbrev-ref HEAD && git status --porcelain
+pylint --version
+
+# app/ score
+pylint app/ --reports=n 2>&1 | grep "rated at"
+
+# All visible messages as JSON (exit code 28 = messages emitted; 0 = clean)
+pylint app/ --output-format=json > /tmp/pylint_app.json
+
+# Counts by symbol
+python3 -c "import json,collections as c; d=json.load(open('/tmp/pylint_app.json')); \
+print(sum(1 for _ in d),'total'); \
+[print(f'{n:4d} {s}') for s,n in c.Counter(m['symbol'] for m in d).most_common()]"
+
+# All inline disables (the authoritative list -- 74 at baseline)
+grep -rn "pylint: disable" app/ | wc -l
+grep -rn "pylint: disable" app/
+
+# Distinct duplicate-code clusters (75 at baseline)
+python3 -c "import json,re; d=json.load(open('/tmp/pylint_app.json')); \
+cl={tuple(sorted(f'{m2}:[{a}:{b}]' for m2,a,b in re.findall(r'==([\w\.]+):\[(\d+):(\d+)\]',m['message']))) \
+for m in d if m['symbol']=='duplicate-code'}; print(len(cl),'clusters')"
+
+# Design-smell items with locations (158 at baseline)
+python3 -c "import json; d=json.load(open('/tmp/pylint_app.json')); \
+S={'too-many-locals','too-many-arguments','too-many-positional-arguments','too-many-branches', \
+'too-many-statements','too-many-return-statements','too-many-nested-blocks','too-many-lines'}; \
+i=[m for m in d if m['symbol'] in S]; print(len(i),'smell items'); \
+[print(f\"{m['path']}:{m['line']} {m['symbol']} {m['obj']}\") for m in sorted(i,key=lambda m:(m['path'],m['line']))]"
+```
+
+---
+
+## Progress Log
+
+Append one row per commit that changes the score or completes register items. Newest at bottom.
+Each row MUST cite a commit SHA and a re-measured number you actually ran.
+
+| Date | Commit | Phase | What changed | app/ score after | Visible msgs after |
+|---|---|---|---|---|---|
+| 2026-06-04 | `591264f` | -- | Baseline recorded. No code changed. | 9.68/10 | 423 |
+| 2026-06-04 | `<pending: filled with next doc commit>` | 0 | Audited + re-baselined `.pylintrc`: removed `import-error` & `missing-module-docstring` disables (0 violations each), added `missing-type-doc`/`redundant-returns-doc` disables (hints are source of truth), reverted `max-attributes` 15->7 (surfaced 13 service-class smells). `.pylintrc` only; no code changed. | 9.74/10 | 349 |
