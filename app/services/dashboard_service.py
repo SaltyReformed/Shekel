@@ -587,6 +587,9 @@ def _get_debt_summary(user_id: int) -> dict | None:
     Reuses existing logic from savings_dashboard_service to avoid
     duplicating debt computation.  Returns None if no debt accounts.
     """
+    # Deferred: savings_dashboard_service pulls the heaviest service import
+    # chain (+27 modules, measured); loaded only when the debt-summary path
+    # runs, not on every dashboard_service import.
     from app.services import savings_dashboard_service  # pylint: disable=import-outside-toplevel
 
     try:

@@ -1,7 +1,9 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phase 0 DONE (`.pylintrc` audited + re-baselined; commit `10936f4`). Phase 1 IN PROGRESS.
-As of 2026-06-04 app/ is 9.74/10 with 349 visible messages; baseline was 9.68/10 / 423.**
+**Status: Phases 0-1 DONE. Phase 2 (duplicate-code) is NEXT -- START IT IN A FRESH SESSION.
+As of 2026-06-04 app/ is 9.74/10 with 350 visible messages (baseline 9.68/10 / 423). Disables
+74 -> 61: 13 removed (root-cause fixes), 46 documented KEEP, 15 smell-disables deferred to Phase 3.
+See [Phase 1 closeout](#phase-1-closeout) for the full disposition and the Phase 2 handoff.**
 
 This document is the single system of record for driving `app/` (then `scripts/`) to a clean
 `pylint` 10.00/10. It exists so any session -- including a fresh one with no memory of this
@@ -111,8 +113,8 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | Phase | Title | Primary target | Status |
 |---|---|---|---|
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
-| 1 | Audit all 74 inline disables | the disables themselves | NOT STARTED |
-| 2 | duplicate-code / DRY | 75 clusters | NOT STARTED |
+| 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
+| 2 | duplicate-code / DRY | 75 clusters | **NEXT (fresh session)** |
 | 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | NOT STARTED |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
@@ -662,6 +664,62 @@ i=[m for m in d if m['symbol'] in S]; print(len(i),'smell items'); \
 
 ---
 
+## Phase 1 closeout
+
+**Phase 1 (disable audit) is COMPLETE.** Every one of the original 74 inline disables was read
+against the actual code and either removed (root cause fixed) or classified KEEP with a verified,
+documented reason -- or, for the complexity smells, handed to Phase 3. No disable was left
+unreviewed. Final disposition:
+
+### Removed -- 13 (root-cause fixes, never suppression)
+
+| Disable | Fix | Commit |
+|---|---|---|
+| `models/__init__:9` unused-import | explicit `__all__` (43 models) | `a28aea5` |
+| `loan_anchor_event:168/183` unused-argument (x2) | rename to `_mapper, _connection` | `a28aea5` |
+| `obligations:54` global-statement | `@functools.cache` | `a6ec28a` |
+| `investment_projection:250`, `settings:153`, `year_end:1877`, `auth_service:804` import-outside-toplevel (x4) | hoist (cargo-cult) | `2bd8c90` |
+| `dashboard:524/525`, `savings_dashboard:647/648`, `retirement:186` import-outside-toplevel (x5) | hoist (cargo-cult) | `3548906` |
+
+### KEEP -- 46 (verified legitimate, all documented)
+
+- **import-outside-toplevel (32):** `app/__init__.py` factory sites (~19: blueprint registration,
+  model/`ref_cache` imports that cycle because everything imports `app`, F-091/F-095 security
+  closures); circular (`ref_cache:132`, `logging_config:543`); one-way boundary
+  (`carry_forward:734/881/882`, `loan_payment:347/506`, `balance_resolver:393`); leaf-purity
+  (`pension_calculator:97`); measurably-heavy lazy-load (`dashboard:592` -> savings_dashboard +27);
+  testability/source-patch (`recurrence_engine:736/737`); init-timing (`ref_seeds:154`).
+- **global-statement (5):** `ref_cache` cache-init (`global` rebinds the module-level maps the
+  accessors read; class encapsulation out of scope).
+- **wrong-import-position (4):** `accounts/__init__` blueprint side-effect registration (sub-modules
+  must import after `_bp`; F-25 cycle-break).
+- **broad-except (1):** `health.py:52` (test-locked: tests inject bare `Exception`, assert
+  controlled "unhealthy" + no credential leak).
+- **protected-access (2):** `balance_resolver:565/706` (deliberate engine-math reuse, audit E-25).
+- **line-too-long (1):** `ref_seeds:31` (`# fmt: off` columnar data table, documented).
+- **unused-argument (1):** `loan_resolver:377` (public uniform signature; `payments=` passed by
+  keyword, can't rename).
+
+### Deferred to Phase 3 -- 15 smell-disables (`too-many-*`)
+
+These hide complex functions/files; the refactor-or-justify decision belongs to Phase 3, not a
+Phase 1 suppression call: `auth.py:23/357/627/738/969` (the login/MFA flows -- security-critical),
+`balance_calculator:121`, `budget_variance_service:98/176/261`, `calendar_service:375`,
+`dashboard_service:306`, `spending_trend_service:296`, `transfer_service:283/445/693`. They appear
+in the Phase 3 register; Phase 3 will decompose or replace each with a scoped+commented disable.
+
+### Handoff to Phase 2 (do this in a FRESH session)
+
+1. Open a new session in the repo; the `project_pylint_10_cleanup` memory points here.
+2. Re-run the [Verification](#verification-commands) commands; confirm the live state matches the
+   last Progress Log row (disables ~61, score 9.74/10, 350 visible).
+3. **Phase 2 = duplicate-code.** The full 75-cluster worklist is in
+   [Phase 2](#phase-2----duplicate-code--dry-75-clusters) (note: live count is now 76 -- the +1 is
+   the documented R0801 re-pairing artifact from batch 3, harmless). Big structural targets:
+   `templates.py` <-> `transfers.py` (~18 clusters) and `recurrence_engine` <-> `transfer_recurrence`
+   (~7). Model-boilerplate clones (#1-#21) may be incidental -- judge before forcing a base/mixin.
+4. Do NOT touch the 15 smell-disables in Phase 2 -- those are Phase 3.
+
 ## Problems surfaced during the audit (report-and-decide)
 
 Real issues found while auditing disables -- the kind of defect a disable was hiding. These are
@@ -704,6 +762,7 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `10936f4` | 0 | Audited + re-baselined `.pylintrc`: removed `import-error` & `missing-module-docstring` disables (0 violations each), added `missing-type-doc`/`redundant-returns-doc` disables (hints are source of truth), reverted `max-attributes` 15->7 (surfaced 13 service-class smells). `.pylintrc` only; no code changed. | 9.74/10 | 349 |
 | 2026-06-04 | `a28aea5` | 1 | Batch 1 (disables): removed 3 (`models/__init__`->`__all__`; `loan_anchor_event` listeners->`_mapper`/`_connection`). Audited `health.py:52` + `loan_resolver.py:377` as verified KEEP. Surfaced problem P-1. Disables 74->71; score/msgs unchanged (removals emit nothing). | 9.74/10 | 349 |
 | 2026-06-04 | `a6ec28a` | 1 | Batch 2 (disables): obligations `_FREQUENCY_LABELS` global -> `@functools.cache` (removed global-statement); audited balance_resolver protected-access x2 as KEEP (engine-math reuse, E-25). Disables 71->70; score/msgs unchanged. | 9.74/10 | 349 |
+| 2026-06-04 | `<pending: next commit>` | 1 | **Phase 1 CLOSEOUT**: documented the 3 remaining KEEPs needing inline why-comments (`ref_cache` globals, `dashboard:592` heavy lazy-load, `logging_config:543` circular). **Full suite 5766 passed.** Phase 1 COMPLETE: 74->61 disables (13 removed, 46 documented KEEP, 15 smell-disables -> Phase 3). Phase 2 is next in a FRESH session. | 9.74/10 | 350 |
 | 2026-06-04 | `3548906` | 1 | Batch 4 (DEFER set): hoisted 5 cargo-cult paycheck/tax deferrals (dashboard x2, savings x2, retirement x1). RECLASSIFIED `recurrence_engine:736/737` cargo-cult->KEEP -- 3 fallback tests source-patch `tax_config_service.load_tax_configs`, so the local (per-call) import is load-bearing; reverted my hoist + documented. KEEP `pension_calculator:97` (verified stdlib-only leaf), `balance_resolver:393` (documented, critical core). create_app OK; 187+81+172+43 area tests pass. Disables 66->61. | 9.74/10 | 350 |
 | 2026-06-04 | `2bd8c90` | 1 | Batch 3 (hoists): 4 cargo-cult import-outside-toplevel hoisted to module top (`investment_projection`, `settings`, `year_end`, `auth_service`). `create_app()` OK (no cycle); 335 area tests pass. Disables 70->66; import-outside-toplevel 41->37. Visible 349->350 is a pylint R0801 re-pairing artifact (a pre-existing 3-way `Account`-query duplication in savings/settings/transfers got re-reported as 2 pairings instead of 1 after a 1-line shift), NOT new duplication; Phase 2 dedupes it; score unchanged. | 9.74/10 | 350 |
 | 2026-06-04 | `fb394c0` | 1 | import-outside-toplevel classifier: 2/21 service-util pairs genuinely circular (`ref_cache`, `logging_config` -> KEEP); 19 non-circular (deliberate boundary/lazy-load per their comments). Policy decision pending before touching the 19 + ~19 app-factory sites. No code change. | 9.74/10 | 349 |

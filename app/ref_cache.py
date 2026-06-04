@@ -144,6 +144,11 @@ def init(db_session):
         UserRole,
     )
 
+    # ``global`` is required to (re)bind the module-level cache maps that the
+    # accessor functions (status_id, txn_type_id, ...) read.  This module is a
+    # process-lifetime cache initialized once at app startup and re-initialized
+    # in tests; encapsulating it in a class would touch every accessor and is
+    # out of scope for the lint cleanup.
     global _status_map, _txn_type_map, _acct_type_map  # pylint: disable=global-statement
     global _acct_category_map, _recurrence_pattern_map  # pylint: disable=global-statement
     global _deduction_timing_map, _calc_method_map, _tax_type_map  # pylint: disable=global-statement
