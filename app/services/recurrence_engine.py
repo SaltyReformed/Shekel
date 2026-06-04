@@ -733,6 +733,12 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
         return template.default_amount
 
     try:
+        # Local imports: the tax-config / paycheck fallback tests patch the
+        # SOURCE modules (app.services.tax_config_service.load_tax_configs and
+        # app.services.paycheck_calculator.calculate_paycheck -- the
+        # testing-standards-preferred patch target).  A module-level
+        # ``from ... import load_tax_configs`` would bind the name once at
+        # import and not see the patch, so this import stays local.
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
         from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
 

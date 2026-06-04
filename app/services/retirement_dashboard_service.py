@@ -42,6 +42,7 @@ from app.services.projection_inputs import (
     load_shadow_income_contributions_for_accounts,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.tax_config_service import load_tax_configs
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,6 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     if salary_profiles:
         profile = salary_profiles[0]
         if current_period:
-            from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
             tax_configs = load_tax_configs(user_id, profile)
             current_breakdown = paycheck_calculator.calculate_paycheck(
                 profile, current_period, all_periods, tax_configs,

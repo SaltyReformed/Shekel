@@ -41,6 +41,7 @@ from app.services import (
     loan_resolver,
     obligations_aggregator,
     pay_period_service,
+    paycheck_calculator,
     savings_goal_service,
 )
 from app.services.account_projection import (
@@ -58,6 +59,7 @@ from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.tax_config_service import load_tax_configs
 from app.utils.balance_predicates import balance_excluded_status_ids
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
@@ -643,9 +645,6 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     )
     if profile is None:
         return None
-
-    from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
-    from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
 
     tax_configs = load_tax_configs(user_id, profile)
     return paycheck_calculator.calculate_paycheck(

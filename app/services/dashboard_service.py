@@ -25,10 +25,11 @@ from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_resolver, pay_period_service
+from app.services import balance_resolver, pay_period_service, paycheck_calculator
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.tax_config_service import load_tax_configs
 from app.utils.balance_predicates import is_projected_clause
 
 logger = logging.getLogger(__name__)
@@ -520,9 +521,6 @@ def _get_net_pay_for_period(
     )
     if profile is None:
         return None
-
-    from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
-    from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
 
     tax_configs = load_tax_configs(user_id, profile)
     breakdown = paycheck_calculator.calculate_paycheck(
