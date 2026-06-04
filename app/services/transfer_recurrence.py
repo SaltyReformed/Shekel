@@ -2,8 +2,12 @@
 Shekel Budget App -- Transfer Recurrence Engine
 
 Parallel to recurrence_engine.py but generates Transfer records instead
-of Transaction records.  Reuses _match_periods from the transaction
-recurrence engine for pattern matching.
+of Transaction records.  The model-agnostic halves of the two engines
+(the gating + pattern-matching preamble via
+``recurrence_engine._resolve_generation_plan``, the per-period skip
+predicate, the regenerate fetch/partition, and the cross-user audit
+logging) are shared through that module and
+``app/services/_recurrence_common.py`` so the two cannot drift.
 
 Key differences from transaction recurrence:
   - No salary linkage.
@@ -17,18 +21,17 @@ import logging
 from collections import defaultdict
 
 from app.extensions import db
-from app.models.scenario import Scenario
 from app.models.transfer import Transfer
-from app.models.pay_period import PayPeriod
 from app.services._recurrence_common import (
+    check_scenario_ownership,
     log_resource_access_denied,
-    log_template_cross_user_blocked,
+    partition_regeneration_rows,
+    query_rows_from_effective_date,
+    should_skip_period,
 )
-from app.services.recurrence_engine import _compute_due_date, _match_periods
+from app.services.recurrence_engine import _compute_due_date, _resolve_generation_plan
 from app.services import transfer_service
 from app.exceptions import RecurrenceConflict
-from app import ref_cache
-from app.enums import RecurrencePatternEnum, StatusEnum
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
@@ -53,58 +56,28 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     Returns:
         List of newly created Transfer objects.
     """
-    # Defense-in-depth: verify the template and scenario belong to the same
-    # user.  The route layer already enforces this, but a mismatch here would
-    # silently create transfers in another user's scenario (IDOR).
-    scenario = db.session.get(Scenario, scenario_id)
-    if scenario is None or scenario.user_id != template.user_id:
-        log_template_cross_user_blocked(
-            logger,
-            message="Blocked cross-user transfer recurrence generation",
-            template_id=template.id,
-            template_user_id=template.user_id,
-            scenario_id=scenario_id,
-        )
+    # Resolve the shared gating + period-matching preamble (cross-user
+    # defense, rule/ONCE gating, effective_from defaulting, pattern
+    # match) via the transaction engine's helper -- the transfer engine
+    # is a deliberate parallel and must apply the rule identically.  A
+    # None result means generate nothing.  See
+    # recurrence_engine._resolve_generation_plan.
+    plan = _resolve_generation_plan(
+        template, periods, scenario_id, effective_from,
+        block_message="Blocked cross-user transfer recurrence generation",
+    )
+    if plan is None:
         return []
 
-    rule = template.recurrence_rule
-    if rule is None:
-        return []
-
-    pattern_id = rule.pattern_id
-    if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
-        return []
-
-    if effective_from is None and rule.start_period_id and rule.start_period:
-        effective_from = rule.start_period.start_date
-    if effective_from is None and periods:
-        effective_from = periods[0].start_date
-
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
-    matching_periods = _match_periods(rule, pattern_id, periods, effective_from)
-    existing = _get_existing_map(template.id, scenario_id, matching_periods)
+    existing = _get_existing_map(template.id, scenario_id, plan.matching_periods)
 
     created = []
-    for period in matching_periods:
+    for period in plan.matching_periods:
         existing_xfers = existing.get(period.id, [])
 
-        should_skip = False
-        for xfer in existing_xfers:
-            if xfer.status and xfer.status.is_immutable:
-                should_skip = True
-                break
-            if xfer.is_override:
-                should_skip = True
-                break
-            if xfer.is_deleted:
-                should_skip = True
-                break
-            # Already exists and unmodified.
-            should_skip = True
-            break
-
-        if should_skip:
+        # Skip periods that already hold a template-linked transfer
+        # (immutable, override, soft-deleted, or already auto-generated).
+        if should_skip_period(existing_xfers):
             continue
 
         # Delegate to the transfer service so shadow transactions are
@@ -126,11 +99,11 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             pay_period_id=period.id,
             scenario_id=scenario_id,
             amount=template.default_amount,
-            status_id=projected_id,
+            status_id=plan.projected_id,
             category_id=template.category_id,
             name=template.name,
             transfer_template_id=template.id,
-            due_date=_compute_due_date(rule, period),
+            due_date=_compute_due_date(plan.rule, period),
         )
         created.append(xfer)
 
@@ -162,48 +135,22 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
         RecurrenceConflict: If overridden or deleted entries exist.
     """
     # Defense-in-depth: verify ownership before deleting and regenerating.
-    scenario = db.session.get(Scenario, scenario_id)
-    if scenario is None or scenario.user_id != template.user_id:
-        log_template_cross_user_blocked(
-            logger,
-            message="Blocked cross-user transfer recurrence regeneration",
-            template_id=template.id,
-            template_user_id=template.user_id,
-            scenario_id=scenario_id,
-        )
+    if not check_scenario_ownership(
+        logger, template, scenario_id,
+        block_message="Blocked cross-user transfer recurrence regeneration",
+    ):
         return []
 
     if effective_from is None and periods:
         effective_from = periods[0].start_date
 
-    existing = (
-        db.session.query(Transfer)
-        .join(PayPeriod, Transfer.pay_period_id == PayPeriod.id)
-        .filter(
-            Transfer.transfer_template_id == template.id,
-            Transfer.scenario_id == scenario_id,
-            PayPeriod.end_date >= effective_from,
-        )
-        .all()
+    # Find all existing template-linked transfers on or after effective_from,
+    # then partition them into conflicts vs rows safe to delete and regenerate.
+    existing = query_rows_from_effective_date(
+        Transfer, Transfer.transfer_template_id,
+        template.id, scenario_id, effective_from,
     )
-
-    overridden_ids = []
-    deleted_ids = []
-    to_delete = []
-
-    for xfer in existing:
-        if xfer.status and xfer.status.is_immutable:
-            continue
-
-        if xfer.is_override:
-            overridden_ids.append(xfer.id)
-            continue
-
-        if xfer.is_deleted:
-            deleted_ids.append(xfer.id)
-            continue
-
-        to_delete.append(xfer)
+    overridden_ids, deleted_ids, to_delete = partition_regeneration_rows(existing)
 
     # Route each deletion through the canonical hard-delete path
     # (Transfer Invariant 4): transfer_service.delete_transfer runs the

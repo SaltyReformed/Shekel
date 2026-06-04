@@ -27,18 +27,23 @@ import logging
 from collections import defaultdict
 from datetime import date
 from decimal import InvalidOperation
+from typing import NamedTuple
 
 from app.extensions import db
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
+from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
 from app.exceptions import RecurrenceConflict, ValidationError
 from app.models.salary_profile import SalaryProfile
 from app.services._recurrence_common import (
+    check_scenario_ownership,
     log_resource_access_denied,
-    log_template_cross_user_blocked,
+    partition_regeneration_rows,
+    query_rows_from_effective_date,
+    should_skip_period,
 )
 from app.utils.log_events import (
     BUSINESS,
@@ -50,6 +55,73 @@ from app.utils.log_events import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _GenerationPlan(NamedTuple):
+    """Resolved inputs a recurrence generate pass needs after gating.
+
+    Returned by :func:`_resolve_generation_plan` once the cross-user
+    ownership check and the rule/ONCE gating have passed, so the caller
+    can proceed straight to model-specific row creation.
+    """
+
+    rule: RecurrenceRule
+    matching_periods: list[PayPeriod]
+    projected_id: int
+
+
+def _resolve_generation_plan(
+    template, periods, scenario_id, effective_from, *, block_message,
+):
+    """Run the shared gating + period-matching preamble for a generate pass.
+
+    Both this module's ``generate_for_template`` and the transfer
+    engine's identical preamble (``app/services/transfer_recurrence.py``)
+    perform the same steps before their model-specific row creation: the
+    cross-user ownership check, the rule-present / not-ONCE gating, the
+    ``effective_from`` defaulting, and the pattern match.  Centralising
+    them guarantees the two engines cannot drift on which periods a rule
+    applies to.
+
+    Args:
+        template: The (Transaction|Transfer)Template to generate from.
+        periods: Candidate PayPeriod objects, ordered by index.
+        scenario_id: The scenario to generate into.
+        effective_from: Optional boundary date; when None it defaults to
+            the rule's start period, then the first candidate period.
+        block_message: Cross-user-block log message distinguishing the
+            calling engine.
+
+    Returns:
+        A :class:`_GenerationPlan` when generation should proceed, or
+        ``None`` when ownership fails or the rule is absent / ONCE (every
+        caller returns an empty list in the None case).
+    """
+    if not check_scenario_ownership(
+        logger, template, scenario_id, block_message=block_message,
+    ):
+        return None
+
+    rule = template.recurrence_rule
+    if rule is None:
+        # No recurrence rule -- nothing to generate (one-time / manual).
+        return None
+
+    pattern_id = rule.pattern_id
+    if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
+        # 'once' items are manually placed; no auto-generation.
+        return None
+
+    # If the rule has a start_period_id and no explicit effective_from
+    # was passed, use the start period's start_date as the boundary.
+    if effective_from is None and rule.start_period_id and rule.start_period:
+        effective_from = rule.start_period.start_date
+    if effective_from is None and periods:
+        effective_from = periods[0].start_date
+
+    matching_periods = _match_periods(rule, pattern_id, periods, effective_from)
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    return _GenerationPlan(rule, matching_periods, projected_id)
 
 
 def generate_for_template(template, periods, scenario_id, effective_from=None):
@@ -70,76 +142,30 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     Returns:
         List of newly created Transaction objects.
     """
-    # Defense-in-depth: verify the template and scenario belong to the same
-    # user.  The route layer already enforces this, but a mismatch here would
-    # silently create transactions in another user's scenario (IDOR).
-    scenario = db.session.get(Scenario, scenario_id)
-    if scenario is None or scenario.user_id != template.user_id:
-        log_template_cross_user_blocked(
-            logger,
-            message="Blocked cross-user recurrence generation",
-            template_id=template.id,
-            template_user_id=template.user_id,
-            scenario_id=scenario_id,
-        )
+    # Resolve the shared gating + period-matching preamble: cross-user
+    # defense, rule/ONCE gating, effective_from defaulting, and the
+    # pattern match.  A None result means generate nothing (ownership
+    # failed, or no rule / ONCE).  See _resolve_generation_plan.
+    plan = _resolve_generation_plan(
+        template, periods, scenario_id, effective_from,
+        block_message="Blocked cross-user recurrence generation",
+    )
+    if plan is None:
         return []
-
-    rule = template.recurrence_rule
-    if rule is None:
-        # No recurrence rule -- nothing to generate (one-time / manual).
-        return []
-
-    pattern_id = rule.pattern_id
-    if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
-        # 'once' items are manually placed; no auto-generation.
-        return []
-
-    # If the rule has a start_period_id and no explicit effective_from was
-    # passed, use the start period's start_date as the boundary.
-    if effective_from is None and rule.start_period_id and rule.start_period:
-        effective_from = rule.start_period.start_date
-    if effective_from is None and periods:
-        effective_from = periods[0].start_date
-
-    # Get the projected status for new transactions.
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
-    # Determine which periods match the recurrence pattern.
-    matching_periods = _match_periods(rule, pattern_id, periods, effective_from)
 
     # Check for existing transactions to avoid duplicates and respect overrides.
-    existing = _get_existing_map(template.id, scenario_id, matching_periods)
+    existing = _get_existing_map(template.id, scenario_id, plan.matching_periods)
 
     # Check if this template has a linked salary profile for paycheck calculation.
     salary_profile = _get_salary_profile(template.id)
 
     created = []
-    for period in matching_periods:
+    for period in plan.matching_periods:
         existing_txns = existing.get(period.id, [])
 
-        # Skip this period if any existing entry matches a skip condition.
-        should_skip = False
-        for existing_txn in existing_txns:
-            # Never touch immutable (historical) transactions.
-            if existing_txn.status and existing_txn.status.is_immutable:
-                should_skip = True
-                break
-
-            # Skip overridden entries -- the user made a deliberate change.
-            if existing_txn.is_override:
-                should_skip = True
-                break
-
-            # Skip soft-deleted entries -- the user intentionally removed it.
-            if existing_txn.is_deleted:
-                should_skip = True
-                break
-
-            # Auto-generated and unmodified -- it already exists, skip.
-            should_skip = True
-            break
-
-        if should_skip:
+        # Skip periods that already hold a template-linked row (immutable,
+        # override, soft-deleted, or simply already auto-generated).
+        if should_skip_period(existing_txns):
             continue
 
         # Determine the amount -- use paycheck calculator if salary-linked.
@@ -148,7 +174,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         )
 
         # Compute the due date from the rule and period context.
-        due = _compute_due_date(rule, period)
+        due = _compute_due_date(plan.rule, period)
 
         # No existing entry -- create a new one.
         txn = Transaction(
@@ -156,7 +182,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
             template_id=template.id,
             pay_period_id=period.id,
             scenario_id=scenario_id,
-            status_id=projected_id,
+            status_id=plan.projected_id,
             name=template.name,
             category_id=template.category_id,
             transaction_type_id=template.transaction_type_id,
@@ -275,53 +301,22 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
                             present the options, and call resolve_conflicts().
     """
     # Defense-in-depth: verify ownership before deleting and regenerating.
-    scenario = db.session.get(Scenario, scenario_id)
-    if scenario is None or scenario.user_id != template.user_id:
-        log_template_cross_user_blocked(
-            logger,
-            message="Blocked cross-user recurrence regeneration",
-            template_id=template.id,
-            template_user_id=template.user_id,
-            scenario_id=scenario_id,
-        )
+    if not check_scenario_ownership(
+        logger, template, scenario_id,
+        block_message="Blocked cross-user recurrence regeneration",
+    ):
         return []
 
     if effective_from is None and periods:
         effective_from = periods[0].start_date
 
-    # Find all existing template-linked transactions on or after effective_from.
-    existing = (
-        db.session.query(Transaction)
-        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
-        .filter(
-            Transaction.template_id == template.id,
-            Transaction.scenario_id == scenario_id,
-            PayPeriod.end_date >= effective_from,
-        )
-        .all()
+    # Find all existing template-linked transactions on or after effective_from,
+    # then partition them into conflicts vs rows safe to delete and regenerate.
+    existing = query_rows_from_effective_date(
+        Transaction, Transaction.template_id,
+        template.id, scenario_id, effective_from,
     )
-
-    overridden_ids = []
-    deleted_ids = []
-    to_delete = []
-
-    for txn in existing:
-        # Immutable -- never touch.
-        if txn.status and txn.status.is_immutable:
-            continue
-
-        # Overridden -- flag as conflict for user prompt.
-        if txn.is_override:
-            overridden_ids.append(txn.id)
-            continue
-
-        # Soft-deleted -- flag as conflict for user prompt.
-        if txn.is_deleted:
-            deleted_ids.append(txn.id)
-            continue
-
-        # Auto-generated, unmodified -- safe to delete and regenerate.
-        to_delete.append(txn)
+    overridden_ids, deleted_ids, to_delete = partition_regeneration_rows(existing)
 
     # Delete the safe-to-remove entries.
     for txn in to_delete:
