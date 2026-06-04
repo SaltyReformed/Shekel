@@ -6,10 +6,15 @@ for the true-up workflow.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin, OptimisticLockMixin, TimestampMixin
+from app.models.mixins import (
+    CreatedAtMixin,
+    OptimisticLockMixin,
+    TimestampMixin,
+    UserScopedMixin,
+)
 
 
-class Account(OptimisticLockMixin, TimestampMixin, db.Model):
+class Account(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
     """A financial account (checking or savings) owned by a user.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -48,10 +53,6 @@ class Account(OptimisticLockMixin, TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     account_type_id = db.Column(
         db.Integer, db.ForeignKey("ref.account_types.id", ondelete="RESTRICT"),
         nullable=False,

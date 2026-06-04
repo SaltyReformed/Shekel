@@ -6,10 +6,10 @@ baseline scenario; Phase 3 adds clone, compare, and diff features.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import TimestampMixin, UserScopedMixin
 
 
-class Scenario(TimestampMixin, db.Model):
+class Scenario(UserScopedMixin, TimestampMixin, db.Model):
     """A named budget scenario (baseline or what-if variant)."""
 
     __tablename__ = "scenarios"
@@ -34,10 +34,6 @@ class Scenario(TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     name = db.Column(db.String(100), nullable=False)
     is_baseline = db.Column(
         db.Boolean, nullable=False, default=False,

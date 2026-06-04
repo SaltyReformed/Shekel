@@ -12,11 +12,13 @@ from app.models.mixins import (
     OptimisticLockMixin,
     TimestampMixin,
     TrackingVisibilityMixin,
+    UserScopedMixin,
 )
 
 
 class TransactionTemplate(
-    OptimisticLockMixin, TrackingVisibilityMixin, TimestampMixin, db.Model,
+    UserScopedMixin, OptimisticLockMixin, TrackingVisibilityMixin, TimestampMixin,
+    db.Model,
 ):
     """Blueprint for a recurring income or expense line item.
 
@@ -42,10 +44,6 @@ class TransactionTemplate(
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     account_id = db.Column(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,

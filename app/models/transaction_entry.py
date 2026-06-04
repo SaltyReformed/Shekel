@@ -8,10 +8,10 @@ budget and the checking balance impact.
 """
 
 from app.extensions import db
-from app.models.mixins import OptimisticLockMixin, TimestampMixin
+from app.models.mixins import OptimisticLockMixin, TimestampMixin, UserScopedMixin
 
 
-class TransactionEntry(OptimisticLockMixin, TimestampMixin, db.Model):
+class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
     """An individual purchase recorded against a parent transaction.
 
     Entries accumulate against the parent transaction's estimated amount.
@@ -63,11 +63,6 @@ class TransactionEntry(OptimisticLockMixin, TimestampMixin, db.Model):
     transaction_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transactions.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    user_id = db.Column(
-        db.Integer,
-        db.ForeignKey("auth.users.id", ondelete="CASCADE"),
         nullable=False,
     )
     amount = db.Column(db.Numeric(12, 2), nullable=False)

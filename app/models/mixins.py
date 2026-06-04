@@ -16,6 +16,59 @@ from sqlalchemy.orm import declared_attr
 from app.extensions import db
 
 
+class UserScopedMixin:
+    """Owning-user foreign key for per-user data tables.
+
+    Adds one column:
+
+      ``user_id`` -- INTEGER NOT NULL, ``FK auth.users.id ON DELETE
+                     CASCADE``.  Identifies the user who owns the row;
+                     deleting a user cascades to every row they own.
+
+    Applied to the user-owned tables whose ``user_id`` is exactly this
+    shape: a NOT NULL CASCADE FK with no ``unique`` qualifier.  Three
+    ``user_id`` columns are deliberately EXCLUDED because their DDL
+    differs:
+
+      * ``ref.*`` per-user override rows (``AccountType``) -- the FK is
+        ``ON DELETE RESTRICT`` and ``nullable=True`` (a NULL ``user_id``
+        marks a seeded, system-owned row).
+      * ``auth.user_settings`` / ``auth.mfa_configs`` -- 1:1 satellite
+        tables whose ``user_id`` carries ``unique=True``.
+
+    ``Transaction`` has NO ``user_id`` at all -- it is scoped through
+    ``pay_period_id`` / ``account_id`` -- so it does not use this mixin.
+
+    DDL-ORDERING NOTE (differs from the end-positioned mixins below).
+    SQLAlchemy renders mixin columns AFTER a class's own columns, so
+    extracting this previously-second column moves ``user_id`` to the
+    tail of the emitted ``CREATE TABLE``.  This is NOT byte-identical to
+    the prior inline declaration -- unlike :class:`OptimisticLockMixin`
+    et al., whose columns already sat at the table tail.  It is
+    nonetheless safe here, and the correct verification standard for
+    this mixin is **order-independent equivalence + an empty Alembic
+    autogenerate diff**, not byte-identical DDL, because column ORDER is
+    load-bearing nowhere in this project:
+
+      * the test suite clones the Alembic-migrated ``shekel_test_template``
+        (column order comes from the migration chain, not the model);
+      * no code or test does positional row/column access on these
+        tables (the ORM addresses every column by name);
+      * the documented ``db.create_all()`` <-> migration alignment
+        invariant is about CONSTRAINT NAMES and existence, never order.
+
+    Alembic autogenerate compares columns by name, so the reorder
+    produces no migration.  If the auth-FK policy ever changes (e.g. a
+    different ``ondelete``, or an added FK index), it is now a single
+    edit here instead of ~15.
+    """
+
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+
 class TimestampMixin:
     """Audit-trail timestamps for mutable rows.
 

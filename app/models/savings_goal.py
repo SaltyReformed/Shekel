@@ -11,10 +11,10 @@ Supports two goal modes:
 """
 
 from app.extensions import db
-from app.models.mixins import OptimisticLockMixin, TimestampMixin
+from app.models.mixins import OptimisticLockMixin, TimestampMixin, UserScopedMixin
 
 
-class SavingsGoal(OptimisticLockMixin, TimestampMixin, db.Model):
+class SavingsGoal(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
     """A savings goal with target amount, target date, and contribution plan.
 
     Goal modes:
@@ -62,10 +62,6 @@ class SavingsGoal(OptimisticLockMixin, TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     account_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),

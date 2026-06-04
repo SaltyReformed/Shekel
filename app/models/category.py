@@ -6,10 +6,10 @@ Example: group='Auto', item='Car Payment'.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin
+from app.models.mixins import CreatedAtMixin, UserScopedMixin
 
 
-class Category(CreatedAtMixin, db.Model):
+class Category(UserScopedMixin, CreatedAtMixin, db.Model):
     """A budget category with a group and item name (two-level flat hierarchy)."""
 
     __tablename__ = "categories"
@@ -23,10 +23,6 @@ class Category(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     group_name = db.Column(db.String(100), nullable=False)
     item_name = db.Column(db.String(100), nullable=False)
     sort_order = db.Column(

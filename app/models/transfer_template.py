@@ -8,10 +8,10 @@ rows into future pay periods.
 """
 
 from app.extensions import db
-from app.models.mixins import OptimisticLockMixin, TimestampMixin
+from app.models.mixins import OptimisticLockMixin, TimestampMixin, UserScopedMixin
 
 
-class TransferTemplate(OptimisticLockMixin, TimestampMixin, db.Model):
+class TransferTemplate(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
     """Blueprint for a recurring transfer between two accounts.
 
     Optimistic locking: see :class:`Transaction` for the
@@ -41,10 +41,6 @@ class TransferTemplate(OptimisticLockMixin, TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     from_account_id = db.Column(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,

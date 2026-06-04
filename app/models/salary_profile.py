@@ -6,10 +6,10 @@ state tax config, and links to raises and deductions for paycheck calculation.
 """
 
 from app.extensions import db
-from app.models.mixins import OptimisticLockMixin, TimestampMixin
+from app.models.mixins import OptimisticLockMixin, TimestampMixin, UserScopedMixin
 
 
-class SalaryProfile(OptimisticLockMixin, TimestampMixin, db.Model):
+class SalaryProfile(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
     """A salary income profile used for net paycheck calculation.
 
     Optimistic locking: see :class:`Transaction` for the
@@ -40,10 +40,6 @@ class SalaryProfile(OptimisticLockMixin, TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     scenario_id = db.Column(
         db.Integer, db.ForeignKey("budget.scenarios.id", ondelete="CASCADE"),
         nullable=False,

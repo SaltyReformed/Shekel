@@ -6,10 +6,10 @@ Used for retirement income gap analysis.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import TimestampMixin, UserScopedMixin
 
 
-class PensionProfile(TimestampMixin, db.Model):
+class PensionProfile(UserScopedMixin, TimestampMixin, db.Model):
     """A defined-benefit pension plan linked to a salary profile.
 
     Duplicate prevention (F-105 / C-22): the composite unique
@@ -61,11 +61,6 @@ class PensionProfile(TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer,
-        db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     salary_profile_id = db.Column(
         db.Integer,
         db.ForeignKey("salary.salary_profiles.id", ondelete="SET NULL"),
