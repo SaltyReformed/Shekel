@@ -195,6 +195,22 @@ verify with `grep -rhno "disable=[a-z,-]*" app/ | sed 's/.*disable=//' | tr ',' 
 Prior art: commits `9971094` (hoisted 37) and `6dcc503` (removed cargo-cult in 5 modules) already
 swept a batch. Remaining ones are more likely real circular breaks -- but verify each by hoisting.
 
+**Classifier (2026-06-04, `/tmp/classify_imports.py`):** for each service/util deferred import
+`(source S, target T)`, a fresh interpreter imports T and checks whether S got pulled into
+`sys.modules`. If yes, hoisting `import T` into S would cycle (KEEP); if no, there is no cycle
+(hoist is technically safe). Result over the 21 service/util pairs:
+- **CYCLE (genuinely circular, KEEP):** `ref_cache`->`models.ref`; `logging_config`->`extensions`. (2)
+- **No cycle (19):** every other pair. Reading their comments, these are deferred for DELIBERATE
+  reasons, not necessity: one-way dependency-boundary documentation
+  (`carry_forward_service:734/881`, `loan_payment_service:347` -- comments say "top-level works...
+  documents the intentional one-way dependency") and lazy-loading of heavy chains
+  (`pension_calculator:97` -- "keeps this module a stdlib-only leaf"; the `paycheck_calculator` /
+  `tax_config_service` imports in dashboard/savings/recurrence). `app/__init__.py` (~19 sites, app
+  factory) not yet classified -- factory-pattern deferrals are a separate, generally-justified case.
+- **POLICY PENDING:** whether non-circular deliberate deferrals are KEEP-and-document or hoist is a
+  design decision for the developer (collides with the Phase 0 "only exclude what is unavoidable"
+  directive). Awaiting decision before touching the 19 + the app-factory sites.
+
 | file:line | Verdict | Reason / commit |
 |---|---|---|
 | app/__init__.py:67 | - | |
@@ -216,7 +232,7 @@ swept a batch. Remaining ones are more likely real circular breaks -- but verify
 | app/__init__.py:437 | - | |
 | app/__init__.py:675 | - | |
 | app/__init__.py:845 | - | |
-| app/ref_cache.py:132 | - | |
+| app/ref_cache.py:132 | **KEEP** | Classifier: CIRCULAR (`models.ref`->`extensions` must init before cache loads). Commented. KEEP under any policy. |
 | app/ref_seeds.py:154 | - | |
 | app/routes/settings.py:153 | - | |
 | app/services/auth_service.py:804 | - | |
@@ -237,7 +253,7 @@ swept a batch. Remaining ones are more likely real circular breaks -- but verify
 | app/services/savings_dashboard_service.py:647 | - | |
 | app/services/savings_dashboard_service.py:648 | - | |
 | app/services/year_end_summary_service.py:1877 | - | |
-| app/utils/logging_config.py:543 | - | |
+| app/utils/logging_config.py:543 | **KEEP** | Classifier: CIRCULAR (`app.extensions` pulls in this module during logging setup). KEEP under any policy; consider adding a one-line "deferred: circular via extensions" note. |
 
 (41 rows = the exact count of `disable=import-outside-toplevel` lines, verified via
 `grep -rn "disable=import-outside-toplevel" app/ | wc -l`. The raw grep is the authority;
@@ -661,4 +677,5 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `591264f` | -- | Baseline recorded. No code changed. | 9.68/10 | 423 |
 | 2026-06-04 | `10936f4` | 0 | Audited + re-baselined `.pylintrc`: removed `import-error` & `missing-module-docstring` disables (0 violations each), added `missing-type-doc`/`redundant-returns-doc` disables (hints are source of truth), reverted `max-attributes` 15->7 (surfaced 13 service-class smells). `.pylintrc` only; no code changed. | 9.74/10 | 349 |
 | 2026-06-04 | `a28aea5` | 1 | Batch 1 (disables): removed 3 (`models/__init__`->`__all__`; `loan_anchor_event` listeners->`_mapper`/`_connection`). Audited `health.py:52` + `loan_resolver.py:377` as verified KEEP. Surfaced problem P-1. Disables 74->71; score/msgs unchanged (removals emit nothing). | 9.74/10 | 349 |
-| 2026-06-04 | `<pending: next commit>` | 1 | Batch 2 (disables): obligations `_FREQUENCY_LABELS` global -> `@functools.cache` (removed global-statement); audited balance_resolver protected-access x2 as KEEP (engine-math reuse, E-25). Disables 71->70; score/msgs unchanged. | 9.74/10 | 349 |
+| 2026-06-04 | `a6ec28a` | 1 | Batch 2 (disables): obligations `_FREQUENCY_LABELS` global -> `@functools.cache` (removed global-statement); audited balance_resolver protected-access x2 as KEEP (engine-math reuse, E-25). Disables 71->70; score/msgs unchanged. | 9.74/10 | 349 |
+| 2026-06-04 | `<pending: next commit>` | 1 | import-outside-toplevel classifier: 2/21 service-util pairs genuinely circular (`ref_cache`, `logging_config` -> KEEP); 19 non-circular (deliberate boundary/lazy-load per their comments). Policy decision pending before touching the 19 + ~19 app-factory sites. No code change. | 9.74/10 | 349 |
