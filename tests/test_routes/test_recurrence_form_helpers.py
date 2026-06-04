@@ -25,12 +25,12 @@ from app.enums import RecurrencePatternEnum
 from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
+from app.routes._commit_helpers import handle_stale_conflict
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     build_recurrence_rule_from_form,
     handle_recurrence_conflict,
-    handle_stale_conflict,
     handle_stale_form_conflict,
 )
 

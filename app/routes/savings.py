@@ -11,7 +11,6 @@ import logging
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app import ref_cache
@@ -20,6 +19,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.ref import GoalMode, IncomeUnit
 from app.models.savings_goal import SavingsGoal
+from app.routes._commit_helpers import commit_or_handle_stale
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import account_service, savings_dashboard_service
 
@@ -229,19 +229,19 @@ def update_goal(goal_id):
         if field in _GOAL_UPDATE_FIELDS:
             setattr(goal, field, value)
 
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on update_goal id=%d", goal_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="update_goal",
+        log_id=goal_id,
+        flash_message=(
             "This savings goal was changed by another action while you "
-            "were editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("savings.edit_goal", goal_id=goal_id))
+            "were editing.  Please reload and try again."
+        ),
+        redirect_endpoint="savings.edit_goal",
+        redirect_endpoint_kwargs={"goal_id": goal_id},
+    )
+    if conflict is not None:
+        return conflict
     logger.info("user_id=%d updated savings goal %d", current_user.id, goal_id)
     flash(f"Savings goal '{goal.name}' updated.", "success")
     return redirect(url_for("savings.dashboard"))
@@ -263,19 +263,18 @@ def delete_goal(goal_id):
         abort(404)
 
     goal.is_active = False
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on delete_goal id=%d", goal_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="delete_goal",
+        log_id=goal_id,
+        flash_message=(
             "This savings goal was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("savings.dashboard"))
+            "Please reload and try again."
+        ),
+        redirect_endpoint="savings.dashboard",
+    )
+    if conflict is not None:
+        return conflict
     logger.info("user_id=%d deleted savings goal %d", current_user.id, goal_id)
 
     flash(f"Savings goal '{goal.name}' deactivated.", "info")

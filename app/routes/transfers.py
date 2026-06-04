@@ -47,13 +47,15 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import NotFoundError, RecurrenceConflict, ValidationError as ShekelValidationError
 from app.utils.balance_predicates import is_projected_clause
 from app.utils.db_errors import is_unique_violation
+from app.routes._commit_helpers import (
+    commit_or_handle_stale,
+    handle_stale_conflict,
+)
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     build_recurrence_rule_from_form,
-    commit_or_handle_stale,
     handle_recurrence_conflict,
-    handle_stale_conflict,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )

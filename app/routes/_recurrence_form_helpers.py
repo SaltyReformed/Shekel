@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Recurrence-Form Route Helpers (F-24, F-26)
 
-Six helpers shared between the transaction-template
+Five recurrence-specific helpers shared between the transaction-template
 (:mod:`app.routes.templates`) and transfer-template
 (:mod:`app.routes.transfers`) CRUD routes:
 
@@ -21,13 +21,6 @@ Six helpers shared between the transaction-template
   update-form branches (re-point existing rule vs build + link a new
   one) so each ``update_*`` route resolves its recurrence rule with a
   single call.  [F-24]
-* :func:`commit_or_handle_stale` -- wraps the
-  ``try: db.session.commit() except StaleDataError`` idiom shared by
-  every form-mutation route's final commit; returns ``None`` on a
-  clean commit or the conflict redirect otherwise.  [F-24]
-* :func:`handle_stale_conflict` -- emits the canonical stale-data
-  flash + redirect when a commit raises :class:`StaleDataError`.
-  [F-24]
 * :func:`handle_stale_form_conflict` -- pre-flush optimistic-locking
   guard for the ``submitted_version != template.version_id``
   branch; logs both counters so post-mortem analysis can reconstruct
@@ -38,10 +31,15 @@ Six helpers shared between the transaction-template
   counts and flashes the canonical "kept as-is" notice; returns
   ``None`` because the caller continues executing.  [F-26 pair 2]
 
-Route-layer module rather than service because three of the four
-helpers consume Flask ``flash`` / ``redirect`` / ``url_for``;
-``CLAUDE.md::Architecture`` keeps services isolated from Flask
-globals.  The leading underscore marks the module as route-internal.
+The general commit-time stale-conflict wrappers
+(``commit_or_handle_stale``, ``handle_stale_conflict``) used to live
+here too; they moved to :mod:`app.routes._commit_helpers` once the
+salary / savings / account CRUD routes needed them as well.
+
+Route-layer module rather than service because these helpers consume
+Flask ``flash`` / ``redirect`` / ``url_for``; ``CLAUDE.md::Architecture``
+keeps services isolated from Flask globals.  The leading underscore
+marks the module as route-internal.
 
 Module-level flash-template constants centralise the canonical
 "stale by another action" and "kept as-is" copy without forcing
@@ -54,7 +52,6 @@ from datetime import date
 from typing import Any
 
 from flask import Response, flash, redirect, url_for
-from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
@@ -374,119 +371,6 @@ def resolve_recurrence_rule_for_update(
     return None
 
 
-def handle_stale_conflict(
-    *,
-    logger: logging.Logger,
-    log_label: str,
-    log_id: int,
-    flash_message: str,
-    redirect_endpoint: str,
-    redirect_endpoint_kwargs: dict[str, Any] | None = None,
-) -> Response:
-    """Roll back, log, flash, and redirect for stale-data conflicts.
-
-    The canonical handler for the
-    ``try: db.session.commit() except StaleDataError`` pattern that
-    appears across every templates / transfers mutation route.
-    Called from inside the ``except`` block -- the caller is
-    responsible for the ``try`` and for re-raising or handling any
-    other exception (notably :class:`IntegrityError`, which
-    ``update_transfer_template`` catches separately with its own
-    name-uniqueness flash).
-
-    Args:
-        logger: Per-module logger; the helper does not own one because
-            log records should originate at the route module so log
-            grep / filtering by ``logger=app.routes.templates`` keeps
-            working.
-        log_label: Short label for the log message, e.g.
-            ``"update_template"`` or
-            ``"hard_delete_transfer_template archive-fallback"``.
-        log_id: The mutating template id, used in the log message.
-        flash_message: Fully-formed flash string.  Callers compose it
-            via the :data:`STALE_EDITING_MESSAGE` /
-            :data:`STALE_ACTION_MESSAGE` template constants exposed
-            by this module, substituting the route's domain noun.
-        redirect_endpoint: Flask endpoint to redirect the user to
-            (typically the list or edit page).
-        redirect_endpoint_kwargs: Kwargs for ``url_for``.
-
-    Returns:
-        A Flask redirect :class:`Response`.  The caller returns it
-        directly so the route's control flow is identical to the
-        pre-extraction shape.
-    """
-    db.session.rollback()
-    logger.info("Stale-data conflict on %s id=%d", log_label, log_id)
-    flash(flash_message, "warning")
-    return redirect(url_for(
-        redirect_endpoint, **(redirect_endpoint_kwargs or {}),
-    ))
-
-
-def commit_or_handle_stale(
-    *,
-    logger: logging.Logger,
-    log_label: str,
-    log_id: int,
-    flash_message: str,
-    redirect_endpoint: str,
-    redirect_endpoint_kwargs: dict[str, Any] | None = None,
-) -> Response | None:
-    """Commit the session, converting a stale-data race into flash+redirect.
-
-    Wraps the
-    ``try: db.session.commit() except StaleDataError: ...`` idiom that
-    closes every templates / transfers form-mutation route (archive,
-    unarchive, hard-delete, and the update routes' final commit).  On
-    a clean commit it returns ``None`` and the caller proceeds to its
-    own success flash + redirect; on the optimistic-lock conflict it
-    delegates to :func:`handle_stale_conflict` (rollback + log + flash
-    + redirect) and returns that :class:`Response` for the caller to
-    return verbatim.
-
-    Only :class:`StaleDataError` is caught.  Routes that additionally
-    translate an :class:`~sqlalchemy.exc.IntegrityError` at commit time
-    (e.g. ``update_transfer_template``'s name-uniqueness flash) keep
-    their explicit ``try`` block rather than calling this helper, so
-    the helper stays single-purpose and does not grow a grab-bag of
-    optional exception handlers (coding-standards rule 13).
-
-    Args:
-        logger: Per-module logger; passed through to
-            :func:`handle_stale_conflict` so log records originate at
-            the route module (keeps ``logger=app.routes.templates``
-            grep filters working).
-        log_label: Short label for the conflict log line, e.g.
-            ``"archive_template"`` or
-            ``"hard_delete_transfer_template archive-fallback"``.
-        log_id: The mutating template id, used in the log message.
-        flash_message: Fully-formed flash string, composed by the
-            caller via the :data:`STALE_EDITING_MESSAGE` /
-            :data:`STALE_ACTION_MESSAGE` templates.
-        redirect_endpoint: Flask endpoint to redirect to on conflict.
-        redirect_endpoint_kwargs: Kwargs for ``url_for``.
-
-    Returns:
-        * ``None`` -- the commit succeeded; the caller continues.
-        * :class:`Response` -- the conflict redirect from
-          :func:`handle_stale_conflict`; the caller returns it
-          directly.
-    """
-    try:
-        db.session.commit()
-        return None
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label=log_label,
-            log_id=log_id,
-            flash_message=flash_message,
-            redirect_endpoint=redirect_endpoint,
-            redirect_endpoint_kwargs=redirect_endpoint_kwargs,
-        )
-
-
 def handle_stale_form_conflict(
     *,
     logger: logging.Logger,
@@ -604,8 +488,6 @@ __all__ = [
     "build_recurrence_rule_from_form",
     "update_recurrence_rule_from_form",
     "resolve_recurrence_rule_for_update",
-    "commit_or_handle_stale",
-    "handle_stale_conflict",
     "handle_stale_form_conflict",
     "handle_recurrence_conflict",
 ]

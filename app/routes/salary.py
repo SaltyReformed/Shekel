@@ -47,6 +47,7 @@ from app.enums import (
     AcctCategoryEnum, CalcMethodEnum, RecurrencePatternEnum,
     TaxTypeEnum, TxnTypeEnum,
 )
+from app.routes._commit_helpers import commit_or_handle_stale
 from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
@@ -429,19 +430,18 @@ def delete_profile(profile_id):
     if profile.template:
         profile.template.is_active = False
 
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on delete_profile id=%d", profile_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="delete_profile",
+        log_id=profile_id,
+        flash_message=(
             "This salary profile was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("salary.list_profiles"))
+            "Please reload and try again."
+        ),
+        redirect_endpoint="salary.list_profiles",
+    )
+    if conflict is not None:
+        return conflict
     logger.info("user_id=%d deactivated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' deactivated.", "info")
     return redirect(url_for("salary.list_profiles"))

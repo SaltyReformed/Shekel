@@ -26,7 +26,6 @@ from decimal import Decimal
 
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
@@ -43,6 +42,10 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
+from app.routes._commit_helpers import (
+    commit_or_handle_stale,
+    regenerate_and_commit_or_stale,
+)
 from app.routes.accounts._bp import accounts_bp
 from app.services import (
     account_service,
@@ -336,21 +339,28 @@ def update_account(account_id):
     # ``StaleDataError`` would otherwise escape outside the catch.
     # See the matching comment in :func:`true_up`.
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    try:
+
+    def _clear_anchor_entries_if_changed():
+        """Clear checking entries on an anchor true-up (in-transaction step)."""
         if anchor_changed and account.account_type_id == checking_type_id:
             entry_service.clear_entries_for_anchor_true_up(current_user.id)
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on update_account id=%d", account_id,
-        )
-        flash(
+
+    # The clear-entries step must run inside the same stale-race guard as
+    # the commit (it flushes and can itself raise StaleDataError).
+    conflict = regenerate_and_commit_or_stale(
+        _clear_anchor_entries_if_changed,
+        logger=logger,
+        log_label="update_account",
+        log_id=account_id,
+        flash_message=(
             "This account was changed by another action while you were "
-            "editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.edit_account", account_id=account_id))
+            "editing.  Please reload and try again."
+        ),
+        redirect_endpoint="accounts.edit_account",
+        redirect_endpoint_kwargs={"account_id": account_id},
+    )
+    if conflict is not None:
+        return conflict
 
     logger.info("Updated account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' updated.", "success")
@@ -396,19 +406,18 @@ def archive_account(account_id):
         return redirect(url_for("accounts.list_accounts"))
 
     account.is_active = False
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on archive_account id=%d", account_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="archive_account",
+        log_id=account_id,
+        flash_message=(
             "This account was changed by another action.  Please reload "
-            "the page and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.list_accounts"))
+            "the page and try again."
+        ),
+        redirect_endpoint="accounts.list_accounts",
+    )
+    if conflict is not None:
+        return conflict
     logger.info("Archived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' archived.", "info")
     return redirect(url_for("accounts.list_accounts"))
@@ -427,19 +436,18 @@ def unarchive_account(account_id):
         abort(404)
 
     account.is_active = True
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on unarchive_account id=%d", account_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="unarchive_account",
+        log_id=account_id,
+        flash_message=(
             "This account was changed by another action.  Please reload "
-            "the page and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.list_accounts"))
+            "the page and try again."
+        ),
+        redirect_endpoint="accounts.list_accounts",
+    )
+    if conflict is not None:
+        return conflict
     logger.info("Unarchived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' unarchived.", "success")
     return redirect(url_for("accounts.list_accounts"))
@@ -522,19 +530,18 @@ def hard_delete_account(account_id):
         )
         if account.is_active:
             account.is_active = False
-            try:
-                db.session.commit()
-            except StaleDataError:
-                db.session.rollback()
-                logger.info(
-                    "Stale-data conflict during archive-fallback in "
-                    "hard_delete_account id=%d", account_id,
-                )
-                flash(
+            conflict = commit_or_handle_stale(
+                logger=logger,
+                log_label="hard_delete_account archive-fallback",
+                log_id=account_id,
+                flash_message=(
                     "This account was changed by another action.  "
-                    "Please reload the page and try again.",
-                    "warning",
-                )
+                    "Please reload the page and try again."
+                ),
+                redirect_endpoint="accounts.list_accounts",
+            )
+            if conflict is not None:
+                return conflict
         return redirect(url_for("accounts.list_accounts"))
 
     # All guards passed -- permanently delete.
@@ -576,19 +583,18 @@ def hard_delete_account(account_id):
     # handler converts into a flash + redirect rather than a 500.
     account_name = account.name
     db.session.delete(account)
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on hard_delete_account id=%d", account_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="hard_delete_account",
+        log_id=account_id,
+        flash_message=(
             "This account was changed by another action.  Please reload "
-            "the page and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.list_accounts"))
+            "the page and try again."
+        ),
+        redirect_endpoint="accounts.list_accounts",
+    )
+    if conflict is not None:
+        return conflict
 
     flash(f"Account '{account_name}' permanently deleted.", "info")
     return redirect(url_for("accounts.list_accounts"))
