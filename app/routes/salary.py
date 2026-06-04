@@ -7,10 +7,11 @@ paycheck breakdown, and salary projection views.
 
 import logging
 from datetime import date
-from decimal import Decimal as D
+from decimal import Decimal
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from markupsafe import Markup
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -20,8 +21,6 @@ from app.utils.auth_helpers import (
     get_owned_via_parent,
     require_owner,
 )
-from markupsafe import Markup
-
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
@@ -42,7 +41,6 @@ from app.models.ref import (
     DeductionTiming,
     FilingStatus,
     RaiseType,
-    TaxType,
 )
 from app import ref_cache
 from app.enums import (
@@ -454,7 +452,7 @@ def add_raise(profile_id):
 
     # Convert percentage input (e.g. 3 → 0.03) for storage.
     if data.get("percentage") is not None:
-        data["percentage"] = D(str(data["percentage"])) / D("100")
+        data["percentage"] = Decimal(str(data["percentage"])) / Decimal("100")
 
     salary_raise = SalaryRaise(salary_profile_id=profile.id, **data)
     db.session.add(salary_raise)
@@ -611,7 +609,7 @@ def update_raise(raise_id):
 
     # Convert percentage input (e.g. 3 → 0.03) for storage.
     if data.get("percentage") is not None:
-        data["percentage"] = D(str(data["percentage"])) / D("100")
+        data["percentage"] = Decimal(str(data["percentage"])) / Decimal("100")
 
     _RAISE_UPDATE_FIELDS = {
         "raise_type_id", "effective_month", "effective_year",
@@ -709,9 +707,9 @@ def add_deduction(profile_id):
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
-        data["amount"] = D(str(data["amount"])) / D("100")
+        data["amount"] = Decimal(str(data["amount"])) / Decimal("100")
     if data.get("inflation_rate"):
-        data["inflation_rate"] = D(str(data["inflation_rate"])) / D("100")
+        data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     deduction = PaycheckDeduction(salary_profile_id=profile.id, **data)
     db.session.add(deduction)
@@ -871,9 +869,9 @@ def update_deduction(ded_id):
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
-        data["amount"] = D(str(data["amount"])) / D("100")
+        data["amount"] = Decimal(str(data["amount"])) / Decimal("100")
     if data.get("inflation_rate"):
-        data["inflation_rate"] = D(str(data["inflation_rate"])) / D("100")
+        data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     _DEDUCTION_UPDATE_FIELDS = {
         "name", "deduction_timing_id", "calc_method_id", "amount",
@@ -1073,7 +1071,7 @@ def calibrate_preview(profile_id):
     data = _calibration_schema.load(request.form)
 
     # Calculate taxable income from the profile's current pre-tax deductions.
-    gross = D(str(data["actual_gross_pay"]))
+    gross = Decimal(str(data["actual_gross_pay"]))
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
 
@@ -1084,10 +1082,10 @@ def calibrate_preview(profile_id):
         )
         total_pre_tax = bk.total_pre_tax
     else:
-        total_pre_tax = D("0")
+        total_pre_tax = Decimal("0")
 
     taxable = gross - total_pre_tax
-    if taxable <= D("0"):
+    if taxable <= Decimal("0"):
         flash(
             "Taxable income (gross minus pre-tax deductions) is zero or "
             "negative. Cannot derive effective rates.",
@@ -1180,11 +1178,11 @@ def calibrate_confirm(profile_id):
         )
         total_pre_tax = preview_breakdown.total_pre_tax
     else:
-        total_pre_tax = D("0")
+        total_pre_tax = Decimal("0")
 
-    gross = D(str(data["actual_gross_pay"]))
+    gross = Decimal(str(data["actual_gross_pay"]))
     taxable = gross - total_pre_tax
-    if taxable <= D("0"):
+    if taxable <= Decimal("0"):
         # Profile-state issue (pre-tax deductions exceed gross), not
         # tampering; redirect to the form so the user can adjust the
         # profile and re-do the preview.  Mirrors ``calibrate_preview``.
@@ -1215,13 +1213,13 @@ def calibrate_confirm(profile_id):
     # rate mismatch under ``taxable`` smaller than one cent of
     # withholding is below the precision of the underlying
     # ``Numeric(12, 10)`` storage and cannot signal real tampering.
-    one_cent = D("0.01")
-    cross_check_failures: list[tuple[str, D, D, D]] = []
+    one_cent = Decimal("0.01")
+    cross_check_failures: list[tuple[str, Decimal, Decimal, Decimal]] = []
     for posted_key, derived_value in (
         ("effective_federal_rate", derived_rates.effective_federal_rate),
         ("effective_state_rate", derived_rates.effective_state_rate),
     ):
-        posted = D(str(data[posted_key]))
+        posted = Decimal(str(data[posted_key]))
         diff_dollars = abs(posted - derived_value) * taxable
         if diff_dollars > one_cent:
             cross_check_failures.append(
@@ -1373,7 +1371,7 @@ def update_tax_config():
     # Convert percentage input (e.g. 3.99 → 0.0399) for storage.
     flat_rate = None
     if data.get("flat_rate") is not None:
-        flat_rate = D(str(data["flat_rate"])) / D("100")
+        flat_rate = Decimal(str(data["flat_rate"])) / Decimal("100")
 
     standard_deduction = data.get("standard_deduction")
 
@@ -1429,7 +1427,7 @@ def update_fica_config():
     # Convert percentage inputs (e.g. 6.2 → 0.062) for storage.
     for rate_field in ("ss_rate", "medicare_rate", "medicare_surtax_rate"):
         if rate_field in data and data[rate_field] is not None:
-            data[rate_field] = D(str(data[rate_field])) / D("100")
+            data[rate_field] = Decimal(str(data[rate_field])) / Decimal("100")
 
     fica = (
         db.session.query(FicaConfig)

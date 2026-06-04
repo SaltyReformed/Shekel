@@ -27,7 +27,7 @@ from app.services.credit_workflow import (
     get_or_create_cc_category,
     lock_source_transaction_for_payback,
 )
-from app.exceptions import NotFoundError, ValidationError
+from app.exceptions import ValidationError
 from app.utils.log_events import (
     BUSINESS,
     EVT_ENTRY_PAYBACK_CREATED,

@@ -10,11 +10,10 @@ from datetime import date
 
 from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from markupsafe import Markup
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
-from markupsafe import Markup
-
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule

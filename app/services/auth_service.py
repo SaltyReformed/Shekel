@@ -30,7 +30,7 @@ from app.models.user import User, UserSettings
 # both and is the only acceptable creation path post-E-19.
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.ref import FilingStatus, TaxType
+from app.models.ref import FilingStatus
 from app.models.scenario import Scenario
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
 from app.exceptions import AuthError, ConflictError, ValidationError

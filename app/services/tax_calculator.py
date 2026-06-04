@@ -112,14 +112,12 @@ def calculate_federal_withholding(
     # Subtract annualized pre-tax deductions (retirement, Sec 125, etc.)
     # and W-4 Step 4(b) additional deductions.
     adjusted_income = annual_income - pre_tax_deductions - additional_deductions
-    if adjusted_income < ZERO:
-        adjusted_income = ZERO
+    adjusted_income = max(adjusted_income, ZERO)
 
     # ── Step 3 -- Subtract standard deduction ──────────────────────
     standard_deduction = Decimal(str(bracket_set.standard_deduction))
     taxable_income = adjusted_income - standard_deduction
-    if taxable_income < ZERO:
-        taxable_income = ZERO
+    taxable_income = max(taxable_income, ZERO)
 
     logger.debug("Step 3 -- taxable_income: %s", taxable_income)
 
@@ -149,8 +147,7 @@ def calculate_federal_withholding(
     logger.debug("Step 5 -- total_credits: %s", total_credits)
 
     annual_tax_after_credits = annual_tax_before_credits - total_credits
-    if annual_tax_after_credits < ZERO:
-        annual_tax_after_credits = ZERO
+    annual_tax_after_credits = max(annual_tax_after_credits, ZERO)
 
     logger.debug(
         "Step 5 -- annual_tax_after_credits: %s", annual_tax_after_credits
@@ -236,8 +233,7 @@ def calculate_state_tax(annual_gross, state_config):
         rate = Decimal(str(state_config.flat_rate))
         std_ded = Decimal(str(getattr(state_config, "standard_deduction", None) or 0))
         taxable = annual_gross - std_ded
-        if taxable < ZERO:
-            taxable = ZERO
+        taxable = max(taxable, ZERO)
         return (taxable * rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     return ZERO

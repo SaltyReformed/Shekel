@@ -11,11 +11,9 @@ from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-
-from app.utils.auth_helpers import get_or_404, require_owner
-
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from app.utils.auth_helpers import get_or_404, require_owner
 from app import ref_cache
 from app.enums import AcctTypeEnum, LoanAnchorSourceEnum, RecurrencePatternEnum
 from app.extensions import db
@@ -1061,7 +1059,7 @@ def true_up_balance(account_id):
 @require_owner
 def add_rate_change(account_id):
     """Record a variable-rate change (HTMX)."""
-    account, params, account_type = _load_loan_account(account_id)
+    account, params, _account_type = _load_loan_account(account_id)
     if account is None or params is None:
         return "Account not found", 404
 
@@ -1141,7 +1139,7 @@ def add_rate_change(account_id):
 @require_owner
 def add_escrow(account_id):
     """Add an escrow component (HTMX)."""
-    account, params, account_type = _load_loan_account(account_id)
+    account, params, _account_type = _load_loan_account(account_id)
     if account is None:
         return "Account not found", 404
 
@@ -1201,7 +1199,7 @@ def add_escrow(account_id):
 @require_owner
 def delete_escrow(account_id, component_id):
     """Remove an escrow component (HTMX)."""
-    account, _, account_type = _load_loan_account(account_id)
+    account, _, _account_type = _load_loan_account(account_id)
     if account is None:
         return "Account not found", 404
 
@@ -1245,7 +1243,7 @@ def delete_escrow(account_id, component_id):
 @require_owner
 def payoff_calculate(account_id):
     """Calculate payoff scenario (HTMX)."""
-    account, params, account_type = _load_loan_account(account_id)
+    account, params, _account_type = _load_loan_account(account_id)
     if account is None or params is None:
         return "Account not found", 404
 
@@ -1443,7 +1441,7 @@ def refinance_calculate(account_id):
     The refinance principal defaults to current_real_principal +
     closing_costs.  The user may override for cash-out refinances.
     """
-    account, params, account_type = _load_loan_account(account_id)
+    account, params, _account_type = _load_loan_account(account_id)
     if account is None or params is None:
         return "Account not found", 404
 

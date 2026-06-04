@@ -10,11 +10,10 @@ import logging
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-
-from app.utils.auth_helpers import get_or_404, require_owner
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.utils.auth_helpers import get_or_404, require_owner
 from app import ref_cache
 from app.enums import GoalModeEnum
 from app.extensions import db

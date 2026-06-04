@@ -11,17 +11,15 @@ from datetime import date
 
 from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for, jsonify
 from flask_login import current_user, login_required
-
-from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 from app.extensions import db
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.models.scenario import Scenario

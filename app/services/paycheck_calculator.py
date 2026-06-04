@@ -189,8 +189,7 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
 
     # Step 5: Taxable income (for display -- taxes computed via Pub 15-T)
     taxable_biweekly = gross_biweekly - total_pre_tax
-    if taxable_biweekly < ZERO:
-        taxable_biweekly = ZERO
+    taxable_biweekly = max(taxable_biweekly, ZERO)
 
     # Step 6 & 7: Tax calculation -- calibrated or bracket-based
     use_calibration = (

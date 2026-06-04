@@ -1202,5 +1202,3 @@ def calculate_payoff_by_date(
             break
 
     return hi
-
-
