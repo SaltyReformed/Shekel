@@ -165,7 +165,7 @@ class LoanAnchorEventImmutableError(RuntimeError):
 
 
 @event.listens_for(LoanAnchorEvent, "before_update")
-def _block_update(mapper, connection, target):  # pylint: disable=unused-argument
+def _block_update(_mapper, _connection, target):
     """Refuse every ORM-mediated UPDATE on a LoanAnchorEvent.
 
     Fires before SQLAlchemy emits the UPDATE so the offending session
@@ -180,7 +180,7 @@ def _block_update(mapper, connection, target):  # pylint: disable=unused-argumen
 
 
 @event.listens_for(LoanAnchorEvent, "before_delete")
-def _block_delete(mapper, connection, target):  # pylint: disable=unused-argument
+def _block_delete(_mapper, _connection, target):
     """Refuse every ORM-mediated DELETE on a LoanAnchorEvent.
 
     Same rationale as :func:`_block_update`: the table is

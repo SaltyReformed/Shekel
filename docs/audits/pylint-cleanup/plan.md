@@ -1,6 +1,6 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phase 0 DONE (`.pylintrc` audited + re-baselined; uncommitted). Phases 1-5 pending.
+**Status: Phase 0 DONE (`.pylintrc` audited + re-baselined; commit `10936f4`). Phase 1 IN PROGRESS.
 As of 2026-06-04 app/ is 9.74/10 with 349 visible messages; baseline was 9.68/10 / 423.**
 
 This document is the single system of record for driving `app/` (then `scripts/`) to a clean
@@ -110,7 +110,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 
 | Phase | Title | Primary target | Status |
 |---|---|---|---|
-| 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (uncommitted) |
+| 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | NOT STARTED |
 | 2 | duplicate-code / DRY | 75 clusters | NOT STARTED |
 | 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | NOT STARTED |
@@ -160,7 +160,7 @@ standard thresholds (not a relaxation artifact).
 - Files changed: **`.pylintrc` only.** No application code changed, so the test suite is unaffected
   (a lint-config edit cannot change runtime behavior).
 
-**Status:** DONE, uncommitted as of this writing. Commit SHA recorded in the Progress Log on commit.
+**Status:** DONE. Commit `10936f4`.
 
 ---
 
@@ -267,13 +267,13 @@ reconcile against `grep -rn "pylint: disable" app/` when working this register.)
 
 | file:line | Rule | Verdict | Reason / commit |
 |---|---|---|---|
-| app/routes/health.py:52 | broad-except | - | **FIX**: CLAUDE.md bans broad-except. Catch specific exceptions. |
+| app/routes/health.py:52 | broad-except | **KEEP** (`10936f4`+) | Verified 2026-06-04 against code + test. Deliberate and test-locked: a health endpoint must convert ANY failure (DB/driver/pool exhaustion) into a controlled "unhealthy" JSON, never a 500 traceback, and must not leak `str(exc)` (audit M5). `tests/test_routes/test_health.py` lines 33/51/75 inject a bare `Exception()` and assert status=="unhealthy" + no credential leak; narrowing to `SQLAlchemyError` breaks all three. Disable is already scoped + rule-named + commented per coding-standards. NO CHANGE. (Corrects this register's earlier pre-read "FIX" guess.) |
 | app/services/balance_resolver.py:565 | protected-access | - | expose public accessor or document |
 | app/services/balance_resolver.py:706 | protected-access | - | expose public accessor or document |
-| app/models/__init__.py:9 | unused-import | - | re-export; prefer `__all__` then remove disable |
-| app/models/loan_anchor_event.py:168 (_block_update) | unused-argument | - | SQLAlchemy event signature; KEEP+DOC |
-| app/models/loan_anchor_event.py:183 (_block_delete) | unused-argument | - | SQLAlchemy event signature; KEEP+DOC |
-| app/services/loan_resolver.py:377 | unused-argument | - | verify; KEEP+DOC or remove |
+| app/models/__init__.py:9 | unused-import | **REMOVED** | Replaced the blanket module-level disable with an explicit `__all__` (43 re-exported models). Verified: pylint 10.00/10 on the file; all 43 names resolve (no typos/dupes). More precise than the disable -- a stray accidental unused import is still flagged. Confirmed `app.models` is not used as a class re-export API today (only `from app.models import ref`), so these are side-effect/Alembic-discovery imports. |
+| app/models/loan_anchor_event.py:168 (_block_update) | unused-argument | **REMOVED** | Renamed the SQLAlchemy-mandated unused `mapper, connection` -> `_mapper, _connection` (matches `.pylintrc ignored-argument-names=_.*`); disable no longer needed. 13 immutability tests pass; pylint 10.00 on file. |
+| app/models/loan_anchor_event.py:183 (_block_delete) | unused-argument | **REMOVED** | Same rename as `_block_update`. |
+| app/services/loan_resolver.py:377 (`compute_monthly_payment_baseline`) | unused-argument | **KEEP** | Verified against code + caller: body is one expression using only `loan_params, rate_changes, as_of`; `anchor_events`/`payments` genuinely unused, kept for a deliberate uniform signature mirroring `resolve_loan`. Caller `loan_payment_service.compute_contractual_pi` passes `payments=` BY KEYWORD, so rename is unsafe; `_`-prefixing a public-API param is wrong. Disable is correct + documented. (But see problem P-1.) |
 | app/ref_cache.py:147 | global-statement | - | lazy-cache init; likely KEEP+DOC |
 | app/ref_cache.py:148 | global-statement | - | lazy-cache init; likely KEEP+DOC |
 | app/ref_cache.py:149 | global-statement | - | lazy-cache init; likely KEEP+DOC |
@@ -620,6 +620,37 @@ i=[m for m in d if m['symbol'] in S]; print(len(i),'smell items'); \
 
 ---
 
+## Problems surfaced during the audit (report-and-decide)
+
+Real issues found while auditing disables -- the kind of defect a disable was hiding. These are
+NOT fixed unilaterally (financial logic / out of scope); they await a developer decision per
+CLAUDE.md rules 3, 4, 6, 8.
+
+### P-1 -- `payments` documented as behavior-changing but ignored (loan P&I / escrow threshold)
+
+- **Where:** `app/services/loan_payment_service.py:283` `compute_contractual_pi` docstring
+  (lines ~322-330) vs `app/services/loan_resolver.py:332` `compute_monthly_payment_baseline`
+  (body at ~378-380).
+- **Found via:** auditing the `unused-argument` disable at `loan_resolver.py:377`.
+- **The contradiction:** `compute_contractual_pi`'s docstring states that `payments`, when
+  provided, "drives the conservative current-balance approximation in
+  `compute_monthly_payment_baseline` so the threshold is guaranteed to be at-or-below the true
+  `state.monthly_payment`", and that without it "the baseline uses `anchor_balance`, which
+  slightly overestimates the threshold." The caller passes `payments=payments` (loan_payment_service.py:353).
+  But `compute_monthly_payment_baseline`'s entire body is
+  `return period_for_date(_resolve_periods(loan_params, rate_changes), as_of).period_pi` -- it
+  references NEITHER `payments` NOR `anchor_balance`. It returns the rate-period level P&I,
+  independent of both. So the documented payments-sensitivity / anchor_balance-fallback does not
+  exist in the implementation.
+- **Impact (needs developer judgement -- financial):** either (a) the docstring is stale and
+  misleading (doc-only fix), OR (b) the implementation is incomplete -- the escrow-subtraction
+  threshold is NOT actually "guaranteed at-or-below" for a paid-down ARM as documented, which
+  could mis-subtract escrow from prepared payments. Cannot determine which is correct without the
+  intended financial behavior of the threshold. Rule 3 (ambiguous financial logic): ask.
+- **Recommendation:** developer confirms whether the period-P&I-only behavior is correct (then fix
+  the caller docstring) or whether `payments` was meant to tighten the threshold (then it is a
+  calculation bug to fix). Status: OPEN, reported 2026-06-04.
+
 ## Progress Log
 
 Append one row per commit that changes the score or completes register items. Newest at bottom.
@@ -628,4 +659,5 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | Date | Commit | Phase | What changed | app/ score after | Visible msgs after |
 |---|---|---|---|---|---|
 | 2026-06-04 | `591264f` | -- | Baseline recorded. No code changed. | 9.68/10 | 423 |
-| 2026-06-04 | `<pending: filled with next doc commit>` | 0 | Audited + re-baselined `.pylintrc`: removed `import-error` & `missing-module-docstring` disables (0 violations each), added `missing-type-doc`/`redundant-returns-doc` disables (hints are source of truth), reverted `max-attributes` 15->7 (surfaced 13 service-class smells). `.pylintrc` only; no code changed. | 9.74/10 | 349 |
+| 2026-06-04 | `<pending: next commit>` | 1 | Batch 1 (disables): removed 3 (`models/__init__`->`__all__`; `loan_anchor_event` listeners->`_mapper`/`_connection`). Audited `health.py:52` + `loan_resolver.py:377` as verified KEEP. Surfaced problem P-1. Disables 74->71; score/msgs unchanged (removals emit nothing). | 9.74/10 | 349 |
+| 2026-06-04 | `10936f4` | 0 | Audited + re-baselined `.pylintrc`: removed `import-error` & `missing-module-docstring` disables (0 violations each), added `missing-type-doc`/`redundant-returns-doc` disables (hints are source of truth), reverted `max-attributes` 15->7 (surfaced 13 service-class smells). `.pylintrc` only; no code changed. | 9.74/10 | 349 |

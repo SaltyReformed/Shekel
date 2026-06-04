@@ -6,8 +6,6 @@ discover them.  Import order matters: ref tables first, then auth,
 then budget (to satisfy foreign key dependencies).
 """
 
-# pylint: disable=unused-import
-
 # Reference / lookup tables
 from app.models.ref import (
     AccountType,
@@ -58,3 +56,58 @@ from app.models.tax_config import (
     TaxBracket,
     TaxBracketSet,
 )
+
+# Public API.  Every model class imported above is re-exported here.  Declaring
+# __all__ marks these otherwise side-effect-only imports (needed so Alembic
+# autogenerate can discover every model) as exported rather than unused, which
+# removes the need for a blanket `disable=unused-import` while still flagging any
+# genuinely accidental unused import added later.  Keep in sync with the imports.
+__all__ = [
+    # Reference / lookup tables
+    "AccountType",
+    "CalcMethod",
+    "DeductionTiming",
+    "FilingStatus",
+    "GoalMode",
+    "IncomeUnit",
+    "LoanAnchorSource",
+    "RaiseType",
+    "RecurrencePattern",
+    "Status",
+    "TaxType",
+    "TransactionType",
+    "UserRole",
+    # Authentication
+    "MfaConfig",
+    "User",
+    "UserSettings",
+    # Budget domain
+    "PayPeriod",
+    "Account",
+    "AccountAnchorHistory",
+    "Category",
+    "RecurrenceRule",
+    "Scenario",
+    "TransactionTemplate",
+    "Transaction",
+    "TransactionEntry",
+    "TransferTemplate",
+    "Transfer",
+    "SavingsGoal",
+    "InterestParams",
+    "LoanParams",
+    "LoanAnchorEvent",
+    "RateHistory",
+    "EscrowComponent",
+    "InvestmentParams",
+    # Salary domain
+    "SalaryProfile",
+    "SalaryRaise",
+    "PaycheckDeduction",
+    "PensionProfile",
+    "CalibrationOverride",
+    "FicaConfig",
+    "StateTaxConfig",
+    "TaxBracket",
+    "TaxBracketSet",
+]
