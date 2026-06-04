@@ -11,7 +11,6 @@ from datetime import date
 from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from markupsafe import Markup
-from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 from app.extensions import db
@@ -39,9 +38,10 @@ from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     build_recurrence_rule_from_form,
+    commit_or_handle_stale,
     handle_recurrence_conflict,
-    handle_stale_conflict,
     handle_stale_form_conflict,
+    resolve_recurrence_rule_for_update,
 )
 
 logger = logging.getLogger(__name__)
@@ -199,6 +199,16 @@ def create_template():
         flash("Purchase tracking is only available for expense templates.", "danger")
         return redirect(url_for("templates.new_template"))
 
+    # The pop + ``build_recurrence_rule_from_form`` call below is the
+    # shared create-form preamble; ``transfers.create_transfer_template``
+    # runs the byte-identical sequence.  The rule-building logic itself is
+    # already DRY in the F-24 helper; only the call site repeats, and it
+    # cannot be hoisted into a further wrapper because the transfers side
+    # reuses ``start_period_id`` afterward (its one-time-transfer branch)
+    # while this route does not -- a wrapper that popped it internally
+    # would have to thread it back out (coding-standards rule 13).
+    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # pylint: disable=duplicate-code
     # Extract start_period_id and end_date before creating the rule.
     start_period_id = data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
@@ -221,6 +231,7 @@ def create_template():
     if isinstance(rule_or_redirect, Response):
         return rule_or_redirect
     rule = rule_or_redirect
+    # pylint: enable=duplicate-code
 
     # Create the template.
     template = TransactionTemplate(
@@ -296,6 +307,20 @@ def update_template(template_id):
         flash(_flash_message_for_errors(errors), "danger")
         return redirect(url_for("templates.edit_template", template_id=template_id))
 
+    # The load / version-guard / pop / resolve preamble below is the
+    # standard parallel-CRUD update shape it shares with
+    # ``transfers.update_transfer_template``.  Its substantive steps are
+    # already DRY: the optimistic-lock guard (``handle_stale_form_conflict``)
+    # and the recurrence-rule resolution (``resolve_recurrence_rule_for_update``)
+    # live in the shared F-24 helper module.  What remains duplicated is only
+    # the ORDER in which this route invokes those helpers; folding that call
+    # sequence into a further helper would couple two separate template
+    # domains (transaction-template envelope tracking + name propagation vs
+    # transfer-template name-uniqueness + shadow invariants) behind awkward
+    # multi-value returns for no real gain (coding-standards rule 13).
+    # One-sided ``duplicate-code`` disable per the R0801 mechanics in
+    # ``docs/audits/pylint-cleanup/plan.md`` (Phase 2 working notes).
+    # pylint: disable=duplicate-code
     data = _update_schema.load(request.form)
 
     # Stale-form check (commit C-18 / F-010).  Routed through the
@@ -323,40 +348,22 @@ def update_template(template_id):
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Update recurrence rule if pattern changed.  The existing-rule
-    # mutation branch stays inline (R0801 acceptance, F-24 Section 2:
-    # extracting it would replace nine ``setattr``-style assignments
-    # with a helper whose body is identical to the inline form).  The
-    # no-existing-rule branch (and the no-pattern cleanup) route
-    # through the F-24 helper, which pops every recurrence key from
-    # ``data`` either way.
-    if data.get("recurrence_pattern") and template.recurrence_rule:
-        pattern_id_str = data.pop("recurrence_pattern")
-        pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
-        if pattern is None:
-            flash("Invalid recurrence pattern.", "danger")
-            return redirect(url_for("templates.edit_template", template_id=template_id))
-        template.recurrence_rule.pattern_id = pattern.id
-        template.recurrence_rule.interval_n = data.pop("interval_n", 1)
-        template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
-        template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
-        template.recurrence_rule.due_day_of_month = data.pop("due_day_of_month", None)
-        template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
-        template.recurrence_rule.end_date = end_date
-    else:
-        rule_or_redirect = build_recurrence_rule_from_form(
-            data,
-            user_id=current_user.id,
-            start_period_id=None,
-            end_date_value=end_date,
-            redirect_endpoint="templates.edit_template",
-            redirect_endpoint_kwargs={"template_id": template_id},
-            include_due_day_of_month=True,
-        )
-        if isinstance(rule_or_redirect, Response):
-            return rule_or_redirect
-        if rule_or_redirect is not None:
-            template.recurrence_rule_id = rule_or_redirect.id
+    # Re-point or rebuild the recurrence rule from the update payload
+    # (F-24).  The helper dispatches the existing-rule (mutate in place)
+    # vs no-existing-rule (build + link) branches and pops every
+    # recurrence key from ``data`` so the field-update loop below sees
+    # none.
+    redirect_response = resolve_recurrence_rule_for_update(
+        template,
+        data,
+        end_date_value=end_date,
+        redirect_endpoint="templates.edit_template",
+        redirect_endpoint_kwargs={"template_id": template_id},
+        include_due_day_of_month=True,
+    )
+    if redirect_response is not None:
+        return redirect_response
+    # pylint: enable=duplicate-code
 
     # Validate ownership if account or category is being changed.
     if "account_id" in data:
@@ -418,19 +425,18 @@ def update_template(template_id):
                 conflict=conflict,
             )
 
-    try:
-        db.session.commit()
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label="update_template",
-            log_id=template_id,
-            flash_message=STALE_EDITING_MESSAGE.format(
-                noun="recurring transaction",
-            ),
-            redirect_endpoint="templates.edit_template",
-            redirect_endpoint_kwargs={"template_id": template_id},
-        )
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="update_template",
+        log_id=template_id,
+        flash_message=STALE_EDITING_MESSAGE.format(
+            noun="recurring transaction",
+        ),
+        redirect_endpoint="templates.edit_template",
+        redirect_endpoint_kwargs={"template_id": template_id},
+    )
+    if conflict is not None:
+        return conflict
     flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 
@@ -463,18 +469,17 @@ def archive_template(template_id):
         Transaction.is_deleted.is_(False),
     ).update({"is_deleted": True}, synchronize_session="fetch")
 
-    try:
-        db.session.commit()
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label="archive_template",
-            log_id=template_id,
-            flash_message=STALE_ACTION_MESSAGE.format(
-                noun="recurring transaction",
-            ),
-            redirect_endpoint="templates.list_templates",
-        )
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="archive_template",
+        log_id=template_id,
+        flash_message=STALE_ACTION_MESSAGE.format(
+            noun="recurring transaction",
+        ),
+        redirect_endpoint="templates.list_templates",
+    )
+    if conflict is not None:
+        return conflict
 
     flash(
         f"Recurring transaction '{template.name}' archived. "
@@ -515,18 +520,17 @@ def unarchive_template(template_id):
                 template, periods, scenario.id, effective_from=date.today(),
             )
 
-    try:
-        db.session.commit()
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label="unarchive_template",
-            log_id=template_id,
-            flash_message=STALE_ACTION_MESSAGE.format(
-                noun="recurring transaction",
-            ),
-            redirect_endpoint="templates.list_templates",
-        )
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="unarchive_template",
+        log_id=template_id,
+        flash_message=STALE_ACTION_MESSAGE.format(
+            noun="recurring transaction",
+        ),
+        redirect_endpoint="templates.list_templates",
+    )
+    if conflict is not None:
+        return conflict
 
     flash(
         f"Recurring transaction '{template.name}' unarchived. "
@@ -568,6 +572,15 @@ def hard_delete_template(template_id):
     if template is None:
         abort(404)
 
+    # The paid-history-blocked branch below (flash + archive toggle) is
+    # the byte-identical sibling of
+    # ``transfers.hard_delete_transfer_template``; only the
+    # ``*_has_paid_history`` guard name and the divergent projected-row
+    # soft-delete that follows differ.  The shared part is too thin and
+    # too coupled to its two parallel routes to extract without
+    # indirection that removes no logic (coding-standards rule 13).
+    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # pylint: disable=duplicate-code
     if archive_helpers.template_has_paid_history(template.id):
         flash(
             f"'{template.name}' has payment history and cannot be permanently "
@@ -576,6 +589,7 @@ def hard_delete_template(template_id):
         )
         if template.is_active:
             template.is_active = False
+            # pylint: enable=duplicate-code
             # Soft-delete projected transactions (same logic as
             # archive_template).  Routed through ``is_projected_clause``
             # (D6-09 / MED-02); see ``archive_template`` above.
@@ -584,18 +598,17 @@ def hard_delete_template(template_id):
                 is_projected_clause(Transaction),
                 Transaction.is_deleted.is_(False),
             ).update({"is_deleted": True}, synchronize_session="fetch")
-            try:
-                db.session.commit()
-            except StaleDataError:
-                return handle_stale_conflict(
-                    logger=logger,
-                    log_label="hard_delete_template archive-fallback",
-                    log_id=template_id,
-                    flash_message=STALE_ACTION_MESSAGE.format(
-                        noun="recurring transaction",
-                    ),
-                    redirect_endpoint="templates.list_templates",
-                )
+            conflict = commit_or_handle_stale(
+                logger=logger,
+                log_label="hard_delete_template archive-fallback",
+                log_id=template_id,
+                flash_message=STALE_ACTION_MESSAGE.format(
+                    noun="recurring transaction",
+                ),
+                redirect_endpoint="templates.list_templates",
+            )
+            if conflict is not None:
+                return conflict
         return redirect(url_for("templates.list_templates"))
 
     # No settled history -- safe to permanently delete.  Restrict the
@@ -615,18 +628,17 @@ def hard_delete_template(template_id):
     ).delete(synchronize_session="fetch")
 
     db.session.delete(template)
-    try:
-        db.session.commit()
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label="hard_delete_template",
-            log_id=template_id,
-            flash_message=STALE_ACTION_MESSAGE.format(
-                noun="recurring transaction",
-            ),
-            redirect_endpoint="templates.list_templates",
-        )
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="hard_delete_template",
+        log_id=template_id,
+        flash_message=STALE_ACTION_MESSAGE.format(
+            noun="recurring transaction",
+        ),
+        redirect_endpoint="templates.list_templates",
+    )
+    if conflict is not None:
+        return conflict
 
     flash(f"Recurring transaction '{template_name}' permanently deleted.", "info")
     return redirect(url_for("templates.list_templates"))

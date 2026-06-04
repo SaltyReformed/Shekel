@@ -51,9 +51,15 @@ from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     build_recurrence_rule_from_form,
+    commit_or_handle_stale,
     handle_recurrence_conflict,
     handle_stale_conflict,
     handle_stale_form_conflict,
+    resolve_recurrence_rule_for_update,
+)
+from app.routes._transfer_creation_helpers import (
+    flush_template_or_namedup_redirect,
+    generate_transfers_for_all_periods,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,12 +213,12 @@ def create_transfer_template():
     )
     db.session.add(template)
 
-    try:
-        db.session.flush()
-    except IntegrityError:
-        db.session.rollback()
-        flash("A transfer with that name already exists.", "warning")
-        return redirect(url_for("transfers.list_transfer_templates"))
+    namedup_redirect = flush_template_or_namedup_redirect(
+        redirect_endpoint="transfers.list_transfer_templates",
+        name_dup_message="A transfer with that name already exists.",
+    )
+    if namedup_redirect is not None:
+        return namedup_redirect
 
     # Determine whether this is a one-time transfer.  The ONCE pattern
     # is skipped by the recurrence engine ("once items are manually
@@ -259,12 +265,7 @@ def create_transfer_template():
                 return redirect(url_for("transfers.new_transfer_template"))
     elif rule:
         # Recurring transfer: delegate to the recurrence engine.
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
-            periods = pay_period_service.get_all_periods(current_user.id)
-            transfer_recurrence.generate_for_template(
-                template, periods, scenario.id,
-            )
+        generate_transfers_for_all_periods(template)
 
     db.session.commit()
     flash(f"Transfer '{template.name}' created.", "success")
@@ -344,38 +345,21 @@ def update_transfer_template(template_id):
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Update recurrence rule if pattern changed.  The existing-rule
-    # mutation branch stays inline (R0801 acceptance, F-24 Section 2);
-    # the no-existing-rule branch (and the no-pattern cleanup) route
-    # through the F-24 helper, which pops every recurrence key from
-    # ``data`` either way.  ``include_due_day_of_month=False`` because
-    # the transfer-template schemas do not expose the field.
-    if data.get("recurrence_pattern") and template.recurrence_rule:
-        pattern_id_str = data.pop("recurrence_pattern")
-        pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
-        if pattern is None:
-            flash("Invalid recurrence pattern.", "danger")
-            return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
-        template.recurrence_rule.pattern_id = pattern.id
-        template.recurrence_rule.interval_n = data.pop("interval_n", 1)
-        template.recurrence_rule.offset_periods = data.pop("offset_periods", 0)
-        template.recurrence_rule.day_of_month = data.pop("day_of_month", None)
-        template.recurrence_rule.month_of_year = data.pop("month_of_year", None)
-        template.recurrence_rule.end_date = end_date
-    else:
-        rule_or_redirect = build_recurrence_rule_from_form(
-            data,
-            user_id=current_user.id,
-            start_period_id=None,
-            end_date_value=end_date,
-            redirect_endpoint="transfers.edit_transfer_template",
-            redirect_endpoint_kwargs={"template_id": template_id},
-            include_due_day_of_month=False,
-        )
-        if isinstance(rule_or_redirect, Response):
-            return rule_or_redirect
-        if rule_or_redirect is not None:
-            template.recurrence_rule_id = rule_or_redirect.id
+    # Re-point or rebuild the recurrence rule from the update payload
+    # (F-24).  The helper dispatches the existing-rule (mutate in place)
+    # vs no-existing-rule (build + link) branches and pops every
+    # recurrence key from ``data``.  ``include_due_day_of_month=False``
+    # because the transfer-template schemas do not expose the field.
+    redirect_response = resolve_recurrence_rule_for_update(
+        template,
+        data,
+        end_date_value=end_date,
+        redirect_endpoint="transfers.edit_transfer_template",
+        redirect_endpoint_kwargs={"template_id": template_id},
+        include_due_day_of_month=False,
+    )
+    if redirect_response is not None:
+        return redirect_response
 
     # --- Route-boundary FK ownership (commit C-27 / F-043) ---
     # Each user-scoped FK is verified only when present in the
@@ -411,12 +395,12 @@ def update_transfer_template(template_id):
 
     # Flush template changes first so name-uniqueness violations are caught
     # before regeneration dirties the session with transfer deletes/creates.
-    try:
-        db.session.flush()
-    except IntegrityError:
-        db.session.rollback()
-        flash("A recurring transfer with that name already exists.", "warning")
-        return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
+    namedup_redirect = flush_template_or_namedup_redirect(
+        redirect_endpoint="transfers.edit_transfer_template",
+        redirect_kwargs={"template_id": template_id},
+    )
+    if namedup_redirect is not None:
+        return namedup_redirect
 
     # Regenerate future transfers.
     scenario = get_baseline_scenario(current_user.id)
@@ -500,18 +484,17 @@ def archive_transfer_template(template_id):
     for xfer in transfers_to_delete:
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
 
-    try:
-        db.session.commit()
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label="archive_transfer_template",
-            log_id=template_id,
-            flash_message=STALE_ACTION_MESSAGE.format(
-                noun="recurring transfer",
-            ),
-            redirect_endpoint="transfers.list_transfer_templates",
-        )
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="archive_transfer_template",
+        log_id=template_id,
+        flash_message=STALE_ACTION_MESSAGE.format(
+            noun="recurring transfer",
+        ),
+        redirect_endpoint="transfers.list_transfer_templates",
+    )
+    if conflict is not None:
+        return conflict
 
     flash(
         f"Recurring transfer '{template.name}' archived. "
@@ -558,25 +541,19 @@ def unarchive_transfer_template(template_id):
     restored_count = len(transfers_to_restore)
 
     if template.recurrence_rule:
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
-            periods = pay_period_service.get_all_periods(current_user.id)
-            transfer_recurrence.generate_for_template(
-                template, periods, scenario.id, effective_from=date.today(),
-            )
+        generate_transfers_for_all_periods(template, effective_from=date.today())
 
-    try:
-        db.session.commit()
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label="unarchive_transfer_template",
-            log_id=template_id,
-            flash_message=STALE_ACTION_MESSAGE.format(
-                noun="recurring transfer",
-            ),
-            redirect_endpoint="transfers.list_transfer_templates",
-        )
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="unarchive_transfer_template",
+        log_id=template_id,
+        flash_message=STALE_ACTION_MESSAGE.format(
+            noun="recurring transfer",
+        ),
+        redirect_endpoint="transfers.list_transfer_templates",
+    )
+    if conflict is not None:
+        return conflict
     flash(
         f"Recurring transfer '{template.name}' unarchived. "
         f"{restored_count} projected transfer(s) restored.",
@@ -651,18 +628,17 @@ def hard_delete_transfer_template(template_id):
             )
             for xfer in transfers_to_delete:
                 transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
-            try:
-                db.session.commit()
-            except StaleDataError:
-                return handle_stale_conflict(
-                    logger=logger,
-                    log_label="hard_delete_transfer_template archive-fallback",
-                    log_id=template_id,
-                    flash_message=STALE_ACTION_MESSAGE.format(
-                        noun="recurring transfer",
-                    ),
-                    redirect_endpoint="transfers.list_transfer_templates",
-                )
+            conflict = commit_or_handle_stale(
+                logger=logger,
+                log_label="hard_delete_transfer_template archive-fallback",
+                log_id=template_id,
+                flash_message=STALE_ACTION_MESSAGE.format(
+                    noun="recurring transfer",
+                ),
+                redirect_endpoint="transfers.list_transfer_templates",
+            )
+            if conflict is not None:
+                return conflict
         return redirect(url_for("transfers.list_transfer_templates"))
 
     # No history -- safe to permanently delete linked transfers through
@@ -699,18 +675,17 @@ def hard_delete_transfer_template(template_id):
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=False)
 
     db.session.delete(template)
-    try:
-        db.session.commit()
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label="hard_delete_transfer_template",
-            log_id=template_id,
-            flash_message=STALE_ACTION_MESSAGE.format(
-                noun="recurring transfer",
-            ),
-            redirect_endpoint="transfers.list_transfer_templates",
-        )
+    conflict = commit_or_handle_stale(
+        logger=logger,
+        log_label="hard_delete_transfer_template",
+        log_id=template_id,
+        flash_message=STALE_ACTION_MESSAGE.format(
+            noun="recurring transfer",
+        ),
+        redirect_endpoint="transfers.list_transfer_templates",
+    )
+    if conflict is not None:
+        return conflict
 
     flash(f"Recurring transfer '{template_name}' permanently deleted.", "info")
     return redirect(url_for("transfers.list_transfer_templates"))

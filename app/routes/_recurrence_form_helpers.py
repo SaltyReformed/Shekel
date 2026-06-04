@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Recurrence-Form Route Helpers (F-24, F-26)
 
-Four helpers shared between the transaction-template
+Six helpers shared between the transaction-template
 (:mod:`app.routes.templates`) and transfer-template
 (:mod:`app.routes.transfers`) CRUD routes:
 
@@ -11,6 +11,20 @@ Four helpers shared between the transaction-template
   ``None`` when no pattern was selected, or a Flask redirect
   :class:`Response` when validation fails (invalid pattern id,
   invalid start period for every-N-periods auto-offset).  [F-24]
+* :func:`update_recurrence_rule_from_form` -- sibling of the builder
+  for the pattern-changed-on-an-existing-rule branch: re-points the
+  template's current :class:`RecurrenceRule` in place (preserving its
+  id and the owning FK), pops the recurrence keys, and returns
+  ``None`` on success or a redirect :class:`Response` for an invalid
+  pattern id.  [F-24]
+* :func:`resolve_recurrence_rule_for_update` -- dispatches the two
+  update-form branches (re-point existing rule vs build + link a new
+  one) so each ``update_*`` route resolves its recurrence rule with a
+  single call.  [F-24]
+* :func:`commit_or_handle_stale` -- wraps the
+  ``try: db.session.commit() except StaleDataError`` idiom shared by
+  every form-mutation route's final commit; returns ``None`` on a
+  clean commit or the conflict redirect otherwise.  [F-24]
 * :func:`handle_stale_conflict` -- emits the canonical stale-data
   flash + redirect when a commit raises :class:`StaleDataError`.
   [F-24]
@@ -40,6 +54,7 @@ from datetime import date
 from typing import Any
 
 from flask import Response, flash, redirect, url_for
+from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
@@ -210,6 +225,155 @@ def build_recurrence_rule_from_form(
     return rule
 
 
+def update_recurrence_rule_from_form(
+    rule: RecurrenceRule,
+    data: dict[str, Any],
+    *,
+    end_date_value: date | None,
+    redirect_endpoint: str,
+    redirect_endpoint_kwargs: dict[str, Any] | None = None,
+    include_due_day_of_month: bool = False,
+) -> Response | None:
+    """Re-point an existing :class:`RecurrenceRule` from a form payload.
+
+    Sibling of :func:`build_recurrence_rule_from_form` for the
+    pattern-changed-on-an-existing-rule branch of the ``update_*``
+    routes.  When a template already owns a rule, the edit mutates
+    that same row in place -- preserving its primary key and the
+    template's ``recurrence_rule_id`` FK -- rather than creating a
+    new rule, then pops every recurrence key from ``data`` so the
+    caller's downstream ``setattr`` loop never sees a stray kwarg.
+
+    Unlike :func:`build_recurrence_rule_from_form`, this helper does
+    NOT auto-derive ``offset_periods`` from a start period for the
+    ``EVERY_N_PERIODS`` pattern: the update form does not re-collect
+    ``start_period_id`` (it is fixed at creation), so ``offset_periods``
+    is taken verbatim from the payload.  This preserves the
+    pre-extraction inline behaviour exactly.
+
+    Args:
+        rule: The existing :class:`RecurrenceRule` to mutate in place.
+            The caller guarantees it is non-``None`` (the branch guard
+            tests ``template.recurrence_rule``).
+        data: Marshmallow-validated payload; mutated in place.  Pops
+            ``recurrence_pattern``, ``interval_n``, ``offset_periods``,
+            ``day_of_month``, ``month_of_year``, and -- when
+            ``include_due_day_of_month`` is ``True`` --
+            ``due_day_of_month``.
+        end_date_value: From the form (already popped by the caller);
+            copied verbatim onto ``rule.end_date``.
+        redirect_endpoint: Flask endpoint name for the invalid-pattern
+            redirect response.
+        redirect_endpoint_kwargs: Extra kwargs for ``url_for`` (e.g.
+            ``{"template_id": template_id}``).
+        include_due_day_of_month: ``True`` for transaction templates,
+            ``False`` for transfer templates (whose schema does not
+            expose ``due_day_of_month``).
+
+    Returns:
+        * ``None`` -- the rule was re-pointed successfully; the caller
+          continues to the field-update loop.
+        * :class:`Response` -- a Flask redirect emitted when the
+          submitted ``recurrence_pattern`` id does not resolve to a
+          :class:`RecurrencePattern`; the caller returns it directly
+          so the route's control flow matches the pre-extraction shape.
+    """
+    pattern_id_str = data.pop("recurrence_pattern")
+    pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
+    if pattern is None:
+        flash("Invalid recurrence pattern.", "danger")
+        return redirect(url_for(
+            redirect_endpoint, **(redirect_endpoint_kwargs or {}),
+        ))
+
+    rule.pattern_id = pattern.id
+    rule.interval_n = data.pop("interval_n", 1)
+    rule.offset_periods = data.pop("offset_periods", 0)
+    rule.day_of_month = data.pop("day_of_month", None)
+    if include_due_day_of_month:
+        rule.due_day_of_month = data.pop("due_day_of_month", None)
+    rule.month_of_year = data.pop("month_of_year", None)
+    rule.end_date = end_date_value
+    return None
+
+
+def resolve_recurrence_rule_for_update(
+    template: Any,
+    data: dict[str, Any],
+    *,
+    end_date_value: date | None,
+    redirect_endpoint: str,
+    redirect_endpoint_kwargs: dict[str, Any] | None = None,
+    include_due_day_of_month: bool = False,
+) -> Response | None:
+    """Re-point or rebuild a template's recurrence rule for an update.
+
+    Dispatches the two update-form branches shared by
+    :func:`app.routes.templates.update_template` and
+    :func:`app.routes.transfers.update_transfer_template`:
+
+    * pattern present AND the template already owns a rule -> re-point
+      that row in place via :func:`update_recurrence_rule_from_form`
+      (its primary key and the template's ``recurrence_rule_id`` FK
+      stay stable);
+    * otherwise -> build a fresh rule via
+      :func:`build_recurrence_rule_from_form` (or ``None`` when no
+      pattern was selected) and link it onto
+      ``template.recurrence_rule_id``.
+
+    The owning row's user scope comes from ``template.user_id`` -- the
+    caller fetched the template through an owner-scoped ``get_or_404``,
+    so this equals the pre-extraction ``current_user.id``.
+    ``start_period_id`` is fixed at create time, so the builder is
+    invoked with ``start_period_id=None`` and never performs the
+    ``EVERY_N_PERIODS`` start-period owner re-check.
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate``
+            being updated.  Accessed for ``recurrence_rule``,
+            ``recurrence_rule_id`` (assigned when a new rule is built),
+            and ``user_id``.  Mutated in place.
+        data: Marshmallow-validated payload; the recurrence keys are
+            popped by the delegated helper.
+        end_date_value: From the form (already popped by the caller).
+        redirect_endpoint: Flask endpoint for the invalid-pattern
+            redirect response.
+        redirect_endpoint_kwargs: Extra kwargs for ``url_for``.
+        include_due_day_of_month: ``True`` for transaction templates,
+            ``False`` for transfer templates.
+
+    Returns:
+        * ``None`` -- the rule was resolved; the caller continues to
+          the field-update loop.
+        * :class:`Response` -- a Flask redirect for an invalid
+          recurrence pattern id; the caller returns it directly.
+    """
+    if data.get("recurrence_pattern") and template.recurrence_rule:
+        return update_recurrence_rule_from_form(
+            template.recurrence_rule,
+            data,
+            end_date_value=end_date_value,
+            redirect_endpoint=redirect_endpoint,
+            redirect_endpoint_kwargs=redirect_endpoint_kwargs,
+            include_due_day_of_month=include_due_day_of_month,
+        )
+
+    rule_or_redirect = build_recurrence_rule_from_form(
+        data,
+        user_id=template.user_id,
+        start_period_id=None,
+        end_date_value=end_date_value,
+        redirect_endpoint=redirect_endpoint,
+        redirect_endpoint_kwargs=redirect_endpoint_kwargs,
+        include_due_day_of_month=include_due_day_of_month,
+    )
+    if isinstance(rule_or_redirect, Response):
+        return rule_or_redirect
+    if rule_or_redirect is not None:
+        template.recurrence_rule_id = rule_or_redirect.id
+    return None
+
+
 def handle_stale_conflict(
     *,
     logger: logging.Logger,
@@ -258,6 +422,69 @@ def handle_stale_conflict(
     return redirect(url_for(
         redirect_endpoint, **(redirect_endpoint_kwargs or {}),
     ))
+
+
+def commit_or_handle_stale(
+    *,
+    logger: logging.Logger,
+    log_label: str,
+    log_id: int,
+    flash_message: str,
+    redirect_endpoint: str,
+    redirect_endpoint_kwargs: dict[str, Any] | None = None,
+) -> Response | None:
+    """Commit the session, converting a stale-data race into flash+redirect.
+
+    Wraps the
+    ``try: db.session.commit() except StaleDataError: ...`` idiom that
+    closes every templates / transfers form-mutation route (archive,
+    unarchive, hard-delete, and the update routes' final commit).  On
+    a clean commit it returns ``None`` and the caller proceeds to its
+    own success flash + redirect; on the optimistic-lock conflict it
+    delegates to :func:`handle_stale_conflict` (rollback + log + flash
+    + redirect) and returns that :class:`Response` for the caller to
+    return verbatim.
+
+    Only :class:`StaleDataError` is caught.  Routes that additionally
+    translate an :class:`~sqlalchemy.exc.IntegrityError` at commit time
+    (e.g. ``update_transfer_template``'s name-uniqueness flash) keep
+    their explicit ``try`` block rather than calling this helper, so
+    the helper stays single-purpose and does not grow a grab-bag of
+    optional exception handlers (coding-standards rule 13).
+
+    Args:
+        logger: Per-module logger; passed through to
+            :func:`handle_stale_conflict` so log records originate at
+            the route module (keeps ``logger=app.routes.templates``
+            grep filters working).
+        log_label: Short label for the conflict log line, e.g.
+            ``"archive_template"`` or
+            ``"hard_delete_transfer_template archive-fallback"``.
+        log_id: The mutating template id, used in the log message.
+        flash_message: Fully-formed flash string, composed by the
+            caller via the :data:`STALE_EDITING_MESSAGE` /
+            :data:`STALE_ACTION_MESSAGE` templates.
+        redirect_endpoint: Flask endpoint to redirect to on conflict.
+        redirect_endpoint_kwargs: Kwargs for ``url_for``.
+
+    Returns:
+        * ``None`` -- the commit succeeded; the caller continues.
+        * :class:`Response` -- the conflict redirect from
+          :func:`handle_stale_conflict`; the caller returns it
+          directly.
+    """
+    try:
+        db.session.commit()
+        return None
+    except StaleDataError:
+        return handle_stale_conflict(
+            logger=logger,
+            log_label=log_label,
+            log_id=log_id,
+            flash_message=flash_message,
+            redirect_endpoint=redirect_endpoint,
+            redirect_endpoint_kwargs=redirect_endpoint_kwargs,
+        )
 
 
 def handle_stale_form_conflict(
@@ -375,6 +602,9 @@ __all__ = [
     "STALE_EDITING_MESSAGE",
     "STALE_ACTION_MESSAGE",
     "build_recurrence_rule_from_form",
+    "update_recurrence_rule_from_form",
+    "resolve_recurrence_rule_for_update",
+    "commit_or_handle_stale",
     "handle_stale_conflict",
     "handle_stale_form_conflict",
     "handle_recurrence_conflict",

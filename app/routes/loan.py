@@ -9,7 +9,7 @@ import logging
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
+from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -24,6 +24,12 @@ from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType
 from app.models.transfer_template import TransferTemplate
+from app.routes._transfer_creation_helpers import (
+    build_recurring_transfer_template,
+    flush_template_or_namedup_redirect,
+    generate_transfers_for_all_periods,
+    validate_and_resolve_source_account,
+)
 from app.schemas.validation import (
     EscrowComponentSchema,
     LoanAnchorTrueupSchema,
@@ -39,8 +45,6 @@ from app.services import (
     anchor_service,
     escrow_calculator,
     loan_resolver,
-    pay_period_service,
-    transfer_recurrence,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.amortization_engine import (
@@ -1605,27 +1609,17 @@ def create_payment_transfer(account_id):
         flash("Loan parameters are not configured.", "warning")
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    errors = _transfer_schema.validate(request.form)
-    if errors:
-        flash("Please correct the errors and try again.", "danger")
-        return redirect(url_for("loan.dashboard", account_id=account_id))
-
-    data = _transfer_schema.load(request.form)
-    source_account_id = data["source_account_id"]
-
-    # Verify source account ownership (404 for both "not found" and
-    # "not yours" per the security response rule).
-    source_account = get_or_404(Account, source_account_id)
-    if source_account is None:
-        abort(404)
-
-    if not source_account.is_active:
-        flash("Source account is inactive.", "danger")
-        return redirect(url_for("loan.dashboard", account_id=account_id))
-
-    if source_account_id == account_id:
-        flash("Source and destination accounts must be different.", "danger")
-        return redirect(url_for("loan.dashboard", account_id=account_id))
+    # Validate the form and resolve + ownership-check the source account
+    # (shared with investment.create_contribution_transfer).
+    result = validate_and_resolve_source_account(
+        _transfer_schema,
+        dest_account_id=account_id,
+        redirect_endpoint="loan.dashboard",
+        redirect_kwargs={"account_id": account_id},
+    )
+    if isinstance(result, Response):
+        return result
+    source_account, data = result
 
     # Determine the transfer amount and whether it auto-derives.  A
     # user-supplied amount is respected verbatim (no live derivation);
@@ -1666,33 +1660,28 @@ def create_payment_transfer(account_id):
     db.session.add(rule)
     db.session.flush()
 
-    # Create transfer template.
+    # Create transfer template via the shared builder.  Loan-payment
+    # transfers set derive_from_loan so the projected cash debit tracks
+    # the live monthly payment after an escrow or rate change.
     template_name = f"{source_account.name} -> {account.name} Payment"
-    template = TransferTemplate(
-        user_id=current_user.id,
-        from_account_id=source_account.id,
-        to_account_id=account.id,
-        recurrence_rule_id=rule.id,
+    template = build_recurring_transfer_template(
+        source_account=source_account,
+        dest_account=account,
+        rule=rule,
         name=template_name,
         default_amount=transfer_amount,
         derive_from_loan=derive_from_loan,
     )
-    db.session.add(template)
 
-    try:
-        db.session.flush()
-    except IntegrityError:
-        db.session.rollback()
-        flash("A recurring transfer with that name already exists.", "warning")
-        return redirect(url_for("loan.dashboard", account_id=account_id))
+    namedup_redirect = flush_template_or_namedup_redirect(
+        redirect_endpoint="loan.dashboard",
+        redirect_kwargs={"account_id": account_id},
+    )
+    if namedup_redirect is not None:
+        return namedup_redirect
 
     # Generate transfers for existing pay periods.
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario:
-        periods = pay_period_service.get_all_periods(current_user.id)
-        transfer_recurrence.generate_for_template(
-            template, periods, scenario.id,
-        )
+    generate_transfers_for_all_periods(template)
 
     db.session.commit()
 
