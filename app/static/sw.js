@@ -17,7 +17,16 @@
  * connection error for app pages, not a stale projection.
  */
 
-const CACHE = 'shekel-static-v1';
+// CACHE is versioned by a content hash that the /sw.js route
+// (app/routes/static_pass.py) substitutes for __ASSET_VERSION__ at
+// serve time.  The hash covers every cached /static asset, so the
+// name changes automatically whenever any of them changes; no manual
+// bumping.  A changed name means changed worker bytes, so the browser
+// installs the new worker and the activate handler below evicts the
+// prior cache.  The literal placeholder is a valid fallback name if
+// this file is ever served without the route (e.g. fetched directly
+// at /static/sw.js, which the app never does).
+const CACHE = 'shekel-static-__ASSET_VERSION__';
 const STATIC_PREFIXES = [
   '/static/vendor/',
   '/static/css/',
@@ -35,10 +44,11 @@ self.addEventListener('install', function () {
 });
 
 self.addEventListener('activate', function (event) {
-  // Purge any previous-version static caches so a bumped CACHE
-  // name (e.g. shekel-static-v2) cleanly evicts v1 on the next
-  // activation.  Non-matching cache names are left alone in case
-  // a future feature uses a separate cache namespace.
+  // Purge any previous-version static caches.  CACHE carries a
+  // content hash (see top of file), so it changes whenever a cached
+  // asset changes; this deletes the prior hash's cache on the next
+  // activation.  Non-matching cache names are left alone in case a
+  // future feature uses a separate cache namespace.
   event.waitUntil(
     caches.keys().then(function (names) {
       return Promise.all(names

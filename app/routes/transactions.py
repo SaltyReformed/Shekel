@@ -416,12 +416,19 @@ def get_full_edit(txn_id):
             .order_by(Category.group_name, Category.item_name)
             .all()
         )
+        # Current + future periods (plus the transfer's own) power the
+        # period-move selector when a transfer is edited from a grid
+        # shadow cell -- same set the transfers blueprint supplies.
+        periods = pay_period_service.get_current_and_future_periods(
+            current_user.id, include_period_id=xfer.pay_period_id,
+        )
         return render_template(
             "transfers/_transfer_full_edit.html",
             xfer=xfer,
             statuses=statuses,
             categories=categories,
             source_txn_id=txn.id,
+            periods=periods,
         )
 
     statuses = db.session.query(Status).all()

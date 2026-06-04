@@ -53,6 +53,25 @@
       </select>
     </div>
 
+    {# Pay period selector -- move this transfer (and both shadow
+       transactions) to a different period.  The service re-validates
+       ownership of the submitted id and propagates it to both shadows
+       (Transfer Invariant 3); the route flags template-generated
+       transfers as overrides on a move.  Only rendered when the route
+       supplies the period list. #}
+    {% if periods %}
+    <div class="mb-2">
+      <label class="form-label mb-0 small">Pay Period</label>
+      <select name="pay_period_id" class="form-select form-select-sm">
+        {% for p in periods %}
+        <option value="{{ p.id }}" {{ 'selected' if xfer.pay_period_id == p.id else '' }}>
+          {{ p.label }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+
     {# Category #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Category</label>

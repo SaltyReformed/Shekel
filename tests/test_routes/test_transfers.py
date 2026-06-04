@@ -2339,3 +2339,150 @@ class TestTransferTemplateHardDelete:
                 transfer_id=xfer_id,
             ).count()
             assert orphans == 0
+
+
+# ── Period move (transfer-period-move follow-up) ──────────────────
+
+
+class TestTransferPeriodMove:
+    """Moving a transfer's pay period from the full-edit popover.
+
+    The transfer service already relocates the parent transfer and both
+    shadow transactions together (Transfer Invariant 3); these tests
+    cover the UI wiring: the filtered period selector, the override flag
+    on a template move, the gridRefresh trigger, and route-boundary
+    ownership of the submitted period id.
+    """
+
+    def _shadows(self, xfer_id):
+        """Return the two shadow transactions for a transfer."""
+        return (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer_id)
+            .all()
+        )
+
+    def test_full_edit_renders_filtered_period_selector(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Popover lists current+future periods plus the transfer's own.
+
+        seed_periods_today places today in index 4, so index 0 is past
+        (the transfer's own -- included and selected), index 5 is future
+        (offered), and index 2 is past and not the transfer's own
+        (excluded).  The pay-period <select> is isolated so option-value
+        assertions cannot collide with the status select.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            own = seed_periods_today[0]
+            future = seed_periods_today[5]
+            excluded_past = seed_periods_today[2]
+
+            resp = auth_client.get(f"/transfers/{xfer.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert 'name="pay_period_id"' in html
+            start = html.index('name="pay_period_id"')
+            period_select = html[start:html.index("</select>", start)]
+            assert own.label in period_select
+            assert f'value="{own.id}" selected' in period_select
+            assert future.label in period_select
+            assert excluded_past.label not in period_select
+
+    def test_move_relocates_transfer_and_both_shadows(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A period move relocates the transfer and both shadows; gridRefresh.
+
+        Verifies Transfer Invariant 3 (shadow periods equal the parent's)
+        is preserved through the move and that the response asks for a
+        full grid refresh so the relocated rows appear under the new period.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            target = seed_periods_today[5]
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"pay_period_id": target.id, "version_id": xfer.version_id},
+            )
+            assert resp.status_code == 200
+            assert resp.headers.get("HX-Trigger") == "gridRefresh"
+
+            db.session.refresh(xfer)
+            assert xfer.pay_period_id == target.id
+            shadows = self._shadows(xfer.id)
+            assert len(shadows) == 2
+            assert all(s.pay_period_id == target.id for s in shadows)
+
+    def test_template_transfer_move_sets_override(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Moving a template-generated transfer flags it is_override.
+
+        Without the flag the recurrence engine would regenerate the
+        transfer in its original period, duplicating it.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings)
+            xfer = _create_transfer(
+                seed_user, seed_periods_today, savings, template=template,
+            )
+            assert xfer.is_override is False
+            target = seed_periods_today[5]
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"pay_period_id": target.id, "version_id": xfer.version_id},
+            )
+            assert resp.status_code == 200
+            db.session.refresh(xfer)
+            assert xfer.pay_period_id == target.id
+            assert xfer.is_override is True
+
+    def test_move_to_cross_user_period_rejected(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Submitting another user's period id returns 404 and moves nothing."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            original_period_id = xfer.pay_period_id
+            other = _create_other_user_with_template()
+            foreign_period_id = other["transfer"].pay_period_id
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "pay_period_id": foreign_period_id,
+                    "version_id": xfer.version_id,
+                },
+            )
+            assert resp.status_code == 404
+            db.session.refresh(xfer)
+            assert xfer.pay_period_id == original_period_id
+            assert all(
+                s.pay_period_id == original_period_id
+                for s in self._shadows(xfer.id)
+            )
+
+    def test_inplace_edit_keeps_balancechanged(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An edit that does not change the period keeps balanceChanged."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"amount": "250.00", "version_id": xfer.version_id},
+            )
+            assert resp.status_code == 200
+            assert resp.headers.get("HX-Trigger") == "balanceChanged"
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("250.00")
