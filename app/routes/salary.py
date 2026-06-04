@@ -1082,18 +1082,7 @@ def calibrate_preview(profile_id):
 
     # Calculate taxable income from the profile's current pre-tax deductions.
     gross = Decimal(str(data["actual_gross_pay"]))
-    periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
-
-    if current_period:
-        tax_configs = load_tax_configs(current_user.id, profile)
-        bk = paycheck_calculator.calculate_paycheck(
-            profile, current_period, periods, tax_configs,
-        )
-        total_pre_tax = bk.total_pre_tax
-    else:
-        total_pre_tax = Decimal("0")
-
+    total_pre_tax = _compute_total_pre_tax(profile)
     taxable = gross - total_pre_tax
     if taxable <= Decimal("0"):
         flash(
@@ -1179,17 +1168,7 @@ def calibrate_confirm(profile_id):
     # against a posted rate the client could have tampered with or
     # whose source taxable base could have shifted between preview and
     # confirm.
-    periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
-    if current_period:
-        tax_configs = load_tax_configs(current_user.id, profile)
-        preview_breakdown = paycheck_calculator.calculate_paycheck(
-            profile, current_period, periods, tax_configs,
-        )
-        total_pre_tax = preview_breakdown.total_pre_tax
-    else:
-        total_pre_tax = Decimal("0")
-
+    total_pre_tax = _compute_total_pre_tax(profile)
     gross = Decimal(str(data["actual_gross_pay"]))
     taxable = gross - total_pre_tax
     if taxable <= Decimal("0"):
@@ -1216,37 +1195,11 @@ def calibrate_confirm(profile_id):
         flash(str(exc), "danger")
         return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
 
-    # Federal/state cross-check (the schema covers FICA where the
-    # divisor is the posted ``actual_gross_pay``; federal/state's
-    # divisor is the live taxable base, only available here).  Tolerate
-    # the same one-cent equivalent that the schema uses for FICA: a
-    # rate mismatch under ``taxable`` smaller than one cent of
-    # withholding is below the precision of the underlying
-    # ``Numeric(12, 10)`` storage and cannot signal real tampering.
-    one_cent = Decimal("0.01")
-    cross_check_failures: list[tuple[str, Decimal, Decimal, Decimal]] = []
-    for posted_key, derived_value in (
-        ("effective_federal_rate", derived_rates.effective_federal_rate),
-        ("effective_state_rate", derived_rates.effective_state_rate),
-    ):
-        posted = Decimal(str(data[posted_key]))
-        diff_dollars = abs(posted - derived_value) * taxable
-        if diff_dollars > one_cent:
-            cross_check_failures.append(
-                (posted_key, posted, derived_value, diff_dollars)
-            )
-    if cross_check_failures:
-        logger.info(
-            "Rejected calibration confirm for profile %d "
-            "(federal/state rate inconsistency, failures=%s)",
-            profile_id,
-            [
-                f"{name} posted={posted} derived={derived} "
-                f"mismatch=${mismatch}"
-                for name, posted, derived, mismatch in cross_check_failures
-            ],
-        )
-        abort(422)
+    # Federal/state cross-check: the schema covers FICA (divisor = posted
+    # ``actual_gross_pay``); federal/state's divisor is the live taxable
+    # base, available only here.  Aborts 422 on a mismatch worth more than
+    # one cent of withholding (E-20 / C19-2 tampering signal).
+    _reject_if_rates_inconsistent(data, derived_rates, taxable, profile_id)
 
     try:
         # Delete any existing calibration for this profile.
@@ -1523,6 +1476,64 @@ def _regenerate_all_salary_transactions():
     )
     for profile in profiles:
         _regenerate_salary_transactions(profile)
+
+
+def _compute_total_pre_tax(profile):
+    """Return the profile's pre-tax deduction total for the current period.
+
+    Shared by :func:`calibrate_preview` and :func:`calibrate_confirm` to
+    derive the taxable base (gross minus pre-tax deductions) the effective
+    tax rates are computed against.  Returns ``Decimal("0")`` when the user
+    has no current pay period, so the taxable base falls back to the full
+    gross -- mirroring the original inline behaviour in both handlers.
+    """
+    current_period = pay_period_service.get_current_period(current_user.id)
+    if not current_period:
+        return Decimal("0")
+    periods = pay_period_service.get_all_periods(current_user.id)
+    tax_configs = load_tax_configs(current_user.id, profile)
+    pay_breakdown = paycheck_calculator.calculate_paycheck(
+        profile, current_period, periods, tax_configs,
+    )
+    return pay_breakdown.total_pre_tax
+
+
+def _reject_if_rates_inconsistent(data, derived_rates, taxable, profile_id):
+    """Abort 422 if posted federal/state rates disagree with derived ones.
+
+    The confirm form is fully server-generated from the preview, so a
+    mismatch between the posted ``effective_federal_rate`` /
+    ``effective_state_rate`` and the freshly-derived values signals
+    tampering or stale browser state (E-20 / C19-2), not legitimate user
+    error.  The schema covers FICA (divisor = posted ``actual_gross_pay``);
+    federal/state's divisor is the live ``taxable`` base, available only
+    here.  Tolerates the same one-cent-of-withholding slack the schema uses
+    for FICA: a mismatch worth under one cent against ``taxable`` is below
+    the ``Numeric(12, 10)`` storage precision and cannot signal real
+    tampering.
+    """
+    one_cent = Decimal("0.01")
+    failures: list[tuple[str, Decimal, Decimal, Decimal]] = []
+    for posted_key, derived_value in (
+        ("effective_federal_rate", derived_rates.effective_federal_rate),
+        ("effective_state_rate", derived_rates.effective_state_rate),
+    ):
+        posted = Decimal(str(data[posted_key]))
+        diff_dollars = abs(posted - derived_value) * taxable
+        if diff_dollars > one_cent:
+            failures.append((posted_key, posted, derived_value, diff_dollars))
+    if failures:
+        logger.info(
+            "Rejected calibration confirm for profile %d "
+            "(federal/state rate inconsistency, failures=%s)",
+            profile_id,
+            [
+                f"{name} posted={posted} derived={derived} "
+                f"mismatch=${mismatch}"
+                for name, posted, derived, mismatch in failures
+            ],
+        )
+        abort(422)
 
 
 def _render_raises_partial(profile):
