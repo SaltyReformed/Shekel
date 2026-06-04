@@ -1,15 +1,16 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
 **Status: Phases 0-1 DONE. Phase 2 (duplicate-code) IN PROGRESS.
-As of 2026-06-04 app/ is 9.74/10 with 339 visible messages (baseline 9.68/10 / 423). Disables
+As of 2026-06-04 app/ is 9.75/10 with 335 visible messages (baseline 9.68/10 / 423). Disables
 74 -> 61: 13 removed (root-cause fixes), 46 documented KEEP, 15 smell-disables deferred to Phase 3.
 Phase 2 progress: batch 1 (`7ed84c7`) recurrence fork -> `_recurrence_common.py`; batch 2
 (`d806eab`) `OptimisticLockMixin` for the 10-model `version_id` block; P-2 fix (`a608d77`)
-`account_service.list_active_accounts` deduping the 6 account dropdowns. R0801 clusters 76 -> 66.
-Open: 1 residual recurrence regenerate-tail + the templates<->transfers call-site residue, both
-deferred to the call-site-residue decision; remaining model boilerplate (`user_id` FK,
-`sort_order`/`is_active`) = future mixin batches; templates<->transfers category dropdown =
-follow-on. See [Phase 1 closeout](#phase-1-closeout) and the [Progress Log](#progress-log).**
+`account_service.list_active_accounts`; batch 3 (`b58adf1`) `category_service.list_active_categories`
+deduping the 5 category dropdowns. R0801 clusters 76 -> 62. Open: 1 residual recurrence
+regenerate-tail + the templates<->transfers call-site residue, both deferred to the
+call-site-residue decision; remaining model boilerplate (`user_id` FK, `sort_order`/`is_active`)
+= future mixin batches. See [Phase 1 closeout](#phase-1-closeout) and the
+[Progress Log](#progress-log).**
 
 This document is the single system of record for driving `app/` (then `scripts/`) to a clean
 `pylint` 10.00/10. It exists so any session -- including a fresh one with no memory of this
@@ -801,3 +802,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `7ed84c7` | 2 | **Batch 1 (recurrence fork):** hoisted the model-agnostic halves of the two recurrence engines into `_recurrence_common.py` (`check_scenario_ownership`, `should_skip_period`, `partition_regeneration_rows`, `query_rows_from_effective_date`) + `recurrence_engine._resolve_generation_plan`/`_GenerationPlan` (gating + pattern-match preamble; kept there for `_match_periods` access). Model-specific halves (Transaction build vs `transfer_service.create_transfer` shadow atomicity; transfer regenerate delete path) stay per-engine. Tried+reverted a `log_recurrence_regenerated` helper (added too-many-arguments, dissolved nothing). Transfer engine sheds 7 imports. Clusters 76->70 (rows 57/70/71/72/74/75 EXTRACT; row 73 PARTIAL -- regenerate-tail call-SEQUENCE residual `recurrence_engine:333-368 <-> transfer_recurrence:168-204` left live, deferred to the call-site-residue decision). No new pylint messages. **Full suite 5766 passed.** | 9.74/10 | 343 |
 | 2026-06-04 | `d806eab` | 2 | **Batch 2 (model boilerplate -- OptimisticLockMixin):** developer chose "extend the mixin pattern" for the genuinely-shared optimistic-lock block. Hoisted `version_id` + `__mapper_args__` out of 10 models (account, paycheck_deduction, transaction_entry, savings_goal, salary_raise, transfer, transfer_template, transaction_template, transaction, salary_profile) into `OptimisticLockMixin`. Column at class level (byte-identical DDL); `__mapper_args__` via `@declared_attr` so each subclass binds its own `version_id_col`. Per-table `ck_*_version_id_positive` CHECKs stay in `__table_args__`. **Verified: CreateTable DDL byte-identical for all 10 tables vs baseline (empty autogenerate diff -- no migration, no test-template rebuild); `version_id_col` resolves to `<table>.version_id` on all 10.** Clusters 70->69 net (version_id dup eliminated; model boilerplate re-paired into remaining `user_id`/`sort_order`/`is_active` groups). No new pylint messages (5 line-too-long on those files are pre-existing Phase 4 items). **Full suite 5766 passed.** | 9.74/10 | 342 |
 | 2026-06-04 | `a608d77` | 2 | **P-2 fix + account-dropdown dedupe:** added `account_service.list_active_accounts(user_id)` (Flask-isolated, ordered by `sort_order, name`, `is_active` only); routed all six form sites through it (templates x2 -- now ordered, fixing P-2; transfers x2; savings; settings). Dissolved the account-dropdown R0801 clusters (`savings<->transfers`, `settings<->transfers`); the templates<->transfers CATEGORY-dropdown clusters remain (separate follow-on). Clusters 69->66. No new pylint messages; `create_app` OK (no cycle). **Full suite 5766 passed.** | 9.74/10 | 339 |
+| 2026-06-04 | `b58adf1` | 2 | **Batch 3 (category-dropdown dedupe):** new `app/services/category_service.py` with `list_active_categories(user_id)` (Flask-isolated, parallel to `account_service.list_active_accounts`); routed the 5 active-category form sites through it (templates x2, transfers x3). Pure refactor -- all 5 already used the identical `is_active` + `group_name, item_name` query, so no behavior change. The grid/transactions/companion category queries use a different (all-categories) semantic and are intentionally untouched. Clusters 66->62; **score 9.74 -> 9.75** (cumulative cluster removals crossed a rounding boundary). No new messages; `create_app` OK. **Full suite 5766 passed.** | 9.75/10 | 335 |
