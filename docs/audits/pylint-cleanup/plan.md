@@ -9,7 +9,10 @@ Phase 2 progress: batch 1 (`7ed84c7`) recurrence fork -> `_recurrence_common.py`
 deduping the 5 category dropdowns. R0801 clusters 76 -> 62. Open: 1 residual recurrence
 regenerate-tail + the templates<->transfers call-site residue, both deferred to the
 call-site-residue decision; remaining model boilerplate (`user_id` FK, `sort_order`/`is_active`)
-= future mixin batches. See [Phase 1 closeout](#phase-1-closeout) and the
+= future mixin batches. **RECOMMENDED NEXT BATCH: `UserScopedMixin`** (the `user_id -> auth.users`
+CASCADE FK across ~15 models -- same pattern + DDL-verification recipe as `OptimisticLockMixin`;
+biggest remaining single cluster-dissolver). Read "Phase 2 working notes" below before starting a
+disable-based or mixin-based batch. See [Phase 1 closeout](#phase-1-closeout) and the
 [Progress Log](#progress-log).**
 
 This document is the single system of record for driving `app/` (then `scripts/`) to a clean
@@ -368,6 +371,47 @@ in some output formats; that file is NOT the problem. The real sites are the fil
   pair. The rest (e.g. `investment_params` <-> `loan_params` domain columns) are coincidental ->
   document. NOTE: line numbers in the #1-#21 table below predate batch 2 and have re-paired;
   re-run the cluster command for current ranges.
+
+### Phase 2 working notes (methods + empirical findings, 2026-06-04)
+
+Two things were established by experiment this phase; record them so a fresh session does not
+re-derive them.
+
+**1. R0801 inline-disable mechanics (pylint 4.0.5, verified on throwaway files).** Needed for the
+deferred call-site-residue decision -- if/when a cluster is DISABLEd rather than extracted:
+- `min-similarity-lines = 4` (pylint default; no `[SIMILARITIES]` override). Default also ignores
+  docstrings and comments, so a matched run can span them; only string/identifier *values* break it.
+- The R0801 message anchors at **module line 1 of whichever file is processed LAST**, never at the
+  duplicated block.
+- A `# pylint: disable=duplicate-code` placed in **exactly ONE** of the two blocks suppresses the
+  whole cluster, reliably, in both file orderings.
+- **TRAP:** the same disable in **BOTH** blocks makes it **re-fire**. So a documented disable must
+  be one-sided (pick one file per pair and be consistent). Raising `min-similarity-lines` to hide a
+  cluster is OFF THE TABLE -- morally identical to raising a `[DESIGN]` threshold (ratified
+  decision #3) and it blinds the checker to future duplication.
+
+**2. Mixin DDL-equivalence verification recipe (for `UserScopedMixin` and any future mixin batch).**
+The `app/models/mixins.py` invariant is "byte-identical DDL / empty autogenerate diff." Verify it
+WITHOUT needing a migrated dev DB by diffing the compiled `CreateTable` before vs after, plus the
+mapper config where relevant. The batch-2 proof (10/10 byte-identical) used exactly this:
+```python
+# capture BEFORE (on the pre-change tree), then AFTER (post-change), and diff per table:
+from app import create_app; from app.extensions import db
+from sqlalchemy.schema import CreateTable
+with create_app().app_context():
+    ddl = str(CreateTable(Model.__table__).compile(db.engine))   # compare BEFORE == AFTER
+    # for OptimisticLockMixin also: str(Model.__mapper__.version_id_col) == f"{tbl}.version_id"
+```
+Byte-identical `CreateTable` (+ unchanged `__table_args__` indexes, which I did not touch) is
+STRONGER than "empty autogenerate diff" and means no migration + no test-template rebuild. The
+`@declared_attr` form was required for `__mapper_args__` (a plain dict captures the mixin's unmapped
+column); a class-level Column keeps DDL identical. Same caution applies to any `version_id_col`- or
+column-referencing mapper option in a new mixin.
+
+**3. `too-many-arguments` watch.** Extracting a `log_event(...)` call into a named helper with one
+param per field tripped `too-many-arguments` (10 params) AND dissolved no cluster -- reverted in
+batch 1. Lesson: a thin log helper only pays off at many call sites AND with <=5 params (the two
+existing `_recurrence_common` log helpers stay under the limit); the regenerate-log shape does not.
 
 Status values: `-` (unreviewed), `EXTRACT` (done via extraction), `DISABLE` (documented incidental),
 with commit SHA.
