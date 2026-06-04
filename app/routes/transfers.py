@@ -35,6 +35,7 @@ from app.schemas.validation import (
 )
 from app.services import (
     account_service,
+    category_service,
     pay_period_service,
     transfer_recurrence,
     transfer_service,
@@ -112,12 +113,7 @@ def list_transfer_templates():
 def new_transfer_template():
     """Display the transfer template creation form."""
     accounts = account_service.list_active_accounts(current_user.id)
-    categories = (
-        db.session.query(Category)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Category.group_name, Category.item_name)
-        .all()
-    )
+    categories = category_service.list_active_categories(current_user.id)
     patterns = db.session.query(RecurrencePattern).all()
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -285,12 +281,7 @@ def edit_transfer_template(template_id):
         abort(404)
 
     accounts = account_service.list_active_accounts(current_user.id)
-    categories = (
-        db.session.query(Category)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Category.group_name, Category.item_name)
-        .all()
-    )
+    categories = category_service.list_active_categories(current_user.id)
     patterns = db.session.query(RecurrencePattern).all()
 
     return render_template(
@@ -762,12 +753,7 @@ def get_full_edit(xfer_id):
     if xfer is None:
         return "Not found", 404
     statuses = db.session.query(Status).all()
-    categories = (
-        db.session.query(Category)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Category.group_name, Category.item_name)
-        .all()
-    )
+    categories = category_service.list_active_categories(current_user.id)
     # Current + future periods power the in-popover period-move selector,
     # always including the transfer's own period so a transfer sitting in
     # a past period stays selected.  The service re-validates ownership of

@@ -26,7 +26,12 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
-from app.services import account_service, pay_period_service, recurrence_engine
+from app.services import (
+    account_service,
+    category_service,
+    pay_period_service,
+    recurrence_engine,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.exceptions import RecurrenceConflict
@@ -148,12 +153,7 @@ def list_templates():
 @require_owner
 def new_template():
     """Display the template creation form."""
-    categories = (
-        db.session.query(Category)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Category.group_name, Category.item_name)
-        .all()
-    )
+    categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
     patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
@@ -254,12 +254,7 @@ def edit_template(template_id):
     if template is None:
         abort(404)
 
-    categories = (
-        db.session.query(Category)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Category.group_name, Category.item_name)
-        .all()
-    )
+    categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
     patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
