@@ -122,13 +122,7 @@ def show():
             .order_by(AccountType.name)
             .all()
         )
-        types_in_use = set(
-            row[0] for row in
-            db.session.query(Account.account_type_id)
-            .filter_by(user_id=current_user.id)
-            .distinct()
-            .all()
-        )
+        types_in_use = account_service.get_account_type_ids_in_use(current_user.id)
         categories = (
             db.session.query(AccountTypeCategory)
             .order_by(AccountTypeCategory.id)

@@ -17,11 +17,10 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app import ref_cache
-from app.enums import RoleEnum
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
@@ -44,43 +43,6 @@ _update_schema = EntryUpdateSchema()
 # ``__table_args__`` declaration on
 # ``app.models.transaction.Transaction``.
 _CREDIT_PAYBACK_UNIQUE_INDEX = "uq_transactions_credit_payback_unique"
-
-
-def _get_accessible_transaction(txn_id):
-    """Fetch a transaction accessible to the current user.
-
-    Owners access transactions belonging to their own pay periods.
-    Companions access transactions belonging to their linked owner's
-    pay periods, restricted to companion-visible rows (a template
-    flagged companion_visible, or an ad-hoc row whose own
-    companion_visible flag is set -- resolved by
-    Transaction.visible_to_companion).
-
-    Follows the security response rule: returns None for both
-    "not found" and "not yours" so the caller returns 404 in
-    either case.
-
-    Args:
-        txn_id: Integer primary key of the transaction.
-
-    Returns:
-        Transaction if found and accessible, else None.
-    """
-    txn = db.session.get(Transaction, txn_id)
-    if txn is None:
-        return None
-    companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
-    if current_user.role_id == companion_role_id:
-        # Companion path: must be linked owner's data + companion-visible
-        # (resolved from the template, or the row's own flag for ad-hoc).
-        if (txn.pay_period.user_id != current_user.linked_owner_id
-                or not txn.visible_to_companion):
-            return None
-    else:
-        # Owner path: standard pay-period ownership check.
-        if txn.pay_period.user_id != current_user.id:
-            return None
-    return txn
 
 
 def _entry_list_host_id(txn_id, host):
@@ -187,7 +149,7 @@ def _credit_payback_idempotent_response(exc, txn_id, log_context):
         "Duplicate CC payback prevented on %s (idempotent success)",
         log_context,
     )
-    refreshed = _get_accessible_transaction(txn_id)
+    refreshed = get_accessible_transaction(txn_id)
     if refreshed is None:
         return "Not found", 404
     return (
@@ -232,7 +194,7 @@ def list_entries(txn_id):
     Accepts an optional ``editing`` query parameter (entry ID) to
     render an inline edit form for the specified entry.
     """
-    txn = _get_accessible_transaction(txn_id)
+    txn = get_accessible_transaction(txn_id)
     if txn is None:
         return "Not found", 404
     editing_id = request.args.get("editing", type=int)
@@ -249,7 +211,7 @@ def create_entry(txn_id):
     updates actual_amount if Paid), then commits atomically.
     Returns the refreshed entry list with a balanceChanged trigger.
     """
-    txn = _get_accessible_transaction(txn_id)
+    txn = get_accessible_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -300,7 +262,7 @@ def update_entry(txn_id, entry_id):
     mode so the user sees the winner's values.  ``StaleDataError``
     raised at flush time is caught and produces the same response.
     """
-    txn = _get_accessible_transaction(txn_id)
+    txn = get_accessible_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -370,7 +332,7 @@ def toggle_cleared(txn_id, entry_id):
     flush time and the handler converts ``StaleDataError`` into a
     409 + conflict entry list.
     """
-    txn = _get_accessible_transaction(txn_id)
+    txn = get_accessible_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
@@ -408,7 +370,7 @@ def delete_entry(txn_id, entry_id):
 
     Optimistic locking: see :func:`toggle_cleared`.
     """
-    txn = _get_accessible_transaction(txn_id)
+    txn = get_accessible_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 

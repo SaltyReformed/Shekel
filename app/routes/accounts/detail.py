@@ -37,6 +37,7 @@ from app.services import balance_calculator, balance_resolver, pay_period_servic
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.account_validation import _interest_params_schema
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.period_projections import project_balance_horizons
 
 logger = logging.getLogger(__name__)
 
@@ -142,14 +143,7 @@ def interest_detail(account_id):
             })
 
     # 3/6/12 month horizon projections.
-    projected = {}
-    for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
-        if current_period:
-            target_idx = current_period.period_index + offset_count
-            for p in all_periods:
-                if p.period_index == target_idx and p.id in balances:
-                    projected[offset_label] = balances[p.id]
-                    break
+    projected = project_balance_horizons(current_period, all_periods, balances)
 
     return render_template(
         "accounts/interest_detail.html",

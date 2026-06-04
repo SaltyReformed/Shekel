@@ -27,6 +27,7 @@ from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import (
+    account_service,
     balance_resolver,
     growth_engine,
     income_service,
@@ -191,13 +192,7 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             net_biweekly = current_breakdown.net_pay
 
     # ── Load retirement/investment accounts ──────────────────────
-    retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
-    investment_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
-    retirement_types = (
-        db.session.query(AccountType)
-        .filter(AccountType.category_id.in_([retirement_cat_id, investment_cat_id]))
-        .all()
-    )
+    retirement_types = account_service.list_retirement_investment_account_types()
     retirement_type_ids = {rt.id for rt in retirement_types}
     traditional_type_ids = frozenset(
         rt.id for rt in retirement_types if rt.is_pretax

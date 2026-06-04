@@ -44,6 +44,7 @@ from flask_login import current_user
 from app import ref_cache
 from app.enums import RoleEnum
 from app.extensions import db
+from app.models.transaction import Transaction
 from app.utils.log_events import (
     ACCESS,
     EVT_ACCESS_DENIED_CROSS_USER,
@@ -261,6 +262,50 @@ def get_owned_via_parent(model, pk, parent_attr,
         )
         return None
     return record
+
+
+def get_accessible_transaction(txn_id):
+    """Load a transaction the current user may access (owner or companion).
+
+    The shared companion-aware access check behind the entry-CRUD
+    (:mod:`app.routes.entries`) and status-change
+    (:mod:`app.routes.transactions`) transaction routes.  Owners reach
+    transactions in their own pay periods; companions reach their linked
+    owner's transactions restricted to companion-visible rows (a template
+    flagged ``companion_visible``, or an ad-hoc row whose own
+    ``companion_visible`` flag is set -- resolved by
+    ``Transaction.visible_to_companion``).
+
+    Follows the project security response rule: returns ``None`` for both
+    "not found" and "not accessible" so the caller returns 404 in either
+    case.
+
+    Unlike :func:`get_or_404` / :func:`get_owned_via_parent`, this helper
+    does not emit a denial ``log_event``; it preserves verbatim the
+    pre-extraction inline behaviour of the two routes it unifies, which
+    were silent on the companion-visibility denial.
+
+    Args:
+        txn_id: Integer primary key of the transaction.
+
+    Returns:
+        The :class:`Transaction` if found and accessible, else ``None``.
+    """
+    txn = db.session.get(Transaction, txn_id)
+    if txn is None:
+        return None
+    companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
+    if current_user.role_id == companion_role_id:
+        # Companion path: linked owner's data + companion-visible
+        # (resolved from the template, or the row's own flag for ad-hoc).
+        if (txn.pay_period.user_id != current_user.linked_owner_id
+                or not txn.visible_to_companion):
+            return None
+    else:
+        # Owner path: standard pay-period ownership check.
+        if txn.pay_period.user_id != current_user.id:
+            return None
+    return txn
 
 
 def _fresh_login_is_within(threshold: timedelta) -> bool:

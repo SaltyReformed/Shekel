@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -46,7 +46,7 @@ from app.services.entry_service import (
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import verify_transition
 from app.exceptions import NotFoundError, ValidationError
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import get_accessible_transaction, require_owner
 from app.utils.db_errors import is_unique_violation
 
 # Name of the partial unique index that backstops commit C-19's
@@ -236,7 +236,7 @@ def _stale_transaction_response(
     (latest state) rather than the desktop cell; the card's
     ``hx-target`` is the card wrapper, so a desktop-cell body would not
     swap.  That path re-fetches through
-    :func:`_get_accessible_transaction_for_status` so a companion's
+    :func:`get_accessible_transaction` so a companion's
     conflict resolves against the linked owner's row (the desktop path
     uses :func:`_get_owned_transaction`, which is owner-only).
 
@@ -258,7 +258,7 @@ def _stale_transaction_response(
     db.session.rollback()
     db.session.expire_all()
     if render_mode == "mobile_card":
-        txn = _get_accessible_transaction_for_status(txn_id)
+        txn = get_accessible_transaction(txn_id)
         if txn is None:
             return "Not found", 404
         return (
@@ -329,43 +329,6 @@ def _verify_owned_fks_in_update(data):
         if cat is None or cat.user_id != current_user.id:
             return "Category not found", 404
     return None
-
-
-def _get_accessible_transaction_for_status(txn_id):
-    """Fetch a transaction accessible to the current user for status changes.
-
-    Owners access their own transactions.  Companions access
-    transactions belonging to their linked owner's pay periods,
-    restricted to companion-visible rows (a template flagged
-    ``companion_visible``, or an ad-hoc row whose own
-    ``companion_visible`` flag is set -- resolved by
-    ``Transaction.visible_to_companion``).
-
-    Used by mark_done to allow companions to mark visible
-    transactions as Paid.  Follows the security response rule:
-    returns None for both "not found" and "not yours."
-
-    Args:
-        txn_id: Integer primary key of the transaction.
-
-    Returns:
-        Transaction if found and accessible, else None.
-    """
-    txn = db.session.get(Transaction, txn_id)
-    if txn is None:
-        return None
-    companion_id = ref_cache.role_id(RoleEnum.COMPANION)
-    if current_user.role_id == companion_id:
-        # Companion path: linked owner's data + companion-visible
-        # (resolved from the template, or the row's own flag for ad-hoc).
-        if (txn.pay_period.user_id != current_user.linked_owner_id
-                or not txn.visible_to_companion):
-            return None
-    else:
-        # Owner path: standard pay-period ownership check.
-        if txn.pay_period.user_id != current_user.id:
-            return None
-    return txn
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/cell", methods=["GET"])
@@ -685,7 +648,7 @@ def mark_done(txn_id):
     conflict cell so the user retries against fresh state instead
     of seeing a 500.
     """
-    txn = _get_accessible_transaction_for_status(txn_id)
+    txn = get_accessible_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 

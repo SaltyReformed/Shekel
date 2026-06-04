@@ -93,14 +93,8 @@ def list_accounts():
 
     account_types = _visible_account_types(current_user.id)
 
-    # Build a set of account type IDs that are in use (for delete guard).
-    types_in_use = set(
-        row[0] for row in
-        db.session.query(Account.account_type_id)
-        .filter_by(user_id=current_user.id)
-        .distinct()
-        .all()
-    )
+    # Account type IDs in use (for the delete guard).
+    types_in_use = account_service.get_account_type_ids_in_use(current_user.id)
 
     return render_template(
         "accounts/list.html",

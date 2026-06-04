@@ -62,6 +62,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.utils.balance_predicates import balance_excluded_status_ids
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
+from app.utils.period_projections import project_balance_horizons
 
 logger = logging.getLogger(__name__)
 
@@ -490,13 +491,9 @@ def _compute_account_projections(
                 all_periods, current_period, current_bal,
             )
         else:
-            for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
-                if current_period:
-                    target_idx = current_period.period_index + offset_count
-                    for p in all_periods:
-                        if p.period_index == target_idx and p.id in balances:
-                            projected[offset_label] = balances[p.id]
-                            break
+            projected = project_balance_horizons(
+                current_period, all_periods, balances,
+            )
 
         # MED-01 / S6-03: the third partial copy of the per-account-
         # type ladder used to live here.  Routed through the shared

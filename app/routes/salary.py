@@ -60,7 +60,12 @@ from app.schemas.validation import (
     StateTaxConfigSchema,
 )
 from app.exceptions import RecurrenceConflict, ValidationError
-from app.services import paycheck_calculator, pay_period_service, recurrence_engine
+from app.services import (
+    account_service,
+    paycheck_calculator,
+    pay_period_service,
+    recurrence_engine,
+)
 from app.services.calibration_service import derive_effective_rates
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
@@ -1549,13 +1554,7 @@ def _render_deductions_partial(profile):
 
 def _get_investment_accounts(user_id):
     """Load retirement/investment accounts for the target account dropdown."""
-    retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
-    investment_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
-    retirement_types = (
-        db.session.query(AccountType)
-        .filter(AccountType.category_id.in_([retirement_cat_id, investment_cat_id]))
-        .all()
-    )
+    retirement_types = account_service.list_retirement_investment_account_types()
     type_ids = {rt.id for rt in retirement_types}
     if not type_ids:
         return []

@@ -31,10 +31,13 @@ raw SQL.
 import logging
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.exceptions import ValidationError
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
+from app.models.ref import AccountType
 from app.services import pay_period_service
 
 
@@ -210,5 +213,51 @@ def list_active_accounts(user_id: int) -> list[Account]:
         db.session.query(Account)
         .filter_by(user_id=user_id, is_active=True)
         .order_by(Account.sort_order, Account.name)
+        .all()
+    )
+
+
+def get_account_type_ids_in_use(user_id: int) -> set[int]:
+    """Return the account_type_ids the user currently has accounts of.
+
+    Powers the account-type delete guard (a type that is in use cannot
+    be deleted) shared by the accounts-list page and the settings
+    account-types page.
+
+    Args:
+        user_id: ``auth.users.id`` of the owner.
+
+    Returns:
+        Set of ``account_type_id`` integers in use by the user's
+        accounts.
+    """
+    return {
+        row[0] for row in
+        db.session.query(Account.account_type_id)
+        .filter_by(user_id=user_id)
+        .distinct()
+        .all()
+    }
+
+
+def list_retirement_investment_account_types() -> list[AccountType]:
+    """Return every AccountType in the retirement or investment category.
+
+    The shared source for the salary contribution-target dropdown
+    (:func:`app.routes.salary._get_investment_accounts`) and the
+    retirement dashboard's pretax/Roth account-type partitioning
+    (:mod:`app.services.retirement_dashboard_service`).  Returns the full
+    rows rather than just the id set because the dashboard reads
+    ``AccountType.is_pretax`` off them.
+
+    Returns:
+        List of :class:`AccountType` rows whose category is RETIREMENT
+        or INVESTMENT.
+    """
+    retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+    investment_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
+    return (
+        db.session.query(AccountType)
+        .filter(AccountType.category_id.in_([retirement_cat_id, investment_cat_id]))
         .all()
     )
