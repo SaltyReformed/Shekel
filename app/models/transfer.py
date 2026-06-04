@@ -8,10 +8,16 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.mixins import SoftDeleteOverridableMixin, TimestampMixin
+from app.models.mixins import (
+    OptimisticLockMixin,
+    SoftDeleteOverridableMixin,
+    TimestampMixin,
+)
 
 
-class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
+class Transfer(
+    OptimisticLockMixin, SoftDeleteOverridableMixin, TimestampMixin, db.Model,
+):
     """A transfer between two accounts within a pay period.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -156,18 +162,7 @@ class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     # shadow ``Transaction.due_date``; this column exists so the parent is
     # a complete record and so edits/display have one source of truth.
     due_date = db.Column(db.Date, nullable=True)
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.  NOT NULL with server_default="1" so existing
-    # production rows are filled at ALTER TABLE time and new rows
-    # always start at version 1.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.  Routes that mutate
-    # Transfer (or call transfer_service helpers that flush) MUST
-    # catch StaleDataError and surface a 409 / flash + redirect.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     template = db.relationship("TransferTemplate", back_populates="transfers")

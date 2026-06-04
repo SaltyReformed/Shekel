@@ -6,10 +6,10 @@ profile's gross pay to arrive at net pay.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import OptimisticLockMixin, TimestampMixin
 
 
-class PaycheckDeduction(TimestampMixin, db.Model):
+class PaycheckDeduction(OptimisticLockMixin, TimestampMixin, db.Model):
     """A payroll deduction (e.g., 401k, health insurance, Roth IRA).
 
     Optimistic locking: see :class:`Transaction` for the
@@ -134,14 +134,7 @@ class PaycheckDeduction(TimestampMixin, db.Model):
         db.Boolean, nullable=False, default=True,
         server_default=db.text("true"),
     )
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="deductions")

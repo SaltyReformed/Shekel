@@ -8,10 +8,16 @@ pay periods.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin, TrackingVisibilityMixin
+from app.models.mixins import (
+    OptimisticLockMixin,
+    TimestampMixin,
+    TrackingVisibilityMixin,
+)
 
 
-class TransactionTemplate(TrackingVisibilityMixin, TimestampMixin, db.Model):
+class TransactionTemplate(
+    OptimisticLockMixin, TrackingVisibilityMixin, TimestampMixin, db.Model,
+):
     """Blueprint for a recurring income or expense line item.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -66,14 +72,7 @@ class TransactionTemplate(TrackingVisibilityMixin, TimestampMixin, db.Model):
     )
     # is_envelope and companion_visible are provided by
     # TrackingVisibilityMixin (shared with Transaction).
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

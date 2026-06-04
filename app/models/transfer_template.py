@@ -8,10 +8,10 @@ rows into future pay periods.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import OptimisticLockMixin, TimestampMixin
 
 
-class TransferTemplate(TimestampMixin, db.Model):
+class TransferTemplate(OptimisticLockMixin, TimestampMixin, db.Model):
     """Blueprint for a recurring transfer between two accounts.
 
     Optimistic locking: see :class:`Transaction` for the
@@ -80,14 +80,7 @@ class TransferTemplate(TimestampMixin, db.Model):
         db.Boolean, nullable=False, default=False,
         server_default=db.text("false"),
     )
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     from_account = db.relationship(

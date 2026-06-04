@@ -6,10 +6,10 @@ state tax config, and links to raises and deductions for paycheck calculation.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import OptimisticLockMixin, TimestampMixin
 
 
-class SalaryProfile(TimestampMixin, db.Model):
+class SalaryProfile(OptimisticLockMixin, TimestampMixin, db.Model):
     """A salary income profile used for net paycheck calculation.
 
     Optimistic locking: see :class:`Transaction` for the
@@ -105,14 +105,7 @@ class SalaryProfile(TimestampMixin, db.Model):
     sort_order = db.Column(
         db.Integer, nullable=False, default=0, server_default=db.text("0"),
     )
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     scenario = db.relationship("Scenario", lazy="joined")

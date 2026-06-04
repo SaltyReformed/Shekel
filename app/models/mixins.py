@@ -11,6 +11,8 @@ Mixins are NOT registered in ``app/models/__init__.py`` -- they
 represent shared declarations, not concrete tables.
 """
 
+from sqlalchemy.orm import declared_attr
+
 from app.extensions import db
 
 
@@ -136,3 +138,49 @@ class TrackingVisibilityMixin:
     companion_visible = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
     )
+
+
+class OptimisticLockMixin:
+    """Optimistic-locking version counter for concurrently-edited rows.
+
+    Adds one column plus the mapper configuration that activates
+    SQLAlchemy's version-counter concurrency control:
+
+      ``version_id`` -- INTEGER NOT NULL DEFAULT 1.  SQLAlchemy issues
+                        ``UPDATE ... WHERE id = ? AND version_id = ?`` on
+                        every flush of a dirty row, atomically increments
+                        the counter in the same statement, and raises
+                        ``StaleDataError`` when the rowcount is 0 -- i.e.
+                        a concurrent commit already advanced the counter.
+
+    Routes that mutate a row carrying this mixin MUST catch
+    ``StaleDataError`` and surface a 409 Conflict (or a flash + redirect
+    for full-page forms) so the loser retries against fresh state.  This
+    is the commit C-18 / F-010 optimistic-locking contract.
+
+    ``__mapper_args__`` is supplied via ``@declared_attr`` -- not a plain
+    class attribute -- because declarative copies the mixin's
+    ``version_id`` Column onto each subclass, and the ``version_id_col``
+    mapper option must point at THAT subclass's own copy.  A plain
+    ``{"version_id_col": version_id}`` dict would capture the mixin's
+    original (unmapped) column and misconfigure every subclass.  The
+    column itself is declared at class level (NOT via ``@declared_attr``)
+    so the emitted DDL is byte-identical to the prior inline
+    declarations; ``flask db migrate`` against a migrated schema must
+    produce an empty diff.
+
+    A model that needs its own ``__mapper_args__`` keys (e.g. polymorphic
+    config) cannot use this mixin as-is -- it would have to merge the
+    ``version_id_col`` entry into its own declared-attr.  None of the
+    current optimistic-locked tables do.
+    """
+
+    version_id = db.Column(
+        db.Integer, nullable=False, server_default="1",
+    )
+
+    @declared_attr
+    def __mapper_args__(cls):  # pylint: disable=no-self-argument
+        # declared_attr passes the mapped class, not an instance; the
+        # `cls` name is the SQLAlchemy-mandated convention here.
+        return {"version_id_col": cls.version_id}
