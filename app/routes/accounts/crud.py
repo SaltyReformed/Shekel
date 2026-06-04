@@ -30,6 +30,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
@@ -39,6 +40,9 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
 from app.routes.accounts._bp import accounts_bp
 from app.services import (
     account_service,
@@ -162,7 +166,6 @@ def create_account():
     # raises ``ValidationError``; this route converts that into a
     # redirect to ``/pay-periods/generate`` so the user can fix the
     # missing-periods state and retry.
-    from app.exceptions import ValidationError as _ValidationError  # pylint: disable=import-outside-toplevel
     try:
         account = account_service.create_account(
             user_id=current_user.id,
@@ -170,7 +173,7 @@ def create_account():
             notes="origination",
             **data,
         )
-    except _ValidationError:
+    except ValidationError:
         flash(
             "Generate pay periods before creating an account so the "
             "account balance has a period to anchor against.",
@@ -374,7 +377,6 @@ def archive_account(account_id):
         abort(404)
 
     # Guard: prevent archiving if active transfer templates reference this account.
-    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
     active_transfers = (
         db.session.query(TransferTemplate)
@@ -481,7 +483,6 @@ def hard_delete_account(account_id):
         abort(404)
 
     # Guard 2: transfer templates with RESTRICT FK.
-    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
     blocking_xfer_template = (
         db.session.query(TransferTemplate)
         .filter(
@@ -502,7 +503,6 @@ def hard_delete_account(account_id):
         return redirect(url_for("accounts.list_accounts"))
 
     # Guard 3: transaction templates with RESTRICT FK.
-    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
     blocking_txn_template = (
         db.session.query(TransactionTemplate)
         .filter_by(account_id=account_id, user_id=current_user.id)
@@ -543,7 +543,6 @@ def hard_delete_account(account_id):
     # All guards passed -- permanently delete.
     # Step 1: delete remaining Transfer rows (soft-deleted or ghost
     # ad-hoc) through the transfer service to maintain shadow invariants.
-    from app.models.transfer import Transfer  # pylint: disable=import-outside-toplevel
     remaining_transfers = (
         db.session.query(Transfer)
         .filter(db.or_(

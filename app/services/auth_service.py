@@ -22,7 +22,7 @@ import bcrypt
 import requests
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
+from app.enums import AcctTypeEnum, TaxTypeEnum
 from app.extensions import db
 from app.models.user import User, UserSettings
 # Account / AccountAnchorHistory are not imported at module level;
@@ -467,9 +467,6 @@ def _seed_tax_data_for_user(user_id):
 
     for tax_year, data in DEFAULT_FICA.items():
         db.session.add(FicaConfig(user_id=user_id, tax_year=tax_year, **data))
-
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
 
     flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
     if flat_type_id:

@@ -28,6 +28,7 @@ from decimal import Decimal
 
 from flask import jsonify, render_template, request
 from flask_login import current_user, login_required
+from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
@@ -103,7 +104,6 @@ def inline_anchor_update(account_id):
     # when the user has periods none of which contain today (e.g.
     # they generated only historical periods).
     if current_period is None:
-        from sqlalchemy.orm.exc import StaleDataError  # pylint: disable=import-outside-toplevel
         account.current_anchor_balance = new_balance
         checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
         try:

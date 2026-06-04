@@ -30,6 +30,7 @@ from decimal import Decimal, InvalidOperation
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.ref import Status
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -114,7 +115,6 @@ def _get_owned_period(pay_period_id, user_id):
         NotFoundError: If the period does not exist or belongs to
             another user.
     """
-    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
     period = db.session.get(PayPeriod, pay_period_id)
     if period is None or period.user_id != user_id:
         raise NotFoundError(f"Pay period {pay_period_id} not found.")

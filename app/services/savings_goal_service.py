@@ -10,6 +10,7 @@ import logging
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
+from app.enums import GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,6 @@ def resolve_goal_target(
             or income_multiplier is None.
     """
     from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import GoalModeEnum, IncomeUnitEnum  # pylint: disable=import-outside-toplevel
 
     fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
 
@@ -233,7 +233,6 @@ def amount_to_monthly(
         Decimal monthly equivalent, or None for non-recurring patterns.
     """
     from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
 
     every_period_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.EVERY_PERIOD

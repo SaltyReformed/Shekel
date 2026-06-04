@@ -36,6 +36,7 @@ import time
 import uuid
 
 from flask import Flask, g, request
+from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
 from pythonjsonlogger.json import JsonFormatter
@@ -538,7 +539,6 @@ def setup_logging(app: Flask) -> None:
         # so audit triggers can capture who made the change.
         # Uses SET LOCAL (transaction-scoped, not session-scoped).
         try:
-            from flask_login import current_user  # pylint: disable=import-outside-toplevel
             if current_user.is_authenticated:
                 from app.extensions import db  # pylint: disable=import-outside-toplevel
                 db.session.execute(
@@ -586,7 +586,6 @@ def setup_logging(app: Flask) -> None:
         }
 
         try:
-            from flask_login import current_user  # pylint: disable=import-outside-toplevel
             if current_user.is_authenticated:
                 extra_fields["user_id"] = current_user.id
         except (RuntimeError, AttributeError):

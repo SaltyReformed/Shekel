@@ -48,6 +48,7 @@ from typing import List, Optional
 import logging
 
 from app.extensions import db
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import transfer_service
 from app.services.entry_service import compute_actual_from_entries
@@ -234,7 +235,6 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     Raises:
         NotFoundError: if either period is missing or not owned.
     """
-    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
 
     source = db.session.get(PayPeriod, source_period_id)
     if source is None or source.user_id != user_id:

@@ -24,6 +24,7 @@ Supported patterns (§4.7):
 
 import calendar as cal
 import logging
+from collections import defaultdict
 from datetime import date
 from decimal import InvalidOperation
 
@@ -684,8 +685,6 @@ def _get_existing_map(template_id, scenario_id, periods):
     non-deleted transaction share the same period_id.  Fetches all entries
     (including deleted) to check for duplicates and respect override/delete flags.
     """
-    from collections import defaultdict  # pylint: disable=import-outside-toplevel
-
     period_ids = [p.id for p in periods]
     if not period_ids:
         return {}

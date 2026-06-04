@@ -41,6 +41,7 @@ from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services import amortization_engine, escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.rate_period_engine import monthly_due_date
@@ -503,7 +504,6 @@ def live_loan_transfer_amounts(
     # loan_resolver imports nothing from this module, so resolving it here
     # rather than at module top keeps the dependency one-directional.
     # pylint: disable=import-outside-toplevel
-    from app.models.transfer import Transfer
     from app.services import loan_resolver
 
     candidates = [

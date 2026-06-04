@@ -24,7 +24,7 @@ from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import joinedload, subqueryload
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, StatusEnum, TxnTypeEnum
+from app.enums import AcctCategoryEnum, AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -1760,7 +1760,6 @@ def _get_primary_checking_id(accounts: list) -> int | None:
     Used to exclude the primary checking account from the savings
     progress section (it is not a savings vehicle).
     """
-    from app.enums import AcctTypeEnum  # pylint: disable=import-outside-toplevel
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     for a in accounts:
         if a.account_type_id == checking_type_id:

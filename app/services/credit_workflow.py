@@ -11,6 +11,7 @@ import logging
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
@@ -220,7 +221,6 @@ def mark_as_credit(transaction_id, user_id):
     db.session.expire(txn, ["status"])
 
     # Find or create the CC Payback category for this user.
-    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
     period = db.session.get(PayPeriod, txn.pay_period_id)
 
     category = get_or_create_cc_category(user_id)

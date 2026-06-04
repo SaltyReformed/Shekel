@@ -51,10 +51,17 @@ that injects an extra digit is rejected with a clean field-level
 400 instead of being silently committed.
 """
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from marshmallow import Schema, fields, pre_load, validate, validates_schema, ValidationError, EXCLUDE
 
+from app.enums import (
+    AcctCategoryEnum,
+    CalcMethodEnum,
+    GoalModeEnum,
+    IncomeUnitEnum,
+)
 from app.services.debt_strategy_service import (
     STRATEGY_AVALANCHE,
     STRATEGY_CUSTOM,
@@ -839,7 +846,6 @@ class DeductionCreateSchema(BaseSchema):
                 ``PERCENTAGE`` and ``amount`` is greater than 100.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import CalcMethodEnum  # pylint: disable=import-outside-toplevel
 
         calc_method_id = data.get("calc_method_id")
         amount = data.get("amount")
@@ -1148,7 +1154,6 @@ class SavingsGoalCreateSchema(BaseSchema):
     def validate_goal_mode_fields(self, data, **kwargs):
         """Enforce cross-field constraints between goal mode and income fields."""
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import GoalModeEnum, IncomeUnitEnum  # pylint: disable=import-outside-toplevel
 
         goal_mode_id = data.get("goal_mode_id", 1)
         income_unit_id = data.get("income_unit_id")
@@ -1255,7 +1260,6 @@ class SavingsGoalUpdateSchema(BaseSchema):
         Partial updates that omit goal_mode_id skip cross-field checks.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import GoalModeEnum, IncomeUnitEnum  # pylint: disable=import-outside-toplevel
 
         goal_mode_id = data.get("goal_mode_id")
         if goal_mode_id is None:
@@ -1375,7 +1379,6 @@ class AccountTypeCreateSchema(BaseSchema):
     def validate_flag_combinations(self, data, **kwargs):
         """Enforce category-flag consistency rules."""
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import AcctCategoryEnum  # pylint: disable=import-outside-toplevel
 
         cat_id = data.get("category_id")
         liability_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
@@ -1463,7 +1466,6 @@ class AccountTypeUpdateSchema(BaseSchema):
         present.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import AcctCategoryEnum  # pylint: disable=import-outside-toplevel
 
         cat_id = data.get("category_id")
 
@@ -1698,9 +1700,8 @@ class LoanAnchorTrueupSchema(BaseSchema):
         for any request after the boot day.  Resolving ``today``
         per-request keeps the floor live.
         """
-        from datetime import date as _date  # pylint: disable=import-outside-toplevel
         anchor_date = data.get("anchor_date")
-        if anchor_date is not None and anchor_date > _date.today():
+        if anchor_date is not None and anchor_date > date.today():
             raise ValidationError(
                 {"anchor_date": [
                     "Anchor date cannot be in the future."
@@ -2002,8 +2003,6 @@ class PensionProfileCreateSchema(BaseSchema):
     @validates_schema
     def validate_pension_dates(self, data, **kwargs):
         """Cross-field date validation for pension profiles."""
-        from datetime import date as date_type  # pylint: disable=import-outside-toplevel
-
         hire = data.get("hire_date")
         earliest = data.get("earliest_retirement_date")
         planned = data.get("planned_retirement_date")
@@ -2018,7 +2017,7 @@ class PensionProfileCreateSchema(BaseSchema):
                 "Planned retirement date must be after hire date.",
                 field_name="planned_retirement_date",
             )
-        if planned and planned <= date_type.today():
+        if planned and planned <= date.today():
             raise ValidationError(
                 "Planned retirement date must be in the future.",
                 field_name="planned_retirement_date",

@@ -20,6 +20,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
+from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -511,7 +512,6 @@ def _get_net_pay_for_period(
 
     Returns None if no active salary profile exists.
     """
-    from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
 
     profile = (
         db.session.query(SalaryProfile)

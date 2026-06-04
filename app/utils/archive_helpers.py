@@ -20,7 +20,11 @@ covers every current and future settled status without enumeration.
 """
 
 from app.extensions import db
+from app.models.pay_period import PayPeriod
 from app.models.ref import Status
+from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
 
 
 def template_has_paid_history(template_id: int) -> bool:
@@ -42,7 +46,6 @@ def template_has_paid_history(template_id: int) -> bool:
         True if at least one linked transaction has a settled status
         and is not soft-deleted.
     """
-    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
 
     return db.session.query(
         db.session.query(Transaction)
@@ -70,7 +73,6 @@ def transfer_template_has_paid_history(template_id: int) -> bool:
         True if at least one linked transfer has a settled status
         and is not soft-deleted.
     """
-    from app.models.transfer import Transfer  # pylint: disable=import-outside-toplevel
 
     return db.session.query(
         db.session.query(Transfer)
@@ -99,7 +101,6 @@ def account_has_history(account_id: int) -> bool:
     Returns:
         True if the account has any non-deleted transaction history.
     """
-    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
 
     return db.session.query(
         db.session.query(Transaction).filter(
@@ -128,9 +129,6 @@ def category_has_usage(category_id: int, user_id: int) -> bool:
         True if any templates or transactions reference this category
         for the given user.
     """
-    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
-    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
-    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
 
     # Check templates first -- cheap query with direct user_id column.
     has_templates = db.session.query(
