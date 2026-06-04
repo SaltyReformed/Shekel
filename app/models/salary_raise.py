@@ -6,10 +6,14 @@ a specific month/year to adjust the annual salary for paycheck calculation.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin, OptimisticLockMixin
+from app.models.mixins import (
+    CreatedAtMixin,
+    OptimisticLockMixin,
+    SalaryProfileScopedMixin,
+)
 
 
-class SalaryRaise(OptimisticLockMixin, CreatedAtMixin, db.Model):
+class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin, db.Model):
     """A scheduled salary raise event.
 
     Optimistic locking: see :class:`Transaction` for the
@@ -88,11 +92,6 @@ class SalaryRaise(OptimisticLockMixin, CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    salary_profile_id = db.Column(
-        db.Integer,
-        db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name.  See
     # app/extensions.py for the full SHEKEL_NAMING_CONVENTION
     # rationale and the close-out story for finding F-078.

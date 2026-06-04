@@ -45,6 +45,12 @@ class TransactionTemplate(
         {"schema": "budget"},
     )
 
+    # pylint: disable=duplicate-code
+    # Incidental id-PK + account FK preamble, shared by structure (not by
+    # domain) with the transaction table.  A transaction is a generated
+    # instance and a template is its blueprint; they are deliberately
+    # separate tables, so extracting a base would couple them wrongly
+    # (coding-standards rule 13).  One-sided disable.
     id = db.Column(db.Integer, primary_key=True)
     account_id = db.Column(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),

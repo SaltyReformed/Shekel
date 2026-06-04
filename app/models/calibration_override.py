@@ -7,10 +7,16 @@ bracket-based estimates for more accurate projections.
 """
 
 from app.extensions import db
-from app.models.mixins import IsActiveMixin, TimestampMixin
+from app.models.mixins import (
+    IsActiveMixin,
+    SalaryProfileScopedMixin,
+    TimestampMixin,
+)
 
 
-class CalibrationOverride(IsActiveMixin, TimestampMixin, db.Model):
+class CalibrationOverride(
+    SalaryProfileScopedMixin, IsActiveMixin, TimestampMixin, db.Model,
+):
     """Effective tax rates derived from a real pay stub.
 
     One calibration per salary profile.  Stores both the raw actual
@@ -70,11 +76,6 @@ class CalibrationOverride(IsActiveMixin, TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    salary_profile_id = db.Column(
-        db.Integer,
-        db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
-        nullable=False,
-    )
 
     # Actual amounts from the pay stub (audit trail).
     actual_gross_pay = db.Column(db.Numeric(10, 2), nullable=False)

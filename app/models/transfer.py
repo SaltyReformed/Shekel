@@ -17,8 +17,8 @@ from app.models.mixins import (
 
 
 class Transfer(
-    UserScopedMixin, OptimisticLockMixin, SoftDeleteOverridableMixin, TimestampMixin,
-    db.Model,
+    UserScopedMixin, OptimisticLockMixin, SoftDeleteOverridableMixin,
+    TimestampMixin, db.Model,
 ):
     """A transfer between two accounts within a pay period.
 
@@ -129,6 +129,13 @@ class Transfer(
         ),
         nullable=False,
     )
+    # pylint: disable=duplicate-code
+    # Incidental scenario_id + status_id FK pair, shared by structure
+    # (not by domain) with the transaction table -- both are budget
+    # events living in a scenario with a status.  They are deliberately
+    # separate tables (the transfer owns the two-shadow invariant), so a
+    # shared base would couple them wrongly (coding-standards rule 13).
+    # One-sided disable: the transaction block stays un-disabled.
     scenario_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.scenarios.id", ondelete="CASCADE"),

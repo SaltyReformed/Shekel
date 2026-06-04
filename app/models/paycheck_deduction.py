@@ -9,13 +9,15 @@ from app.extensions import db
 from app.models.mixins import (
     IsActiveMixin,
     OptimisticLockMixin,
+    SalaryProfileScopedMixin,
     SortOrderMixin,
     TimestampMixin,
 )
 
 
 class PaycheckDeduction(
-    SortOrderMixin, IsActiveMixin, OptimisticLockMixin, TimestampMixin, db.Model,
+    SalaryProfileScopedMixin, SortOrderMixin, IsActiveMixin, OptimisticLockMixin,
+    TimestampMixin, db.Model,
 ):
     """A payroll deduction (e.g., 401k, health insurance, Roth IRA).
 
@@ -90,11 +92,6 @@ class PaycheckDeduction(
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    salary_profile_id = db.Column(
-        db.Integer,
-        db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     # F-073 / C-43: explicit ondelete=RESTRICT + fk_* names on the
     # two ref-table FKs.  See app/extensions.py for the full
     # SHEKEL_NAMING_CONVENTION rationale.

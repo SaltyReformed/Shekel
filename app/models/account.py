@@ -7,6 +7,7 @@ for the true-up workflow.
 
 from app.extensions import db
 from app.models.mixins import (
+    AccountScopedMixin,
     CreatedAtMixin,
     IsActiveMixin,
     OptimisticLockMixin,
@@ -83,7 +84,6 @@ class Account(
         db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
         nullable=False,
     )
-    # sort_order + is_active: from SortOrderMixin / IsActiveMixin.
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
@@ -100,7 +100,7 @@ class Account(
         return f"<Account {self.name} ({self.id})>"
 
 
-class AccountAnchorHistory(CreatedAtMixin, db.Model):
+class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     """Audit trail of anchor balance true-ups for an account.
 
     Same-day duplicate prevention (F-103 / C-22): the partial unique
@@ -151,11 +151,13 @@ class AccountAnchorHistory(CreatedAtMixin, db.Model):
         {"schema": "budget"},
     )
 
+    # pylint: disable=duplicate-code
+    # Incidental: the per-day UTC unique-index expression coincides with
+    # loan_anchor_event (another append-only per-account history table)
+    # but the tables are unrelated in domain, so a shared base would
+    # couple them wrongly (coding-standards rule 13).  One-sided disable:
+    # the loan_anchor_event block stays un-disabled.
     id = db.Column(db.Integer, primary_key=True)
-    account_id = db.Column(
-        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     pay_period_id = db.Column(
         db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="CASCADE"),
         nullable=False,

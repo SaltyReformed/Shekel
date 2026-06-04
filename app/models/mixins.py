@@ -69,6 +69,70 @@ class UserScopedMixin:
     )
 
 
+class AccountScopedMixin:
+    """Owning-account foreign key for per-account satellite tables.
+
+    Adds one column:
+
+      ``account_id`` -- INTEGER NOT NULL, ``FK budget.accounts.id ON
+                        DELETE CASCADE``.  Identifies the account a
+                        history/feature/goal row belongs to; deleting the
+                        account cascades to the row.
+
+    Applied ONLY to tables whose ``account_id`` is exactly this shape: a
+    NOT NULL CASCADE FK with no ``unique`` qualifier and the
+    convention-generated FK name.  These ``account_id`` blocks are
+    byte-identical across several per-account tables and form a
+    duplicate-code clique that one-sided disables cannot resolve, so
+    centralizing them here is the structural fix.
+
+    EXCLUDES tables whose ``account_id`` differs:
+
+      * ``loan_params`` / ``investment_params`` -- ``unique=True`` (1:1
+        with the account), a different column.
+      * ``transaction`` / ``transaction_template`` -- ``ON DELETE
+        RESTRICT`` (a transaction must not silently vanish with its
+        account).
+      * ``interest_params`` -- carries an explicit ``fk_*`` constraint
+        name, so a convention-named mixin FK would diverge.
+
+    Same mid-table reorder + order-independence argument as
+    :class:`UserScopedMixin` (column order is load-bearing nowhere here).
+    """
+
+    account_id = db.Column(
+        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+
+class SalaryProfileScopedMixin:
+    """Owning salary-profile foreign key for per-profile child tables.
+
+    Adds one column:
+
+      ``salary_profile_id`` -- INTEGER NOT NULL, ``FK
+                               salary.salary_profiles.id ON DELETE
+                               CASCADE``.  Deleting the profile cascades
+                               to the raise / deduction / calibration row.
+
+    Applied to ``salary_raise``, ``paycheck_deduction``, and
+    ``calibration_override``, whose ``salary_profile_id`` blocks are
+    byte-identical and form a duplicate-code clique.  EXCLUDES
+    ``pension_profile``, whose FK is ``ON DELETE SET NULL`` and
+    ``nullable=True`` (a pension can outlive the linked salary profile).
+
+    Same mid-table reorder + order-independence argument as
+    :class:`UserScopedMixin`.
+    """
+
+    salary_profile_id = db.Column(
+        db.Integer,
+        db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+
 class SortOrderMixin:
     """User-controlled display-ordering column.
 
