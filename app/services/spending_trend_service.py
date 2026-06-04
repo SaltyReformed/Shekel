@@ -244,6 +244,13 @@ def _query_paid_expenses(
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     settled_ids = _get_settled_status_ids()
 
+    # Settled-expense query for the spending-trend report.  The account /
+    # scenario / period / expense-type filter core coincides with
+    # ``dashboard_service``'s expense query, but the two diverge on the
+    # parts that matter (eager-loads and the settled-vs-projected status
+    # gate), so a shared builder would need both as parameters and save no
+    # logic (coding-standards rule 13).  One-sided ``duplicate-code`` disable.
+    # pylint: disable=duplicate-code
     return (
         db.session.query(Transaction)
         .options(
@@ -260,6 +267,7 @@ def _query_paid_expenses(
         )
         .all()
     )
+    # pylint: enable=duplicate-code
 
 
 def _build_item_trends(

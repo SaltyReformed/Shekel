@@ -635,6 +635,14 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     if current_period is None:
         return None
 
+    # Resolve-active-profile -> load-tax-configs -> calculate_paycheck.
+    # ``dashboard_service`` runs the same three steps, but the two return
+    # different contracts (that one keeps only ``net_pay``; this one
+    # returns the full PaycheckBreakdown for the DTI / trajectory math), so
+    # they are deliberately separate surfaces over the same calculator
+    # rather than a shared helper (coding-standards rule 13).
+    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # pylint: disable=duplicate-code
     profile = (
         db.session.query(SalaryProfile)
         .filter_by(user_id=user_id, is_active=True)
@@ -647,6 +655,7 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     return paycheck_calculator.calculate_paycheck(
         profile, current_period, all_periods, tax_configs,
     )
+    # pylint: enable=duplicate-code
 
 
 def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay):

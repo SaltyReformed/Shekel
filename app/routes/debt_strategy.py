@@ -99,6 +99,13 @@ def _load_debt_accounts(user_id):
     debt_accounts = []
     has_arm = False
 
+    # The per-account "load LoanParams, skip if unconfigured" preamble
+    # below coincides with the same generic SQLAlchemy idiom in
+    # ``year_end_summary_service``; the extracted body would be identical
+    # to the inline form, and the two consumers are unrelated domains
+    # (debt-strategy view vs year-end summary).  One-sided ``duplicate-code``
+    # disable (coding-standards rule 13; see plan.md Phase 2 notes).
+    # pylint: disable=duplicate-code
     for account in accounts:
         params = (
             db.session.query(LoanParams)
@@ -108,6 +115,7 @@ def _load_debt_accounts(user_id):
         if params is None:
             # Account exists but loan details not yet configured.
             continue
+        # pylint: enable=duplicate-code
 
         if params.is_arm:
             has_arm = True

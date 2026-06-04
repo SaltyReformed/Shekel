@@ -627,6 +627,16 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
     if not is_projected(txn):
         return txn.effective_amount
 
+    # The credit / cleared-debit / uncleared-debit entry-bucketing loop
+    # below mirrors ``balance_calculator._entry_aware_amount`` -- but this
+    # dated variant adds the ``entry.entry_date > as_of`` window filter and
+    # the ``any_in_window`` special case, so the two are a deliberate
+    # parallel, not a clean shared helper.  The engine already shares its
+    # summation math with this resolver via the audited ``_sum_all`` reuse
+    # (E-25); folding this loop into one helper would entangle the as-of
+    # window with the undated path and risk the core balance math for a few
+    # lines (coding-standards rule 13).  One-sided ``duplicate-code`` disable.
+    # pylint: disable=duplicate-code
     cleared_debit = Decimal("0")
     uncleared_debit = Decimal("0")
     sum_credit = Decimal("0")
@@ -641,6 +651,7 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
             cleared_debit += entry.amount
         else:
             uncleared_debit += entry.amount
+    # pylint: enable=duplicate-code
 
     if not any_in_window:
         # No purchase has occurred yet as of ``as_of``; the full

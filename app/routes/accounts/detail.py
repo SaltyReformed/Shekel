@@ -103,6 +103,14 @@ def interest_detail(account_id):
     # through ``calculate_balances_with_interest``; MED-01 / Commit 28
     # collapses the dual interest/no-interest dispatcher into a single
     # canonical resolver.
+    # Per-account transaction load for this detail page.  The filter shape
+    # coincides with the savings dashboard's aggregate query, but the two
+    # are different scopes by design (a single account's detail view here
+    # vs the dashboard's all-accounts aggregation, which omits the
+    # ``account_id`` filter), so extracting one parameterised query builder
+    # would couple unrelated surfaces (coding-standards rule 13).
+    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # pylint: disable=duplicate-code
     acct_transactions = (
         db.session.query(Transaction)
         .options(selectinload(Transaction.entries))
@@ -114,6 +122,7 @@ def interest_detail(account_id):
         )
         .all()
     ) if scenario and period_ids else []
+    # pylint: enable=duplicate-code
 
     balances = {}
     interest_by_period = {}

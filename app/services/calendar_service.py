@@ -257,6 +257,15 @@ def _query_transactions_for_range(
     Cancelled) -- intentionally wider than the grid period subtotal's
     Projected-only predicate.  The two surfaces diverge by design.
     """
+    # The overlapping-periods + eager-loaded Transaction query below is
+    # structurally parallel to ``budget_variance_service``'s period query,
+    # but the two diverge by design (see the docstring above): this
+    # calendar query uses the wider ``balance_contributing_clause`` while
+    # budget-variance uses the Projected-only / explicit-status-exclusion
+    # gate.  Documented one-sided ``duplicate-code`` disable rather than a
+    # shared query builder that would re-introduce the divergent predicate
+    # as a parameter (coding-standards rule 13).
+    # pylint: disable=duplicate-code
     overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]
 
@@ -283,6 +292,7 @@ def _query_transactions_for_range(
         )
         .all()
     )
+    # pylint: enable=duplicate-code
 
 
 def _build_day_entry(

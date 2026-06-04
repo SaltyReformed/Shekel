@@ -242,6 +242,13 @@ def get_payment_history(
     # longer needs it.  ``joinedload(Transaction.status)`` still
     # eager-loads the status row for the downstream ``is_settled``
     # consumer.
+    # Shadow-income transaction query for live loan-payment amounts.  Its
+    # account / scenario / is-deleted / status-exclusion core coincides
+    # with ``budget_variance_service``'s query, but this one adds the
+    # loan-specific constraints (``transfer_id IS NOT NULL`` + income type)
+    # that make it a distinct query, not a shared builder (rule 13).
+    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # pylint: disable=duplicate-code
     txns = (
         db.session.query(Transaction)
         .join(Transaction.pay_period)
@@ -262,6 +269,7 @@ def get_payment_history(
         .order_by(PayPeriod.start_date)
         .all()
     )
+    # pylint: enable=duplicate-code
 
     payments = []
     for txn in txns:

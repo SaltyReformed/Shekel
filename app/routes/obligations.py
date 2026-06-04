@@ -113,6 +113,15 @@ def _next_occurrence(rule):
     if rule.end_date is not None and rule.end_date < today:
         return None
 
+    # The recurrence-pattern-id resolution block below is paralleled by
+    # the cadence classifier in ``savings_goal_service``; both resolve the
+    # same seven pattern ids.  The substantive logic that consumes them
+    # diverges entirely (this route computes the next occurrence date; the
+    # service converts a per-occurrence amount to a monthly equivalent), so
+    # a shared "bag of ids" helper would relocate the lookups without
+    # dissolving the real per-domain logic (coding-standards rule 13).
+    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # pylint: disable=duplicate-code
     every_period_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.EVERY_PERIOD
     )
@@ -134,6 +143,7 @@ def _next_occurrence(rule):
     annual_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.ANNUAL
     )
+    # pylint: enable=duplicate-code
 
     pid = rule.pattern_id
 
