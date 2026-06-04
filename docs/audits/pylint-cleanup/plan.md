@@ -1,9 +1,12 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-1 DONE. Phase 2 (duplicate-code) is NEXT -- START IT IN A FRESH SESSION.
-As of 2026-06-04 app/ is 9.74/10 with 350 visible messages (baseline 9.68/10 / 423). Disables
+**Status: Phases 0-1 DONE. Phase 2 (duplicate-code) IN PROGRESS.
+As of 2026-06-04 app/ is 9.74/10 with 343 visible messages (baseline 9.68/10 / 423). Disables
 74 -> 61: 13 removed (root-cause fixes), 46 documented KEEP, 15 smell-disables deferred to Phase 3.
-See [Phase 1 closeout](#phase-1-closeout) for the full disposition and the Phase 2 handoff.**
+Phase 2 batch 1 (`7ed84c7`): recurrence_engine <-> transfer_recurrence shared logic hoisted to
+`_recurrence_common.py` + `_resolve_generation_plan`; R0801 clusters 76 -> 70 (1 residual
+regenerate-tail call-site deferred to the call-site-residue decision). See [Phase 1
+closeout](#phase-1-closeout) and the [Progress Log](#progress-log).**
 
 This document is the single system of record for driving `app/` (then `scripts/`) to a clean
 `pylint` 10.00/10. It exists so any session -- including a fresh one with no memory of this
@@ -114,7 +117,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 |---|---|---|---|
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
-| 2 | duplicate-code / DRY | 75 clusters | **NEXT (fresh session)** |
+| 2 | duplicate-code / DRY | 75 clusters | **IN PROGRESS** (`7ed84c7`: 76->70; recurrence fork) |
 | 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | NOT STARTED |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
@@ -416,7 +419,7 @@ with commit SHA.
 | 54 | 6 | routes/templates:629-635 | routes/transfers:714-720 | - |
 | 55 | 5 | routes/transactions:409-414 | routes/transfers:766-771 | - |
 | 56 | 11 | routes/transactions:415-426 | routes/transfers:772-784 | - |
-| 57 | 12 | routes/transfers:247-259 | services/transfer_recurrence:127-134 | - |
+| 57 | 12 | routes/transfers:247-259 | services/transfer_recurrence:127-134 | EXTRACT `7ed84c7` (dissolved: transfer generate preamble hoist shifted the create_transfer call) |
 | 58 | 11 | services/amortization_engine:68-79 | services/growth_engine:74-85 | - |
 | 59 | 7 | services/balance_calculator:292-299 | services/balance_resolver:626-632 | - |
 | 60 | 10 | services/balance_calculator:300-310 | services/balance_resolver:637-644 | - |
@@ -429,12 +432,12 @@ with commit SHA.
 | 67 | 12 | services/dashboard_service:515-527 | services/savings_dashboard_service:638-650 | - |
 | 68 | 18 | services/dashboard_service:575-593 | services/entry_service:583-608 | - |
 | 69 | 30 | services/debt_strategy_service:360-390 | services/savings_goal_service:435-444 | - |
-| 70 | 11 | services/recurrence_engine:134-145 | services/transfer_recurrence:100-121 | - |
-| 71 | 11 | services/recurrence_engine:282-293 | services/transfer_recurrence:169-179 | - |
-| 72 | 9 | services/recurrence_engine:298-307 | services/transfer_recurrence:184-193 | - |
-| 73 | 35 | services/recurrence_engine:336-371 | services/transfer_recurrence:223-259 | - |
-| 74 | 28 | services/recurrence_engine:51-79 | services/transfer_recurrence:39-62 | - |
-| 75 | 33 | services/recurrence_engine:80-113 | services/transfer_recurrence:63-87 | - |
+| 70 | 11 | services/recurrence_engine:134-145 | services/transfer_recurrence:100-121 | EXTRACT `7ed84c7` (`should_skip_period`) |
+| 71 | 11 | services/recurrence_engine:282-293 | services/transfer_recurrence:169-179 | EXTRACT `7ed84c7` (`query_rows_from_effective_date`) |
+| 72 | 9 | services/recurrence_engine:298-307 | services/transfer_recurrence:184-193 | EXTRACT `7ed84c7` (`partition_regeneration_rows`) |
+| 73 | 35 | services/recurrence_engine:336-371 | services/transfer_recurrence:223-259 | PARTIAL `7ed84c7` -- shared logic hoisted; residual is the regenerate-tail call SEQUENCE (own-module `generate_for_template` + identical `log_event` kwargs + raise + return), now live as `recurrence_engine:333-368 <-> transfer_recurrence:168-204`. Deferred to the call-site-residue decision (see Progress Log). |
+| 74 | 28 | services/recurrence_engine:51-79 | services/transfer_recurrence:39-62 | EXTRACT `7ed84c7` (`check_scenario_ownership` + `_resolve_generation_plan`) |
+| 75 | 33 | services/recurrence_engine:80-113 | services/transfer_recurrence:63-87 | EXTRACT `7ed84c7` (`_resolve_generation_plan`) |
 
 **Status:** NOT STARTED. Re-run the cluster extraction command (Verification) after Phase 3 too:
 refactors shift line ranges and can create or dissolve clusters.
@@ -766,3 +769,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `3548906` | 1 | Batch 4 (DEFER set): hoisted 5 cargo-cult paycheck/tax deferrals (dashboard x2, savings x2, retirement x1). RECLASSIFIED `recurrence_engine:736/737` cargo-cult->KEEP -- 3 fallback tests source-patch `tax_config_service.load_tax_configs`, so the local (per-call) import is load-bearing; reverted my hoist + documented. KEEP `pension_calculator:97` (verified stdlib-only leaf), `balance_resolver:393` (documented, critical core). create_app OK; 187+81+172+43 area tests pass. Disables 66->61. | 9.74/10 | 350 |
 | 2026-06-04 | `2bd8c90` | 1 | Batch 3 (hoists): 4 cargo-cult import-outside-toplevel hoisted to module top (`investment_projection`, `settings`, `year_end`, `auth_service`). `create_app()` OK (no cycle); 335 area tests pass. Disables 70->66; import-outside-toplevel 41->37. Visible 349->350 is a pylint R0801 re-pairing artifact (a pre-existing 3-way `Account`-query duplication in savings/settings/transfers got re-reported as 2 pairings instead of 1 after a 1-line shift), NOT new duplication; Phase 2 dedupes it; score unchanged. | 9.74/10 | 350 |
 | 2026-06-04 | `fb394c0` | 1 | import-outside-toplevel classifier: 2/21 service-util pairs genuinely circular (`ref_cache`, `logging_config` -> KEEP); 19 non-circular (deliberate boundary/lazy-load per their comments). Policy decision pending before touching the 19 + ~19 app-factory sites. No code change. | 9.74/10 | 349 |
+| 2026-06-04 | `7ed84c7` | 2 | **Batch 1 (recurrence fork):** hoisted the model-agnostic halves of the two recurrence engines into `_recurrence_common.py` (`check_scenario_ownership`, `should_skip_period`, `partition_regeneration_rows`, `query_rows_from_effective_date`) + `recurrence_engine._resolve_generation_plan`/`_GenerationPlan` (gating + pattern-match preamble; kept there for `_match_periods` access). Model-specific halves (Transaction build vs `transfer_service.create_transfer` shadow atomicity; transfer regenerate delete path) stay per-engine. Tried+reverted a `log_recurrence_regenerated` helper (added too-many-arguments, dissolved nothing). Transfer engine sheds 7 imports. Clusters 76->70 (rows 57/70/71/72/74/75 EXTRACT; row 73 PARTIAL -- regenerate-tail call-SEQUENCE residual `recurrence_engine:333-368 <-> transfer_recurrence:168-204` left live, deferred to the call-site-residue decision). No new pylint messages. **Full suite 5766 passed.** | 9.74/10 | 343 |
