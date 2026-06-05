@@ -116,17 +116,6 @@ def _load_loan_account(account_id):
     return account, params, account_type
 
 
-def _build_chart_data(schedule):
-    """Build chart data from an amortization schedule."""
-    labels = []
-    balances = []
-    for row in schedule:
-        labels.append(row.payment_date.strftime("%b %Y"))
-        # Presentation boundary: float() for Chart.js JSON serialization.
-        balances.append(float(row.remaining_balance))
-    return labels, balances
-
-
 def _balances_for_chart(rows, target_len):
     """Build a chart balance list, padded to ``target_len`` with $0.00.
 
@@ -151,6 +140,39 @@ def _balances_for_chart(rows, target_len):
     if len(balances) < target_len:
         balances.extend([0.0] * (target_len - len(balances)))
     return balances
+
+
+def _build_chart_series(series_rows):
+    """Build aligned Chart.js label + balance arrays for loan scenarios.
+
+    Every scenario shares the same x-axis: labels come from the FIRST
+    series (the original / longest contractual baseline), and every
+    series' balances are padded to that baseline's length with $0.00 via
+    :func:`_balances_for_chart` so Chart.js plots equal-length arrays
+    against the shared labels.  Shared by the dashboard's three-series
+    chart (original / committed / floor) and the payoff calculator's
+    (original / committed / accelerated).
+
+    Args:
+        series_rows: Insertion-ordered mapping of series name -> the
+            full :class:`AmortizationRow` list (history + forward,
+            already concatenated by the caller).  The FIRST entry is the
+            baseline whose length and dates define the x-axis.
+
+    Returns:
+        Tuple of (chart_labels, balances) where ``balances`` is a dict
+        mapping each series name to its padded float list.
+    """
+    baseline_rows = next(iter(series_rows.values()))
+    target_len = len(baseline_rows)
+    chart_labels = [
+        row.payment_date.strftime("%b %Y") for row in baseline_rows
+    ]
+    balances = {
+        name: _balances_for_chart(rows, target_len)
+        for name, rows in series_rows.items()
+    }
+    return chart_labels, balances
 
 
 def _find_current_period_row(schedule):
@@ -178,6 +200,67 @@ def _find_current_period_row(schedule):
             return row
     # All rows confirmed -- use the last one.
     return schedule[-1]
+
+
+def _distribute_payment_percentages(parts, total_payment):
+    """Compute portion percentages that sum to exactly 100.0%.
+
+    Truncate-then-distribute: each part is truncated to one decimal
+    place (ROUND_DOWN), then the residual needed to reach 100.0% is
+    assigned to the largest part.  Guarantees the percentages sum to
+    exactly 100.0% regardless of per-part rounding.
+
+    Args:
+        parts: List of ``(name, amount)`` tuples (Decimal amounts).
+        total_payment: Decimal sum of the part amounts; must be > 0.
+
+    Returns:
+        dict mapping each part name to its Decimal percentage.
+    """
+    one_decimal = Decimal("0.1")
+    truncated = {}
+    for name, amount in parts:
+        raw_pct = amount / total_payment * 100
+        truncated[name] = raw_pct.quantize(one_decimal, rounding=ROUND_DOWN)
+
+    residual = Decimal("100.0") - sum(truncated.values())
+    # Assign residual to the largest portion.
+    largest = max(truncated, key=truncated.get)
+    truncated[largest] += residual
+    return truncated
+
+
+def _project_next_year_escrow(escrow_components, escrow_portion):
+    """Project next year's monthly escrow when a component inflates.
+
+    O-3: if any component carries a non-null ``inflation_rate`` and the
+    current escrow portion is positive, compute the Jan-1-next-year
+    monthly escrow so the dashboard can show the user the projected
+    change.
+
+    Args:
+        escrow_components: List of active EscrowComponent objects.
+        escrow_portion: Decimal current monthly escrow.
+
+    Returns:
+        Decimal projected escrow when it differs from the current
+        portion, otherwise None (no note shown).
+    """
+    has_inflation = any(
+        getattr(c, "inflation_rate", None)
+        for c in escrow_components
+    )
+    if not has_inflation or escrow_portion <= Decimal("0.00"):
+        return None
+
+    next_year_date = date(date.today().year + 1, 1, 1)
+    next_year_escrow = escrow_calculator.calculate_monthly_escrow(
+        escrow_components, as_of_date=next_year_date,
+    )
+    # Only show the note if next year differs from current.
+    if next_year_escrow == escrow_portion:
+        return None
+    return next_year_escrow
 
 
 def _compute_payment_breakdown(schedule, escrow_components):
@@ -211,39 +294,17 @@ def _compute_payment_breakdown(schedule, escrow_components):
     if total_payment <= Decimal("0.00"):
         return None
 
-    # Truncate-then-distribute: guarantees percentages sum to 100.0%.
-    one_decimal = Decimal("0.1")
-    parts = [
-        ("principal", principal_portion),
-        ("interest", interest_portion),
-        ("escrow", escrow_portion),
-    ]
-    truncated = {}
-    for name, amount in parts:
-        raw_pct = amount / total_payment * 100
-        truncated[name] = raw_pct.quantize(one_decimal, rounding=ROUND_DOWN)
-
-    residual = Decimal("100.0") - sum(truncated.values())
-    # Assign residual to the largest portion.
-    largest = max(truncated, key=truncated.get)
-    truncated[largest] += residual
-
-    # O-3: Escrow inflation projection.  If any component has a
-    # non-null inflation_rate, compute next year's monthly escrow
-    # to show the user projected changes.
-    next_year_escrow = None
-    has_inflation = any(
-        getattr(c, "inflation_rate", None)
-        for c in escrow_components
+    truncated = _distribute_payment_percentages(
+        [
+            ("principal", principal_portion),
+            ("interest", interest_portion),
+            ("escrow", escrow_portion),
+        ],
+        total_payment,
     )
-    if has_inflation and escrow_portion > Decimal("0.00"):
-        next_year_date = date(date.today().year + 1, 1, 1)
-        next_year_escrow = escrow_calculator.calculate_monthly_escrow(
-            escrow_components, as_of_date=next_year_date,
-        )
-        # Only show the note if next year differs from current.
-        if next_year_escrow == escrow_portion:
-            next_year_escrow = None
+    next_year_escrow = _project_next_year_escrow(
+        escrow_components, escrow_portion,
+    )
 
     return {
         "principal": principal_portion,
@@ -530,6 +591,254 @@ def _compute_total_payment(account, params, escrow_components):
     )
 
 
+def _build_dashboard_scenarios(params, anchor_events, payments, rate_changes, as_of):
+    """Run the main + floor payoff-scenario composer calls for the dashboard.
+
+    Commit 5 of the amortization-engine split: two
+    ``compute_payoff_scenarios`` calls (replacing three direct
+    ``generate_schedule`` calls) whose chart series and summary derive
+    from the same return value so they cannot diverge (the structural
+    fix documented at
+    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
+
+    ``scenarios_main`` consumes ALL payments (confirmed + projected)
+    with ``extra_monthly=0``: its ``history_rows + committed_forward``
+    slice IS the planned trajectory the amortization tab, payment
+    breakdown, schedule totals, recurrence end_date update, and summary
+    all read.  ``scenarios_floor`` re-runs with the projected portion of
+    ``payments`` filtered out, so its ``committed_forward`` is "pure
+    contractual from balance_as_of" -- the floor's semantic of "where I
+    stand if I cancel all extras today."  Both share the same
+    ``anchor_events`` so a future trueup cannot drift between them.
+
+    Returns:
+        Tuple of (scenarios_main, scenarios_floor) PayoffScenarios.
+    """
+    scenarios_main = loan_resolver.compute_payoff_scenarios(
+        loan_params=params,
+        anchor_events=anchor_events,
+        payments=payments,
+        rate_changes=rate_changes,
+        extra_monthly=Decimal("0.00"),
+        as_of=as_of,
+    )
+    confirmed_payments = [p for p in payments if p.is_confirmed]
+    scenarios_floor = loan_resolver.compute_payoff_scenarios(
+        loan_params=params,
+        anchor_events=anchor_events,
+        payments=confirmed_payments,
+        rate_changes=rate_changes,
+        extra_monthly=Decimal("0.00"),
+        as_of=as_of,
+    )
+    return scenarios_main, scenarios_floor
+
+
+def _build_planned_summary(state, planned_schedule, params):
+    """Build the life-of-loan AmortizationSummary from the planned schedule.
+
+    monthly_payment comes from the resolver (single source of truth);
+    total_interest / payoff_date are summed/read over ``planned_schedule``
+    (history + forward) so the "Total Interest (life of loan)" and
+    "Projected Payoff" cards reflect the user's full trajectory.  The
+    composer's ``total_interest_committed`` covers the forward slice
+    only; summing over ``planned_schedule`` adds back the history-row
+    interest the dashboard has always displayed.
+
+    Args:
+        state: Resolver :class:`LoanState` (monthly_payment source).
+        planned_schedule: history + committed-forward AmortizationRows.
+        params: ORM :class:`LoanParams` (origination fallback date).
+
+    Returns:
+        :class:`AmortizationSummary` (no acceleration: with-extra fields
+        mirror the base fields, months/interest saved zero).
+    """
+    planned_total_interest = sum(
+        (row.interest for row in planned_schedule), Decimal("0.00"),
+    )
+    planned_payoff_date = (
+        planned_schedule[-1].payment_date if planned_schedule
+        else params.origination_date
+    )
+    return AmortizationSummary(
+        monthly_payment=state.monthly_payment,
+        total_interest=planned_total_interest,
+        payoff_date=planned_payoff_date,
+        total_interest_with_extra=planned_total_interest,
+        payoff_date_with_extra=planned_payoff_date,
+        months_saved=0,
+        interest_saved=Decimal("0.00"),
+    )
+
+
+def _build_payment_summary(state, summary, planned_schedule, escrow_components):
+    """Build the loan-card payment-summary template context.
+
+    Bundles the resolver-derived current balance, the total monthly
+    payment (P&I + escrow), the current-period payment breakdown, and
+    the escrow display list.  The life-of-loan ``summary`` is built by
+    the caller (it is also needed for the recurrence end_date sync) and
+    passed in for its ``monthly_payment``.  The payment breakdown uses
+    the planned schedule so it reflects the next planned payment, not
+    the contractual one when the user is under-/over-paying.
+
+    Returns:
+        dict of template vars: current_principal_display, total_payment,
+        payment_breakdown, escrow_components (display list).
+    """
+    return {
+        # E-18 / Commit 15: resolver-derived; equals the /savings debt
+        # card balance and the net-worth liability.
+        "current_principal_display": state.current_balance,
+        "total_payment": escrow_calculator.calculate_total_payment(
+            summary.monthly_payment, escrow_components,
+        ),
+        "payment_breakdown": _compute_payment_breakdown(
+            planned_schedule, escrow_components,
+        ),
+        "escrow_components": escrow_calculator.build_escrow_display(
+            escrow_components,
+        ),
+    }
+
+
+def _build_dashboard_chart_context(scenarios_main, scenarios_floor, has_payments):
+    """Build the dashboard's multi-scenario chart template context.
+
+    Three series share the x-axis (see :func:`_build_chart_series`):
+    Original (history + original_forward, pure contractual) and
+    Committed (history + committed_forward, planned outlays) come from
+    the main scenario; Floor (history + committed_forward) comes from
+    the floor scenario (projections cancelled).  Committed and Floor
+    render empty when the loan has no payments (the JS overlays just
+    Original), preserving the pre-Commit-5 conditional behavior.
+
+    Returns:
+        dict of template vars: chart_labels, chart_original,
+        chart_committed, chart_floor, has_payments.
+    """
+    chart_labels, balances = _build_chart_series({
+        "original": (
+            scenarios_main.history_rows + scenarios_main.original_forward
+        ),
+        "committed": (
+            scenarios_main.history_rows + scenarios_main.committed_forward
+        ),
+        "floor": (
+            scenarios_floor.history_rows + scenarios_floor.committed_forward
+        ),
+    })
+    return {
+        "chart_labels": chart_labels,
+        "chart_original": balances["original"],
+        "chart_committed": balances["committed"] if has_payments else [],
+        "chart_floor": balances["floor"] if has_payments else [],
+        "has_payments": has_payments,
+    }
+
+
+def _resolve_transfer_prompt(account):
+    """Resolve the recurring-transfer prompt state for the dashboard.
+
+    The prompt shows when LoanParams exist but no active recurring
+    transfer template targets this account.  When shown, the eligible
+    source accounts (active, non-amortizing, excluding this account) and
+    the default source (the checking account, if any) are loaded.
+
+    Returns:
+        Tuple of (existing_template, prompt_context) where
+        ``existing_template`` is the active transfer template (or None)
+        -- the caller also needs it for the end_date sync -- and
+        ``prompt_context`` is a dict of template vars:
+        show_transfer_prompt, source_accounts, default_source_id.
+    """
+    existing_template = (
+        db.session.query(TransferTemplate)
+        .filter(
+            TransferTemplate.user_id == current_user.id,
+            TransferTemplate.to_account_id == account.id,
+            TransferTemplate.is_active.is_(True),
+            TransferTemplate.recurrence_rule_id.isnot(None),
+        )
+        .first()
+    )
+    if existing_template is not None:
+        return existing_template, {
+            "show_transfer_prompt": False,
+            "source_accounts": [],
+            "default_source_id": None,
+        }
+
+    source_accounts = (
+        db.session.query(Account)
+        .join(AccountType)
+        .filter(
+            Account.user_id == current_user.id,
+            Account.is_active.is_(True),
+            Account.id != account.id,
+            AccountType.has_amortization.is_(False),
+        )
+        .order_by(Account.sort_order, Account.name)
+        .all()
+    )
+    # Default to the checking account if one exists.
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    default_source_id = next(
+        (acct.id for acct in source_accounts
+         if acct.account_type_id == checking_type_id),
+        None,
+    )
+    return None, {
+        "show_transfer_prompt": True,
+        "source_accounts": source_accounts,
+        "default_source_id": default_source_id,
+    }
+
+
+def _build_schedule_tab(planned_schedule, monthly_escrow, base_rate, params):
+    """Build the amortization-schedule tab's template context.
+
+    The planned schedule shows the user's trajectory with confirmed
+    actuals + projected payments.  Three index-parallel lists are
+    computed server-side (consumed via ``loop.index0``) so the schedule
+    template renders without inline Jinja arithmetic (MED-04 / E-16):
+    per-row total monthly outflow (P&I + escrow + extra), the ARM
+    display rate (storage-domain fraction times 100), and a continuous
+    payment number from origination so a mid-life loan's "#" column
+    keeps counting up instead of restarting at 1.
+
+    Returns:
+        dict of template vars: amortization_schedule, show_rate_column,
+        schedule_totals, schedule_row_totals, schedule_row_rates_pct,
+        schedule_row_numbers.
+    """
+    show_rate_column = bool(params.is_arm)
+    schedule_row_totals = [
+        round_money(row.payment + monthly_escrow + row.extra_payment)
+        for row in planned_schedule
+    ]
+    schedule_row_rates_pct = [
+        (row.interest_rate if row.interest_rate is not None else base_rate)
+        * Decimal("100")
+        for row in planned_schedule
+    ] if show_rate_column else None
+    schedule_row_numbers = [
+        payment_number(params.origination_date, row.payment_date)
+        for row in planned_schedule
+    ]
+    return {
+        "amortization_schedule": planned_schedule,
+        "show_rate_column": show_rate_column,
+        "schedule_totals": _compute_schedule_totals(
+            planned_schedule, monthly_escrow,
+        ),
+        "schedule_row_totals": schedule_row_totals,
+        "schedule_row_rates_pct": schedule_row_rates_pct,
+        "schedule_row_numbers": schedule_row_numbers,
+    }
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan")
 @login_required
 @require_owner
@@ -547,276 +856,54 @@ def dashboard(account_id):
         )
 
     ctx = _load_loan_context(account, params)
-    payments = ctx["payments"]
-    rate_changes = ctx["rate_changes"]
-    rate_history = ctx["rate_history"]
-    escrow_components = ctx["escrow_components"]
-    monthly_escrow = ctx["monthly_escrow"]
-    state = ctx["state"]
-    base_rate = ctx["base_rate"]
-
-    # Resolver-derived "current state" fields drive the loan card
-    # (E-18 / Commit 15).  current_principal_display == /savings debt
-    # card balance == net-worth liability.
-    current_principal_display = state.current_balance
-
-    # Anchor events feed both composer calls below.  Loaded once so
-    # the two scenarios share the same anchor (and any future trueup
-    # cannot drift between the main and floor invocations).
-    anchor_events = _load_anchor_events(account.id)
-    as_of = date.today()
-
-    # --- Single composer call drives chart, schedule, summary -----
-    # Commit 5 of the amortization-engine split: replaces the
-    # previous three direct ``generate_schedule`` calls (planned,
-    # original, floor) with two ``compute_payoff_scenarios`` calls.
-    # Chart series and summary derive from the same return value so
-    # they cannot diverge -- the structural fix documented at
-    # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``.
-    #
-    # ``scenarios_main`` consumes ALL payments (confirmed +
-    # projected) with ``extra_monthly=0``.  Its ``history_rows +
-    # committed_forward`` slice IS the planned trajectory the
-    # amortization tab, payment breakdown, schedule totals,
-    # recurrence end_date update, and summary all read.
-    scenarios_main = loan_resolver.compute_payoff_scenarios(
-        loan_params=params,
-        anchor_events=anchor_events,
-        payments=payments,
-        rate_changes=rate_changes,
-        extra_monthly=Decimal("0.00"),
-        as_of=as_of,
+    scenarios_main, scenarios_floor = _build_dashboard_scenarios(
+        params, _load_anchor_events(account.id),
+        ctx["payments"], ctx["rate_changes"], date.today(),
     )
-
-    # ``scenarios_floor`` re-uses the composer with the projected
-    # portion of ``payments`` filtered out.  Its
-    # ``committed_forward`` is therefore "pure contractual from
-    # balance_as_of" -- the floor's semantic of "where I stand if
-    # I cancel all extras today."  When no projected payments
-    # exist, floor and committed collapse to the same series.
-    confirmed_payments = [p for p in payments if p.is_confirmed]
-    scenarios_floor = loan_resolver.compute_payoff_scenarios(
-        loan_params=params,
-        anchor_events=anchor_events,
-        payments=confirmed_payments,
-        rate_changes=rate_changes,
-        extra_monthly=Decimal("0.00"),
-        as_of=as_of,
-    )
-
-    # PLANNED-trajectory schedule for display (Amortization Schedule
-    # tab) and "life of loan" forecasts (total interest, payoff
-    # date, recurrence end_date update).  Composed from
-    # ``scenarios_main``: real confirmed history + projected /
+    # PLANNED-trajectory schedule: real confirmed history + projected /
     # contractual forward.  Resolver still owns current_balance and
-    # monthly_payment so the loan card / debt card / net-worth
-    # liability cannot diverge (the E-18 invariant).
+    # monthly_payment so the loan card / debt card / net-worth liability
+    # cannot diverge (the E-18 invariant).
     planned_schedule = (
         scenarios_main.history_rows + scenarios_main.committed_forward
     )
+    summary = _build_planned_summary(ctx["state"], planned_schedule, params)
 
-    # Build AmortizationSummary for the template / end_date update:
-    # monthly_payment from the resolver (single source of truth);
-    # total_interest / payoff_date from the planned schedule so the
-    # "Total Interest (life of loan)" and "Projected Payoff" cards
-    # reflect the user's full trajectory (history + forward).  The
-    # composer's ``total_interest_committed`` covers the forward
-    # slice only; summing over ``planned_schedule`` adds back the
-    # history-row interest the dashboard has always displayed.
-    planned_total_interest = sum(
-        (row.interest for row in planned_schedule), Decimal("0.00"),
-    )
-    planned_payoff_date = (
-        planned_schedule[-1].payment_date if planned_schedule
-        else params.origination_date
-    )
-    summary = AmortizationSummary(
-        monthly_payment=state.monthly_payment,
-        total_interest=planned_total_interest,
-        payoff_date=planned_payoff_date,
-        total_interest_with_extra=planned_total_interest,
-        payoff_date_with_extra=planned_payoff_date,
-        months_saved=0,
-        interest_saved=Decimal("0.00"),
-    )
-    total_payment = escrow_calculator.calculate_total_payment(
-        summary.monthly_payment, escrow_components,
-    )
-
-    # Payment allocation breakdown for the current period.  Uses the
-    # planned schedule so the breakdown reflects the next planned
-    # payment, not the next contractual payment when the user is
-    # under-/over-paying.
-    payment_breakdown = _compute_payment_breakdown(
-        planned_schedule, escrow_components,
-    )
-
-    # --- Multi-scenario chart data ---
-    # All three series share ``history_rows`` and then diverge:
-    #   Original   = history + original_forward
-    #                (pure contractual from balance_as_of forward)
-    #   Committed  = history + committed_forward
-    #                (planned outlays via monthly_override)
-    #   Floor      = floor_history + floor_committed_forward
-    #                (committed with projections cancelled)
-    # Chart labels are taken from the Original series because it is
-    # the longest baseline (no override, no extra means contractual
-    # all the way to term end); Committed and Floor may pay off
-    # earlier but render against the same x-axis with shorter
-    # arrays.  ``_balances_for_chart`` pads with $0.00 so Chart.js
-    # plots equal-length arrays.
-    original_rows = scenarios_main.history_rows + scenarios_main.original_forward
-    committed_rows = scenarios_main.history_rows + scenarios_main.committed_forward
-    floor_rows = scenarios_floor.history_rows + scenarios_floor.committed_forward
-    target_len = len(original_rows)
-
-    chart_labels = [
-        row.payment_date.strftime("%b %Y") for row in original_rows
-    ]
-    chart_original = _balances_for_chart(original_rows, target_len)
-
-    # Committed and Floor render empty when the loan has no payments
-    # (the JS overlays just Original).  Preserves the pre-Commit-5
-    # dashboard behavior where chart_committed / chart_floor were
-    # set conditionally on ``has_payments``.
-    has_payments = len(payments) > 0
-    if has_payments:
-        chart_committed = _balances_for_chart(committed_rows, target_len)
-        chart_floor = _balances_for_chart(floor_rows, target_len)
-    else:
-        chart_committed = []
-        chart_floor = []
-
-    # Recurring payment transfer prompt: show when LoanParams exist
-    # but no active recurring transfer template targets this account.
-    # The template object is also used by the 5.9-1 end_date update.
-    existing_template = (
-        db.session.query(TransferTemplate)
-        .filter(
-            TransferTemplate.user_id == current_user.id,
-            TransferTemplate.to_account_id == account.id,
-            TransferTemplate.is_active.is_(True),
-            TransferTemplate.recurrence_rule_id.isnot(None),
-        )
-        .first()
-    )
-
-    show_transfer_prompt = existing_template is None
-
-    # --- Auto-update recurrence rule end date (5.9-1) ---
-    # When a recurring transfer exists, sync its recurrence rule
-    # end_date to the projected payoff date so shadow transactions
-    # are not generated beyond payoff.  Uses ``planned_schedule``
-    # (confirmed + projected payments) because the question is "when
-    # will my recurring transfers stop being needed" -- the user's
-    # planned trajectory, not the bank's contractual forecast.  A
-    # neg-am user paying $100/mo on a $5K-monthly-interest loan
-    # MUST see end_date stay open (the planned schedule ends with
-    # positive balance), even though the resolver's contractual
-    # forecast would otherwise say "paid off next month."
+    # Sync the recurring transfer's recurrence end_date to the projected
+    # payoff (5.9-1) so shadow transactions are not generated beyond
+    # payoff.  Uses ``planned_schedule`` (the user's planned trajectory)
+    # so a neg-am user paying under the monthly interest keeps an open
+    # end_date even though the contractual forecast would say "paid off."
+    existing_template, prompt_context = _resolve_transfer_prompt(account)
     if existing_template is not None and existing_template.recurrence_rule is not None:
         _update_transfer_end_date(
             existing_template, summary, planned_schedule, account.id,
         )
 
-    # Source accounts for the transfer prompt dropdown: active accounts
-    # excluding the current debt account and other amortizing accounts.
-    source_accounts = []
-    if show_transfer_prompt:
-        all_accounts = (
-            db.session.query(Account)
-            .join(AccountType)
-            .filter(
-                Account.user_id == current_user.id,
-                Account.is_active.is_(True),
-                Account.id != account.id,
-                AccountType.has_amortization.is_(False),
-            )
-            .order_by(Account.sort_order, Account.name)
-            .all()
-        )
-        source_accounts = all_accounts
-
-    # Default to the checking account if one exists.
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    default_source_id = None
-    for acct in source_accounts:
-        if acct.account_type_id == checking_type_id:
-            default_source_id = acct.id
-            break
-
-    # Amortization schedule tab: the planned schedule shows the
-    # user's trajectory with confirmed actuals + projected payments.
-    # The loan card's current_principal stays resolver-derived so
-    # the card-vs-schedule split is "what's true now" vs "what's
-    # the plan."
-    amortization_schedule = planned_schedule
-    show_rate_column = bool(params.is_arm)
-    schedule_totals = _compute_schedule_totals(
-        amortization_schedule, monthly_escrow,
-    )
-    # MED-04 / E-16: per-row "total monthly outflow" (P&I + escrow +
-    # extra) and display rate (storage-domain decimal fraction times
-    # 100 for percent display) computed server-side so the schedule
-    # template renders without inline Jinja arithmetic.  Parallel to
-    # ``amortization_schedule``; consumed via ``loop.index0``.
-    schedule_row_totals = [
-        round_money(row.payment + monthly_escrow + row.extra_payment)
-        for row in amortization_schedule
-    ]
-    schedule_row_rates_pct = [
-        (row.interest_rate if row.interest_rate is not None else base_rate)
-        * Decimal("100")
-        for row in amortization_schedule
-    ] if show_rate_column else None
-    # Continuous payment number from origination for the "#" column, so a
-    # mid-life loan's schedule reflects total payments made (e.g. 90) and
-    # the projected slice keeps counting up instead of restarting at 1.
-    # The replay already stamps this on confirmed rows' ``month``; the
-    # projected rows carry ``project_forward``'s local 1..N count, so this
-    # parallel list renumbers the whole schedule on one scale.  Parallel to
-    # ``amortization_schedule``; consumed via ``loop.index0``.
-    schedule_row_numbers = [
-        payment_number(params.origination_date, row.payment_date)
-        for row in amortization_schedule
-    ]
-
-    return render_template(
-        "loan/dashboard.html",
-        account=account,
-        account_type=account_type,
-        params=params,
-        summary=summary,
-        current_principal_display=current_principal_display,
-        escrow_components=escrow_calculator.build_escrow_display(
-            escrow_components,
-        ),
-        monthly_escrow=monthly_escrow,
-        total_payment=total_payment,
-        payment_breakdown=payment_breakdown,
-        rate_history=rate_history,
-        chart_labels=chart_labels,
-        chart_original=chart_original,
-        chart_committed=chart_committed,
-        chart_floor=chart_floor,
-        has_payments=has_payments,
-        show_transfer_prompt=show_transfer_prompt,
-        source_accounts=source_accounts,
-        default_source_id=default_source_id,
-        amortization_schedule=amortization_schedule,
-        schedule_row_totals=schedule_row_totals,
-        schedule_row_rates_pct=schedule_row_rates_pct,
-        schedule_row_numbers=schedule_row_numbers,
-        show_rate_column=show_rate_column,
-        schedule_totals=schedule_totals,
-        # E-18 / Commit 16: pass today's ISO date as a string so the
-        # "Record Loan Balance" form can pre-fill the as-of date and
-        # cap the input element's ``max`` attribute.  Computed here
-        # rather than via a Jinja global so a future test that
-        # freezes ``date.today()`` (see :func:`tests._test_helpers.freeze_today`)
+    context = {
+        "account": account,
+        "account_type": account_type,
+        "params": params,
+        "summary": summary,
+        "rate_history": ctx["rate_history"],
+        "monthly_escrow": ctx["monthly_escrow"],
+        # E-18 / Commit 16: today's ISO date pre-fills the "Record Loan
+        # Balance" form's as-of date and caps its ``max``.  Computed here
+        # (not via a Jinja global) so a test that freezes ``date.today()``
         # sees the frozen value on the page.
-        today_iso=date.today().isoformat(),
-    )
+        "today_iso": date.today().isoformat(),
+    }
+    context.update(_build_payment_summary(
+        ctx["state"], summary, planned_schedule, ctx["escrow_components"],
+    ))
+    context.update(_build_dashboard_chart_context(
+        scenarios_main, scenarios_floor, len(ctx["payments"]) > 0,
+    ))
+    context.update(prompt_context)
+    context.update(_build_schedule_tab(
+        planned_schedule, ctx["monthly_escrow"], ctx["base_rate"], params,
+    ))
+    return render_template("loan/dashboard.html", **context)
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/setup", methods=["POST"])
@@ -1240,6 +1327,173 @@ def delete_escrow(account_id, component_id):
     )
 
 
+def _payoff_committed_savings(scenarios):
+    """Months and interest the committed plan saves vs pure contractual.
+
+    Committed-forward vs original-forward: both slices share the same
+    replay starting state, so the difference quantifies what the user's
+    planned outlays save vs paying pure contractual from today onward.
+    This is the load-bearing single-source-of-truth invariant -- the
+    chart's months_saved and the displayed label derive from the same
+    forward-row lists.
+
+    Returns:
+        Tuple of (committed_months_saved int, committed_interest_saved
+        Decimal; the latter routed through ``round_money`` so the
+        half-cent boundary follows the project default ROUND_HALF_UP,
+        E-26).
+    """
+    committed_months_saved = (
+        len(scenarios.original_forward) - len(scenarios.committed_forward)
+    )
+    original_forward_interest = sum(
+        (r.interest for r in scenarios.original_forward), Decimal("0.00"),
+    )
+    committed_forward_interest = sum(
+        (r.interest for r in scenarios.committed_forward), Decimal("0.00"),
+    )
+    committed_interest_saved = round_money(
+        original_forward_interest - committed_forward_interest,
+    )
+    return committed_months_saved, committed_interest_saved
+
+
+def _build_payoff_summary(scenarios, state):
+    """Assemble the AmortizationSummary for the extra-payment partial.
+
+    monthly_payment from the resolver (single source of truth);
+    committed/accelerated totals and payoff dates from the composer.
+    """
+    return AmortizationSummary(
+        monthly_payment=state.monthly_payment,
+        total_interest=scenarios.total_interest_committed,
+        payoff_date=scenarios.payoff_date_committed,
+        total_interest_with_extra=scenarios.total_interest_accelerated,
+        payoff_date_with_extra=scenarios.payoff_date_accelerated,
+        months_saved=scenarios.months_saved,
+        interest_saved=scenarios.interest_saved,
+    )
+
+
+def _payoff_extra_payment_result(params, account_id, ctx, data):
+    """Render the extra-payment payoff scenario partial.
+
+    One ``compute_payoff_scenarios`` call drives both the chart series
+    and the summary metrics so they cannot diverge (the structural fix
+    for the "extra applied to ghost historical months" defect): replay
+    routes confirmed payments through history with no acceleration,
+    projection routes projected payments through ``monthly_override``,
+    and ``extra_monthly`` is applied only to forward non-override
+    months.  The three chart series (original / committed / accelerated)
+    share the x-axis via :func:`_build_chart_series`; committed renders
+    empty when the loan has no payments.
+
+    Args:
+        params: ORM :class:`LoanParams` instance.
+        account_id: Debt account id (anchor-event load).
+        ctx: Loan context dict from :func:`_load_loan_context`.
+        data: Validated :class:`PayoffCalculatorSchema` form data.
+
+    Returns:
+        Rendered ``loan/_payoff_results.html`` response.
+    """
+    extra = Decimal(str(data.get("extra_monthly", "0")))
+    scenarios = loan_resolver.compute_payoff_scenarios(
+        loan_params=params,
+        anchor_events=_load_anchor_events(account_id),
+        payments=ctx["payments"],
+        rate_changes=ctx["rate_changes"],
+        extra_monthly=extra,
+        as_of=date.today(),
+    )
+
+    chart_labels, balances = _build_chart_series({
+        "original": scenarios.history_rows + scenarios.original_forward,
+        "committed": scenarios.history_rows + scenarios.committed_forward,
+        "accelerated": (
+            scenarios.history_rows + scenarios.accelerated_forward
+        ),
+    })
+    has_payments = len(ctx["payments"]) > 0
+    committed_months_saved, committed_interest_saved = (
+        _payoff_committed_savings(scenarios)
+    )
+
+    return render_template(
+        "loan/_payoff_results.html",
+        mode="extra_payment",
+        payoff_summary=_build_payoff_summary(scenarios, ctx["state"]),
+        chart_labels=chart_labels,
+        chart_original=balances["original"],
+        chart_committed=balances["committed"] if has_payments else [],
+        chart_accelerated=balances["accelerated"],
+        has_payments=has_payments,
+        committed_months_saved=committed_months_saved,
+        committed_interest_saved=committed_interest_saved,
+    )
+
+
+def _payoff_target_date_result(params, ctx, data):
+    """Render the target-date payoff scenario partial.
+
+    Computes the extra monthly payment required to retire the loan by
+    the user's target date via the engine's binary search.  The search
+    anchors at the resolver-derived current balance and the contractual
+    P&I the loan card displays (so the rendered
+    ``total_monthly = monthly_payment + required_extra`` is internally
+    consistent, D-2 closure).  ``calculate_remaining_months`` supplies
+    the raw origination-to-today month count the binary search needs and
+    that the resolver does not expose on :class:`LoanState`.
+
+    Args:
+        params: ORM :class:`LoanParams` instance.
+        ctx: Loan context dict from :func:`_load_loan_context`.
+        data: Validated :class:`PayoffCalculatorSchema` form data.
+
+    Returns:
+        Rendered ``loan/_payoff_results.html`` response.
+    """
+    target_date = data.get("target_date")
+    if not target_date:
+        return render_template(
+            "loan/_payoff_results.html",
+            error="Target date is required.",
+        )
+
+    state = ctx["state"]
+    monthly_payment = state.monthly_payment
+    remaining_months = amortization_engine.calculate_remaining_months(
+        params.origination_date, params.term_months,
+    )
+    required_extra = amortization_engine.calculate_payoff_by_date(
+        amortization_engine.PayoffRequest(
+            current_principal=state.current_balance,
+            annual_rate=ctx["base_rate"],
+            remaining_months=remaining_months,
+            target_date=target_date,
+            origination_date=date.today().replace(day=1),
+            payment_day=params.payment_day,
+            original_principal=ctx["original_for_engine"],
+            term_months=params.term_months,
+            rate_changes=ctx["rate_changes"],
+            contractual_payment=monthly_payment,
+        )
+    )
+
+    total_monthly = (
+        round_money(monthly_payment + required_extra)
+        if required_extra is not None and required_extra > 0
+        else None
+    )
+    return render_template(
+        "loan/_payoff_results.html",
+        mode="target_date",
+        required_extra=required_extra,
+        monthly_payment=monthly_payment,
+        total_monthly=total_monthly,
+    )
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan/payoff", methods=["POST"])
 @login_required
 @require_owner
@@ -1261,168 +1515,148 @@ def payoff_calculate(account_id):
 
     # Shared loan context: payments, rate changes, resolver state.
     # Identical to the dashboard's data loading so calculations are
-    # consistent.  ``state.current_balance`` is the same dollar
-    # figure rendered on the loan card (E-18 / Commit 15).
+    # consistent.  ``state.current_balance`` is the same dollar figure
+    # rendered on the loan card (E-18 / Commit 15).
     ctx = _load_loan_context(account, params)
-    payments = ctx["payments"]
-    rate_changes = ctx["rate_changes"]
-    state = ctx["state"]
-    base_rate = ctx["base_rate"]
-    original = ctx["original_for_engine"]
 
     if mode == "extra_payment":
-        extra = Decimal(str(data.get("extra_monthly", "0")))
-
-        # One composer call replaces the previous three direct
-        # ``generate_schedule`` calls plus ``calculate_summary``.
-        # Chart series and summary metrics derive from the same
-        # :class:`PayoffScenarios` return value so they cannot
-        # diverge -- the structural fix for the "extra applied to
-        # ghost historical months" defect documented at
-        # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``.
-        # Replay routes confirmed payments through history (no
-        # acceleration), projection routes projected payments
-        # through ``monthly_override``, and ``extra_monthly`` is
-        # applied only to forward non-override months.
-        scenarios = loan_resolver.compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=_load_anchor_events(account.id),
-            payments=payments,
-            rate_changes=rate_changes,
-            extra_monthly=extra,
-            as_of=date.today(),
-        )
-
-        # Chart series: every scenario shares ``history_rows`` and
-        # then diverges.  ``original_forward`` is the longest
-        # baseline (pure contractual, no override, no extra);
-        # committed/accelerated may pay off earlier, in which case
-        # their series are padded with $0.00 (the post-payoff
-        # balance) so all three datasets line up against the same
-        # x-axis of months.  Chart.js plots equal-length arrays
-        # against the shared ``chart_labels``.
-        original_rows = scenarios.history_rows + scenarios.original_forward
-        committed_rows = scenarios.history_rows + scenarios.committed_forward
-        accelerated_rows = (
-            scenarios.history_rows + scenarios.accelerated_forward
-        )
-        target_len = len(original_rows)
-
-        chart_labels = [
-            row.payment_date.strftime("%b %Y") for row in original_rows
-        ]
-        chart_original = _balances_for_chart(original_rows, target_len)
-        chart_committed = _balances_for_chart(committed_rows, target_len)
-        chart_accelerated = _balances_for_chart(accelerated_rows, target_len)
-
-        has_payments = len(payments) > 0
-
-        # Comparison metrics: committed forward vs. original forward.
-        # Both slices share the same starting state from replay, so
-        # the difference quantifies what the user's planned outlays
-        # save vs. paying pure contractual from today onward.  This
-        # is the load-bearing single-source-of-truth invariant --
-        # months_saved on the chart and the displayed label derive
-        # from the same forward-row lists.
-        committed_months_saved = (
-            len(scenarios.original_forward)
-            - len(scenarios.committed_forward)
-        )
-        original_forward_interest = sum(
-            (r.interest for r in scenarios.original_forward),
-            Decimal("0.00"),
-        )
-        committed_forward_interest = sum(
-            (r.interest for r in scenarios.committed_forward),
-            Decimal("0.00"),
-        )
-        # Route through round_money so the half-cent boundary follows
-        # the project default ROUND_HALF_UP (E-26).
-        committed_interest_saved = round_money(
-            original_forward_interest - committed_forward_interest,
-        )
-
-        payoff_summary = AmortizationSummary(
-            monthly_payment=state.monthly_payment,
-            total_interest=scenarios.total_interest_committed,
-            payoff_date=scenarios.payoff_date_committed,
-            total_interest_with_extra=scenarios.total_interest_accelerated,
-            payoff_date_with_extra=scenarios.payoff_date_accelerated,
-            months_saved=scenarios.months_saved,
-            interest_saved=scenarios.interest_saved,
-        )
-
-        return render_template(
-            "loan/_payoff_results.html",
-            mode=mode,
-            payoff_summary=payoff_summary,
-            chart_labels=chart_labels,
-            chart_original=chart_original,
-            chart_committed=chart_committed if has_payments else [],
-            chart_accelerated=chart_accelerated,
-            has_payments=has_payments,
-            committed_months_saved=committed_months_saved,
-            committed_interest_saved=committed_interest_saved,
-        )
-
+        return _payoff_extra_payment_result(params, account_id, ctx, data)
     if mode == "target_date":
-        target_date = data.get("target_date")
-        if not target_date:
-            return render_template(
-                "loan/_payoff_results.html",
-                error="Target date is required.",
-            )
-
-        # Resolver-derived current balance and monthly payment
-        # (E-18 / Commit 15).  Same dollar figures the loan card
-        # displays.  ``calculate_remaining_months`` is the engine's
-        # calendar-month delta from origination to today; the
-        # resolver does not expose it on :class:`LoanState` because
-        # the resolver's per-loan amortization derives months
-        # internally, but the payoff calculator's ``target_date``
-        # branch still needs the raw count for the binary search.
-        real_principal = state.current_balance
-        monthly_payment = state.monthly_payment
-        remaining_months = amortization_engine.calculate_remaining_months(
-            params.origination_date, params.term_months,
-        )
-
-        required_extra = amortization_engine.calculate_payoff_by_date(
-            amortization_engine.PayoffRequest(
-                current_principal=real_principal,
-                annual_rate=base_rate,
-                remaining_months=remaining_months,
-                target_date=target_date,
-                origination_date=date.today().replace(day=1),
-                payment_day=params.payment_day,
-                original_principal=original,
-                term_months=params.term_months,
-                rate_changes=rate_changes,
-                # SSOT contractual: the binary search must use the same
-                # P&I baseline the loan card displays, so the rendered
-                # ``total_monthly = monthly_payment + required_extra``
-                # is internally consistent (D-2 closure).
-                contractual_payment=monthly_payment,
-            )
-        )
-
-        total_monthly = (
-            round_money(monthly_payment + required_extra)
-            if required_extra is not None and required_extra > 0
-            else None
-        )
-        return render_template(
-            "loan/_payoff_results.html",
-            mode=mode,
-            required_extra=required_extra,
-            monthly_payment=monthly_payment,
-            total_monthly=total_monthly,
-        )
-
+        return _payoff_target_date_result(params, ctx, data)
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",
     )
+
+
+def _project_refinance(refi_principal, refi_rate, refi_term, payment_day):
+    """Project a hypothetical refinance schedule and summarize it.
+
+    Commit 7 of the amortization-engine split: a pure forward projection
+    from a known starting state (``refi_principal`` at next month's pay
+    date) that maps directly onto
+    :func:`amortization_engine.project_forward` -- no replay, no
+    projections-as-overrides, no extra; the contractual P&I drives every
+    row.
+
+    Args:
+        refi_principal: Decimal starting balance for the refinance.
+        refi_rate: Decimal annual rate (storage-domain fraction).
+        refi_term: New term in months.
+        payment_day: Day-of-month the payment falls on.
+
+    Returns:
+        Tuple of (refi_monthly P&I, refi_total_interest, refi_payoff
+        date).
+    """
+    refi_monthly = amortization_engine.calculate_monthly_payment(
+        refi_principal, refi_rate, refi_term,
+    )
+    schedule_start = date.today().replace(day=1)
+    starting_date = amortization_engine.advance_to_next_payment_date(
+        schedule_start, payment_day,
+    )
+    refi_schedule = amortization_engine.project_forward(
+        amortization_engine.ProjectionInputs(
+            starting_balance=refi_principal,
+            starting_date=starting_date,
+            annual_rate=refi_rate,
+            remaining_months=refi_term,
+            payment_day=payment_day,
+            contractual_payment=refi_monthly,
+            rate_changes_remaining=None,
+        ),
+        monthly_override=None,
+        extra_monthly=Decimal("0.00"),
+    )
+    refi_total_interest = sum(
+        (row.interest for row in refi_schedule), Decimal("0.00"),
+    )
+    refi_payoff = (
+        refi_schedule[-1].payment_date if refi_schedule
+        else schedule_start
+    )
+    return refi_monthly, refi_total_interest, refi_payoff
+
+
+def _refinance_break_even(closing_costs, monthly_savings):
+    """Months to recoup closing costs from monthly savings, or None.
+
+    Standard consumer-facing approximation assuming constant monthly
+    savings: ceil(closing_costs / monthly_savings) when both are
+    positive; None when there are no costs to recoup or no monthly
+    savings (refinancing to a higher payment).
+
+    Returns:
+        int months, or None.
+    """
+    if (
+        closing_costs <= Decimal("0.00")
+        or monthly_savings <= Decimal("0.00")
+    ):
+        return None
+    return int(
+        (closing_costs / monthly_savings).to_integral_value(
+            rounding=ROUND_CEILING,
+        )
+    )
+
+
+def _build_refinance_comparison(state, data, params):
+    """Build the refinance side-by-side comparison from validated form data.
+
+    Compares the current committed trajectory (resolver ``state`` --
+    same dollar figures as the loan card, E-18 / Commit 15) against a
+    hypothetical refinance.  The refinance principal defaults to the
+    current real balance + closing costs; the user may override for
+    cash-out refinances.  The principal delta and its absolute magnitude
+    are pre-computed server-side (MED-04 / E-16) so the template renders
+    without inline arithmetic.
+
+    Args:
+        state: Resolver :class:`LoanState` for the current loan.
+        data: Validated :class:`RefinanceSchema` form data.  ``new_rate``
+            is already the storage-domain fraction (schema ``@pre_load``).
+        params: ORM :class:`LoanParams` instance (payment_day source).
+
+    Returns:
+        dict of comparison fields consumed by
+        ``loan/_refinance_results.html``.
+    """
+    current_real_principal = state.current_balance
+    closing_costs = data["closing_costs"]
+    if data["new_principal"] is not None:
+        refi_principal = data["new_principal"]
+    else:
+        refi_principal = current_real_principal + closing_costs
+    refi_term = data["new_term_months"]
+
+    refi_monthly, refi_total_interest, refi_payoff = _project_refinance(
+        refi_principal, data["new_rate"], refi_term, params.payment_day,
+    )
+
+    monthly_savings = state.monthly_payment - refi_monthly
+    break_even_months = _refinance_break_even(closing_costs, monthly_savings)
+    principal_diff = refi_principal - current_real_principal
+
+    return {
+        "current_monthly": state.monthly_payment,
+        "current_total_interest": state.total_interest,
+        "current_payoff": state.payoff_date,
+        "current_remaining_months": len(state.schedule),
+        "current_principal": current_real_principal,
+        "refi_monthly": refi_monthly,
+        "refi_total_interest": refi_total_interest,
+        "refi_payoff": refi_payoff,
+        "refi_term": refi_term,
+        "refi_principal": refi_principal,
+        "monthly_savings": monthly_savings,
+        "interest_savings": state.total_interest - refi_total_interest,
+        "break_even_months": break_even_months,
+        "closing_costs": closing_costs,
+        "principal_diff": principal_diff,
+        "principal_diff_abs": abs(principal_diff),
+    }
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/refinance", methods=["POST"])
@@ -1458,21 +1692,17 @@ def refinance_calculate(account_id):
 
     data = _refinance_schema.load(request.form)
 
-    # Shared loan context: payments, rate changes, and resolver
-    # state.  Identical to the dashboard's data loading so the
-    # "current" refinance baseline matches the loan card.
+    # Shared loan context: resolver state.  Identical to the dashboard's
+    # data loading so the "current" refinance baseline matches the card.
     ctx = _load_loan_context(account, params)
     state = ctx["state"]
 
-    current_schedule = state.schedule
-    current_real_principal = state.current_balance
-
     # Paid-off loan: no refinance comparison is meaningful.  Use the
     # resolver-derived current_balance for the gate so editing the
-    # stored ``current_principal`` column (still legal until Commit
-    # 16) cannot trick the route into rendering a refinance form
-    # against an already-paid-off loan.
-    if not current_schedule or current_real_principal <= Decimal("0.00"):
+    # stored ``current_principal`` column (still legal until Commit 16)
+    # cannot trick the route into rendering a refinance form against an
+    # already-paid-off loan.
+    if not state.schedule or state.current_balance <= Decimal("0.00"):
         return render_template(
             "loan/_refinance_results.html",
             error=(
@@ -1481,115 +1711,49 @@ def refinance_calculate(account_id):
             ),
         )
 
-    # Determine refinance principal: user override or auto-calculated
-    # from current real balance + closing costs.
-    closing_costs = data["closing_costs"]
-    if data["new_principal"] is not None:
-        refi_principal = data["new_principal"]
-    else:
-        refi_principal = current_real_principal + closing_costs
-
-    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load``
-    # already divided the form percent by 100, so ``data["new_rate"]``
-    # is the storage-domain decimal fraction the engine consumes.
-    refi_rate = data["new_rate"]
-    refi_term = data["new_term_months"]
-
-    # Compute refinance monthly P&I.
-    refi_monthly = amortization_engine.calculate_monthly_payment(
-        refi_principal, refi_rate, refi_term,
-    )
-
-    # Compute refinance schedule for total interest and payoff date.
-    # Commit 7 of the amortization-engine split (see
-    # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``):
-    # the refi schedule is a pure forward projection from a known
-    # starting state (``refi_principal`` at next month's pay date) so
-    # it maps directly onto :func:`amortization_engine.project_forward`.
-    # No replay, no projections-as-overrides, no extra -- the
-    # contractual P&I drives every row.
-    schedule_start = date.today().replace(day=1)
-    starting_date = amortization_engine.advance_to_next_payment_date(
-        schedule_start, params.payment_day,
-    )
-    refi_schedule = amortization_engine.project_forward(
-        amortization_engine.ProjectionInputs(
-            starting_balance=refi_principal,
-            starting_date=starting_date,
-            annual_rate=refi_rate,
-            remaining_months=refi_term,
-            payment_day=params.payment_day,
-            contractual_payment=refi_monthly,
-            rate_changes_remaining=None,
-        ),
-        monthly_override=None,
-        extra_monthly=Decimal("0.00"),
-    )
-    refi_total_interest = sum(
-        (row.interest for row in refi_schedule), Decimal("0.00"),
-    )
-    refi_payoff = (
-        refi_schedule[-1].payment_date if refi_schedule
-        else schedule_start
-    )
-
-    # Current metrics from the resolver state -- same dollar figures
-    # as the loan card (E-18 / Commit 15).
-    current_monthly = state.monthly_payment
-    current_total_interest = state.total_interest
-    current_payoff = state.payoff_date
-    current_remaining_months = len(current_schedule)
-
-    # Comparison metrics.
-    monthly_savings = current_monthly - refi_monthly
-    interest_savings = current_total_interest - refi_total_interest
-
-    # Break-even: ceil(closing_costs / monthly_savings) when both > 0.
-    # This is the standard consumer-facing approximation assuming
-    # constant monthly savings.  A future enhancement could compute
-    # the crossover point month-by-month for greater precision.
-    break_even_months = None
-    if (
-        closing_costs > Decimal("0.00")
-        and monthly_savings > Decimal("0.00")
-    ):
-        break_even_months = int(
-            (closing_costs / monthly_savings).to_integral_value(
-                rounding=ROUND_CEILING,
-            )
-        )
-
-    # MED-04 / E-16: pre-compute the principal delta and its absolute
-    # magnitude server-side so the refinance template renders without
-    # inline arithmetic.  Previously the template subtracted
-    # ``refi_principal - current_principal`` (TA-07) and applied a
-    # unary negation ``-princ_diff`` (TA-08) on Decimal values.
-    principal_diff = refi_principal - current_real_principal
-    principal_diff_abs = abs(principal_diff)
-
-    comparison = {
-        "current_monthly": current_monthly,
-        "current_total_interest": current_total_interest,
-        "current_payoff": current_payoff,
-        "current_remaining_months": current_remaining_months,
-        "current_principal": current_real_principal,
-        "refi_monthly": refi_monthly,
-        "refi_total_interest": refi_total_interest,
-        "refi_payoff": refi_payoff,
-        "refi_term": refi_term,
-        "refi_principal": refi_principal,
-        "monthly_savings": monthly_savings,
-        "interest_savings": interest_savings,
-        "break_even_months": break_even_months,
-        "closing_costs": closing_costs,
-        "principal_diff": principal_diff,
-        "principal_diff_abs": principal_diff_abs,
-    }
-
+    comparison = _build_refinance_comparison(state, data, params)
     return render_template(
         "loan/_refinance_results.html",
         comparison=comparison,
     )
+
+
+def _resolve_transfer_amount(account, params, data):
+    """Resolve the loan-payment transfer amount and live-derivation flag.
+
+    A user-supplied amount is respected verbatim (no live derivation);
+    otherwise the amount defaults to the full monthly payment (P&I +
+    escrow) and opts into live derivation so the projected cash debit
+    tracks the loan's monthly payment after an escrow or rate change
+    instead of staying frozen at the default.
+
+    Resolver state owns the P&I figure for both ARM (re-amortized from
+    the latest anchor's balance over the remaining term) and fixed-rate
+    (contractual payment from origination), so the computed default
+    matches the dashboard's displayed "Total Monthly (with escrow)"
+    exactly (E-18 / Commit 15).
+
+    Args:
+        account: ORM :class:`Account` instance for the loan account.
+        params: ORM :class:`LoanParams` instance.
+        data: Validated transfer form data (mapping).
+
+    Returns:
+        Tuple of (Decimal transfer amount, bool derive_from_loan).
+    """
+    if "amount" in data and data["amount"] is not None:
+        return data["amount"], False
+
+    state, _, _ = _resolve_loan_state(account, params)
+    escrow_components = (
+        db.session.query(EscrowComponent)
+        .filter_by(account_id=account.id, is_active=True)
+        .all()
+    )
+    transfer_amount = escrow_calculator.calculate_total_payment(
+        state.monthly_payment, escrow_components,
+    )
+    return transfer_amount, True
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/create-transfer", methods=["POST"])
@@ -1626,31 +1790,13 @@ def create_payment_transfer(account_id):
     source_account, data = result
 
     # Determine the transfer amount and whether it auto-derives.  A
-    # user-supplied amount is respected verbatim (no live derivation);
-    # the computed default opts into live derivation so the projected
-    # cash debit tracks the loan's monthly payment after an escrow or
-    # rate change instead of staying frozen at default_amount.
-    if "amount" in data and data["amount"] is not None:
-        transfer_amount = data["amount"]
-        derive_from_loan = False
-    else:
-        # P&I + escrow as the full monthly payment.  Resolver state
-        # owns the P&I figure for both ARM (re-amortized from the
-        # latest anchor's balance over the remaining term) and
-        # fixed-rate (contractual payment from origination), so the
-        # transfer default matches the dashboard's displayed
-        # "Total Monthly (with escrow)" exactly (E-18 / Commit 15).
-        state, _, _ = _resolve_loan_state(account, params)
-        monthly_pi = state.monthly_payment
-        escrow_components = (
-            db.session.query(EscrowComponent)
-            .filter_by(account_id=account.id, is_active=True)
-            .all()
-        )
-        transfer_amount = escrow_calculator.calculate_total_payment(
-            monthly_pi, escrow_components,
-        )
-        derive_from_loan = True
+    # user-supplied amount is respected verbatim; the computed default
+    # opts into live derivation so the projected cash debit tracks the
+    # loan's monthly payment after an escrow or rate change instead of
+    # staying frozen at default_amount.
+    transfer_amount, derive_from_loan = _resolve_transfer_amount(
+        account, params, data,
+    )
 
     # Create monthly recurrence rule.
     monthly_pattern_id = ref_cache.recurrence_pattern_id(
