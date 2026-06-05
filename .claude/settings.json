@@ -2,30 +2,30 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "scripts/hooks/guard-migrations.sh \"$TOOL_INPUT_PATH\""
+            "command": "scripts/hooks/guard-migrations.sh"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "scripts/hooks/post-edit-python.sh \"$TOOL_INPUT_PATH\""
+            "command": "scripts/hooks/post-edit-python.sh"
           },
           {
             "type": "command",
-            "command": "scripts/hooks/post-edit-template.sh \"$TOOL_INPUT_PATH\""
+            "command": "scripts/hooks/post-edit-template.sh"
           },
           {
             "type": "command",
-            "command": "scripts/hooks/post-edit-deps.sh \"$TOOL_INPUT_PATH\""
+            "command": "scripts/hooks/post-edit-deps.sh"
           }
         ]
       }
