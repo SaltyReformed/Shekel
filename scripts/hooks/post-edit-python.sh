@@ -1,51 +1,68 @@
 #!/usr/bin/env bash
-# PostToolUse: Check edited Python files for high-risk patterns.
-# Targets the patterns behind audit findings C-01, H-01, H-05, and the
-# Decimal precision rule.
+# PostToolUse (Write|Edit|MultiEdit): enforce Python standards on the edited file.
+#
+# Reads the edited path from the stdin JSON payload (see _hooklib.sh) and lints
+# it against the FULL project config so design smells (too-many-*, line-too-long,
+# missing-docstring) and the project's custom checkers are caught in-loop -- the
+# old hook disabled C and R, blinding it to exactly those classes.
+#
+# Two-tier response:
+#   * Hard block (exit 2, fed back to Claude) on real errors (E/F) and the custom
+#     financial-correctness checkers (shekel-decimal-from-float, shekel-refname-
+#     compare). These have zero violations in the current tree, so this never
+#     false-blocks correct code; it catches a regression the instant it is typed.
+#   * Advisory (exit 0) for the remaining smells/conventions while Phase 3/4 of
+#     the cleanup is still in flight. The Stop hook's full `pylint app/` ratchet
+#     is the hard gate that forbids a net regression and locks the tree at zero.
+#
+# duplicate-code (R0801) is a whole-package check and CANNOT surface from a
+# single-file lint; the Stop hook is what catches a re-introduced DRY cluster.
 
-FILE="$1"
-WARNINGS=""
+set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_hooklib.sh"
 
-# Only check Python files in app/ or scripts/
-[[ "$FILE" != app/*.py && "$FILE" != scripts/*.py ]] && exit 0
+FILE="$(hook_target_relpath)"
+[ -z "$FILE" ] && exit 0
 
-# --- Check 1: broad except Exception (caused C-01, the CRITICAL finding) ---
-BROAD=$(grep -n "except Exception" "$FILE" 2>/dev/null | grep -v "# pylint: disable")
-if [ -n "$BROAD" ]; then
-    WARNINGS+="BROAD EXCEPT: 'except Exception' found. Catch specific exceptions.\n"
-    WARNINGS+="$BROAD\n\n"
+case "$FILE" in
+    app/*.py | scripts/*.py) ;;
+    tests/*.py)
+        # tests/ are out of general pylint scope (ratified decision #1), but a
+        # Decimal built from a float in a hand-computed assertion is a real bug,
+        # so the monetary-precision checker still applies here. unknown/bad-option-value
+        # are disabled explicitly (--disable=all does not cover them) so a test
+        # file's "disable=X -- explanation" inline comment does not derail the scan.
+        guard="$(pylint "$FILE" --score=no --disable=all \
+            --enable=shekel-decimal-from-float \
+            --disable=unknown-option-value,bad-option-value 2>&1)"
+        [ -n "$guard" ] || exit 0
+        {
+            echo "Monetary-precision violation in test file $FILE -- fix before continuing:"
+            echo "$guard"
+        } >&2
+        exit 2
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+# Hard-block tier: errors and the custom financial-correctness rules.
+guard="$(pylint "$FILE" --score=no --disable=all \
+    --enable=E,F,shekel-decimal-from-float,shekel-refname-compare 2>&1)"
+if [ -n "$guard" ]; then
+    {
+        echo "Blocking issue in $FILE (error or financial-correctness rule)."
+        echo "Fix the root cause; do not silence it with a bare disable:"
+        echo "$guard"
+    } >&2
+    exit 2
 fi
 
-# --- Check 2: Decimal constructed from float, not string ---
-# Matches Decimal(0.1) or Decimal(some_number) but not Decimal("0.1") or Decimal('0.1')
-BAD_DECIMAL=$(grep -nP 'Decimal\(\s*[0-9]' "$FILE" 2>/dev/null | grep -v 'Decimal("' | grep -v "Decimal('")
-if [ -n "$BAD_DECIMAL" ]; then
-    WARNINGS+="DECIMAL FROM FLOAT: Construct Decimals from strings, not numbers.\n"
-    WARNINGS+="$BAD_DECIMAL\n\n"
+# Advisory tier: surface design smells / conventions as in-loop feedback.
+smells="$(pylint "$FILE" --score=no 2>&1)"
+if [ -n "$smells" ]; then
+    echo "Pylint notes for $FILE (advisory now; the Stop-hook ratchet enforces no net regression):"
+    echo "$smells"
 fi
-
-# --- Check 3: float() used on monetary values in app code ---
-# Skip chart_data_service.py which legitimately converts to float at the Chart.js boundary
-if [[ "$FILE" != *"chart_data_service"* ]]; then
-    FLOAT_USE=$(grep -n "float(" "$FILE" 2>/dev/null)
-    if [ -n "$FLOAT_USE" ]; then
-        WARNINGS+="FLOAT USAGE: float() found. Use Decimal for financial values.\n"
-        WARNINGS+="$FLOAT_USE\n\n"
-    fi
-fi
-
-# --- Check 4: pylint ---
-LINT=$(pylint "$FILE" --fail-on=E,F --disable=C,R --score=no 2>&1)
-LINT_EXIT=$?
-if [ $LINT_EXIT -ne 0 ]; then
-    WARNINGS+="PYLINT ERRORS:\n$LINT\n\n"
-fi
-
-# Report warnings
-if [ -n "$WARNINGS" ]; then
-    echo "=== Post-edit warnings for $FILE ==="
-    echo -e "$WARNINGS"
-    exit 1
-fi
-
 exit 0

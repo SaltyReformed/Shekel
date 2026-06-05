@@ -27,6 +27,12 @@ pylint==4.0.5
 pylint-flask==0.6
 pylint-flask-sqlalchemy==0.2.0
 
+# Pre-commit framework: runs the local hooks in .pre-commit-config.yaml
+# (pylint app/ + the custom checkers) before each commit, mirroring the CI
+# gate. A pre-merge belt-and-suspenders layer for commits made outside a
+# Claude Code session; CI remains the enforced gate.
+pre-commit==4.0.1
+
 # Manual mobile / browser verification harness.  Drives a headless
 # Chromium at iPhone-sized viewports against the local dev Flask
 # server; the runnable scripts live under tests/manual/ and are
