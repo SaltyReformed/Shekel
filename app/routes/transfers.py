@@ -222,52 +222,15 @@ def create_transfer_template():
     if namedup_redirect is not None:
         return namedup_redirect
 
-    # Determine whether this is a one-time transfer.  The ONCE pattern
-    # is skipped by the recurrence engine ("once items are manually
-    # placed; no auto-generation"), so we create the single Transfer
-    # instance directly via the service.
-    once_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
-    is_one_time = rule.pattern_id == once_id
-
-    if is_one_time and start_period_id:
-        # One-time transfer: create a single Transfer in the selected
-        # period via the transfer service so shadow transactions are
-        # generated atomically.
-        period = db.session.get(PayPeriod, start_period_id)
-        if not period or period.user_id != current_user.id:
-            db.session.rollback()
-            flash("Invalid pay period for one-time transfer.", "danger")
-            return redirect(url_for("transfers.new_transfer_template"))
-
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            try:
-                transfer_service.create_transfer(
-                    user_id=current_user.id,
-                    from_account_id=template.from_account_id,
-                    to_account_id=template.to_account_id,
-                    pay_period_id=period.id,
-                    scenario_id=scenario.id,
-                    amount=template.default_amount,
-                    status_id=projected_id,
-                    category_id=template.category_id,
-                    name=template.name,
-                    transfer_template_id=template.id,
-                    # Compute the due date from the rule via the same
-                    # shared helper the recurrence engine uses.  A ONCE
-                    # rule carries no day_of_month, so this resolves to
-                    # period.start_date -- an improvement on the prior
-                    # NULL and consistent with every other transfer path.
-                    due_date=_compute_due_date(rule, period),
-                )
-            except (NotFoundError, ShekelValidationError) as exc:
-                db.session.rollback()
-                flash(f"Could not create transfer: {exc}", "danger")
-                return redirect(url_for("transfers.new_transfer_template"))
-    elif rule:
-        # Recurring transfer: delegate to the recurrence engine.
-        generate_transfers_for_all_periods(template)
+    # Create the initial transfer instance(s) for the new template: a
+    # single Transfer for the ONCE pattern, or a recurrence-engine fan-out
+    # otherwise.  Returns a redirect Response on an invalid period or a
+    # service rejection, which is propagated verbatim.
+    materialize_redirect = _materialize_initial_transfers(
+        template, rule, start_period_id,
+    )
+    if materialize_redirect is not None:
+        return materialize_redirect
 
     db.session.commit()
     flash(f"Transfer '{template.name}' created.", "success")
@@ -364,27 +327,7 @@ def update_transfer_template(template_id):
         return redirect_response
 
     # --- Route-boundary FK ownership (commit C-27 / F-043) ---
-    # Each user-scoped FK is verified only when present in the
-    # partial update payload (the loaded ``data`` dict only carries
-    # keys the user submitted -- BaseSchema's EXCLUDE meta drops
-    # stray form fields).  ``category_id`` accepts ``None`` per the
-    # schema; ``None`` clears the category and skips the probe.
-    # Single-return loop so a future FK addition does not push the
-    # function past pylint's too-many-returns threshold.
-    ownership_failure = None
-    for field, model, label in (
-        ("from_account_id", Account, "source account"),
-        ("to_account_id", Account, "destination account"),
-        ("category_id", Category, "category"),
-    ):
-        if field not in data:
-            continue
-        value = data[field]
-        if value is None:
-            continue
-        if not _user_owns(model, value):
-            ownership_failure = label
-            break
+    ownership_failure = _first_unowned_template_fk(data)
     if ownership_failure is not None:
         flash(f"Invalid {ownership_failure}.", "danger")
         return redirect(url_for(
@@ -404,45 +347,7 @@ def update_transfer_template(template_id):
     if namedup_redirect is not None:
         return namedup_redirect
 
-    # Regenerate future transfers.
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario and template.recurrence_rule:
-        periods = pay_period_service.get_all_periods(current_user.id)
-        try:
-            transfer_recurrence.regenerate_for_template(
-                template, periods, scenario.id, effective_from=effective_from,
-            )
-        except RecurrenceConflict as conflict:
-            # Phase-1 auto-keep-overrides advisory.  Routed through
-            # the F-26 helper; ``log_label`` carries the transfers-
-            # side "Transfer recurrence conflict for template"
-            # prefix verbatim so log-grep patterns stay valid.
-            handle_recurrence_conflict(
-                logger=logger,
-                log_label="Transfer recurrence conflict for template",
-                log_id=template.id,
-                conflict=conflict,
-            )
-
-    try:
-        db.session.commit()
-    except StaleDataError:
-        return handle_stale_conflict(
-            logger=logger,
-            log_label="update_transfer_template",
-            log_id=template_id,
-            flash_message=STALE_EDITING_MESSAGE.format(
-                noun="recurring transfer",
-            ),
-            redirect_endpoint="transfers.edit_transfer_template",
-            redirect_endpoint_kwargs={"template_id": template_id},
-        )
-    except IntegrityError:
-        db.session.rollback()
-        flash("A recurring transfer with that name already exists.", "warning")
-        return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
-    flash(f"Recurring transfer '{template.name}' updated.", "success")
-    return redirect(url_for("transfers.list_transfer_templates"))
+    return _regenerate_and_commit_template(template, effective_from, template_id)
 
 
 @transfers_bp.route("/transfers/<int:template_id>/archive", methods=["POST"])
@@ -798,25 +703,21 @@ def update_transfer(xfer_id):
         return _stale_transfer_response(xfer_id), 409
 
     # --- Route-boundary FK ownership (commit C-27 / F-043) ---
-    # The only user-scoped FK ``TransferUpdateSchema`` exposes is
-    # ``category_id``; ``status_id`` references the ref table.
-    # ``allow_none=True`` on ``category_id`` means clearing the
-    # category (setting it to NULL) is legitimate and must skip the
-    # ownership probe -- the service drops it through unchanged in
-    # that case.
-    if data.get("category_id") is not None and not _user_owns(
-        Category, data["category_id"],
-    ):
-        return "Not found", 404
-
-    # Route-boundary ownership for the period FK (same C-27 / F-043
-    # pattern as category above).  The service's _get_owned_period
-    # re-checks, but enforcing it here keeps the boundary visible and
-    # guards a future refactor that bypasses the service helper.
-    if data.get("pay_period_id") is not None and not _user_owns(
-        PayPeriod, data["pay_period_id"],
-    ):
-        return "Not found", 404
+    # The user-scoped FKs ``TransferUpdateSchema`` exposes are
+    # ``category_id`` and ``pay_period_id``; ``status_id`` references
+    # the ref table and needs no ownership probe.  Each is verified
+    # only when present and non-``None`` -- ``allow_none=True`` on
+    # ``category_id`` means clearing it (NULL) is legitimate and the
+    # service drops it through unchanged.  The service's
+    # ``_get_owned_*`` helpers re-check, but enforcing it here keeps
+    # the boundary visible and guards a future refactor that bypasses
+    # them.  Single-return loop so adding a future FK does not push the
+    # function past pylint's too-many-returns threshold; all failures
+    # collapse to 404 per the project security response rule.
+    for model, field in ((Category, "category_id"), (PayPeriod, "pay_period_id")):
+        value = data.get(field)
+        if value is not None and not _user_owns(model, value):
+            return "Not found", 404
 
     # A period move relocates the transfer (and both shadows) to another
     # period in the grid, which an in-place cell swap cannot express --
@@ -833,46 +734,22 @@ def update_transfer(xfer_id):
     if xfer.transfer_template_id and ("amount" in data or "pay_period_id" in data):
         data["is_override"] = True
 
-    try:
-        transfer_service.update_transfer(xfer.id, current_user.id, **data)
-        db.session.commit()
-    except StaleDataError:
-        logger.info(
-            "Stale-data conflict on update_transfer id=%d", xfer_id,
-        )
-        return _stale_transfer_response(xfer_id), 409
-    except NotFoundError:
-        return "Not found", 404
-    except ShekelValidationError as exc:
-        return jsonify(errors={"_schema": [str(exc)]}), 400
-    except IntegrityError:
-        db.session.rollback()
-        return "Invalid reference. Check that all referenced records exist.", 400
-    logger.info("user_id=%d updated transfer %d", current_user.id, xfer_id)
+    error_response = _execute_transfer_update(xfer, data)
+    if error_response is not None:
+        return error_response
 
     # When opened from a shadow transaction cell in the grid, render the
     # transaction cell template so the cell remains interactive.  When
     # opened from the transfer management page, render the transfer cell.
     # A period move needs a full grid refresh so the relocated rows
     # appear under the new period; an in-place edit only needs balances
-    # recomputed (gridRefresh reloads the page via app.js).
+    # recomputed (gridRefresh reloads the page via app.js).  Both cell
+    # paths carry the same trigger here -- it is the move, not the cell
+    # kind, that decides between a refresh and a balance recompute.
     trigger = "gridRefresh" if period_changed else "balanceChanged"
-
-    shadow = _resolve_shadow_context(xfer)
-    if shadow is not None:
-        db.session.refresh(shadow)
-        response = render_template(
-            "grid/_transaction_cell.html",
-            txn=shadow,
-            entry_sums=build_entry_sums_dict([shadow]),
-        )
-        return response, 200, {"HX-Trigger": trigger}
-
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    response = render_template(
-        "transfers/_transfer_cell.html", xfer=xfer, account=account,
+    return _render_post_mutation_cell(
+        xfer, shadow_trigger=trigger, cell_trigger=trigger,
     )
-    return response, 200, {"HX-Trigger": trigger}
 
 
 @transfers_bp.route("/transfers/ad-hoc", methods=["POST"])
@@ -939,11 +816,14 @@ def create_ad_hoc():
 
     # ``transfer_service.create_transfer`` calls ``db.session.flush()``
     # internally to obtain the transfer's primary key for the shadow
-    # rows.  The IntegrityError on ``uq_transfers_adhoc_dedupe`` therefore
-    # fires *during* the service call, not at the subsequent
-    # ``db.session.commit()``.  Both code paths must catch the
-    # constraint hit and translate it into idempotent success or the
-    # caller sees a 500.
+    # rows, so the ``uq_transfers_adhoc_dedupe`` IntegrityError can fire
+    # either during the service call (the flush) or at the subsequent
+    # ``db.session.commit()``.  A single ``try`` spans both so the
+    # constraint hit is translated into idempotent success (or a 400)
+    # from whichever statement trips it.  ``NotFoundError`` /
+    # ``ShekelValidationError`` originate only in the service call and
+    # never at commit, so folding the commit into the same ``try``
+    # changes no behavior.
     try:
         xfer = transfer_service.create_transfer(
             user_id=current_user.id,
@@ -958,23 +838,13 @@ def create_ad_hoc():
             notes=data.get("notes"),
             due_date=data.get("due_date"),
         )
+        db.session.commit()
     except NotFoundError:
         return "Not found", 404
     except ShekelValidationError as exc:
         return jsonify(errors={"_schema": [str(exc)]}), 400
     except IntegrityError as exc:
-        db.session.rollback()
-        if is_unique_violation(exc, _TRANSFER_ADHOC_UNIQUE_INDEX):
-            return _adhoc_dedupe_idempotent_response(data)
-        return "Invalid reference. Check that all referenced records exist.", 400
-
-    try:
-        db.session.commit()
-    except IntegrityError as exc:
-        db.session.rollback()
-        if is_unique_violation(exc, _TRANSFER_ADHOC_UNIQUE_INDEX):
-            return _adhoc_dedupe_idempotent_response(data)
-        return "Invalid reference. Check that all referenced records exist.", 400
+        return _handle_adhoc_integrity(exc, data)
     logger.info("user_id=%d created ad-hoc transfer (id=%d)", current_user.id, xfer.id)
 
     account = resolve_grid_account(current_user.id, current_user.settings)
@@ -982,6 +852,31 @@ def create_ad_hoc():
         "transfers/_transfer_cell.html", xfer=xfer, account=account, wrap_div=True,
     )
     return response, 201, {"HX-Trigger": "balanceChanged"}
+
+
+def _handle_adhoc_integrity(exc, data):
+    """Translate an ad-hoc transfer ``IntegrityError`` into the right response.
+
+    The ``uq_transfers_adhoc_dedupe`` partial unique index (F-050 / C-22)
+    rejects a second active ad-hoc transfer with identical parameters when two
+    requests race (a double-click, a network retry).  That case is treated as
+    idempotent success -- the winning row's cell is returned (see
+    :func:`_adhoc_dedupe_idempotent_response`).  Any other ``IntegrityError``
+    is a genuine bad reference and becomes a 400.  The session is rolled back
+    before the violation is inspected.
+
+    Args:
+        exc: The caught ``IntegrityError``.
+        data: The loaded TransferCreateSchema payload for the failed request.
+
+    Returns:
+        The idempotent 201 cell response on a dedupe-index hit, or a 400
+        ``(body, status)`` tuple otherwise.
+    """
+    db.session.rollback()
+    if is_unique_violation(exc, _TRANSFER_ADHOC_UNIQUE_INDEX):
+        return _adhoc_dedupe_idempotent_response(data)
+    return "Invalid reference. Check that all referenced records exist.", 400
 
 
 def _adhoc_dedupe_idempotent_response(data):
@@ -1124,23 +1019,13 @@ def mark_done(xfer_id):
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
 
-    # Grid shadow context: render transaction cell with gridRefresh
-    # (matches the transaction route guard pattern for status changes).
-    shadow = _resolve_shadow_context(xfer)
-    if shadow is not None:
-        db.session.refresh(shadow)
-        response = render_template(
-            "grid/_transaction_cell.html",
-            txn=shadow,
-            entry_sums=build_entry_sums_dict([shadow]),
-        )
-        return response, 200, {"HX-Trigger": "gridRefresh"}
-
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    response = render_template(
-        "transfers/_transfer_cell.html", xfer=xfer, account=account,
+    # Grid shadow context renders the transaction cell with gridRefresh;
+    # the transfer-management page renders the transfer cell with
+    # balanceChanged (matches the transaction route guard pattern for
+    # status changes).
+    return _render_post_mutation_cell(
+        xfer, shadow_trigger="gridRefresh", cell_trigger="balanceChanged",
     )
-    return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/cancel", methods=["POST"])
@@ -1171,8 +1056,235 @@ def cancel_transfer(xfer_id):
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d cancelled transfer %d", current_user.id, xfer_id)
 
-    # Grid shadow context: render transaction cell with gridRefresh
-    # (matches the transaction route guard pattern for status changes).
+    # Grid shadow context renders the transaction cell with gridRefresh;
+    # the transfer-management page renders the transfer cell with
+    # balanceChanged (matches the transaction route guard pattern for
+    # status changes).
+    return _render_post_mutation_cell(
+        xfer, shadow_trigger="gridRefresh", cell_trigger="balanceChanged",
+    )
+
+
+# ── Helpers ─────────────────────────────────────────────────────────
+
+
+def _materialize_initial_transfers(template, rule, start_period_id):
+    """Create the initial transfer instance(s) for a freshly built template.
+
+    A ONCE-pattern template with a selected start period produces a single
+    Transfer in that period (created through ``transfer_service`` so its two
+    shadow transactions are generated atomically); any other recurring rule
+    is handed to the recurrence engine to fan out across every period.
+
+    The ONCE branch re-fetches ``start_period_id`` and re-verifies ownership
+    so a tampered period id cannot leak into the transfer service, mirroring
+    the route-boundary FK checks in :func:`create_transfer_template`.
+
+    Args:
+        template: The persisted (flushed) TransferTemplate.
+        rule: The template's RecurrenceRule.
+        start_period_id: The submitted start-period id, or ``None``.
+
+    Returns:
+        A redirect ``Response`` when the one-time path hits an invalid period
+        or the service rejects the transfer (the caller returns it verbatim);
+        ``None`` on success so the caller proceeds to commit.
+    """
+    once_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
+    is_one_time = rule.pattern_id == once_id
+
+    if is_one_time and start_period_id:
+        # One-time transfer: create a single Transfer in the selected
+        # period via the transfer service so shadow transactions are
+        # generated atomically.
+        period = db.session.get(PayPeriod, start_period_id)
+        if not period or period.user_id != current_user.id:
+            db.session.rollback()
+            flash("Invalid pay period for one-time transfer.", "danger")
+            return redirect(url_for("transfers.new_transfer_template"))
+
+        scenario = get_baseline_scenario(current_user.id)
+        if scenario:
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            try:
+                transfer_service.create_transfer(
+                    user_id=current_user.id,
+                    from_account_id=template.from_account_id,
+                    to_account_id=template.to_account_id,
+                    pay_period_id=period.id,
+                    scenario_id=scenario.id,
+                    amount=template.default_amount,
+                    status_id=projected_id,
+                    category_id=template.category_id,
+                    name=template.name,
+                    transfer_template_id=template.id,
+                    # Compute the due date from the rule via the same
+                    # shared helper the recurrence engine uses.  A ONCE
+                    # rule carries no day_of_month, so this resolves to
+                    # period.start_date -- an improvement on the prior
+                    # NULL and consistent with every other transfer path.
+                    due_date=_compute_due_date(rule, period),
+                )
+            except (NotFoundError, ShekelValidationError) as exc:
+                db.session.rollback()
+                flash(f"Could not create transfer: {exc}", "danger")
+                return redirect(url_for("transfers.new_transfer_template"))
+    elif rule:
+        # Recurring transfer: delegate to the recurrence engine.
+        generate_transfers_for_all_periods(template)
+
+    return None
+
+
+def _first_unowned_template_fk(data):
+    """Return the label of the first submitted FK the user does not own, else None.
+
+    Route-boundary FK ownership for the transfer-template update payload
+    (commit C-27 / F-043).  Each user-scoped FK is verified only when present
+    in the partial-update ``data`` (the loaded dict carries only keys the user
+    submitted -- BaseSchema's EXCLUDE meta drops stray form fields).
+    ``category_id`` accepts ``None`` per the schema; ``None`` clears the
+    category and skips the probe.
+
+    Args:
+        data: The loaded TransferTemplateUpdateSchema output (partial update).
+
+    Returns:
+        The human-readable label ("source account", "destination account" or
+        "category") of the first FK that is present, non-``None``, and not
+        owned by ``current_user``; ``None`` when every present FK is owned.
+    """
+    for field, model, label in (
+        ("from_account_id", Account, "source account"),
+        ("to_account_id", Account, "destination account"),
+        ("category_id", Category, "category"),
+    ):
+        if field not in data:
+            continue
+        value = data[field]
+        if value is None:
+            continue
+        if not _user_owns(model, value):
+            return label
+    return None
+
+
+def _regenerate_and_commit_template(template, effective_from, template_id):
+    """Regenerate a transfer template's future transfers, then commit.
+
+    Re-runs ``transfer_recurrence.regenerate_for_template`` against the
+    baseline scenario (auto-keeping any overridden instances via the F-26
+    conflict helper), then commits.  Optimistic-lock and name-uniqueness
+    failures at flush time are converted to the same flash + redirect the
+    form-side guards produce, so a concurrent edit never surfaces as a 500.
+
+    Args:
+        template: The TransferTemplate whose field changes are already staged
+            in the session.
+        effective_from: Date from which regeneration applies.
+        template_id: The template's id, used for redirect kwargs and logging.
+
+    Returns:
+        A redirect ``Response`` -- to the edit form on a stale-data or
+        name-duplicate conflict, or to the template list on success.
+    """
+    scenario = get_baseline_scenario(current_user.id)
+    if scenario and template.recurrence_rule:
+        periods = pay_period_service.get_all_periods(current_user.id)
+        try:
+            transfer_recurrence.regenerate_for_template(
+                template, periods, scenario.id, effective_from=effective_from,
+            )
+        except RecurrenceConflict as conflict:
+            # Phase-1 auto-keep-overrides advisory.  Routed through
+            # the F-26 helper; ``log_label`` carries the transfers-
+            # side "Transfer recurrence conflict for template"
+            # prefix verbatim so log-grep patterns stay valid.
+            handle_recurrence_conflict(
+                logger=logger,
+                log_label="Transfer recurrence conflict for template",
+                log_id=template.id,
+                conflict=conflict,
+            )
+
+    try:
+        db.session.commit()
+    except StaleDataError:
+        return handle_stale_conflict(
+            logger=logger,
+            log_label="update_transfer_template",
+            log_id=template_id,
+            flash_message=STALE_EDITING_MESSAGE.format(
+                noun="recurring transfer",
+            ),
+            redirect_endpoint="transfers.edit_transfer_template",
+            redirect_endpoint_kwargs={"template_id": template_id},
+        )
+    except IntegrityError:
+        db.session.rollback()
+        flash("A recurring transfer with that name already exists.", "warning")
+        return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
+    flash(f"Recurring transfer '{template.name}' updated.", "success")
+    return redirect(url_for("transfers.list_transfer_templates"))
+
+
+def _execute_transfer_update(xfer, data):
+    """Apply an inline transfer edit via the service and commit it.
+
+    Runs ``transfer_service.update_transfer`` (which propagates the change to
+    both shadow transactions) and commits, translating each failure mode into
+    the HTTP response :func:`update_transfer` would otherwise inline: a
+    stale-form/flush race to a 409 conflict cell, a missing or unowned
+    reference to 404, a domain validation error to a 400 JSON body, and a
+    foreign-key ``IntegrityError`` to a 400.
+
+    Args:
+        xfer: The owned Transfer being edited.
+        data: The loaded TransferUpdateSchema payload (``is_override`` may
+            already be set by the caller for template-linked moves).
+
+    Returns:
+        ``None`` on success -- the caller renders the updated cell -- or a
+        Flask response tuple describing the failure.
+    """
+    try:
+        transfer_service.update_transfer(xfer.id, current_user.id, **data)
+        db.session.commit()
+    except StaleDataError:
+        logger.info("Stale-data conflict on update_transfer id=%d", xfer.id)
+        return _stale_transfer_response(xfer.id), 409
+    except NotFoundError:
+        return "Not found", 404
+    except ShekelValidationError as exc:
+        return jsonify(errors={"_schema": [str(exc)]}), 400
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
+    logger.info("user_id=%d updated transfer %d", current_user.id, xfer.id)
+    return None
+
+
+def _render_post_mutation_cell(xfer, *, shadow_trigger, cell_trigger):
+    """Render the grid cell for a transfer after a successful mutation.
+
+    The transfer-mutating HTMX routes (:func:`update_transfer`,
+    :func:`mark_done`, :func:`cancel_transfer`) share one response shape: when
+    the request originated from a shadow transaction cell in the budget grid
+    (``source_txn_id`` present and validated), the shadow's
+    ``grid/_transaction_cell.html`` is re-rendered so the cell stays
+    interactive; otherwise the transfer's own ``_transfer_cell.html`` is
+    returned.  The two paths can carry different HX-Trigger events (a status
+    change refreshes the grid but renders the transfer cell with a balance
+    recompute), so each trigger is supplied explicitly.
+
+    Args:
+        xfer: The mutated Transfer.
+        shadow_trigger: HX-Trigger event for the shadow-cell response.
+        cell_trigger: HX-Trigger event for the transfer-cell response.
+
+    Returns:
+        A Flask response tuple ``(html, 200, {"HX-Trigger": ...})``.
+    """
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
@@ -1181,16 +1293,13 @@ def cancel_transfer(xfer_id):
             txn=shadow,
             entry_sums=build_entry_sums_dict([shadow]),
         )
-        return response, 200, {"HX-Trigger": "gridRefresh"}
+        return response, 200, {"HX-Trigger": shadow_trigger}
 
     account = resolve_grid_account(current_user.id, current_user.settings)
     response = render_template(
         "transfers/_transfer_cell.html", xfer=xfer, account=account,
     )
-    return response, 200, {"HX-Trigger": "balanceChanged"}
-
-
-# ── Helpers ─────────────────────────────────────────────────────────
+    return response, 200, {"HX-Trigger": cell_trigger}
 
 
 def _get_owned_transfer(xfer_id):
