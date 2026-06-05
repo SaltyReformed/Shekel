@@ -17,6 +17,7 @@ request/session imports.
 import calendar
 import logging
 from collections import OrderedDict, defaultdict
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -71,6 +72,53 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 TWO_PLACES = Decimal("0.01")
+
+
+# ── Shared bundle dataclasses ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _ProjectionInputs:
+    """Pre-loaded per-account parameter maps the section helpers project against.
+
+    Bundles the maps loaded once in :func:`_load_common_data` (plus the
+    amortization schedules built in :func:`_build_summary`) so the
+    net-worth and savings-progress helpers forward a single cohesive
+    object down the projection call chain instead of the four or five
+    parallel keyword arguments they previously threaded by hand
+    (MED-01 / S6-06).
+
+    The net-worth chain reads ``debt_schedules`` and the investment trio
+    (``investment_params_map`` / ``deductions_by_account`` /
+    ``salary_gross_biweekly``); the savings-progress chain reads
+    ``interest_params_map`` and the same investment trio.  Each chain
+    leaves the one field it does not need untouched.
+    """
+
+    debt_schedules: dict[int, list]
+    investment_params_map: dict[int, InvestmentParams]
+    interest_params_map: dict[int, InterestParams]
+    deductions_by_account: dict[int, list]
+    salary_gross_biweekly: Decimal
+
+
+@dataclass(frozen=True)
+class _YearContext:
+    """The calendar year under summary plus its period and scenario context.
+
+    Loop-invariant inputs shared across the net-worth and
+    savings-progress per-account computations: the target year, the
+    baseline scenario, the full ordered period list (needed for
+    anchor-based reverse projection), and the IDs of the pay periods that
+    fall within the year.  Bundled so the section helpers and their
+    per-account workers take one cohesive context object instead of four
+    separate positional parameters.
+    """
+
+    year: int
+    scenario: Scenario
+    all_periods: list[PayPeriod]
+    year_period_ids: list[int]
 
 
 # ── Main Entry Point ──────────────────────────────────────────────
@@ -212,10 +260,11 @@ def _build_summary(
         scenario: The user's baseline scenario.
         ctx: Common data from :func:`_load_common_data`.  This is the
             sanctioned W-052 load-once bag and stays whole at this
-            top-level assembly site -- the assembler legitimately
-            reads 8 of 11 keys.  MED-01 / S6-06 narrowing happens
-            below: each section helper now declares the specific
-            fields it depends on instead of taking the opaque bag.
+            top-level assembly site, where it is packed into the two
+            cohesive bundles passed down the projection chains: the
+            ``_ProjectionInputs`` parameter maps and the ``_YearContext``
+            period/scenario context (MED-01 / S6-06 -- the section
+            helpers below take those bundles instead of the opaque bag).
 
     Returns:
         Fully assembled year-end summary dict.
@@ -225,6 +274,20 @@ def _build_summary(
     # mortgage interest, debt progress, and net worth sections.
     debt_schedules = _generate_debt_schedules(
         ctx["debt_accounts"], scenario.id,
+    )
+
+    inputs = _ProjectionInputs(
+        debt_schedules=debt_schedules,
+        investment_params_map=ctx["investment_params_map"],
+        interest_params_map=ctx["interest_params_map"],
+        deductions_by_account=ctx["deductions_by_account"],
+        salary_gross_biweekly=ctx["salary_gross_biweekly"],
+    )
+    year_ctx = _YearContext(
+        year=year,
+        scenario=scenario,
+        all_periods=ctx["all_periods"],
+        year_period_ids=ctx["year_period_ids"],
     )
 
     income_tax = _compute_income_tax(
@@ -242,22 +305,13 @@ def _build_summary(
             user_id, ctx["year_period_ids"], scenario.id,
         ),
         "net_worth": _compute_net_worth(
-            year, ctx["accounts"], ctx["all_periods"], scenario,
-            debt_schedules=debt_schedules,
-            investment_params_map=ctx["investment_params_map"],
-            deductions_by_account=ctx["deductions_by_account"],
-            salary_gross_biweekly=ctx["salary_gross_biweekly"],
+            ctx["accounts"], year_ctx, inputs,
         ),
         "debt_progress": _compute_debt_progress(
             year, ctx["debt_accounts"], debt_schedules,
         ),
         "savings_progress": _compute_savings_progress(
-            ctx["savings_accounts"], ctx["year_period_ids"],
-            scenario.id, ctx["all_periods"], year, scenario,
-            investment_params_map=ctx["investment_params_map"],
-            interest_params_map=ctx["interest_params_map"],
-            deductions_by_account=ctx["deductions_by_account"],
-            salary_gross_biweekly=ctx["salary_gross_biweekly"],
+            ctx["savings_accounts"], year_ctx, inputs,
         ),
         "payment_timeliness": _compute_payment_timeliness(
             user_id, year, ctx["year_period_ids"], scenario.id,
@@ -727,15 +781,9 @@ def _compute_transfers_summary(
 
 
 def _compute_net_worth(
-    year: int,
     accounts: list,
-    all_periods: list,
-    scenario: Scenario,
-    debt_schedules: dict[int, list] | None = None,
-    *,
-    investment_params_map: dict | None = None,
-    deductions_by_account: dict | None = None,
-    salary_gross_biweekly: Decimal | None = None,
+    year_ctx: _YearContext,
+    inputs: _ProjectionInputs,
 ) -> dict:
     """Compute net worth at 12 monthly endpoints for the year.
 
@@ -745,41 +793,31 @@ def _compute_net_worth(
 
     Uses the balance calculator for checking/savings, interest
     calculator for HYSA-type accounts, amortization schedule for loan
-    accounts, and growth engine for investment accounts (when the
-    investment-params / deductions / salary trio is supplied).
+    accounts, and growth engine for investment accounts.  The per-account
+    balance derivation reads ``inputs.debt_schedules`` and the investment
+    trio (``investment_params_map`` / ``deductions_by_account`` /
+    ``salary_gross_biweekly``).
 
     Args:
-        year: Target calendar year.
         accounts: All active user accounts.
-        all_periods: All user pay periods (for anchor-based projection).
-        scenario: Baseline scenario.
-        debt_schedules: Optional account_id -> list[AmortizationRow]
-            mapping.  When provided, debt account balances are derived
-            from the amortization schedule.
-        investment_params_map: MED-01 / S6-06: narrow replacement for
-            the previous opaque-ctx parameter -- the only investment-
-            side field this helper actually needs.  ``None`` skips the
-            growth-engine projection (investments are returned at
-            their canonical resolver balance).
-        deductions_by_account: Pay-deduction map keyed by account id,
-            forwarded to :func:`_build_investment_balance_map` for the
-            growth engine's contribution inputs.
-        salary_gross_biweekly: The active salary profile's biweekly
-            gross, forwarded for the same reason.
+        year_ctx: The target year plus its scenario and the full ordered
+            period list (used for anchor-based projection).
+        inputs: Pre-loaded projection parameter maps; this section reads
+            ``debt_schedules`` and the investment trio and leaves
+            ``interest_params_map`` untouched.
 
     Returns:
         dict with monthly_values (list of 12 {month, month_name,
         balance}), jan1, dec31, delta.
     """
+    all_periods = year_ctx.all_periods
+    year = year_ctx.year
     if not accounts or not all_periods:
         return _empty_net_worth()
 
     month_end_periods = _get_month_end_periods(year, all_periods)
     account_data = _build_account_data(
-        accounts, scenario, all_periods, debt_schedules,
-        investment_params_map=investment_params_map,
-        deductions_by_account=deductions_by_account,
-        salary_gross_biweekly=salary_gross_biweekly,
+        accounts, year_ctx.scenario, all_periods, inputs,
     )
 
     jan1_period = _find_period_before_date(date(year, 1, 1), all_periods)
@@ -805,11 +843,7 @@ def _build_account_data(
     accounts: list,
     scenario: Scenario,
     all_periods: list,
-    debt_schedules: dict[int, list] | None = None,
-    *,
-    investment_params_map: dict | None = None,
-    deductions_by_account: dict | None = None,
-    salary_gross_biweekly: Decimal | None = None,
+    inputs: _ProjectionInputs,
 ) -> list[dict]:
     """Build balance maps for all accounts with liability flags.
 
@@ -817,16 +851,11 @@ def _build_account_data(
         accounts: All active user accounts.
         scenario: Baseline scenario.
         all_periods: All user pay periods.
-        debt_schedules: Optional account_id -> list[AmortizationRow]
-            mapping for debt accounts.
-        investment_params_map: MED-01 / S6-06: explicit replacement
-            for the previous opaque-ctx parameter -- this helper now
-            declares the exact dependency it forwards to
-            :func:`_get_account_balance_map`.
-        deductions_by_account: Forwarded to
-            :func:`_get_account_balance_map` for the investment-side
-            growth projection.
-        salary_gross_biweekly: Forwarded for the same reason.
+        inputs: Pre-loaded projection parameter maps forwarded to
+            :func:`_get_account_balance_map` (``debt_schedules`` selects
+            the amortization-schedule path for debt accounts; the
+            investment trio drives the growth-engine path for investment
+            accounts).
 
     Returns:
         List of dicts with 'balances' and 'is_liability' keys.
@@ -835,11 +864,7 @@ def _build_account_data(
     result = []
     for account in accounts:
         balances = _get_account_balance_map(
-            account, scenario, all_periods,
-            debt_schedules=debt_schedules,
-            investment_params_map=investment_params_map,
-            deductions_by_account=deductions_by_account,
-            salary_gross_biweekly=salary_gross_biweekly,
+            account, scenario, all_periods, inputs,
         )
         if balances is None:
             continue
@@ -952,20 +977,15 @@ def _compute_debt_progress(
 
 def _compute_savings_progress(
     savings_accounts: list,
-    period_ids: list[int],
-    scenario_id: int,
-    all_periods: list,
-    year: int,
-    scenario: Scenario,
-    *,
-    investment_params_map: dict,
-    interest_params_map: dict,
-    deductions_by_account: dict,
-    salary_gross_biweekly: Decimal,
+    year_ctx: _YearContext,
+    inputs: _ProjectionInputs,
 ) -> list[dict]:
     """Compute balance growth, contributions, and returns for savings accounts.
 
-    Dispatches to three calculation paths based on account type:
+    Delegates each account to :func:`_savings_progress_for_account`,
+    which dispatches to one of three calculation paths based on account
+    type:
+
     - Investment accounts (with InvestmentParams): growth engine with
       employer contributions and assumed annual return.
     - Interest-bearing accounts (with InterestParams): balance
@@ -974,87 +994,99 @@ def _compute_savings_progress(
 
     Args:
         savings_accounts: Non-debt, non-checking accounts.
-        period_ids: IDs of pay periods in the target year.
-        scenario_id: Baseline scenario ID.
-        all_periods: All user pay periods.
-        year: Target calendar year.
-        scenario: Baseline scenario.
-        investment_params_map: MED-01 / S6-06: explicit narrow
-            replacement for the previous 11-key ``ctx`` opaque bag.
-            Maps account_id -> InvestmentParams.
-        interest_params_map: account_id -> InterestParams.
-        deductions_by_account: account_id -> PaycheckDeduction list,
-            forwarded to :func:`_project_investment_for_year`.
-        salary_gross_biweekly: Active salary profile gross biweekly,
-            forwarded for the same reason.
+        year_ctx: The target year, baseline scenario, full period list,
+            and the year's period IDs.
+        inputs: Pre-loaded projection parameter maps; this section reads
+            ``investment_params_map`` / ``interest_params_map`` (account
+            dispatch) and the investment trio, leaving ``debt_schedules``
+            untouched.
 
     Returns:
         List of dicts: [{account_name, account_id, jan1_balance,
         dec31_balance, total_contributions, employer_contributions,
         investment_growth}].
     """
-    if not savings_accounts:
-        return []
+    return [
+        _savings_progress_for_account(account, year_ctx, inputs)
+        for account in savings_accounts
+    ]
 
-    result = []
-    for account in savings_accounts:
-        contributions = _sum_shadow_income(
-            account.id, period_ids, scenario_id,
+
+def _savings_progress_for_account(
+    account: Account,
+    year_ctx: _YearContext,
+    inputs: _ProjectionInputs,
+) -> dict:
+    """Compute the savings-progress row for one account.
+
+    Dispatches on the account's parameter type: investment accounts use
+    the growth-engine projection; interest-bearing accounts use the
+    interest calculator (plus a pre-anchor estimate); plain savings
+    accounts report balances with no growth.  Contributions are the
+    settled shadow-income (transfer-in) total for the year regardless of
+    type.
+
+    Args:
+        account: A non-debt, non-checking savings account.
+        year_ctx: The target year, baseline scenario, full period list,
+            and the year's period IDs.
+        inputs: Pre-loaded projection parameter maps.
+
+    Returns:
+        dict with account_name, account_id, jan1_balance, dec31_balance,
+        total_contributions, employer_contributions, investment_growth.
+    """
+    all_periods = year_ctx.all_periods
+    year = year_ctx.year
+    scenario = year_ctx.scenario
+
+    contributions = _sum_shadow_income(
+        account.id, year_ctx.year_period_ids, scenario.id,
+    )
+    inv_params = inputs.investment_params_map.get(account.id)
+    int_params = inputs.interest_params_map.get(account.id)
+
+    if inv_params:
+        jan1_bal, dec31_bal, employer_total, growth_total = (
+            _project_investment_for_year(
+                account, inv_params, year_ctx, inputs,
+            )
         )
+    elif int_params:
+        balances = _get_account_balance_map(account, scenario, all_periods)
+        jan1_bal = _lookup_balance_with_anchor_fallback(
+            balances, year, 1, all_periods, account,
+        )
+        dec31_bal = _lookup_balance_with_anchor_fallback(
+            balances, year, 12, all_periods, account,
+        )
+        employer_total = ZERO
+        growth_total = _compute_interest_for_year(
+            account, int_params, scenario, all_periods, year,
+        )
+        growth_total += _compute_pre_anchor_interest(
+            account, int_params, all_periods, year,
+        )
+    else:
+        balances = _get_account_balance_map(account, scenario, all_periods)
+        jan1_bal = _lookup_balance_with_anchor_fallback(
+            balances, year, 1, all_periods, account,
+        )
+        dec31_bal = _lookup_balance_with_anchor_fallback(
+            balances, year, 12, all_periods, account,
+        )
+        employer_total = ZERO
+        growth_total = ZERO
 
-        inv_params = investment_params_map.get(account.id)
-        int_params = interest_params_map.get(account.id)
-
-        if inv_params:
-            jan1_bal, dec31_bal, employer_total, growth_total = (
-                _project_investment_for_year(
-                    account, inv_params, all_periods, year,
-                    scenario, period_ids, scenario_id,
-                    deductions_by_account=deductions_by_account,
-                    salary_gross_biweekly=salary_gross_biweekly,
-                )
-            )
-        elif int_params:
-            balances = _get_account_balance_map(
-                account, scenario, all_periods,
-            )
-            jan1_bal = _lookup_balance_with_anchor_fallback(
-                balances, year, 1, all_periods, account,
-            )
-            dec31_bal = _lookup_balance_with_anchor_fallback(
-                balances, year, 12, all_periods, account,
-            )
-            employer_total = ZERO
-            growth_total = _compute_interest_for_year(
-                account, int_params, scenario, all_periods, year,
-            )
-            growth_total += _compute_pre_anchor_interest(
-                account, int_params, all_periods, year,
-            )
-        else:
-            balances = _get_account_balance_map(
-                account, scenario, all_periods,
-            )
-            jan1_bal = _lookup_balance_with_anchor_fallback(
-                balances, year, 1, all_periods, account,
-            )
-            dec31_bal = _lookup_balance_with_anchor_fallback(
-                balances, year, 12, all_periods, account,
-            )
-            employer_total = ZERO
-            growth_total = ZERO
-
-        result.append({
-            "account_name": account.name,
-            "account_id": account.id,
-            "jan1_balance": jan1_bal,
-            "dec31_balance": dec31_bal,
-            "total_contributions": contributions,
-            "employer_contributions": employer_total,
-            "investment_growth": growth_total,
-        })
-
-    return result
+    return {
+        "account_name": account.name,
+        "account_id": account.id,
+        "jan1_balance": jan1_bal,
+        "dec31_balance": dec31_bal,
+        "total_contributions": contributions,
+        "employer_contributions": employer_total,
+        "investment_growth": growth_total,
+    }
 
 
 def _sum_shadow_income(
@@ -1104,17 +1136,74 @@ def _sum_shadow_income(
     return total
 
 
+def _load_shadow_contributions(
+    account_id: int,
+    scenario_id: int,
+    period_ids: list[int],
+) -> list:
+    """Load settled shadow-income (transfer-in) transactions for an account.
+
+    The contribution-history feed for the growth engine, shared by the
+    savings-progress projection (:func:`_project_investment_for_year`)
+    and the net-worth investment balance map
+    (:func:`_build_investment_balance_map`).  ``status`` and
+    ``pay_period`` are eager-loaded so the downstream consumer
+    (``investment_projection.calculate_investment_inputs`` /
+    ``build_contribution_timeline``) reads ``txn.status.*`` /
+    ``txn.pay_period`` without an N+1.  The status filter routes through
+    ``balance_excluded_status_ids`` (D6-09 / MED-02), which lets the
+    query drop the ``Status`` INNER JOIN while the ``joinedload`` keeps
+    the attribute available; the audit-trigger row count is unchanged.
+
+    Args:
+        account_id: Target account ID.
+        scenario_id: Baseline scenario ID.
+        period_ids: Pay period IDs whose shadow income forms the
+            contribution history.
+
+    Returns:
+        List of shadow-income Transaction objects, or ``[]`` when
+        ``period_ids`` is empty.
+    """
+    if not period_ids:
+        return []
+
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    # The joinedload(status, pay_period) + account/scenario filter
+    # preamble below is generic SQLAlchemy boilerplate that incidentally
+    # matches ``budget_variance_service._query_by_period`` -- a
+    # semantically unrelated query (it also joinedloads ``category``,
+    # filters by a single period / date range, and feeds variance
+    # computation, not the growth-engine contribution history).
+    # Extracting a shared helper across the two would wrongly couple the
+    # year-end aggregation to the variance service (coding-standards
+    # rule 13), so a one-sided ``duplicate-code`` disable documents the
+    # incidental similarity instead.
+    return (
+        db.session.query(Transaction)
+        .options(
+            # pylint: disable=duplicate-code
+            joinedload(Transaction.status),
+            joinedload(Transaction.pay_period),
+        )
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type_id,
+            Transaction.is_deleted.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
+        )
+        .all()
+    )
+
+
 def _project_investment_for_year(
     account: Account,
     investment_params: InvestmentParams,
-    all_periods: list,
-    year: int,
-    scenario: Scenario,
-    year_period_ids: list[int],
-    scenario_id: int,
-    *,
-    deductions_by_account: dict,
-    salary_gross_biweekly: Decimal,
+    year_ctx: _YearContext,
+    inputs: _ProjectionInputs,
 ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     """Project investment account balance through the target year.
 
@@ -1127,109 +1216,49 @@ def _project_investment_for_year(
     Args:
         account: The investment account.
         investment_params: InvestmentParams for the account.
-        all_periods: All user pay periods.
-        year: Target calendar year.
-        scenario: Baseline scenario.
-        year_period_ids: Pay period IDs in the target year.
-        scenario_id: Baseline scenario ID.
-        deductions_by_account: MED-01 / S6-06: explicit narrow
-            replacement for the previous 11-key ``ctx`` opaque bag.
-            Account-id -> PaycheckDeduction list.
-        salary_gross_biweekly: Active salary profile gross biweekly.
+        year_ctx: The target year, baseline scenario, full period list,
+            and the year's period IDs.
+        inputs: Pre-loaded projection parameter maps; this projection
+            reads ``deductions_by_account`` and ``salary_gross_biweekly``
+            (the growth engine's contribution inputs).
 
     Returns:
         Tuple of (jan1_balance, dec31_balance, employer_contributions,
         investment_growth).
     """
+    all_periods = year_ctx.all_periods
+
     # Get base balance from the balance calculator (anchor + transactions).
-    balances = _get_account_balance_map(account, scenario, all_periods)
+    balances = _get_account_balance_map(
+        account, year_ctx.scenario, all_periods,
+    )
 
-    # Find pay periods that fall within the target year.
-    year_start = date(year, 1, 1)
-    year_end = date(year, 12, 31)
+    # Pay periods that fall within the target year (Jan 1 - Dec 31).
     year_periods = [
-        p for p in all_periods
-        if year_start <= p.start_date <= year_end
+        p for p in all_periods if p.start_date.year == year_ctx.year
     ]
-
     if not year_periods:
         return ZERO, ZERO, ZERO, ZERO
 
-    # Adapt paycheck deductions for calculate_investment_inputs().
-    acct_deductions = deductions_by_account.get(account.id, [])
-    adapted_deductions = adapt_deductions(acct_deductions)
-
-    # Shadow income transactions in the year for contribution history.
-    # Status filter routes through ``balance_excluded_status_ids``
-    # (D6-09 / MED-02); see ``_compute_account_contributions`` above.
-    # ``joinedload(Transaction.status)`` is retained so downstream
-    # consumers (``investment_projection.calculate_investment_inputs``)
-    # can read ``txn.status.is_settled`` /
-    # ``txn.status.excludes_from_balance`` without an N+1; the
-    # explicit INNER JOIN is dropped because the
-    # ``Transaction.status_id`` filter no longer needs it.
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    acct_contributions = (
-        db.session.query(Transaction)
-        .options(
-            joinedload(Transaction.status),
-            joinedload(Transaction.pay_period),
-        )
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(year_period_ids),
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-            ~Transaction.status_id.in_(balance_excluded_status_ids()),
-        )
-        .all()
-    ) if year_period_ids else []
+    # Adapt paycheck deductions and load the year's shadow contributions
+    # (the growth engine's contribution-history feed).
+    adapted_deductions = adapt_deductions(
+        inputs.deductions_by_account.get(account.id, []),
+    )
+    acct_contributions = _load_shadow_contributions(
+        account.id, year_ctx.scenario.id, year_ctx.year_period_ids,
+    )
 
     # Compute periodic contribution and employer params.
     # F-22 / Commit 18: shared kwargs-splat helper.
-    inputs = build_investment_projection_inputs(
+    proj_inputs = build_investment_projection_inputs(
         account.id, investment_params, adapted_deductions, acct_contributions,
-        all_periods, year_periods[0], salary_gross_biweekly,
+        all_periods, year_periods[0], inputs.salary_gross_biweekly,
     )
 
-    # Determine anchor position relative to the year.
-    anchor_idx = _get_anchor_period_index(account, all_periods)
-    first_year_idx = year_periods[0].period_index
-
-    if anchor_idx is not None and anchor_idx > first_year_idx:
-        # Pre-anchor gap: the balance calculator has no data for
-        # periods before the anchor.  Reverse-project from the anchor
-        # balance to derive the January 1 starting balance.
-        anchor_pid = account.current_anchor_period_id
-        anchor_bal = (
-            balances.get(anchor_pid, account.current_anchor_balance or ZERO)
-            if balances else account.current_anchor_balance or ZERO
-        )
-
-        # Include all periods from the start of the year through the
-        # anchor so the reverse traverses every intervening period.
-        reverse_periods = [
-            p for p in all_periods
-            if first_year_idx <= p.period_index <= anchor_idx
-        ]
-
-        reversed_proj = growth_engine.reverse_project_balance(
-            anchor_balance=anchor_bal,
-            assumed_annual_return=investment_params.assumed_annual_return,
-            periods=reverse_periods,
-            periodic_contribution=inputs.periodic_contribution,
-            employer_params=inputs.employer_params,
-        )
-        jan1_bal = (
-            reversed_proj[0].start_balance if reversed_proj else ZERO
-        )
-    else:
-        # No pre-anchor gap -- the balance map covers January.
-        jan1_bal = _lookup_period_balance(
-            balances, year, 1, all_periods,
-        )
+    jan1_bal = _derive_investment_jan1(
+        account, investment_params, balances, year_ctx, proj_inputs,
+    )
 
     # F-19: feed a per-period contribution timeline so a lump-sum
     # settled transfer (e.g. an end-of-year 401(k) contribution) lands
@@ -1247,13 +1276,91 @@ def _project_investment_for_year(
         current_balance=jan1_bal,
         assumed_annual_return=investment_params.assumed_annual_return,
         periods=year_periods,
-        periodic_contribution=inputs.periodic_contribution,
-        employer_params=inputs.employer_params,
-        annual_contribution_limit=inputs.annual_contribution_limit,
+        periodic_contribution=proj_inputs.periodic_contribution,
+        employer_params=proj_inputs.employer_params,
+        annual_contribution_limit=proj_inputs.annual_contribution_limit,
         ytd_contributions_start=ZERO,
         contributions=contributions,
     )
 
+    return _summarize_investment_projection(projection, jan1_bal)
+
+
+def _derive_investment_jan1(
+    account: Account,
+    investment_params: InvestmentParams,
+    balances: dict | None,
+    year_ctx: _YearContext,
+    proj_inputs,
+) -> Decimal:
+    """Derive an investment account's January 1 balance for the year.
+
+    When the account's anchor period is after the first pay period of the
+    target year, the balance calculator has no data for the pre-anchor
+    periods, so the January balance is reverse-projected from the anchor
+    balance back through every intervening period.  Otherwise the balance
+    map already covers January and is looked up directly.
+
+    Args:
+        account: The investment account.
+        investment_params: InvestmentParams (for the assumed return).
+        balances: period_id -> Decimal base-balance map, or None.
+        year_ctx: The target year and full ordered period list.
+        proj_inputs: The ``build_investment_projection_inputs`` result
+            (periodic contribution and employer params).
+
+    Returns:
+        Decimal January 1 starting balance.
+    """
+    all_periods = year_ctx.all_periods
+    year = year_ctx.year
+    year_periods = [p for p in all_periods if p.start_date.year == year]
+    if not year_periods:
+        return ZERO
+
+    first_year_idx = year_periods[0].period_index
+    anchor_idx = _get_anchor_period_index(account, all_periods)
+
+    if anchor_idx is None or anchor_idx <= first_year_idx:
+        # No pre-anchor gap -- the balance map covers January.
+        return _lookup_period_balance(balances, year, 1, all_periods)
+
+    # Pre-anchor gap: reverse-project from the anchor balance across every
+    # period from the start of the year through the anchor.
+    anchor_pid = account.current_anchor_period_id
+    anchor_bal = (
+        balances.get(anchor_pid, account.current_anchor_balance or ZERO)
+        if balances else account.current_anchor_balance or ZERO
+    )
+    reverse_periods = [
+        p for p in all_periods
+        if first_year_idx <= p.period_index <= anchor_idx
+    ]
+    reversed_proj = growth_engine.reverse_project_balance(
+        anchor_balance=anchor_bal,
+        assumed_annual_return=investment_params.assumed_annual_return,
+        periods=reverse_periods,
+        periodic_contribution=proj_inputs.periodic_contribution,
+        employer_params=proj_inputs.employer_params,
+    )
+    return reversed_proj[0].start_balance if reversed_proj else ZERO
+
+
+def _summarize_investment_projection(
+    projection: list, jan1_bal: Decimal,
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Reduce a forward growth projection to the savings-progress tuple.
+
+    Args:
+        projection: List of period-balance rows from
+            ``growth_engine.project_balance`` (may be empty).
+        jan1_bal: The January 1 starting balance (the Dec 31 fallback
+            when the projection produced no rows).
+
+    Returns:
+        Tuple of (jan1_balance, dec31_balance, employer_contributions,
+        investment_growth).
+    """
     if not projection:
         return jan1_bal, jan1_bal, ZERO, ZERO
 
@@ -1262,7 +1369,6 @@ def _project_investment_for_year(
         (pb.employer_contribution for pb in projection), ZERO,
     )
     growth_total = sum((pb.growth for pb in projection), ZERO)
-
     return jan1_bal, dec31_bal, employer_total, growth_total
 
 
@@ -1601,9 +1707,7 @@ def _build_investment_balance_map(
     investment_params: InvestmentParams,
     scenario: Scenario,
     periods: list,
-    *,
-    deductions_by_account: dict,
-    salary_gross_biweekly: Decimal,
+    inputs: _ProjectionInputs,
 ) -> OrderedDict:
     """Build period_id -> balance map using the growth engine.
 
@@ -1621,13 +1725,10 @@ def _build_investment_balance_map(
         investment_params: InvestmentParams for the account.
         scenario: Baseline scenario.
         periods: All user pay periods.
-        deductions_by_account: MED-01 / S6-06: explicit narrow
-            replacement for the previous 11-key ``ctx`` opaque bag.
-            Account-id -> :class:`PaycheckDeduction` list mapping
-            used to derive the contribution feed.
-        salary_gross_biweekly: The active salary profile's biweekly
-            gross, used by
-            :func:`calculate_investment_inputs`.
+        inputs: Pre-loaded projection parameter maps; this builder reads
+            ``deductions_by_account`` (the contribution feed) and
+            ``salary_gross_biweekly`` (the employer-match cap basis) via
+            :func:`build_investment_projection_inputs`.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance.
@@ -1643,103 +1744,148 @@ def _build_investment_balance_map(
         account, scenario.id, periods,
     ).balances
 
-    anchor_pid = account.current_anchor_period_id
-    anchor_balance = base_balances.get(anchor_pid, ZERO)
-
     # Find the anchor period's index to split pre/post-anchor.
     anchor_idx = _get_anchor_period_index(account, periods)
     if anchor_idx is None:
         return base_balances
 
-    pre_anchor = [
-        p for p in periods if p.period_index < anchor_idx
-    ]
-    post_anchor = [
-        p for p in periods if p.period_index > anchor_idx
-    ]
-
+    pre_anchor = [p for p in periods if p.period_index < anchor_idx]
+    post_anchor = [p for p in periods if p.period_index > anchor_idx]
     if not pre_anchor and not post_anchor:
         return base_balances
 
-    # Adapt paycheck deductions and compute projection inputs.
-    # Pre-Commit-28 this helper read both keys off a whole 11-key
-    # ``ctx`` (S6-06 in ``06_dry_solid.md``); they are now explicit
-    # parameters declared in the signature.
-    scenario_id = scenario.id
-
-    acct_deductions = deductions_by_account.get(account.id, [])
-    adapted_deductions = adapt_deductions(acct_deductions)
-
-    # Shadow income transactions for contribution history.
-    # Status filter routes through ``balance_excluded_status_ids``
-    # (D6-09 / MED-02); see ``_compute_account_contributions``
-    # earlier in this module.
-    post_period_ids = [p.id for p in post_anchor]
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    acct_contributions = (
-        db.session.query(Transaction)
-        .options(
-            joinedload(Transaction.status),
-            joinedload(Transaction.pay_period),
-        )
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(post_period_ids),
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-            ~Transaction.status_id.in_(balance_excluded_status_ids()),
-        )
-        .all()
-    ) if post_period_ids else []
-
-    current_period = post_anchor[0] if post_anchor else pre_anchor[-1]
+    # Adapt paycheck deductions, load the post-anchor shadow-income
+    # contribution feed, and compute the growth-engine projection inputs.
     # F-22 / Commit 18: shared kwargs-splat helper.
-    inputs = build_investment_projection_inputs(
-        account.id, investment_params, adapted_deductions, acct_contributions,
-        periods, current_period, salary_gross_biweekly,
+    acct_contributions = _load_shadow_contributions(
+        account.id, scenario.id, [p.id for p in post_anchor],
+    )
+    proj_inputs = build_investment_projection_inputs(
+        account.id, investment_params,
+        adapt_deductions(inputs.deductions_by_account.get(account.id, [])),
+        acct_contributions, periods,
+        post_anchor[0] if post_anchor else pre_anchor[-1],
+        inputs.salary_gross_biweekly,
     )
 
-    # Forward projection for post-anchor periods.
-    proj_by_pid = {}
-    if post_anchor:
-        projection = growth_engine.project_balance(
-            current_balance=anchor_balance,
-            assumed_annual_return=investment_params.assumed_annual_return,
-            periods=post_anchor,
-            periodic_contribution=inputs.periodic_contribution,
-            employer_params=inputs.employer_params,
-            annual_contribution_limit=inputs.annual_contribution_limit,
-            ytd_contributions_start=inputs.ytd_contributions,
-        )
-        proj_by_pid = {
-            pb.period_id: pb.end_balance for pb in projection
-        }
+    anchor_balance = base_balances.get(
+        account.current_anchor_period_id, ZERO,
+    )
+    anchor_period = next(
+        (p for p in periods if p.id == account.current_anchor_period_id),
+        None,
+    )
 
-    # Reverse projection for pre-anchor periods.  Include the anchor
-    # period in the reverse list so reverse_project_balance has the
-    # correct endpoint (anchor_balance = end of anchor period).
-    rev_by_pid = {}
-    if pre_anchor:
-        anchor_period = next(
-            p for p in periods if p.id == anchor_pid
-        )
-        reverse_periods = pre_anchor + [anchor_period]
-        reversed_proj = growth_engine.reverse_project_balance(
-            anchor_balance=anchor_balance,
-            assumed_annual_return=investment_params.assumed_annual_return,
-            periods=reverse_periods,
-            periodic_contribution=inputs.periodic_contribution,
-            employer_params=inputs.employer_params,
-        )
-        rev_by_pid = {
-            pb.period_id: pb.end_balance
-            for pb in reversed_proj
-            if pb.period_id != anchor_pid
-        }
+    proj_by_pid = _forward_project_periods(
+        post_anchor, anchor_balance, investment_params, proj_inputs,
+    )
+    rev_by_pid = _reverse_project_periods(
+        pre_anchor, anchor_period, anchor_balance,
+        investment_params, proj_inputs,
+    )
+    return _merge_balance_sources(
+        periods, proj_by_pid, base_balances, rev_by_pid,
+    )
 
-    # Merge all three sources.
+
+def _forward_project_periods(
+    post_anchor: list,
+    anchor_balance: Decimal,
+    investment_params: InvestmentParams,
+    proj_inputs,
+) -> dict:
+    """Forward-project post-anchor period-end balances via the growth engine.
+
+    Args:
+        post_anchor: Periods after the anchor (chronological).
+        anchor_balance: Balance at the end of the anchor period.
+        investment_params: InvestmentParams (for the assumed return).
+        proj_inputs: ``build_investment_projection_inputs`` result.
+
+    Returns:
+        dict mapping period_id to projected end balance, or ``{}`` when
+        there are no post-anchor periods.
+    """
+    if not post_anchor:
+        return {}
+
+    projection = growth_engine.project_balance(
+        current_balance=anchor_balance,
+        assumed_annual_return=investment_params.assumed_annual_return,
+        periods=post_anchor,
+        periodic_contribution=proj_inputs.periodic_contribution,
+        employer_params=proj_inputs.employer_params,
+        annual_contribution_limit=proj_inputs.annual_contribution_limit,
+        ytd_contributions_start=proj_inputs.ytd_contributions,
+    )
+    return {pb.period_id: pb.end_balance for pb in projection}
+
+
+def _reverse_project_periods(
+    pre_anchor: list,
+    anchor_period,
+    anchor_balance: Decimal,
+    investment_params: InvestmentParams,
+    proj_inputs,
+) -> dict:
+    """Reverse-project pre-anchor period-end balances via the growth engine.
+
+    The anchor period is appended to the reverse list so
+    ``reverse_project_balance`` has the correct endpoint (the anchor
+    balance is the end-of-anchor-period value); the anchor's own entry is
+    then dropped from the result so the base-balance map keeps ownership
+    of it.
+
+    Args:
+        pre_anchor: Periods before the anchor (chronological).
+        anchor_period: The anchor PayPeriod (the reverse endpoint), or
+            None if it could not be resolved.
+        anchor_balance: Balance at the end of the anchor period.
+        investment_params: InvestmentParams (for the assumed return).
+        proj_inputs: ``build_investment_projection_inputs`` result.
+
+    Returns:
+        dict mapping period_id to projected end balance, or ``{}`` when
+        there are no pre-anchor periods.
+    """
+    if not pre_anchor or anchor_period is None:
+        return {}
+
+    reversed_proj = growth_engine.reverse_project_balance(
+        anchor_balance=anchor_balance,
+        assumed_annual_return=investment_params.assumed_annual_return,
+        periods=pre_anchor + [anchor_period],
+        periodic_contribution=proj_inputs.periodic_contribution,
+        employer_params=proj_inputs.employer_params,
+    )
+    return {
+        pb.period_id: pb.end_balance
+        for pb in reversed_proj
+        if pb.period_id != anchor_period.id
+    }
+
+
+def _merge_balance_sources(
+    periods: list,
+    proj_by_pid: dict,
+    base_balances: dict,
+    rev_by_pid: dict,
+) -> OrderedDict:
+    """Merge the three balance sources into one period-ordered map.
+
+    For each period, prefers the forward projection, then the canonical
+    base balance, then the reverse projection.  Periods absent from all
+    three sources are omitted.
+
+    Args:
+        periods: All user pay periods (defines output order).
+        proj_by_pid: Forward post-anchor balances by period_id.
+        base_balances: Canonical anchor/base balances by period_id.
+        rev_by_pid: Reverse pre-anchor balances by period_id.
+
+    Returns:
+        OrderedDict mapping period_id to Decimal balance.
+    """
     result = OrderedDict()
     for period in periods:
         if period.id in proj_by_pid:
@@ -1748,7 +1894,6 @@ def _build_investment_balance_map(
             result[period.id] = base_balances[period.id]
         elif period.id in rev_by_pid:
             result[period.id] = rev_by_pid[period.id]
-
     return result
 
 
@@ -2052,11 +2197,7 @@ def _get_account_balance_map(
     account: Account,
     scenario: Scenario,
     periods: list,
-    debt_schedules: dict[int, list] | None = None,
-    *,
-    investment_params_map: dict | None = None,
-    deductions_by_account: dict | None = None,
-    salary_gross_biweekly: Decimal | None = None,
+    inputs: _ProjectionInputs | None = None,
 ) -> dict | None:
     """Compute period_id -> balance mapping for one account.
 
@@ -2070,16 +2211,13 @@ def _get_account_balance_map(
         account: The account to project.
         scenario: The baseline scenario.
         periods: All user pay periods.
-        debt_schedules: Optional account_id -> list[AmortizationRow]
-            mapping.  When provided and the account is a debt account,
-            balances are derived from the amortization schedule.
-        investment_params_map: MED-01 / S6-06: replaces the previous
-            ``ctx`` bag.  When ``None`` (or the account has no row in
-            the map) the investment branch falls through to the
-            canonical balance resolver.
-        deductions_by_account: Payroll-deduction map forwarded to the
-            investment-balance-map builder.
-        salary_gross_biweekly: Forwarded for the same reason.
+        inputs: Pre-loaded projection parameter maps (MED-01 / S6-06).
+            ``None`` -- the default used by the savings-progress and
+            base-balance callers -- skips the amortization-schedule and
+            growth-engine paths, returning the account's canonical
+            resolver/interest balance.  When supplied, ``debt_schedules``
+            selects the schedule path for debt accounts and the
+            investment trio drives the growth-engine path.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None
@@ -2087,6 +2225,16 @@ def _get_account_balance_map(
     """
     if account.current_anchor_period_id is None:
         return None
+
+    # Pull the two dispatch-selecting maps off the bundle (absent when
+    # the caller passes no ``inputs``): a missing ``debt_schedules`` /
+    # ``investment_params_map`` leaves the corresponding branch below
+    # falling through to the canonical resolver, exactly as the old
+    # keyword defaults did.
+    debt_schedules = inputs.debt_schedules if inputs else None
+    investment_params_map = (
+        inputs.investment_params_map if inputs else None
+    )
 
     # MED-01 / S6-03: single flag-driven classifier replaces the
     # divergent branch ladders that used to express the same
@@ -2155,13 +2303,7 @@ def _get_account_balance_map(
         inv_params = investment_params_map.get(account.id)
         if inv_params:
             return _build_investment_balance_map(
-                account, inv_params, scenario, periods,
-                deductions_by_account=deductions_by_account or {},
-                salary_gross_biweekly=(
-                    salary_gross_biweekly
-                    if salary_gross_biweekly is not None
-                    else ZERO
-                ),
+                account, inv_params, scenario, periods, inputs,
             )
 
     # Standard checking/savings (and any unmatched types) route through
