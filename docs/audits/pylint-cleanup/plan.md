@@ -1,8 +1,13 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.83/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 227 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has FOUR files complete: **`routes/salary.py`
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.84/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 219 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has FOUR files complete plus
+**`routes/transactions.py` Phase 1 of 2 DONE** (`41cab0e`: all four handler smells --
+`update_transaction`/`mark_done`/`cancel_transaction`/`create_inline` -- decomposed by honest
+extraction incl. the shared `_resolve_owned_fks` IDOR primitive and the `_RenderTarget` bundle;
+no disables, behavior bit-identical; only module tm-lines remains -> Phase 2 split). The four
+fully-complete files: **`routes/salary.py`
 DONE** (`4d7d7c1` returns+dead-imports, `e834635` calibrate decomposition, `131d648` split into the
 `app/routes/salary/` package); **`services/amortization_engine.py` DONE** (`0e8b986` dead-code
 removal, `c4f01e6` `project_forward` decomposition, `7cc8fe1` `calculate_payoff_by_date`
@@ -666,9 +671,23 @@ documented disables), with commit SHA.
 - **routes/loan.py** (module tm-lines; `_compute_payment_breakdown`:179 tm-locals; `dashboard`:532
   tm-locals/statements; `payoff_calculate`:1242 tm-locals; `refinance_calculate`:1425 tm-locals;
   `create_payment_transfer`:1590 tm-locals) -- Status: `-`
-- **routes/transactions.py** (module tm-lines; `update_transaction`:456 tm-return/branches/statements;
-  `mark_done`:665 tm-return/branches/statements; `cancel_transaction`:903 tm-return;
-  `create_inline`:1099 tm-return) -- Status: `-`
+- **routes/transactions.py** (module tm-lines; `update_transaction` tm-return/branches/statements;
+  `mark_done` tm-return/branches/statements; `cancel_transaction` tm-return; `create_inline`
+  tm-return) -- Status: **WIP** (Phase 1 of 2 DONE `41cab0e`; package split is Phase 2).
+  **Phase 1 (`41cab0e`, function decomposition -- honest extraction, no disables, behavior
+  bit-identical):** `update_transaction` -> `_apply_shadow_update` (transfer-shadow path) +
+  `_resolve_status_change` (state-machine verify + Credit-block + paid_at-revert) +
+  `_apply_regular_update`. `mark_done` -> frozen `_RenderTarget` bundle
+  (render_mode/card_prefix/can_edit, keeps helpers <=5 args) + `_mark_done_shadow` +
+  `_mark_done_regular`. `cancel_transaction` -> `_cancel_shadow`. `create_inline` -> shared
+  `_resolve_owned_fks(specs)` IDOR primitive (one owned-FK-by-id check; identical 404 for "not
+  found" and "not yours"; a `None` id short-circuits without a NULL-PK query), which ALSO dedupes
+  `create_transaction` + `get_quick_create`/`get_full_create`/`get_empty_cell` +
+  `_verify_owned_fks_in_update` (developer-approved widening to all create/form routes). All four
+  handler smells -> 0; only module tm-lines (1532/1000, grew from decomposition) remains -> Phase 2
+  split. Shadow paths still route through `transfer_service` (TRANSFER INVARIANTS untouched). 0
+  R0801, 0 useless-suppression, 0 E/F, 0 new disables; the 4 `line-too-long` are pre-existing
+  Phase 4 residue. Targeted 323 + full suite 5755 passed.
 - **routes/transfers.py** (module tm-lines; `create_transfer_template`:145 tm-locals/return;
   `update_transfer_template`:315 tm-locals/return/branches/statements; `update_transfer`:792
   tm-return; `create_ad_hoc`:923 tm-return) -- TRANSFER INVARIANTS apply -- Status: `-`
@@ -777,9 +796,10 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after `year_end_summary_service/` DONE; 124 smell
-items remain): `routes/transactions.py` (9), `routes/transfers.py` (8), `routes/loan.py` (7),
-`services/debt_strategy_service.py` (7), `services/investment_dashboard_service.py` (6) -- the
+Next by live density (re-measured 2026-06-05 after `transactions.py` Phase 1 `41cab0e`; 116 smell
+items remain, down from 124): `routes/transactions.py` Phase 2 (its package split -- the last
+remaining smell on that file is module tm-lines), then `routes/transfers.py` (8), `routes/loan.py`
+(7), `services/debt_strategy_service.py` (7), `services/investment_dashboard_service.py` (6) -- the
 financial cores plan-first per the developer's cadence (the route files apply TRANSFER INVARIANTS /
 security-critical caution; `transactions.py`/`transfers.py`/`loan.py` are also module tm-lines ->
 package splits per decision #5).
@@ -1037,3 +1057,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `0ec5586` | 3 | **savings_dashboard_service `Phase 2 of 2` -- module -> package split (developer-chosen 8-module split) -- file DONE:** the 1379-line module (over the 1000 ceiling after Phase 1) split into `app/services/savings_dashboard_service/` (`__init__` re-exports public `compute_dashboard_data`; `_types`/`_data`/`_projections`/`_goals`/`_metrics`/`_display`/`_orchestrator`). Directory named to preserve `from app.services import savings_dashboard_service`. Dropped unused module `logger`. **0 new R0801** (split trap avoided -- the one-sided dup-code disable on `_get_current_paycheck_breakdown` moved to `_metrics.py`, still effective). Test patch-path updates (decision #5, no assertion change): AST guard 1b -> parse `_orchestrator`; AST guard 2 -> glob all sub-modules; `_get_dti_label` import -> `._metrics`; `_load_account_params` call -> `._data`; **C15-3 demoted-column lock allow-list entry became the `services/savings_dashboard_service/` package prefix** (the 2 `.current_principal` hits are prose, not reads); income_service docstring repointed. Each sub-module pylint 10/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **savings_dashboard_service DONE (both phases).** Score 9.82; visible 240->239; R0801 0; E/F 0; useless-suppression 0. | 9.82/10 | 239 |
 | 2026-06-05 | `5eeb020` | 3 | **year_end_summary_service `Phase 1 of 2` -- decompose 6 functions (developer-chosen two-phase):** all 11 function-level smells resolved by genuine decomposition (no logic change). Two frozen bundle dataclasses (developer chose small bundles, both <=7 fields, NO new disable): `_ProjectionInputs` (the 5 pre-loaded parameter maps) + `_YearContext` (year/scenario/all_periods/year_period_ids), threaded through the net-worth + savings chains in place of the 4-5 parallel keyword maps each forwarded by hand. `_compute_net_worth` 8->3 args; `_build_account_data` 7->4; `_get_account_balance_map` 7->4 (`inputs=None` for base-balance callers); `_compute_savings_progress` 10 args/6 pos/20 locals -> 3 args via `_savings_progress_for_account`; `_project_investment_for_year` 9 args/7 pos/30 locals -> 4 args via `_derive_investment_jan1` + `_summarize_investment_projection`; `_build_investment_balance_map` 6 args/28 locals -> 5 args via `_forward_project_periods`/`_reverse_project_periods`/`_merge_balance_sources`. New shared `_load_shadow_contributions` dedupes the two near-identical inline shadow-income queries (developer-approved); the incidental 6-line joinedload+filter overlap it surfaced with `budget_variance_service._query_by_period` (semantically unrelated) -> one-sided rule-13 `duplicate-code` disable (developer-approved). All 6 smell fns private + internally-called (no exposed signature). pylint counts args as locals (R0914), so the bundle reduction also cleared the locals smells. 11 function smells -> 0; only module tm-lines remains (2437/1000) -> Phase 2. Score 9.82->9.83; visible 239->228; R0801 0; E/F 0; useless-suppression 0; disables +1. Targeted (year-end 73, integration 31, analytics+csv+savings 199) + **full suite 5755 passed.** | 9.83/10 | 228 |
 | 2026-06-05 | `b96b8b8` | 3 | **year_end_summary_service `Phase 2 of 2` -- module -> package split (developer-chosen 10-module split) -- file DONE:** the 2437-line module split into `app/services/year_end_summary_service/` (10 per-concern sub-modules: `_types`/`_data`/`_periods`/`_balances`/`_income_tax`/`_spending`/`_transfers`/`_net_worth`/`_savings`/`_orchestrator`; each well under 1000 lines, `_balances` largest at ~700). Partition verified **import-cycle-free by AST cycle-detection** before writing; `__init__` re-exports only `compute_year_end_summary`. **Split trap (decision #5):** re-surfaced ONE intra-file R0801 the monolith hid (the `LoanParams`->`original_principal` idiom shared by `_get_account_balance_map` + `_compute_debt_progress`) -- resolved by genuine dedup into the shared `_loan_original_principal` helper (DRY win; `_net_worth` then dropped its now-unused `db`/`LoanParams` imports). Dropped the unused module `logger`/`logging`. Test patch-path updates (decision #5, no assertion change): `_compute_entry_breakdowns` -> `._spending`; `test_loan_unified_figures` uses `._balances._generate_debt_schedules` / `._income_tax._compute_mortgage_interest` and its bare-quantize sweep now runs `grep -r --include=*.py` over the package dir (coverage preserved); `test_income_service` uses `._data._load_salary_gross_biweekly`. The whole-app `rglob` structural guards (balance_predicates, calculate_balances sweep) pick up the sub-modules automatically. Package pylint 10.00/10 (0 messages); **behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **year_end_summary_service DONE (both phases).** Score 9.83; visible 228->227; tm-lines 6->5; R0801 0; E/F 0; useless-suppression 0. | 9.83/10 | 227 |
+| 2026-06-05 | `41cab0e` | 3 | **transactions.py `Phase 1 of 2` -- decompose 4 route handlers + dedup owned-FK checks (developer-chosen two-phase + developer-approved FK-dedup widening):** all four flagged handler smells resolved by honest extraction (no disables, behavior bit-identical). `update_transaction` (tm-return 13/6, tm-branches 24/12, tm-statements 64/50) -> `_apply_shadow_update` (transfer-shadow path, verbatim) + `_resolve_status_change` (state-machine verify + Credit-block + paid_at-revert decision; control-flow inverted to a guard clause, result-identical) + `_apply_regular_update`. `mark_done` (tm-return 11/6, tm-branches 16/12, tm-statements 51/50) -> frozen `_RenderTarget` bundle (render_mode/card_prefix/can_edit; keeps the two helpers <=5 args, dodging too-many-arguments) + `_mark_done_shadow` + `_mark_done_regular`. `cancel_transaction` (tm-return 7/6) -> `_cancel_shadow`. `create_inline` (tm-return 7/6) -> shared `_resolve_owned_fks(specs)` IDOR primitive (returns a `{model: row}` dict or `(None, (msg, 404))`; identical 404 for "not found" and "not yours"; a `None` id short-circuits without a NULL-PK query -- verified `db.session.get(Model, None)` returns None, so HTTP-behavior-identical to the prior per-route `if account_id else None` guards), which ALSO dedupes `create_transaction` + `get_quick_create`/`get_full_create`/`get_empty_cell` + `_verify_owned_fks_in_update` (one owned-FK-by-id check across all six create/form sites). Shadow paths still route through `transfer_service` (TRANSFER INVARIANTS untouched); every 404/400/409/200 body, HX-Trigger, status flip, and log line preserved. All four handler smells -> 0; only module tm-lines (1532/1000, grew from decomposition) remains -> Phase 2 split. Score 9.83->9.84; visible 227->219 (-8); R0801 0; E/F 0; useless-suppression 0; 0 new disables (81); the 4 `line-too-long` are pre-existing Phase 4 residue. Targeted 323 + **full suite 5755 passed.** | 9.84/10 | 219 |
