@@ -34,11 +34,15 @@ repos:
         files: ^tests/.*\.py$
         pass_filenames: false
         # tests/ are out of general pylint scope, but a Decimal built from a
-        # float in a hand-computed assertion is a real bug.
+        # float in a hand-computed assertion is a real bug. unknown/bad-option-value
+        # are disabled explicitly so the test files' "disable=X -- explanation"
+        # inline comments do not derail this targeted scan (--disable=all does not
+        # cover option-validity meta-messages).
         args:
           - tests/
           - --disable=all
           - --enable=shekel-decimal-from-float
+          - --disable=unknown-option-value,bad-option-value
       - id: shekel-checker-tests
         name: pylint checker unit tests
         entry: pytest

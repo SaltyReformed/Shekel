@@ -29,9 +29,12 @@ case "$FILE" in
     tests/*.py)
         # tests/ are out of general pylint scope (ratified decision #1), but a
         # Decimal built from a float in a hand-computed assertion is a real bug,
-        # so the monetary-precision checker still applies here.
+        # so the monetary-precision checker still applies here. unknown/bad-option-value
+        # are disabled explicitly (--disable=all does not cover them) so a test
+        # file's "disable=X -- explanation" inline comment does not derail the scan.
         guard="$(pylint "$FILE" --score=no --disable=all \
-            --enable=shekel-decimal-from-float 2>&1)"
+            --enable=shekel-decimal-from-float \
+            --disable=unknown-option-value,bad-option-value 2>&1)"
         [ -n "$guard" ] || exit 0
         {
             echo "Monetary-precision violation in test file $FILE -- fix before continuing:"

@@ -120,11 +120,14 @@ jobs:
       # The checkers themselves are unit-tested (every "flags" case paired with a
       # "must-not-flag" case). tests/ are out of general pylint scope, but a
       # float-sourced Decimal in a hand-computed assertion is a real bug, so the
-      # one monetary-precision checker is applied there too.
+      # one monetary-precision checker is applied there too. unknown/bad-option-value
+      # are disabled explicitly (--disable=all does not cover option-validity
+      # meta-messages) so the test files' "disable=X -- explanation" inline
+      # comments do not derail this targeted scan.
       - name: Test and apply custom pylint checkers
         run: |
           pytest tools/pylint/tests -c /dev/null -q
-          pylint tests/ --disable=all --enable=shekel-decimal-from-float --output-format=colorized
+          pylint tests/ --disable=all --enable=shekel-decimal-from-float --disable=unknown-option-value,bad-option-value --output-format=colorized
 
       # ── 6. Build the per-pytest-session template database ───────
       # Builds ``shekel_test_template``: drops + recreates the
