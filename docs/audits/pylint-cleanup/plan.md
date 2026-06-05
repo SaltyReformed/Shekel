@@ -1,8 +1,21 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.86/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 188 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has NINE files complete. The newest,
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.87/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 180 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has TEN files complete. The newest,
+**`services/paycheck_calculator.py` DONE** (`15bcfd1`), cleared all 5 design smells by genuine
+decomposition (no disables, behavior bit-identical; full suite 5755 the gate): `PaycheckBreakdown`
+(13/7 instance-attrs) was restructured (developer-chosen over a documented disable) into FOUR
+cohesive nested sections -- `PeriodInfo`/`Earnings`/`TaxLines`/`DeductionBreakdown` (4/7) -- with the
+section totals moved onto the owning section (`taxes.total`, `deductions.total_pre_tax`,
+`earnings.take_home_rate_pct`) and ~all consumer accesses migrated to the nested form (Option B: app
+services + the 2 salary templates that actually render a breakdown + 6 test files incl.
+`test_paycheck_calculator`'s 371 path-only/values-frozen assertions); `calculate_paycheck` 37->13
+locals via two frozen contexts (`_DeductionContext`/`_PaycheckContext`, developer-chosen ISP split) +
+`_compute_deductions`/`_compute_tax_lines`/`_bracket_federal`/`_bracket_state`; `_calculate_deductions`
+7->2 args (takes `_DeductionContext`, resolves pct_id internally -- cached, behavior-identical);
+`_gross_biweekly_for_period` 16->12 via `_residue_cents`; 0 new R0801, 0 disables added (82), and the
+3 total-property `missing-function-docstring` (Phase 4) cleared as a bonus. Before it,
 **`services/investment_dashboard_service.py` DONE** (`e3dbea7`), dissolved all 6 design smells by
 genuine decomposition (no disables, behavior bit-identical; route-level `test_investment.py` the
 gate): the developer-chosen single frozen `_ProjectionContext` (6 fields) loaded once by
@@ -211,7 +224,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (9 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (10 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -854,11 +867,43 @@ documented disables), with commit SHA.
   `preview_recurrence`:651 tm-locals) -- Status: `-`
 - **services/retirement_dashboard_service.py** (`compute_gap_data`:114 tm-locals/statements;
   `_project_retirement_accounts`:432 tm-args/pos/locals) -- Status: `-`
-- **routes/_recurrence_form_helpers.py** (`build_recurrence_rule_from_form`:100 tm-args/locals;
-  `handle_stale_conflict`:213 tm-args; `handle_stale_form_conflict`:263 tm-args) -- Status: `-`
+- **routes/_recurrence_form_helpers.py** (live, re-verified 2026-06-05:
+  `build_recurrence_rule_from_form`:112 tm-args/locals; `update_recurrence_rule_from_form`:225
+  tm-args; `resolve_recurrence_rule_for_update`:297 tm-args; `handle_stale_form_conflict`:374
+  tm-args) -- Status: `-`. NB: `handle_stale_conflict` (which this register previously listed here)
+  was MOVED to `routes/_commit_helpers.py` in the Phase 2 `eb56235` stale-clique extraction;
+  `_commit_helpers.py` now carries its own 3 tm-args entries
+  (`handle_stale_conflict`/`commit_or_handle_stale`/`regenerate_and_commit_or_stale`), a separate
+  Phase-3 item.
 - **routes/grid.py** (`_build_plan_view`:342 tm-args/pos/locals; `index`:433 tm-locals) -- Status: `-`
-- **services/paycheck_calculator.py** (`calculate_paycheck`:125 tm-locals;
-  `_gross_biweekly_for_period`:319 tm-locals; `_calculate_deductions`:559 tm-args/pos) -- Status: `-`
+- **services/paycheck_calculator.py** -- Status: **DONE** (`15bcfd1`; file now 10.00/10, zero smell
+  messages). All 5 design smells resolved by genuine decomposition (no disables, behavior
+  bit-identical; full suite 5755 the gate). **`PaycheckBreakdown` (13/7) restructured into 4 nested
+  sections (developer-chosen over a documented disable, after I corrected a bad attribute count: a
+  TaxLines-only nest is 10/7, still failing; only a full 4-group nest reaches 4/7):** `period`
+  (`PeriodInfo`: period_id/is_third_paycheck/raise_event), `earnings` (`Earnings`:
+  annual_salary/gross_biweekly/taxable_income/net_pay + `take_home_rate_pct`), `taxes` (`TaxLines`:
+  federal/state/social_security/medicare + `total`), `deductions` (`DeductionBreakdown`:
+  pre_tax/post_tax + `total_pre_tax`/`total_post_tax`). The former flat totals moved onto the owning
+  section. **Consumer migration (Option B, developer-chosen over a backward-compat delegating-property
+  facade, which I flagged as itself a DRY/maintainability smell):** every access -> nested form across
+  app services (income_service, year_end/_income_tax, salary/_helpers+profiles, recurrence_engine,
+  savings/_orchestrator, retirement_dashboard, dashboard_service), the 2 salary templates that
+  actually render a breakdown (breakdown.html, projection.html -- the other 7 "matches" were
+  collisions: `data.income_tax.*` year-end aggregate, FicaConfig `medicare_rate`, SalaryProfile
+  `annual_salary`, calibrate-rate fields), and 6 test files **path-only with all expected values
+  frozen byte-identical** (test_paycheck_calculator's 371 assertions + 11 nested constructor rewrites
+  + 7 `_calculate_deductions` call-shape updates; the savings C26-3 source-inspection guard's target
+  string repointed to `current_breakdown.earnings.gross_biweekly`). `calculate_paycheck` 37->13 locals
+  via the two frozen contexts `_DeductionContext`(5) + `_PaycheckContext`(5) (developer-chosen tighter
+  ISP over a single shared context) + the deduction bundle `_compute_deductions` + the tax dispatch
+  `_compute_tax_lines`/`_bracket_federal`/`_bracket_state` (each <=15 locals/<=5 args; net-pay sum is
+  Decimal-exact-equivalent to the prior per-line subtraction). `_calculate_deductions` 7->2 args
+  (takes `_DeductionContext`; resolves pct_id from the cache internally -- behavior-identical; the
+  now-dead test helper `_pct_id` + its unused `CalcMethodEnum` import removed).
+  `_gross_biweekly_for_period` 16->12 locals via the extracted `_residue_cents`. 0 new R0801, 0
+  disables added (82), 0 useless-suppression, 0 E/F; the 3 total-property `missing-function-docstring`
+  (Phase 4) cleared as a bonus. 590 targeted + **full suite 5755 passed.**
 
 ### Tier 3 -- single-function or low-count files
 
@@ -899,7 +944,7 @@ rule-named + commented inline disable. Count/limit shown as reported at the defa
 
 | file:line | attrs/limit | Status |
 |---|---|---|
-| services/paycheck_calculator.py:83 | 13/7 | - |
+| services/paycheck_calculator.py:83 | 13/7 | **RESTRUCTURED (no disable), `15bcfd1`** -- `PaycheckBreakdown` split into 4 nested sections (period/earnings/taxes/deductions) -> 4/7; see the Tier-2 entry |
 | services/spending_trend_service.py:52 | 11/7 | - |
 | services/spending_trend_service.py:81 | 8/7 | - |
 | services/retirement_gap_calculator.py:24 | 11/7 | - |
@@ -935,17 +980,15 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after `investment_dashboard_service.py` DONE `e3dbea7`;
-87 smell items remain [75 of the 8-symbol set + 12 `too-many-instance-attributes`], down from 93):
-`routes/_recurrence_form_helpers.py` (5) / `services/retirement_dashboard_service.py` (5) /
-`services/paycheck_calculator.py` (5 = 4 + 1 instance-attr), then `routes/grid.py` /
-`routes/templates.py` (4 each) and `services/growth_engine.py` / `services/loan_resolver.py` /
-`services/retirement_gap_calculator.py` (4 each = 3 + 1 instance-attr) -- the financial cores
-plan-first per the developer's cadence. None of the remaining top files are module tm-lines (only
-`schemas/validation.py` + `services/carry_forward_service.py` carry that, both Tier-3 -> package
-split per decision #5);
-`paycheck_calculator`/`retirement_dashboard_service` are pure
-services, function-level decomposition only.
+Next by live density (re-measured 2026-06-05 after `paycheck_calculator.py` DONE `15bcfd1`;
+82 smell items remain [71 of the 8-symbol set + 11 `too-many-instance-attributes`], down from 87):
+`routes/_recurrence_form_helpers.py` (5) / `services/retirement_dashboard_service.py` (5), then
+`routes/grid.py` / `routes/templates.py` (4 each) and `services/growth_engine.py` /
+`services/loan_resolver.py` / `services/retirement_gap_calculator.py` (4 each = 3 + 1
+instance-attr) -- the financial cores plan-first per the developer's cadence. None of the remaining
+top files are module tm-lines (only `schemas/validation.py` + `services/carry_forward_service.py`
+carry that, both Tier-3 -> package split per decision #5);
+`retirement_dashboard_service` is a pure service, function-level decomposition only.
 
 ---
 
@@ -1208,3 +1251,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `f07fb1c` | 3 | **loan.py `Phase 2 of 2` -- module -> `app/routes/loan/` package (developer-chosen 5-concern split) -- file DONE:** the 1847-line module (over the 1000 ceiling after Phase 1) split into `_bp`/`_helpers` (8 schema singletons + the `_load_loan_account`/`_require_configured_loan`/anchor/resolver-state/full-context loaders + chart utils + 2 domain constants)/`dashboard` (route + 12 helpers)/`params` (create_params, update_params, true_up_balance)/`escrow_rates` (add_rate_change, add_escrow, delete_escrow -- HTMX, shared OOB tail co-located)/`calculators` (payoff_calculate, refinance_calculate)/`payment_transfer` (create_payment_transfer); each sub-module <=621 lines, sliced verbatim by def boundary. All 10 endpoints + URLs + the `from app.routes.loan import loan_bp` path preserved (no `url_for`/template/`app/__init__` edit). **Split trap (decision #5):** the "load configured loan, else 404/redirect" guard shared by update_params + true_up_balance + create_payment_transfer re-surfaced as a cross-file R0801 once split -- resolved by genuine dedup into `_require_configured_loan` (a real reusable route-guard, NOT incidental), which fully encapsulates both rejection paths via `abort(404)`/`abort(redirect(...))` (verified werkzeug raises a 302 from a Response) so call sites are a single line, NO residual dup; 0 documented dup disables. Test path updates (decision #5, no assertion change): the 4 static-source guards in `test_loan.py` repoint to the package / moved helpers; C15-3 allow-list `"routes/loan.py:"` -> `"routes/loan/"`; C17-6 sweep `"routes/loan.py"` -> `"routes/loan"`; `_transfer_creation_helpers` `:func:` cross-refs -> `.payment_transfer`. Each sub-module + package pylint 10.00/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **loan.py DONE.** Score 9.85; visible 202->201; tm-lines 3->2; smell items 107->100; R0801 0; E/F 0; useless-suppression 0. | 9.85/10 | 201 |
 | 2026-06-05 | `a1d076e` | 3 | **debt_strategy_service.py -- decompose 3 functions (param object + working-state bundle, developer-chosen `StrategyRequest`) -- file DONE:** all 7 function smells resolved by genuine decomposition (no logic change, no disables, behavior bit-identical). `calculate_strategy` tm-args/pos (6/5) -> frozen `StrategyRequest` param object (6 fields; developer chose this over keyword-only + a documented disable, following the `PayoffRequest` precedent), so the public entry point takes ONE arg; all 40 callers (4 route + 36 test) wrapped in `StrategyRequest(...)`. The five parallel per-debt working arrays (a data clump threaded by hand) -> frozen `_SimulationState` (6 fields) + `initialize()` factory, mirroring `amortization_engine._ProjectionState`; `_accrue_interest` / `_apply_minimum_payments` / `_cascade_extra_payments` / `_build_result` now take `state` (`_cascade_extra_payments` 6->3 args, `_build_result` 9->5 args). New `_simulate_month` extracts the per-month loop body so `calculate_strategy` tm-locals 23->12 (verified REQUIRED: without the extraction the loop body holds the function at 16/15). Empirically confirmed on a throwaway probe that keyword-only clears tm-positional but NOT tm-arguments -- which framed the param-object decision. The route's `calculate` handler keeps its pre-existing tm-locals/return/branches (separate Tier-3 item, untouched; wrapping the calls added no locals/branches/returns -- route score held 9.78 +0.00). file 10.00/10, zero smell messages. 0 new R0801; disables unchanged at 82; E/F 0; useless-suppression 0. Targeted 66 + **full suite 5755 passed.** | 9.86/10 | 194 |
 | 2026-06-05 | `e3dbea7` | 3 | **investment_dashboard_service.py -- bundle per-account inputs + extract projection primitives (developer-chosen single `_ProjectionContext`) -- file DONE:** all 6 design smells resolved by genuine decomposition (no logic change, no disables, behavior bit-identical; route-level `test_investment.py` is the gate). New frozen `_ProjectionContext` (6 fields) loaded once by `_load_projection_context` centralizes the entries-aware current balance + the projection-inputs splat + the contribution timeline that the dashboard and growth-chart bodies each resolved inline (S6-01 dup; `params` passed in so neither surface re-queries `InvestmentParams`). New shared `_run_growth_projection` + `_build_chart_series` dedupe two R0801-invisible duplications (the `project_balance` splat + the cumulative-contribution chart loop; variable names differed so R0801 never clustered them; 0 new R0801 surfaced cross-file). `compute_dashboard_data` 26->6 locals (thin: load ctx, merge dict fragments via `**`); `_project_dashboard_balances` 8 args/19 locals -> 3 args/8 locals (returns a dict fragment); `_compute_contribution_prompt` 7->4 args (takes ctx, returns template-keyed dict); `compute_growth_chart_data` 28->11 locals (delegates to `_growth_chart_context`); `_compute_what_if_overlay` 6->4 args; `_compute_employer_per_period` extracts the cap->employer 2-step. file 10.00/10, zero smell messages; 0 disables added (82); useless-suppression 0; E/F 0. Score 9.86; visible 194->188; smell items 93->87 (75 8-symbol + 12 instance-attr). NB: an unused module `logger` remains (pre-existing dead code, not pylint-flagged; left in scope-discipline, reported to developer). 55 investment route + 91 integration/income + **full suite 5755 passed.** | 9.86/10 | 188 |
+| 2026-06-05 | `15bcfd1` | 3 | **paycheck_calculator.py -- restructure PaycheckBreakdown into nested sections + decompose calculate_paycheck (developer-chosen full 4-group restructure + two-context ISP + deduction bundle) -- file DONE:** all 5 design smells resolved by genuine decomposition (no disables, behavior bit-identical; full suite 5755 the gate). **`PaycheckBreakdown` 13/7 -> 4/7** by restructuring into 4 cohesive nested sections `period`(`PeriodInfo`)/`earnings`(`Earnings`)/`taxes`(`TaxLines`)/`deductions`(`DeductionBreakdown`), section totals moved onto the owning section (`taxes.total`, `deductions.total_pre_tax`/`total_post_tax`, `earnings.take_home_rate_pct`). **I corrected a bad attribute count mid-decision** (told the developer a TaxLines-only nest was "11->8"; it is actually 13->10/7 and still fails -- only the full 4-group nest reaches 4/7) and **flagged that the chosen full consumer-migration (Option B) was ~400 sites incl. 371 test assertions** vs the safer delegating-property facade (which I argued is itself a DRY/maintainability smell); developer chose Option B. Consumer migration to nested form: app services (income_service, year_end/_income_tax, salary/_helpers+profiles, recurrence_engine, savings/_orchestrator, retirement_dashboard, dashboard_service), the 2 salary templates that actually render a breakdown (breakdown.html, projection.html; the other 7 "matches" disambiguated as collisions), 6 test files **path-only/values-frozen** (test_paycheck_calculator 371 assertions + 11 nested constructors + 7 `_calculate_deductions` call updates; savings C26-3 source guard repointed to `current_breakdown.earnings.gross_biweekly`). `calculate_paycheck` 37->13 locals via frozen `_DeductionContext`(5)+`_PaycheckContext`(5) + `_compute_deductions`/`_compute_tax_lines`/`_bracket_federal`/`_bracket_state`; `_calculate_deductions` 7->2 args (takes `_DeductionContext`, resolves pct_id internally); `_gross_biweekly_for_period` 16->12 via `_residue_cents`; removed the now-dead test `_pct_id` + its unused import. file 10.00/10, 0 smell messages; 0 new R0801; 0 disables added (82); useless-suppression 0; E/F 0; no new line-too-long; 3 total-property `missing-function-docstring` (Phase 4) cleared as a bonus. Score 9.86->9.87; visible 188->180; smell items 87->82 (71 8-symbol + 11 instance-attr). 590 targeted + **full suite 5755 passed.** | 9.87/10 | 180 |
