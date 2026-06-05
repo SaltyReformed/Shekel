@@ -1,10 +1,13 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-04 app/ is 9.80/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 258 visible messages.
-Full suite 5766 passed.** Phase 3 (design smells) has its first file complete: **`routes/salary.py`
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.81/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 253 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has two files complete: **`routes/salary.py`
 DONE** (`4d7d7c1` returns+dead-imports, `e834635` calibrate decomposition, `131d648` split into the
-`app/routes/salary/` package) -- see the [Phase 3](#phase-3----design-smell-refactors-158-visible--the-phase-1-smell-disables)
+`app/routes/salary/` package) and **`services/amortization_engine.py` DONE** (`0e8b986` dead-code
+removal, `c4f01e6` `project_forward` decomposition, `7cc8fe1` `calculate_payoff_by_date`
+`PayoffRequest` param object + `_search_extra_for_payoff` binary-search extraction; file now
+10.00/10, zero smell messages) -- see the [Phase 3](#phase-3----design-smell-refactors-158-visible--the-phase-1-smell-disables)
 register and the [Progress Log](#progress-log). Ratified decision #5 (module splits = genuine
 package splits, not disables) is locked. Phase 2 resolved every
 one of the original 75 clusters by honest extraction or a documented one-sided disable (rule 13).
@@ -158,7 +161,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (`salary/` done: `4d7d7c1`/`e834635`/`131d648`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (`salary/` done `4d7d7c1`/`e834635`/`131d648`; `amortization_engine.py` done `0e8b986`/`c4f01e6`/`7cc8fe1`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -587,16 +590,27 @@ documented disables), with commit SHA.
   tm-args/pos/locals/branches/statements + tm-nested-blocks:359; `_project_investment`:559
   tm-args/pos/locals; `_compute_goal_progress`:656 tm-locals; `_compute_avg_monthly_expenses`:786
   tm-locals; `_compute_debt_summary`:867 tm-locals) -- Status: `-`
-- **services/amortization_engine.py** -- Status: **WIP**. module tm-lines RESOLVED + all four
+- **services/amortization_engine.py** -- Status: **DONE** (`7cc8fe1`; file now 10.00/10, zero smell
+  messages). module tm-lines RESOLVED + all four
   `replay_confirmed_history` smells RESOLVED by removing that dead/superseded primitive (`0e8b986`;
   1204->781 lines, no package split needed). `project_forward` ALL FOUR smells RESOLVED (`c4f01e6`):
   tm-args via the new `ProjectionInputs` param object (9->3 args); tm-branches/statements via the
   `_apply_override_payment`/`_apply_contractual_payment` helpers; tm-locals 33->14 via a
   `_ProjectionState` object + `_recast_for_rate_change` + reuse of `_advance_month` (genuine
   decomposition, no disable). `AmortizationRow` (9 attrs) tm-instance-attributes -> documented
-  scoped disable (cohesive schedule-row DTO). REMAINING: `calculate_payoff_by_date`:707
-  tm-args/pos/locals/return/branches (next commit: `PayoffRequest` param object + binary-search
-  extraction).
+  scoped disable (cohesive schedule-row DTO). `calculate_payoff_by_date` ALL FIVE smells RESOLVED
+  (`7cc8fe1`): tm-args/pos via the new `PayoffRequest` param object (10->1 arg, developer-chosen
+  Shape A with `target_date` included); tm-locals 25->12, tm-return 7->6, tm-branches 14->9 via the
+  `_search_extra_for_payoff` binary-search helper. `PayoffRequest` (10 attrs) -> documented scoped
+  tm-instance-attributes disable (legitimate Parameter Object, same pattern as `AmortizationRow`).
+  **TRAP (learned here):** the param object converts the bare `current_principal` parameter into
+  `request.current_principal` reads, which the C15-3 demoted-column lock
+  (`test_loan_params_demoted.py`) flags on its coarse `.current_principal` grep. Resolved per the
+  lock's own protocol (developer-chosen Option A): allow-listed `amortization_engine.py` (no DB
+  access / no model import -- it structurally cannot read `LoanParams`; the value is the resolver-
+  derived `state.current_balance`) + recorded F-28 in `remediation_follow_up.md`. Also updated the
+  in-file C2-11 structural slice marker (now bounded by the inserted `PayoffRequest`; assertions
+  unchanged). Behavior bit-identical (hand-derived Decimal locks pass). Full suite 5755 passed.
 - **routes/loan.py** (module tm-lines; `_compute_payment_breakdown`:179 tm-locals; `dashboard`:532
   tm-locals/statements; `payoff_calculate`:1242 tm-locals; `refinance_calculate`:1425 tm-locals;
   `create_payment_transfer`:1590 tm-locals) -- Status: `-`
@@ -688,6 +702,7 @@ rule-named + commented inline disable. Count/limit shown as reported at the defa
 | services/budget_variance_service.py:82 | 8/7 | - |
 | services/growth_engine.py:24 | 9/7 | - |
 | services/amortization_engine.py:164 | 9/7 | **DISABLE (documented), `c4f01e6`** -- `AmortizationRow` cohesive schedule-row DTO; scoped+named+commented |
+| services/amortization_engine.py:708 | 10/7 | **DISABLE (documented), `7cc8fe1`** -- `PayoffRequest` Parameter Object (NOT one of the original 13; introduced by the `calculate_payoff_by_date` param-object refactor and immediately disabled); scoped+named+commented |
 
 **Common refactor moves** (apply judgement, not mechanically): bundle cohesive args into a
 dataclass/params object (the many tm-args calculators); extract cohesive sub-steps (tm-locals);
@@ -710,9 +725,10 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density: `amortization_engine.py` (15), `savings_dashboard_service.py` (14),
-`year_end_summary_service.py` (12) -- all financial cores (plan-first per the developer's cadence),
-then the route files (`transactions.py`, `transfers.py`, `loan.py`).
+Next by live density (re-measured 2026-06-05 after `amortization_engine.py` closed):
+`savings_dashboard_service.py` (14), `year_end_summary_service.py` (12) -- both financial cores
+(plan-first per the developer's cadence), then the route files (`transactions.py` (9),
+`transfers.py` (8), `loan.py` (7)) and `debt_strategy_service.py` (7).
 
 ---
 
@@ -962,3 +978,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `3a9d96f` | 3 | **useless-suppression + dead-import sweep (Phase 3 start):** verifying the plan against the live tree surfaced 13 `useless-suppression` messages (full config + `--enable`; the plan wrongly claimed 0) plus 3 dead imports. Read each site to confirm the smell no longer fires, then removed: auth `login` too-many-return (6 returns = `max-returns` limit), transfer `restore_transfer` too-many-branches (8 <= 12), dashboard `_compute_alerts` too-many-args/pos (5 params = limit) -- **resolving 3 of the 15 Phase-1->Phase-3 smell-disables outright**; the 9 `wrong-import-position` disables in `accounts/`+`salary/` `__init__` (rule never fires -- only the docstring + `_bp` import precede them; corrected the mistaken Phase 1 KEEP rationale that conflated runtime order with what the rule flags); 3 unused imports in `retirement_dashboard_service`. No refactor, no behavior change. Disable lines 90->78; useless-suppression 13->0; R0801 still 0. 665 targeted tests pass. | 9.80/10 | 268 |
 | 2026-06-04 | `0e8b986` | 3 | **amortization_engine dead-code removal (developer-approved):** verified `replay_confirmed_history` (+ its `ReplayResult`) had ZERO production callers -- superseded by `rate_period_engine.replay_schedule` (git `8ea2585`); `_build_payment_lookups` was fully dead. Removed all three (~417 lines) + the `TestReplayConfirmedHistory` class; fixed stale cross-references in loan_resolver/account_projection/rate_period_engine/year_end (incl. the `loan_resolver:669` docstring drift). **Resolves 5 of 15 file smells -- module tm-lines (1204->781, NO package split needed) + all four replay smells.** No behavior change. Score 9.80; visible 263; tm-lines modules 8->7; 415 targeted tests pass. | 9.80/10 | 263 |
 | 2026-06-04 | `c4f01e6` | 3 | **amortization_engine `project_forward` decomposition (param objects, developer-chosen):** new frozen `ProjectionInputs` bundles the 7 shared projection inputs (9->3 args, kills tm-args; callers build one and reuse it, reinforcing the can't-diverge SSOT); `_apply_override_payment`/`_apply_contractual_payment` pure helpers kill tm-branches/statements; `_ProjectionState` + `_recast_for_rate_change` + `_advance_month` reuse drop tm-locals 33->14 (genuine, no disable); `AmortizationRow` 9-attr DTO -> scoped+commented tm-instance-attributes disable. Updated all call sites (loan_resolver x3, routes/loan refi, 2 internal payoff calls, 18 test calls). Behavior bit-identical (hand-asserted money tests pass). **project_forward 4 smells -> 0; AmortizationRow -> documented.** Score 9.80; visible 258; E/F 0; R0801 0; useless-suppression 0; 415 targeted tests pass. | 9.80/10 | 258 |
+| 2026-06-05 | `7cc8fe1` | 3 | **amortization_engine `calculate_payoff_by_date` decomposition (param object + binary-search extraction, developer-chosen Shape A) -- file DONE:** new frozen `PayoffRequest` bundles the 10 inputs incl. `target_date` (tm-args/pos 10->1); `_search_extra_for_payoff` helper extracts the binary search (tm-locals 25->12, tm-return 7->6, tm-branches 14->9); `PayoffRequest` 10-attr Parameter Object -> scoped+commented tm-instance-attributes disable (verified needed, 0 useless-suppression). Traced impact: 1 production caller (routes/loan.py), 9 test call sites, the C2-11 structural slice marker (now bounded by the inserted `PayoffRequest`; assertions unchanged). **C15-3 demoted-column lock interaction (Option A):** the param object introduced `request.current_principal` reads that the lock's coarse `.current_principal` grep flagged; allow-listed `amortization_engine.py` (no DB access -- can't read `LoanParams`; value is the resolver-derived `state.current_balance`) + recorded F-28 in `remediation_follow_up.md` + fixed F-27's stale signature pseudocode. **All 5 `calculate_payoff_by_date` smells -> 0; file 10.00/10, zero smell messages.** Score 9.80->9.81; visible 258->253; E/F 0; R0801 0; useless-suppression 0; disables 79->80. 253 targeted + 4 C15-3 lock pass; **full suite 5755 passed.** | 9.81/10 | 253 |
