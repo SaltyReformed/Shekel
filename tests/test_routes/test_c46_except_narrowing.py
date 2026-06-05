@@ -549,7 +549,7 @@ class TestRegenerateHelperNarrowCatch:
 
             with caplog.at_level(logging.ERROR, logger="app.routes.salary"):
                 with patch(
-                    "app.routes.salary.recurrence_engine."
+                    "app.routes.salary._helpers.recurrence_engine."
                     "regenerate_for_template",
                     side_effect=_make_data_error(),
                 ):

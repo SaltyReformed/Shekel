@@ -244,7 +244,7 @@ def list_retirement_investment_account_types() -> list[AccountType]:
     """Return every AccountType in the retirement or investment category.
 
     The shared source for the salary contribution-target dropdown
-    (:func:`app.routes.salary._get_investment_accounts`) and the
+    (:func:`app.routes.salary._helpers._get_investment_accounts`) and the
     retirement dashboard's pretax/Roth account-type partitioning
     (:mod:`app.services.retirement_dashboard_service`).  Returns the full
     rows rather than just the id set because the dashboard reads
