@@ -1,8 +1,14 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.84/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 218 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has FIVE files complete, newest
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.85/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 208 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has SIX files complete, newest
+**`routes/transfers.py` DONE** (two-phase, developer-chosen: `21f2a31` decomposed all four flagged
+handler smells by honest extraction incl. the shared `_render_post_mutation_cell` split-trap
+pre-empt + the `create_ad_hoc` two-try merge, then `c4e9015` split the 1457-line module into the
+`app/routes/transfers/` package -- developer-chosen 6-module split with a dedicated `forms.py`,
+co-locating the instance mutations + status actions in `mutations.py`; 0 new R0801; all 16 endpoints
+preserved, behavior bit-identical). The previously-newest
 **`routes/transactions.py` DONE** (two-phase: `41cab0e` decomposed all four handler smells by honest
 extraction incl. the shared `_resolve_owned_fks` IDOR primitive + the `_RenderTarget` bundle, then
 `27e99f2` split the 1532-line module into the `app/routes/transactions/` package -- 6-module merge
@@ -176,7 +182,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (4 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (6 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -699,9 +705,36 @@ documented disables), with commit SHA.
   (decision #5, no assertion change): `test_c19` -> `...transactions.mutations.credit_workflow...`.
   0 R0801, 0 useless-suppression, 0 E/F; +1 documented disable; the 4 `line-too-long` are pre-existing
   Phase 4 residue. Targeted 323/515 + full suite 5755 passed (both phases).
-- **routes/transfers.py** (module tm-lines; `create_transfer_template`:145 tm-locals/return;
-  `update_transfer_template`:315 tm-locals/return/branches/statements; `update_transfer`:792
-  tm-return; `create_ad_hoc`:923 tm-return) -- TRANSFER INVARIANTS apply -- Status: `-`
+- **routes/transfers.py** -- Status: **DONE** (two-phase, developer-chosen: `21f2a31` decomposed all
+  four flagged handler smells, then `c4e9015` split the 1457-line module into the
+  `app/routes/transfers/` package -- all 8 smell items gone, each sub-module <1000 lines, 0 net new
+  R0801). TRANSFER INVARIANTS untouched (shadow paths still route through `transfer_service`).
+  **Phase 1 (`21f2a31`, honest extraction, no disables, behavior bit-identical):**
+  `create_transfer_template` (17 locals/7 returns) -> `_materialize_initial_transfers` (the
+  one-time/recurring instance-materialization tail). `update_transfer_template`
+  (17 locals/8 returns/16 branches) -> `_first_unowned_template_fk` (FK-ownership probe) +
+  `_regenerate_and_commit_template` (the regenerate-then-commit tail). `update_transfer` (11 returns)
+  -> single-return FK loop + `_execute_transfer_update` (the service-call+commit 4-way error
+  translation) + `_render_post_mutation_cell` (shared shadow/transfer cell render). `create_ad_hoc`
+  (9 returns) -> `_handle_adhoc_integrity` (deduped IntegrityError handler) + merged the two
+  equivalent try blocks (the `uq_transfers_adhoc_dedupe` hit fires at flush OR commit and routes to
+  the same handler; `NotFoundError`/`ValidationError` originate only in the service call, so the
+  merge changes no behavior). `_render_post_mutation_cell` also replaced the verbatim shadow-cell
+  block in `mark_done`/`cancel_transfer` -- a DRY win that pre-empted the Phase-2 split trap.
+  **Phase 2 (`c4e9015`, package split -- developer-chosen 6-module split with a dedicated
+  `forms.py`):** `_bp`/`_helpers` (4 schema singletons + 5 shared ownership/render helpers)/
+  `templates` (8 template-CRUD routes + 3 helpers)/`forms` (3 grid-cell GET partials)/`mutations`
+  (5 instance routes + 3 helpers); all 16 endpoints + URLs + the `transfers_bp` import path preserved
+  verbatim (no `url_for`/template/`app/__init__` edit). **Split trap (decision #5):** co-locating
+  `update_transfer` + `mark_done` + `cancel_transfer` in `mutations.py` kept their parallel
+  service-update/cell-response code intra-file, and the Phase-1 `_render_post_mutation_cell`
+  extraction pre-deduped the shadow block -- 0 new R0801. Bonus: the fresh wrapped imports cleared 2
+  pre-existing `line-too-long`. Test patch-path update (decision #5, no assertion change):
+  `test_transfers.py` hard-delete bypass repoints
+  `app.routes.transfers.archive_helpers` -> `...transfers.templates.archive_helpers`; two docstring
+  `:func:` cross-refs (`_recurrence_form_helpers`, `_transfer_creation_helpers`) repointed to the
+  `.templates` submodule. Package pylint 10.00/10; score 9.84->9.85; visible 218->208; smell items
+  115->107; full suite 5755 passed (both phases).
 
 ### Tier 2
 
@@ -807,12 +840,13 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after `transactions.py` DONE `27e99f2`; 115 smell
-items remain, down from 124): `routes/transfers.py` (8), `routes/loan.py` (7),
-`services/debt_strategy_service.py` (7), `services/investment_dashboard_service.py` (6) -- the
-financial cores plan-first per the developer's cadence (the route files apply TRANSFER INVARIANTS /
-security-critical caution; `transfers.py`/`loan.py` are also module tm-lines -> package splits per
-decision #5).
+Next by live density (re-measured 2026-06-05 after `transfers.py` DONE `c4e9015`; 107 smell
+items remain, down from 115): `routes/loan.py` (7), `services/debt_strategy_service.py` (7),
+`services/investment_dashboard_service.py` (6), `routes/_recurrence_form_helpers.py` (5),
+`services/paycheck_calculator.py` (5), `services/retirement_dashboard_service.py` (5) -- the
+financial cores plan-first per the developer's cadence (`loan.py` is also module tm-lines -> package
+split per decision #5; `debt_strategy_service`/`investment_dashboard_service` are pure services,
+function-level decomposition only).
 
 ---
 
@@ -1069,3 +1103,5 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `b96b8b8` | 3 | **year_end_summary_service `Phase 2 of 2` -- module -> package split (developer-chosen 10-module split) -- file DONE:** the 2437-line module split into `app/services/year_end_summary_service/` (10 per-concern sub-modules: `_types`/`_data`/`_periods`/`_balances`/`_income_tax`/`_spending`/`_transfers`/`_net_worth`/`_savings`/`_orchestrator`; each well under 1000 lines, `_balances` largest at ~700). Partition verified **import-cycle-free by AST cycle-detection** before writing; `__init__` re-exports only `compute_year_end_summary`. **Split trap (decision #5):** re-surfaced ONE intra-file R0801 the monolith hid (the `LoanParams`->`original_principal` idiom shared by `_get_account_balance_map` + `_compute_debt_progress`) -- resolved by genuine dedup into the shared `_loan_original_principal` helper (DRY win; `_net_worth` then dropped its now-unused `db`/`LoanParams` imports). Dropped the unused module `logger`/`logging`. Test patch-path updates (decision #5, no assertion change): `_compute_entry_breakdowns` -> `._spending`; `test_loan_unified_figures` uses `._balances._generate_debt_schedules` / `._income_tax._compute_mortgage_interest` and its bare-quantize sweep now runs `grep -r --include=*.py` over the package dir (coverage preserved); `test_income_service` uses `._data._load_salary_gross_biweekly`. The whole-app `rglob` structural guards (balance_predicates, calculate_balances sweep) pick up the sub-modules automatically. Package pylint 10.00/10 (0 messages); **behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **year_end_summary_service DONE (both phases).** Score 9.83; visible 228->227; tm-lines 6->5; R0801 0; E/F 0; useless-suppression 0. | 9.83/10 | 227 |
 | 2026-06-05 | `41cab0e` | 3 | **transactions.py `Phase 1 of 2` -- decompose 4 route handlers + dedup owned-FK checks (developer-chosen two-phase + developer-approved FK-dedup widening):** all four flagged handler smells resolved by honest extraction (no disables, behavior bit-identical). `update_transaction` (tm-return 13/6, tm-branches 24/12, tm-statements 64/50) -> `_apply_shadow_update` (transfer-shadow path, verbatim) + `_resolve_status_change` (state-machine verify + Credit-block + paid_at-revert decision; control-flow inverted to a guard clause, result-identical) + `_apply_regular_update`. `mark_done` (tm-return 11/6, tm-branches 16/12, tm-statements 51/50) -> frozen `_RenderTarget` bundle (render_mode/card_prefix/can_edit; keeps the two helpers <=5 args, dodging too-many-arguments) + `_mark_done_shadow` + `_mark_done_regular`. `cancel_transaction` (tm-return 7/6) -> `_cancel_shadow`. `create_inline` (tm-return 7/6) -> shared `_resolve_owned_fks(specs)` IDOR primitive (returns a `{model: row}` dict or `(None, (msg, 404))`; identical 404 for "not found" and "not yours"; a `None` id short-circuits without a NULL-PK query -- verified `db.session.get(Model, None)` returns None, so HTTP-behavior-identical to the prior per-route `if account_id else None` guards), which ALSO dedupes `create_transaction` + `get_quick_create`/`get_full_create`/`get_empty_cell` + `_verify_owned_fks_in_update` (one owned-FK-by-id check across all six create/form sites). Shadow paths still route through `transfer_service` (TRANSFER INVARIANTS untouched); every 404/400/409/200 body, HX-Trigger, status flip, and log line preserved. All four handler smells -> 0; only module tm-lines (1532/1000, grew from decomposition) remains -> Phase 2 split. Score 9.83->9.84; visible 227->219 (-8); R0801 0; E/F 0; useless-suppression 0; 0 new disables (81); the 4 `line-too-long` are pre-existing Phase 4 residue. Targeted 323 + **full suite 5755 passed.** | 9.84/10 | 219 |
 | 2026-06-05 | `27e99f2` | 3 | **transactions.py `Phase 2 of 2` -- module -> package split (developer-chosen 6-module merge) -- file DONE:** the 1532-line module (over the 1000 ceiling after Phase 1) split into `app/routes/transactions/` (`_bp` leaf + `_helpers` schema-singletons/render/ownership/FK helpers + `forms` GET partials + `create` + `mutations` + `carry_forward`; `__init__` re-exports `transactions_bp` + imports submodules for registration). All 16 endpoint names, URLs, methods, and the `from app.routes.transactions import transactions_bp` path preserved verbatim (no `url_for`/template/`app/__init__` edit). Code relocated verbatim (AST-sliced, decorators included) -- no logic change. **Split trap (decision #5):** surfaced TWO intra-file R0801 dups the monolith hid. (1) The transfer-shadow + mark_done helpers (`_apply_shadow_update`/`_mark_done_shadow`/`_mark_done_regular`/`_cancel_shadow`) form an INSEPARABLE clique -- `_mark_done_shadow` shares the `update_transfer`+commit+stale preamble with `_apply_shadow_update` AND the `_RenderTarget` stale+IntegrityError response with `_mark_done_regular`, so no edit/status split avoids a cross-file pair. Resolved by MERGING edit+status into one `mutations.py` (module-level co-location of intentional parallel code, decision #5). (2) An incidental 6-line `commit / NotFound->404 / Validation->rollback->400` idiom (`carry_forward` <-> `mutations.unmark_credit`; the idiom recurs across 5 route files, the two sites differ in StaleData handling / return value / success body, and `_commit_helpers` is redirect-only so it can't host the HTMX `(body,status)` form) -> documented one-sided rule-13 `duplicate-code` disable on the `carry_forward` side. **This is a deliberate, developer-approved exception to decision #5's "never disable split-trap" -- which assumed every such cluster is dedupable or co-locatable-as-intentional-parallel; this one is genuinely incidental boilerplate that is neither.** Test patch-path update (decision #5, no assertion change): `test_c19` `patch("app.routes.transactions.credit_workflow.mark_as_credit")` -> `...transactions.mutations.credit_workflow...`. Each sub-module pylint-clean, all <1000 lines (largest `mutations.py` 759); **behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **transactions.py DONE (both phases).** Score 9.84; visible 219->218; tm-lines 5->4; R0801 0; E/F 0; useless-suppression 0; disables 81->82 (+1 documented). | 9.84/10 | 218 |
+| 2026-06-05 | `21f2a31` | 3 | **transfers.py `Phase 1 of 2` -- decompose 4 route handlers (honest extraction, no disables, behavior bit-identical):** all 7 function-level smells resolved. `create_transfer_template` (17 locals/7 returns) -> `_materialize_initial_transfers`. `update_transfer_template` (17 locals/8 returns/16 branches) -> `_first_unowned_template_fk` + `_regenerate_and_commit_template`. `update_transfer` (11 returns) -> single-return FK loop + `_execute_transfer_update` + the shared `_render_post_mutation_cell`. `create_ad_hoc` (9 returns) -> `_handle_adhoc_integrity` + merged the two equivalent try blocks (`uq_transfers_adhoc_dedupe` fires at flush OR commit -> same handler; NotFound/Validation only from the service call, so the merge changes no behavior). `_render_post_mutation_cell` also deduped the shadow-cell block in `mark_done`/`cancel_transfer` (DRY + Phase-2 split-trap pre-empt). TRANSFER INVARIANTS untouched. Score 9.84; visible 218->211 (-7); R0801 0; E/F 0; useless-suppression 0; 0 new disables. Targeted 101 + **full suite 5755 passed.** | 9.84/10 | 211 |
+| 2026-06-05 | `c4e9015` | 3 | **transfers.py `Phase 2 of 2` -- module -> `app/routes/transfers/` package (developer-chosen 6-module split) -- file DONE:** the 1457-line module (over the 1000 ceiling after Phase 1) split into `_bp`/`_helpers` (4 schema singletons + 5 shared ownership/render helpers)/`templates` (8 template-CRUD routes + 3 helpers)/`forms` (3 grid-cell GET partials)/`mutations` (5 instance routes + 3 helpers; AST-sliced verbatim). All 16 endpoints + URLs + the `from app.routes.transfers import transfers_bp` path preserved (no `url_for`/template/`app/__init__` edit). **Split trap (decision #5): 0 new R0801** -- co-locating update_transfer + mark_done + cancel_transfer in `mutations.py` kept their parallel code intra-file, and Phase 1's `_render_post_mutation_cell` pre-deduped the shadow block. Bonus: fresh wrapped imports cleared 2 pre-existing `line-too-long`. Test patch-path + 2 docstring `:func:` cross-refs repointed to `.templates` (decision #5, no assertion change). Each sub-module pylint 10.00/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **transfers.py DONE.** Score 9.84->9.85; visible 211->208; tm-lines 4->3; smell items 108->107; R0801 0; E/F 0; useless-suppression 0. | 9.85/10 | 208 |
