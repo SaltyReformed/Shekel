@@ -599,9 +599,10 @@ _APP_DIR = Path(__file__).resolve().parents[2] / "app"
 
 _LOAN_SINGLE_SOURCE_FILES = (
     "services/debt_strategy_service.py",
-    "routes/loan.py",
-    # Phase 2 split: year_end_summary_service is now a package; the grep
-    # below runs with -r --include=*.py so every sub-module is scanned.
+    # Phase 3 pylint-cleanup split: routes/loan.py is now the routes/loan/
+    # package, and year_end_summary_service is a package; the grep below
+    # runs with -r --include=*.py so every sub-module is scanned.
+    "routes/loan",
     "services/year_end_summary_service",
     "services/loan_payment_service.py",
 )

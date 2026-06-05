@@ -140,13 +140,15 @@ def test_no_display_read_of_current_principal():
         "models/loan_params.py:",  # column definition + docstring
         "models/loan_anchor_event.py:",  # docstring reference
         # Commit 16 retargeted the legacy ``update_params`` write path
-        # at the true-up event; ``routes/loan.py`` no longer mutates
-        # the column.  The grep still matches docstring references
-        # (the original write-site allow-list line is preserved here
-        # because those docstrings are the documentation of the
-        # demoted contract -- removing the entry would force every
-        # future docstring touch to bypass the lock).
-        "routes/loan.py:",
+        # at the true-up event; the loan routes no longer mutate the
+        # column.  ``routes/loan.py`` became the ``routes/loan/``
+        # package in the Phase 3 pylint-cleanup split; the directory
+        # prefix matches every sub-module.  The grep still matches
+        # docstring references (the ``_load_loan_context`` /
+        # ``true_up_balance`` docstrings document the demoted contract
+        # in ``_helpers.py`` / ``params.py``); removing the entry would
+        # force every future docstring touch to bypass the lock.
+        "routes/loan/",
         # Commit 16 extends ``anchor_service`` for loan trueups; the
         # module's docstring and the ``apply_loan_anchor_true_up``
         # docstring reference the demoted column to assert the

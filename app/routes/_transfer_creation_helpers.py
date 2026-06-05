@@ -7,7 +7,7 @@ TransferTemplate and seed its Transfer instances:
 * :func:`app.routes.investment.create_contribution_transfer` -- a
   biweekly contribution transfer into an investment / retirement
   account.
-* :func:`app.routes.loan.create_payment_transfer` -- a monthly P&I +
+* :func:`app.routes.loan.payment_transfer.create_payment_transfer` -- a monthly P&I +
   escrow payment transfer into a debt account.
 * :func:`app.routes.transfers.templates.create_transfer_template` /
   :func:`app.routes.transfers.templates.unarchive_transfer_template` -- the
@@ -73,7 +73,7 @@ def validate_and_resolve_source_account(
 
     Shared head of
     :func:`app.routes.investment.create_contribution_transfer` and
-    :func:`app.routes.loan.create_payment_transfer`.  Runs the four
+    :func:`app.routes.loan.payment_transfer.create_payment_transfer`.  Runs the four
     pre-conditions both routes enforce before building anything:
 
     1. The submitted form validates against ``schema``.
