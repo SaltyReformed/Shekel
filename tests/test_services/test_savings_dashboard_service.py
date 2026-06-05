@@ -1397,7 +1397,7 @@ class TestDTI:
         43.0% -> moderate (not > 43)
         43.1% -> high (> 43)
         """
-        from app.services.savings_dashboard_service import _get_dti_label
+        from app.services.savings_dashboard_service._metrics import _get_dti_label
         assert _get_dti_label(Decimal("35.9")) == "healthy"
         assert _get_dti_label(Decimal("36.0")) == "moderate"
         assert _get_dti_label(Decimal("43.0")) == "moderate"
@@ -1405,7 +1405,7 @@ class TestDTI:
 
     def test_dti_over_100(self, app):
         """C-5.12-16: DTI > 100% is valid and labeled 'high'."""
-        from app.services.savings_dashboard_service import _get_dti_label
+        from app.services.savings_dashboard_service._metrics import _get_dti_label
         assert _get_dti_label(Decimal("124.5")) == "high"
 
     def test_gross_monthly_uses_26_not_24(self, app):
@@ -1607,7 +1607,16 @@ class TestDTIRaiseAware:
         """
         import ast  # pylint: disable=import-outside-toplevel
         import inspect  # pylint: disable=import-outside-toplevel
+        import pathlib  # pylint: disable=import-outside-toplevel
         from app.services import savings_dashboard_service as svc  # pylint: disable=import-outside-toplevel
+        # ``compute_dashboard_data`` lives in the package's
+        # ``_orchestrator`` sub-module after the Phase 2 split; ``svc``
+        # re-exports it, but the source-inspection guards must target the
+        # sub-module (the package ``__init__`` holds only the re-export,
+        # not the function body).
+        from app.services.savings_dashboard_service import (  # pylint: disable=import-outside-toplevel
+            _orchestrator,
+        )
 
         # Guard 1a: positive lock -- the engine breakdown attribute is
         # read in compute_dashboard_data.
@@ -1619,7 +1628,7 @@ class TestDTIRaiseAware:
 
         # Guard 1b: negative lock -- no Subscript node in
         # compute_dashboard_data reads ``params["salary_gross_biweekly"]``.
-        tree = ast.parse(inspect.getsource(svc))
+        tree = ast.parse(inspect.getsource(_orchestrator))
         target_fn = None
         for node in ast.walk(tree):
             if (isinstance(node, ast.FunctionDef)
@@ -1643,8 +1652,14 @@ class TestDTIRaiseAware:
                     "value for DTI (MED-06 / F-032)."
                 )
 
-        # Guard 2: module-wide -- no bare 26/12 literal remains.
-        file_source = inspect.getsource(svc)
+        # Guard 2: package-wide -- no bare 26/12 literal in any
+        # sub-module.  Reads every .py file in the package directory so
+        # the check stays module-wide after the Phase 2 split.
+        pkg_dir = pathlib.Path(inspect.getfile(_orchestrator)).parent
+        file_source = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in sorted(pkg_dir.glob("*.py"))
+        )
         assert 'Decimal("26") / Decimal("12")' not in file_source, (
             "biweekly-to-monthly factor must use named constants "
             "PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR (E-24 / HIGH-05)."

@@ -12,7 +12,7 @@ recompute that silently dropped any applicable
 
 Pre-fix, six call sites read the off-engine quantity:
 
-- ``savings_dashboard_service._load_account_params``
+- ``savings_dashboard_service._data._load_account_params``
 - ``year_end_summary_service._load_salary_gross_biweekly``
 - ``retirement_dashboard_service.compute_gap_data`` (projected-salary path)
 - ``retirement_dashboard_service._project_retirement_accounts``

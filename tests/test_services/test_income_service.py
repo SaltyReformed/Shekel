@@ -556,9 +556,10 @@ class TestConsumerIntegration:
             assert canonical == _RAISE_APPLIED_GROSS
 
             # Savings consumer: routed through income_service via
-            # ``_load_account_params``.  ``accounts`` is read but the
-            # salary value is independent of any account.
-            savings_params = savings_dashboard_service._load_account_params(
+            # ``_load_account_params`` (in the package's ``_data``
+            # sub-module after the Phase 2 split).  ``accounts`` is read
+            # but the salary value is independent of any account.
+            savings_params = savings_dashboard_service._data._load_account_params(
                 user_id, accounts=[],
             )
             assert savings_params["salary_gross_biweekly"] == canonical

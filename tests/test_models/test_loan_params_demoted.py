@@ -156,7 +156,14 @@ def test_no_display_read_of_current_principal():
         # Tests don't live under app/ but the grep pattern is
         # app-only -- listed for completeness; never matched here.
         "routes/debt_strategy.py:",  # comments only
-        "services/savings_dashboard_service.py:",  # comments only
+        # ``savings_dashboard_service`` became a package in the Phase 3
+        # pylint-cleanup split; the directory prefix matches every
+        # sub-module.  The two ``.current_principal`` hits are prose in
+        # ``_projections.py`` / ``_metrics.py`` (docstring + comment
+        # referencing ``LoanParams.current_principal``); the package code
+        # reads ``state.current_balance`` / ``ad["current_balance"]``,
+        # never the demoted column.
+        "services/savings_dashboard_service/",  # comments only
         "services/loan_resolver.py:",
         # PayoffRequest parameter-object field (F-28): the pure-function
         # amortization engine has no DB access and imports no model, so
