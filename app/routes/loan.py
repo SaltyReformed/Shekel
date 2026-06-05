@@ -1511,15 +1511,17 @@ def refinance_calculate(account_id):
         schedule_start, params.payment_day,
     )
     refi_schedule = amortization_engine.project_forward(
-        starting_balance=refi_principal,
-        starting_date=starting_date,
-        annual_rate=refi_rate,
-        remaining_months=refi_term,
-        payment_day=params.payment_day,
-        contractual_payment=refi_monthly,
+        amortization_engine.ProjectionInputs(
+            starting_balance=refi_principal,
+            starting_date=starting_date,
+            annual_rate=refi_rate,
+            remaining_months=refi_term,
+            payment_day=params.payment_day,
+            contractual_payment=refi_monthly,
+            rate_changes_remaining=None,
+        ),
         monthly_override=None,
         extra_monthly=Decimal("0.00"),
-        rate_changes_remaining=None,
     )
     refi_total_interest = sum(
         (row.interest for row in refi_schedule), Decimal("0.00"),

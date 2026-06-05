@@ -10,6 +10,7 @@ import pytest
 
 from app.services.amortization_engine import (
     PaymentRecord,
+    ProjectionInputs,
     RateChangeRecord,
     calculate_monthly_payment,
     calculate_payoff_by_date,
@@ -104,12 +105,14 @@ class TestPayoffByDate:
         )
         starting_date = date(2026, 2, 1)  # origination + 1 month
         schedule_at = project_forward(
-            starting_balance=Decimal("200000"),
-            starting_date=starting_date,
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            payment_day=1,
-            contractual_payment=contractual,
+            ProjectionInputs(
+                starting_balance=Decimal("200000"),
+                starting_date=starting_date,
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                payment_day=1,
+                contractual_payment=contractual,
+            ),
             extra_monthly=Decimal("478.08"),
         )
         assert schedule_at[-1].payment_date <= date(2041, 1, 1), (
@@ -120,12 +123,14 @@ class TestPayoffByDate:
         # And $478.07 (one penny less) must NOT achieve it -- pins the
         # binary search's penny-level discrimination.
         schedule_under = project_forward(
-            starting_balance=Decimal("200000"),
-            starting_date=starting_date,
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            payment_day=1,
-            contractual_payment=contractual,
+            ProjectionInputs(
+                starting_balance=Decimal("200000"),
+                starting_date=starting_date,
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                payment_day=1,
+                contractual_payment=contractual,
+            ),
             extra_monthly=Decimal("478.07"),
         )
         assert schedule_under[-1].payment_date > date(2041, 1, 1), (
@@ -467,12 +472,14 @@ class TestAmortizationEngineRegression:
         months = self.MONTHS if months is None else months
         contractual = calculate_monthly_payment(principal, rate, months)
         return project_forward(
-            starting_balance=principal,
-            starting_date=self.STARTING_DATE,
-            annual_rate=rate,
-            remaining_months=months,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=contractual,
+            ProjectionInputs(
+                starting_balance=principal,
+                starting_date=self.STARTING_DATE,
+                annual_rate=rate,
+                remaining_months=months,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=contractual,
+            ),
             extra_monthly=extra_monthly,
         )
 
@@ -813,12 +820,14 @@ class TestProjectForward:
         ``extra_payment`` is $0.00 on every row.
         """
         rows = project_forward(
-            starting_balance=self.PRINCIPAL,
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
         )
         assert len(rows) == self.TERM_MONTHS
         # Row 1.
@@ -855,12 +864,14 @@ class TestProjectForward:
         Non-override months use the contractual payment.
         """
         rows = project_forward(
-            starting_balance=self.PRINCIPAL,
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
             monthly_override={(2026, 6): Decimal("2000.00")},
         )
         june = next(r for r in rows if r.payment_date == date(2026, 6, 1))
@@ -894,12 +905,14 @@ class TestProjectForward:
         and reports ``extra_payment == $0.00``.
         """
         rows = project_forward(
-            starting_balance=self.PRINCIPAL,
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
             extra_monthly=Decimal("500.00"),
         )
         # Row 1 hand-computed values.
@@ -944,12 +957,14 @@ class TestProjectForward:
           July extra_payment = $500.00
         """
         rows = project_forward(
-            starting_balance=self.PRINCIPAL,
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
             monthly_override={(2026, 6): Decimal("2000.00")},
             extra_monthly=Decimal("500.00"),
         )
@@ -983,12 +998,14 @@ class TestProjectForward:
         payment-record branch is preserved.
         """
         rows = project_forward(
-            starting_balance=self.PRINCIPAL,
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
             monthly_override={(2026, 2): Decimal("50.00")},
         )
         feb = rows[0]
@@ -1023,18 +1040,20 @@ class TestProjectForward:
             self.PRINCIPAL, self.RATE, self.TERM_MONTHS,
         )
         rows = project_forward(
-            starting_balance=self.PRINCIPAL,
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=contractual,
-            rate_changes_remaining=[
-                RateChangeRecord(
-                    effective_date=date(2027, 2, 1),
-                    interest_rate=Decimal("0.075"),
-                ),
-            ],
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=contractual,
+                rate_changes_remaining=[
+                    RateChangeRecord(
+                        effective_date=date(2027, 2, 1),
+                        interest_rate=Decimal("0.075"),
+                    ),
+                ],
+            ),
         )
         # Row 12 (month 13, Feb 2027) is the first row at the new
         # rate.  Pre-change row 11 (Jan 2027, month 12) keeps the
@@ -1072,12 +1091,14 @@ class TestProjectForward:
         The schedule terminates in a single row.
         """
         rows = project_forward(
-            starting_balance=Decimal("1000.00"),
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=Decimal("1000.00"),
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
             extra_monthly=Decimal("500.00"),
         )
         assert len(rows) == 1
@@ -1095,22 +1116,26 @@ class TestProjectForward:
         (the loan is already paid off; nothing to project).
         """
         rows = project_forward(
-            starting_balance=Decimal("0.00"),
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=Decimal("0.00"),
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
         )
         assert rows == []
         # Negative balance is treated the same way (defensive).
         rows = project_forward(
-            starting_balance=Decimal("-10.00"),
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=self.TERM_MONTHS,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=Decimal("-10.00"),
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
         )
         assert rows == []
 
@@ -1121,22 +1146,26 @@ class TestProjectForward:
         (no time horizon for projection).
         """
         rows = project_forward(
-            starting_balance=self.PRINCIPAL,
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=0,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=0,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
         )
         assert rows == []
         # Negative remaining_months is treated the same way.
         rows = project_forward(
-            starting_balance=self.PRINCIPAL,
-            starting_date=self.STARTING_DATE,
-            annual_rate=self.RATE,
-            remaining_months=-3,
-            payment_day=self.PAYMENT_DAY,
-            contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                annual_rate=self.RATE,
+                remaining_months=-3,
+                payment_day=self.PAYMENT_DAY,
+                contractual_payment=self.CONTRACTUAL_PAYMENT,
+            ),
         )
         assert rows == []
 
@@ -1173,12 +1202,14 @@ class TestProjectForward:
         # Hand-anchored contractual value.
         assert contractual == Decimal("1722.25")
         rows = project_forward(
-            starting_balance=starting,
-            starting_date=date(2026, 5, 30),
-            annual_rate=self.RATE,
-            remaining_months=remaining,
-            payment_day=payment_day,
-            contractual_payment=contractual,
+            ProjectionInputs(
+                starting_balance=starting,
+                starting_date=date(2026, 5, 30),
+                annual_rate=self.RATE,
+                remaining_months=remaining,
+                payment_day=payment_day,
+                contractual_payment=contractual,
+            ),
             extra_monthly=extra,
         )
         # Hand-anchored independently-computed payoff.

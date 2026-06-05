@@ -586,12 +586,14 @@ class TestMortgageInterest:
             params.term_months,
         )
         schedule = amortization_engine.project_forward(
-            starting_balance=params.original_principal,
-            starting_date=starting_date,
-            annual_rate=params.interest_rate,
-            remaining_months=params.term_months,
-            payment_day=params.payment_day,
-            contractual_payment=contractual,
+            amortization_engine.ProjectionInputs(
+                starting_balance=params.original_principal,
+                starting_date=starting_date,
+                annual_rate=params.interest_rate,
+                remaining_months=params.term_months,
+                payment_day=params.payment_day,
+                contractual_payment=contractual,
+            ),
         )
         expected_interest = sum(
             row.interest for row in schedule
@@ -667,12 +669,14 @@ class TestMortgageInterest:
             params.term_months,
         )
         schedule = amortization_engine.project_forward(
-            starting_balance=params.original_principal,
-            starting_date=starting_date,
-            annual_rate=params.interest_rate,
-            remaining_months=params.term_months,
-            payment_day=params.payment_day,
-            contractual_payment=contractual,
+            amortization_engine.ProjectionInputs(
+                starting_balance=params.original_principal,
+                starting_date=starting_date,
+                annual_rate=params.interest_rate,
+                remaining_months=params.term_months,
+                payment_day=params.payment_day,
+                contractual_payment=contractual,
+            ),
         )
         expected = sum(
             r.interest for r in schedule if r.payment_date.year == YEAR

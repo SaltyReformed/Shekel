@@ -79,6 +79,7 @@ from decimal import Decimal
 from app.services.amortization_engine import (
     AmortizationRow,
     PaymentRecord,
+    ProjectionInputs,
     RateChangeRecord,
     project_forward,
 )
@@ -813,31 +814,31 @@ def compute_payoff_scenarios(
     # critical regression-prevention property -- chart and summary
     # cannot diverge -- is enforced HERE by funnelling all three
     # through the same primitive call shape.
-    projection_kwargs = {
-        "starting_balance": replay.balance_as_of,
-        "starting_date": replay.next_pay_date,
-        "annual_rate": period_for_date(periods, replay.next_pay_date).annual_rate,
-        "remaining_months": replay.remaining_months_as_of,
-        "payment_day": loan_params.payment_day,
-        "contractual_payment": contractual,
-        "rate_changes_remaining": (
+    projection_inputs = ProjectionInputs(
+        starting_balance=replay.balance_as_of,
+        starting_date=replay.next_pay_date,
+        annual_rate=period_for_date(periods, replay.next_pay_date).annual_rate,
+        remaining_months=replay.remaining_months_as_of,
+        payment_day=loan_params.payment_day,
+        contractual_payment=contractual,
+        rate_changes_remaining=(
             rate_changes_remaining if rate_changes_remaining else None
         ),
-    }
+    )
     override_for_projection = monthly_override if monthly_override else None
 
     original_forward = project_forward(
-        **projection_kwargs,
+        projection_inputs,
         monthly_override=None,
         extra_monthly=ZERO_MONEY,
     )
     committed_forward = project_forward(
-        **projection_kwargs,
+        projection_inputs,
         monthly_override=override_for_projection,
         extra_monthly=ZERO_MONEY,
     )
     accelerated_forward = project_forward(
-        **projection_kwargs,
+        projection_inputs,
         monthly_override=override_for_projection,
         extra_monthly=extra_monthly,
     )

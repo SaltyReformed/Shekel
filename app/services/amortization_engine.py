@@ -161,13 +161,20 @@ def calculate_remaining_months(
 
 
 @dataclass
-class AmortizationRow:
+class AmortizationRow:  # pylint: disable=too-many-instance-attributes
     """A single month in an amortization schedule.
 
     The is_confirmed flag distinguishes historical fact from projection:
     True when the row's payment came from a confirmed PaymentRecord
     (Paid/Settled status), False when projected or computed from the
     contractual payment formula.
+
+    Pylint note: ``too-many-instance-attributes`` (9) is suppressed
+    because this is a cohesive value record -- one amortization-table
+    row -- consumed verbatim across the loan routes, year-end summary,
+    and resolver.  Every field is an irreducible column of that row;
+    splitting it would fragment a single domain concept and break every
+    consumer for no design gain.
     """
 
     month: int
@@ -325,17 +332,197 @@ def _find_applicable_rate(
     return applicable_rate
 
 
+@dataclass(frozen=True)
+class ProjectionInputs:
+    """Immutable starting state and forward-only terms for a projection.
+
+    Bundles the inputs that describe a loan's state at
+    ``starting_date`` together with the parameters that stay constant
+    across a related set of projections.  The Payoff Calculator builds
+    one ``ProjectionInputs`` and runs three projections from it
+    (Original / Committed / Accelerated) varying only ``monthly_override``
+    and ``extra_monthly``, so the three slices cannot diverge in their
+    shared starting state -- the load-bearing single-source-of-truth
+    invariant in ``loan_resolver.compute_payoff_scenarios``.
+
+    Attributes:
+        starting_balance: Outstanding balance at ``starting_date``.
+            ``<= 0`` yields an empty projection (loan already paid off).
+        starting_date: The first ``payment_date`` of the projection
+            (typically the replay's ``next_pay_date``).  Subsequent
+            dates advance one month at a time, the day clamped to each
+            month's length.
+        annual_rate: Starting annual interest rate as a Decimal (e.g.
+            ``Decimal("0.06")`` for 6%).  ARM transitions in
+            ``rate_changes_remaining`` override it mid-projection.
+        remaining_months: Maximum number of months to project; also the
+            input to ARM re-amortization at rate changes.  ``<= 0``
+            yields an empty projection.
+        payment_day: Day-of-month payments are due, clamped to each
+            month's max days (e.g. day 31 in February).
+        contractual_payment: Contractual P&I, frozen at projection
+            start.  The per-month payment when no override exists and
+            the baseline for ARM rate-change re-amortization.
+        rate_changes_remaining: Optional ARM rate transitions whose
+            ``effective_date`` is at or after ``starting_date``.
+            ``None`` or empty leaves the rate fixed at ``annual_rate``
+            for the full projection.
+    """
+
+    starting_balance: Decimal
+    starting_date: date
+    annual_rate: Decimal
+    remaining_months: int
+    payment_day: int
+    contractual_payment: Decimal
+    rate_changes_remaining: list[RateChangeRecord] | None = None
+
+
+def _apply_override_payment(
+    balance: Decimal, interest: Decimal, override_amount: Decimal,
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Apply one override-month payment; return its principal split.
+
+    The override amount IS the total payment for the month (no extra --
+    the override already represents the user's planned outlay).
+    Negative amortization (override below the period interest) is
+    preserved as a negative principal portion.  An overpayment that
+    would drive the balance below zero is capped at the remaining
+    balance so the schedule closes without a sub-penny residue.
+
+    Args:
+        balance: Outstanding balance before this month's payment.
+        interest: Period interest already computed for this month.
+        override_amount: The total payment scheduled for the month.
+
+    Returns:
+        ``(principal_portion, actual_payment, new_balance)`` -- Decimals;
+        ``new_balance`` is quantized to cents and never negative.
+    """
+    principal_portion = override_amount - interest
+    if principal_portion >= balance:
+        principal_portion = balance
+        return principal_portion, principal_portion + interest, Decimal("0.00")
+    new_balance = round_money(balance - principal_portion)
+    # Guard against sub-penny negative balance from rounding.
+    if new_balance < 0:
+        new_balance = Decimal("0.00")
+    return principal_portion, principal_portion + interest, new_balance
+
+
+def _apply_contractual_payment(
+    balance: Decimal,
+    interest: Decimal,
+    monthly_payment: Decimal,
+    extra_monthly: Decimal,
+    is_last_month: bool,
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """Apply one contractual (+ extra) payment; return its split.
+
+    The remaining balance is absorbed exactly (and no extra applies)
+    when the contractual principal already covers it OR this is the
+    loop's last scheduled month.  Otherwise ``extra_monthly`` is clamped
+    so acceleration alone cannot drive the balance below zero, and any
+    sub-penny rounding residue is folded back into ``extra`` so payment,
+    principal, and extra reconcile.
+
+    Args:
+        balance: Outstanding balance before this month's payment.
+        interest: Period interest already computed for this month.
+        monthly_payment: Current contractual P&I (post any ARM recast).
+        extra_monthly: Requested additional principal for the month.
+        is_last_month: True on the loop's final scheduled month, which
+            forces the remaining balance to be absorbed.
+
+    Returns:
+        ``(principal_portion, actual_payment, extra, new_balance)`` --
+        Decimals; ``new_balance`` is quantized to cents and never
+        negative.
+    """
+    principal_portion = monthly_payment - interest
+    # Final row absorbs the residue: the contractual principal already
+    # covers the balance, or this is the last scheduled month.
+    if principal_portion >= balance or is_last_month:
+        principal_portion = balance
+        return (
+            principal_portion,
+            principal_portion + interest,
+            Decimal("0.00"),
+            Decimal("0.00"),
+        )
+    # Cap extra so the balance cannot drop below zero from
+    # acceleration alone.
+    extra = min(extra_monthly, balance - principal_portion)
+    extra = max(extra, Decimal("0.00"))
+    new_balance = round_money(balance - principal_portion - extra)
+    # Guard against sub-penny negative balance from rounding.
+    if new_balance < 0:
+        extra += new_balance
+        new_balance = Decimal("0.00")
+    return principal_portion, monthly_payment, extra, new_balance
+
+
+@dataclass
+class _ProjectionState:
+    """Mutable per-month state carried through the projection loop.
+
+    Bundles the four values that evolve together as a forward
+    amortization walks month by month, so the loop body and its helpers
+    share one cohesive state object instead of parallel locals.
+
+    Attributes:
+        balance: Outstanding principal after the latest applied payment.
+        monthly_payment: Current contractual P&I (recast on ARM changes).
+        annual_rate: Current annual rate (changes at ARM transitions).
+        monthly_rate: ``annual_rate / 12`` (cached to avoid recomputing).
+    """
+
+    balance: Decimal
+    monthly_payment: Decimal
+    annual_rate: Decimal
+    monthly_rate: Decimal
+
+
+def _recast_for_rate_change(
+    state: _ProjectionState,
+    pay_date: date,
+    rate_schedule: list[tuple[date, Decimal]],
+    months_left: int,
+) -> None:
+    """Apply any ARM rate change effective at ``pay_date`` to ``state``.
+
+    When the most-recent applicable rate differs from the state's
+    current rate, updates the state's annual and monthly rates and
+    re-amortizes the contractual ``monthly_payment`` over the remaining
+    balance and ``months_left`` months at the new rate.  A no-op when no
+    rate change applies (the fallback is the state's current rate, so an
+    empty or fully-consumed schedule leaves the state untouched).
+
+    Args:
+        state: The loop's mutable projection state; updated in place.
+        pay_date: The payment date of the current schedule month.
+        rate_schedule: Sorted ``(effective_date, rate)`` tuples.
+        months_left: Months remaining (including this one), the term for
+            the re-amortization formula.
+    """
+    period_rate = _find_applicable_rate(
+        pay_date, rate_schedule, state.annual_rate,
+    )
+    if period_rate != state.annual_rate:
+        state.annual_rate = period_rate
+        state.monthly_rate = (
+            period_rate / 12 if period_rate > 0 else Decimal("0")
+        )
+        state.monthly_payment = calculate_monthly_payment(
+            state.balance, period_rate, months_left,
+        )
+
+
 def project_forward(
+    inputs: ProjectionInputs,
     *,
-    starting_balance: Decimal,
-    starting_date: date,
-    annual_rate: Decimal,
-    remaining_months: int,
-    payment_day: int,
-    contractual_payment: Decimal,
     monthly_override: dict[tuple[int, int], Decimal] | None = None,
     extra_monthly: Decimal = Decimal("0.00"),
-    rate_changes_remaining: list[RateChangeRecord] | None = None,
 ) -> list[AmortizationRow]:
     """Pure forward projection from a known starting state.
 
@@ -388,31 +575,12 @@ def project_forward(
     absent.
 
     Args:
-        starting_balance: Outstanding balance at ``starting_date``.
-            Must be > 0 for any rows to be produced; ``<= 0`` returns
-            an empty list (the loan is already paid off).
-        starting_date: The first ``payment_date`` of the projection.
-            The caller (typically the replay's ``next_pay_date`` --
-            ``rate_period_engine.replay_schedule``) determines this;
-            ``project_forward`` does not derive it from an origination
-            date.  Subsequent
-            payment dates advance one month at a time using
-            ``payment_day`` clamped to each month's length.
-        annual_rate: Annual interest rate as a Decimal (e.g.
-            ``Decimal("0.06")`` for 6%).  The starting rate; ARM
-            transitions in ``rate_changes_remaining`` override it
-            mid-projection.
-        remaining_months: Maximum number of months to project.  Used
-            both as the loop cap and as the input to ARM
-            re-amortization at rate changes.  ``<= 0`` returns an
-            empty list.
-        payment_day: Day-of-month payments are due.  Clamped to each
-            month's max days (e.g. day 31 in February).
-        contractual_payment: The contractual P&I (frozen at projection
-            start, typically derived by the caller from the original
-            terms via ``calculate_monthly_payment``).  Used as the
-            payment for months without an override and as the baseline
-            for ARM rate-change re-amortization.
+        inputs: A :class:`ProjectionInputs` bundling the starting state
+            (balance, date) and the forward-only terms (annual rate,
+            remaining months, payment day, contractual P&I, optional ARM
+            rate changes) that stay constant across a related set of
+            projections.  See :class:`ProjectionInputs` for per-field
+            semantics.
         monthly_override: Optional ``(year, month) -> Decimal`` map.
             Each entry replaces the contractual payment for that month
             and suppresses ``extra_monthly`` for that month.  ``None``
@@ -424,15 +592,12 @@ def project_forward(
             ignore this parameter entirely -- the override IS the
             user's planned outlay for that month, not a baseline that
             extra accelerates further.
-        rate_changes_remaining: Optional ARM rate transitions whose
-            ``effective_date`` is at or after ``starting_date``.
-            ``None`` or empty leaves the rate fixed at ``annual_rate``
-            for the full projection.
 
     Returns:
         A list of ``AmortizationRow`` instances in payment-date order,
         each with ``is_confirmed=False``.  Empty when
-        ``starting_balance <= 0`` or ``remaining_months <= 0``.
+        ``inputs.starting_balance <= 0`` or
+        ``inputs.remaining_months <= 0``.
 
     Raises:
         Nothing.  ``RateChangeRecord`` and ``PaymentRecord`` field
@@ -440,125 +605,78 @@ def project_forward(
         this function trusts its inputs (per CLAUDE.md "Trust
         internal code and framework guarantees").
     """
-    if starting_balance <= 0 or remaining_months <= 0:
+    if inputs.starting_balance <= 0 or inputs.remaining_months <= 0:
         return []
 
     overrides = {} if monthly_override is None else monthly_override
-
-    has_rate_changes = (
-        rate_changes_remaining is not None
-        and len(rate_changes_remaining) > 0
+    # No origination filter: projection has no origination concept.
+    rate_schedule = (
+        _build_rate_change_list(inputs.rate_changes_remaining, None)
+        if inputs.rate_changes_remaining
+        else []
     )
-    if has_rate_changes:
-        # No origination filter: projection has no origination concept.
-        rate_schedule = _build_rate_change_list(
-            rate_changes_remaining, None,
-        )
-    else:
-        rate_schedule = []
 
-    # Defensive: coerce to Decimal even if caller passes a value
+    # Defensive: coerce to Decimal even if the caller passes a value
     # whose representation could yield float-like surprises.
-    balance = Decimal(str(starting_balance))
-    monthly_payment = contractual_payment
-    current_annual_rate = annual_rate
-    monthly_rate = annual_rate / 12 if annual_rate > 0 else Decimal("0")
+    state = _ProjectionState(
+        balance=Decimal(str(inputs.starting_balance)),
+        monthly_payment=inputs.contractual_payment,
+        annual_rate=inputs.annual_rate,
+        monthly_rate=(
+            inputs.annual_rate / 12 if inputs.annual_rate > 0 else Decimal("0")
+        ),
+    )
 
-    pay_year = starting_date.year
-    pay_month = starting_date.month
+    # First payment date: the starting month with the day clamped to
+    # that month's length.  Subsequent dates advance via _advance_month.
+    pay_date = date(
+        inputs.starting_date.year,
+        inputs.starting_date.month,
+        min(
+            inputs.payment_day,
+            calendar.monthrange(
+                inputs.starting_date.year, inputs.starting_date.month,
+            )[1],
+        ),
+    )
     rows: list[AmortizationRow] = []
 
-    for month_num in range(1, remaining_months + 1):
-        if balance <= 0:
+    for month_num in range(1, inputs.remaining_months + 1):
+        if state.balance <= 0:
             break
 
-        # Calculate payment date for this month.
-        max_day = calendar.monthrange(pay_year, pay_month)[1]
-        pay_date = date(pay_year, pay_month, min(payment_day, max_day))
-
-        # ARM rate adjustment: when the applicable rate changes,
-        # re-amortize the remaining balance over the remaining months
-        # at the new rate.
+        # ARM rate adjustment: re-amortize over the remaining balance
+        # and months at the new rate when the applicable rate changes.
         if rate_schedule:
-            period_rate = _find_applicable_rate(
-                pay_date, rate_schedule, current_annual_rate,
+            _recast_for_rate_change(
+                state, pay_date, rate_schedule,
+                inputs.remaining_months - month_num + 1,
             )
-            if period_rate != current_annual_rate:
-                current_annual_rate = period_rate
-                monthly_rate = (
-                    current_annual_rate / 12
-                    if current_annual_rate > 0
-                    else Decimal("0")
+
+        interest = round_money(state.balance * state.monthly_rate)
+        month_key = (pay_date.year, pay_date.month)
+
+        if month_key in overrides:
+            # Override path: the override amount IS the total payment for
+            # the month; extra_monthly is NOT added (override months must
+            # never carry extra -- the plan's regression-prevention
+            # property).
+            principal_portion, actual_payment, state.balance = (
+                _apply_override_payment(
+                    state.balance, interest, overrides[month_key],
                 )
-                months_left = remaining_months - month_num + 1
-                monthly_payment = calculate_monthly_payment(
-                    balance, current_annual_rate, months_left,
-                )
-
-        # Period interest at the applicable rate.
-        interest = round_money(balance * monthly_rate)
-
-        month_key = (pay_year, pay_month)
-        has_override = month_key in overrides
-
-        if has_override:
-            # Override path: the override amount IS the total payment
-            # for the month.  extra_monthly is NOT added (the
-            # architectural plan's critical regression-prevention
-            # property -- override months must never carry extra).
-            total_payment = overrides[month_key]
-            principal_portion = total_payment - interest
-            # extra is structurally zero for override months: the
-            # override already represents the user's planned outlay.
+            )
             extra = Decimal("0.00")
-
-            if principal_portion >= balance:
-                # Overpayment cap: absorb remaining balance exactly so
-                # the schedule closes without a sub-penny residue.
-                principal_portion = balance
-                actual_payment = principal_portion + interest
-                balance = Decimal("0.00")
-            else:
-                actual_payment = principal_portion + interest
-                balance -= principal_portion
-                balance = round_money(balance)
-                # Guard against sub-penny negative balance from
-                # rounding (mirrors the engine's payment-record
-                # branch).
-                if balance < 0:
-                    balance = Decimal("0.00")
         else:
-            # No override: contractual + extra path.  ``extra_monthly``
-            # is applied here and only here -- the architectural fix
-            # for the "extra applied to ghost historical months" bug.
-            principal_portion = monthly_payment - interest
-            is_final = (
-                principal_portion >= balance
-                or month_num == remaining_months
+            # No override: contractual + extra path.  extra_monthly is
+            # applied here and only here; the final scheduled month
+            # absorbs the residue regardless of extra.
+            principal_portion, actual_payment, extra, state.balance = (
+                _apply_contractual_payment(
+                    state.balance, interest, state.monthly_payment,
+                    extra_monthly, month_num == inputs.remaining_months,
+                )
             )
-            if is_final:
-                principal_portion = balance
-                actual_payment = principal_portion + interest
-                extra = Decimal("0.00")
-                balance = Decimal("0.00")
-            else:
-                actual_payment = monthly_payment
-                # Cap extra so the balance cannot drop below zero
-                # from acceleration alone.
-                extra = min(extra_monthly, balance - principal_portion)
-                extra = max(extra, Decimal("0.00"))
-                balance -= principal_portion + extra
-                balance = round_money(balance)
-                # Guard against sub-penny negative balance from
-                # rounding.
-                if balance < 0:
-                    extra += balance
-                    balance = Decimal("0.00")
-
-        # Record the rate used for this period when ARM data is
-        # present; otherwise leave None so consumers that do not
-        # render the rate column see the field absent.
-        row_rate = current_annual_rate if rate_schedule else None
 
         rows.append(AmortizationRow(
             month=month_num,
@@ -567,19 +685,21 @@ def project_forward(
             principal=round_money(principal_portion),
             interest=interest,
             extra_payment=round_money(extra),
-            remaining_balance=balance,
+            remaining_balance=state.balance,
             is_confirmed=False,
-            interest_rate=row_rate,
+            # Rate column only when ARM data is present; else None so
+            # consumers that do not render it see the field absent.
+            interest_rate=state.annual_rate if rate_schedule else None,
         ))
 
-        if balance <= 0:
+        if state.balance <= 0:
             break
 
-        # Advance to next month.
-        pay_month += 1
-        if pay_month > 12:
-            pay_month = 1
-            pay_year += 1
+        # Advance to the next month's payment date (day re-clamped from
+        # the original payment_day, not the prior clamped day).
+        pay_date = _advance_month(
+            pay_date.year, pay_date.month, inputs.payment_day,
+        )
 
     return rows
 
@@ -708,18 +828,24 @@ def calculate_payoff_by_date(
         origination_date, payment_day,
     )
 
-    # Standard projection: no extra.  The contractual payment alone
-    # determines the standard payoff date.
-    standard = project_forward(
+    # All projections in this function share one starting state; only
+    # ``extra_monthly`` varies between the standard run and each binary-
+    # search iteration.  Building ``ProjectionInputs`` once guarantees
+    # they cannot diverge in their shared inputs.
+    projection_inputs = ProjectionInputs(
         starting_balance=current_principal,
         starting_date=starting_date,
         annual_rate=annual_rate,
         remaining_months=projection_months,
         payment_day=payment_day,
         contractual_payment=contractual_payment,
-        monthly_override=None,
-        extra_monthly=Decimal("0.00"),
         rate_changes_remaining=rate_changes,
+    )
+
+    # Standard projection: no extra.  The contractual payment alone
+    # determines the standard payoff date.
+    standard = project_forward(
+        projection_inputs, monthly_override=None, extra_monthly=Decimal("0.00"),
     )
     if not standard:
         return Decimal("0.00")
@@ -759,15 +885,7 @@ def calculate_payoff_by_date(
     for _ in range(100):  # Max iterations for convergence.
         mid = ((lo + hi) / 2).quantize(TWO_PLACES, ROUND_HALF_UP)
         schedule = project_forward(
-            starting_balance=current_principal,
-            starting_date=starting_date,
-            annual_rate=annual_rate,
-            remaining_months=projection_months,
-            payment_day=payment_day,
-            contractual_payment=contractual_payment,
-            monthly_override=None,
-            extra_monthly=mid,
-            rate_changes_remaining=rate_changes,
+            projection_inputs, monthly_override=None, extra_monthly=mid,
         )
         if not schedule:
             return mid
