@@ -564,9 +564,10 @@ class TestConsumerIntegration:
             )
             assert savings_params["salary_gross_biweekly"] == canonical
 
-            # Year-end consumer: thin delegator over income_service.
+            # Year-end consumer: thin delegator over income_service
+            # (moved to the ._data sub-module in the Phase 2 split).
             year_end_val = (
-                year_end_summary_service._load_salary_gross_biweekly(
+                year_end_summary_service._data._load_salary_gross_biweekly(
                     user_id, scenario,
                 )
             )

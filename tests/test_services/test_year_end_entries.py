@@ -31,9 +31,9 @@ from app.models.ref import RecurrencePattern
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services.year_end_summary_service import (
+from app.services.year_end_summary_service import compute_year_end_summary
+from app.services.year_end_summary_service._spending import (
     _compute_entry_breakdowns,
-    compute_year_end_summary,
 )
 
 ZERO = Decimal("0")

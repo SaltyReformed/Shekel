@@ -23,11 +23,13 @@ contract.
 
 # pylint: disable=protected-access
 # Cross-surface single-source-of-truth tests deliberately reach into
-# ``year_end_summary_service``'s private ``_generate_debt_schedules`` /
-# ``_compute_mortgage_interest`` helpers because the public
-# ``compute_year_end_summary`` aggregate exposes derived dec31
-# balances, not the schedule rows themselves -- and the schedule-row
-# equality is exactly what HIGH-08 / F-017..F-023 demand we lock.
+# the year_end_summary_service package's private
+# ``_balances._generate_debt_schedules`` /
+# ``_income_tax._compute_mortgage_interest`` helpers (Phase 2 split)
+# because the public ``compute_year_end_summary`` aggregate exposes
+# derived dec31 balances, not the schedule rows themselves -- and the
+# schedule-row equality is exactly what HIGH-08 / F-017..F-023 demand
+# we lock.
 
 import re
 import subprocess
@@ -215,7 +217,7 @@ def test_per_period_principal_interest_single_source(
 
         state = _resolver_state(account, loan_params, date.today())
 
-        debt_schedules = year_end_summary_service._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
         year_end_schedule = debt_schedules[account.id]
@@ -291,11 +293,11 @@ def test_total_interest_one_definition(
         # first eleven payments (payment_day=1, origination
         # 2026-01-01 ⇒ first payment 2026-02-01, last in-year payment
         # 2026-12-01).
-        debt_schedules = year_end_summary_service._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
         calendar_year_interest = (
-            year_end_summary_service._compute_mortgage_interest(
+            year_end_summary_service._income_tax._compute_mortgage_interest(
                 2026, debt_schedules,
             )
         )
@@ -542,7 +544,7 @@ def test_arm_payoff_date_consistent_across_surfaces(
 
         # Year-end-summary path: the same schedule the resolver
         # produced flows through ``_generate_debt_schedules``.
-        debt_schedules = year_end_summary_service._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
         ye_schedule = debt_schedules[account.id]
@@ -598,7 +600,9 @@ _APP_DIR = Path(__file__).resolve().parents[2] / "app"
 _LOAN_SINGLE_SOURCE_FILES = (
     "services/debt_strategy_service.py",
     "routes/loan.py",
-    "services/year_end_summary_service.py",
+    # Phase 2 split: year_end_summary_service is now a package; the grep
+    # below runs with -r --include=*.py so every sub-module is scanned.
+    "services/year_end_summary_service",
     "services/loan_payment_service.py",
 )
 
@@ -623,7 +627,7 @@ def test_no_bare_quantize_in_loan_paths():
     """
     grep_out = subprocess.run(
         [
-            "grep", "-Hn",
+            "grep", "-rHn", "--include=*.py",
             r'\.quantize(Decimal("0\.01"))',
         ] + [
             str(_APP_DIR / rel) for rel in _LOAN_SINGLE_SOURCE_FILES
