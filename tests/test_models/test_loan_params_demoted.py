@@ -171,7 +171,7 @@ def test_no_display_read_of_current_principal():
         # amortization engine has no DB access and imports no model, so
         # ``request.current_principal`` reads the resolver-derived
         # balance the caller passes in (``state.current_balance`` at
-        # ``routes/loan.py`` payoff_calculate), NOT the demoted
+        # ``routes/loan/calculators.py`` payoff_calculate), NOT the demoted
         # ``LoanParams.current_principal`` column.  The module is
         # structurally unable to touch LoanParams, so this entry does
         # not weaken the lock's real protection.

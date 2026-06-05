@@ -739,7 +739,7 @@ class PayoffRequest:  # pylint: disable=too-many-instance-attributes
             ``payment_day``).  The caller is responsible for passing
             "today's first of month" when projecting from current
             state rather than from real origination (see
-            ``app.routes.loan.payoff_calculate`` target-date branch).
+            ``app.routes.loan.calculators.payoff_calculate`` target-date branch).
         payment_day: Day-of-month payments are due.
         original_principal: Original loan amount used to derive the
             contractual payment for fixed-rate loans.  When ``None``

@@ -79,8 +79,8 @@ class TransferTemplate(
     # the destination loan account on every balance render, so it tracks
     # the loan's monthly payment after an escrow or rate change rather
     # than staying frozen at ``default_amount`` (E-18 loan model).  Set by
-    # ``app.routes.loan.create_payment_transfer`` for new loan-payment
-    # transfers; FALSE for every other template and for all pre-existing
+    # ``app.routes.loan.payment_transfer.create_payment_transfer`` for new
+    # loan-payment transfers; FALSE for every other template and pre-existing
     # rows, so the live-derive override is dormant unless enabled.
     derive_from_loan = db.Column(
         db.Boolean, nullable=False, default=False,

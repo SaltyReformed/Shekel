@@ -19,7 +19,7 @@ It NEVER queries budget.transfers.  The balance calculator and all
 related services must never depend on the transfers table directly.
 
 Shared by:
-  - app/routes/loan.py (dashboard and payoff calculator)
+  - app/routes/loan/ (dashboard and payoff calculator)
   - app/services/savings_dashboard_service.py (savings projections)
   - app/services/year_end_summary_service.py (annual aggregation)
   - app/routes/debt_strategy.py (debt payoff strategies)

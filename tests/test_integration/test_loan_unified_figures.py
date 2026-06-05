@@ -10,8 +10,8 @@ schedule, payoff date and life-of-loan interest"; Commit 15 routed
 every display surface through it; Commit 17 closes the remaining
 divergences by collapsing residual computations onto the resolver
 output and replacing the bare ``.quantize(Decimal("0.01"))`` site at
-``app/routes/loan.py``'s ``committed_interest_saved`` with
-``round_money`` (the E-26 / HIGH-04 boundary).
+``committed_interest_saved`` (now ``app/routes/loan/calculators.py``)
+with ``round_money`` (the E-26 / HIGH-04 boundary).
 
 Test IDs C17-1..C17-6 trace to ``remediation_plan.md`` Section 9
 "Commit 17" subsection E.  Hand-computed expectations follow the

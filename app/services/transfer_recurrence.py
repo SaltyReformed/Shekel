@@ -85,8 +85,8 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         # date is computed from the recurrence rule via the same shared
         # helper the transaction engine uses (recurrence_engine.
         # _compute_due_date): a rule with a day_of_month (monthly,
-        # quarterly, and -- via routes/loan.py -- the mortgage payment,
-        # whose rule carries day_of_month=LoanParams.payment_day) yields
+        # quarterly, and -- via routes/loan/payment_transfer.py -- the
+        # mortgage payment, whose rule carries day_of_month=payment_day) yields
         # that calendar day placed in the period's month, so the
         # calendar/dashboard match the loan card's true monthly due
         # date.  Rules without a day_of_month (every-paycheck, every-N)

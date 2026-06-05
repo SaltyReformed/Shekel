@@ -65,7 +65,7 @@ class RateHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
         ),
         # F-139 / C-42: composite index on
         # ``(account_id, effective_date DESC)`` matches the
-        # predominant query in ``app/routes/loan.py``:
+        # predominant query in ``app/routes/loan/escrow_rates.py``:
         # ``RateHistory.query.filter_by(account_id=X)
         #     .order_by(RateHistory.effective_date.desc())``.
         # DESC ordering on the second column lets PostgreSQL satisfy
