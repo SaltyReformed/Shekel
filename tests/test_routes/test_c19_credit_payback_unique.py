@@ -1126,7 +1126,7 @@ class TestMarkCreditRouteIntegrityErrorCatch:
             raise forged
 
         with patch(
-            "app.routes.transactions.credit_workflow.mark_as_credit",
+            "app.routes.transactions.mutations.credit_workflow.mark_as_credit",
             _raise_other_integrity_error,
         ):
             resp = auth_client.post(f"/transactions/{source_id}/mark-credit")
