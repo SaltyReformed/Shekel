@@ -10,6 +10,7 @@ import pytest
 
 from app.services.amortization_engine import (
     PaymentRecord,
+    PayoffRequest,
     ProjectionInputs,
     RateChangeRecord,
     calculate_monthly_payment,
@@ -85,12 +86,14 @@ class TestPayoffByDate:
         achieves the target and $478.07 does not.
         """
         result = calculate_payoff_by_date(
-            current_principal=Decimal("200000"),
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            target_date=date(2041, 1, 1),
-            origination_date=date(2026, 1, 1),
-            payment_day=1,
+            PayoffRequest(
+                current_principal=Decimal("200000"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                target_date=date(2041, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            )
         )
         assert result == Decimal("478.08"), (
             f"Expected extra payment 478.08, got {result}"
@@ -141,36 +144,42 @@ class TestPayoffByDate:
     def test_target_too_soon(self):
         """Target in past → returns None."""
         result = calculate_payoff_by_date(
-            current_principal=Decimal("200000"),
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            target_date=date(2025, 1, 1),
-            origination_date=date(2026, 1, 1),
-            payment_day=1,
+            PayoffRequest(
+                current_principal=Decimal("200000"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                target_date=date(2025, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            )
         )
         assert result is None
 
     def test_target_after_standard_payoff(self):
         """Target after standard payoff → returns 0."""
         result = calculate_payoff_by_date(
-            current_principal=Decimal("200000"),
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            target_date=date(2060, 1, 1),
-            origination_date=date(2026, 1, 1),
-            payment_day=1,
+            PayoffRequest(
+                current_principal=Decimal("200000"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                target_date=date(2060, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            )
         )
         assert result == Decimal("0.00")
 
     def test_zero_principal(self):
         """Zero principal → returns $0."""
         result = calculate_payoff_by_date(
-            current_principal=Decimal("0"),
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            target_date=date(2040, 1, 1),
-            origination_date=date(2026, 1, 1),
-            payment_day=1,
+            PayoffRequest(
+                current_principal=Decimal("0"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                target_date=date(2040, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            )
         )
         assert result == Decimal("0.00")
 
@@ -198,12 +207,14 @@ class TestPayoffByDateProjectForward:
         change history).
         """
         result = calculate_payoff_by_date(
-            current_principal=Decimal("200000"),
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            target_date=date(2025, 12, 1),
-            origination_date=date(2026, 1, 1),
-            payment_day=1,
+            PayoffRequest(
+                current_principal=Decimal("200000"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                target_date=date(2025, 12, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            )
         )
         assert result is None
 
@@ -215,12 +226,14 @@ class TestPayoffByDateProjectForward:
         required and the function short-circuits before binary search.
         """
         result = calculate_payoff_by_date(
-            current_principal=Decimal("200000"),
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            target_date=date(2060, 1, 1),
-            origination_date=date(2026, 1, 1),
-            payment_day=1,
+            PayoffRequest(
+                current_principal=Decimal("200000"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                target_date=date(2060, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            )
         )
         assert result == Decimal("0.00")
 
@@ -233,12 +246,14 @@ class TestPayoffByDateProjectForward:
         via the bisection's convergence criterion (hi - lo <= 0.01).
         """
         result = calculate_payoff_by_date(
-            current_principal=Decimal("200000"),
-            annual_rate=Decimal("0.065"),
-            remaining_months=360,
-            target_date=date(2041, 1, 1),
-            origination_date=date(2026, 1, 1),
-            payment_day=1,
+            PayoffRequest(
+                current_principal=Decimal("200000"),
+                annual_rate=Decimal("0.065"),
+                remaining_months=360,
+                target_date=date(2041, 1, 1),
+                origination_date=date(2026, 1, 1),
+                payment_day=1,
+            )
         )
         assert result == Decimal("478.08"), (
             f"Expected $478.08 required extra, got {result}"
@@ -322,7 +337,7 @@ class TestPayoffByDateProjectForward:
         if any value drifts even by one cent, that is a real
         regression caught here.
         """
-        result = calculate_payoff_by_date(**kwargs)
+        result = calculate_payoff_by_date(PayoffRequest(**kwargs))
         assert result == expected, (
             f"{label}: expected {expected}, got {result}"
         )
@@ -492,8 +507,10 @@ class TestAmortizationEngineRegression:
         """
         target = date(2044, 1, 1)  # 20-year payoff target
         extra = calculate_payoff_by_date(
-            self.PRINCIPAL, self.RATE, self.MONTHS,
-            target, self.ORIGINATION, self.PAYMENT_DAY,
+            PayoffRequest(
+                self.PRINCIPAL, self.RATE, self.MONTHS,
+                target, self.ORIGINATION, self.PAYMENT_DAY,
+            )
         )
         assert extra is not None
         assert extra > Decimal("0")
@@ -1236,14 +1253,19 @@ class TestProjectForward:
         engine_source = Path(
             "app/services/amortization_engine.py"
         ).read_text(encoding="utf-8")
-        # Slice out the project_forward body for the assertion.
-        # ``calculate_payoff_by_date`` is the next top-level def
-        # after Commit 9 of the amortization-engine split removed
-        # ``calculate_summary``.
+        # Slice out the project_forward body for the assertion.  The
+        # body ends at the next top-level ``def`` or ``class`` after
+        # ``project_forward`` -- the ``PayoffRequest`` dataclass, which
+        # the payoff-by-date param-object refactor placed between
+        # ``project_forward`` and ``calculate_payoff_by_date``.  Taking
+        # the min of both markers keeps the slice correct regardless of
+        # what construct comes next.
         marker = "def project_forward("
-        next_def = "\ndef calculate_payoff_by_date("
         start = engine_source.index(marker)
-        end = engine_source.index(next_def, start)
+        next_def = engine_source.find("\ndef ", start + len(marker))
+        next_class = engine_source.find("\nclass ", start + len(marker))
+        candidates = [c for c in (next_def, next_class) if c != -1]
+        end = min(candidates) if candidates else len(engine_source)
         body = engine_source[start:end]
         # No bare cents quantize without explicit rounding= keyword.
         assert '.quantize(Decimal("0.01"))' not in body

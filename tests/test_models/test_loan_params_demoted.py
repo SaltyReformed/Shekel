@@ -85,8 +85,12 @@ def test_no_display_read_of_current_principal():
     ``loan_payment_service.py``) were collapsed by the follow-up
     Commit 15 (F-10): the first two were deleted as dead production
     code; the third was rewritten to read ``original_principal``
-    instead of ``current_principal``.  No ``app/services/`` allow-
-    list entries remain.
+    instead of ``current_principal``.  No engine-internal *read of the
+    demoted column* remains in ``app/services/``.  The one ``services/``
+    entry that post-dates F-10 -- ``amortization_engine.py`` (F-28) --
+    allow-lists the ``PayoffRequest`` parameter-object field, not a
+    ``LoanParams`` read: that module has no DB access and cannot touch
+    the demoted column (see the allow-list comment below).
 
     The grep matches WRITES (``params.current_principal = X``) as
     well as reads -- but Commit 15 leaves the legacy write path in
@@ -154,6 +158,15 @@ def test_no_display_read_of_current_principal():
         "routes/debt_strategy.py:",  # comments only
         "services/savings_dashboard_service.py:",  # comments only
         "services/loan_resolver.py:",
+        # PayoffRequest parameter-object field (F-28): the pure-function
+        # amortization engine has no DB access and imports no model, so
+        # ``request.current_principal`` reads the resolver-derived
+        # balance the caller passes in (``state.current_balance`` at
+        # ``routes/loan.py`` payoff_calculate), NOT the demoted
+        # ``LoanParams.current_principal`` column.  The module is
+        # structurally unable to touch LoanParams, so this entry does
+        # not weaken the lock's real protection.
+        "services/amortization_engine.py:",
         # Static / HTML comments + dashboard.html itself:
         "templates/loan/dashboard.html:",
     )

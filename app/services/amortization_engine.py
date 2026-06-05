@@ -704,36 +704,30 @@ def project_forward(
     return rows
 
 
-def calculate_payoff_by_date(
-    current_principal: Decimal,
-    annual_rate: Decimal,
-    remaining_months: int,
-    target_date: date,
-    origination_date: date,
-    payment_day: int,
-    original_principal: Decimal | None = None,
-    term_months: int | None = None,
-    rate_changes: list[RateChangeRecord] | None = None,
-    contractual_payment: Decimal | None = None,
-) -> Decimal | None:
-    """Calculate required extra monthly payment to pay off by target_date.
+@dataclass(frozen=True)
+class PayoffRequest:  # pylint: disable=too-many-instance-attributes
+    """Everything needed to answer "what extra payment hits this date?".
 
-    Reframed in terms of :func:`project_forward` (Phase 7 of the
-    amortization-engine split documented in
-    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
-    The function is a pure forward projection from a known starting
-    state (``current_principal`` at ``origination_date``), so it maps
-    naturally onto the projection primitive: one ``project_forward``
-    call establishes the standard payoff date, then a binary search
-    repeats the projection with successively larger ``extra_monthly``
-    values until the schedule pays off by ``target_date``.  External
-    behavior is preserved bit-for-bit; the projected-payments
-    follow-up (OPT-1 / F-N) is explicitly out of scope here per
-    design decision D-F.
+    Bundles the loan's current state, original terms, and the target
+    payoff date into one immutable request so
+    :func:`calculate_payoff_by_date` takes a single cohesive argument
+    instead of ten positional parameters.  The function derives a
+    :class:`ProjectionInputs` from this request and runs repeated
+    projections against it; the request is the higher-level "loan facts
+    plus the question" object, distinct from the lower-level projection
+    primitive.
 
-    Args:
+    Pylint note: ``too-many-instance-attributes`` (10) is suppressed
+    because this is a deliberate Parameter Object -- its entire purpose
+    is to bundle the ten inputs ``calculate_payoff_by_date`` needs into
+    one cohesive argument.  The ten positional parameters the smell
+    would otherwise push back onto the function are exactly what this
+    dataclass exists to eliminate; splitting it would fragment one
+    request concept for no design gain.
+
+    Attributes:
         current_principal: Outstanding balance to project from.
-            ``<= 0`` returns ``Decimal("0.00")``.
+            ``<= 0`` makes the function return ``Decimal("0.00")``.
         annual_rate: Starting annual interest rate as a Decimal
             (e.g., ``Decimal("0.065")`` for 6.5%).
         remaining_months: Months remaining on the loan.  Doubles as
@@ -778,109 +772,49 @@ def calculate_payoff_by_date(
             applicable rate this produced the D-2 divergence where
             the binary-searched ``required_extra`` did not pair
             correctly with the loan card's ``monthly_payment``.
+    """
+
+    current_principal: Decimal
+    annual_rate: Decimal
+    remaining_months: int
+    target_date: date
+    origination_date: date
+    payment_day: int
+    original_principal: Decimal | None = None
+    term_months: int | None = None
+    rate_changes: list[RateChangeRecord] | None = None
+    contractual_payment: Decimal | None = None
+
+
+def _search_extra_for_payoff(
+    projection_inputs: ProjectionInputs,
+    target_date: date,
+    upper_bound: Decimal,
+) -> Decimal:
+    """Binary-search the extra monthly payment that pays off by target_date.
+
+    Repeats the forward projection with a candidate ``extra_monthly`` and
+    narrows the bracket until the bisection width drops below one cent
+    (the convergence criterion the legacy implementation used).  The
+    caller guarantees the standard schedule pays off AFTER
+    ``target_date`` (so some positive extra is required) and that
+    ``target_date`` falls within the loan's remaining months, so the
+    search always has a valid bracket to converge in.
+
+    Args:
+        projection_inputs: The shared starting state every iteration
+            projects from; only ``extra_monthly`` varies between calls,
+            so the iterations cannot diverge in their other inputs.
+        target_date: The desired payoff date the search drives toward.
+        upper_bound: The initial high bracket -- the current principal
+            (paying it all off immediately is the trivial upper bound).
 
     Returns:
-        ``None`` if ``target_date`` is in the past (no extra payment
-        can change history).  ``Decimal("0.00")`` when no extra is
-        required because the standard schedule already pays off by
-        ``target_date`` (or the loan is already paid off).
-        Otherwise, the binary-searched Decimal extra-monthly payment
-        rounded to cents that achieves payoff at or before
-        ``target_date``.
+        The Decimal extra-monthly payment, rounded to cents, that
+        achieves payoff at or before ``target_date``.
     """
-    if current_principal <= 0 or remaining_months <= 0:
-        return Decimal("0.00")
-
-    # Derive the contractual payment when the caller did not supply
-    # one.  When the caller supplies ``contractual_payment`` (the
-    # production path), it is the SSOT value from the resolver and
-    # the local derivation is bypassed.  ``projection_months`` still
-    # widens for the fixed-rate-with-original-terms case so a
-    # partially paid loan can finish before ``remaining_months``
-    # without hitting the loop cap.
-    has_rate_changes = rate_changes is not None and len(rate_changes) > 0
-    using_contractual = (
-        original_principal is not None
-        and term_months is not None
-        and not has_rate_changes
-    )
-    if contractual_payment is None:
-        if using_contractual:
-            contractual_payment = calculate_monthly_payment(
-                original_principal, annual_rate, term_months,
-            )
-        else:
-            contractual_payment = calculate_monthly_payment(
-                current_principal, annual_rate, remaining_months,
-            )
-    # Coerce a caller-supplied value to Decimal in case it arrived as
-    # a float-shaped DB column or string.
-    else:
-        contractual_payment = Decimal(str(contractual_payment))
-
-    projection_months = (
-        remaining_months + term_months
-        if using_contractual
-        else remaining_months
-    )
-
-    starting_date = advance_to_next_payment_date(
-        origination_date, payment_day,
-    )
-
-    # All projections in this function share one starting state; only
-    # ``extra_monthly`` varies between the standard run and each binary-
-    # search iteration.  Building ``ProjectionInputs`` once guarantees
-    # they cannot diverge in their shared inputs.
-    projection_inputs = ProjectionInputs(
-        starting_balance=current_principal,
-        starting_date=starting_date,
-        annual_rate=annual_rate,
-        remaining_months=projection_months,
-        payment_day=payment_day,
-        contractual_payment=contractual_payment,
-        rate_changes_remaining=rate_changes,
-    )
-
-    # Standard projection: no extra.  The contractual payment alone
-    # determines the standard payoff date.
-    standard = project_forward(
-        projection_inputs, monthly_override=None, extra_monthly=Decimal("0.00"),
-    )
-    if not standard:
-        return Decimal("0.00")
-
-    standard_payoff = standard[-1].payment_date
-    if standard_payoff <= target_date:
-        return Decimal("0.00")
-
-    # Calculate how many months until target_date based on the same
-    # starting reference point ``starting_date`` would land on.  The
-    # inclusive ``+ 1`` matches the legacy convention so the "target
-    # in the past" / "target later than remaining_months" gates fire
-    # for the same inputs as before.
-    start_year = starting_date.year
-    start_month = starting_date.month
-
-    target_months = (
-        (target_date.year - start_year) * 12
-        + (target_date.month - start_month)
-        + 1  # inclusive
-    )
-
-    if target_months <= 0:
-        return None  # Target date is in the past.
-
-    if target_months >= remaining_months:
-        return Decimal("0.00")
-
-    # Binary search for the required extra payment.  Each iteration
-    # repeats the projection with a candidate ``extra_monthly`` and
-    # narrows the bracket until the bisection width drops below one
-    # cent (the convergence criterion the legacy implementation
-    # used).
     lo = Decimal("0.01")
-    hi = current_principal  # Upper bound: pay it all off immediately.
+    hi = upper_bound  # Upper bound: pay it all off immediately.
 
     for _ in range(100):  # Max iterations for convergence.
         mid = ((lo + hi) / 2).quantize(TWO_PLACES, ROUND_HALF_UP)
@@ -900,3 +834,136 @@ def calculate_payoff_by_date(
             break
 
     return hi
+
+
+def calculate_payoff_by_date(
+    request: PayoffRequest,
+) -> Decimal | None:
+    """Calculate required extra monthly payment to pay off by target_date.
+
+    Reframed in terms of :func:`project_forward` (Phase 7 of the
+    amortization-engine split documented in
+    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
+    The function is a pure forward projection from a known starting
+    state (``current_principal`` at ``origination_date``), so it maps
+    naturally onto the projection primitive: one ``project_forward``
+    call establishes the standard payoff date, then a binary search
+    repeats the projection with successively larger ``extra_monthly``
+    values until the schedule pays off by ``target_date``.  External
+    behavior is preserved bit-for-bit; the projected-payments
+    follow-up (OPT-1 / F-N) is explicitly out of scope here per
+    design decision D-F.
+
+    Args:
+        request: A :class:`PayoffRequest` bundling the loan's current
+            state, original terms, target payoff date, and optional
+            SSOT contractual payment / ARM rate changes.  See
+            :class:`PayoffRequest` for per-field semantics (including
+            the ``contractual_payment`` SSOT-vs-legacy-derivation
+            distinction and the ``term_months`` loop-cap widening).
+
+    Returns:
+        ``None`` if ``target_date`` is in the past (no extra payment
+        can change history).  ``Decimal("0.00")`` when no extra is
+        required because the standard schedule already pays off by
+        ``target_date`` (or the loan is already paid off).
+        Otherwise, the binary-searched Decimal extra-monthly payment
+        rounded to cents that achieves payoff at or before
+        ``target_date``.
+    """
+    if request.current_principal <= 0 or request.remaining_months <= 0:
+        return Decimal("0.00")
+
+    # Derive the contractual payment when the caller did not supply
+    # one.  When the caller supplies ``contractual_payment`` (the
+    # production path), it is the SSOT value from the resolver and
+    # the local derivation is bypassed.  ``projection_months`` still
+    # widens for the fixed-rate-with-original-terms case so a
+    # partially paid loan can finish before ``remaining_months``
+    # without hitting the loop cap.
+    has_rate_changes = (
+        request.rate_changes is not None and len(request.rate_changes) > 0
+    )
+    using_contractual = (
+        request.original_principal is not None
+        and request.term_months is not None
+        and not has_rate_changes
+    )
+    if request.contractual_payment is None:
+        if using_contractual:
+            contractual_payment = calculate_monthly_payment(
+                request.original_principal, request.annual_rate,
+                request.term_months,
+            )
+        else:
+            contractual_payment = calculate_monthly_payment(
+                request.current_principal, request.annual_rate,
+                request.remaining_months,
+            )
+    # Coerce a caller-supplied value to Decimal in case it arrived as
+    # a float-shaped DB column or string.
+    else:
+        contractual_payment = Decimal(str(request.contractual_payment))
+
+    projection_months = (
+        request.remaining_months + request.term_months
+        if using_contractual
+        else request.remaining_months
+    )
+
+    starting_date = advance_to_next_payment_date(
+        request.origination_date, request.payment_day,
+    )
+
+    # All projections in this function share one starting state; only
+    # ``extra_monthly`` varies between the standard run and each binary-
+    # search iteration.  Building ``ProjectionInputs`` once guarantees
+    # they cannot diverge in their shared inputs.
+    projection_inputs = ProjectionInputs(
+        starting_balance=request.current_principal,
+        starting_date=starting_date,
+        annual_rate=request.annual_rate,
+        remaining_months=projection_months,
+        payment_day=request.payment_day,
+        contractual_payment=contractual_payment,
+        rate_changes_remaining=request.rate_changes,
+    )
+
+    # Standard projection: no extra.  The contractual payment alone
+    # determines the standard payoff date.
+    standard = project_forward(
+        projection_inputs, monthly_override=None, extra_monthly=Decimal("0.00"),
+    )
+    if not standard:
+        return Decimal("0.00")
+
+    standard_payoff = standard[-1].payment_date
+    if standard_payoff <= request.target_date:
+        return Decimal("0.00")
+
+    # Calculate how many months until target_date based on the same
+    # starting reference point ``starting_date`` would land on.  The
+    # inclusive ``+ 1`` matches the legacy convention so the "target
+    # in the past" / "target later than remaining_months" gates fire
+    # for the same inputs as before.
+    start_year = starting_date.year
+    start_month = starting_date.month
+
+    target_months = (
+        (request.target_date.year - start_year) * 12
+        + (request.target_date.month - start_month)
+        + 1  # inclusive
+    )
+
+    if target_months <= 0:
+        return None  # Target date is in the past.
+
+    if target_months >= request.remaining_months:
+        return Decimal("0.00")
+
+    # Binary search for the required extra payment, sharing the one
+    # ``projection_inputs`` so every iteration projects from the same
+    # starting state and only ``extra_monthly`` varies.
+    return _search_extra_for_payoff(
+        projection_inputs, request.target_date, request.current_principal,
+    )

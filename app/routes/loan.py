@@ -1388,20 +1388,22 @@ def payoff_calculate(account_id):
         )
 
         required_extra = amortization_engine.calculate_payoff_by_date(
-            current_principal=real_principal,
-            annual_rate=base_rate,
-            remaining_months=remaining_months,
-            target_date=target_date,
-            origination_date=date.today().replace(day=1),
-            payment_day=params.payment_day,
-            original_principal=original,
-            term_months=params.term_months,
-            rate_changes=rate_changes,
-            # SSOT contractual: the binary search must use the same
-            # P&I baseline the loan card displays, so the rendered
-            # ``total_monthly = monthly_payment + required_extra``
-            # is internally consistent (D-2 closure).
-            contractual_payment=monthly_payment,
+            amortization_engine.PayoffRequest(
+                current_principal=real_principal,
+                annual_rate=base_rate,
+                remaining_months=remaining_months,
+                target_date=target_date,
+                origination_date=date.today().replace(day=1),
+                payment_day=params.payment_day,
+                original_principal=original,
+                term_months=params.term_months,
+                rate_changes=rate_changes,
+                # SSOT contractual: the binary search must use the same
+                # P&I baseline the loan card displays, so the rendered
+                # ``total_monthly = monthly_payment + required_extra``
+                # is internally consistent (D-2 closure).
+                contractual_payment=monthly_payment,
+            )
         )
 
         total_monthly = (
