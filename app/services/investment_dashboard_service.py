@@ -30,6 +30,7 @@ load-bearing assert-unchanged gate.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -50,6 +51,7 @@ from app.services import (
 )
 from app.services.account_projection import is_payroll_deduction_funded
 from app.services.investment_projection import (
+    InvestmentInputs,
     adapt_deductions,
     build_contribution_timeline,
 )
@@ -64,6 +66,46 @@ logger = logging.getLogger(__name__)
 
 TWO_PLACES = Decimal("0.01")
 _FALLBACK_HORIZON_YEARS = 10
+
+
+@dataclass(frozen=True)
+class _ProjectionContext:
+    """Every per-account input the dashboard + growth-chart both consume.
+
+    Built once per request by :func:`_load_projection_context` and
+    threaded through the projection primitives and card builders so the
+    two public entry points stay thin orchestration.  Bundling these six
+    values into one frozen struct removes the parallel-load duplication
+    the dashboard and the chart fragment previously each carried inline
+    (S6-01): the entries-aware current balance, the projection inputs,
+    and the contribution timeline were resolved the same way in both
+    bodies.
+
+    Attributes:
+        params: The account's :class:`InvestmentParams` row, or ``None``
+            when the user has not configured the account.  ``None`` is a
+            valid dashboard state (the projection and chart degrade to
+            empty containers); the growth-chart fragment guards it out
+            earlier and never reaches a context with ``params is None``.
+        current_balance: The canonical entries-aware current balance
+            (E-25 / CRIT-01 / F-009 / R-1: Commit 8).
+        inputs: The :class:`InvestmentInputs` the growth engine needs
+            (periodic contribution, employer params, annual contribution
+            limit, YTD contributions).
+        contributions: The per-period contribution timeline (deductions
+            plus transfer receipts) fed to ``project_balance``.
+        deductions: The raw :class:`PaycheckDeduction` rows targeting
+            this account; drives the contribution-prompt decision.
+        active_profile: The user's active :class:`SalaryProfile`, or
+            ``None``; drives the deduction-path salary-profile link.
+    """
+
+    params: InvestmentParams | None
+    current_balance: Decimal
+    inputs: InvestmentInputs
+    contributions: list
+    deductions: list[PaycheckDeduction]
+    active_profile: SalaryProfile | None
 
 
 # ── Shared loaders ─────────────────────────────────────────────────
@@ -113,49 +155,127 @@ def _resolve_current_balance(
     return balances.get(current_period.id, anchor_balance)
 
 
-def _projection_inputs_for_account(
+def _load_projection_context(
     user_id: int,
-    account_id: int,
-    investment_params: InvestmentParams,
+    account: Account,
+    params: InvestmentParams | None,
     all_periods: list,
     current_period,
-):
-    """Bundle the shared inputs feed for :func:`calculate_investment_inputs`.
+) -> _ProjectionContext:
+    """Load every per-account input the dashboard + chart fragment share.
 
-    Both the dashboard and the growth-chart fragment need the same
-    derived inputs -- the salary-profile gross biweekly, the
-    deductions targeting this account, and the shadow-income
-    contribution stream.  Centralising the load here removes the
-    near-verbatim duplication that previously sat in
-    ``investment.py:120-218`` and ``investment.py:444-523``.
+    Centralises the projection feed both surfaces need: the canonical
+    current balance, the salary-profile-derived projection inputs, the
+    deductions targeting this account, the shadow-income contribution
+    stream, and the per-period contribution timeline.  Both the
+    entries-aware balance resolution and the timeline build previously
+    sat near-verbatim in ``compute_dashboard_data`` and
+    ``compute_growth_chart_data`` (the S6-01 duplication this collapses);
+    bundling the result in :class:`_ProjectionContext` keeps the two
+    public entry points thin.
+
+    *params* is supplied by the caller (loaded once for its own guard)
+    rather than re-queried here, so neither surface issues a second
+    :class:`InvestmentParams` lookup.
+
+    Args:
+        user_id: ID of the authenticated user.
+        account: The pre-ownership-checked account instance.
+        params: The account's :class:`InvestmentParams`, or ``None``.
+        all_periods: All pay periods for the user.
+        current_period: The current :class:`PayPeriod`, or ``None``.
 
     Returns:
-        A tuple ``(inputs, adapted_deductions, acct_contributions,
-        deductions, active_profile)``.  Callers consume different
-        subsets so all five are returned rather than packed into a
-        struct.
+        A :class:`_ProjectionContext` carrying the six per-account
+        values the projection primitives and card builders consume.
     """
+    current_balance = _resolve_current_balance(
+        account, get_baseline_scenario(user_id), current_period, all_periods,
+    )
     active_profile = _load_active_salary_profile(user_id)
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
     # off-engine ``annual_salary / pay_periods_per_year`` recompute that
     # silently dropped any applicable ``SalaryRaise`` row pre-Commit-17.
     salary_gross_biweekly = income_service.get_current_gross_biweekly(user_id)
-    deductions = load_active_deductions_for_account(user_id, account_id)
+    deductions = load_active_deductions_for_account(user_id, account.id)
     adapted_deductions = adapt_deductions(deductions)
-
-    period_ids = [p.id for p in all_periods]
     acct_contributions = load_shadow_income_contributions_for_account(
-        account_id, period_ids,
+        account.id, [p.id for p in all_periods],
     )
-
     inputs = build_investment_projection_inputs(
-        account_id, investment_params, adapted_deductions, acct_contributions,
+        account.id, params, adapted_deductions, acct_contributions,
         all_periods, current_period, salary_gross_biweekly,
     )
-    return (
-        inputs, adapted_deductions, acct_contributions,
-        deductions, active_profile,
+    contributions = build_contribution_timeline(
+        deductions=adapted_deductions,
+        contribution_transactions=acct_contributions,
+        periods=all_periods,
     )
+    return _ProjectionContext(
+        params=params,
+        current_balance=current_balance,
+        inputs=inputs,
+        contributions=contributions,
+        deductions=deductions,
+        active_profile=active_profile,
+    )
+
+
+# ── Shared projection primitives ───────────────────────────────────
+
+
+def _run_growth_projection(ctx: _ProjectionContext, periods: list) -> list:
+    """Project balances across *periods* from the shared growth context.
+
+    The single home for the ``growth_engine.project_balance`` splat the
+    dashboard and the growth-chart fragment both issue with identical
+    arguments -- only the period list differs (the dashboard's future
+    real periods vs. the chart's synthetic horizon periods).  Callers
+    must guard ``ctx.params is not None`` before calling.
+    """
+    return growth_engine.project_balance(
+        current_balance=ctx.current_balance,
+        assumed_annual_return=ctx.params.assumed_annual_return,
+        periods=periods,
+        periodic_contribution=ctx.inputs.periodic_contribution,
+        employer_params=ctx.inputs.employer_params,
+        annual_contribution_limit=ctx.params.annual_contribution_limit,
+        ytd_contributions_start=ctx.inputs.ytd_contributions,
+        contributions=ctx.contributions,
+    )
+
+
+def _build_chart_series(
+    projection: list,
+    periods: list,
+    current_balance: Decimal,
+) -> tuple[list[str], list[str], list[str]]:
+    """Build the chart's ``(labels, balances, contributions)`` string lists.
+
+    The single home for the cumulative-contribution chart loop the
+    dashboard and the growth-chart fragment both ran inline with
+    different variable names (so R0801 never clustered them).  Labels
+    resolve against *periods*; because :func:`growth_engine.project_balance`
+    emits exactly one row per input period, every ``pb.period_id`` is
+    present in the map and the three lists stay equal length.  The
+    contribution series is the running ``current_balance + cumulative
+    employee + employer`` total per period.
+    """
+    period_map = {p.id: p for p in periods}
+    labels: list[str] = []
+    balances: list[str] = []
+    contributions: list[str] = []
+    cumulative_contrib = Decimal("0")
+    for pb in projection:
+        period = period_map.get(pb.period_id)
+        if period:
+            labels.append(period.start_date.strftime("%b %Y"))
+        balances.append(str(pb.end_balance.quantize(TWO_PLACES)))
+        cumulative_contrib += pb.contribution + pb.employer_contribution
+        contributions.append(
+            str((current_balance + cumulative_contrib).quantize(TWO_PLACES))
+        )
+    return labels, balances, contributions
 
 
 # ── Dashboard helpers ──────────────────────────────────────────────
@@ -249,6 +369,28 @@ def _compute_suggested_contribution(
     ).quantize(TWO_PLACES)
 
 
+def _compute_employer_per_period(inputs: InvestmentInputs) -> Decimal:
+    """Return the per-period employer contribution at the capped employee rate.
+
+    HIGH-07 / F-043 / F-055: feeds the limit-capped contribution to
+    :func:`growth_engine.calculate_employer_contribution` so the
+    per-period employer card matches the growth chart's employer line
+    and the year-end ``year_summary_employer_total`` -- all three
+    surfaces read the same capped value.  Returns ``Decimal("0")`` when
+    the account configures no employer match.
+    """
+    capped_contribution = growth_engine.cap_contribution_at_limit(
+        inputs.periodic_contribution,
+        inputs.annual_contribution_limit,
+        inputs.ytd_contributions,
+    )
+    if not inputs.employer_params:
+        return Decimal("0")
+    return growth_engine.calculate_employer_contribution(
+        inputs.employer_params, capped_contribution,
+    )
+
+
 def _load_transfer_source_accounts(
     user_id: int, exclude_account_id: int,
 ) -> tuple[list[Account], int | None]:
@@ -321,181 +463,84 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
         A dict with the template context plus the two route-side
         URL-resolution hints.
     """
-    account_id = account.id
-    params = _load_investment_params(account_id)
-
+    params = _load_investment_params(account.id)
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
-
-    # Canonical entries-aware current balance (E-25 / CRIT-01 / F-009
-    # / R-1: Commit 8).  Routing through ``balances_for`` keeps the
-    # investment dashboard's "current balance" tile aligned with the
-    # grid for the same account/scenario/period.
-    scenario = get_baseline_scenario(user_id)
-    current_balance = _resolve_current_balance(
-        account, scenario, current_period, all_periods,
-    )
-
-    (
-        inputs, adapted_deductions, acct_contributions,
-        deductions, active_profile,
-    ) = _projection_inputs_for_account(
-        user_id, account_id, params, all_periods, current_period,
-    )
-
-    periodic_contribution = inputs.periodic_contribution
-    employer_params = inputs.employer_params
-    ytd_contributions = inputs.ytd_contributions
-
-    # HIGH-07 / F-043 / F-055: feed the limit-capped contribution to
-    # ``calculate_employer_contribution`` so the per-period employer
-    # card matches the growth chart's employer line and the year-end
-    # ``year_summary_employer_total`` -- all three surfaces now read
-    # the same capped value.
-    capped_contribution_this_period = growth_engine.cap_contribution_at_limit(
-        periodic_contribution,
-        inputs.annual_contribution_limit,
-        ytd_contributions,
-    )
-    employer_contribution_per_period = Decimal("0")
-    if employer_params:
-        employer_contribution_per_period = growth_engine.calculate_employer_contribution(
-            employer_params, capped_contribution_this_period,
-        )
-
-    # Per-period contribution timeline from deductions and transfers.
-    contributions = build_contribution_timeline(
-        deductions=adapted_deductions,
-        contribution_transactions=acct_contributions,
-        periods=all_periods,
-    )
-
-    projection, chart_date_labels, chart_balances, chart_contributions = (
-        _project_dashboard_balances(
-            params=params,
-            current_period=current_period,
-            current_balance=current_balance,
-            periodic_contribution=periodic_contribution,
-            employer_params=employer_params,
-            ytd_contributions=ytd_contributions,
-            contributions=contributions,
-            all_periods=all_periods,
-        )
-    )
-
-    limit_info = _compute_limit_info(params, ytd_contributions)
-    default_horizon = _compute_default_horizon(user_id, all_periods)
-
-    contribution_prompt = _compute_contribution_prompt(
-        user_id=user_id,
-        account=account,
-        params=params,
-        deductions=deductions,
-        active_profile=active_profile,
-        ytd_contributions=ytd_contributions,
-        all_periods=all_periods,
+    ctx = _load_projection_context(
+        user_id, account, params, all_periods, current_period,
     )
 
     return {
         "account": account,
         "params": params,
-        "current_balance": current_balance,
-        "periodic_contribution": periodic_contribution,
-        "employer_contribution_per_period": employer_contribution_per_period,
-        "employer_params": employer_params,
-        "limit_info": limit_info,
-        "projection": projection,
-        "chart_labels": chart_date_labels,
-        "chart_balances": chart_balances,
-        "chart_contributions": chart_contributions,
-        "default_horizon": default_horizon,
-        "show_contribution_prompt": contribution_prompt["show"],
-        "is_deduction_path": contribution_prompt["is_deduction_path"],
-        "source_accounts": contribution_prompt["source_accounts"],
-        "default_source_id": contribution_prompt["default_source_id"],
-        "suggested_amount": contribution_prompt["suggested_amount"],
-        # Underscore-prefixed: route uses ``url_for`` to fill
-        # ``salary_profile_url`` from these two values.
-        "_salary_profile_action": contribution_prompt["salary_profile_action"],
-        "_active_profile_id": contribution_prompt["active_profile_id"],
+        "current_balance": ctx.current_balance,
+        "periodic_contribution": ctx.inputs.periodic_contribution,
+        "employer_contribution_per_period": _compute_employer_per_period(
+            ctx.inputs,
+        ),
+        "employer_params": ctx.inputs.employer_params,
+        "limit_info": _compute_limit_info(params, ctx.inputs.ytd_contributions),
+        "default_horizon": _compute_default_horizon(user_id, all_periods),
+        # Projection + chart series (``projection`` / ``chart_labels`` /
+        # ``chart_balances`` / ``chart_contributions``).
+        **_project_dashboard_balances(ctx, all_periods, current_period),
+        # Contribution-prompt block, including the two underscore-prefixed
+        # ``_salary_profile_action`` / ``_active_profile_id`` route hints.
+        **_compute_contribution_prompt(user_id, account, ctx, all_periods),
     }
 
 
 def _project_dashboard_balances(
-    *,
-    params: InvestmentParams | None,
-    current_period,
-    current_balance: Decimal,
-    periodic_contribution: Decimal,
-    employer_params,
-    ytd_contributions: Decimal,
-    contributions,
+    ctx: _ProjectionContext,
     all_periods: list,
-):
+    current_period,
+) -> dict:
     """Run the dashboard growth projection and build the chart series.
 
-    Empty results (no params or no current period) produce the four
-    empty containers the template expects, preserving the
-    pre-Commit-28 default-empty behaviour exactly.
-
-    Returns:
-        A 4-tuple ``(projection, chart_date_labels, chart_balances,
-        chart_contributions)``: the engine's
-        :class:`PeriodicBalance` list and the three string-formatted
-        chart-data lists.
+    Returns the four template-context keys (``projection`` plus
+    ``chart_labels`` / ``chart_balances`` / ``chart_contributions``) so
+    :func:`compute_dashboard_data` can merge them with ``**``.  Empty
+    results (no params or no current period) produce the four empty
+    containers the template expects, preserving the pre-Commit-28
+    default-empty behaviour exactly.
     """
     projection: list = []
-    chart_period_ids: list[int] = []
+    chart_labels: list[str] = []
     chart_balances: list[str] = []
     chart_contributions: list[str] = []
 
-    if params and current_period:
+    if ctx.params and current_period:
         future_periods = [
             p for p in all_periods
             if p.period_index >= current_period.period_index
         ]
-        projection = growth_engine.project_balance(
-            current_balance=current_balance,
-            assumed_annual_return=params.assumed_annual_return,
-            periods=future_periods,
-            periodic_contribution=periodic_contribution,
-            employer_params=employer_params,
-            annual_contribution_limit=params.annual_contribution_limit,
-            ytd_contributions_start=ytd_contributions,
-            contributions=contributions,
+        projection = _run_growth_projection(ctx, future_periods)
+        chart_labels, chart_balances, chart_contributions = _build_chart_series(
+            projection, future_periods, ctx.current_balance,
         )
 
-        cumulative_contrib = Decimal("0")
-        for pb in projection:
-            chart_period_ids.append(pb.period_id)
-            chart_balances.append(str(pb.end_balance.quantize(TWO_PLACES)))
-            cumulative_contrib += pb.contribution + pb.employer_contribution
-            chart_contributions.append(
-                str((current_balance + cumulative_contrib).quantize(TWO_PLACES))
-            )
-
-    # Resolve period labels last so the lookup happens once.
-    period_map = {p.id: p for p in all_periods}
-    chart_date_labels: list[str] = []
-    for pid in chart_period_ids:
-        p = period_map.get(pid)
-        if p:
-            chart_date_labels.append(p.start_date.strftime("%b %Y"))
-
-    return projection, chart_date_labels, chart_balances, chart_contributions
+    return {
+        "projection": projection,
+        "chart_labels": chart_labels,
+        "chart_balances": chart_balances,
+        "chart_contributions": chart_contributions,
+    }
 
 
 def _compute_contribution_prompt(
-    *,
     user_id: int,
     account: Account,
-    params: InvestmentParams | None,
-    deductions: list[PaycheckDeduction],
-    active_profile: SalaryProfile | None,
-    ytd_contributions: Decimal,
+    ctx: _ProjectionContext,
     all_periods: list,
 ) -> dict:
     """Decide whether to show the "set up contributions" prompt + how.
+
+    Returns the seven template-context keys (the five
+    ``show_contribution_prompt`` / ``is_deduction_path`` /
+    ``source_accounts`` / ``default_source_id`` / ``suggested_amount``
+    values plus the two underscore-prefixed ``_salary_profile_action`` /
+    ``_active_profile_id`` route hints) so
+    :func:`compute_dashboard_data` can merge them with ``**``.
 
     Three states:
 
@@ -511,23 +556,23 @@ def _compute_contribution_prompt(
       amount, eligible source accounts, and the default source id.
     """
     result = {
-        "show": False,
+        "show_contribution_prompt": False,
         "is_deduction_path": False,
         "source_accounts": [],
         "default_source_id": None,
         "suggested_amount": Decimal("0"),
-        "salary_profile_action": None,
-        "active_profile_id": None,
+        "_salary_profile_action": None,
+        "_active_profile_id": None,
     }
-    if not params:
+    if not ctx.params:
         return result
 
-    has_linked_deduction = bool(deductions)
+    has_linked_deduction = bool(ctx.deductions)
     has_recurring_transfer = _has_active_recurring_transfer_to(
         account.id, user_id,
     )
     show = not has_linked_deduction and not has_recurring_transfer
-    result["show"] = show
+    result["show_contribution_prompt"] = show
     if not show:
         return result
 
@@ -537,17 +582,17 @@ def _compute_contribution_prompt(
     result["is_deduction_path"] = is_deduction_path
 
     if is_deduction_path:
-        if active_profile is not None:
-            result["salary_profile_action"] = "edit"
-            result["active_profile_id"] = active_profile.id
+        if ctx.active_profile is not None:
+            result["_salary_profile_action"] = "edit"
+            result["_active_profile_id"] = ctx.active_profile.id
         else:
-            result["salary_profile_action"] = "list"
+            result["_salary_profile_action"] = "list"
         return result
 
     # Transfer-path: compute the suggested per-period amount and
     # load eligible source accounts.
     result["suggested_amount"] = _compute_suggested_contribution(
-        params, ytd_contributions, all_periods,
+        ctx.params, ctx.inputs.ytd_contributions, all_periods,
     )
     result["source_accounts"], result["default_source_id"] = (
         _load_transfer_source_accounts(user_id, account.id)
@@ -597,11 +642,6 @@ def compute_growth_chart_data(
 
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
-    scenario = get_baseline_scenario(user_id)
-
-    current_balance = _resolve_current_balance(
-        account, scenario, current_period, all_periods,
-    )
 
     # Synthetic future periods for the chosen horizon.
     end_date = date.today() + timedelta(days=horizon_years * 365)
@@ -616,53 +656,33 @@ def compute_growth_chart_data(
             "chart_contributions": [],
         }
 
-    (
-        inputs, adapted_deductions, acct_contributions, _deds, _profile,
-    ) = _projection_inputs_for_account(
-        user_id, account.id, params, all_periods, current_period,
+    ctx = _load_projection_context(
+        user_id, account, params, all_periods, current_period,
     )
+    projection = _run_growth_projection(ctx, periods)
+    return _growth_chart_context(ctx, periods, projection, what_if_raw)
 
-    contributions = build_contribution_timeline(
-        deductions=adapted_deductions,
-        contribution_transactions=acct_contributions,
-        periods=all_periods,
+
+def _growth_chart_context(
+    ctx: _ProjectionContext,
+    periods: list,
+    projection: list,
+    what_if_raw: str | None,
+) -> dict:
+    """Assemble the growth-chart fragment's full template context.
+
+    Builds the committed-projection chart series plus the optional
+    what-if overlay and comparison card.  Split out of
+    :func:`compute_growth_chart_data` so that orchestrator stays a thin
+    load-project-render sequence.
+    """
+    chart_labels, chart_balances, chart_contributions = _build_chart_series(
+        projection, periods, ctx.current_balance,
     )
-
-    projection = growth_engine.project_balance(
-        current_balance=current_balance,
-        assumed_annual_return=params.assumed_annual_return,
-        periods=periods,
-        periodic_contribution=inputs.periodic_contribution,
-        employer_params=inputs.employer_params,
-        annual_contribution_limit=params.annual_contribution_limit,
-        ytd_contributions_start=inputs.ytd_contributions,
-        contributions=contributions,
-    )
-
-    period_map = {p.id: p for p in periods}
-    chart_labels: list[str] = []
-    chart_balances: list[str] = []
-    chart_contributions: list[str] = []
-    cumulative_contrib = Decimal("0")
-
-    for pb in projection:
-        p = period_map.get(pb.period_id)
-        if p:
-            chart_labels.append(p.start_date.strftime("%b %Y"))
-        chart_balances.append(str(pb.end_balance.quantize(TWO_PLACES)))
-        cumulative_contrib += pb.contribution + pb.employer_contribution
-        chart_contributions.append(
-            str((current_balance + cumulative_contrib).quantize(TWO_PLACES))
-        )
 
     what_if_amount = _parse_what_if(what_if_raw)
     what_if_balances, comparison = _compute_what_if_overlay(
-        what_if_amount=what_if_amount,
-        params=params,
-        inputs=inputs,
-        current_balance=current_balance,
-        periods=periods,
-        projection=projection,
+        what_if_amount, ctx, periods, projection,
     )
 
     return {
@@ -696,14 +716,11 @@ def _parse_what_if(what_if_raw: str | None) -> Decimal | None:
 
 
 def _compute_what_if_overlay(
-    *,
     what_if_amount: Decimal | None,
-    params: InvestmentParams,
-    inputs,
-    current_balance: Decimal,
+    ctx: _ProjectionContext,
     periods: list,
     projection: list,
-):
+) -> tuple[list[str], dict | None]:
     """Run the what-if projection (when an amount is supplied) plus comparison.
 
     Returns:
@@ -720,13 +737,13 @@ def _compute_what_if_overlay(
     # recalculated automatically because the per-period loop passes
     # each period's contribution to ``calculate_employer_contribution``.
     what_if_projection = growth_engine.project_balance(
-        current_balance=current_balance,
-        assumed_annual_return=params.assumed_annual_return,
+        current_balance=ctx.current_balance,
+        assumed_annual_return=ctx.params.assumed_annual_return,
         periods=periods,
         periodic_contribution=what_if_amount,
-        employer_params=inputs.employer_params,
-        annual_contribution_limit=params.annual_contribution_limit,
-        ytd_contributions_start=inputs.ytd_contributions,
+        employer_params=ctx.inputs.employer_params,
+        annual_contribution_limit=ctx.params.annual_contribution_limit,
+        ytd_contributions_start=ctx.inputs.ytd_contributions,
         contributions=None,
     )
 
