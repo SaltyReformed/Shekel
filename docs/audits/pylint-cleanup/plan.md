@@ -1,7 +1,12 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-2 DONE. As of 2026-06-04 app/ is 9.79/10 with ZERO `duplicate-code` (R0801)
-clusters, zero `useless-suppression`, zero E/F. Full suite 5766 passed.** Phase 2 resolved every
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-04 app/ is 9.80/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 271 visible messages.
+Full suite 5766 passed.** Phase 3 (design smells) has its first file complete: **`routes/salary.py`
+DONE** (`4d7d7c1` returns+dead-imports, `e834635` calibrate decomposition, `131d648` split into the
+`app/routes/salary/` package) -- see the [Phase 3](#phase-3----design-smell-refactors-158-visible--the-phase-1-smell-disables)
+register and the [Progress Log](#progress-log). Ratified decision #5 (module splits = genuine
+package splits, not disables) is locked. Phase 2 resolved every
 one of the original 75 clusters by honest extraction or a documented one-sided disable (rule 13).
 **Model clusters (20):** dissolved via six `app/models/mixins.py` mixins + 5 documented bipartite
 disables (`57cf12d`/`ae815bc`/`561a369`/`d806eab`). **Route/service clusters (the rest):** five
@@ -109,7 +114,7 @@ surviving disable is justified per `docs/coding-standards.md`.
 
 ## Ratified decisions (locked 2026-06-04)
 
-These four were decided with the developer. Do not silently revisit them.
+These were decided with the developer. Do not silently revisit them.
 
 1. **Scope:** `app/` to 10/10 first; `scripts/` (currently 9.27) as a follow-on pass. `tests/`
    and `migrations/` are out of scope.
@@ -122,6 +127,24 @@ These four were decided with the developer. Do not silently revisit them.
    `docs/coding-standards.md`. **Never raise a `.pylintrc` design threshold to win a smell.**
 4. **CI:** once `app/` is clean, change CI to gate the full run (fail on any message) so 10/10
    cannot silently regress. See Phase 5 for the exact command.
+5. **Module splits (locked 2026-06-04):** the `too-many-lines` modules (8 remaining: `auth.py`,
+   `loan.py`, `transactions.py`, `transfers.py`, `amortization_engine.py`,
+   `savings_dashboard_service.py`, `year_end_summary_service.py`, `carry_forward_service.py`;
+   `schemas/validation.py` is module-tm-lines too -- re-measure) are **genuinely split into
+   packages**, NOT closed with a documented `too-many-lines` disable. Follow the
+   `app/routes/accounts/` and now `app/routes/salary/` precedent: a leaf `_bp.py` declares the
+   blueprint (cycle-break), `__init__.py` re-exports it + imports sub-modules for side-effect
+   registration, shared schema singletons / helpers live in `_helpers.py`. **Preserve every URL
+   and endpoint name verbatim** so `url_for` / templates / `app/__init__.py` are untouched.
+   **TRAP (learned on `salary/`):** splitting can re-surface `duplicate-code` (R0801) clusters the
+   monolith hid -- R0801 compares ONLY across files, so intra-file dup in the monolith was
+   invisible. Resolve by genuine dedup (route through a shared helper -- e.g. the salary stale
+   handlers now use `_commit_helpers.regenerate_and_commit_or_stale`) or by co-locating
+   intentional parallel code in one sub-module (e.g. `salary/items.py` holds both raises and
+   deductions), NEVER by a duplicate-code disable. Also: a test that monkeypatches a symbol via
+   the old module path (`patch("app.routes.salary.recurrence_engine...")`) must be repointed to
+   the symbol's new home (`app.routes.salary._helpers...`); this is a patch-PATH update following
+   moved code, not a rule-5 assertion change.
 
 ---
 
@@ -135,7 +158,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | NOT STARTED |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (`salary/` done: `4d7d7c1`/`e834635`/`131d648`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -579,8 +602,18 @@ documented disables), with commit SHA.
 
 ### Tier 2
 
-- **routes/salary.py** (module tm-lines; `add_raise`:451, `update_raise`:583, `add_deduction`:703,
-  `update_deduction`:839 all tm-return; `calibrate_confirm`:1126 tm-locals/statements) -- Status: `-`
+- **routes/salary.py** (module tm-lines; `add_raise`, `update_raise`, `add_deduction`,
+  `update_deduction` all tm-return; `calibrate_confirm` tm-locals/statements) -- Status: **DONE**
+  (`4d7d7c1`/`e834635`/`131d648`). `add_raise`/`add_deduction` returns resolved by extracting the
+  HTMX/redirect dual-return responders (`_respond_after_*_change`, 8 sites); `update_raise`/
+  `update_deduction` keep 7 guard-clause/audit-error returns under a documented
+  `disable=too-many-return-statements`. `calibrate_confirm` tm-locals/statements resolved by
+  extracting `_compute_total_pre_tax` (shared with `calibrate_preview` -- a Phase-2-missed dup) +
+  `_reject_if_rates_inconsistent`. Module tm-lines resolved by splitting into the
+  `app/routes/salary/` package (`_bp`/`_helpers`/`profiles`/`items`/`views`/`calibration`/
+  `tax_config`; none >566 lines); stale handlers routed through
+  `_commit_helpers.regenerate_and_commit_or_stale`; 2 dead imports removed. 0 R0801 clusters
+  preserved. Full suite 5766 passed.
 - **services/investment_dashboard_service.py** (`compute_dashboard_data`:299 tm-locals;
   `_project_dashboard_balances`:424 tm-args/locals; `_compute_contribution_prompt`:488 tm-args;
   `compute_growth_chart_data`:558 tm-locals; `_compute_what_if_overlay`:698 tm-args) -- Status: `-`
@@ -658,7 +691,21 @@ guard clauses + dispatch maps (tm-branches / tm-return); split oversized modules
 (coding-standards rule 7). Understand any >20-line function before changing it (rule 10);
 `auth.py` and `transfer_service.py` are security-/invariant-critical -- do not rewrite from scratch.
 
-**Status:** NOT STARTED.
+**Status:** IN PROGRESS. **`routes/salary.py` DONE** (`4d7d7c1`/`e834635`/`131d648`; see the Tier 2
+entry above for the per-smell disposition). Methodology established on this first file, reusable
+for the rest:
+- **tm-return on form routes:** extract the genuinely-shared response/commit branches (real DRY,
+  often drops the count under the limit as a side effect); for the residual guard-clause + audit-
+  error-path returns that the coding standards MANDATE, document a scoped+named+commented
+  `disable=too-many-return-statements` (collapsing them trips too-many-arguments / obscures
+  distinct user flashes -- plan note #3).
+- **tm-locals/statements:** decompose into cohesive named helpers; watch for Phase-2-missed dups
+  (vars named differently dodge R0801) that the decomposition can dedupe for free.
+- **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
+  R0801 re-surfacing + monkeypatch-path updates).
+Next by live density: `amortization_engine.py` (15), `savings_dashboard_service.py` (14),
+`year_end_summary_service.py` (12) -- all financial cores (plan-first per the developer's cadence),
+then the route files (`transactions.py`, `transfers.py`, `loan.py`).
 
 ---
 
@@ -896,3 +943,6 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `86eb309` | 2 | **Access + account/period helpers:** `auth_helpers.get_accessible_transaction` (centralised the owner/companion access check copy-pasted in entries + transactions -- security-critical single definition); `account_service.get_account_type_ids_in_use` + `list_retirement_investment_account_types`; new `utils/period_projections.project_balance_horizons` (deduped the 3/6/12-month horizon loop). Clusters 22->15. Targeted 204+320+62 passed. | 9.78/10 | -- |
 | 2026-06-04 | `6475429` | 2 | **Documented 13 incidental clusters:** one-sided scoped why-commented `duplicate-code` disables where extraction would couple unrelated domains or equal the inline form (rule 13): obligations pattern-id preamble, growth_engine dataclass `__post_init__`, calendar/budget-variance divergent queries, balance_resolver dated entry-bucketing (E-25), debt_strategy/year_end LoanParams idiom, retirement error-render, accounts.detail/savings_dashboard, spending_trend, loan_payment, dashboard expense-sum. Clusters 15->2. Comment-only (no behavior change). | 9.79/10 | -- |
 | 2026-06-04 | `eb56235` | 2 | **Stale-data commit CLIQUE consolidation (Phase 2 CLOSE):** the cross-route stale handler was a clique across salary/savings/accounts (cliques can't be one-sided-disabled -- both-sides re-fire), so extracted to new `app/routes/_commit_helpers.py` (commit_or_handle_stale + handle_stale_conflict moved out of `_recurrence_form_helpers`; templates/transfers re-pointed; +regenerate_and_commit_or_stale for the flush-must-stay-in-the-try case -- update_account, salary). Routed the plain salary/savings/account handlers through it; the salary update_profile/raise/deduction two-branch (StaleDataError + SQLAlchemyError C-46/F-145) handlers verified to no longer cluster and left inline. **Clusters 2->0. PHASE 2 COMPLETE: 0 R0801 clusters, 0 useless-suppression, 0 E/F. Disables 67->83. Full suite 5766 passed.** | 9.79/10 | -- |
+| 2026-06-04 | `4d7d7c1` | 3 | **Phase 3 file 1/N -- salary returns + dead imports:** extracted `_respond_after_raise_change`/`_respond_after_deduction_change` (HTMX-partial-else-redirect dual-return, 8 sites) -- DRY, and drops `add_raise`/`add_deduction` under the return limit as a side effect; documented `disable=too-many-return-statements` on `update_raise`/`update_deduction` (7 guard-clause/audit-error returns each). Removed dead imports `AccountType`/`AcctCategoryEnum`. 135 targeted pass. | 9.85 (file) | -- |
+| 2026-06-04 | `e834635` | 3 | **salary calibrate_confirm decomposition:** extracted `_compute_total_pre_tax` (shared with `calibrate_preview` -- a Phase-2-missed dup, vars `bk` vs `preview_breakdown` dodged R0801) + `_reject_if_rates_inconsistent` (the federal/state cross-check). calibrate_confirm tm-locals(21)/statements(51) -> 0; behavior-preserving (E-20/C19-2 tampering checks unchanged). | 9.85 (file) | -- |
+| 2026-06-04 | `131d648` | 3 | **salary.py -> `app/routes/salary/` package (module split, ratified decision #5):** `_bp`/`__init__`/`_helpers`/`profiles`/`items`(raises+deductions co-located)/`views`/`calibration`/`tax_config`; none >566 lines; 22 endpoints + URLs preserved (no `url_for`/template/`app/__init__` edit). Split re-surfaced 6 R0801 clusters the monolith hid (R0801 is cross-file only) -- resolved by genuine dedup: stale handlers routed through `_commit_helpers.regenerate_and_commit_or_stale`, raises+deductions co-located in `items.py`. **0 R0801 clusters, 0 new dup disables.** test_c46 patch-path + account_service docstring repointed to `_helpers`. tm-lines 9->8. **Full suite 5766 passed.** | 9.80/10 | 271 |
