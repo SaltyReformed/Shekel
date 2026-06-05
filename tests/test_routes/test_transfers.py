@@ -2117,7 +2117,7 @@ class TestTransferTemplateHardDelete:
             # The defense-in-depth filter inside the route is what must
             # save the Received transfer plus its two shadows.
             monkeypatch.setattr(
-                "app.routes.transfers.archive_helpers.transfer_template_has_paid_history",
+                "app.routes.transfers.templates.archive_helpers.transfer_template_has_paid_history",
                 lambda _template_id: False,
             )
 

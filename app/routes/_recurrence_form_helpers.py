@@ -307,7 +307,7 @@ def resolve_recurrence_rule_for_update(
 
     Dispatches the two update-form branches shared by
     :func:`app.routes.templates.update_template` and
-    :func:`app.routes.transfers.update_transfer_template`:
+    :func:`app.routes.transfers.templates.update_transfer_template`:
 
     * pattern present AND the template already owns a rule -> re-point
       that row in place via :func:`update_recurrence_rule_from_form`
