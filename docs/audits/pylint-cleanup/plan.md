@@ -1,15 +1,16 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.82/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 240 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has two files complete: **`routes/salary.py`
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 239 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has three files complete: **`routes/salary.py`
 DONE** (`4d7d7c1` returns+dead-imports, `e834635` calibrate decomposition, `131d648` split into the
-`app/routes/salary/` package) and **`services/amortization_engine.py` DONE** (`0e8b986` dead-code
+`app/routes/salary/` package); **`services/amortization_engine.py` DONE** (`0e8b986` dead-code
 removal, `c4f01e6` `project_forward` decomposition, `7cc8fe1` `calculate_payoff_by_date`
 `PayoffRequest` param object + `_search_extra_for_payoff` binary-search extraction; file now
-10.00/10, zero smell messages). **`services/savings_dashboard_service.py` Phase 1 of 2 DONE**
-(`d05758b`: all 13 function-level smells decomposed; only module `too-many-lines` (1379/1000)
-remains, deferred to a Phase 2 package split per the developer-chosen phasing). See the
+10.00/10, zero smell messages); and **`services/savings_dashboard_service.py` DONE** (two-phase,
+developer-chosen: `d05758b` decomposed all 13 function-level smells, then `0ec5586` split the
+1379-line module into the `app/services/savings_dashboard_service/` package -- all smells gone,
+each sub-module 10/10, 0 new R0801). See the
 [Phase 3](#phase-3----design-smell-refactors-158-visible--the-phase-1-smell-disables)
 register and the [Progress Log](#progress-log). Ratified decision #5 (module splits = genuine
 package splits, not disables) is locked. Phase 2 resolved every
@@ -588,8 +589,9 @@ documented disables), with commit SHA.
   `_build_account_data`:803 tm-args; `_compute_savings_progress`:952 tm-args/pos/locals;
   `_project_investment_for_year`:1106 tm-args/pos/locals; `_build_investment_balance_map`:1598
   tm-args/locals; `_get_account_balance_map`:2052 tm-args) -- Status: `-`
-- **services/savings_dashboard_service.py** -- Status: **Phase 1 of 2 DONE** (`d05758b`; all 13
-  function-level smells resolved; module tm-lines deferred to Phase 2). The god-function
+- **services/savings_dashboard_service.py** -- Status: **DONE** (two-phase: `d05758b` + `0ec5586`;
+  all 14 smells resolved, file now the `app/services/savings_dashboard_service/` package, each
+  sub-module 10/10). The god-function
   `_compute_account_projections` (37 locals / 63 stmts / 18 branches / 6 args) decomposed into
   `_project_one_account` + `_compute_base_balances` + `_compute_loan_account`
   (+ `_loan_projected_horizons`, `_loan_ever_paid_off`) + `_compute_needs_setup`, with a frozen
@@ -602,10 +604,15 @@ documented disables), with commit SHA.
   cohesive extraction. Pure extraction, no logic change; public `compute_dashboard_data` signature
   unchanged (60+ call sites + AST guards unaffected). Full suite 5755 passed. **NOTE: the plan's
   earlier `tm-nested-blocks:359` was already stale -- the live tree had no nested-blocks smell.**
-  **Phase 2 (NEXT):** module `too-many-lines` 1379/1000 (decomposition grew the file 1035->1379) --
-  package split per ratified decision #5. The AST guard 1b (`inspect.getsource(svc)` finding the
-  `compute_dashboard_data` FunctionDef) and the direct `_load_account_params` call in
-  `test_income_service.py` will need repointing/re-export when the module becomes a package.
+  **Phase 2 (DONE `0ec5586`):** the 1379-line module split into the 8-file
+  `app/services/savings_dashboard_service/` package (`__init__` re-exports the public
+  `compute_dashboard_data`; `_types`/`_data`/`_projections`/`_goals`/`_metrics`/`_display`/
+  `_orchestrator`). Directory named to preserve the `from app.services import
+  savings_dashboard_service` path. **0 new R0801** (split trap avoided). Test patch-path updates
+  (decision #5, no assertion change): AST guard 1b -> parse `_orchestrator`; AST guard 2 -> glob all
+  sub-modules; `_get_dti_label` -> `._metrics`; `_load_account_params` -> `._data`; C15-3 allow-list
+  entry became the `services/savings_dashboard_service/` package prefix (the two `.current_principal`
+  hits are prose, not reads). Unused module `logger` dropped. Each sub-module 10/10; full suite 5755.
 - **services/amortization_engine.py** -- Status: **DONE** (`7cc8fe1`; file now 10.00/10, zero smell
   messages). module tm-lines RESOLVED + all four
   `replay_confirmed_history` smells RESOLVED by removing that dead/superseded primitive (`0e8b986`;
@@ -741,8 +748,7 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after `savings_dashboard_service.py` Phase 1):
-`savings_dashboard_service.py` Phase 2 (module tm-lines only -- package split),
+Next by live density (re-measured 2026-06-05 after `savings_dashboard_service.py` DONE):
 `year_end_summary_service.py` (12), then the route files (`transactions.py` (9),
 `transfers.py` (8), `loan.py` (7)) and `debt_strategy_service.py` (7) -- the financial cores
 plan-first per the developer's cadence.
@@ -997,3 +1003,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `c4f01e6` | 3 | **amortization_engine `project_forward` decomposition (param objects, developer-chosen):** new frozen `ProjectionInputs` bundles the 7 shared projection inputs (9->3 args, kills tm-args; callers build one and reuse it, reinforcing the can't-diverge SSOT); `_apply_override_payment`/`_apply_contractual_payment` pure helpers kill tm-branches/statements; `_ProjectionState` + `_recast_for_rate_change` + `_advance_month` reuse drop tm-locals 33->14 (genuine, no disable); `AmortizationRow` 9-attr DTO -> scoped+commented tm-instance-attributes disable. Updated all call sites (loan_resolver x3, routes/loan refi, 2 internal payoff calls, 18 test calls). Behavior bit-identical (hand-asserted money tests pass). **project_forward 4 smells -> 0; AmortizationRow -> documented.** Score 9.80; visible 258; E/F 0; R0801 0; useless-suppression 0; 415 targeted tests pass. | 9.80/10 | 258 |
 | 2026-06-05 | `7cc8fe1` | 3 | **amortization_engine `calculate_payoff_by_date` decomposition (param object + binary-search extraction, developer-chosen Shape A) -- file DONE:** new frozen `PayoffRequest` bundles the 10 inputs incl. `target_date` (tm-args/pos 10->1); `_search_extra_for_payoff` helper extracts the binary search (tm-locals 25->12, tm-return 7->6, tm-branches 14->9); `PayoffRequest` 10-attr Parameter Object -> scoped+commented tm-instance-attributes disable (verified needed, 0 useless-suppression). Traced impact: 1 production caller (routes/loan.py), 9 test call sites, the C2-11 structural slice marker (now bounded by the inserted `PayoffRequest`; assertions unchanged). **C15-3 demoted-column lock interaction (Option A):** the param object introduced `request.current_principal` reads that the lock's coarse `.current_principal` grep flagged; allow-listed `amortization_engine.py` (no DB access -- can't read `LoanParams`; value is the resolver-derived `state.current_balance`) + recorded F-28 in `remediation_follow_up.md` + fixed F-27's stale signature pseudocode. **All 5 `calculate_payoff_by_date` smells -> 0; file 10.00/10, zero smell messages.** Score 9.80->9.81; visible 258->253; E/F 0; R0801 0; useless-suppression 0; disables 79->80. 253 targeted + 4 C15-3 lock pass; **full suite 5755 passed.** | 9.81/10 | 253 |
 | 2026-06-05 | `d05758b` | 3 | **savings_dashboard_service `Phase 1 of 2` -- decompose 7 functions (developer-chosen phasing):** all 13 function-level smells resolved by pure cohesive-helper extraction + context/result objects (no logic change). God-function `_compute_account_projections` (37 locals/63 stmts/18 branches/6 args) -> `_project_one_account` + `_compute_base_balances` + `_compute_loan_account` (+ `_loan_projected_horizons`, `_loan_ever_paid_off`) + `_compute_needs_setup`; frozen `_ProjectionContext` clears tm-args. `_project_investment` -> `_ProjectionContext` + `_investment_horizons`. `compute_dashboard_data` -> `_load_dashboard_core_data`(+`_DashboardCoreData`) + `_apply_dti_metrics` (gross_biweekly read kept inline for AST guard 1a) + `_sum_liquid_balances`. goals/expenses/debt/params via cohesive extraction. 3 new frozen dataclasses all <7 attrs. Public `compute_dashboard_data` signature unchanged (60+ call sites + AST guards unaffected). **Behavior bit-identical: full suite 5755 passed incl. cross-page balance-equality + loan-resolver-single-source integration tests.** 13 function smells -> 0; only module tm-lines remains (1379/1000, grew from 1035) -> Phase 2 package split. Score 9.81->9.82; visible 253->240; R0801 0; E/F 0; useless-suppression 0. | 9.82/10 | 240 |
+| 2026-06-05 | `0ec5586` | 3 | **savings_dashboard_service `Phase 2 of 2` -- module -> package split (developer-chosen 8-module split) -- file DONE:** the 1379-line module (over the 1000 ceiling after Phase 1) split into `app/services/savings_dashboard_service/` (`__init__` re-exports public `compute_dashboard_data`; `_types`/`_data`/`_projections`/`_goals`/`_metrics`/`_display`/`_orchestrator`). Directory named to preserve `from app.services import savings_dashboard_service`. Dropped unused module `logger`. **0 new R0801** (split trap avoided -- the one-sided dup-code disable on `_get_current_paycheck_breakdown` moved to `_metrics.py`, still effective). Test patch-path updates (decision #5, no assertion change): AST guard 1b -> parse `_orchestrator`; AST guard 2 -> glob all sub-modules; `_get_dti_label` import -> `._metrics`; `_load_account_params` call -> `._data`; **C15-3 demoted-column lock allow-list entry became the `services/savings_dashboard_service/` package prefix** (the 2 `.current_principal` hits are prose, not reads); income_service docstring repointed. Each sub-module pylint 10/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **savings_dashboard_service DONE (both phases).** Score 9.82; visible 240->239; R0801 0; E/F 0; useless-suppression 0. | 9.82/10 | 239 |
