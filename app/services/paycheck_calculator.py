@@ -80,33 +80,43 @@ class DeductionLine:
 
 
 @dataclass
-class PaycheckBreakdown:
-    """Complete paycheck breakdown for a single pay period."""
-    period_id: int
-    annual_salary: Decimal
-    gross_biweekly: Decimal
-    pre_tax_deductions: list = field(default_factory=list)
-    taxable_income: Decimal = ZERO
-    federal_tax: Decimal = ZERO
-    state_tax: Decimal = ZERO
+class TaxLines:
+    """The four withholding lines computed for a single paycheck."""
+    federal: Decimal = ZERO
+    state: Decimal = ZERO
     social_security: Decimal = ZERO
     medicare: Decimal = ZERO
-    post_tax_deductions: list = field(default_factory=list)
+
+    @property
+    def total(self) -> Decimal:
+        """Return the sum of the four withholding lines."""
+        return self.federal + self.state + self.social_security + self.medicare
+
+
+@dataclass
+class DeductionBreakdown:
+    """Pre- and post-tax deduction line items for a single paycheck."""
+    pre_tax: list = field(default_factory=list)
+    post_tax: list = field(default_factory=list)
+
+    @property
+    def total_pre_tax(self) -> Decimal:
+        """Return the sum of the pre-tax deduction amounts."""
+        return sum((d.amount for d in self.pre_tax), ZERO)
+
+    @property
+    def total_post_tax(self) -> Decimal:
+        """Return the sum of the post-tax deduction amounts."""
+        return sum((d.amount for d in self.post_tax), ZERO)
+
+
+@dataclass
+class Earnings:
+    """Gross-to-net dollar figures for a single paycheck."""
+    annual_salary: Decimal
+    gross_biweekly: Decimal
+    taxable_income: Decimal = ZERO
     net_pay: Decimal = ZERO
-    is_third_paycheck: bool = False
-    raise_event: str = ""
-
-    @property
-    def total_pre_tax(self):
-        return sum((d.amount for d in self.pre_tax_deductions), ZERO)
-
-    @property
-    def total_post_tax(self):
-        return sum((d.amount for d in self.post_tax_deductions), ZERO)
-
-    @property
-    def total_taxes(self):
-        return self.federal_tax + self.state_tax + self.social_security + self.medicare
 
     @property
     def take_home_rate_pct(self) -> Decimal | None:
@@ -120,6 +130,51 @@ class PaycheckBreakdown:
         if self.gross_biweekly <= ZERO:
             return None
         return (self.net_pay / self.gross_biweekly) * Decimal("100")
+
+
+@dataclass
+class PeriodInfo:
+    """Pay-period identity and per-paycheck event flags."""
+    period_id: int
+    is_third_paycheck: bool = False
+    raise_event: str = ""
+
+
+@dataclass
+class PaycheckBreakdown:
+    """Complete paycheck breakdown for a single pay period.
+
+    The breakdown is organised into four cohesive sections rather than a
+    flat field list: :class:`PeriodInfo` (``period``), :class:`Earnings`
+    (``earnings``), :class:`TaxLines` (``taxes``), and
+    :class:`DeductionBreakdown` (``deductions``).  Section totals live on
+    the section that owns the data (``taxes.total``,
+    ``deductions.total_pre_tax``, ``earnings.take_home_rate_pct``).
+    """
+    period: PeriodInfo
+    earnings: Earnings
+    taxes: TaxLines = field(default_factory=TaxLines)
+    deductions: DeductionBreakdown = field(default_factory=DeductionBreakdown)
+
+
+@dataclass(frozen=True)
+class _DeductionContext:
+    """Immutable inputs shared by the pre- and post-tax deduction passes."""
+    profile: object
+    period: object
+    all_periods: list
+    gross_biweekly: Decimal
+    is_third_paycheck: bool
+
+
+@dataclass(frozen=True)
+class _PaycheckContext:
+    """Immutable per-paycheck inputs the tax-line computation reads."""
+    profile: object
+    period: object
+    all_periods: list
+    pay_periods_per_year: int
+    gross_biweekly: Decimal
 
 
 def calculate_paycheck(profile, period, all_periods, tax_configs,
@@ -153,13 +208,8 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     Returns:
         PaycheckBreakdown dataclass.
     """
-    bracket_set = tax_configs.get("bracket_set")
-    state_config = tax_configs.get("state_config")
-    fica_config = tax_configs.get("fica_config")
-
-    # Step 1: Determine annual salary after raises
+    # Step 1: Determine annual salary after raises.
     annual_salary = _apply_raises(profile, period)
-    raise_event = _get_raise_event(profile, period)
 
     # Step 2: Gross biweekly.  Residue from the per-cycle quantisation
     # is reconciled back into the annual aggregate (MED-05 / PA-07);
@@ -168,127 +218,43 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     # fallback.
     pay_periods_per_year = profile.pay_periods_per_year or 26
     gross_biweekly = _gross_biweekly_for_period(
-        annual_salary, period, all_periods, profile,
-        pay_periods_per_year,
+        annual_salary, period, all_periods, profile, pay_periods_per_year,
     )
 
-    # Step 3: Detect 3rd paycheck
-    is_third = _is_third_paycheck(period, all_periods)
-
-    # Resolve deduction timing and calc method IDs from the startup cache.
-
-    pre_tax_id = ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
-    post_tax_id = ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
-    pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
-
-    # Step 4: Calculate pre-tax deductions
-    pre_tax_deductions = _calculate_deductions(
-        profile, period, all_periods, gross_biweekly, pre_tax_id, pct_id, is_third
+    # Steps 3-4 & 8: 3rd-paycheck detection plus the pre- and post-tax
+    # deduction passes (both share the same per-paycheck context).
+    ded_ctx = _DeductionContext(
+        profile, period, all_periods, gross_biweekly,
+        _is_third_paycheck(period, all_periods),
     )
-    total_pre_tax = sum((d.amount for d in pre_tax_deductions), ZERO)
+    deductions = _compute_deductions(ded_ctx)
 
-    # Step 5: Taxable income (for display -- taxes computed via Pub 15-T)
-    taxable_biweekly = gross_biweekly - total_pre_tax
-    taxable_biweekly = max(taxable_biweekly, ZERO)
+    # Step 5: Taxable income (for display -- taxes computed via Pub 15-T).
+    taxable_biweekly = max(gross_biweekly - deductions.total_pre_tax, ZERO)
 
-    # Step 6 & 7: Tax calculation -- calibrated or bracket-based
-    use_calibration = (
-        calibration is not None
-        and getattr(calibration, "is_active", False)
+    # Steps 6-7: Tax calculation -- calibrated or bracket-based.
+    pay_ctx = _PaycheckContext(
+        profile, period, all_periods, pay_periods_per_year, gross_biweekly,
+    )
+    taxes = _compute_tax_lines(
+        pay_ctx, taxable_biweekly, deductions.total_pre_tax, tax_configs, calibration,
     )
 
-    # Cumulative YTD wages are needed by both branches for the SS wage-base
-    # cap (CRIT-03 / F-037: the calibration path used to skip this and
-    # over-charged SS after the cap on high earners).
-    cumulative_wages = _get_cumulative_wages(
-        profile, period, all_periods
-    )
-
-    if use_calibration:
-        # Use effective rates from the pay stub calibration.  The SS line
-        # inside apply_calibration delegates to capped_social_security so
-        # the wage-base cap is enforced identically to the bracket path.
-        cal_taxes = apply_calibration(
-            gross_biweekly,
-            taxable_biweekly,
-            calibration,
-            cumulative_wages=cumulative_wages,
-            fica_config=fica_config,
-        )
-        federal_biweekly = cal_taxes["federal"]
-        state_biweekly = cal_taxes["state"]
-        ss_biweekly = cal_taxes["ss"]
-        medicare_biweekly = cal_taxes["medicare"]
-    else:
-        # Bracket-based federal withholding (IRS Pub 15-T).
-        annual_pre_tax = total_pre_tax * pay_periods_per_year
-
-        additional_income = Decimal(str(getattr(profile, "additional_income", 0) or 0))
-        additional_deductions = Decimal(str(getattr(profile, "additional_deductions", 0) or 0))
-        extra_withholding = Decimal(str(getattr(profile, "extra_withholding", 0) or 0))
-        qualifying_children = int(getattr(profile, "qualifying_children", 0) or 0)
-        other_dependents = int(getattr(profile, "other_dependents", 0) or 0)
-
-        if bracket_set:
-            federal_biweekly = tax_calculator.calculate_federal_withholding(
-                gross_pay=gross_biweekly,
-                pay_periods=pay_periods_per_year,
-                bracket_set=bracket_set,
-                additional_income=additional_income,
-                pre_tax_deductions=annual_pre_tax,
-                additional_deductions=additional_deductions,
-                qualifying_children=qualifying_children,
-                other_dependents=other_dependents,
-                extra_withholding=extra_withholding,
-            )
-        else:
-            federal_biweekly = ZERO
-
-        state_annual = tax_calculator.calculate_state_tax(
-            taxable_biweekly * pay_periods_per_year, state_config
-        )
-        state_biweekly = (state_annual / pay_periods_per_year).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
-
-        # FICA -- use cumulative wages for SS cap tracking.
-        fica = tax_calculator.calculate_fica(
-            gross_biweekly, fica_config, cumulative_wages
-        )
-        ss_biweekly = fica["ss"]
-        medicare_biweekly = fica["medicare"]
-
-    # Step 8: Post-tax deductions
-    post_tax_deductions = _calculate_deductions(
-        profile, period, all_periods, gross_biweekly, post_tax_id, pct_id, is_third
-    )
-    total_post_tax = sum((d.amount for d in post_tax_deductions), ZERO)
-
-    # Step 9: Net pay
+    # Step 9: Net pay.
     net_pay = (
         gross_biweekly
-        - total_pre_tax
-        - federal_biweekly
-        - state_biweekly
-        - ss_biweekly
-        - medicare_biweekly
-        - total_post_tax
+        - deductions.total_pre_tax
+        - taxes.total
+        - deductions.total_post_tax
     ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     return PaycheckBreakdown(
-        period_id=period.id,
-        annual_salary=annual_salary,
-        gross_biweekly=gross_biweekly,
-        pre_tax_deductions=pre_tax_deductions,
-        taxable_income=taxable_biweekly,
-        federal_tax=federal_biweekly,
-        state_tax=state_biweekly,
-        social_security=ss_biweekly,
-        medicare=medicare_biweekly,
-        post_tax_deductions=post_tax_deductions,
-        net_pay=net_pay,
-        is_third_paycheck=is_third,
-        raise_event=raise_event,
+        period=PeriodInfo(
+            period.id, ded_ctx.is_third_paycheck, _get_raise_event(profile, period),
+        ),
+        earnings=Earnings(annual_salary, gross_biweekly, taxable_biweekly, net_pay),
+        taxes=taxes,
+        deductions=deductions,
     )
 
 
@@ -314,6 +280,140 @@ def project_salary(profile, periods, tax_configs, *, calibration=None):
 
 
 # ── Private Helpers ────────────────────────────────────────────────
+
+
+def _compute_deductions(ctx):
+    """Compute the pre- and post-tax deduction lines for a paycheck.
+
+    Runs :func:`_calculate_deductions` once per timing using the shared
+    :class:`_DeductionContext`, returning both line lists bundled in a
+    :class:`DeductionBreakdown`.
+
+    Args:
+        ctx: The per-paycheck :class:`_DeductionContext`.
+
+    Returns:
+        DeductionBreakdown with the pre- and post-tax line items.
+    """
+    return DeductionBreakdown(
+        pre_tax=_calculate_deductions(
+            ctx, ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
+        ),
+        post_tax=_calculate_deductions(
+            ctx, ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
+        ),
+    )
+
+
+def _compute_tax_lines(ctx, taxable_biweekly, total_pre_tax, tax_configs, calibration):
+    """Compute the four withholding lines, calibrated or bracket-based.
+
+    When an active calibration is supplied, effective pay-stub rates drive
+    the lines (the SS line inside ``apply_calibration`` delegates to
+    ``capped_social_security`` so the wage-base cap is enforced identically
+    to the bracket path).  Otherwise the lines come from IRS Pub 15-T
+    bracket withholding plus FICA.  Cumulative YTD wages are computed once
+    and fed to both paths for the SS wage-base cap (CRIT-03 / F-037: the
+    calibration path used to skip this and over-charged SS after the cap on
+    high earners).
+
+    Args:
+        ctx: The per-paycheck :class:`_PaycheckContext`.
+        taxable_biweekly: Gross less pre-tax deductions, floored at zero.
+        total_pre_tax: Per-period pre-tax deduction total (annualised for
+            the bracket federal calculation).
+        tax_configs: dict with bracket_set, state_config, fica_config.
+        calibration: Optional CalibrationOverride with effective rates.
+
+    Returns:
+        TaxLines with the federal, state, social_security, and medicare
+        withholding amounts.
+    """
+    fica_config = tax_configs.get("fica_config")
+    cumulative_wages = _get_cumulative_wages(ctx.profile, ctx.period, ctx.all_periods)
+
+    if calibration is not None and getattr(calibration, "is_active", False):
+        cal_taxes = apply_calibration(
+            ctx.gross_biweekly,
+            taxable_biweekly,
+            calibration,
+            cumulative_wages=cumulative_wages,
+            fica_config=fica_config,
+        )
+        return TaxLines(
+            federal=cal_taxes["federal"],
+            state=cal_taxes["state"],
+            social_security=cal_taxes["ss"],
+            medicare=cal_taxes["medicare"],
+        )
+
+    bracket_set = tax_configs.get("bracket_set")
+    federal = (
+        _bracket_federal(ctx, bracket_set, total_pre_tax * ctx.pay_periods_per_year)
+        if bracket_set
+        else ZERO
+    )
+    state = _bracket_state(
+        taxable_biweekly, ctx.pay_periods_per_year, tax_configs.get("state_config")
+    )
+    fica = tax_calculator.calculate_fica(
+        ctx.gross_biweekly, fica_config, cumulative_wages
+    )
+    return TaxLines(
+        federal=federal,
+        state=state,
+        social_security=fica["ss"],
+        medicare=fica["medicare"],
+    )
+
+
+def _bracket_federal(ctx, bracket_set, annual_pre_tax):
+    """Return the bracket-based biweekly federal withholding (IRS Pub 15-T).
+
+    Reads the W-4 inputs off ``ctx.profile`` and delegates to
+    :func:`tax_calculator.calculate_federal_withholding`.
+
+    Args:
+        ctx: The per-paycheck :class:`_PaycheckContext`.
+        bracket_set: The TaxBracketSet to withhold against.
+        annual_pre_tax: Annualised pre-tax deduction total.
+
+    Returns:
+        Decimal biweekly federal withholding.
+    """
+    profile = ctx.profile
+    return tax_calculator.calculate_federal_withholding(
+        gross_pay=ctx.gross_biweekly,
+        pay_periods=ctx.pay_periods_per_year,
+        bracket_set=bracket_set,
+        additional_income=Decimal(str(getattr(profile, "additional_income", 0) or 0)),
+        pre_tax_deductions=annual_pre_tax,
+        additional_deductions=Decimal(
+            str(getattr(profile, "additional_deductions", 0) or 0)
+        ),
+        qualifying_children=int(getattr(profile, "qualifying_children", 0) or 0),
+        other_dependents=int(getattr(profile, "other_dependents", 0) or 0),
+        extra_withholding=Decimal(str(getattr(profile, "extra_withholding", 0) or 0)),
+    )
+
+
+def _bracket_state(taxable_biweekly, pay_periods_per_year, state_config):
+    """Return the biweekly state withholding from annualised taxable income.
+
+    Args:
+        taxable_biweekly: Gross less pre-tax deductions, floored at zero.
+        pay_periods_per_year: The full-year denominator (typically 26).
+        state_config: The StateTaxConfig (or None).
+
+    Returns:
+        Decimal biweekly state withholding.
+    """
+    state_annual = tax_calculator.calculate_state_tax(
+        taxable_biweekly * pay_periods_per_year, state_config
+    )
+    return (state_annual / pay_periods_per_year).quantize(
+        TWO_PLACES, rounding=ROUND_HALF_UP
+    )
 
 
 def _gross_biweekly_for_period(
@@ -389,23 +489,9 @@ def _gross_biweekly_for_period(
     floor_value = (annual_salary / pay_periods_dec).quantize(
         TWO_PLACES, rounding=ROUND_DOWN
     )
-
-    # The group's exact share of the annual salary at full precision is
-    # ``annual_salary * group_size / pay_periods_per_year``.  The
-    # residue is the cents that need to be added on top of
-    # ``floor_value * group_size`` to reach that share.  Quantising
-    # the share to the cent here is safe: ``floor_value`` is already at
-    # cent precision, so any sub-cent fraction in the exact share is
-    # below the rounding boundary the residue distribution targets.
-    group_size = len(group)
-    group_size_dec = Decimal(group_size)
-    exact_share = (
-        annual_salary * group_size_dec / pay_periods_dec
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-    residue = exact_share - floor_value * group_size_dec
-    residue_cents = int((residue / ONE_CENT).to_integral_value(
-        rounding=ROUND_HALF_UP
-    ))
+    residue_cents = _residue_cents(
+        annual_salary, len(group), pay_periods_dec, floor_value
+    )
 
     # ``residue_cents`` is non-negative by construction (floor rounded
     # the share down; quantising the share never decreases it below
@@ -425,6 +511,37 @@ def _gross_biweekly_for_period(
     if idx < residue_cents:
         return floor_value + ONE_CENT
     return floor_value
+
+
+def _residue_cents(annual_salary, group_size, pay_periods_dec, floor_value):
+    """Return the whole-cent residue to distribute across a reconciliation group.
+
+    The group's exact share of the annual salary at full precision is
+    ``annual_salary * group_size / pay_periods_per_year``.  The residue is
+    the cents that must be added on top of ``floor_value * group_size`` to
+    reach that share.  Quantising the share to the cent here is safe:
+    ``floor_value`` is already at cent precision, so any sub-cent fraction
+    in the exact share is below the rounding boundary the residue
+    distribution targets.  The result is non-negative by construction (the
+    floor rounded the share down; quantising the share never decreases it
+    below ``floor * group_size``).
+
+    Args:
+        annual_salary: The post-raise annual salary for the group.
+        group_size: Number of periods sharing the salary in the year.
+        pay_periods_dec: ``pay_periods_per_year`` as a Decimal.
+        floor_value: The per-period floor (annual / periods, rounded down).
+
+    Returns:
+        int -- the count of cents to distribute (one cent each to the
+        earliest ``residue_cents`` periods in group order).
+    """
+    group_size_dec = Decimal(group_size)
+    exact_share = (
+        annual_salary * group_size_dec / pay_periods_dec
+    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    residue = exact_share - floor_value * group_size_dec
+    return int((residue / ONE_CENT).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def _apply_raises(profile, period):
@@ -556,14 +673,13 @@ def _is_first_paycheck_of_month(period, all_periods):
     return True
 
 
-def _calculate_deductions(profile, period, all_periods, gross_biweekly,
-                          timing_id, calc_method_pct_id, is_third_paycheck):
-    """Calculate deductions for a specific timing.
+def _calculate_deductions(ctx, timing_id):
+    """Calculate the deduction lines for a specific timing.
 
     Args:
-        timing_id:          Integer ID of the DeductionTiming to filter on.
-        calc_method_pct_id: Integer ID of the CalcMethod "percentage" row,
-                            used to detect percentage-based deductions.
+        ctx: The per-paycheck :class:`_DeductionContext` (profile, period,
+            all_periods, gross_biweekly, is_third_paycheck).
+        timing_id: Integer ID of the DeductionTiming to filter on.
 
     Handles:
     - deductions_per_year (26/24/12) filtering based on 3rd paycheck
@@ -572,28 +688,29 @@ def _calculate_deductions(profile, period, all_periods, gross_biweekly,
     - annual cap tracking
     """
     deductions = []
-    if not profile.deductions:
+    if not ctx.profile.deductions:
         return deductions
 
-    for ded in profile.deductions:
+    pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+    for ded in ctx.profile.deductions:
         if not ded.is_active:
             continue
         if ded.deduction_timing_id != timing_id:
             continue
 
         # Skip 24-per-year deductions on 3rd paychecks
-        if ded.deductions_per_year == 24 and is_third_paycheck:
+        if ded.deductions_per_year == 24 and ctx.is_third_paycheck:
             continue
 
         # Skip 12-per-year deductions unless first paycheck of month
         if ded.deductions_per_year == 12:
-            if not _is_first_paycheck_of_month(period, all_periods):
+            if not _is_first_paycheck_of_month(ctx.period, ctx.all_periods):
                 continue
 
         # Calculate amount
         amount = Decimal(str(ded.amount))
-        if ded.calc_method_id == calc_method_pct_id:
-            amount = (gross_biweekly * amount).quantize(
+        if ded.calc_method_id == pct_id:
+            amount = (ctx.gross_biweekly * amount).quantize(
                 TWO_PLACES, rounding=ROUND_HALF_UP
             )
 
@@ -602,7 +719,7 @@ def _calculate_deductions(profile, period, all_periods, gross_biweekly,
             inflation_rate = Decimal(str(ded.inflation_rate))
             eff_month = ded.inflation_effective_month or 1
             # Calculate years of inflation based on period date
-            years = _inflation_years(period, profile, eff_month)
+            years = _inflation_years(ctx.period, ctx.profile, eff_month)
             if years > 0:
                 amount = (amount * (1 + inflation_rate) ** years).quantize(
                     TWO_PLACES, rounding=ROUND_HALF_UP

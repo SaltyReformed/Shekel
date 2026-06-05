@@ -57,18 +57,18 @@ def _compute_income_tax(
             user_id, year, profile, periods,
         )
         for bd in breakdowns:
-            totals["gross"] += bd.gross_biweekly
-            totals["federal"] += bd.federal_tax
-            totals["state"] += bd.state_tax
-            totals["ss"] += bd.social_security
-            totals["medicare"] += bd.medicare
-            totals["net"] += bd.net_pay
+            totals["gross"] += bd.earnings.gross_biweekly
+            totals["federal"] += bd.taxes.federal
+            totals["state"] += bd.taxes.state
+            totals["ss"] += bd.taxes.social_security
+            totals["medicare"] += bd.taxes.medicare
+            totals["net"] += bd.earnings.net_pay
 
-            for ded in bd.pre_tax_deductions:
+            for ded in bd.deductions.pre_tax:
                 pretax_by_name[ded.name] = (
                     pretax_by_name.get(ded.name, ZERO) + ded.amount
                 )
-            for ded in bd.post_tax_deductions:
+            for ded in bd.deductions.post_tax:
                 posttax_by_name[ded.name] = (
                     posttax_by_name.get(ded.name, ZERO) + ded.amount
                 )

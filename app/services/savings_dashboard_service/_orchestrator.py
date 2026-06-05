@@ -79,7 +79,7 @@ def compute_dashboard_data(user_id):
         user_id, core.all_periods, core.current_period,
     )
     net_biweekly_pay = (
-        current_breakdown.net_pay if current_breakdown is not None
+        current_breakdown.earnings.net_pay if current_breakdown is not None
         else Decimal("0.00")
     )
 
@@ -112,12 +112,12 @@ def compute_dashboard_data(user_id):
     if debt_summary is not None:
         # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine
         # output for the current period (``calculate_paycheck`` ->
-        # ``PaycheckBreakdown.gross_biweekly``), NOT the off-engine
+        # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
         # ``annual_salary / pay_periods`` recompute the DTI block read
         # pre-Commit-26.  ``_apply_dti_metrics`` performs the
         # biweekly -> monthly normalization on this engine-derived input.
         gross_biweekly = (
-            current_breakdown.gross_biweekly if current_breakdown is not None
+            current_breakdown.earnings.gross_biweekly if current_breakdown is not None
             else Decimal("0.00")
         )
         _apply_dti_metrics(debt_summary, gross_biweekly)

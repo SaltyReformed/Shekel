@@ -1588,7 +1588,7 @@ class TestDTIRaiseAware:
         ``app/services/savings_dashboard_service.py``:
 
         1. ``compute_dashboard_data`` reads
-           ``current_breakdown.gross_biweekly`` (the engine-derived
+           ``current_breakdown.earnings.gross_biweekly`` (the engine-derived
            value introduced by Commit 26) and does NOT subscript
            ``params`` with the ``"salary_gross_biweekly"`` key (the
            off-engine value still used by the investment-projection
@@ -1621,7 +1621,7 @@ class TestDTIRaiseAware:
         # Guard 1a: positive lock -- the engine breakdown attribute is
         # read in compute_dashboard_data.
         source = inspect.getsource(svc.compute_dashboard_data)
-        assert "current_breakdown.gross_biweekly" in source, (
+        assert "current_breakdown.earnings.gross_biweekly" in source, (
             "DTI block must read gross_biweekly from the paycheck "
             "engine breakdown (MED-06 / F-032)."
         )

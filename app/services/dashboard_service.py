@@ -527,7 +527,7 @@ def _get_net_pay_for_period(
     breakdown = paycheck_calculator.calculate_paycheck(
         profile, period, all_periods, tax_configs,
     )
-    return breakdown.net_pay
+    return breakdown.earnings.net_pay
 
 
 # ── Section 5: Savings Goals ──────────────────────────────────────

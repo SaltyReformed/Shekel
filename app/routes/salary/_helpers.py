@@ -108,7 +108,7 @@ def _regenerate_salary_transactions(profile):
             profile, current_period, periods, tax_configs,
             calibration=profile.calibration,
         )
-        profile.template.default_amount = pay_breakdown.net_pay
+        profile.template.default_amount = pay_breakdown.earnings.net_pay
 
     # Regenerate transactions
     try:
@@ -164,7 +164,7 @@ def _compute_total_pre_tax(profile):
     pay_breakdown = paycheck_calculator.calculate_paycheck(
         profile, current_period, periods, tax_configs,
     )
-    return pay_breakdown.total_pre_tax
+    return pay_breakdown.deductions.total_pre_tax
 
 
 def _reject_if_rates_inconsistent(data, derived_rates, taxable, profile_id):

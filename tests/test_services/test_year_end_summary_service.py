@@ -442,10 +442,10 @@ class TestIncomeTax:
         breakdowns = paycheck_calculator.project_salary(
             profile, periods, tax_configs,
         )
-        expected_federal = sum(bd.federal_tax for bd in breakdowns)
-        expected_state = sum(bd.state_tax for bd in breakdowns)
-        expected_ss = sum(bd.social_security for bd in breakdowns)
-        expected_medicare = sum(bd.medicare for bd in breakdowns)
+        expected_federal = sum(bd.taxes.federal for bd in breakdowns)
+        expected_state = sum(bd.taxes.state for bd in breakdowns)
+        expected_ss = sum(bd.taxes.social_security for bd in breakdowns)
+        expected_medicare = sum(bd.taxes.medicare for bd in breakdowns)
 
         result = compute_year_end_summary(user.id, YEAR)
         inc = result["income_tax"]

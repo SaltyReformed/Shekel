@@ -186,7 +186,7 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             current_breakdown = paycheck_calculator.calculate_paycheck(
                 profile, current_period, all_periods, tax_configs,
             )
-            net_biweekly = current_breakdown.net_pay
+            net_biweekly = current_breakdown.earnings.net_pay
 
     # ── Load retirement/investment accounts ──────────────────────
     retirement_types = account_service.list_retirement_investment_account_types()
@@ -226,7 +226,7 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     gap_net_biweekly = net_biweekly
     if salary_profiles and planned_retirement_date and net_biweekly > 0:
         profile = salary_profiles[0]
-        # F-20 / MED-06 / F-032: ``current_breakdown.gross_biweekly`` is
+        # F-20 / MED-06 / F-032: ``current_breakdown.earnings.gross_biweekly`` is
         # the paycheck-engine value the ``net_biweekly`` line above
         # already paid for; reusing it here avoids re-running the
         # engine for an identical result and locks the
@@ -235,7 +235,7 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         # ``annual_salary / pay_periods_per_year`` directly, which
         # silently dropped any applicable ``SalaryRaise`` row.
         current_gross_biweekly = (
-            current_breakdown.gross_biweekly
+            current_breakdown.earnings.gross_biweekly
             if current_breakdown is not None
             else Decimal("0.00")
         )

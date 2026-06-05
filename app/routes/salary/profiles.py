@@ -75,7 +75,7 @@ def list_profiles():
                 profile, current_period, periods, tax_configs,
                 calibration=profile.calibration,
             )
-            net_pay = pay_breakdown.net_pay
+            net_pay = pay_breakdown.earnings.net_pay
         profile_data.append({"profile": profile, "net_pay": net_pay})
 
     return render_template("salary/list.html", profile_data=profile_data)
@@ -213,7 +213,7 @@ def create_profile():
             init_breakdown = paycheck_calculator.calculate_paycheck(
                 profile, ref_period, periods, tax_configs
             )
-            template.default_amount = init_breakdown.net_pay
+            template.default_amount = init_breakdown.earnings.net_pay
 
         db.session.commit()
     except SQLAlchemyError:

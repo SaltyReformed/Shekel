@@ -762,7 +762,7 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
             salary_profile, period, all_periods, tax_configs,
             calibration=calibration,
         )
-        return breakdown.net_pay
+        return breakdown.earnings.net_pay
 
     except (InvalidOperation, ZeroDivisionError, TypeError, KeyError) as exc:
         logger.error(

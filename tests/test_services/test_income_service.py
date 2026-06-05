@@ -171,7 +171,9 @@ class TestLiveProjectedNet:
         breakdowns = paycheck_calculator.project_salary(
             profile, periods, tax_configs, calibration=profile.calibration,
         )
-        return {bd.period_id: bd.net_pay for bd in breakdowns}[period_id]
+        return {
+            bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
+        }[period_id]
 
     def test_recomputes_live_ignoring_stored_amount(
         self, app, db, seed_user, seed_periods,
@@ -342,7 +344,7 @@ class TestLiveIncomeThroughBalanceResolver:
                 profile, periods, tax_configs, calibration=profile.calibration,
             )
             expected_net = {
-                bd.period_id: bd.net_pay for bd in breakdowns
+                bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
             }[period.id]
             # Sanity: the live net genuinely differs from the stale stored.
             assert expected_net == Decimal("4000.00")
