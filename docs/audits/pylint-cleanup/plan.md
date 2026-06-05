@@ -1,8 +1,15 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.85/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 201 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has SEVEN files complete, newest
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.86/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 194 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has EIGHT files complete. The newest,
+**`services/debt_strategy_service.py` DONE** (`a1d076e`), dissolved all 7 function smells by
+genuine decomposition (no disables): the developer-chosen frozen `StrategyRequest` param object
+collapsed `calculate_strategy` to ONE arg, and the frozen `_SimulationState` working-state bundle
+(mirrors `amortization_engine._ProjectionState`) + the extracted `_simulate_month` cleared the
+`_cascade_extra_payments` (6->3 args) / `_build_result` (9->5 args) / `calculate_strategy`
+(locals 23->12) smells; 40 callers wrapped in `StrategyRequest(...)`; 0 new R0801, 0 disables
+added. The prior newest
 **`routes/loan.py` DONE** (two-phase, developer-chosen: `e8b910b` decomposed all FIVE flagged
 function smells by honest cohesive-helper extraction -- `dashboard` (46 locals/57 stmts) via five
 context-slice builders merged into the render dict, `payoff_calculate` (35 locals) via one helper
@@ -193,7 +200,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (7 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (8 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -796,8 +803,23 @@ documented disables), with commit SHA.
 - **services/investment_dashboard_service.py** (`compute_dashboard_data`:299 tm-locals;
   `_project_dashboard_balances`:424 tm-args/locals; `_compute_contribution_prompt`:488 tm-args;
   `compute_growth_chart_data`:558 tm-locals; `_compute_what_if_overlay`:698 tm-args) -- Status: `-`
-- **services/debt_strategy_service.py** (`_cascade_extra_payments`:476 tm-args/pos;
-  `calculate_strategy`:528 tm-args/pos/locals; `_build_result`:649 tm-args/pos) -- Status: `-`
+- **services/debt_strategy_service.py** -- Status: **DONE** (`a1d076e`; file now 10.00/10,
+  zero smell messages). All 7 function smells resolved by genuine decomposition (no logic
+  change, no disables, behavior bit-identical). `calculate_strategy` tm-args/pos (6/5) resolved
+  by the developer-chosen frozen `StrategyRequest` param object (6 fields bundling
+  debts/extra_monthly/strategy/custom_order/start_date/max_horizon_months; PayoffRequest
+  precedent), so the public entry point takes ONE arg; all 40 callers (4 route + 36 test)
+  wrapped in `StrategyRequest(...)`. The five parallel per-debt working arrays (the data clump
+  threaded by hand) bundled into the frozen `_SimulationState` (6 fields) + `initialize()`
+  factory -- mirrors `amortization_engine._ProjectionState`; `_accrue_interest` /
+  `_apply_minimum_payments` / `_cascade_extra_payments` / `_build_result` now take `state`
+  (`_cascade_extra_payments` 6->3 args, `_build_result` 9->5 args). `_simulate_month` extracts
+  the per-month loop body so `calculate_strategy` tm-locals 23->12 (verified REQUIRED: without
+  the extraction the loop body holds the function at 16/15). 0 new R0801 (the working-state
+  bundle introduced no cross-file dup); 0 disables added (82 unchanged). The route's
+  `calculate` handler keeps its pre-existing tm-locals/return/branches smells (separate Tier-3
+  item, untouched -- wrapping the calls added no locals/branches/returns). 66 targeted + full
+  suite 5755 passed.
 - **routes/templates.py** (`update_template`:290 tm-locals/return/branches/statements;
   `preview_recurrence`:651 tm-locals) -- Status: `-`
 - **services/retirement_dashboard_service.py** (`compute_gap_data`:114 tm-locals/statements;
@@ -883,16 +905,17 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after `loan.py` DONE `f07fb1c`; 100 smell items remain
-[88 of the 8-symbol set + 12 `too-many-instance-attributes`], down from 107):
-`services/debt_strategy_service.py` (7), `services/investment_dashboard_service.py` (6),
-`routes/_recurrence_form_helpers.py` (5), `services/paycheck_calculator.py` (5),
-`services/retirement_dashboard_service.py` (5), then `routes/grid.py` / `routes/templates.py` /
-`services/retirement_gap_calculator.py` (4 each) -- the financial cores plan-first per the
-developer's cadence. None of the remaining top files are module tm-lines (only `schemas/validation.py`
-+ `services/carry_forward_service.py` carry that, both Tier-3 -> package split per decision #5);
-`debt_strategy_service`/`investment_dashboard_service`/`paycheck_calculator`/`retirement_dashboard_service`
-are pure services, function-level decomposition only.
+Next by live density (re-measured 2026-06-05 after `debt_strategy_service.py` DONE `a1d076e`;
+93 smell items remain [81 of the 8-symbol set + 12 `too-many-instance-attributes`], down from 100):
+`services/investment_dashboard_service.py` (6), then `routes/_recurrence_form_helpers.py` (5) /
+`services/paycheck_calculator.py` (5) / `services/retirement_dashboard_service.py` (5), then
+`routes/grid.py` / `routes/templates.py` / `services/retirement_gap_calculator.py` /
+`services/growth_engine.py` / `services/loan_resolver.py` (4 each) -- the financial cores
+plan-first per the developer's cadence. None of the remaining top files are module tm-lines (only
+`schemas/validation.py` + `services/carry_forward_service.py` carry that, both Tier-3 -> package
+split per decision #5);
+`investment_dashboard_service`/`paycheck_calculator`/`retirement_dashboard_service` are pure
+services, function-level decomposition only.
 
 ---
 
@@ -1153,3 +1176,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `c4e9015` | 3 | **transfers.py `Phase 2 of 2` -- module -> `app/routes/transfers/` package (developer-chosen 6-module split) -- file DONE:** the 1457-line module (over the 1000 ceiling after Phase 1) split into `_bp`/`_helpers` (4 schema singletons + 5 shared ownership/render helpers)/`templates` (8 template-CRUD routes + 3 helpers)/`forms` (3 grid-cell GET partials)/`mutations` (5 instance routes + 3 helpers; AST-sliced verbatim). All 16 endpoints + URLs + the `from app.routes.transfers import transfers_bp` path preserved (no `url_for`/template/`app/__init__` edit). **Split trap (decision #5): 0 new R0801** -- co-locating update_transfer + mark_done + cancel_transfer in `mutations.py` kept their parallel code intra-file, and Phase 1's `_render_post_mutation_cell` pre-deduped the shadow block. Bonus: fresh wrapped imports cleared 2 pre-existing `line-too-long`. Test patch-path + 2 docstring `:func:` cross-refs repointed to `.templates` (decision #5, no assertion change). Each sub-module pylint 10.00/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **transfers.py DONE.** Score 9.84->9.85; visible 211->208; tm-lines 4->3; smell items 108->107; R0801 0; E/F 0; useless-suppression 0. | 9.85/10 | 208 |
 | 2026-06-05 | `e8b910b` | 3 | **loan.py `Phase 1 of 2` -- decompose 5 function smells + remove dead code (honest cohesive-helper extraction, no disables, behavior bit-identical):** all five function-level smells -> 0. `dashboard` (46/15 locals, 57/50 stmts) -> `_build_dashboard_scenarios` + `_build_planned_summary` + `_build_payment_summary` + `_build_dashboard_chart_context` + `_resolve_transfer_prompt` + `_build_schedule_tab`; the route assembles its render context by merging the per-section dicts (`**` unpack), 12 locals. `payoff_calculate` (35) -> `_payoff_extra_payment_result` / `_payoff_target_date_result` (one per mode) + `_payoff_committed_savings` + `_build_payoff_summary`. `refinance_calculate` (30) -> `_project_refinance` + `_refinance_break_even` + `_build_refinance_comparison`. `_compute_payment_breakdown` (18) -> `_distribute_payment_percentages` + `_project_next_year_escrow`. `create_payment_transfer` (16) -> `_resolve_transfer_amount`. **DRY win:** dashboard's + payoff's three-series chart building deduped into the shared `_build_chart_series` (split-trap pre-empt, 0 new R0801). **Dead-code removal (developer-approved, precedent `0e8b986`):** `_build_chart_data` had zero callers anywhere (pylint cannot flag module-level dead fns). loan.py 9.98/10 (only module tm-lines remains -> Phase 2); visible 208->202; R0801 0; useless-suppression 0; E/F 0. 223 targeted loan tests pass. | 9.85/10 | 202 |
 | 2026-06-05 | `f07fb1c` | 3 | **loan.py `Phase 2 of 2` -- module -> `app/routes/loan/` package (developer-chosen 5-concern split) -- file DONE:** the 1847-line module (over the 1000 ceiling after Phase 1) split into `_bp`/`_helpers` (8 schema singletons + the `_load_loan_account`/`_require_configured_loan`/anchor/resolver-state/full-context loaders + chart utils + 2 domain constants)/`dashboard` (route + 12 helpers)/`params` (create_params, update_params, true_up_balance)/`escrow_rates` (add_rate_change, add_escrow, delete_escrow -- HTMX, shared OOB tail co-located)/`calculators` (payoff_calculate, refinance_calculate)/`payment_transfer` (create_payment_transfer); each sub-module <=621 lines, sliced verbatim by def boundary. All 10 endpoints + URLs + the `from app.routes.loan import loan_bp` path preserved (no `url_for`/template/`app/__init__` edit). **Split trap (decision #5):** the "load configured loan, else 404/redirect" guard shared by update_params + true_up_balance + create_payment_transfer re-surfaced as a cross-file R0801 once split -- resolved by genuine dedup into `_require_configured_loan` (a real reusable route-guard, NOT incidental), which fully encapsulates both rejection paths via `abort(404)`/`abort(redirect(...))` (verified werkzeug raises a 302 from a Response) so call sites are a single line, NO residual dup; 0 documented dup disables. Test path updates (decision #5, no assertion change): the 4 static-source guards in `test_loan.py` repoint to the package / moved helpers; C15-3 allow-list `"routes/loan.py:"` -> `"routes/loan/"`; C17-6 sweep `"routes/loan.py"` -> `"routes/loan"`; `_transfer_creation_helpers` `:func:` cross-refs -> `.payment_transfer`. Each sub-module + package pylint 10.00/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **loan.py DONE.** Score 9.85; visible 202->201; tm-lines 3->2; smell items 107->100; R0801 0; E/F 0; useless-suppression 0. | 9.85/10 | 201 |
+| 2026-06-05 | `a1d076e` | 3 | **debt_strategy_service.py -- decompose 3 functions (param object + working-state bundle, developer-chosen `StrategyRequest`) -- file DONE:** all 7 function smells resolved by genuine decomposition (no logic change, no disables, behavior bit-identical). `calculate_strategy` tm-args/pos (6/5) -> frozen `StrategyRequest` param object (6 fields; developer chose this over keyword-only + a documented disable, following the `PayoffRequest` precedent), so the public entry point takes ONE arg; all 40 callers (4 route + 36 test) wrapped in `StrategyRequest(...)`. The five parallel per-debt working arrays (a data clump threaded by hand) -> frozen `_SimulationState` (6 fields) + `initialize()` factory, mirroring `amortization_engine._ProjectionState`; `_accrue_interest` / `_apply_minimum_payments` / `_cascade_extra_payments` / `_build_result` now take `state` (`_cascade_extra_payments` 6->3 args, `_build_result` 9->5 args). New `_simulate_month` extracts the per-month loop body so `calculate_strategy` tm-locals 23->12 (verified REQUIRED: without the extraction the loop body holds the function at 16/15). Empirically confirmed on a throwaway probe that keyword-only clears tm-positional but NOT tm-arguments -- which framed the param-object decision. The route's `calculate` handler keeps its pre-existing tm-locals/return/branches (separate Tier-3 item, untouched; wrapping the calls added no locals/branches/returns -- route score held 9.78 +0.00). file 10.00/10, zero smell messages. 0 new R0801; disables unchanged at 82; E/F 0; useless-suppression 0. Targeted 66 + **full suite 5755 passed.** | 9.86/10 | 194 |
