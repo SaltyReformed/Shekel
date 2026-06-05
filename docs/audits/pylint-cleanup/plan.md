@@ -1,7 +1,7 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-04 app/ is 9.80/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 271 visible messages.
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 268 visible messages.
 Full suite 5766 passed.** Phase 3 (design smells) has its first file complete: **`routes/salary.py`
 DONE** (`4d7d7c1` returns+dead-imports, `e834635` calibrate decomposition, `131d648` split into the
 `app/routes/salary/` package) -- see the [Phase 3](#phase-3----design-smell-refactors-158-visible--the-phase-1-smell-disables)
@@ -335,7 +335,7 @@ reconcile against `grep -rn "pylint: disable" app/` when working this register.)
 | file:line | Rule(s) disabled | Verdict | Reason / commit |
 |---|---|---|---|
 | app/routes/auth.py:23 | too-many-lines | - | file split candidate |
-| app/routes/auth.py:357 (login) | too-many-return-statements | - | security-critical; understand before touch |
+| app/routes/auth.py:357 (login) | too-many-return-statements | **REMOVED (useless), Phase 3** | Verified `login` has exactly 6 returns (= pylint `max-returns` default of 6; fires only at 7+), so the disable was a `useless-suppression`. Removed it; kept the design-rationale docstring, reworded from "Pylint note: ... is suppressed" to a "Design note" (the 6 distinct semantic exits are still worth documenting). No refactor, no behavior change. |
 | app/routes/auth.py:627 (reauth) | too-many-return-statements | - | |
 | app/routes/auth.py:738 (mfa_verify) | too-many-return-statements, too-many-branches | - | |
 | app/routes/auth.py:969 (mfa_confirm) | too-many-return-statements | - | |
@@ -344,11 +344,11 @@ reconcile against `grep -rn "pylint: disable" app/` when working this register.)
 | app/services/budget_variance_service.py:176 | too-many-arguments, too-many-positional-arguments | - | |
 | app/services/budget_variance_service.py:261 | too-many-arguments, too-many-positional-arguments | - | |
 | app/services/calendar_service.py:375 | too-many-arguments, too-many-positional-arguments | - | |
-| app/services/dashboard_service.py:306 (_compute_alerts) | too-many-arguments, too-many-positional-arguments | - | |
+| app/services/dashboard_service.py:306 (_compute_alerts) | too-many-arguments, too-many-positional-arguments | **REMOVED (useless), Phase 3** | Verified `_compute_alerts` has exactly 5 params (= `max-args`/`max-positional-arguments` default of 5; fires at 6+), so BOTH disables were `useless-suppression`. Removed. No refactor, no behavior change. |
 | app/services/spending_trend_service.py:296 | too-many-locals | - | |
 | app/services/transfer_service.py:283 (create_transfer) | too-many-arguments, too-many-positional-arguments, too-many-locals | - | TRANSFER INVARIANTS apply |
 | app/services/transfer_service.py:445 (update_transfer) | too-many-branches, too-many-statements | - | TRANSFER INVARIANTS apply |
-| app/services/transfer_service.py:693 (restore_transfer) | too-many-branches | - | TRANSFER INVARIANTS apply |
+| app/services/transfer_service.py:693 (restore_transfer) | too-many-branches | **REMOVED (useless), Phase 3** | Verified `restore_transfer` has 8 branches (4 top-level guards + the shadow `for` loop + 3 invariant-correction `if`s; <= `max-branches` default of 12, fires at 13+), so the disable was `useless-suppression`. Removed; TRANSFER INVARIANTS untouched, no behavior change. |
 
 ### Register: fix-now and other disables
 
@@ -837,8 +837,14 @@ unreviewed. Final disposition:
   testability/source-patch (`recurrence_engine:736/737`); init-timing (`ref_seeds:154`).
 - **global-statement (5):** `ref_cache` cache-init (`global` rebinds the module-level maps the
   accessors read; class encapsulation out of scope).
-- **wrong-import-position (4):** `accounts/__init__` blueprint side-effect registration (sub-modules
-  must import after `_bp`; F-25 cycle-break).
+- **wrong-import-position (4):** `accounts/__init__` blueprint side-effect registration.
+  **CORRECTED in Phase 3 (see Progress Log):** these 4 -- plus the 5 added later by the
+  `salary/__init__` package split (`131d648`) -- were classified KEEP on a mistaken rationale that
+  conflated runtime import ORDER (the sub-modules genuinely must import after `_bp`, true) with what
+  `wrong-import-position` actually flags (imports appearing after NON-import code). Because nothing
+  but the module docstring and the `_bp` import precedes them, the rule never fires;
+  `useless-suppression` (full config) proved all 9 useless and Phase 3 removed them. The
+  `# noqa: F401, E402` flake8 markers stay (a different tool; out of scope for the pylint pass).
 - **broad-except (1):** `health.py:52` (test-locked: tests inject bare `Exception`, assert
   controlled "unhealthy" + no credential leak).
 - **protected-access (2):** `balance_resolver:565/706` (deliberate engine-math reuse, audit E-25).
@@ -946,3 +952,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-04 | `4d7d7c1` | 3 | **Phase 3 file 1/N -- salary returns + dead imports:** extracted `_respond_after_raise_change`/`_respond_after_deduction_change` (HTMX-partial-else-redirect dual-return, 8 sites) -- DRY, and drops `add_raise`/`add_deduction` under the return limit as a side effect; documented `disable=too-many-return-statements` on `update_raise`/`update_deduction` (7 guard-clause/audit-error returns each). Removed dead imports `AccountType`/`AcctCategoryEnum`. 135 targeted pass. | 9.85 (file) | -- |
 | 2026-06-04 | `e834635` | 3 | **salary calibrate_confirm decomposition:** extracted `_compute_total_pre_tax` (shared with `calibrate_preview` -- a Phase-2-missed dup, vars `bk` vs `preview_breakdown` dodged R0801) + `_reject_if_rates_inconsistent` (the federal/state cross-check). calibrate_confirm tm-locals(21)/statements(51) -> 0; behavior-preserving (E-20/C19-2 tampering checks unchanged). | 9.85 (file) | -- |
 | 2026-06-04 | `131d648` | 3 | **salary.py -> `app/routes/salary/` package (module split, ratified decision #5):** `_bp`/`__init__`/`_helpers`/`profiles`/`items`(raises+deductions co-located)/`views`/`calibration`/`tax_config`; none >566 lines; 22 endpoints + URLs preserved (no `url_for`/template/`app/__init__` edit). Split re-surfaced 6 R0801 clusters the monolith hid (R0801 is cross-file only) -- resolved by genuine dedup: stale handlers routed through `_commit_helpers.regenerate_and_commit_or_stale`, raises+deductions co-located in `items.py`. **0 R0801 clusters, 0 new dup disables.** test_c46 patch-path + account_service docstring repointed to `_helpers`. tm-lines 9->8. **Full suite 5766 passed.** | 9.80/10 | 271 |
+| 2026-06-04 | `3a9d96f` | 3 | **useless-suppression + dead-import sweep (Phase 3 start):** verifying the plan against the live tree surfaced 13 `useless-suppression` messages (full config + `--enable`; the plan wrongly claimed 0) plus 3 dead imports. Read each site to confirm the smell no longer fires, then removed: auth `login` too-many-return (6 returns = `max-returns` limit), transfer `restore_transfer` too-many-branches (8 <= 12), dashboard `_compute_alerts` too-many-args/pos (5 params = limit) -- **resolving 3 of the 15 Phase-1->Phase-3 smell-disables outright**; the 9 `wrong-import-position` disables in `accounts/`+`salary/` `__init__` (rule never fires -- only the docstring + `_bp` import precede them; corrected the mistaken Phase 1 KEEP rationale that conflated runtime order with what the rule flags); 3 unused imports in `retirement_dashboard_service`. No refactor, no behavior change. Disable lines 90->78; useless-suppression 13->0; R0801 still 0. 665 targeted tests pass. | 9.80/10 | 268 |
