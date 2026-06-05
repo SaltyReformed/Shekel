@@ -35,7 +35,7 @@ class AccountProjectionKind(Enum):
     expressed inconsistently pre-Commit-28 (S6-03):
 
     1. :data:`AMORTIZING` -- loan amortization engine
-       (:func:`app.services.amortization_engine.replay_confirmed_history`
+       (:func:`app.services.rate_period_engine.replay_schedule`
        + :func:`app.services.amortization_engine.project_forward`, fed
        by :func:`app.services.loan_resolver.resolve_loan` via the
        :func:`app.services.loan_resolver.compute_payoff_scenarios`

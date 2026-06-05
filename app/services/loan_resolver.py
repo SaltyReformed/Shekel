@@ -235,7 +235,7 @@ class PayoffScenarios:
     All three forward slices start from the same
     ``(starting_balance, starting_date, remaining_months,
     applicable_rate)`` tuple produced by a single
-    :func:`replay_confirmed_history` call; they differ only in
+    :func:`rate_period_engine.replay_schedule` call; they differ only in
     ``monthly_override`` and ``extra_monthly``.  Chart rendering is
     ``history_rows + <slice>_forward``; the prefix is byte-identical
     across slices because replay returns the same row list.
@@ -481,7 +481,7 @@ def resolve_loan(
     # Schedule generation routes through the scenario composer
     # (Phase 6 of the amortization-engine split -- architectural plan:
     # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
-    # ``compute_payoff_scenarios`` calls ``replay_confirmed_history``
+    # ``compute_payoff_scenarios`` calls ``replay_schedule``
     # once and ``project_forward`` once with ``extra_monthly=0`` to
     # produce a "Committed with no extra" composition;
     # ``LoanState.schedule`` is the concatenation of the confirmed-
@@ -666,7 +666,7 @@ def compute_payoff_scenarios(
 ) -> PayoffScenarios:
     """Single source of truth for the Payoff Calculator's three scenarios.
 
-    Calls :func:`replay_confirmed_history` ONCE to derive a
+    Calls :func:`rate_period_engine.replay_schedule` ONCE to derive a
     deterministic-past slice plus the starting state, then calls
     :func:`project_forward` THREE times from the same starting
     ``(balance, date, remaining_months, rate)`` tuple, differing only
