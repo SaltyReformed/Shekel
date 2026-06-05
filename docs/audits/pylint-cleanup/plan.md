@@ -1,16 +1,21 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.82/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 239 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has three files complete: **`routes/salary.py`
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.83/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 227 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has FOUR files complete: **`routes/salary.py`
 DONE** (`4d7d7c1` returns+dead-imports, `e834635` calibrate decomposition, `131d648` split into the
 `app/routes/salary/` package); **`services/amortization_engine.py` DONE** (`0e8b986` dead-code
 removal, `c4f01e6` `project_forward` decomposition, `7cc8fe1` `calculate_payoff_by_date`
 `PayoffRequest` param object + `_search_extra_for_payoff` binary-search extraction; file now
-10.00/10, zero smell messages); and **`services/savings_dashboard_service.py` DONE** (two-phase,
+10.00/10, zero smell messages); **`services/savings_dashboard_service.py` DONE** (two-phase,
 developer-chosen: `d05758b` decomposed all 13 function-level smells, then `0ec5586` split the
 1379-line module into the `app/services/savings_dashboard_service/` package -- all smells gone,
-each sub-module 10/10, 0 new R0801). See the
+each sub-module 10/10, 0 new R0801); and **`services/year_end_summary_service.py` DONE** (two-phase,
+developer-chosen: `5eeb020` decomposed all 11 function-level smells via the `_ProjectionInputs` +
+`_YearContext` bundles + shared `_load_shadow_contributions`, then `b96b8b8` split the 2437-line
+module into the 10-module `app/services/year_end_summary_service/` package -- all smells gone, each
+sub-module 10/10; the split trap re-surfaced ONE intra-file R0801 dissolved by the shared
+`_loan_original_principal` helper). See the
 [Phase 3](#phase-3----design-smell-refactors-158-visible--the-phase-1-smell-disables)
 register and the [Progress Log](#progress-log). Ratified decision #5 (module splits = genuine
 package splits, not disables) is locked. Phase 2 resolved every
@@ -165,7 +170,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (`salary/` done `4d7d7c1`/`e834635`/`131d648`; `amortization_engine.py` done `0e8b986`/`c4f01e6`/`7cc8fe1`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (4 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -585,10 +590,34 @@ documented disables), with commit SHA.
 
 ### Tier 1 -- densest
 
-- **services/year_end_summary_service.py** (module tm-lines; `_compute_net_worth`:728 tm-args;
-  `_build_account_data`:803 tm-args; `_compute_savings_progress`:952 tm-args/pos/locals;
-  `_project_investment_for_year`:1106 tm-args/pos/locals; `_build_investment_balance_map`:1598
-  tm-args/locals; `_get_account_balance_map`:2052 tm-args) -- Status: `-`
+- **services/year_end_summary_service.py** -- Status: **DONE** (two-phase, developer-chosen:
+  `5eeb020` decomposed all 11 function-level smells, then `b96b8b8` split the 2437-line module into
+  the `app/services/year_end_summary_service/` package -- all smells gone, each sub-module 10/10, 0
+  net new R0801). **Phase 1 (`5eeb020`):** two frozen bundle dataclasses (both <=7 fields, no new
+  disable) -- `_ProjectionInputs` (the 5 pre-loaded parameter maps) and `_YearContext`
+  (year/scenario/all_periods/year_period_ids) -- threaded through the net-worth and savings-progress
+  chains in place of the four-or-five parallel keyword maps each forwarded by hand. `_compute_net_worth`
+  8->3 args; `_build_account_data` 7->4; `_get_account_balance_map` 7->4 (`inputs=None` for the
+  base-balance callers); `_compute_savings_progress` 10 args/6 pos/20 locals -> 3 args via the
+  extracted `_savings_progress_for_account`; `_project_investment_for_year` 9 args/7 pos/30 locals ->
+  4 args via `_derive_investment_jan1` + `_summarize_investment_projection`;
+  `_build_investment_balance_map` 6 args/28 locals -> 5 args via `_forward_project_periods` /
+  `_reverse_project_periods` / `_merge_balance_sources`. The new shared `_load_shadow_contributions`
+  dedupes the two near-identical inline shadow-income queries (developer-approved); the incidental
+  6-line `joinedload`+filter overlap it surfaced with `budget_variance_service._query_by_period`
+  (semantically unrelated) carries a one-sided rule-13 `duplicate-code` disable. All 6 smell functions
+  are private and called only internally, so no signature is exposed. **Phase 2 (`b96b8b8`):** split
+  into 10 per-concern sub-modules (each well under 1000 lines: `_types`/`_data`/`_periods`/`_balances`/
+  `_income_tax`/`_spending`/`_transfers`/`_net_worth`/`_savings`/`_orchestrator`), partition verified
+  import-cycle-free by AST cycle-detection; `__init__` re-exports only `compute_year_end_summary`.
+  **Split trap (decision #5):** the split re-surfaced ONE intra-file R0801 the monolith hid (the
+  `LoanParams`->`original_principal` idiom in `_get_account_balance_map` + `_compute_debt_progress`) --
+  resolved by genuine dedup into the shared `_loan_original_principal` helper (DRY win; let `_net_worth`
+  drop its now-unused `db`/`LoanParams` imports). Test patch-path updates (decision #5, no assertion
+  change): `_compute_entry_breakdowns` -> `._spending`; `test_loan_unified_figures` uses
+  `._balances._generate_debt_schedules` / `._income_tax._compute_mortgage_interest` and its
+  bare-quantize sweep now runs `grep -r --include=*.py` over the package dir; `test_income_service`
+  uses `._data._load_salary_gross_biweekly`. Package pylint 10.00/10; full suite 5755 passed.
 - **services/savings_dashboard_service.py** -- Status: **DONE** (two-phase: `d05758b` + `0ec5586`;
   all 14 smells resolved, file now the `app/services/savings_dashboard_service/` package, each
   sub-module 10/10). The god-function
@@ -748,10 +777,12 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after `savings_dashboard_service.py` DONE):
-`year_end_summary_service.py` (12), then the route files (`transactions.py` (9),
-`transfers.py` (8), `loan.py` (7)) and `debt_strategy_service.py` (7) -- the financial cores
-plan-first per the developer's cadence.
+Next by live density (re-measured 2026-06-05 after `year_end_summary_service/` DONE; 124 smell
+items remain): `routes/transactions.py` (9), `routes/transfers.py` (8), `routes/loan.py` (7),
+`services/debt_strategy_service.py` (7), `services/investment_dashboard_service.py` (6) -- the
+financial cores plan-first per the developer's cadence (the route files apply TRANSFER INVARIANTS /
+security-critical caution; `transactions.py`/`transfers.py`/`loan.py` are also module tm-lines ->
+package splits per decision #5).
 
 ---
 
@@ -1004,3 +1035,5 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `7cc8fe1` | 3 | **amortization_engine `calculate_payoff_by_date` decomposition (param object + binary-search extraction, developer-chosen Shape A) -- file DONE:** new frozen `PayoffRequest` bundles the 10 inputs incl. `target_date` (tm-args/pos 10->1); `_search_extra_for_payoff` helper extracts the binary search (tm-locals 25->12, tm-return 7->6, tm-branches 14->9); `PayoffRequest` 10-attr Parameter Object -> scoped+commented tm-instance-attributes disable (verified needed, 0 useless-suppression). Traced impact: 1 production caller (routes/loan.py), 9 test call sites, the C2-11 structural slice marker (now bounded by the inserted `PayoffRequest`; assertions unchanged). **C15-3 demoted-column lock interaction (Option A):** the param object introduced `request.current_principal` reads that the lock's coarse `.current_principal` grep flagged; allow-listed `amortization_engine.py` (no DB access -- can't read `LoanParams`; value is the resolver-derived `state.current_balance`) + recorded F-28 in `remediation_follow_up.md` + fixed F-27's stale signature pseudocode. **All 5 `calculate_payoff_by_date` smells -> 0; file 10.00/10, zero smell messages.** Score 9.80->9.81; visible 258->253; E/F 0; R0801 0; useless-suppression 0; disables 79->80. 253 targeted + 4 C15-3 lock pass; **full suite 5755 passed.** | 9.81/10 | 253 |
 | 2026-06-05 | `d05758b` | 3 | **savings_dashboard_service `Phase 1 of 2` -- decompose 7 functions (developer-chosen phasing):** all 13 function-level smells resolved by pure cohesive-helper extraction + context/result objects (no logic change). God-function `_compute_account_projections` (37 locals/63 stmts/18 branches/6 args) -> `_project_one_account` + `_compute_base_balances` + `_compute_loan_account` (+ `_loan_projected_horizons`, `_loan_ever_paid_off`) + `_compute_needs_setup`; frozen `_ProjectionContext` clears tm-args. `_project_investment` -> `_ProjectionContext` + `_investment_horizons`. `compute_dashboard_data` -> `_load_dashboard_core_data`(+`_DashboardCoreData`) + `_apply_dti_metrics` (gross_biweekly read kept inline for AST guard 1a) + `_sum_liquid_balances`. goals/expenses/debt/params via cohesive extraction. 3 new frozen dataclasses all <7 attrs. Public `compute_dashboard_data` signature unchanged (60+ call sites + AST guards unaffected). **Behavior bit-identical: full suite 5755 passed incl. cross-page balance-equality + loan-resolver-single-source integration tests.** 13 function smells -> 0; only module tm-lines remains (1379/1000, grew from 1035) -> Phase 2 package split. Score 9.81->9.82; visible 253->240; R0801 0; E/F 0; useless-suppression 0. | 9.82/10 | 240 |
 | 2026-06-05 | `0ec5586` | 3 | **savings_dashboard_service `Phase 2 of 2` -- module -> package split (developer-chosen 8-module split) -- file DONE:** the 1379-line module (over the 1000 ceiling after Phase 1) split into `app/services/savings_dashboard_service/` (`__init__` re-exports public `compute_dashboard_data`; `_types`/`_data`/`_projections`/`_goals`/`_metrics`/`_display`/`_orchestrator`). Directory named to preserve `from app.services import savings_dashboard_service`. Dropped unused module `logger`. **0 new R0801** (split trap avoided -- the one-sided dup-code disable on `_get_current_paycheck_breakdown` moved to `_metrics.py`, still effective). Test patch-path updates (decision #5, no assertion change): AST guard 1b -> parse `_orchestrator`; AST guard 2 -> glob all sub-modules; `_get_dti_label` import -> `._metrics`; `_load_account_params` call -> `._data`; **C15-3 demoted-column lock allow-list entry became the `services/savings_dashboard_service/` package prefix** (the 2 `.current_principal` hits are prose, not reads); income_service docstring repointed. Each sub-module pylint 10/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **savings_dashboard_service DONE (both phases).** Score 9.82; visible 240->239; R0801 0; E/F 0; useless-suppression 0. | 9.82/10 | 239 |
+| 2026-06-05 | `5eeb020` | 3 | **year_end_summary_service `Phase 1 of 2` -- decompose 6 functions (developer-chosen two-phase):** all 11 function-level smells resolved by genuine decomposition (no logic change). Two frozen bundle dataclasses (developer chose small bundles, both <=7 fields, NO new disable): `_ProjectionInputs` (the 5 pre-loaded parameter maps) + `_YearContext` (year/scenario/all_periods/year_period_ids), threaded through the net-worth + savings chains in place of the 4-5 parallel keyword maps each forwarded by hand. `_compute_net_worth` 8->3 args; `_build_account_data` 7->4; `_get_account_balance_map` 7->4 (`inputs=None` for base-balance callers); `_compute_savings_progress` 10 args/6 pos/20 locals -> 3 args via `_savings_progress_for_account`; `_project_investment_for_year` 9 args/7 pos/30 locals -> 4 args via `_derive_investment_jan1` + `_summarize_investment_projection`; `_build_investment_balance_map` 6 args/28 locals -> 5 args via `_forward_project_periods`/`_reverse_project_periods`/`_merge_balance_sources`. New shared `_load_shadow_contributions` dedupes the two near-identical inline shadow-income queries (developer-approved); the incidental 6-line joinedload+filter overlap it surfaced with `budget_variance_service._query_by_period` (semantically unrelated) -> one-sided rule-13 `duplicate-code` disable (developer-approved). All 6 smell fns private + internally-called (no exposed signature). pylint counts args as locals (R0914), so the bundle reduction also cleared the locals smells. 11 function smells -> 0; only module tm-lines remains (2437/1000) -> Phase 2. Score 9.82->9.83; visible 239->228; R0801 0; E/F 0; useless-suppression 0; disables +1. Targeted (year-end 73, integration 31, analytics+csv+savings 199) + **full suite 5755 passed.** | 9.83/10 | 228 |
+| 2026-06-05 | `b96b8b8` | 3 | **year_end_summary_service `Phase 2 of 2` -- module -> package split (developer-chosen 10-module split) -- file DONE:** the 2437-line module split into `app/services/year_end_summary_service/` (10 per-concern sub-modules: `_types`/`_data`/`_periods`/`_balances`/`_income_tax`/`_spending`/`_transfers`/`_net_worth`/`_savings`/`_orchestrator`; each well under 1000 lines, `_balances` largest at ~700). Partition verified **import-cycle-free by AST cycle-detection** before writing; `__init__` re-exports only `compute_year_end_summary`. **Split trap (decision #5):** re-surfaced ONE intra-file R0801 the monolith hid (the `LoanParams`->`original_principal` idiom shared by `_get_account_balance_map` + `_compute_debt_progress`) -- resolved by genuine dedup into the shared `_loan_original_principal` helper (DRY win; `_net_worth` then dropped its now-unused `db`/`LoanParams` imports). Dropped the unused module `logger`/`logging`. Test patch-path updates (decision #5, no assertion change): `_compute_entry_breakdowns` -> `._spending`; `test_loan_unified_figures` uses `._balances._generate_debt_schedules` / `._income_tax._compute_mortgage_interest` and its bare-quantize sweep now runs `grep -r --include=*.py` over the package dir (coverage preserved); `test_income_service` uses `._data._load_salary_gross_biweekly`. The whole-app `rglob` structural guards (balance_predicates, calculate_balances sweep) pick up the sub-modules automatically. Package pylint 10.00/10 (0 messages); **behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **year_end_summary_service DONE (both phases).** Score 9.83; visible 228->227; tm-lines 6->5; R0801 0; E/F 0; useless-suppression 0. | 9.83/10 | 227 |
