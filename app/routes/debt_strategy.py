@@ -34,6 +34,7 @@ from app.services.debt_strategy_service import (
     STRATEGY_AVALANCHE,
     STRATEGY_CUSTOM,
     STRATEGY_SNOWBALL,
+    StrategyRequest,
     calculate_strategy,
 )
 from app.services.loan_payment_service import load_loan_context
@@ -321,18 +322,18 @@ def calculate():
     today = date.today()
 
     try:
-        baseline = calculate_strategy(
+        baseline = calculate_strategy(StrategyRequest(
             debt_accounts, Decimal("0"), STRATEGY_AVALANCHE,
             start_date=today,
-        )
-        avalanche = calculate_strategy(
+        ))
+        avalanche = calculate_strategy(StrategyRequest(
             debt_accounts, extra_monthly, STRATEGY_AVALANCHE,
             start_date=today,
-        )
-        snowball = calculate_strategy(
+        ))
+        snowball = calculate_strategy(StrategyRequest(
             debt_accounts, extra_monthly, STRATEGY_SNOWBALL,
             start_date=today,
-        )
+        ))
     except ValueError as exc:
         logger.warning("Strategy calculation failed: %s", exc)
         return render_template(
@@ -343,10 +344,10 @@ def calculate():
     custom_result = None
     if strategy == STRATEGY_CUSTOM and custom_order is not None:
         try:
-            custom_result = calculate_strategy(
+            custom_result = calculate_strategy(StrategyRequest(
                 debt_accounts, extra_monthly, STRATEGY_CUSTOM,
                 custom_order=custom_order, start_date=today,
-            )
+            ))
         except ValueError as exc:
             logger.warning("Custom strategy calculation failed: %s", exc)
             return render_template(

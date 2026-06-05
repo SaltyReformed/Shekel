@@ -16,6 +16,7 @@ import pytest
 from app.services.debt_strategy_service import (
     AccountPayoff,
     DebtAccount,
+    StrategyRequest,
     StrategyResult,
     calculate_strategy,
     STRATEGY_AVALANCHE,
@@ -73,10 +74,10 @@ class TestAvalancheStrategy:
         The highest rate debt should be paid off first.
         """
         debts = _three_debts()
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         # Per-account results should be in avalanche priority order.
         assert result.per_account[0].account_id == 1  # 18% first
@@ -95,14 +96,14 @@ class TestAvalancheStrategy:
         overall.
         """
         debts = _three_debts()
-        avalanche = calculate_strategy(
+        avalanche = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
-        snowball = calculate_strategy(
+        ))
+        snowball = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_SNOWBALL,
             start_date=FIXED_START,
-        )
+        ))
 
         assert avalanche.total_interest <= snowball.total_interest
 
@@ -117,10 +118,10 @@ class TestAvalancheStrategy:
             _debt(1, "Larger", "5000", "0.12", "200"),
             _debt(2, "Smaller", "3000", "0.12", "100"),
         ]
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("100"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         # Smaller balance breaks the tie.
         assert result.per_account[0].account_id == 2
@@ -138,10 +139,10 @@ class TestSnowballStrategy:
         The smallest balance debt should be paid off first.
         """
         debts = _three_debts()
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_SNOWBALL,
             start_date=FIXED_START,
-        )
+        ))
 
         # Per-account results should be in snowball priority order.
         assert result.per_account[0].account_id == 3  # $3K first
@@ -160,14 +161,14 @@ class TestSnowballStrategy:
         even though total interest is higher.
         """
         debts = _three_debts()
-        avalanche = calculate_strategy(
+        avalanche = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
-        snowball = calculate_strategy(
+        ))
+        snowball = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_SNOWBALL,
             start_date=FIXED_START,
-        )
+        ))
 
         snowball_first = min(
             a.payoff_month for a in snowball.per_account
@@ -189,10 +190,10 @@ class TestSnowballStrategy:
             _debt(1, "Higher Rate", "5000", "0.12", "200"),
             _debt(2, "Lower Rate", "5000", "0.06", "200"),
         ]
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("100"), STRATEGY_SNOWBALL,
             start_date=FIXED_START,
-        )
+        ))
 
         # Higher rate breaks the tie.
         assert result.per_account[0].account_id == 1
@@ -209,11 +210,11 @@ class TestCustomStrategy:
         and snowball (3, 2, 1).  Debt 2 should be targeted first.
         """
         debts = _three_debts()
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_CUSTOM,
             custom_order=[2, 3, 1],
             start_date=FIXED_START,
-        )
+        ))
 
         # Results follow the custom priority order.
         assert result.per_account[0].account_id == 2
@@ -230,11 +231,11 @@ class TestCustomStrategy:
         """
         debts = _three_debts()
         with pytest.raises(ValueError, match="missing account_ids"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 debts, Decimal("200"), STRATEGY_CUSTOM,
                 custom_order=[1, 2],
                 start_date=FIXED_START,
-            )
+            ))
 
     def test_custom_order_extra_account(self):
         """Custom order with an account_id not in debts is rejected.
@@ -243,21 +244,21 @@ class TestCustomStrategy:
         """
         debts = _three_debts()
         with pytest.raises(ValueError, match="not in the active debts"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 debts, Decimal("200"), STRATEGY_CUSTOM,
                 custom_order=[1, 2, 3, 99],
                 start_date=FIXED_START,
-            )
+            ))
 
     def test_custom_order_duplicates(self):
         """Custom order with duplicate account_ids is rejected."""
         debts = _three_debts()
         with pytest.raises(ValueError, match="duplicate account_ids"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 debts, Decimal("200"), STRATEGY_CUSTOM,
                 custom_order=[1, 2, 2, 3],
                 start_date=FIXED_START,
-            )
+            ))
 
 
 class TestFreedPaymentCascade:
@@ -289,10 +290,10 @@ class TestFreedPaymentCascade:
             _debt(1, "Small", "500", "0", "200"),
             _debt(2, "Large", "1000", "0", "100"),
         ]
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("100"), STRATEGY_SNOWBALL,
             start_date=FIXED_START,
-        )
+        ))
 
         a_result = result.per_account[0]  # Debt 1 (smallest, targeted first)
         b_result = result.per_account[1]  # Debt 2
@@ -334,10 +335,10 @@ class TestFreedPaymentCascade:
             _debt(1, "Tiny", "50", "0", "200"),
             _debt(2, "Large", "1000", "0", "100"),
         ]
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("300"), STRATEGY_SNOWBALL,
             start_date=FIXED_START,
-        )
+        ))
 
         b_result = result.per_account[1]  # Debt 2
 
@@ -370,10 +371,10 @@ class TestEdgeCases:
         Payoff: month 3.  Total paid: $1015.25.  Total interest: $15.25.
         """
         debt = _debt(1, "Only Debt", "1000", "0.12", "200")
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             [debt], Decimal("300"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         assert len(result.per_account) == 1
         acct = result.per_account[0]
@@ -416,10 +417,10 @@ class TestEdgeCases:
             _debt(2, "Large", "2000", "0", "100"),
             _debt(3, "Small", "500", "0", "100"),
         ]
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("0"), STRATEGY_SNOWBALL,
             start_date=FIXED_START,
-        )
+        ))
 
         # Snowball order: C ($500), A ($1000), B ($2000).
         assert result.per_account[0].account_id == 3  # C first
@@ -449,10 +450,10 @@ class TestEdgeCases:
             _debt(2, "Paid Off", "0", "0.12", "100"),
             _debt(3, "Active Low", "3000", "0.06", "100"),
         ]
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         # Only 2 active debts in the result.
         assert len(result.per_account) == 2
@@ -473,10 +474,10 @@ class TestEdgeCases:
         Payoff: month 4.  Total paid: $1,000.  Total interest: $0.
         """
         debt = _debt(1, "Zero Rate", "1000", "0", "200")
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             [debt], Decimal("100"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         acct = result.per_account[0]
         assert acct.payoff_month == 4
@@ -496,10 +497,10 @@ class TestEdgeCases:
         Balance grows each month.  max_horizon=12.
         """
         debt = _debt(1, "Underwater", "10000", "0.24", "50")
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             [debt], Decimal("0"), STRATEGY_AVALANCHE,
             start_date=FIXED_START, max_horizon_months=12,
-        )
+        ))
 
         assert result.horizon_reached is True
         assert result.total_months == 12
@@ -521,10 +522,10 @@ class TestEdgeCases:
         Total paid = $50 (not $200).
         """
         debt = _debt(1, "Almost Done", "50", "0", "200")
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             [debt], Decimal("0"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         acct = result.per_account[0]
         assert acct.payoff_month == 1
@@ -544,10 +545,10 @@ class TestEdgeCases:
                   min = $50.  Balance = $10303.
         """
         debt = _debt(1, "Growing", "10000", "0.24", "50")
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             [debt], Decimal("0"), STRATEGY_AVALANCHE,
             start_date=FIXED_START, max_horizon_months=6,
-        )
+        ))
 
         assert result.horizon_reached is True
         acct = result.per_account[0]
@@ -568,18 +569,18 @@ class TestValidation:
         """Negative extra_monthly is rejected with ValueError."""
         debt = _debt(1, "Debt", "1000", "0.12", "100")
         with pytest.raises(ValueError, match="extra_monthly must be >= 0"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 [debt], Decimal("-100"), STRATEGY_AVALANCHE,
                 start_date=FIXED_START,
-            )
+            ))
 
     def test_empty_debts_list(self):
         """Empty debts list is rejected with ValueError."""
         with pytest.raises(ValueError, match="No active debts"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 [], Decimal("100"), STRATEGY_AVALANCHE,
                 start_date=FIXED_START,
-            )
+            ))
 
     def test_all_zero_principal_debts(self):
         """A list where all debts have zero principal is rejected.
@@ -591,19 +592,19 @@ class TestValidation:
             _debt(2, "Paid B", "0", "0.06", "50"),
         ]
         with pytest.raises(ValueError, match="No active debts"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 debts, Decimal("100"), STRATEGY_AVALANCHE,
                 start_date=FIXED_START,
-            )
+            ))
 
     def test_invalid_strategy_rejected(self):
         """An unknown strategy name is rejected with ValueError."""
         debt = _debt(1, "Debt", "1000", "0.12", "100")
         with pytest.raises(ValueError, match="strategy must be one of"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 [debt], Decimal("100"), "invalid_strategy",
                 start_date=FIXED_START,
-            )
+            ))
 
     def test_zero_minimum_payment_rejected(self):
         """An active debt with zero minimum payment is rejected.
@@ -613,29 +614,29 @@ class TestValidation:
         """
         debt = _debt(1, "No Payment", "1000", "0.12", "0")
         with pytest.raises(ValueError, match="minimum_payment must be > 0"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 [debt], Decimal("100"), STRATEGY_AVALANCHE,
                 start_date=FIXED_START,
-            )
+            ))
 
     def test_custom_without_order_rejected(self):
         """Custom strategy without custom_order is rejected."""
         debt = _debt(1, "Debt", "1000", "0.12", "100")
         with pytest.raises(ValueError, match="custom_order is required"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 [debt], Decimal("100"), STRATEGY_CUSTOM,
                 start_date=FIXED_START,
-            )
+            ))
 
     def test_custom_empty_order_rejected(self):
         """Custom strategy with empty custom_order is rejected."""
         debt = _debt(1, "Debt", "1000", "0.12", "100")
         with pytest.raises(ValueError, match="must not be empty"):
-            calculate_strategy(
+            calculate_strategy(StrategyRequest(
                 [debt], Decimal("100"), STRATEGY_CUSTOM,
                 custom_order=[],
                 start_date=FIXED_START,
-            )
+            ))
 
 
 class TestResultStructure:
@@ -651,10 +652,10 @@ class TestResultStructure:
             _debt(1, "A", "5000", "0.12", "200"),
             _debt(2, "B", "3000", "0.06", "100"),
         ]
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("100"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         assert isinstance(result.total_interest, Decimal)
         assert isinstance(result.total_paid, Decimal)
@@ -686,10 +687,10 @@ class TestResultStructure:
             _debt(1, "Small", "500", "0", "200"),
             _debt(2, "Large", "1000", "0", "100"),
         ]
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("100"), STRATEGY_SNOWBALL,
             start_date=FIXED_START,
-        )
+        ))
 
         expected_length = result.total_months + 1
         for acct in result.per_account:
@@ -710,16 +711,16 @@ class TestResultStructure:
         debt = _debt(1, "Debt", "1000", "0", "100")
 
         for strategy in (STRATEGY_AVALANCHE, STRATEGY_SNOWBALL):
-            result = calculate_strategy(
+            result = calculate_strategy(StrategyRequest(
                 [debt], Decimal("100"), strategy,
                 start_date=FIXED_START,
-            )
+            ))
             assert result.strategy_name == strategy
 
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             [debt], Decimal("100"), STRATEGY_CUSTOM,
             custom_order=[1], start_date=FIXED_START,
-        )
+        ))
         assert result.strategy_name == STRATEGY_CUSTOM
 
     def test_start_date_used_for_payoff_dates(self):
@@ -732,10 +733,10 @@ class TestResultStructure:
         """
         debt = _debt(1, "Debt", "1000", "0.12", "200")
         start = date(2026, 7, 15)
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             [debt], Decimal("300"), STRATEGY_AVALANCHE,
             start_date=start,
-        )
+        ))
 
         acct = result.per_account[0]
         assert acct.payoff_month == 3
@@ -749,10 +750,10 @@ class TestResultStructure:
         either principal or interest.
         """
         debt = _debt(1, "Debt", "5000", "0.12", "200")
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             [debt], Decimal("200"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         acct = result.per_account[0]
         assert result.horizon_reached is False
@@ -765,10 +766,10 @@ class TestResultStructure:
         per-account values.
         """
         debts = _three_debts()
-        result = calculate_strategy(
+        result = calculate_strategy(StrategyRequest(
             debts, Decimal("200"), STRATEGY_AVALANCHE,
             start_date=FIXED_START,
-        )
+        ))
 
         expected_interest = sum(
             a.total_interest for a in result.per_account
