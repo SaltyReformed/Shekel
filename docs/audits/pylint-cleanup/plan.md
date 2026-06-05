@@ -1,8 +1,19 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.85/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 208 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has SIX files complete, newest
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 201 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has SEVEN files complete, newest
+**`routes/loan.py` DONE** (two-phase, developer-chosen: `e8b910b` decomposed all FIVE flagged
+function smells by honest cohesive-helper extraction -- `dashboard` (46 locals/57 stmts) via five
+context-slice builders merged into the render dict, `payoff_calculate` (35 locals) via one helper
+per mode branch, `refinance_calculate` (30 locals) via `_project_refinance`/`_build_refinance_comparison`,
+`_compute_payment_breakdown` (18) + `create_payment_transfer` (16) via extraction -- with the shared
+`_build_chart_series` deduping dashboard's + payoff's chart-series (split-trap pre-empt) and the dead
+`_build_chart_data` removed; then `f07fb1c` split the 1847-line module into the `app/routes/loan/`
+package -- developer-chosen 5-concern split (`dashboard`/`params`/`escrow_rates`/`calculators`/
+`payment_transfer` + `_bp`/`_helpers`), dissolving the re-surfaced configured-loan-guard R0801 via
+the shared `_require_configured_loan` route-guard (`abort(404)`/`abort(redirect(...))`, single-line
+call sites, 0 dup disables); all 10 endpoints preserved, behavior bit-identical). The next-newest
 **`routes/transfers.py` DONE** (two-phase, developer-chosen: `21f2a31` decomposed all four flagged
 handler smells by honest extraction incl. the shared `_render_post_mutation_cell` split-trap
 pre-empt + the `create_ad_hoc` two-try merge, then `c4e9015` split the 1457-line module into the
@@ -182,7 +193,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (6 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (7 files done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -675,9 +686,41 @@ documented disables), with commit SHA.
   derived `state.current_balance`) + recorded F-28 in `remediation_follow_up.md`. Also updated the
   in-file C2-11 structural slice marker (now bounded by the inserted `PayoffRequest`; assertions
   unchanged). Behavior bit-identical (hand-derived Decimal locks pass). Full suite 5755 passed.
-- **routes/loan.py** (module tm-lines; `_compute_payment_breakdown`:179 tm-locals; `dashboard`:532
-  tm-locals/statements; `payoff_calculate`:1242 tm-locals; `refinance_calculate`:1425 tm-locals;
-  `create_payment_transfer`:1590 tm-locals) -- Status: `-`
+- **routes/loan.py** -- Status: **DONE** (two-phase, developer-chosen: `e8b910b` decomposed all five
+  function smells + removed dead code, then `f07fb1c` split the 1847-line module into the
+  `app/routes/loan/` package -- 5-concern split, all 7 smell items gone, each sub-module <=621 lines,
+  0 net new R0801). **Phase 1 (`e8b910b`, honest cohesive-helper extraction, no disables, behavior
+  bit-identical):** `dashboard` (46/15 locals, 57/50 stmts) -> `_build_dashboard_scenarios` +
+  `_build_planned_summary` + `_build_payment_summary` + `_build_dashboard_chart_context` +
+  `_resolve_transfer_prompt` + `_build_schedule_tab`, with the route assembling its render context by
+  merging the per-section dicts (`**` unpack), 12 locals. `payoff_calculate` (35/15) -> one helper per
+  mode branch (`_payoff_extra_payment_result` / `_payoff_target_date_result`) + `_payoff_committed_savings`
+  + `_build_payoff_summary`. `refinance_calculate` (30/15) -> `_project_refinance` + `_refinance_break_even`
+  + `_build_refinance_comparison` (note: pylint counts args toward R0914, so the split kept each helper
+  <=15). `_compute_payment_breakdown` (18/15) -> `_distribute_payment_percentages` + `_project_next_year_escrow`.
+  `create_payment_transfer` (16/15) -> `_resolve_transfer_amount`. **DRY win:** dashboard's + payoff's
+  near-identical three-series chart building deduped into the shared `_build_chart_series` (history +
+  forward -> aligned labels + padded balances), pre-empting the Phase-2 split trap (0 new R0801).
+  **Dead-code removal (developer-approved, precedent `0e8b986`):** `_build_chart_data` had zero callers
+  anywhere in app/ or tests/ (pylint cannot flag module-level dead functions). **Phase 2 (`f07fb1c`,
+  package split -- developer-chosen 5-concern layout):** `_bp`/`_helpers` (8 schema singletons + the
+  account/anchor/resolver-state/full-context loaders + chart utils + the 2 domain constants)/`dashboard`
+  (route + its 12 helpers)/`params` (create_params, update_params, true_up_balance)/`escrow_rates`
+  (add_rate_change, add_escrow, delete_escrow -- HTMX, shared OOB-payment tail co-located)/`calculators`
+  (payoff_calculate, refinance_calculate)/`payment_transfer` (create_payment_transfer). All 10 endpoints
+  + URLs + the `from app.routes.loan import loan_bp` path preserved verbatim. **Split trap (decision #5):**
+  the "load configured loan, else 404/redirect" guard shared by update_params + true_up_balance +
+  create_payment_transfer re-surfaced as a cross-file R0801 once split -- resolved by genuine dedup into
+  `_require_configured_loan` (a real reusable route-guard, NOT incidental), which fully encapsulates both
+  rejection paths via `abort(404)` / `abort(redirect(...))` (verified werkzeug raises a 302 from a Response)
+  so the call sites are a single line with no residual duplication; 0 documented dup disables. Test path
+  updates (decision #5, no assertion change): the 4 static-source guards in `test_loan.py` repoint to the
+  package / moved helpers (`calculate_summary` -> package-dir glob; extra_payment branch ->
+  `_payoff_extra_payment_result`; dashboard -> `dashboard.py` surface; refinance -> `_project_refinance`);
+  C15-3 demoted-column allow-list `"routes/loan.py:"` -> `"routes/loan/"`; C17-6 bare-quantize sweep
+  `"routes/loan.py"` -> `"routes/loan"`; `_transfer_creation_helpers` `:func:` cross-refs repointed to
+  `.payment_transfer`. Package pylint 10.00/10; score 9.85; visible 208->201; tm-lines 3->2; smell items
+  107->100; R0801 0; useless-suppression 0; E/F 0. 223 targeted loan tests + **full suite 5755 passed**.
 - **routes/transactions.py** -- Status: **DONE** (two-phase, developer-chosen: `41cab0e` decomposed
   all four handler smells, then `27e99f2` split the 1532-line module into the
   `app/routes/transactions/` package -- all smells gone, each sub-module <1000 lines, 0 net new
@@ -840,13 +883,16 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after `transfers.py` DONE `c4e9015`; 107 smell
-items remain, down from 115): `routes/loan.py` (7), `services/debt_strategy_service.py` (7),
-`services/investment_dashboard_service.py` (6), `routes/_recurrence_form_helpers.py` (5),
-`services/paycheck_calculator.py` (5), `services/retirement_dashboard_service.py` (5) -- the
-financial cores plan-first per the developer's cadence (`loan.py` is also module tm-lines -> package
-split per decision #5; `debt_strategy_service`/`investment_dashboard_service` are pure services,
-function-level decomposition only).
+Next by live density (re-measured 2026-06-05 after `loan.py` DONE `f07fb1c`; 100 smell items remain
+[88 of the 8-symbol set + 12 `too-many-instance-attributes`], down from 107):
+`services/debt_strategy_service.py` (7), `services/investment_dashboard_service.py` (6),
+`routes/_recurrence_form_helpers.py` (5), `services/paycheck_calculator.py` (5),
+`services/retirement_dashboard_service.py` (5), then `routes/grid.py` / `routes/templates.py` /
+`services/retirement_gap_calculator.py` (4 each) -- the financial cores plan-first per the
+developer's cadence. None of the remaining top files are module tm-lines (only `schemas/validation.py`
++ `services/carry_forward_service.py` carry that, both Tier-3 -> package split per decision #5);
+`debt_strategy_service`/`investment_dashboard_service`/`paycheck_calculator`/`retirement_dashboard_service`
+are pure services, function-level decomposition only.
 
 ---
 
@@ -1105,3 +1151,5 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `27e99f2` | 3 | **transactions.py `Phase 2 of 2` -- module -> package split (developer-chosen 6-module merge) -- file DONE:** the 1532-line module (over the 1000 ceiling after Phase 1) split into `app/routes/transactions/` (`_bp` leaf + `_helpers` schema-singletons/render/ownership/FK helpers + `forms` GET partials + `create` + `mutations` + `carry_forward`; `__init__` re-exports `transactions_bp` + imports submodules for registration). All 16 endpoint names, URLs, methods, and the `from app.routes.transactions import transactions_bp` path preserved verbatim (no `url_for`/template/`app/__init__` edit). Code relocated verbatim (AST-sliced, decorators included) -- no logic change. **Split trap (decision #5):** surfaced TWO intra-file R0801 dups the monolith hid. (1) The transfer-shadow + mark_done helpers (`_apply_shadow_update`/`_mark_done_shadow`/`_mark_done_regular`/`_cancel_shadow`) form an INSEPARABLE clique -- `_mark_done_shadow` shares the `update_transfer`+commit+stale preamble with `_apply_shadow_update` AND the `_RenderTarget` stale+IntegrityError response with `_mark_done_regular`, so no edit/status split avoids a cross-file pair. Resolved by MERGING edit+status into one `mutations.py` (module-level co-location of intentional parallel code, decision #5). (2) An incidental 6-line `commit / NotFound->404 / Validation->rollback->400` idiom (`carry_forward` <-> `mutations.unmark_credit`; the idiom recurs across 5 route files, the two sites differ in StaleData handling / return value / success body, and `_commit_helpers` is redirect-only so it can't host the HTMX `(body,status)` form) -> documented one-sided rule-13 `duplicate-code` disable on the `carry_forward` side. **This is a deliberate, developer-approved exception to decision #5's "never disable split-trap" -- which assumed every such cluster is dedupable or co-locatable-as-intentional-parallel; this one is genuinely incidental boilerplate that is neither.** Test patch-path update (decision #5, no assertion change): `test_c19` `patch("app.routes.transactions.credit_workflow.mark_as_credit")` -> `...transactions.mutations.credit_workflow...`. Each sub-module pylint-clean, all <1000 lines (largest `mutations.py` 759); **behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **transactions.py DONE (both phases).** Score 9.84; visible 219->218; tm-lines 5->4; R0801 0; E/F 0; useless-suppression 0; disables 81->82 (+1 documented). | 9.84/10 | 218 |
 | 2026-06-05 | `21f2a31` | 3 | **transfers.py `Phase 1 of 2` -- decompose 4 route handlers (honest extraction, no disables, behavior bit-identical):** all 7 function-level smells resolved. `create_transfer_template` (17 locals/7 returns) -> `_materialize_initial_transfers`. `update_transfer_template` (17 locals/8 returns/16 branches) -> `_first_unowned_template_fk` + `_regenerate_and_commit_template`. `update_transfer` (11 returns) -> single-return FK loop + `_execute_transfer_update` + the shared `_render_post_mutation_cell`. `create_ad_hoc` (9 returns) -> `_handle_adhoc_integrity` + merged the two equivalent try blocks (`uq_transfers_adhoc_dedupe` fires at flush OR commit -> same handler; NotFound/Validation only from the service call, so the merge changes no behavior). `_render_post_mutation_cell` also deduped the shadow-cell block in `mark_done`/`cancel_transfer` (DRY + Phase-2 split-trap pre-empt). TRANSFER INVARIANTS untouched. Score 9.84; visible 218->211 (-7); R0801 0; E/F 0; useless-suppression 0; 0 new disables. Targeted 101 + **full suite 5755 passed.** | 9.84/10 | 211 |
 | 2026-06-05 | `c4e9015` | 3 | **transfers.py `Phase 2 of 2` -- module -> `app/routes/transfers/` package (developer-chosen 6-module split) -- file DONE:** the 1457-line module (over the 1000 ceiling after Phase 1) split into `_bp`/`_helpers` (4 schema singletons + 5 shared ownership/render helpers)/`templates` (8 template-CRUD routes + 3 helpers)/`forms` (3 grid-cell GET partials)/`mutations` (5 instance routes + 3 helpers; AST-sliced verbatim). All 16 endpoints + URLs + the `from app.routes.transfers import transfers_bp` path preserved (no `url_for`/template/`app/__init__` edit). **Split trap (decision #5): 0 new R0801** -- co-locating update_transfer + mark_done + cancel_transfer in `mutations.py` kept their parallel code intra-file, and Phase 1's `_render_post_mutation_cell` pre-deduped the shadow block. Bonus: fresh wrapped imports cleared 2 pre-existing `line-too-long`. Test patch-path + 2 docstring `:func:` cross-refs repointed to `.templates` (decision #5, no assertion change). Each sub-module pylint 10.00/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **transfers.py DONE.** Score 9.84->9.85; visible 211->208; tm-lines 4->3; smell items 108->107; R0801 0; E/F 0; useless-suppression 0. | 9.85/10 | 208 |
+| 2026-06-05 | `e8b910b` | 3 | **loan.py `Phase 1 of 2` -- decompose 5 function smells + remove dead code (honest cohesive-helper extraction, no disables, behavior bit-identical):** all five function-level smells -> 0. `dashboard` (46/15 locals, 57/50 stmts) -> `_build_dashboard_scenarios` + `_build_planned_summary` + `_build_payment_summary` + `_build_dashboard_chart_context` + `_resolve_transfer_prompt` + `_build_schedule_tab`; the route assembles its render context by merging the per-section dicts (`**` unpack), 12 locals. `payoff_calculate` (35) -> `_payoff_extra_payment_result` / `_payoff_target_date_result` (one per mode) + `_payoff_committed_savings` + `_build_payoff_summary`. `refinance_calculate` (30) -> `_project_refinance` + `_refinance_break_even` + `_build_refinance_comparison`. `_compute_payment_breakdown` (18) -> `_distribute_payment_percentages` + `_project_next_year_escrow`. `create_payment_transfer` (16) -> `_resolve_transfer_amount`. **DRY win:** dashboard's + payoff's three-series chart building deduped into the shared `_build_chart_series` (split-trap pre-empt, 0 new R0801). **Dead-code removal (developer-approved, precedent `0e8b986`):** `_build_chart_data` had zero callers anywhere (pylint cannot flag module-level dead fns). loan.py 9.98/10 (only module tm-lines remains -> Phase 2); visible 208->202; R0801 0; useless-suppression 0; E/F 0. 223 targeted loan tests pass. | 9.85/10 | 202 |
+| 2026-06-05 | `f07fb1c` | 3 | **loan.py `Phase 2 of 2` -- module -> `app/routes/loan/` package (developer-chosen 5-concern split) -- file DONE:** the 1847-line module (over the 1000 ceiling after Phase 1) split into `_bp`/`_helpers` (8 schema singletons + the `_load_loan_account`/`_require_configured_loan`/anchor/resolver-state/full-context loaders + chart utils + 2 domain constants)/`dashboard` (route + 12 helpers)/`params` (create_params, update_params, true_up_balance)/`escrow_rates` (add_rate_change, add_escrow, delete_escrow -- HTMX, shared OOB tail co-located)/`calculators` (payoff_calculate, refinance_calculate)/`payment_transfer` (create_payment_transfer); each sub-module <=621 lines, sliced verbatim by def boundary. All 10 endpoints + URLs + the `from app.routes.loan import loan_bp` path preserved (no `url_for`/template/`app/__init__` edit). **Split trap (decision #5):** the "load configured loan, else 404/redirect" guard shared by update_params + true_up_balance + create_payment_transfer re-surfaced as a cross-file R0801 once split -- resolved by genuine dedup into `_require_configured_loan` (a real reusable route-guard, NOT incidental), which fully encapsulates both rejection paths via `abort(404)`/`abort(redirect(...))` (verified werkzeug raises a 302 from a Response) so call sites are a single line, NO residual dup; 0 documented dup disables. Test path updates (decision #5, no assertion change): the 4 static-source guards in `test_loan.py` repoint to the package / moved helpers; C15-3 allow-list `"routes/loan.py:"` -> `"routes/loan/"`; C17-6 sweep `"routes/loan.py"` -> `"routes/loan"`; `_transfer_creation_helpers` `:func:` cross-refs -> `.payment_transfer`. Each sub-module + package pylint 10.00/10. **Behavior bit-identical: full suite 5755 passed.** module tm-lines -> 0; **loan.py DONE.** Score 9.85; visible 202->201; tm-lines 3->2; smell items 107->100; R0801 0; E/F 0; useless-suppression 0. | 9.85/10 | 201 |
