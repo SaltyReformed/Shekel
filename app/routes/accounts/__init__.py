@@ -54,10 +54,10 @@ from app.routes.accounts._bp import accounts_bp
 # the unused-import / out-of-order-import warnings that would
 # otherwise fire on what is, by design, a deferred-import side-
 # effect registration.
-from app.routes.accounts import crud  # noqa: F401, E402  pylint: disable=wrong-import-position
-from app.routes.accounts import anchor  # noqa: F401, E402  pylint: disable=wrong-import-position
-from app.routes.accounts import types  # noqa: F401, E402  pylint: disable=wrong-import-position
-from app.routes.accounts import detail  # noqa: F401, E402  pylint: disable=wrong-import-position
+from app.routes.accounts import crud  # noqa: F401, E402
+from app.routes.accounts import anchor  # noqa: F401, E402
+from app.routes.accounts import types  # noqa: F401, E402
+from app.routes.accounts import detail  # noqa: F401, E402
 
 
 __all__ = ["accounts_bp"]

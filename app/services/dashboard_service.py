@@ -305,7 +305,7 @@ def _entry_progress_fields(txn: Transaction) -> dict:
 # ── Section 2: Alerts ──────────────────────────────────────────────
 
 
-def _compute_alerts(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _compute_alerts(
     account: Account,
     settings: UserSettings | None,
     balance_results: dict[int, Decimal] | None,

@@ -354,16 +354,15 @@ def _is_safe_redirect(target):
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def login():  # pylint: disable=too-many-return-statements
+def login():
     """Display the login form and handle authentication.
 
-    Pylint note: ``too-many-return-statements`` is suppressed because
-    each early return is a distinct semantic exit (companion-already-
-    logged-in, owner-already-logged-in, MFA-pending redirect,
-    companion-success redirect, owner-success redirect, generic
-    failure render).  Consolidating these into one return path would
-    force a state-machine in the function body that hides per-mode
-    behaviour; the explicit returns are the readable form.
+    Design note: each early return is a distinct semantic exit
+    (companion-already-logged-in, owner-already-logged-in, MFA-pending
+    redirect, companion-success redirect, owner-success redirect,
+    generic failure render).  Consolidating these into one return path
+    would force a state-machine in the function body that hides
+    per-mode behaviour; the explicit returns are the readable form.
     """
     # Already logged in -- redirect to the appropriate landing page.
     if current_user.is_authenticated:

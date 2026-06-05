@@ -17,13 +17,10 @@ import logging
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.pension_profile import PensionProfile
-from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import (

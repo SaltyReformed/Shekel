@@ -690,7 +690,7 @@ def delete_transfer(transfer_id, user_id, soft=False):
     return None
 
 
-def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
+def restore_transfer(transfer_id, user_id):
     """Restore a soft-deleted transfer and its shadow transactions.
 
     This is the inverse of ``delete_transfer(soft=True)``.  Sets

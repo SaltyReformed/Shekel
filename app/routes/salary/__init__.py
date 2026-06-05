@@ -44,11 +44,11 @@ from app.routes.salary._bp import salary_bp
 # decorators against ``salary_bp``.  The ``noqa`` markers suppress the
 # unused-import / out-of-order-import warnings that would otherwise fire
 # on what is, by design, a deferred-import side-effect registration.
-from app.routes.salary import profiles  # noqa: F401, E402  pylint: disable=wrong-import-position
-from app.routes.salary import items  # noqa: F401, E402  pylint: disable=wrong-import-position
-from app.routes.salary import views  # noqa: F401, E402  pylint: disable=wrong-import-position
-from app.routes.salary import calibration  # noqa: F401, E402  pylint: disable=wrong-import-position
-from app.routes.salary import tax_config  # noqa: F401, E402  pylint: disable=wrong-import-position
+from app.routes.salary import profiles  # noqa: F401, E402
+from app.routes.salary import items  # noqa: F401, E402
+from app.routes.salary import views  # noqa: F401, E402
+from app.routes.salary import calibration  # noqa: F401, E402
+from app.routes.salary import tax_config  # noqa: F401, E402
 
 
 __all__ = ["salary_bp"]
