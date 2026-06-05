@@ -68,6 +68,41 @@ These are requirements, not suggestions. Violating them is never acceptable.
     scenarios. If a simpler approach exists, propose it before building the complex one. If 200
     lines could be 50, rewrite it.
 
+## Automated enforcement
+
+Several rules above are now backed by deterministic gates, not just this prose.
+Where a gate enforces a rule, trust the gate and fix what it flags at the root.
+Never silence a finding with a bare disable.
+
+- **Per-edit (PostToolUse hooks, `scripts/hooks/`):** every Write/Edit/MultiEdit
+  to an `app/` or `scripts/` Python file is linted. Real errors and the custom
+  financial-correctness checkers (`shekel-decimal-from-float`,
+  `shekel-refname-compare`) hard-block, so the edit comes back for a fix; design
+  smells are surfaced as advisory notes. Templates and `requirements.txt` have
+  their own guards. (These hooks read the edited path from the stdin JSON
+  payload; they previously read a non-existent `$TOOL_INPUT_PATH` and were inert.)
+- **End of turn (Stop hook):** runs the full `pylint app/` when `app/` changed.
+  This is the only place cross-file `duplicate-code` (R0801) is caught. Once the
+  cleanup reaches 10.00/10 and `scripts/hooks/ENFORCE_PYLINT_FLOOR` exists, a
+  dirty run hard-blocks the turn.
+- **Custom checkers:** `tools/pylint/shekel_checkers.py`, loaded via `.pylintrc`,
+  unit-tested in `tools/pylint/tests/`. Add a checker here when a project rule can
+  be expressed as an AST pattern, rather than hoping a reviewer remembers it.
+- **CI + pre-commit:** `pylint app/` (custom checkers as hard `--fail-on`) plus
+  the full pytest suite gate every PR; `.pre-commit-config.yaml` mirrors it for
+  local commits.
+- **Suppression hygiene:** `useless-suppression` is enabled, so a disable that no
+  longer suppresses anything is itself a finding. Every disable must be scoped,
+  name its symbol, and explain why (rule 1).
+- **Judgment beyond the linters:** the `code-reviewer` subagent and the
+  `/standards` command cover what tools cannot mechanize -- float-on-money
+  boundaries, user-scoping/IDOR, transfer invariants, DRY/SOLID design, test
+  quality.
+
+A gate is a floor, not a ceiling. Passing the linters does not make the code
+correct: the judgment rules (2, 3, 6, 8, 10, 13) still apply, and real money
+depends on them.
+
 ## Common Commands
 
 ```bash
