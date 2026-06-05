@@ -7,6 +7,7 @@ Returns HTMX fragments for inline editing in the grid.
 
 import logging
 
+from dataclasses import dataclass
 from datetime import date
 
 from flask import Blueprint, render_template, request, jsonify
@@ -71,6 +72,23 @@ _inline_create_schema = InlineTransactionCreateSchema()
 # parse the route used before commit C-27 / F-042 / F-162 of the
 # 2026-04-15 security remediation plan.
 _mark_done_schema = MarkDoneSchema()
+
+
+@dataclass(frozen=True)
+class _RenderTarget:
+    """The response surface a mark_done request renders into.
+
+    Bundles the three render-routing fields the mobile / companion card
+    action bar posts (``render=mobile_card`` plus the per-tab
+    ``card_prefix`` and the ``can_edit`` flag) so :func:`mark_done` and
+    its helpers thread one value instead of three parallel arguments.
+    The desktop grid and full-edit popover omit these, so the default
+    (empty ``render_mode``) resolves to the cell + ``gridRefresh`` path.
+    """
+
+    render_mode: str
+    card_prefix: str
+    can_edit: bool
 
 
 def _render_cell(txn, **extra):
@@ -288,6 +306,45 @@ def _get_owned_transaction(txn_id):
     return txn
 
 
+def _resolve_owned_fks(specs):
+    """Fetch and ownership-check a sequence of user-scoped FK ids.
+
+    Centralizes the IDOR probe shared by the transaction create routes
+    (:func:`create_inline`, :func:`create_transaction`) and the grid
+    form-partial routes (:func:`get_quick_create`,
+    :func:`get_full_create`, :func:`get_empty_cell`).  For each
+    ``(model, obj_id, not_found_msg)`` spec the row is fetched by
+    primary key and confirmed to belong to ``current_user``; a missing
+    row and a cross-user row return the identical 404 so an attacker
+    cannot distinguish the two (security response rule: "404 for both
+    not found and not yours").  Specs are checked in order and the
+    first failure short-circuits, so callers list them so the most
+    specific message surfaces first -- mirroring the sequential per-FK
+    checks these routes used before the extraction.
+
+    A ``None`` ``obj_id`` resolves to the 404 without issuing a
+    NULL-primary-key query (which SQLAlchemy warns cannot load a row);
+    the create routes never pass ``None`` (schema-required fields), but
+    the form-partial routes read ids straight off the query string.
+
+    Args:
+        specs: ordered ``(model, obj_id, not_found_msg)`` tuples.
+
+    Returns:
+        ``(resolved, None)`` on success, where *resolved* maps each
+        spec's model class to its fetched row, or ``(None, (msg, 404))``
+        on the first ownership failure -- a Flask response tuple the
+        caller returns directly to HTMX.
+    """
+    resolved = {}
+    for model, obj_id, not_found_msg in specs:
+        obj = db.session.get(model, obj_id) if obj_id is not None else None
+        if obj is None or obj.user_id != current_user.id:
+            return None, (not_found_msg, 404)
+        resolved[model] = obj
+    return resolved, None
+
+
 def _verify_owned_fks_in_update(data):
     """Verify cross-user FK ownership for the PATCH update payload.
 
@@ -320,15 +377,13 @@ def _verify_owned_fks_in_update(data):
         ``None`` on success.  On failure, a Flask response tuple
         ``(body, 404)`` the caller returns directly to HTMX.
     """
+    specs = []
     if "pay_period_id" in data:
-        period = db.session.get(PayPeriod, data["pay_period_id"])
-        if period is None or period.user_id != current_user.id:
-            return "Pay period not found", 404
+        specs.append((PayPeriod, data["pay_period_id"], "Pay period not found"))
     if "category_id" in data:
-        cat = db.session.get(Category, data["category_id"])
-        if cat is None or cat.user_id != current_user.id:
-            return "Category not found", 404
-    return None
+        specs.append((Category, data["category_id"], "Category not found"))
+    _, error = _resolve_owned_fks(specs)
+    return error
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/cell", methods=["GET"])
@@ -411,6 +466,204 @@ def get_full_edit(txn_id):
         statuses=statuses,
         periods=periods,
     )
+
+
+def _apply_shadow_update(txn, txn_id, data):
+    """Apply a PATCH update to a transfer shadow via the transfer service.
+
+    Shadow transactions (``transfer_id IS NOT NULL``) cannot be mutated
+    directly -- the parent transfer and both shadows must move together
+    (design doc invariants 3-5).  Maps the submitted transaction fields
+    onto :func:`transfer_service.update_transfer` kwargs, commits, and
+    renders the refreshed cell.  Reverting to a non-settled status nulls
+    ``paid_at`` so a re-opened shadow stops showing a paid timestamp.
+
+    Args:
+        txn: The shadow Transaction being edited.
+        txn_id: The shadow's id, used for stale-conflict logging and the
+            conflict re-fetch.
+        data: The schema-loaded PATCH payload (``version_id`` already
+            popped by the caller).
+
+    Returns:
+        A Flask response tuple: the updated cell + ``balanceChanged`` on
+        success, a 409 conflict cell on a concurrent commit, or a 400
+        when the transfer service rejects the change.
+    """
+    # Map transaction field names to transfer service kwargs.
+    svc_kwargs = {}
+    if "estimated_amount" in data:
+        svc_kwargs["amount"] = data["estimated_amount"]
+    if "actual_amount" in data:
+        svc_kwargs["actual_amount"] = data["actual_amount"]
+    if "status_id" in data:
+        svc_kwargs["status_id"] = data["status_id"]
+        # Null paid_at when reverting to a non-settled status.
+        new_status = db.session.get(Status, data["status_id"])
+        if new_status and not new_status.is_settled:
+            svc_kwargs["paid_at"] = None
+    if "notes" in data:
+        svc_kwargs["notes"] = data["notes"]
+    if "category_id" in data:
+        svc_kwargs["category_id"] = data["category_id"]
+    if "due_date" in data:
+        svc_kwargs["due_date"] = data["due_date"]
+
+    try:
+        transfer_service.update_transfer(
+            txn.transfer_id, current_user.id, **svc_kwargs
+        )
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on update_transaction shadow id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
+    except (NotFoundError, ValidationError) as exc:
+        return str(exc), 400
+
+    db.session.refresh(txn)
+    logger.info(
+        "user_id=%d updated shadow transaction %d (transfer %d)",
+        current_user.id, txn_id, txn.transfer_id,
+    )
+    response = _render_cell(txn)
+    return response, 200, {"HX-Trigger": "balanceChanged"}
+
+
+def _resolve_status_change(txn, data):
+    """Validate a status transition and decide whether to clear paid_at.
+
+    Runs the status-dependent guards for a regular (non-shadow)
+    :func:`update_transaction` before any column is mutated: verifies
+    the requested transition through the state machine (F-161 / C-21),
+    blocks the Credit status on purchase-tracking transactions (credit
+    is per-entry, scope doc 5.2), and reports whether reverting to a
+    non-settled status should null ``paid_at``.  Looking the status up
+    here -- before the ``setattr`` loop dirties the session -- avoids an
+    autoflush firing an FK violation mid-validation.
+
+    Args:
+        txn: The Transaction being edited.
+        data: The schema-loaded PATCH payload.
+
+    Returns:
+        ``(revert_paid_at, None)`` when the change is allowed --
+        *revert_paid_at* is ``True`` when ``paid_at`` must be cleared --
+        or ``(False, (msg, 400))`` when a guard rejects the request, a
+        Flask response tuple the caller returns directly.
+    """
+    if "status_id" not in data:
+        return False, None
+
+    # Verify the transition BEFORE any other status-dependent work
+    # (envelope guard, paid_at revert).  An illegal transition -- for
+    # example settled -> projected -- short-circuits the request with a
+    # 400 and leaves the row untouched.  Audit reference: F-161 /
+    # commit C-21 of the 2026-04-15 security remediation plan.
+    try:
+        verify_transition(
+            txn.status_id, data["status_id"], context="transaction",
+        )
+    except ValidationError as exc:
+        return False, (str(exc), 400)
+
+    # Block Credit status on entry-capable transactions -- credit
+    # handling is per-entry, not per-transaction (scope doc section 5.2).
+    credit_id = ref_cache.status_id(StatusEnum.CREDIT)
+    if data["status_id"] == credit_id and txn.tracks_purchases:
+        return False, (
+            "Cannot set Credit status on transactions with individual "
+            "purchase tracking. Use entry-level credit instead.",
+            400,
+        )
+
+    new_status = db.session.get(Status, data["status_id"])
+    revert_paid_at = bool(
+        new_status and not new_status.is_settled and txn.paid_at is not None
+    )
+    return revert_paid_at, None
+
+
+def _apply_regular_update(txn, txn_id, data):
+    """Apply a PATCH update to a regular (non-shadow) transaction.
+
+    Validates any status change (:func:`_resolve_status_change`),
+    enforces the expense-only purchase-tracking guard, writes the
+    submitted fields, flags template-generated rows as overridden when
+    the amount or period changed, and commits under the optimistic
+    lock.  A ``pay_period_id`` change relocates the row across the grid,
+    so it triggers a full ``gridRefresh`` instead of the in-place
+    ``balanceChanged`` swap.
+
+    Args:
+        txn: The Transaction being edited.
+        txn_id: The transaction's id, used for stale-conflict logging.
+        data: The schema-loaded PATCH payload (``version_id`` already
+            popped by the caller).
+
+    Returns:
+        A Flask response tuple: the updated cell + ``gridRefresh`` (on a
+        period move) or ``balanceChanged`` on success, a 409 conflict
+        cell on a concurrent commit, or a 400 on a rejected status
+        change, the income purchase-tracking guard, or a bad FK.
+    """
+    revert_paid_at, status_error = _resolve_status_change(txn, data)
+    if status_error is not None:
+        return status_error
+
+    # Purchase tracking is expense-only.  The popover only renders the
+    # is_envelope checkbox for ad-hoc expense rows, but guard the route
+    # too (defense in depth) so a crafted request cannot enable tracking
+    # on an income transaction.  Checked against the stored type because
+    # TransactionUpdateSchema carries no transaction_type_id.
+    if data.get("is_envelope") and txn.is_income:
+        return "Purchase tracking is only available for expenses.", 400
+
+    # Detect a period move before the setattr loop mutates the row.  A
+    # move relocates the row to a different period in the grid, which an
+    # in-place cell swap (hx-target="#txn-cell-<id>") cannot express --
+    # the cell would re-render in its old position.  When the period
+    # actually changes the response triggers a full grid refresh (see
+    # the ``HX-Trigger`` selection at the end of the handler), matching
+    # the ``gridRefresh`` pattern carry-forward uses for cross-period
+    # moves.
+    period_changed = (
+        "pay_period_id" in data and data["pay_period_id"] != txn.pay_period_id
+    )
+
+    # Apply updates (regular transactions only).
+    for field, value in data.items():
+        setattr(txn, field, value)
+
+    if revert_paid_at:
+        txn.paid_at = None
+
+    # If the user changed amount or period on a template-generated item,
+    # flag as override.
+    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
+        txn.is_override = True
+
+    try:
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on update_transaction id=%d", txn_id,
+        )
+        return _stale_transaction_response(txn_id)
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
+    logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
+
+    # A period move needs a full grid refresh so the row appears under
+    # its new period; an in-place edit only needs the balance rows
+    # recomputed.  ``gridRefresh`` reloads the page (app.js); the
+    # returned cell still swaps first, which is harmless before reload.
+    response = _render_cell(txn)
+    return response, 200, {
+        "HX-Trigger": "gridRefresh" if period_changed else "balanceChanged",
+    }
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
@@ -498,129 +751,151 @@ def update_transaction(txn_id):
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
-        # Map transaction field names to transfer service kwargs.
-        svc_kwargs = {}
-        if "estimated_amount" in data:
-            svc_kwargs["amount"] = data["estimated_amount"]
-        if "actual_amount" in data:
-            svc_kwargs["actual_amount"] = data["actual_amount"]
-        if "status_id" in data:
-            svc_kwargs["status_id"] = data["status_id"]
-            # Null paid_at when reverting to a non-settled status.
-            new_status = db.session.get(Status, data["status_id"])
-            if new_status and not new_status.is_settled:
-                svc_kwargs["paid_at"] = None
-        if "notes" in data:
-            svc_kwargs["notes"] = data["notes"]
-        if "category_id" in data:
-            svc_kwargs["category_id"] = data["category_id"]
-        if "due_date" in data:
-            svc_kwargs["due_date"] = data["due_date"]
-
-        try:
-            transfer_service.update_transfer(
-                txn.transfer_id, current_user.id, **svc_kwargs
-            )
-            db.session.commit()
-        except StaleDataError:
-            logger.info(
-                "Stale-data conflict on update_transaction shadow id=%d", txn_id,
-            )
-            return _stale_transaction_response(txn_id)
-        except (NotFoundError, ValidationError) as exc:
-            return str(exc), 400
-
-        db.session.refresh(txn)
-        logger.info(
-            "user_id=%d updated shadow transaction %d (transfer %d)",
-            current_user.id, txn_id, txn.transfer_id,
-        )
-        response = _render_cell(txn)
-        return response, 200, {"HX-Trigger": "balanceChanged"}
+        return _apply_shadow_update(txn, txn_id, data)
     # --- End guard ---
 
-    # Look up new status BEFORE applying setattr to avoid autoflush
-    # triggering an FK violation when the session is dirtied.
-    revert_paid_at = False
-    if "status_id" in data:
-        # Verify the transition BEFORE any other status-dependent work
-        # (envelope guard, paid_at revert).  An illegal transition --
-        # for example settled -> projected -- short-circuits the
-        # request with a 400 and leaves the row untouched.  Audit
-        # reference: F-161 / commit C-21 of the 2026-04-15 security
-        # remediation plan.
+    return _apply_regular_update(txn, txn_id, data)
+
+
+def _mark_done_shadow(txn, txn_id, actual_amount, target):
+    """Settle a transfer shadow through the transfer service.
+
+    Marks both shadows and the parent transfer done atomically (the
+    transfer service owns the shadow invariants).  Uses the DONE status
+    for the service -- the 'done'/'received' split is a display
+    convention for regular transactions only -- and forwards an optional
+    manual ``actual_amount``.
+
+    Args:
+        txn: The shadow Transaction being settled.
+        txn_id: The shadow's id, for stale-conflict logging / re-fetch.
+        actual_amount: Optional manual actual amount from the form, or
+            ``None`` to leave it to the service.
+        target: The :class:`_RenderTarget` describing the response
+            surface (mobile card vs desktop cell).
+
+    Returns:
+        A Flask response tuple: the refreshed cell + ``gridRefresh`` on
+        success, a 409 conflict surface on a concurrent commit, or a 400
+        on a bad FK or a state-machine rejection.
+    """
+    # Use 'done' for the transfer service -- it sets the same status on
+    # both shadows.  The 'done'/'received' distinction is a display
+    # convention for regular transactions.
+    svc_kwargs = {
+        "status_id": ref_cache.status_id(StatusEnum.DONE),
+        "paid_at": db.func.now(),
+    }
+
+    if actual_amount is not None:
+        svc_kwargs["actual_amount"] = actual_amount
+
+    try:
+        transfer_service.update_transfer(
+            txn.transfer_id, current_user.id, **svc_kwargs
+        )
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on mark_done shadow id=%d", txn_id,
+        )
+        return _stale_transaction_response(
+            txn_id, target.render_mode, target.card_prefix, target.can_edit,
+        )
+    except IntegrityError:
+        db.session.rollback()
+        return "Invalid reference. Check that all referenced records exist.", 400
+    except ValidationError as exc:
+        # transfer_service.update_transfer runs the transition through
+        # the state machine (commit C-21).  A mark-done request against
+        # a Cancelled or Settled transfer shadow surfaces here as 400
+        # instead of crashing the request.
+        db.session.rollback()
+        return str(exc), 400
+    db.session.refresh(txn)
+    response = _render_cell(txn)
+    return response, 200, {"HX-Trigger": "gridRefresh"}
+
+
+def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
+    """Settle a regular (non-shadow) transaction.
+
+    Envelope-tracked rows with entries settle at the entry sum via
+    :func:`transaction_service.settle_from_entries` (the single source
+    of truth shared with carry-forward); all others take the manual flow
+    -- a state-machine-guarded status flip to *status_id* plus an
+    optional manual ``actual_amount`` -- then commit under the
+    optimistic lock.
+
+    Args:
+        txn: The Transaction being settled.
+        txn_id: The transaction's id, for stale-conflict logging.
+        status_id: The settled status id ('received' for income, 'done'
+            for expenses) used by the manual branch.
+        actual_amount: Optional manual actual amount from the form, or
+            ``None`` to leave ``actual_amount`` untouched.
+        target: The :class:`_RenderTarget` describing the response
+            surface (mobile card vs desktop cell).
+
+    Returns:
+        A Flask response tuple: the success surface on commit, a 409
+        conflict surface on a concurrent commit, or a 400 on a bad FK or
+        a rejected transition.
+    """
+    # Auto-populate actual from entries for envelope-tracked transactions
+    # with at least one entry.  Entry sum takes precedence over any manual
+    # actual_amount from the form (scope doc section 4.2).  When no entries
+    # exist (or the template is not envelope-tracked), fall through to the
+    # manual flow so non-tracked and empty-tracked transactions behave
+    # identically to pre-entry behavior -- the form's optional
+    # ``actual_amount`` is honoured and a missing value leaves
+    # ``txn.actual_amount`` untouched.
+    #
+    # The envelope-with-entries branch routes through
+    # ``transaction_service.settle_from_entries`` so the manual mark-done
+    # path and the carry-forward envelope branch (Phase 4) share a single
+    # source of truth for "settle a tracked row at sum(entries)."  The
+    # helper writes ``status_id``, ``paid_at``, and ``actual_amount``
+    # together; the route does not need to set them itself in this branch.
+    if txn.tracks_purchases and txn.entries:
         try:
-            verify_transition(
-                txn.status_id, data["status_id"], context="transaction",
-            )
+            transaction_service.settle_from_entries(txn)
         except ValidationError as exc:
             return str(exc), 400
-
-        # Block Credit status on entry-capable transactions -- credit
-        # handling is per-entry, not per-transaction (scope doc section 5.2).
-        credit_id = ref_cache.status_id(StatusEnum.CREDIT)
-        if data["status_id"] == credit_id and txn.tracks_purchases:
-            return (
-                "Cannot set Credit status on transactions with individual "
-                "purchase tracking. Use entry-level credit instead."
-            ), 400
-
-        new_status = db.session.get(Status, data["status_id"])
-        if new_status and not new_status.is_settled and txn.paid_at is not None:
-            revert_paid_at = True
-
-    # Purchase tracking is expense-only.  The popover only renders the
-    # is_envelope checkbox for ad-hoc expense rows, but guard the route
-    # too (defense in depth) so a crafted request cannot enable tracking
-    # on an income transaction.  Checked against the stored type because
-    # TransactionUpdateSchema carries no transaction_type_id.
-    if data.get("is_envelope") and txn.is_income:
-        return "Purchase tracking is only available for expenses.", 400
-
-    # Detect a period move before the setattr loop mutates the row.  A
-    # move relocates the row to a different period in the grid, which an
-    # in-place cell swap (hx-target="#txn-cell-<id>") cannot express --
-    # the cell would re-render in its old position.  When the period
-    # actually changes the response triggers a full grid refresh (see
-    # the ``HX-Trigger`` selection at the end of the handler), matching
-    # the ``gridRefresh`` pattern carry-forward uses for cross-period
-    # moves.
-    period_changed = (
-        "pay_period_id" in data and data["pay_period_id"] != txn.pay_period_id
-    )
-
-    # Apply updates (regular transactions only).
-    for field, value in data.items():
-        setattr(txn, field, value)
-
-    if revert_paid_at:
-        txn.paid_at = None
-
-    # If the user changed amount or period on a template-generated item,
-    # flag as override.
-    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
-        txn.is_override = True
+    else:
+        # State-machine guard: only Projected (or the identity edge from
+        # Paid/Received) can transition into Paid/Received via mark_done.
+        # The envelope branch above already enforces the same rule via
+        # ``settle_from_entries``'s stricter ``is_immutable`` precondition,
+        # so the guard sits on the direct branch where the gap was.
+        # Audit reference: F-047 / F-161 follow-up to commit C-21.
+        try:
+            verify_transition(txn.status_id, status_id, context="transaction")
+        except ValidationError as exc:
+            return str(exc), 400
+        txn.status_id = status_id
+        txn.paid_at = db.func.now()
+        # Accept an optional manual actual amount from the form.
+        if actual_amount is not None:
+            txn.actual_amount = actual_amount
 
     try:
         db.session.commit()
     except StaleDataError:
         logger.info(
-            "Stale-data conflict on update_transaction id=%d", txn_id,
+            "Stale-data conflict on mark_done id=%d", txn_id,
         )
-        return _stale_transaction_response(txn_id)
+        return _stale_transaction_response(
+            txn_id, target.render_mode, target.card_prefix, target.can_edit,
+        )
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
-    logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
+    logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
 
-    # A period move needs a full grid refresh so the row appears under
-    # its new period; an in-place edit only needs the balance rows
-    # recomputed.  ``gridRefresh`` reloads the page (app.js); the
-    # returned cell still swaps first, which is harmless before reload.
-    response = _render_cell(txn)
-    return response, 200, {
-        "HX-Trigger": "gridRefresh" if period_changed else "balanceChanged",
-    }
+    return _mark_done_success_response(
+        txn, target.render_mode, target.card_prefix, target.can_edit,
+    )
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-done", methods=["POST"])
@@ -676,6 +951,7 @@ def mark_done(txn_id):
     render_mode = request.form.get("render", "")
     card_prefix = request.form.get("card_prefix", "")
     card_can_edit = request.form.get("can_edit") == "1"
+    target = _RenderTarget(render_mode, card_prefix, card_can_edit)
 
     # Income uses 'received', expenses use 'done'.
     if txn.is_income:
@@ -685,98 +961,10 @@ def mark_done(txn_id):
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
-        # Use 'done' for the transfer service -- it sets the same status
-        # on both shadows.  The 'done'/'received' distinction is a
-        # display convention for regular transactions.
-        svc_kwargs = {
-            "status_id": ref_cache.status_id(StatusEnum.DONE),
-            "paid_at": db.func.now(),
-        }
-
-        if actual_amount is not None:
-            svc_kwargs["actual_amount"] = actual_amount
-
-        try:
-            transfer_service.update_transfer(
-                txn.transfer_id, current_user.id, **svc_kwargs
-            )
-            db.session.commit()
-        except StaleDataError:
-            logger.info(
-                "Stale-data conflict on mark_done shadow id=%d", txn_id,
-            )
-            return _stale_transaction_response(
-                txn_id, render_mode, card_prefix, card_can_edit,
-            )
-        except IntegrityError:
-            db.session.rollback()
-            return "Invalid reference. Check that all referenced records exist.", 400
-        except ValidationError as exc:
-            # transfer_service.update_transfer runs the transition
-            # through the state machine (commit C-21).  A mark-done
-            # request against a Cancelled or Settled transfer shadow
-            # surfaces here as 400 instead of crashing the request.
-            db.session.rollback()
-            return str(exc), 400
-        db.session.refresh(txn)
-        response = _render_cell(txn)
-        return response, 200, {"HX-Trigger": "gridRefresh"}
+        return _mark_done_shadow(txn, txn_id, actual_amount, target)
     # --- End guard ---
 
-    # Auto-populate actual from entries for envelope-tracked transactions
-    # with at least one entry.  Entry sum takes precedence over any manual
-    # actual_amount from the form (scope doc section 4.2).  When no entries
-    # exist (or the template is not envelope-tracked), fall through to the
-    # manual flow so non-tracked and empty-tracked transactions behave
-    # identically to pre-entry behavior -- the form's optional
-    # ``actual_amount`` is honoured and a missing value leaves
-    # ``txn.actual_amount`` untouched.
-    #
-    # The envelope-with-entries branch routes through
-    # ``transaction_service.settle_from_entries`` so the manual mark-done
-    # path and the carry-forward envelope branch (Phase 4) share a single
-    # source of truth for "settle a tracked row at sum(entries)."  The
-    # helper writes ``status_id``, ``paid_at``, and ``actual_amount``
-    # together; the route does not need to set them itself in this branch.
-    if txn.tracks_purchases and txn.entries:
-        try:
-            transaction_service.settle_from_entries(txn)
-        except ValidationError as exc:
-            return str(exc), 400
-    else:
-        # State-machine guard: only Projected (or the identity edge from
-        # Paid/Received) can transition into Paid/Received via mark_done.
-        # The envelope branch above already enforces the same rule via
-        # ``settle_from_entries``'s stricter ``is_immutable`` precondition,
-        # so the guard sits on the direct branch where the gap was.
-        # Audit reference: F-047 / F-161 follow-up to commit C-21.
-        try:
-            verify_transition(txn.status_id, status_id, context="transaction")
-        except ValidationError as exc:
-            return str(exc), 400
-        txn.status_id = status_id
-        txn.paid_at = db.func.now()
-        # Accept an optional manual actual amount from the form.
-        if actual_amount is not None:
-            txn.actual_amount = actual_amount
-
-    try:
-        db.session.commit()
-    except StaleDataError:
-        logger.info(
-            "Stale-data conflict on mark_done id=%d", txn_id,
-        )
-        return _stale_transaction_response(
-            txn_id, render_mode, card_prefix, card_can_edit,
-        )
-    except IntegrityError:
-        db.session.rollback()
-        return "Invalid reference. Check that all referenced records exist.", 400
-    logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
-
-    return _mark_done_success_response(
-        txn, render_mode, card_prefix, card_can_edit,
-    )
+    return _mark_done_regular(txn, txn_id, status_id, actual_amount, target)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])
@@ -860,6 +1048,48 @@ def unmark_credit(txn_id):
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
+def _cancel_shadow(txn, txn_id, cancelled_id):
+    """Cancel a transfer shadow through the transfer service.
+
+    Cancels the parent transfer and both shadows atomically (the
+    transfer service owns the shadow invariants); the route never
+    mutates a shadow directly.
+
+    Args:
+        txn: The shadow Transaction being cancelled.
+        txn_id: The shadow's id, for stale-conflict logging.
+        cancelled_id: The Cancelled status id.
+
+    Returns:
+        A Flask response tuple: the refreshed cell + ``gridRefresh`` on
+        success, a 409 conflict cell on a concurrent commit, or a 400
+        when the state machine rejects cancelling a settled transfer.
+    """
+    try:
+        transfer_service.update_transfer(
+            txn.transfer_id, current_user.id,
+            status_id=cancelled_id,
+        )
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on cancel_transaction shadow id=%d",
+            txn_id,
+        )
+        return _stale_transaction_response(txn_id)
+    except ValidationError as exc:
+        # transfer_service runs the transition through the state
+        # machine.  An attempt to cancel a Paid/Received/Settled
+        # transfer surfaces here as 400 instead of crashing the request
+        # -- the transfer-service path was already wired by commit C-21;
+        # this except clause is the route's corresponding translation.
+        db.session.rollback()
+        return str(exc), 400
+    db.session.refresh(txn)
+    response = _render_cell(txn)
+    return response, 200, {"HX-Trigger": "gridRefresh"}
+
+
 @transactions_bp.route("/transactions/<int:txn_id>/cancel", methods=["POST"])
 @login_required
 @require_owner
@@ -879,30 +1109,7 @@ def cancel_transaction(txn_id):
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
-        try:
-            transfer_service.update_transfer(
-                txn.transfer_id, current_user.id,
-                status_id=cancelled_id,
-            )
-            db.session.commit()
-        except StaleDataError:
-            logger.info(
-                "Stale-data conflict on cancel_transaction shadow id=%d",
-                txn_id,
-            )
-            return _stale_transaction_response(txn_id)
-        except ValidationError as exc:
-            # transfer_service runs the transition through the state
-            # machine.  An attempt to cancel a Paid/Received/Settled
-            # transfer surfaces here as 400 instead of crashing the
-            # request -- the transfer-service path was already wired
-            # by commit C-21; this except clause is the route's
-            # corresponding translation.
-            db.session.rollback()
-            return str(exc), 400
-        db.session.refresh(txn)
-        response = _render_cell(txn)
-        return response, 200, {"HX-Trigger": "gridRefresh"}
+        return _cancel_shadow(txn, txn_id, cancelled_id)
     # --- End guard ---
 
     # State-machine guard: Cancelled is reachable only from Projected
@@ -946,18 +1153,19 @@ def get_quick_create():
         default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
     )
 
-    category = db.session.get(Category, category_id)
-    period = db.session.get(PayPeriod, period_id)
-    acct = db.session.get(Account, account_id) if account_id else None
-    # Ownership check: prevent IDOR -- return identical 404 for
-    # "does not exist" and "belongs to another user" so attackers
-    # cannot distinguish the two cases.  See audit finding H1.
-    if not category or category.user_id != current_user.id:
-        return "Not found", 404
-    if not period or period.user_id != current_user.id:
-        return "Not found", 404
-    if not acct or acct.user_id != current_user.id:
-        return "Not found", 404
+    # Ownership check: prevent IDOR -- return identical 404 for "does
+    # not exist" and "belongs to another user" so attackers cannot
+    # distinguish the two cases.  See audit finding H1.
+    objs, err = _resolve_owned_fks([
+        (Category, category_id, "Not found"),
+        (PayPeriod, period_id, "Not found"),
+        (Account, account_id, "Not found"),
+    ])
+    if err is not None:
+        return err
+    category = objs[Category]
+    period = objs[PayPeriod]
+    acct = objs[Account]
 
     # Look up the baseline scenario for hidden fields.
     scenario = get_baseline_scenario(current_user.id)
@@ -991,16 +1199,17 @@ def get_full_create():
         default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
     )
 
-    category = db.session.get(Category, category_id)
-    period = db.session.get(PayPeriod, period_id)
-    acct = db.session.get(Account, account_id) if account_id else None
     # Ownership check: same IDOR fix as get_quick_create (H1).
-    if not category or category.user_id != current_user.id:
-        return "Not found", 404
-    if not period or period.user_id != current_user.id:
-        return "Not found", 404
-    if not acct or acct.user_id != current_user.id:
-        return "Not found", 404
+    objs, err = _resolve_owned_fks([
+        (Category, category_id, "Not found"),
+        (PayPeriod, period_id, "Not found"),
+        (Account, account_id, "Not found"),
+    ])
+    if err is not None:
+        return err
+    category = objs[Category]
+    period = objs[PayPeriod]
+    acct = objs[Account]
 
     scenario = get_baseline_scenario(current_user.id)
     if not scenario:
@@ -1036,16 +1245,17 @@ def get_empty_cell():
         default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
     )
 
-    category = db.session.get(Category, category_id)
-    period = db.session.get(PayPeriod, period_id)
-    account = db.session.get(Account, account_id) if account_id else None
     # Ownership check: same IDOR fix as get_quick_create (H1).
-    if not category or category.user_id != current_user.id:
-        return "Not found", 404
-    if not period or period.user_id != current_user.id:
-        return "Not found", 404
-    if not account or account.user_id != current_user.id:
-        return "Not found", 404
+    objs, err = _resolve_owned_fks([
+        (Category, category_id, "Not found"),
+        (PayPeriod, period_id, "Not found"),
+        (Account, account_id, "Not found"),
+    ])
+    if err is not None:
+        return err
+    category = objs[Category]
+    period = objs[PayPeriod]
+    account = objs[Account]
 
     return render_template(
         "grid/_transaction_empty_cell.html",
@@ -1092,25 +1302,19 @@ def create_inline():
 
     data = _inline_create_schema.load(request.form)
 
-    # Verify the account belongs to the current user.
-    acct = db.session.get(Account, data["account_id"])
-    if not acct or acct.user_id != current_user.id:
-        return "Not found", 404
-
-    # Look up the category to derive the transaction name.
-    category = db.session.get(Category, data["category_id"])
-    if not category or category.user_id != current_user.id:
-        return "Category not found", 404
-
-    # Verify the pay period belongs to the current user.
-    period = db.session.get(PayPeriod, data["pay_period_id"])
-    if not period or period.user_id != current_user.id:
-        return "Pay period not found", 404
-
-    # Verify the scenario belongs to the current user.
-    scenario = db.session.get(Scenario, data["scenario_id"])
-    if not scenario or scenario.user_id != current_user.id:
-        return "Not found", 404
+    # Verify every user-scoped FK belongs to the current user before any
+    # write.  Order matches the historical per-FK checks so the first
+    # invalid id returns the same 404 body as before; the resolved
+    # Category drives the derived transaction name below.
+    objs, err = _resolve_owned_fks([
+        (Account, data["account_id"], "Not found"),
+        (Category, data["category_id"], "Category not found"),
+        (PayPeriod, data["pay_period_id"], "Pay period not found"),
+        (Scenario, data["scenario_id"], "Not found"),
+    ])
+    if err is not None:
+        return err
+    category = objs[Category]
 
     # Default to projected status if not specified.
     if "status_id" not in data or data["status_id"] is None:
@@ -1145,20 +1349,16 @@ def create_transaction():
 
     data = _create_schema.load(request.form)
 
-    # Verify the account belongs to the current user.
-    acct = db.session.get(Account, data["account_id"])
-    if not acct or acct.user_id != current_user.id:
-        return "Not found", 404
-
-    # Verify the pay period belongs to the current user.
-    period = db.session.get(PayPeriod, data["pay_period_id"])
-    if not period or period.user_id != current_user.id:
-        return "Pay period not found", 404
-
-    # Verify the scenario belongs to the current user.
-    scenario = db.session.get(Scenario, data["scenario_id"])
-    if not scenario or scenario.user_id != current_user.id:
-        return "Not found", 404
+    # Verify every user-scoped FK belongs to the current user before any
+    # write (same IDOR probe as create_inline; this route carries no
+    # category).  None of the resolved rows are needed afterward.
+    _, err = _resolve_owned_fks([
+        (Account, data["account_id"], "Not found"),
+        (PayPeriod, data["pay_period_id"], "Pay period not found"),
+        (Scenario, data["scenario_id"], "Not found"),
+    ])
+    if err is not None:
+        return err
 
     # Default to projected status if not specified.
     if "status_id" not in data or data["status_id"] is None:
