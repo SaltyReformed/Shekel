@@ -1,6 +1,14 @@
 [MAIN]
-# Load Flask/SQLAlchemy-aware plugins if installed.
-load-plugins=pylint.extensions.docparams
+# Make the repo-local checker plugin importable. Anchored to the working
+# directory, which is the repo root for every pylint invocation in this project:
+# CI, the Claude Code hooks, pre-commit, and the /standards command all run
+# pylint from the root. init-hook runs before load-plugins for exactly this.
+init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint"))'
+# Load the docparams extension (param/return description enforcement) plus the
+# project's own checkers in tools/pylint/shekel_checkers.py:
+# shekel-decimal-from-float and shekel-refname-compare. See docs/coding-standards.md
+# (Type Safety, Reference Tables) for the rules they enforce.
+load-plugins=pylint.extensions.docparams,shekel_checkers
 
 [FORMAT]
 # Max line length. 99 is a reasonable compromise.
@@ -26,6 +34,14 @@ disable=
     # missing-param-doc / missing-return-doc (docparams stays loaded).
     missing-type-doc,
     redundant-returns-doc
+
+# Enabled above pylint's defaults to protect the suppression hygiene the cleanup
+# established. useless-suppression flags a disable that no longer silences
+# anything (a stale or cargo-cult suppression -- a Phase 1 class). The policy is
+# that every disable is scoped, names its symbol, and carries a why-comment; a
+# disable that suppresses nothing violates that and must be removed.
+enable=
+    useless-suppression
 
 [DESIGN]
 # All design thresholds (max-args, max-locals, max-attributes, max-branches,
