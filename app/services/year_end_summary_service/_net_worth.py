@@ -14,7 +14,7 @@ from app.enums import AcctCategoryEnum
 from app.models.scenario import Scenario
 from app.services.year_end_summary_service._balances import (
     _balance_from_schedule_at_date,
-    _get_account_balance_map,
+    _dispatch_account_balance_map,
     _loan_original_principal,
 )
 from app.services.year_end_summary_service._periods import (
@@ -101,8 +101,8 @@ def _build_account_data(
         scenario: Baseline scenario.
         all_periods: All user pay periods.
         inputs: Pre-loaded projection parameter maps forwarded to
-            :func:`_get_account_balance_map` (``debt_schedules`` selects
-            the amortization-schedule path for debt accounts; the
+            :func:`_dispatch_account_balance_map` (``debt_schedules``
+            selects the amortization-schedule path for debt accounts; the
             investment trio drives the growth-engine path for investment
             accounts).
 
@@ -112,7 +112,7 @@ def _build_account_data(
     liability_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
     result = []
     for account in accounts:
-        balances = _get_account_balance_map(
+        balances = _dispatch_account_balance_map(
             account, scenario, all_periods, inputs,
         )
         if balances is None:

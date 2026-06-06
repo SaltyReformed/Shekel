@@ -152,71 +152,34 @@ def _loan_original_principal(account_id: int) -> Decimal:
     return params.original_principal if params else ZERO
 
 
-def _get_account_balance_map(
+def _base_account_balance_map(
     account: Account,
     scenario: Scenario,
     periods: list,
-    inputs: _ProjectionInputs | None = None,
 ) -> dict | None:
-    """Compute period_id -> balance mapping for one account.
+    """Compute period_id -> balance for one account WITHOUT dispatch inputs.
 
-    Dispatches to the correct calculation engine based on account type:
-    - Amortizing loans: pre-generated amortization schedule
-    - Interest-bearing (HYSA, CD, etc.): balance calculator with interest
-    - Investment (401k, IRA, etc.): growth engine with employer and returns
-    - Everything else: plain balance calculator
+    The base path used by the savings-progress section and by
+    :func:`_dispatch_account_balance_map`'s fall-through: interest-bearing
+    accounts (HYSA, Money Market, CD, HSA) use the balance calculator with
+    interest accrual; everything else routes through the canonical
+    entries-aware resolver.  It deliberately takes no amortization-schedule
+    or growth-engine inputs -- callers that drive those use
+    :func:`_dispatch_account_balance_map`.
 
     Args:
         account: The account to project.
         scenario: The baseline scenario.
         periods: All user pay periods.
-        inputs: Pre-loaded projection parameter maps (MED-01 / S6-06).
-            ``None`` -- the default used by the savings-progress and
-            base-balance callers -- skips the amortization-schedule and
-            growth-engine paths, returning the account's canonical
-            resolver/interest balance.  When supplied, ``debt_schedules``
-            selects the schedule path for debt accounts and the
-            investment trio drives the growth-engine path.
 
     Returns:
-        OrderedDict mapping period_id to Decimal balance, or None
-        if the account has no anchor period.
+        OrderedDict mapping period_id to Decimal balance, or None if the
+        account has no anchor period.
     """
     if account.current_anchor_period_id is None:
         return None
 
-    # Pull the two dispatch-selecting maps off the bundle (absent when
-    # the caller passes no ``inputs``): a missing ``debt_schedules`` /
-    # ``investment_params_map`` leaves the corresponding branch below
-    # falling through to the canonical resolver, exactly as the old
-    # keyword defaults did.
-    debt_schedules = inputs.debt_schedules if inputs else None
-    investment_params_map = (
-        inputs.investment_params_map if inputs else None
-    )
-
-    # MED-01 / S6-03: single flag-driven classifier replaces the
-    # divergent branch ladders that used to express the same
-    # taxonomy two different ways here and in
-    # ``savings_dashboard_service._compute_account_projections``.
-    # Adding a new parameterised type now requires extending
-    # :class:`AccountProjectionKind` in one place, not patching two
-    # branch ladders with different keying conventions.
     kind = classify_account(account)
-
-    # Amortizing loan accounts: use pre-generated schedule when available.
-    # Routed through the loan-side resolver in Commit 15; this commit
-    # only handles checking-style reads.
-    if (kind is AccountProjectionKind.AMORTIZING
-            and debt_schedules and account.id in debt_schedules):
-        original = _loan_original_principal(account.id)
-        # F-21 / Commit 19: route through the shared
-        # ``compute_loan_period_balance_map`` so the year-end
-        # liability column and the savings-dashboard loan card
-        # consume the same period-end-keyed balance derivation.
-        return compute_loan_period_balance_map(
-            debt_schedules[account.id], periods, original,
-        )
 
     # Interest-bearing accounts (HYSA, Money Market, CD, HSA).  The
     # math-layer silent-degrade seam in
@@ -248,18 +211,6 @@ def _get_account_balance_map(
         )
         return balances
 
-    # Investment accounts: use growth engine when the projection
-    # inputs are available.  The base balance feeding the projection
-    # comes from the canonical entries-aware producer (E-25 / CRIT-01
-    # / R-1).
-    if (kind is AccountProjectionKind.INVESTMENT
-            and investment_params_map is not None):
-        inv_params = investment_params_map.get(account.id)
-        if inv_params:
-            return _build_investment_balance_map(
-                account, inv_params, scenario, periods, inputs,
-            )
-
     # Standard checking/savings (and any unmatched types) route through
     # the canonical entries-aware producer (E-25 / CRIT-01 / F-009 /
     # R-1: Commit 8).  ``balances_for`` owns the transaction query with
@@ -269,6 +220,74 @@ def _get_account_balance_map(
     return balance_resolver.balances_for(
         account, scenario.id, periods,
     ).balances
+
+
+def _dispatch_account_balance_map(
+    account: Account,
+    scenario: Scenario,
+    periods: list,
+    inputs: _ProjectionInputs,
+) -> dict | None:
+    """Compute period_id -> balance for one account, dispatching on type.
+
+    The net-worth path.  Dispatches to the correct calculation engine:
+    - Amortizing loans: pre-generated amortization schedule
+      (``inputs.debt_schedules``).
+    - Investment (401k, IRA, etc.): growth engine with employer and
+      returns (``inputs.investment_params_map`` + the contribution trio).
+    - Interest-bearing and everything else: the shared
+      :func:`_base_account_balance_map`.
+
+    Unlike the base path this always has the pre-loaded ``inputs`` (the
+    net-worth caller builds them); the absence of a bundle is no longer
+    overloaded to mean "base-balance mode" -- that is the separate, named
+    :func:`_base_account_balance_map` now.
+
+    Args:
+        account: The account to project.
+        scenario: The baseline scenario.
+        periods: All user pay periods.
+        inputs: Pre-loaded projection parameter maps (MED-01 / S6-06):
+            ``debt_schedules`` selects the schedule path for debt accounts
+            and the investment trio drives the growth-engine path.
+
+    Returns:
+        OrderedDict mapping period_id to Decimal balance, or None if the
+        account has no anchor period.
+    """
+    if account.current_anchor_period_id is None:
+        return None
+
+    # MED-01 / S6-03: single flag-driven classifier replaces the
+    # divergent branch ladders that used to express the same taxonomy
+    # two different ways here and in
+    # ``savings_dashboard_service._compute_account_projections``.
+    kind = classify_account(account)
+
+    # Amortizing loan accounts: use pre-generated schedule when available.
+    if (kind is AccountProjectionKind.AMORTIZING
+            and inputs.debt_schedules and account.id in inputs.debt_schedules):
+        original = _loan_original_principal(account.id)
+        # F-21 / Commit 19: route through the shared
+        # ``compute_loan_period_balance_map`` so the year-end liability
+        # column and the savings-dashboard loan card consume the same
+        # period-end-keyed balance derivation.
+        return compute_loan_period_balance_map(
+            inputs.debt_schedules[account.id], periods, original,
+        )
+
+    # Investment accounts: use the growth engine.  The base balance
+    # feeding the projection comes from the canonical entries-aware
+    # producer (E-25 / CRIT-01 / R-1).
+    if kind is AccountProjectionKind.INVESTMENT:
+        inv_params = inputs.investment_params_map.get(account.id)
+        if inv_params:
+            return _build_investment_balance_map(
+                account, inv_params, scenario, periods, inputs,
+            )
+
+    # Interest-bearing and plain accounts share the base path.
+    return _base_account_balance_map(account, scenario, periods)
 
 
 def _build_investment_balance_map(

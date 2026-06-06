@@ -17,9 +17,9 @@ from app.services.investment_projection import (
 )
 from app.services.projection_inputs import build_investment_projection_inputs
 from app.services.year_end_summary_service._balances import (
+    _base_account_balance_map,
     _compute_interest_for_year,
     _compute_pre_anchor_interest,
-    _get_account_balance_map,
     _load_shadow_contributions,
     _sum_shadow_income,
 )
@@ -114,7 +114,7 @@ def _savings_progress_for_account(
             )
         )
     elif int_params:
-        balances = _get_account_balance_map(account, scenario, all_periods)
+        balances = _base_account_balance_map(account, scenario, all_periods)
         jan1_bal = _lookup_balance_with_anchor_fallback(
             balances, year, 1, all_periods, account,
         )
@@ -129,7 +129,7 @@ def _savings_progress_for_account(
             account, int_params, all_periods, year,
         )
     else:
-        balances = _get_account_balance_map(account, scenario, all_periods)
+        balances = _base_account_balance_map(account, scenario, all_periods)
         jan1_bal = _lookup_balance_with_anchor_fallback(
             balances, year, 1, all_periods, account,
         )
@@ -180,7 +180,7 @@ def _project_investment_for_year(
     all_periods = year_ctx.all_periods
 
     # Get base balance from the balance calculator (anchor + transactions).
-    balances = _get_account_balance_map(
+    balances = _base_account_balance_map(
         account, year_ctx.scenario, all_periods,
     )
 
