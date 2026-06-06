@@ -8,6 +8,7 @@ once at import time so every handler reuses the same instance (Marshmallow
 contract), preserving the pre-split monolith's behaviour.
 """
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -30,7 +31,7 @@ from app.schemas.validation import (
     RefinanceSchema,
 )
 from app.services import escrow_calculator, loan_resolver
-from app.services.loan_payment_service import load_loan_context
+from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.loan_resolver import LoanState
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -146,30 +147,41 @@ def _load_anchor_events(account_id: int) -> list[LoanAnchorEvent]:
     )
 
 
-def _resolve_loan_state(account, params) -> tuple[LoanState, list, list | None]:
-    """Run the resolver for a loan; return (state, payments, rate_changes).
+@dataclass(frozen=True)
+class _RouteLoanContext:
+    """Resolver state plus the loaded loan context for the loan ROUTE surfaces.
 
-    Single seam every loan-route resolver consumer reads through, so
-    Commit 17's "unify per-period figures" follow-up has exactly one
-    place to swap.  Returns the prepared payment + rate-change feeds
-    alongside the resolver state because every caller that wants
-    the state also wants the same feed for downstream
-    schedule-generation (chart paths in
-    :func:`dashboard` / :func:`payoff_calculate`).
+    Composes rather than copies: ``loan`` is the service-loaded
+    :class:`LoanContext` (the prepared payment / rate-change feeds, escrow,
+    and rate history); ``state`` is the resolver output; and
+    ``original_for_engine`` / ``base_rate`` are the two route-derived engine
+    inputs the payoff / refinance calculators read.  Replaces the former
+    untyped dict so the dashboard and calculator consumers read typed
+    attributes (``ctx.state`` / ``ctx.loan.payments`` / ``ctx.base_rate``)
+    instead of string keys.
+    """
+
+    state: LoanState
+    loan: LoanContext
+    original_for_engine: Decimal | None
+    base_rate: Decimal
+
+
+def _resolve(account, params) -> tuple[LoanState, LoanContext]:
+    """Run the loan resolver once; return ``(state, loaded context)``.
+
+    The single 4-step resolve sequence -- baseline scenario lookup ->
+    service context load -> anchor events -> resolver -- shared by
+    :func:`_resolve_loan_state` and :func:`_load_loan_context` so the
+    sequence lives in exactly one place.
 
     Args:
         account: ORM :class:`Account` instance.
         params: ORM :class:`LoanParams` instance.
 
     Returns:
-        Three-tuple of:
-            - :class:`LoanState` (resolver output, source of truth
-              for current_balance / monthly_payment / schedule /
-              payoff_date / total_interest).
-            - Prepared payment list (escrow-subtracted, biweekly-
-              redistributed) from
-              :func:`loan_payment_service.load_loan_context`.
-            - Optional rate-change list (None for fixed-rate loans).
+        ``(LoanState, LoanContext)`` -- the resolver output and the
+        service-loaded context it was built from.
     """
     scenario = get_baseline_scenario(current_user.id)
     scenario_id = scenario.id if scenario else None
@@ -178,58 +190,64 @@ def _resolve_loan_state(account, params) -> tuple[LoanState, list, list | None]:
     state = loan_resolver.resolve_loan(
         params, anchor_events, ctx.payments, ctx.rate_changes, date.today(),
     )
-    return state, ctx.payments, ctx.rate_changes
+    return state, ctx
 
 
-def _load_loan_context(account, params):
+def _resolve_loan_state(account, params) -> LoanState:
+    """Return the resolver :class:`LoanState` for a loan.
+
+    Thin accessor over :func:`_resolve` for the callers that need only
+    the resolver state (the escrow total-payment and payment-transfer
+    paths), not the loaded payment / rate-change feeds.
+
+    Args:
+        account: ORM :class:`Account` instance.
+        params: ORM :class:`LoanParams` instance.
+
+    Returns:
+        :class:`LoanState` -- resolver source of truth for
+        current_balance / monthly_payment / schedule / payoff_date /
+        total_interest.
+    """
+    state, _ = _resolve(account, params)
+    return state
+
+
+def _load_loan_context(account, params) -> _RouteLoanContext:
     """Load payment history, escrow, rate changes, and resolver state.
 
     Delegates payment / escrow / rate-change loading to
     :func:`loan_payment_service.load_loan_context`, then runs the
     loan resolver (E-18 / Commit 13) to derive the authoritative
     current balance and monthly payment.  Display surfaces read
-    ``ctx["state"]`` instead of the stored
+    ``ctx.state`` instead of the stored
     ``LoanParams.current_principal`` / ``LoanParams.interest_rate``
     columns (E-18 / Commit 15, decision D-A); the stored columns
     remain only as non-authoritative seed.
 
-    Returns a dict with:
-        payments: Prepared PaymentRecord list (escrow-subtracted,
-            month-aligned).
-        rate_changes: List of RateChangeRecord or None.
-        rate_history: List of RateHistory ORM objects (for display).
-        escrow_components: List of active EscrowComponent objects.
-        monthly_escrow: Decimal monthly escrow amount.
+    Returns a :class:`_RouteLoanContext` with:
         state: :class:`LoanState` from the resolver.
+        loan: the service-loaded :class:`LoanContext` -- ``loan.payments``
+            (prepared, escrow-subtracted, month-aligned), ``loan.rate_changes``
+            (or None), ``loan.rate_history`` (RateHistory for display),
+            ``loan.escrow_components`` (active), ``loan.monthly_escrow``.
         original_for_engine: Decimal original principal, or None for
-            ARM.  Historically consumed by chart-generation paths that
-            called the amortization engine directly; those paths now
-            route through :func:`loan_resolver.compute_payoff_scenarios`
-            (Phase 4-6 of the amortization-engine split documented in
-            ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``),
-            so the field is retained only for the payoff calculator's
+            ARM.  Retained for the payoff calculator's
             ``mode == "target_date"`` branch (a thin
-            :func:`amortization_engine.calculate_payoff_by_date`
-            wrapper internally on :func:`project_forward`).
+            :func:`amortization_engine.calculate_payoff_by_date` wrapper
+            internally on :func:`project_forward`); other chart paths now
+            route through :func:`loan_resolver.compute_payoff_scenarios`.
         base_rate: Decimal annual interest rate -- the resolver's
-            ``base_rate`` input, used by the same direct-engine
-            chart paths and by the refinance / payoff calculators.
-            ``params.interest_rate`` remains the system-of-record
-            for the base rate; the resolver layers
-            :class:`RateHistory` over it for ARM display.
+            ``base_rate`` input, used by the refinance / payoff
+            calculators.  ``params.interest_rate`` remains the
+            system-of-record; the resolver layers :class:`RateHistory`
+            over it for ARM display.
 
     Args:
         account: Account model instance.
         params: LoanParams model instance.
     """
-    scenario = get_baseline_scenario(current_user.id)
-    scenario_id = scenario.id if scenario else None
-
-    ctx = load_loan_context(account.id, scenario_id, params)
-    anchor_events = _load_anchor_events(account.id)
-    state = loan_resolver.resolve_loan(
-        params, anchor_events, ctx.payments, ctx.rate_changes, date.today(),
-    )
+    state, ctx = _resolve(account, params)
 
     original_for_engine = (
         None if params.is_arm
@@ -237,16 +255,12 @@ def _load_loan_context(account, params):
     )
     base_rate = Decimal(str(params.interest_rate))
 
-    return {
-        "payments": ctx.payments,
-        "rate_changes": ctx.rate_changes,
-        "rate_history": ctx.rate_history,
-        "escrow_components": ctx.escrow_components,
-        "monthly_escrow": ctx.monthly_escrow,
-        "state": state,
-        "original_for_engine": original_for_engine,
-        "base_rate": base_rate,
-    }
+    return _RouteLoanContext(
+        state=state,
+        loan=ctx,
+        original_for_engine=original_for_engine,
+        base_rate=base_rate,
+    )
 
 
 def _compute_total_payment(account, params, escrow_components):
@@ -264,7 +278,7 @@ def _compute_total_payment(account, params, escrow_components):
     """
     if params is None:
         return None
-    state, _, _ = _resolve_loan_state(account, params)
+    state = _resolve_loan_state(account, params)
     return escrow_calculator.calculate_total_payment(
         state.monthly_payment, escrow_components,
     )

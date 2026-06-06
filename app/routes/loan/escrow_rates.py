@@ -31,6 +31,35 @@ from app.utils.db_errors import is_unique_violation
 logger = logging.getLogger(__name__)
 
 
+def _render_rate_history(account, params):
+    """Re-query and render the rate-history partial for a loan account.
+
+    The shared reload + render used by both the duplicate-submit
+    (IntegrityError) and the success paths of :func:`add_rate_change`, so
+    the descending-effective-date ordering and the template kwargs live in
+    exactly one place.
+
+    Args:
+        account: ORM :class:`Account` instance for the loan.
+        params: ORM :class:`LoanParams` instance.
+
+    Returns:
+        The rendered ``loan/_rate_history.html`` partial.
+    """
+    rate_history = (
+        db.session.query(RateHistory)
+        .filter_by(account_id=account.id)
+        .order_by(RateHistory.effective_date.desc())
+        .all()
+    )
+    return render_template(
+        "loan/_rate_history.html",
+        account=account,
+        params=params,
+        rate_history=rate_history,
+    )
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan/rate", methods=["POST"])
 @login_required
 @require_owner
@@ -82,33 +111,11 @@ def add_rate_change(account_id):
             "Edit the existing entry to correct it.",
             "warning",
         )
-        rate_history = (
-            db.session.query(RateHistory)
-            .filter_by(account_id=account.id)
-            .order_by(RateHistory.effective_date.desc())
-            .all()
-        )
-        return render_template(
-            "loan/_rate_history.html",
-            account=account,
-            params=params,
-            rate_history=rate_history,
-        )
+        return _render_rate_history(account, params)
 
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
 
-    rate_history = (
-        db.session.query(RateHistory)
-        .filter_by(account_id=account.id)
-        .order_by(RateHistory.effective_date.desc())
-        .all()
-    )
-    return render_template(
-        "loan/_rate_history.html",
-        account=account,
-        params=params,
-        rate_history=rate_history,
-    )
+    return _render_rate_history(account, params)
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])

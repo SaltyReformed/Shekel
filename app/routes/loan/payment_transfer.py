@@ -62,7 +62,7 @@ def _resolve_transfer_amount(account, params, data):
     if "amount" in data and data["amount"] is not None:
         return data["amount"], False
 
-    state, _, _ = _resolve_loan_state(account, params)
+    state = _resolve_loan_state(account, params)
     escrow_components = (
         db.session.query(EscrowComponent)
         .filter_by(account_id=account.id, is_active=True)

@@ -573,7 +573,7 @@ def dashboard(account_id):
     ctx = _load_loan_context(account, params)
     scenarios_main, scenarios_floor = _build_dashboard_scenarios(
         params, _load_anchor_events(account.id),
-        ctx["payments"], ctx["rate_changes"], date.today(),
+        ctx.loan.payments, ctx.loan.rate_changes, date.today(),
     )
     # PLANNED-trajectory schedule: real confirmed history + projected /
     # contractual forward.  Resolver still owns current_balance and
@@ -582,7 +582,7 @@ def dashboard(account_id):
     planned_schedule = (
         scenarios_main.history_rows + scenarios_main.committed_forward
     )
-    summary = _build_planned_summary(ctx["state"], planned_schedule, params)
+    summary = _build_planned_summary(ctx.state, planned_schedule, params)
 
     # Sync the recurring transfer's recurrence end_date to the projected
     # payoff (5.9-1) so shadow transactions are not generated beyond
@@ -600,8 +600,8 @@ def dashboard(account_id):
         "account_type": account_type,
         "params": params,
         "summary": summary,
-        "rate_history": ctx["rate_history"],
-        "monthly_escrow": ctx["monthly_escrow"],
+        "rate_history": ctx.loan.rate_history,
+        "monthly_escrow": ctx.loan.monthly_escrow,
         # E-18 / Commit 16: today's ISO date pre-fills the "Record Loan
         # Balance" form's as-of date and caps its ``max``.  Computed here
         # (not via a Jinja global) so a test that freezes ``date.today()``
@@ -609,13 +609,13 @@ def dashboard(account_id):
         "today_iso": date.today().isoformat(),
     }
     context.update(_build_payment_summary(
-        ctx["state"], summary, planned_schedule, ctx["escrow_components"],
+        ctx.state, summary, planned_schedule, ctx.loan.escrow_components,
     ))
     context.update(_build_dashboard_chart_context(
-        scenarios_main, scenarios_floor, len(ctx["payments"]) > 0,
+        scenarios_main, scenarios_floor, len(ctx.loan.payments) > 0,
     ))
     context.update(prompt_context)
     context.update(_build_schedule_tab(
-        planned_schedule, ctx["monthly_escrow"], ctx["base_rate"], params,
+        planned_schedule, ctx.loan.monthly_escrow, ctx.base_rate, params,
     ))
     return render_template("loan/dashboard.html", **context)

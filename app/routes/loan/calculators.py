@@ -94,7 +94,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     Args:
         params: ORM :class:`LoanParams` instance.
         account_id: Debt account id (anchor-event load).
-        ctx: Loan context dict from :func:`_load_loan_context`.
+        ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
 
     Returns:
@@ -104,8 +104,8 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     scenarios = loan_resolver.compute_payoff_scenarios(
         loan_params=params,
         anchor_events=_load_anchor_events(account_id),
-        payments=ctx["payments"],
-        rate_changes=ctx["rate_changes"],
+        payments=ctx.loan.payments,
+        rate_changes=ctx.loan.rate_changes,
         extra_monthly=extra,
         as_of=date.today(),
     )
@@ -117,7 +117,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
             scenarios.history_rows + scenarios.accelerated_forward
         ),
     })
-    has_payments = len(ctx["payments"]) > 0
+    has_payments = len(ctx.loan.payments) > 0
     committed_months_saved, committed_interest_saved = (
         _payoff_committed_savings(scenarios)
     )
@@ -125,7 +125,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     return render_template(
         "loan/_payoff_results.html",
         mode="extra_payment",
-        payoff_summary=_build_payoff_summary(scenarios, ctx["state"]),
+        payoff_summary=_build_payoff_summary(scenarios, ctx.state),
         chart_labels=chart_labels,
         chart_original=balances["original"],
         chart_committed=balances["committed"] if has_payments else [],
@@ -150,7 +150,7 @@ def _payoff_target_date_result(params, ctx, data):
 
     Args:
         params: ORM :class:`LoanParams` instance.
-        ctx: Loan context dict from :func:`_load_loan_context`.
+        ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
 
     Returns:
@@ -163,7 +163,7 @@ def _payoff_target_date_result(params, ctx, data):
             error="Target date is required.",
         )
 
-    state = ctx["state"]
+    state = ctx.state
     monthly_payment = state.monthly_payment
     remaining_months = amortization_engine.calculate_remaining_months(
         params.origination_date, params.term_months,
@@ -171,14 +171,14 @@ def _payoff_target_date_result(params, ctx, data):
     required_extra = amortization_engine.calculate_payoff_by_date(
         amortization_engine.PayoffRequest(
             current_principal=state.current_balance,
-            annual_rate=ctx["base_rate"],
+            annual_rate=ctx.base_rate,
             remaining_months=remaining_months,
             target_date=target_date,
             origination_date=date.today().replace(day=1),
             payment_day=params.payment_day,
-            original_principal=ctx["original_for_engine"],
+            original_principal=ctx.original_for_engine,
             term_months=params.term_months,
-            rate_changes=ctx["rate_changes"],
+            rate_changes=ctx.loan.rate_changes,
             contractual_payment=monthly_payment,
         )
     )
@@ -398,7 +398,7 @@ def refinance_calculate(account_id):
     # Shared loan context: resolver state.  Identical to the dashboard's
     # data loading so the "current" refinance baseline matches the card.
     ctx = _load_loan_context(account, params)
-    state = ctx["state"]
+    state = ctx.state
 
     # Paid-off loan: no refinance comparison is meaningful.  Use the
     # resolver-derived current_balance for the gate so editing the
