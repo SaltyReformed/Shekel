@@ -1,9 +1,24 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.88/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 165 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has ELEVEN files plus the form-mutation helper
-family complete. The newest, **`routes/_transfer_creation_helpers.py` DONE** (`59ba11a`), cleared
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 161 visible messages.
+Full suite 5755 passed.** Phase 3 (design smells) has TWELVE files plus the form-mutation helper
+family complete. The newest, **`routes/grid.py` DONE** (`86541bb`), cleared all 4 design smells by
+genuine decomposition (no disables, behavior bit-identical): a frozen `_GridRowData` NamedTuple
+replacing `_build_grid_row_data`'s 6-tuple return (the six values are the per-render "row contract"
+spliced into `grid/grid.html`, so naming them collapses the 6-local unpack to ONE local in both
+`index` -- clearing its `too-many-locals` -- and `_build_plan_view` -- halving its locals), plus
+`_build_plan_view` taking the existing `_GridContext` (`ctx`, given a new `user_id` field --
+developer-chosen over deriving `ctx.scenario.user_id`) in place of the unpacked
+`account`/`scenario`/`current_period`/`user_id` (8->5 args, clearing `too-many-arguments` +
+`too-many-positional-arguments`); the 4 remaining loaded values fan out to different consumers so
+they stay unbundled (stamp-coupling avoided, per the `build_recurring_transfer_template` precedent).
+Impact-traced clean: the touched helpers are private + called/constructed only in grid.py
+(`companion.py` references them in a comment only); no test constructs them; `RowKey`/`grid_bp`
+public surface untouched. Fixed two stale docstring counts en route ("5-tuple" -> named-6; "eight"
+-> "six" `plan_*` keys). 0 disables added (82); 0 new R0801; instance-attrs unchanged at 11
+(NamedTuple fields are not counted by R0902). Before it,
+**`routes/_transfer_creation_helpers.py` DONE** (`59ba11a`), cleared
 its last `too-many-arguments` (the `build_recurring_transfer_template` 6-field `TransferTemplate`
 factory) by a developer-chosen genuine structural reduction -- NOT a param object or a disable:
 `derive_from_loan` dropped from the helper (6->5 args), relying on the column's `False` model/server
@@ -260,7 +275,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (11 files + the form-helper family done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (12 files + the form-helper family done: `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -977,7 +992,25 @@ documented disables), with commit SHA.
   that now locks the flag. 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held;
   visible 166->165; smell items 69->68 (57 8-symbol + 11 instance-attr). 253 targeted (investment +
   loan) + **full suite 5755 passed.**
-- **routes/grid.py** (`_build_plan_view`:342 tm-args/pos/locals; `index`:433 tm-locals) -- Status: `-`
+- **routes/grid.py** -- Status: **DONE** (`86541bb`; file now 10.00/10, zero smell messages). All 4
+  design smells (`_build_plan_view` tm-args/pos/locals; `index` tm-locals) resolved by genuine
+  decomposition (no disables, behavior bit-identical; 221 grid + 93 companion targeted + full suite
+  5755 the gate). New frozen `_GridRowData` NamedTuple (6 fields) replaces `_build_grid_row_data`'s
+  6-tuple return -- the six values are the per-render "row contract" spliced into `grid/grid.html`,
+  so naming them collapses the 6-local unpack to ONE local in both `index` (clears tm-locals) and
+  `_build_plan_view` (halves its locals). `_build_plan_view` 8->5 args (clears tm-args +
+  tm-positional) by taking the existing `_GridContext` (`ctx`) -- given a new `user_id` field
+  (developer-chosen over deriving `ctx.scenario.user_id`) -- in place of the unpacked
+  `account`/`scenario`/`current_period`/`user_id`; the 4 remaining loaded values
+  (`all_transactions`/`balances`/`all_categories`/`amount_overrides`) fan out to different consumers,
+  so they stay unbundled (stamp-coupling avoided, per the `build_recurring_transfer_template`
+  precedent). Impact-traced clean: `_build_plan_view`/`_build_grid_row_data`/`_GridContext` are
+  private + called/constructed only in grid.py (`companion.py` references them in a comment only); no
+  test constructs them; `RowKey`/`grid_bp` public surface untouched. Fixed two stale docstring counts
+  en route ("5-tuple" -> named-6; "eight" -> "six" `plan_*` keys). 0 new R0801 (no split-trap);
+  instance-attrs unchanged at 11 (pylint does not count NamedTuple fields toward R0902); 0 disables
+  added (82); useless-suppression 0; E/F 0. Score 9.88 held; visible 165->161; smell items 68->64
+  (53 8-symbol + 11 instance-attr).
 - **services/paycheck_calculator.py** -- Status: **DONE** (`15bcfd1`; file now 10.00/10, zero smell
   messages). All 5 design smells resolved by genuine decomposition (no disables, behavior
   bit-identical; full suite 5755 the gate). **`PaycheckBreakdown` (13/7) restructured into 4 nested
@@ -1082,10 +1115,9 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after the form-mutation helper layer DONE
-`8e01099`+`59ba11a`; 68 smell items remain [57 of the 8-symbol set + 11
-`too-many-instance-attributes`], down from 77): a band at 4 each -- `routes/grid.py` /
-`routes/templates.py` and `services/growth_engine.py` / `services/loan_resolver.py` /
+Next by live density (re-measured 2026-06-05 after `routes/grid.py` DONE `86541bb`; 64 smell items
+remain [53 of the 8-symbol set + 11 `too-many-instance-attributes`], down from 68): a band at 4 each
+-- `routes/templates.py` and `services/growth_engine.py` / `services/loan_resolver.py` /
 `services/retirement_gap_calculator.py` (the last three are 3 8-symbol + 1 instance-attr; the
 financial cores plan-first per the developer's cadence). None of the remaining top files are module
 tm-lines (only `schemas/validation.py` + `services/carry_forward_service.py` carry that, both
@@ -1356,3 +1388,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `ce65229` | 3 | **retirement_dashboard_service.py -- decompose `compute_gap_data` + `_project_retirement_accounts` (functional pipeline + cohesive frozen bundles, developer-chosen) -- file DONE:** all 5 design smells + the dead `salary_profiles` parameter resolved by genuine decomposition (no disables, behavior bit-identical). **Architecture (developer-reviewed):** chose the functional-pipeline style (pure helpers + frozen bundles) over a threaded mutable accumulator (fights robustness) or a stateful class (against the plain-function service convention; would relocate the smell to instance-attrs). `compute_gap_data` (38 locals/51 stmts) -> 14 locals as a thin delegation pipeline -- `_compute_pension_benefit`(`_PensionSummary`) / `_compute_current_pay`(`_CurrentPay`) / `_resolve_planned_retirement_date` / `_build_projection_context` / `_compute_gap_net_biweekly` (gap-comparison salary block rewritten as guard clauses, verified result-identical) / `_resolve_estimated_tax_rate` / `_build_chart_data`; the central `calculate_gap` kept VISIBLE in the orchestrator (6 genuine cross-phase inputs -> wrapping it only relocates the smell). `_project_retirement_accounts` 8 args/8 pos/31 locals -> 1 arg (`ctx`) via the frozen `_RetirementProjectionContext`(7) + `_load_projection_batch`(`_ProjectionBatch`) / `_resolve_current_balances` / `_project_one_account`; the dead `salary_profiles` param removed at root (cleared the `unused-argument`). **Bundle granularity decided by the travel-together cohesion test:** four cohesive frozen dataclasses kept; NO `_RetirementBaseData` for the three top-level loads -- they FAN OUT to different consumers, so bundling = stamp coupling (ISP smell), kept as plain locals. Per-account projection dict shape (calculate_gap/slider/template/test contract) preserved verbatim; `_resolve_swr_fraction` / `compute_slider_defaults` / docstring / constants byte-identical (`git diff`-verified); CRIT-04/E-12 `is None` + LOW-05 carry-open verbatim so the source guard stays green. Removed a pre-existing dead module `logger` (+ unused `import logging`, developer-approved). file 10.00/10, 0 smell messages; 0 new R0801; 0 new tm-instance-attributes; 0 disables (82); E/F 0; useless-suppression 0. Score 9.87 held; visible 180->174; smell items 82->77. 94 targeted + **full suite 5755 passed.** | 9.87/10 | 174 |
 | 2026-06-05 | `8e01099` | 3 | **_recurrence_form_helpers.py + _commit_helpers.py -- bundle redirect/stale-conflict/recurrence-form args (developer-chosen Max-DRY + RedirectTarget) -- both files DONE:** all 8 design smells (5 in `_recurrence_form_helpers`, 3 in `_commit_helpers`) resolved by genuine decomposition (no disables, behavior bit-identical; full suite 5755 the gate). New frozen `RedirectTarget(endpoint, kwargs)` value type in new module `routes/_redirect_target.py` (+ `to_response()` -- the single home for the `redirect(url_for(e, **(k or {})))` idiom shared ~9 ways across the helper layer; also unified the `redirect_kwargs` vs `redirect_endpoint_kwargs` naming drift between `_transfer_creation_helpers` and the others), composed into two frozen contexts. `RecurrenceFormContext` (`end_date_value`/`redirect`/`include_due_day_of_month`) collapses the verbatim triplicated signature tail shared by `build_recurrence_rule_from_form` (7->4 args + 16->13 locals) / `update_recurrence_rule_from_form` (6->3) / `resolve_recurrence_rule_for_update` (6->3). Shared `StaleConflictContext` (`logger`/`log_label`/`log_id`/`flash_message`/`redirect`) lives in `_commit_helpers.py` (the canonical handler's home; imported by `_recurrence_form_helpers` -- one-way edge, no cycle) and drives `handle_stale_conflict`/`commit_or_handle_stale`/`regenerate_and_commit_or_stale` (6/6/7->1/1/2) AND the pre-flush mirror `handle_stale_form_conflict` (8->3). ~30 call sites rewrapped across 8 route files (templates/transfers/accounts/savings/salary/investment/loan); `_transfer_creation_helpers`' `validate_and_resolve_source_account` + `flush_template_or_namedup_redirect` moved to `RedirectTarget` too. Test patch update (decision #5, no assertion change): `test_recurrence_form_helpers.py` 9 call-shapes rewrapped, asserted values frozen byte-identical. **Split-trap check: 0 new R0801** -- the repeated `StaleConflictContext(...)`/`RecurrenceFormContext(...)` wrapping did NOT cluster (log_labels / flash strings / endpoints differ; existing one-sided dup disables on the create/update preambles still cover them). 0 disables added (82); useless-suppression 0; E/F 0. **NOT yet DONE:** `_transfer_creation_helpers.build_recurring_transfer_template` (6-field `TransferTemplate` constructor, an unrelated argument clump) remains -- a separate pending design decision. Score 9.87->9.88; visible 174->166; smell items 77->69 (58 8-symbol + 11 instance-attr). 754 targeted (helper + 7 route suites) + **full suite 5755 passed.** | 9.88/10 | 166 |
 | 2026-06-05 | `59ba11a` | 3 | **_transfer_creation_helpers.py -- externalize `derive_from_loan` from `build_recurring_transfer_template` (developer-chosen genuine structural reduction) -- file DONE:** the last `too-many-arguments` in the form-mutation helper layer cleared WITHOUT a param object or a disable. The 6-field shared `TransferTemplate` factory was flagged because a param object there would only mirror the entity's own columns (single-consumer stamp coupling, zero DRY payoff -- unlike the `8e01099` bundles that dissolved real cross-function duplication), and a disable would break the 0-added streak. Instead `derive_from_loan` was dropped from the helper (6->5 args, at the limit), relying on the column's verified `False` model/server default for investment contributions and every generic transfer; the loan-payment creator -- the ONLY caller that needs it -- assigns `template.derive_from_loan` itself on the returned row before the `flush_template_or_namedup_redirect` flush (`_resolve_transfer_amount` returns the computed bool: `True` for the monthly-payment default path, `False` for a user-supplied amount override), keeping the loan-only concern at the loan call site. Behavior bit-identical. Investment caller unchanged (never passed the flag). **Closed a coverage gap:** strengthened the route test `test_create_transfer_success` with `assert tpl.derive_from_loan is True` -- previously the route's setting of the flag was unasserted (no `amount` posted -> live-derivation path), so this both covers it and locks the refactor; the `False` override path is NOT separately asserted because the model default is also `False` (an assertion there would not distinguish the code from the default). 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held; visible 166->165; smell items 69->68 (57 8-symbol + 11 instance-attr). 253 targeted (investment + loan) + **full suite 5755 passed.** | 9.88/10 | 165 |
+| 2026-06-05 | `86541bb` | 3 | **grid.py -- bundle row-data into `_GridRowData` + pass `_GridContext` to `_build_plan_view` (developer-chosen ctx-passing with a new `user_id` field) -- file DONE:** all 4 design smells (`_build_plan_view` tm-args/pos/locals; `index` tm-locals) resolved by genuine decomposition (no disables, behavior bit-identical). New frozen `_GridRowData` NamedTuple (6 fields) replaces `_build_grid_row_data`'s 6-tuple return -- the per-render "row contract" spliced into grid.html; naming the six values collapses the 6-local unpack to ONE in both `index` (clears tm-locals) and `_build_plan_view` (halves its locals). `_build_plan_view` 8->5 args (clears tm-args + tm-positional) by taking the existing `_GridContext` (`ctx`, given a new `user_id` field) instead of unpacking account/scenario/current_period/user_id; the 4 remaining loaded values fan out to different consumers so they stay unbundled (stamp-coupling avoided). Impact-traced clean (private helpers, no external callers / test constructors; `RowKey`/`grid_bp` untouched). Fixed two stale docstring counts ("5-tuple"->named-6; "eight"->"six" `plan_*` keys). file 10.00/10, 0 smell messages; 0 new R0801; instance-attrs unchanged at 11 (NamedTuple fields not counted by R0902); 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held; visible 165->161; smell items 68->64 (53 8-symbol + 11 instance-attr). 221 grid + 93 companion targeted + **full suite 5755 passed.** | 9.88/10 | 161 |
