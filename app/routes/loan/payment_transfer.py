@@ -122,9 +122,7 @@ def create_payment_transfer(account_id):
     db.session.add(rule)
     db.session.flush()
 
-    # Create transfer template via the shared builder.  Loan-payment
-    # transfers set derive_from_loan so the projected cash debit tracks
-    # the live monthly payment after an escrow or rate change.
+    # Create transfer template via the shared builder.
     template_name = f"{source_account.name} -> {account.name} Payment"
     template = build_recurring_transfer_template(
         source_account=source_account,
@@ -132,8 +130,12 @@ def create_payment_transfer(account_id):
         rule=rule,
         name=template_name,
         default_amount=transfer_amount,
-        derive_from_loan=derive_from_loan,
     )
+    # Loan-payment transfers set derive_from_loan so the projected cash
+    # debit tracks the live monthly payment after an escrow or rate
+    # change.  The shared builder leaves it at the model default (False)
+    # for every other transfer, so this loan-only flag is set here.
+    template.derive_from_loan = derive_from_loan
 
     namedup_redirect = flush_template_or_namedup_redirect(
         redirect=RedirectTarget("loan.dashboard", {"account_id": account_id}),

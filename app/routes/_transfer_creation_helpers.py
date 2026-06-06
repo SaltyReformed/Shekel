@@ -137,7 +137,6 @@ def build_recurring_transfer_template(
     rule: RecurrenceRule,
     name: str,
     default_amount: Decimal,
-    derive_from_loan: bool = False,
 ) -> TransferTemplate:
     """Construct + session-add a recurring :class:`TransferTemplate`.
 
@@ -148,6 +147,13 @@ def build_recurring_transfer_template(
     :func:`flush_template_or_namedup_redirect`) so name-collision
     handling stays at the route layer.
 
+    The ``derive_from_loan`` column is intentionally NOT set here: it
+    defaults to ``False`` (the model / server default) for investment
+    contributions and every generic transfer, and the loan-payment
+    creator -- the only caller that needs it -- sets
+    ``template.derive_from_loan`` itself on the returned row before the
+    flush, keeping that loan-only concern at the loan call site.
+
     Args:
         source_account: The owned, active funding account
             (``from_account``).
@@ -157,13 +163,10 @@ def build_recurring_transfer_template(
             whose ``id`` links the template.
         name: Display name for the template.
         default_amount: Per-period transfer amount (Decimal).
-        derive_from_loan: ``True`` only for loan-payment transfers,
-            which re-derive the live cash amount from the destination
-            loan on every render; ``False`` (the model default) for
-            investment contributions and every other template.
 
     Returns:
-        The added (not yet flushed) :class:`TransferTemplate`.
+        The added (not yet flushed) :class:`TransferTemplate`, with
+        ``derive_from_loan`` at its ``False`` default.
     """
     template = TransferTemplate(
         user_id=current_user.id,
@@ -172,7 +175,6 @@ def build_recurring_transfer_template(
         recurrence_rule_id=rule.id,
         name=name,
         default_amount=default_amount,
-        derive_from_loan=derive_from_loan,
     )
     db.session.add(template)
     return template

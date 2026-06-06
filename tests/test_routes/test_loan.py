@@ -1837,6 +1837,12 @@ class TestTransferPrompt:
         assert tpl.from_account_id == checking.id
         assert tpl.recurrence_rule_id is not None
         assert tpl.default_amount > 0
+        # No "amount" override was posted, so the route defaults to the
+        # full monthly payment and opts into live derivation: the loan-only
+        # derive_from_loan flag must be set on the template.  The shared
+        # builder leaves it at the model default (False); the loan route
+        # sets it explicitly on the returned row.
+        assert tpl.derive_from_loan is True
 
         rule = db.session.get(RecurrenceRule, tpl.recurrence_rule_id)
         assert rule is not None
