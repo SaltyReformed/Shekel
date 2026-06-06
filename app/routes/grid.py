@@ -61,12 +61,15 @@ class _GridContext(NamedTuple):
 
     Produced by :func:`_resolve_grid_context`.  Carrying this as a
     :class:`typing.NamedTuple` lets :func:`index` access fields via
-    attribute (``ctx.scenario``) without binding seven separate locals
-    from a tuple unpack -- the same pattern keeps the orchestrator's
-    pylint ``R0914`` count below the project threshold after the
-    mobile-follow-up Commit 8 / F-6 decomposition.
+    attribute (``ctx.scenario``) without binding a separate local per
+    field from a tuple unpack -- the same pattern keeps the
+    orchestrator's pylint ``R0914`` count below the project threshold
+    after the mobile-follow-up Commit 8 / F-6 decomposition.
 
     Attributes:
+        user_id: ID of the requesting user.  Drives the user-scoped
+            pay-period queries -- notably the forward Plan-tab window
+            rebuilt by :func:`_build_plan_view`.
         scenario: The baseline scenario for the requesting user.
         account: The grid account (checking by default, or the user's
             preferred grid account), or ``None`` when the user has no
@@ -83,6 +86,7 @@ class _GridContext(NamedTuple):
             list to project balances.
     """
 
+    user_id: int
     scenario: Scenario
     account: Account | None
     num_periods: int
@@ -141,6 +145,7 @@ def _resolve_grid_context(user_id, request_args, settings):
         return render_template("grid/no_periods.html")
 
     return _GridContext(
+        user_id=user_id,
         scenario=scenario,
         account=account,
         num_periods=num_periods,
@@ -268,6 +273,43 @@ def _build_grid_subtotals(account, scenario, periods, amount_overrides=None):
     return subtotals
 
 
+class _GridRowData(NamedTuple):
+    """Row-render values produced by :func:`_build_grid_row_data`.
+
+    The six fields are the grid's per-render "row contract": they are
+    produced together and spliced together into the ``grid/grid.html``
+    render context, so carrying them as a :class:`typing.NamedTuple`
+    (rather than a six-tuple unpacked into six parallel locals) keeps
+    both :func:`index` and :func:`_build_plan_view` under pylint's
+    ``R0914`` local-count threshold and names each value at the call
+    site.
+
+    Attributes:
+        income_row_keys: Ordered income-section row keys for the row
+            window (the visible window, or the full projection when
+            ``show_all``).
+        expense_row_keys: Ordered expense-section row keys.
+        matched_by_row_period: ``(category_id, template_id, txn_name,
+            period_id) -> matched transactions`` index read by the cell
+            template.
+        entry_sums: Pre-computed tracked-progress map (``{txn_id ->
+            sums}``) for the cell template's "spent / budget" display.
+        entry_lists: Pre-rendered inline mobile entries list per
+            envelope card (``{txn_id -> list data}``), computed
+            server-side to avoid per-card HTMX fan-out.
+        txn_by_period: Per-period transaction index (``{period_id ->
+            [Transaction]}``) surfaced by the grid template context
+            contract.
+    """
+
+    income_row_keys: list[RowKey]
+    expense_row_keys: list[RowKey]
+    matched_by_row_period: dict[tuple[int, int | None, str, int], list[Transaction]]
+    entry_sums: dict[int, dict]
+    entry_lists: dict[int, dict]
+    txn_by_period: dict[int, list[Transaction]]
+
+
 def _build_grid_row_data(transactions, periods, show_all, all_categories):
     """Build row keys, the (row_key, period) match index, and entry sums.
 
@@ -287,14 +329,15 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     it contributes $0 to every visible-period subtotal and its cells
     were never going to render.
 
-    Returns the 5-tuple ``(income_row_keys, expense_row_keys,
-    matched_by_row_period, entry_sums, txn_by_period)``.
-    ``entry_sums`` is the pre-computed tracked-progress map for the
-    cell template's "spent / budget" display.  ``txn_by_period`` is
-    the per-period transaction index that the grid template context
-    contract still surfaces; ``matched_by_row_period`` rebuilds the
-    same index internally so the dual exposure is intentional dead
-    weight pending a separate cleanup commit.
+    Returns a :class:`_GridRowData` carrying ``income_row_keys``,
+    ``expense_row_keys``, ``matched_by_row_period``, ``entry_sums``,
+    ``entry_lists``, and ``txn_by_period``.  ``entry_sums`` is the
+    pre-computed tracked-progress map for the cell template's
+    "spent / budget" display.  ``txn_by_period`` is the per-period
+    transaction index that the grid template context contract still
+    surfaces; ``matched_by_row_period`` rebuilds the same index
+    internally so the dual exposure is intentional dead weight pending
+    a separate cleanup commit.
     """
     if show_all:
         row_source_txns = transactions
@@ -329,19 +372,18 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     for txn in transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
-    return (
-        income_row_keys,
-        expense_row_keys,
-        matched_by_row_period,
-        entry_sums,
-        entry_lists,
-        txn_by_period,
+    return _GridRowData(
+        income_row_keys=income_row_keys,
+        expense_row_keys=expense_row_keys,
+        matched_by_row_period=matched_by_row_period,
+        entry_sums=entry_sums,
+        entry_lists=entry_lists,
+        txn_by_period=txn_by_period,
     )
 
 
 def _build_plan_view(
-    user_id, account, scenario, all_transactions, balances,
-    current_period, all_categories, amount_overrides=None,
+    ctx, all_transactions, balances, all_categories, amount_overrides=None,
 ):
     """Build the read-only "Plan" tab context window.
 
@@ -359,12 +401,12 @@ def _build_plan_view(
     them here.
 
     Args:
-        user_id: The owning user's id.  Drives the pay-period query.
-        account: The active grid account (may be ``None`` for the
-            user-with-zero-accounts edge case).  Forwarded to the
-            subtotal builder.
-        scenario: The baseline scenario.  Forwarded to the subtotal
-            builder.
+        ctx: The :class:`_GridContext` for this request.  Supplies
+            ``user_id`` and ``current_period`` (the plan window's
+            anchor and its pay-period query) plus ``account`` and
+            ``scenario`` (forwarded to the subtotal builder).
+            ``account`` may be ``None`` for the user-with-zero-accounts
+            edge case.
         all_transactions: The list already loaded by
             :func:`_load_grid_transactions`.  Re-used here instead of
             re-querying; ``_build_grid_row_data`` filters by visible
@@ -373,14 +415,15 @@ def _build_plan_view(
         balances: The full anchor-forward balance map produced by
             :func:`_build_grid_balances`.  Sliced to plan periods
             without recomputing.
-        current_period: The pay period containing today, used as the
-            window's leftmost anchor.
         all_categories: User's full category set (active + archived).
             Forwarded to the row-key builder so archived-category
             transactions still render.
+        amount_overrides: Optional live projected-income overrides,
+            forwarded to the subtotal builder so Plan subtotals match
+            the rest of the grid's cells and balances.
 
     Returns:
-        Dict with eight ``plan_*`` keys ready to splice into the
+        Dict with six ``plan_*`` keys ready to splice into the
         ``render_template`` kwargs of :func:`index`:
 
           - ``plan_periods``: list[PayPeriod], up to
@@ -397,31 +440,24 @@ def _build_plan_view(
             sliced from the global balance map.
     """
     plan_periods = pay_period_service.get_periods_in_range(
-        user_id, current_period.period_index, PLAN_WINDOW_PERIODS,
+        ctx.user_id, ctx.current_period.period_index, PLAN_WINDOW_PERIODS,
     )
 
-    (
-        plan_income_row_keys,
-        plan_expense_row_keys,
-        plan_matched_by_row_period,
-        _entry_sums_unused,
-        _entry_lists_unused,
-        _txn_by_period_unused,
-    ) = _build_grid_row_data(
+    row_data = _build_grid_row_data(
         all_transactions, plan_periods, False, all_categories,
     )
 
     plan_subtotals = _build_grid_subtotals(
-        account, scenario, plan_periods, amount_overrides,
+        ctx.account, ctx.scenario, plan_periods, amount_overrides,
     )
 
     plan_balances = {p.id: balances.get(p.id) for p in plan_periods}
 
     return {
         "plan_periods": plan_periods,
-        "plan_income_row_keys": plan_income_row_keys,
-        "plan_expense_row_keys": plan_expense_row_keys,
-        "plan_matched_by_row_period": plan_matched_by_row_period,
+        "plan_income_row_keys": row_data.income_row_keys,
+        "plan_expense_row_keys": row_data.expense_row_keys,
+        "plan_matched_by_row_period": row_data.matched_by_row_period,
         "plan_subtotals": plan_subtotals,
         "plan_balances": plan_balances,
     }
@@ -483,14 +519,7 @@ def index():
     )
     show_all = request.args.get("show_all", type=int) == 1
 
-    (
-        income_row_keys,
-        expense_row_keys,
-        matched_by_row_period,
-        entry_sums,
-        entry_lists,
-        txn_by_period,
-    ) = _build_grid_row_data(
+    row_data = _build_grid_row_data(
         all_transactions, ctx.periods, show_all, all_categories,
     )
 
@@ -498,12 +527,9 @@ def index():
     # from ctx.periods so a `?periods=1&offset=N` URL (driven by the
     # This Period arrow nav) does not starve Plan of forward visibility.
     plan_view = _build_plan_view(
-        user_id,
-        ctx.account,
-        ctx.scenario,
+        ctx,
         all_transactions,
         balances,
-        ctx.current_period,
         all_categories,
         amount_overrides,
     )
@@ -515,14 +541,14 @@ def index():
         periods=ctx.periods,
         current_period=ctx.current_period,
         balances=balances,
-        txn_by_period=txn_by_period,
+        txn_by_period=row_data.txn_by_period,
         subtotals=_build_grid_subtotals(
             ctx.account, ctx.scenario, ctx.periods,
             amount_overrides=amount_overrides,
         ),
         categories=[c for c in all_categories if c.is_active],
-        income_row_keys=income_row_keys,
-        expense_row_keys=expense_row_keys,
+        income_row_keys=row_data.income_row_keys,
+        expense_row_keys=row_data.expense_row_keys,
         statuses=db.session.query(Status).all(),
         transaction_types=db.session.query(TransactionType).all(),
         num_periods=ctx.num_periods,
@@ -543,9 +569,9 @@ def index():
             else 500
         ),
         stale_anchor_warning=stale_anchor_warning,
-        entry_sums=entry_sums,
-        entry_lists=entry_lists,
-        matched_by_row_period=matched_by_row_period,
+        entry_sums=row_data.entry_sums,
+        entry_lists=row_data.entry_lists,
+        matched_by_row_period=row_data.matched_by_row_period,
         **plan_view,
     )
 
