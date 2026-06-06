@@ -39,6 +39,7 @@ from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
+from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.models.transfer_template import TransferTemplate
@@ -66,6 +67,13 @@ logger = logging.getLogger(__name__)
 
 TWO_PLACES = Decimal("0.01")
 _FALLBACK_HORIZON_YEARS = 10
+
+# A period-like row in a projection: a real ``PayPeriod`` (the dashboard's
+# future periods) or a synthetic horizon period from
+# ``growth_engine.generate_projection_periods`` (the chart fragment).  Both
+# expose ``.id`` / ``.start_date`` / ``.end_date`` -- all the projection
+# primitives read off a period.
+_PeriodList = list[PayPeriod | growth_engine.SyntheticPeriod]
 
 
 @dataclass(frozen=True)
@@ -103,7 +111,7 @@ class _ProjectionContext:
     params: InvestmentParams | None
     current_balance: Decimal
     inputs: InvestmentInputs
-    contributions: list
+    contributions: list[growth_engine.ContributionRecord]
     deductions: list[PaycheckDeduction]
     active_profile: SalaryProfile | None
 
@@ -224,7 +232,9 @@ def _load_projection_context(
 # ── Shared projection primitives ───────────────────────────────────
 
 
-def _run_growth_projection(ctx: _ProjectionContext, periods: list) -> list:
+def _run_growth_projection(
+    ctx: _ProjectionContext, periods: _PeriodList,
+) -> list[growth_engine.ProjectedBalance]:
     """Project balances across *periods* from the shared growth context.
 
     The single home for the ``growth_engine.project_balance`` splat the
@@ -246,8 +256,8 @@ def _run_growth_projection(ctx: _ProjectionContext, periods: list) -> list:
 
 
 def _build_chart_series(
-    projection: list,
-    periods: list,
+    projection: list[growth_engine.ProjectedBalance],
+    periods: _PeriodList,
     current_balance: Decimal,
 ) -> tuple[list[str], list[str], list[str]]:
     """Build the chart's ``(labels, balances, contributions)`` string lists.
@@ -665,8 +675,8 @@ def compute_growth_chart_data(
 
 def _growth_chart_context(
     ctx: _ProjectionContext,
-    periods: list,
-    projection: list,
+    periods: _PeriodList,
+    projection: list[growth_engine.ProjectedBalance],
     what_if_raw: str | None,
 ) -> dict:
     """Assemble the growth-chart fragment's full template context.
@@ -718,8 +728,8 @@ def _parse_what_if(what_if_raw: str | None) -> Decimal | None:
 def _compute_what_if_overlay(
     what_if_amount: Decimal | None,
     ctx: _ProjectionContext,
-    periods: list,
-    projection: list,
+    periods: _PeriodList,
+    projection: list[growth_engine.ProjectedBalance],
 ) -> tuple[list[str], dict | None]:
     """Run the what-if projection (when an amount is supplied) plus comparison.
 

@@ -21,8 +21,10 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
+from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.salary_profile import SalaryProfile
+from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import (
     account_service,
@@ -189,10 +191,10 @@ class _ProjectionBatch:
             account ID.
     """
 
-    deductions_by_account: dict[int, list]
-    contributions: list
+    deductions_by_account: dict[int, list[PaycheckDeduction]]
+    contributions: list[Transaction]
     salary_gross_biweekly: Decimal
-    synthetic_periods: list
+    synthetic_periods: list[growth_engine.SyntheticPeriod]
     balance_map: dict[int, Decimal]
 
 
