@@ -132,6 +132,7 @@ Order = correctness blast-radius x refactor aggressiveness. Financial core first
 | 14 | `routes/_transfer_creation_helpers.py` | `59ba11a` | REVIEWED (M1: inactive-source test-gap) |
 | 15 | `routes/templates.py` + `recurrence_engine.match_periods` | `1c26575` | REVIEWED -- **clean** (all ACCEPT, 0 REFINE/REVERT-OVERREACH; first going-forward Phase-3 file under the folded-in rubric) |
 | 16 | `services/growth_engine.py` | `dcf0d4e` | REVIEWED -- **ACCEPT** (behavior-equivalence verified line-for-line; both documented disables upheld, 0 REVERT-OVERREACH; 2 LOW REFINE applied -- type-precision + degenerate-period test) |
+| 17 | `services/loan_resolver/` (pkg) | `41f42a8` | REVIEWED -- **ACCEPT** (all 6 behavior-equivalence points verified line-for-line; `LoanInputs` bundle + `_replay_from_anchor` sharing + `_ProjectionPrep` + `PayoffScenarios` disable all upheld; 0 REVERT-OVERREACH, 0 REFINE; F8 the lone LOW note, backstopped, no change) |
 
 ## Fold into Phase 3 going forward
 
@@ -161,6 +162,21 @@ over-engineering challenge. Unlike templates.py, this one carried two LOW REFINE
 fallback (now shared by both directions) -- both verified against the code, then folded into the same
 commit. See the register rows below.
 
+**Third going-forward file: `services/loan_resolver/` (`41f42a8`, 2026-06-06).** Two-phase in one
+commit (developer-chosen): the `LoanInputs(loan_params, anchor_events, payments, rate_changes)` bundle
++ `_replay_from_anchor` (shared) + `_build_forward_inputs`->`_ProjectionPrep` setup extraction cleared
+`resolve_loan` tm-locals and `compute_payoff_scenarios` tm-args/locals; `PayoffScenarios`(10/7) took a
+documented disable; the resulting 1009-line module was split into the `app/services/loan_resolver/`
+package (decision #5). The independent reviewer (fresh subagent, A-G rubric) verified all 6
+behavior-equivalence points line-for-line and returned **ACCEPT overall, 0 REVERT-OVERREACH, 0
+REFINE**. It specifically tested the highest-risk calls: `LoanInputs` is a genuine cohesive concept
+(every consumer reads all/most 4 fields, the clump every caller co-loads -- A1/A2 pass, not stamp
+coupling); `_replay_from_anchor` sharing is sound because it does ONLY replay, never `project_forward`,
+so the resolver's "balance derived independently of projection" invariant holds structurally; and the
+`PayoffScenarios` disable survives the "restructure into nested sections" challenge (10 flat columns
+read by one consumer; `PayoffRequest`/`AmortizationRow` precedent). The lone LOW note (F8) is a
+non-issue backstopped by the package-wide purity guard -- no code change. See the register rows below.
+
 ## Register (findings + verdicts)
 
 One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:line`.
@@ -184,6 +200,13 @@ One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:l
 | `growth_engine.py` (`dcf0d4e`) | A3/F3 | The two documented disables -- `project_balance` tm-args/pos (400) and `ProjectedBalance` tm-instance-attrs (24). Reviewer tested "bundle the 8 args" and "split the row" | ACCEPT | Both survive the over-engineering challenge: callers vary the 8 args independently (param object = stamp coupling), DTO fields are irreducible columns mirroring `AmortizationRow`. Honesty-first, symbol-named, why-commented |
 | `growth_engine.py` (`dcf0d4e`) | D2 | `_project_one_period`'s `contribution_lookup: dict` (310) was bare; the lookup's element type is fully known | REFINE (folded into `dcf0d4e`) | Tightened to `dict[date, tuple[Decimal, bool]]` (or None). `employer_params` left `dict`-or-None -- heterogeneous config, untyped module-wide; a TypedDict is out of this file's scope |
 | `growth_engine.py` (`dcf0d4e`) | G3/E1 | The `period_days <= 0 -> 14` degenerate-period fallback (247), now shared by BOTH projection directions, had no direct unit test | REFINE (folded into `dcf0d4e`) | Added `test_degenerate_period_falls_back_to_14_days` -- a 0-day period grows exactly as a real 14-day period (hand-pinned 25.98); closes the now-doubly-load-bearing branch |
+| `loan_resolver/_periods.py` (`41f42a8`) | A1/A2/A3 | `LoanInputs` (128) -- cohesive domain concept or a count-lowering bag? | ACCEPT | Genuine: the 4 fields are the exact clump EVERY caller co-loads (three loads/site); `resolve_loan`, `compute_payoff_scenarios`, `_replay_from_anchor`, `_build_forward_inputs` each read all/most 4. A3 holds -- a "loaded loan data" bundle is defensible without thresholds. Mirrors `PayoffRequest`/`AmortizationRow` |
+| `loan_resolver/_periods.py` (`41f42a8`) | A4/B1/E1 | `_replay_from_anchor` (211) shared by the resolver's balance derivation + the composer -- does sharing it violate the "balance derived independently of the schedule generation" invariant? | ACCEPT | No: the helper does ONLY replay (anchor-select + `replay_schedule`), never `project_forward`. The invariant is about projection not moving the balance; replay IS the balance derivation. Genuine 2-site DRY; the resolver and composer walk the same replay and cannot diverge |
+| `loan_resolver/_payoff.py` (`41f42a8`) | A1/A4/A5 | `_ProjectionPrep` (222) + `_build_forward_inputs` (250) -- single-use bag that just relocates code, or genuine? | ACCEPT | Single-use but genuinely clarifying: dissolves the composer's tm-locals and leaves a thin "project 3 ways, then summarize" orchestrator. All 3 fields are replay-derived (no raw/derived mixing -- A5 clean); the summary metrics correctly stay inline in the composer (byte-identical to the original) |
+| `loan_resolver/_payoff.py` (`41f42a8`) | A3/F3 | `PayoffScenarios` (35) `too-many-instance-attributes` disable -- restructure into nested sections instead? | ACCEPT | 10 irreducible result columns (3 chart slices + history + 6 metrics) read flat by one consumer; nesting would fragment one contract for no gain. Documented, symbol-named, matches `AmortizationRow`/`PayoffRequest` |
+| `loan_resolver/` (pkg) (`41f42a8`) | C3/F3 | Package layering + public surface | ACCEPT | Acyclic DAG `_periods <- _payoff <- _state` (`_state` depends on both, still acyclic); `__init__` re-exports 6 public symbols with a correct sorted `__all__`; every import path preserved; 0 new R0801 (no split-trap) |
+| `test_loan_resolver.py` (`41f42a8`) | G1/G2/G3 | ~52 wrapped call sites + repointed source guards | ACCEPT | All wraps byte-identical (same arg order/values); hand-computed assertions intact ($2,398.20 ARM constant, etc.); edge cases still covered (empty anchors, projected-only, ARM window, trueup, zero-rate, tie-break, confirmed-past-as_of). `_loan_resolver_package_source()` globs the package dir generically (survives a future re-split) and tokenizes cleanly |
+| `test_loan_resolver.py` (`41f42a8`) | G2 | F8: `inspect.getsource(compute_payoff_scenarios)` (composer-only purity guard) no longer reaches the extracted `_build_forward_inputs` | ACCEPT (LOW, no change) | No coverage gap: the package-wide guard `test_resolver_is_pure_no_flask_no_db` scans `_payoff.py` in full (incl. `_build_forward_inputs`). Repointing the composer-only guard too is optional polish, not worth churn (reviewer concurred) |
 
 ## Sweep results (files 2-14, run `wvq2yd9aa`, 2026-06-05)
 
