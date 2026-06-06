@@ -89,6 +89,15 @@ class _ProjectionContext:
     and the contribution timeline were resolved the same way in both
     bodies.
 
+    This is a load-once *feed* object: it is resolved in one place and its
+    fields fan out to different consumers (``contributions`` -> the growth
+    projection; ``deductions`` / ``active_profile`` -> the contribution
+    prompt), so consumers read subsets rather than the whole struct as a
+    unit.  Note the annual contribution limit is reachable two ways --
+    ``params.annual_contribution_limit`` and ``inputs.annual_contribution_limit``
+    (copied from params in ``calculate_investment_inputs``); read it from
+    one place consistently if this struct is ever tightened.
+
     Attributes:
         params: The account's :class:`InvestmentParams` row, or ``None``
             when the user has not configured the account.  ``None`` is a

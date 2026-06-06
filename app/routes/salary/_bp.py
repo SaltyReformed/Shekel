@@ -2,7 +2,7 @@
 Shekel Budget App -- Salary route package: blueprint declaration.
 
 Leaf module that declares ``salary_bp`` so the per-domain sub-modules
-(:mod:`~app.routes.salary.profiles`, ``raises``, ``deductions``,
+(:mod:`~app.routes.salary.profiles`, ``items`` (raises + deductions),
 ``views``, ``calibration``, ``tax_config``) and the shared
 :mod:`~app.routes.salary._helpers` can import the blueprint without a
 circular dependency on the package ``__init__`` (which imports those

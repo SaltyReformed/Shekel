@@ -123,7 +123,12 @@ _DUE_DAY_KEY: str = "due_day_of_month"
 
 @dataclass(frozen=True)
 class RecurrenceFormContext:
-    """How to process a recurrence-form submission across the F-24 helpers.
+    """Recurrence-form processing options shared across the F-24 helpers.
+
+    A parameter object, not a single domain concept: it groups the three
+    otherwise-independent knobs the helpers read so the verbatim-triplicated
+    signature tail collapses to one argument (and ``resolve`` forwards it
+    unchanged).
 
     Bundles the three inputs that :func:`build_recurrence_rule_from_form`,
     :func:`update_recurrence_rule_from_form`, and
