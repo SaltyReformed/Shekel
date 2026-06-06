@@ -2694,18 +2694,21 @@ class TestCalibrationIntegration:
         path end to end.
         """
         from app.services.calibration_service import (  # pylint: disable=import-outside-toplevel
+            PayStubActuals,
             derive_effective_rates,
         )
 
         # Derived against the ACTUAL stub gross 3526.00 and taxable
         # 3526.00 - 706.95 = 2819.05 (the basis calibrate_confirm uses).
         rates = derive_effective_rates(
-            actual_gross_pay=Decimal("3526.00"),
-            actual_federal_tax=Decimal("0.00"),
-            actual_state_tax=Decimal("84.00"),
-            actual_social_security=Decimal("194.36"),
-            actual_medicare=Decimal("45.45"),
-            taxable_income=Decimal("2819.05"),
+            PayStubActuals(
+                actual_gross_pay=Decimal("3526.00"),
+                actual_federal_tax=Decimal("0.00"),
+                actual_state_tax=Decimal("84.00"),
+                actual_social_security=Decimal("194.36"),
+                actual_medicare=Decimal("45.45"),
+                taxable_income=Decimal("2819.05"),
+            )
         )
         cal = FakeCalibration(
             federal_rate=rates.effective_federal_rate,

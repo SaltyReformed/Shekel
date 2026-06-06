@@ -20,7 +20,10 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.calibration_override import CalibrationOverride
 from app.exceptions import ValidationError
-from app.services.calibration_service import derive_effective_rates
+from app.services.calibration_service import (
+    PayStubActuals,
+    derive_effective_rates,
+)
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _calibration_confirm_schema,
@@ -78,12 +81,14 @@ def calibrate_preview(profile_id):
 
     try:
         rates = derive_effective_rates(
-            actual_gross_pay=data["actual_gross_pay"],
-            actual_federal_tax=data["actual_federal_tax"],
-            actual_state_tax=data["actual_state_tax"],
-            actual_social_security=data["actual_social_security"],
-            actual_medicare=data["actual_medicare"],
-            taxable_income=taxable,
+            PayStubActuals(
+                actual_gross_pay=data["actual_gross_pay"],
+                actual_federal_tax=data["actual_federal_tax"],
+                actual_state_tax=data["actual_state_tax"],
+                actual_social_security=data["actual_social_security"],
+                actual_medicare=data["actual_medicare"],
+                taxable_income=taxable,
+            )
         )
     except ValidationError as e:
         flash(str(e), "danger")
@@ -168,12 +173,14 @@ def calibrate_confirm(profile_id):
 
     try:
         derived_rates = derive_effective_rates(
-            actual_gross_pay=data["actual_gross_pay"],
-            actual_federal_tax=data["actual_federal_tax"],
-            actual_state_tax=data["actual_state_tax"],
-            actual_social_security=data["actual_social_security"],
-            actual_medicare=data["actual_medicare"],
-            taxable_income=taxable,
+            PayStubActuals(
+                actual_gross_pay=data["actual_gross_pay"],
+                actual_federal_tax=data["actual_federal_tax"],
+                actual_state_tax=data["actual_state_tax"],
+                actual_social_security=data["actual_social_security"],
+                actual_medicare=data["actual_medicare"],
+                taxable_income=taxable,
+            )
         )
     except ValidationError as exc:
         flash(str(exc), "danger")

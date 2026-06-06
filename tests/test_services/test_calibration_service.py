@@ -12,6 +12,7 @@ import pytest
 from app.exceptions import ValidationError
 from app.services.calibration_service import (
     DerivedRates,
+    PayStubActuals,
     apply_calibration,
     derive_effective_rates,
 )
@@ -62,12 +63,14 @@ class TestDeriveEffectiveRates:
           medicare = $33.46  -> rate = 33.46 / 2307.69 = 0.01450
         """
         result = derive_effective_rates(
-            actual_gross_pay=Decimal("2307.69"),
-            actual_federal_tax=Decimal("153.08"),
-            actual_state_tax=Decimal("94.85"),
-            actual_social_security=Decimal("143.08"),
-            actual_medicare=Decimal("33.46"),
-            taxable_income=Decimal("2107.69"),
+            PayStubActuals(
+                actual_gross_pay=Decimal("2307.69"),
+                actual_federal_tax=Decimal("153.08"),
+                actual_state_tax=Decimal("94.85"),
+                actual_social_security=Decimal("143.08"),
+                actual_medicare=Decimal("33.46"),
+                taxable_income=Decimal("2107.69"),
+            )
         )
 
         assert isinstance(result, DerivedRates)
@@ -84,12 +87,14 @@ class TestDeriveEffectiveRates:
         income that withholding rounds to zero.
         """
         result = derive_effective_rates(
-            actual_gross_pay=Decimal("2000.00"),
-            actual_federal_tax=Decimal("0.00"),
-            actual_state_tax=Decimal("90.00"),
-            actual_social_security=Decimal("124.00"),
-            actual_medicare=Decimal("29.00"),
-            taxable_income=Decimal("1800.00"),
+            PayStubActuals(
+                actual_gross_pay=Decimal("2000.00"),
+                actual_federal_tax=Decimal("0.00"),
+                actual_state_tax=Decimal("90.00"),
+                actual_social_security=Decimal("124.00"),
+                actual_medicare=Decimal("29.00"),
+                taxable_income=Decimal("1800.00"),
+            )
         )
 
         assert result.effective_federal_rate == Decimal("0.0000000000")
@@ -97,12 +102,14 @@ class TestDeriveEffectiveRates:
     def test_zero_state_tax_produces_zero_rate(self):
         """A state with no income tax produces a zero state rate."""
         result = derive_effective_rates(
-            actual_gross_pay=Decimal("2000.00"),
-            actual_federal_tax=Decimal("150.00"),
-            actual_state_tax=Decimal("0.00"),
-            actual_social_security=Decimal("124.00"),
-            actual_medicare=Decimal("29.00"),
-            taxable_income=Decimal("1800.00"),
+            PayStubActuals(
+                actual_gross_pay=Decimal("2000.00"),
+                actual_federal_tax=Decimal("150.00"),
+                actual_state_tax=Decimal("0.00"),
+                actual_social_security=Decimal("124.00"),
+                actual_medicare=Decimal("29.00"),
+                taxable_income=Decimal("1800.00"),
+            )
         )
 
         assert result.effective_state_rate == Decimal("0.0000000000")
@@ -111,59 +118,69 @@ class TestDeriveEffectiveRates:
         """Gross pay of zero is rejected -- cannot derive FICA rates."""
         with pytest.raises(ValidationError, match="greater than zero"):
             derive_effective_rates(
-                actual_gross_pay=Decimal("0"),
-                actual_federal_tax=Decimal("0"),
-                actual_state_tax=Decimal("0"),
-                actual_social_security=Decimal("0"),
-                actual_medicare=Decimal("0"),
-                taxable_income=Decimal("0"),
+                PayStubActuals(
+                    actual_gross_pay=Decimal("0"),
+                    actual_federal_tax=Decimal("0"),
+                    actual_state_tax=Decimal("0"),
+                    actual_social_security=Decimal("0"),
+                    actual_medicare=Decimal("0"),
+                    taxable_income=Decimal("0"),
+                )
             )
 
     def test_negative_gross_pay_raises_error(self):
         """Negative gross pay is rejected."""
         with pytest.raises(ValidationError, match="greater than zero"):
             derive_effective_rates(
-                actual_gross_pay=Decimal("-100"),
-                actual_federal_tax=Decimal("0"),
-                actual_state_tax=Decimal("0"),
-                actual_social_security=Decimal("0"),
-                actual_medicare=Decimal("0"),
-                taxable_income=Decimal("100"),
+                PayStubActuals(
+                    actual_gross_pay=Decimal("-100"),
+                    actual_federal_tax=Decimal("0"),
+                    actual_state_tax=Decimal("0"),
+                    actual_social_security=Decimal("0"),
+                    actual_medicare=Decimal("0"),
+                    taxable_income=Decimal("100"),
+                )
             )
 
     def test_zero_taxable_income_raises_error(self):
         """Zero taxable income is rejected -- cannot derive income tax rates."""
         with pytest.raises(ValidationError, match="Taxable income"):
             derive_effective_rates(
-                actual_gross_pay=Decimal("2000.00"),
-                actual_federal_tax=Decimal("0"),
-                actual_state_tax=Decimal("0"),
-                actual_social_security=Decimal("124.00"),
-                actual_medicare=Decimal("29.00"),
-                taxable_income=Decimal("0"),
+                PayStubActuals(
+                    actual_gross_pay=Decimal("2000.00"),
+                    actual_federal_tax=Decimal("0"),
+                    actual_state_tax=Decimal("0"),
+                    actual_social_security=Decimal("124.00"),
+                    actual_medicare=Decimal("29.00"),
+                    taxable_income=Decimal("0"),
+                )
             )
 
     def test_negative_taxable_income_raises_error(self):
         """Negative taxable income (misconfigured deductions) is rejected."""
         with pytest.raises(ValidationError, match="Taxable income"):
             derive_effective_rates(
-                actual_gross_pay=Decimal("2000.00"),
-                actual_federal_tax=Decimal("0"),
-                actual_state_tax=Decimal("0"),
-                actual_social_security=Decimal("124.00"),
-                actual_medicare=Decimal("29.00"),
-                taxable_income=Decimal("-500"),
+                PayStubActuals(
+                    actual_gross_pay=Decimal("2000.00"),
+                    actual_federal_tax=Decimal("0"),
+                    actual_state_tax=Decimal("0"),
+                    actual_social_security=Decimal("124.00"),
+                    actual_medicare=Decimal("29.00"),
+                    taxable_income=Decimal("-500"),
+                )
             )
 
     def test_string_inputs_coerced_to_decimal(self):
         """String inputs are accepted and coerced to Decimal."""
         result = derive_effective_rates(
-            actual_gross_pay="2000.00",
-            actual_federal_tax="100.00",
-            actual_state_tax="50.00",
-            actual_social_security="124.00",
-            actual_medicare="29.00",
-            taxable_income="1800.00",
+            PayStubActuals(
+                actual_gross_pay="2000.00",
+                actual_federal_tax="100.00",
+                actual_state_tax="50.00",
+                actual_social_security="124.00",
+                actual_medicare="29.00",
+                taxable_income="1800.00",
+            )
         )
 
         assert result.effective_federal_rate == Decimal("0.0555555556")
@@ -175,12 +192,14 @@ class TestDeriveEffectiveRates:
         $200k salary, $7692.31/period gross, ~$1800 federal (23.4% eff).
         """
         result = derive_effective_rates(
-            actual_gross_pay=Decimal("7692.31"),
-            actual_federal_tax=Decimal("1800.00"),
-            actual_state_tax=Decimal("300.00"),
-            actual_social_security=Decimal("476.92"),
-            actual_medicare=Decimal("111.54"),
-            taxable_income=Decimal("6942.31"),
+            PayStubActuals(
+                actual_gross_pay=Decimal("7692.31"),
+                actual_federal_tax=Decimal("1800.00"),
+                actual_state_tax=Decimal("300.00"),
+                actual_social_security=Decimal("476.92"),
+                actual_medicare=Decimal("111.54"),
+                taxable_income=Decimal("6942.31"),
+            )
         )
 
         # Federal: 1800 / 6942.31 at 10 places
@@ -363,12 +382,14 @@ class TestRoundTrip:
         cumulative_wages is zero and the grosses are well below the base.
         """
         rates = derive_effective_rates(
-            actual_gross_pay=gross,
-            actual_federal_tax=federal,
-            actual_state_tax=state,
-            actual_social_security=ss,
-            actual_medicare=medicare,
-            taxable_income=taxable,
+            PayStubActuals(
+                actual_gross_pay=gross,
+                actual_federal_tax=federal,
+                actual_state_tax=state,
+                actual_social_security=ss,
+                actual_medicare=medicare,
+                taxable_income=taxable,
+            )
         )
         cal = FakeCalibration(
             federal_rate=str(rates.effective_federal_rate),
@@ -574,12 +595,14 @@ class TestDeriveRatesSchemaToleranceInvariant:
         medicare = Decimal("174.00")
 
         rates = derive_effective_rates(
-            actual_gross_pay=gross,
-            actual_federal_tax=federal,
-            actual_state_tax=state,
-            actual_social_security=ss,
-            actual_medicare=medicare,
-            taxable_income=taxable,
+            PayStubActuals(
+                actual_gross_pay=gross,
+                actual_federal_tax=federal,
+                actual_state_tax=state,
+                actual_social_security=ss,
+                actual_medicare=medicare,
+                taxable_income=taxable,
+            )
         )
 
         one_cent = Decimal("0.01")
@@ -608,12 +631,14 @@ class TestDeriveRatesSchemaToleranceInvariant:
         medicare = Decimal("41.83")
 
         rates = derive_effective_rates(
-            actual_gross_pay=gross,
-            actual_federal_tax=federal,
-            actual_state_tax=state,
-            actual_social_security=ss,
-            actual_medicare=medicare,
-            taxable_income=taxable,
+            PayStubActuals(
+                actual_gross_pay=gross,
+                actual_federal_tax=federal,
+                actual_state_tax=state,
+                actual_social_security=ss,
+                actual_medicare=medicare,
+                taxable_income=taxable,
+            )
         )
 
         one_cent = Decimal("0.01")
