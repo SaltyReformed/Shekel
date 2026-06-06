@@ -9,10 +9,28 @@
 > gate. Verify every finding against the code before applying. The auto-loaded
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.90/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 139 visible messages.
-Full suite 5766 passed.** Phase 3 (design smells) has SEVENTEEN files plus the form-mutation helper
-family complete. The newest, **`routes/debt_strategy.py` DONE** (`8449f21`), cleared all 3 design
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.91/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 129 visible messages.
+Full suite 5769 passed.** Phase 3 (design smells) has EIGHTEEN files plus the form-mutation helper
+family complete. The newest, **`services/investment_projection.py` (+ its `projection_inputs.py`
+wrapper) DONE** (`bf111f0`), cleared all design smells on the coupled `calculate_investment_inputs`
+(tm-args/pos/locals) and its pure pass-through wrapper `build_investment_projection_inputs`
+(tm-args/pos). The dead `account_id` param -- forwarded by the wrapper, ignored by the callee --
+was removed at root from both signatures + all 5 production call sites + 18 test calls (clears
+`unused-argument`). `calculate_investment_inputs`'s 5 steps decomposed into
+`_periodic_from_deductions` / `_average_transfer_contribution` / `_employer_params` /
+`_ytd_contributions` (clears tm-locals). The residual 6 independent, heterogeneous inputs (1 over
+max; verified all 5 consumers vary `all_periods`/`current_period` independently, so no cohesive
+sub-bundle exists and a param object would be stamp coupling) take a documented
+scoped+named+commented `too-many-arguments,too-many-positional-arguments` disable on BOTH public
+functions, mirroring the sibling `growth_engine.project_balance`. Overlapping Phase-4 residue cleared
+in the same lines (missing `salary_gross_biweekly` param-doc, 3 long `employer_params` lines, the
+stale "Lazy import" comment). Independent quality-pass (fresh subagent, A-G rubric, all 5 steps
+verified line-for-line incl. the De Morgan employer-guard rewrite and the `if current_period:` ->
+`is None` equivalence): ACCEPT, 0 REVERT-OVERREACH, 0 REFINE (the lone watch-item a PRE-EXISTING,
+untouched negative-deduction `# BUG` test comment, reported as P-3). +2 documented disables (86->88);
+0 new R0801; visible 139->129; smell items 44->39 (31 8-symbol + 8 instance-attr); score 9.90->9.91;
+full suite 5769 passed. Before it, **`routes/debt_strategy.py` DONE** (`8449f21`), cleared all 3 design
 smells on the `calculate` route handler (tm-locals 17/15 + tm-return 7/6 + tm-branches) by genuine
 decomposition (no disables, behavior bit-identical; full suite 5766 the gate). The 5 duplicated
 `_results.html` error renders (schema reject / malformed custom order / no debts / a simulation
@@ -384,7 +402,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (17 files + the form-helper family done: `debt_strategy.py` (route), `retirement_gap_calculator.py`, `loan_resolver/`, `growth_engine.py`, `templates.py`, `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (18 files + the form-helper family done: `investment_projection.py` (+ `projection_inputs.py` wrapper), `debt_strategy.py` (route), `retirement_gap_calculator.py`, `loan_resolver/`, `growth_engine.py`, `templates.py`, `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -1178,7 +1196,17 @@ documented disables), with commit SHA.
 
 ### Tier 3 -- single-function or low-count files
 
-- services/investment_projection.py: `calculate_investment_inputs`:104 tm-args/pos/locals -- `-`
+- services/investment_projection.py: **DONE** (`bf111f0`; file now 10.00/10, zero smell messages).
+  `calculate_investment_inputs` tm-args/pos/locals cleared by (a) removing the dead `account_id` param
+  (forwarded by the `projection_inputs` wrapper, never read by the callee -- the `salary_profiles` /
+  `planned_retirement_date` dead-param precedent; clears `unused-argument`), (b) decomposing the 5
+  steps into `_periodic_from_deductions` / `_average_transfer_contribution` / `_employer_params` /
+  `_ytd_contributions` (tm-locals), and (c) a documented scoped+named+commented
+  `too-many-arguments,too-many-positional-arguments` disable for the residual 6 independent inputs
+  (1 over max; no cohesive sub-bundle -- a param object would be stamp coupling; mirrors
+  `growth_engine.project_balance`). Done jointly with `projection_inputs.build_investment_projection_inputs`
+  (the coupled wrapper). Cleared overlapping Phase-4 residue (param-doc, 3 long lines, stale comment).
+  Independent quality-pass: ACCEPT, 0 REVERT-OVERREACH, 0 REFINE. Full suite 5769 passed.
 - routes/debt_strategy.py: **DONE** (`8449f21`; file now 10.00/10, zero smell messages). `calculate`
   tm-locals (17/15) + tm-return (7/6) + tm-branches all cleared by genuine decomposition (no disables,
   behavior bit-identical). The 5 duplicated `_results.html` error renders funnel through a new private
@@ -1242,7 +1270,13 @@ documented disables), with commit SHA.
 - services/balance_calculator.py: `calculate_balances`:33 tm-branches -- `-`
 - services/entry_service.py: `create_entry`:129 tm-args/pos -- `-`
 - services/interest_projection.py: `calculate_interest`:81 tm-locals -- `-`
-- services/projection_inputs.py: `build_investment_projection_inputs`:207 tm-args/pos -- `-`
+- services/projection_inputs.py: **DONE** (`bf111f0`; file now 10.00/10, zero smell messages).
+  `build_investment_projection_inputs` tm-args/pos cleared jointly with the wrapped
+  `calculate_investment_inputs`: dropped the dead `account_id` (6->... still 6 after removal, 1 over
+  max) and documented the same scoped+named+commented `too-many-arguments,too-many-positional-arguments`
+  disable -- this is a thin 1:1 forward of the same six independent inputs, so it mirrors the callee's
+  disposition. The wrapper stays the "single splat home" (canary at :236 intact -- still the only
+  `salary_gross_biweekly=salary_gross_biweekly,)` site). Independent quality-pass: ACCEPT.
 - services/savings_goal_service.py: `amount_to_monthly`:201 tm-return -- `-`
 - services/tax_calculator.py: `calculate_federal_withholding`:37 tm-args/locals -- `-`
 - services/transfer_service.py: `update_transfer`:445 tm-locals (plus Phase 1 disables here) -- `-`
@@ -1294,14 +1328,13 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-06 after `routes/debt_strategy.py` DONE
-`8449f21`; 44 smell items remain [36 of the 8-symbol set + 8 `too-many-instance-attributes`], down
-from 47): the band at 3 -- **`app/ref_cache.py`** (`init` tm-locals/branches/statements),
-**`services/budget_variance_service.py`**
+Next by live density (re-measured 2026-06-06 after `services/investment_projection.py`
+(+ `projection_inputs.py`) DONE `bf111f0`; 39 smell items remain [31 of the 8-symbol set + 8
+`too-many-instance-attributes`], down from 44): the band at 3 -- **`app/ref_cache.py`**
+(`init` tm-locals/branches/statements), **`services/budget_variance_service.py`**
 (3 result dataclasses each tm-instance-attributes: `TransactionVariance` 8/7, `CategoryItemVariance` 9/7,
-`VarianceReport` 8/7), **`services/calibration_service.py`** (`derive_effective_rates` tm-args/pos/locals),
-**`services/investment_projection.py`** (`calculate_investment_inputs` tm-args/pos/locals). Plan-first
-per the developer's cadence. **Note on the retirement_gap_calculator approach (trust-but-verify
+`VarianceReport` 8/7), **`services/calibration_service.py`** (`derive_effective_rates` tm-args/pos/locals).
+Plan-first per the developer's cadence. **Note on the retirement_gap_calculator approach (trust-but-verify
 divergence from the 2026-06-06 paired-fork ratification):** the ratified plan was keyword-only +
 relocate `planned_retirement_date` to the caller (KEEP the field). Verification before coding showed
 (a) the result field is write-only -- read by NO production consumer (template, `_build_chart_data`,
@@ -1329,7 +1362,7 @@ Per-file residue at baseline (re-measure before starting; Phase 1-3 will have ch
 | app/ref_seeds.py | line-too-long:6 |
 | app/routes/transactions.py | line-too-long:4 |
 | app/models/tax_config.py | line-too-long:4 |
-| app/services/investment_projection.py | line-too-long:3, missing-param-doc:1, unused-argument:1 |
+| app/services/investment_projection.py | line-too-long:3, missing-param-doc:1, unused-argument:1 -- **RESOLVED `bf111f0`** (Phase 3 cleared all three in the `calculate_investment_inputs` decomposition: 3 long `employer_params` lines wrapped, `salary_gross_biweekly` param-doc added, dead `account_id` removed at root) |
 | app/models/salary_profile.py | line-too-long:2 |
 | app/models/salary_raise.py | line-too-long:2 |
 | app/routes/templates.py | line-too-long:2, protected-access:1 |
@@ -1526,6 +1559,23 @@ CLAUDE.md rules 3, 4, 6, 8.
   through it (templates x2 now ordered, transfers x2, savings, settings); dissolved the account-
   dropdown R0801 clusters. Full suite 5766 passed.
 
+### P-3 -- negative paycheck deduction accepted without validation (investment contribution)
+
+- **Where:** `app/services/investment_projection.py` `_compute_deduction_per_period` (and thus
+  `calculate_investment_inputs`) applies a deduction `amount` with no sign guard;
+  `tests/test_services/test_investment_projection.py::test_negative_deduction_amount` asserts the
+  current behavior (a `-500.00` deduction yields `periodic_contribution == -500.00`) and carries a
+  pre-existing inline `# BUG: negative deduction amount is silently accepted` comment.
+- **Found via:** the `bf111f0` Phase-3 decomposition's independent quality-pass review (flagged as a
+  pre-existing, out-of-scope watch-item; the refactor preserved the behavior bit-identically).
+- **Impact (needs developer judgement -- financial):** a negative contribution deduction lowers the
+  projected periodic contribution. Whether that is ever valid input, or should be rejected at the
+  service/schema boundary, is a financial-policy question (rule 3). Not fixed unilaterally (rule 6 --
+  out of scope for the lint cleanup; rule 4 -- reported).
+- **Recommendation:** developer decides whether to add a `ValidationError` guard (then update the
+  test's asserted behavior + drop the `# BUG` comment) or to document the behavior as intended.
+  Status: OPEN, reported 2026-06-06.
+
 ## Progress Log
 
 Append one row per commit that changes the score or completes register items. Newest at bottom.
@@ -1582,3 +1632,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-06 | `41f42a8` | 3 | **loan_resolver.py -- bundle loan inputs (LoanInputs) + split into a package (developer-chosen, two-phase in one commit) -- file DONE:** all 4 design smells (`resolve_loan` tm-locals 16; `compute_payoff_scenarios` tm-args 6/5 + tm-locals 26; `PayoffScenarios` tm-instance-attributes 10/7) resolved. The frozen `LoanInputs(loan_params, anchor_events, payments, rate_changes)` -- the data clump EVERY caller already co-loads (three separate loads per site: a params query + `load_loan_context` + an anchor-event query) -- is shared by `resolve_loan` (5->2 args, tm-locals 16->~10) and `compute_payoff_scenarios` (6->3 args); `compute_monthly_payment_baseline` was left untouched (its `unused-argument` disable ties to OPEN problem P-1). The shared `_replay_from_anchor` dedupes the anchor-select+replay both use -- replay ONLY, never `project_forward`, so the resolver's documented "current_balance derived independently of the schedule generation" invariant holds structurally (genuine 2-site DRY). `compute_payoff_scenarios` tm-locals (26->~13) via `_build_forward_inputs` -> the frozen `_ProjectionPrep`(3) setup bundle (replay/contractual/override/history/projection_inputs), leaving a thin "project three ways, then summarize" orchestrator (summary metrics kept inline, byte-identical to the original). `PayoffScenarios`(10/7) -> documented scoped+named+commented disable (cohesive single-return result aggregate: 3 chart slices + history + 6 summary metrics read flat by one consumer; `PayoffRequest`/`AmortizationRow` precedent). **Package split (decision #5):** the decomposition pushed the module to 1009 lines (new too-many-lines), so it became the `app/services/loan_resolver/` package -- `_periods` (rate periods/anchor/replay + `LoanInputs`) / `_state` (`LoanState` + `resolve_loan` + `compute_monthly_payment_baseline`) / `_payoff` (`PayoffScenarios` + composer + helpers); `__init__` re-exports the 6 public names (+`__all__`) so every import path is preserved; acyclic DAG `_periods <- _payoff <- _state`; **0 new R0801** (no split-trap). ~52 call sites wrapped in `LoanInputs(...)` across 8 files (6 app + 46 test, values frozen byte-identical); 3 test source-inspection guards repointed to scan the package dir via the new `_loan_resolver_package_source()` helper; the C15-3 demoted-column allow-list `services/loan_resolver.py:` -> `services/loan_resolver/` (the `.current_principal` prose moved to the `__init__`/`_state` docstrings). Independent quality-pass review (fresh subagent, A-G rubric, all 6 behavior-equivalence points verified line-for-line): **ACCEPT overall, 0 REVERT-OVERREACH, 0 REFINE**; F8 the lone LOW note (the composer-only `inspect.getsource(compute_payoff_scenarios)` purity guard's reach narrowed by the `_build_forward_inputs` extraction, but the package-wide purity guard scans `_payoff.py` in full -- no gap, no change). +1 documented disable (84->85); package 10.00/10; score 9.89 held; visible 150->146; smell items 55->51 (42 8-symbol + 9 instance-attr); 0 R0801/E/F/useless-suppression. 53 resolver + 313 consumer (loan/debt_strategy/savings/loan_payment) targeted + **full suite 5767 passed (after both the decomposition and the split).** | 9.89/10 | 146 |
 | 2026-06-06 | `2b0f5ca` | 3 | **retirement_gap_calculator.py -- remove dead `planned_retirement_date` + decompose `calculate_gap` (developer-chosen full removal over the plan's relocate-the-write option) -- file DONE:** all 4 design smells resolved by genuine root-cause change (behavior bit-identical). Verification showed `gap_result.planned_retirement_date` is **write-only** -- read by NO production consumer (not `_gap_analysis.html`, not `_build_chart_data`, nowhere in app/; grep-confirmed independently by the quality-pass reviewer) -- so dropping the param AND the `RetirementGapAnalysis` field is the DRY fix, not relocating the write. `calculate_gap` **tm-arguments + tm-positional** (6 params) cleared by dropping the param 6->5 (both clear at the pylint default max=5, NO disable -- the `derive_from_loan`/`59ba11a` precedent, except here the relocated attribute would be dead so it was removed outright). **tm-locals** (19->14) via the pure helpers `_after_tax_projected_savings` (trad/Roth bucketing + whole-expression quantize -- the load-bearing extraction; without it 18>15) + `_sum_projected_balances` (per-account total -- kept for orchestrator-altitude symmetry, NOT threshold-necessary: inlining the sum alone leaves exactly 15, which passes). `RetirementGapAnalysis` **tm-instance-attributes** (11->10 after the field drop, still >7) -> documented scoped+named+commented disable (cohesive single-return aggregate, flat row-per-field render; `AmortizationRow`/`PayoffRequest`/`ProjectedBalance` precedent). Single keyword caller (`retirement_dashboard_service`) + 27 test calls updated; deleted `test_planned_retirement_date_passed_through` (rule-5 exception -- tested removed behavior); `test_result_field_completeness` 11->10 fields; removed the now-unused `datetime.date` import. Independent quality-pass review (fresh subagent, A-G rubric, all 4 behavior-equivalence points verified line-for-line incl. the whole-expression quantize order): **ACCEPT, 0 REVERT-OVERREACH, 0 REFINE** (the lone LOW note on `_sum_projected_balances` accepted; the reviewer's "reverting re-trips tm-locals" rationale was wrong and corrected -- inlining the sum leaves 15). File clears all design smells (only the pre-existing `line-too-long:145` Phase-4 residue remains); +1 documented disable (85->86); 0 new R0801; E/F 0; useless-suppression 0. Score 9.89->9.90; visible 146->142; smell items 51->47 (39 8-symbol + 8 instance-attr). 122 targeted (calculator + dashboard service + route) + **full suite 5766 passed.** | 9.90/10 | 142 |
 | 2026-06-06 | `8449f21` | 3 | **debt_strategy.py (route) -- funnel calculate errors through `_ResultsError` + decompose (developer-chosen internal-exception approach) -- file DONE:** all 3 design smells on the `calculate` handler (tm-locals 17/15 + tm-return 7/6 + tm-branches) resolved by genuine decomposition (no disables, behavior bit-identical; full suite 5766 the gate). **tm-return** (the crux): the 5 duplicated `_results.html` error renders (schema reject / malformed custom order / no debts / a simulation `ValueError`) funnel through a new private `_ResultsError(Exception)` + a SINGLE try/except in the handler -- the DRY collapse of one error contract (every user-input failure renders the same banner at HTTP 200) -- leaving 3 returns; the IDOR 404 stays a DIRECT return inside the try (a distinct HTTP contract, deliberately NOT funneled). **tm-locals/branches** via cohesive extraction: `_parse_calculate_form` (schema load + custom_order int-coercion), `_custom_order_has_unknown_account` (the IDOR set-membership check), `_compute_strategies` (-> the frozen `_StrategyResults`(4) bundle; logs the two DISTINCT scenario labels internally then re-raises `_ResultsError(str(exc))` so the funnel preserves them), `_select_result` (the custom/snowball/avalanche pick); `_build_comparison` retargeted from 4 positional results to the bundle. **Dead-code:** grep-verified `_results.html` reads only error/comparison/selected_result/selected_strategy/has_arm/chart_data_json, so 6 render kwargs (baseline/avalanche/snowball/custom_result/extra_monthly/debt_accounts) were removed (developer-approved). Independent quality-pass review (fresh subagent, A-G rubric, all 9 behavior-equivalence points verified line-for-line incl. the `custom_raw` relocation, the IDOR `any()` equivalence, distinct logs, single `today`, and the 6 dead kwargs grep): **ACCEPT, 0 REVERT-OVERREACH, 0 REFINE** (the `_ResultsError`/`_StrategyResults`/3-tuple choices each upheld after arguing both simpler? and right-abstraction?). The lone MED finding -- a PRE-EXISTING route-level test gap on the reachable compute-error funnel (a duplicate/incomplete `custom_order` the route does not dedupe -> the service `ValueError` -> the banner) + the custom-vs-avalanche selection -- was closed in a separate test commit (`9efb7b4`, +3 route tests: duplicate + incomplete custom_order render the message at 200, and a custom order opposite of avalanche's rate-order drives the chart; the baseline/avalanche/snowball except is route-unreachable -- schema bounds extra/strategy, zero-payment loans are skipped -- so NOT mocked, rule 13). file 10.00/10, 0 smell messages; 0 disables added (86); 0 new R0801; useless-suppression 0; E/F 0. Score 9.90 held; visible 142->139; smell items 47->44 (36 8-symbol + 8 instance-attr). 37 debt_strategy route + 15 C-27 sweep targeted + **full suite 5766 passed.** | 9.90/10 | 139 |
+| 2026-06-06 | `bf111f0` | 3 | **investment_projection.py (+ projection_inputs.py wrapper) -- drop dead account_id + decompose calculate_investment_inputs (developer-chosen documented disable for the residual args) -- both files DONE:** all design smells on the coupled `calculate_investment_inputs` (tm-args/pos/locals) + its pure pass-through wrapper `build_investment_projection_inputs` (tm-args/pos) resolved (behavior bit-identical). The dead `account_id` param -- forwarded by the wrapper, never read by the callee -- removed at root from both signatures + all 5 production call sites (investment/retirement/savings dashboards, year_end `_savings`/`_balances`) + 18 test calls (clears `unused-argument`; the `salary_profiles`/`planned_retirement_date` dead-param precedent). `calculate_investment_inputs`'s 5 steps decomposed into `_periodic_from_deductions` / `_average_transfer_contribution` / `_employer_params` / `_ytd_contributions` (orchestrator ~2 locals, clears tm-locals). The residual **6 independent, heterogeneous inputs** (1 over max after the dead-param drop; verified against ALL 5 consumers that `all_periods`/`current_period` are sourced/varied independently, so no cohesive sub-bundle exists and a param object would be stamp coupling) take a documented scoped+named+commented `too-many-arguments,too-many-positional-arguments` disable on BOTH public functions, mirroring the sibling `growth_engine.project_balance`. The wrapper stays the "single splat home" (the `salary_gross_biweekly=salary_gross_biweekly,)` canary at :236 remains the only matching site). Overlapping Phase-4 residue cleared in the same lines: missing `salary_gross_biweekly` param-doc, 3 long `employer_params` lines wrapped, stale "Lazy import" comment removed. Two guard-clause rewrites verified equivalent: the employer-type build condition (De Morgan) and `if current_period:` -> `if current_period is None:` (PayPeriod has no `__bool__`; also aligns with the `is None` coding standard). Independent quality-pass review (fresh subagent, A-G rubric, all 5 steps verified line-for-line): **ACCEPT, 0 REVERT-OVERREACH, 0 REFINE**; lone watch-item a PRE-EXISTING, untouched negative-deduction `# BUG` test comment -> reported as P-3 (financial-policy, rule 3). Both files 10.00/10, 0 smell messages; +2 documented disables (86->88); 0 new R0801; useless-suppression 0; E/F 0. Score 9.90->9.91; visible 139->129; smell items 44->39 (31 8-symbol + 8 instance-attr). 39 targeted (investment_projection + projection_inputs) + 375 consumer (retirement/savings/year_end/income services + investment/retirement/savings routes) + **full suite 5769 passed.** | 9.91/10 | 129 |
