@@ -115,19 +115,19 @@ Order = correctness blast-radius x refactor aggressiveness. Financial core first
 | # | File / package | Cleanup commit(s) | Review status |
 |---|---|---|---|
 | 1 | `services/paycheck_calculator.py` | `15bcfd1` | **DONE** -- reviewed + refined (honesty-first bundle ruling applied) |
-| 2 | `services/amortization_engine.py` | `0e8b986` `c4f01e6` `7cc8fe1` | - |
-| 3 | `services/debt_strategy_service.py` | `a1d076e` | - |
-| 4 | `services/retirement_dashboard_service.py` | `ce65229` | - |
-| 5 | `services/investment_dashboard_service.py` | `e3dbea7` | - |
-| 6 | `services/savings_dashboard_service/` (pkg) | `d05758b` `0ec5586` | - |
-| 7 | `services/year_end_summary_service/` (pkg) | `5eeb020` `b96b8b8` | - |
-| 8 | `routes/loan/` (pkg) | `e8b910b` `f07fb1c` | - |
-| 9 | `routes/transfers/` (pkg) | `21f2a31` `c4e9015` | - |
-| 10 | `routes/transactions/` (pkg) | `41cab0e` `27e99f2` | - |
-| 11 | `routes/salary/` (pkg) | `4d7d7c1` `e834635` `131d648` | - |
-| 12 | `routes/grid.py` | `86541bb` | - |
-| 13 | `routes/_recurrence_form_helpers.py` + `_commit_helpers.py` | `8e01099` | - |
-| 14 | `routes/_transfer_creation_helpers.py` | `59ba11a` | - |
+| 2 | `services/amortization_engine.py` | `0e8b986` `c4f01e6` `7cc8fe1` | REVIEWED -- **clean** (7 ACCEPT; the bundle exemplar) |
+| 3 | `services/debt_strategy_service.py` | `a1d076e` | REVIEWED -- **clean** (6 ACCEPT, 1 LOW) |
+| 4 | `services/retirement_dashboard_service.py` | `ce65229` | REVIEWED (M2: type-precision, test-gap) |
+| 5 | `services/investment_dashboard_service.py` | `e3dbea7` | REVIEWED (M4: type-precision, bundle-caveat, test-gap) |
+| 6 | `services/savings_dashboard_service/` (pkg) | `d05758b` `0ec5586` | REVIEWED (M2: untyped `params` bag, built-then-patched) |
+| 7 | `services/year_end_summary_service/` (pkg) | `5eeb020` `b96b8b8` | REVIEWED (M2: `_ProjectionInputs` superset, None-as-mode) |
+| 8 | `routes/loan/` (pkg) | `e8b910b` `f07fb1c` | REVIEWED (M4: tuple-narrow, dup resolve, untyped dict, dup render) |
+| 9 | `routes/transfers/` (pkg) | `21f2a31` `c4e9015` | REVIEWED -- **clean** (3 ACCEPT, 1 LOW) |
+| 10 | `routes/transactions/` (pkg) | `41cab0e` `27e99f2` | REVIEWED (M2: `_RenderTarget` unpacked, FK-keyed-by-class) |
+| 11 | `routes/salary/` (pkg) | `4d7d7c1` `e834635` `131d648` | REVIEWED (M2: stale `_bp` docstring, 8 line-too-long) + found out-of-scope 500 |
+| 12 | `routes/grid.py` | `86541bb` | REVIEWED (M1: dead `txn_by_period` field canonized) |
+| 13 | `routes/_recurrence_form_helpers.py` + `_commit_helpers.py` | `8e01099` | REVIEWED (M2: docstring honesty, test-gap) |
+| 14 | `routes/_transfer_creation_helpers.py` | `59ba11a` | REVIEWED (M1: inactive-source test-gap) |
 
 ## Fold into Phase 3 going forward
 
@@ -149,3 +149,34 @@ One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:l
 | `paycheck_calculator.py` | A1/A2/F9 | Output sections `PeriodInfo`/`Earnings`/`TaxLines`/`DeductionBreakdown` (82-157) name real concepts, read as cohesive groups by every consumer, totals on the owning section | ACCEPT | Strongest part of the refactor -- this is the model the input contexts should have aspired to |
 | `paycheck_calculator.py` | A4/C1 | `_residue_cents` (516) + `_compute_deductions` (285) are single-site but genuinely clarify (isolate audited arithmetic / co-locate pre+post pairing) | ACCEPT | -- |
 | `paycheck_calculator.py` | E2/G1/G3/G4 | Net-pay sum is Decimal-exact-equivalent; high-risk edges (full-year reconciliation, FICA cap crossing, calibration/bracket agreement, partial-context fallback, determinism) pinned with hand-computed values, public-API tests dominate | ACCEPT | Behavior preserved; suite is strong enough to keep refactoring safely |
+
+## Sweep results (files 2-14, run `wvq2yd9aa`, 2026-06-05)
+
+13 independent reviewers. **1 HIGH (out of scope), 22 MEDIUM, 51 LOW; 37 ACCEPT, 37 REFINE, 0
+REVERT-OVERREACH.** Key signal: **zero REVERT-OVERREACH** across all 13 -- the other files used their
+bundles cohesively; `_PaycheckContext` was the outlier. `amortization_engine`, `debt_strategy_service`,
+and `transfers/` came back essentially clean (the bundle exemplars). Each finding below is a reviewer
+recommendation to **verify-then-apply** (confirm the claim against the code first, as done for the HIGH).
+
+### HIGH -- out of scope (latent production 500; needs a decision)
+
+- **`app/templates/investment/dashboard.html:109`** calls `url_for('salary.salary_listing')`; no such
+  endpoint exists (it is `salary.list_profiles`). werkzeug BuildError (500) on the no-deduction-linked
+  `{% else %}` branch. Introduced by `b994539` (unrelated to the cleanup); not caught by tests (that
+  account/profile combination is unhit). **VERIFIED.** One-line fix; out of scope for this pass.
+
+### Proposed fix-batches (the 22 MEDIUM; financial-core first)
+
+| Batch | Findings | Verdict | Gist |
+|---|---|---|---|
+| B1 type-precision (D2) | retirement F2, investment F3, savings F1 | REFINE | bare `list`/`dict` -> precise element types; savings: promote the `params` grab-bag dict to a typed frozen `_AccountParams` |
+| B2 year_end | year_end F1, F2 | REFINE | tighten `_ProjectionInputs` (forwarded-superset, read-subset) toward a cohesive `_InvestmentProjectionInputs` + plain args; replace `_get_account_balance_map(inputs=None)` mode-flag with an explicit base-only path |
+| B3 loan | loan F1, F2, F3, F4 | REFINE | narrow `_resolve_loan_state` 3-tuple -> `LoanState` (callers discard 2); extract the duplicated 4-step resolve core; return a typed `_RouteLoanContext` instead of an untyped dict; extract `_render_rate_history` (dup query+render) |
+| B4 transactions | transactions F1, F2 | REFINE | make the `_RenderTarget` sinks take the bundle (stop unpacking at call sites -- same asymmetry as `_bracket_federal`); re-key `_resolve_owned_fks` off model-class (silent-overwrite trap if two FKs share a model) |
+| B5 grid | grid F1 | REFINE | remove the dead `_GridRowData.txn_by_period` field (computed + forwarded but no template reads it; cleanup canonized dead weight) -> 5-field contract |
+| B6 docs-only | salary F1, recurrence F1, investment F1/F2 | REFINE/ACCEPT | fix `salary/_bp.py` docstring (`raises`/`deductions` -> `items`); rename `RecurrenceFormContext` doc to "processing-options param object" (keep bundle); note investment `_ProjectionContext` dual limit source (keep) |
+| B7 test-gaps (G) | retirement F1, investment F7, recurrence F2, transfer-creation F1 | REFINE | add hand-computed/value-pinning tests: gap-net-biweekly scaling; zero-annual-limit branches; update/resolve "no auto-offset" invariant; "inactive source account" money-routing guard |
+| B8 lint-floor (Phase 4) | salary F2 | REFINE | 8 `line-too-long` in `salary/` (copied through the split); wrap -- belongs to Phase 4 mechanical sweep |
+
+Full per-finding detail (LOWs + ACCEPT rationales) in run `wvq2yd9aa` output. LOWs are predominantly
+ACCEPTs validating good design, plus minor nits foldable into the batches above.
