@@ -134,6 +134,7 @@ Order = correctness blast-radius x refactor aggressiveness. Financial core first
 | 16 | `services/growth_engine.py` | `dcf0d4e` | REVIEWED -- **ACCEPT** (behavior-equivalence verified line-for-line; both documented disables upheld, 0 REVERT-OVERREACH; 2 LOW REFINE applied -- type-precision + degenerate-period test) |
 | 17 | `services/loan_resolver/` (pkg) | `41f42a8` | REVIEWED -- **ACCEPT** (all 6 behavior-equivalence points verified line-for-line; `LoanInputs` bundle + `_replay_from_anchor` sharing + `_ProjectionPrep` + `PayoffScenarios` disable all upheld; 0 REVERT-OVERREACH, 0 REFINE; F8 the lone LOW note, backstopped, no change) |
 | 18 | `services/retirement_gap_calculator.py` | `2b0f5ca` | REVIEWED -- **ACCEPT** (all 4 behavior-equivalence points verified line-for-line incl. whole-expression quantize order; dead `planned_retirement_date` removal grep-confirmed write-only; `too-many-instance-attributes` disable upheld; 0 REVERT-OVERREACH, 0 REFINE; lone LOW note on single-use `_sum_projected_balances`, accepted) |
+| 19 | `routes/debt_strategy.py` (route) | `8449f21` (+ test `9efb7b4`) | REVIEWED -- **ACCEPT** (all 9 behavior-equivalence points verified line-for-line; `_ResultsError` funnel + `_StrategyResults` bundle + 3-tuple asymmetry all upheld after arguing both directions; 6 dead render kwargs grep-confirmed; 0 REVERT-OVERREACH, 0 REFINE; lone MED was a pre-existing route-level test gap on the reachable compute-error funnel + custom selection -- closed in `9efb7b4`, +3 tests) |
 
 ## Fold into Phase 3 going forward
 
@@ -198,6 +199,25 @@ inlining the sum alone leaves exactly 15 locals, which passes -- so the helper i
 orchestrator-altitude cohesion, not threshold-necessity. No code change beyond the mechanical commit. See
 the register rows below.
 
+**Fifth going-forward file: `routes/debt_strategy.py` (`8449f21`, 2026-06-06).** The mechanical commit
+cleared all 3 design smells on the `calculate` route handler (tm-locals 17/15, tm-return 7/6,
+tm-branches) by genuine decomposition. The design fork was tm-return: the 5 duplicated `_results.html`
+error renders were collapsed through a new private `_ResultsError(Exception)` + one try/except (the
+developer chose this over a no-exception merge or a documented disable), the IDOR 404 left as a direct
+return outside the funnel. The independent reviewer (fresh subagent, A-G rubric) argued BOTH "simpler?"
+(is the exception a count-dodge? is the `_StrategyResults` bundle gold-plating? is the 3-tuple return
+inconsistent?) and "right abstraction?" -- and upheld all three: the exception expresses the genuine
+single-error-contract DRY win (5 identical renders -> 1), the bundle is a cohesive named result read at
+two sites (vs a 4-tuple unpacked positionally), and the 3-tuple is the honest choice for heterogeneous
+inputs unpacked once at the single call site (a bundle there would be the count-dodging bag the
+anti-pattern warns against). All 9 behavior-equivalence points verified line-for-line, returning
+**ACCEPT, 0 REVERT-OVERREACH, 0 REFINE**. The lone MED finding -- a PRE-EXISTING route-level test gap
+(no test pinned the reachable compute-error funnel via a duplicate/incomplete `custom_order`, nor that
+`_select_result` returns the custom run) -- was closed in a SEPARATE test-hardening commit (`9efb7b4`,
++3 route tests), per the developer's choice and the reviewer's advice not to widen the refactor commit;
+the route-unreachable baseline/avalanche/snowball except was deliberately NOT mocked (rule 13). See the
+register rows below.
+
 ## Register (findings + verdicts)
 
 One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:line`.
@@ -234,6 +254,11 @@ One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:l
 | `retirement_gap_calculator.py` (`2b0f5ca`) | A4 | `_sum_projected_balances` (`50-63`) -- branchless 3-line sum whose name restates `sum`; borderline "relocates code" | ACCEPT (LOW, no change) | Kept for orchestrator-altitude symmetry with `_after_tax_projected_savings` (calculate_gap reads as a uniform Step 1-6 delegation; inlining one raw accumulator amid delegating steps reads worse). NOTE: the reviewer's "reverting re-trips too-many-locals" rationale was verified WRONG -- inlining the sum alone leaves exactly 15 locals (passes); the helper is a cohesion choice, not threshold-necessary |
 | `retirement_gap_calculator.py` (`2b0f5ca`) | A1/A3/F3 | `RetirementGapAnalysis` `too-many-instance-attributes` disable (10/7) -- restructure into nested sections (PaycheckBreakdown style) instead? | ACCEPT | Documented disable correct: `_gap_analysis.html` renders all 10 as a flat row-per-field table with pre-tax/after-tax counterparts side-by-side and NO sub-totals (unlike `PaycheckBreakdown`'s `taxes.total`/`deductions.total_pre_tax`), so nesting would fragment one concept for zero gain. Matches the ratified `AmortizationRow`/`PayoffRequest`/`ProjectedBalance` precedent; symbol-named + why-commented |
 | `test_retirement_gap_calculator.py` (`2b0f5ca`) | G1/G3/G4 + rule-5 | Deleted `test_planned_retirement_date_passed_through`; updated `test_result_field_completeness` 11->10 fields | ACCEPT | Deletion is the sanctioned rule-5 exception (it asserted a field that no longer exists -- removed behavior, not a test edited to pass); the field-contract guard lives in `test_result_field_completeness`, which is updated to the 10-field set, so contract coverage is preserved. Section-E edges (zero/negative SWR, 0/100/negative tax, negative pay, empty/all-zero accounts, large values) all still pinned with hand-computed values |
+| `debt_strategy.py` (`8449f21`) | A3/B1/F1 | `_ResultsError` (61-72) + the single `except` (343-344) -- is the internal exception a count-dodge to drop tm-return 7->3, or a genuine concept? | ACCEPT | Survives the over-engineering challenge: the endpoint has ONE error contract (render `_results.html` with a message at HTTP 200), previously duplicated across 5 separate early-return renders -- the funnel is the DRY collapse the count drop is a symptom of, not the goal. Carries exactly the user message (`str(exc)`), mirrors the already-caught Marshmallow `ValidationError` / Flask `abort()` idiom. A new failure mode is one `raise`; the IDOR 404 correctly stays OUTSIDE the funnel (different HTTP contract) |
+| `debt_strategy.py` (`8449f21`) | A1/A2 | `_StrategyResults` (75-94) -- bare 4-tuple or named bundle? | ACCEPT | Named bundle correct: the four results are read by NAME at two sites (`_build_comparison` reads all four, `_select_result` reads three), so a positional 4-tuple would be the readability loss `feedback_tm_args_param_object` warns against. They are one cohesive "the simulations for this request" value (not stamp coupling); `frozen=True`; precise `StrategyResult \| None` hints; matches the `PayoffScenarios`/`AmortizationRow` precedent. A 5th scenario slots in as one field + one `_select_result` branch |
+| `debt_strategy.py` (`8449f21`) | A1/A4 | `_parse_calculate_form` returns a bare 3-tuple while `_compute_strategies` returns a bundle -- inconsistent? | ACCEPT (lean REFINE, not worth churn) | The 3-tuple is unpacked at EXACTLY ONE site, immediately, into named locals; the three values are heterogeneous raw inputs (a Decimal, a strategy string, an optional ID list) that fan out, not a cohesive named concept -- bundling them would be the count-dodging bag the anti-pattern warns against. The asymmetry is intentional and honest (inputs fan out -> tuple; results travel together -> bundle) |
+| `debt_strategy.py` (`8449f21`) | E1/F1 | 6 render kwargs removed (baseline/avalanche/snowball/custom_result/extra_monthly/debt_accounts) -- correctness risk if any is actually read? | ACCEPT | VERIFIED by independent grep of `_results.html`: those names appear ONLY as `comparison.*` sub-keys or loop-literal strings (`['avalanche','snowball']`, `selected_strategy == 'avalanche'`) -- never as top-level reads; the template is not `{% include %}`/`{% import %}`d elsewhere. All six were dead render context; removal is correct, output byte-identical (tests assert on HTML and pass) |
+| `test_debt_strategy.py` (`9efb7b4`) | G3 | Pre-existing gap: no route test pinned the reachable compute-error funnel (duplicate/incomplete `custom_order`) nor that `_select_result` returns the custom run | REFINE (separate commit `9efb7b4`) | +3 route tests: `test_duplicate_custom_order_renders_error_banner` + `test_incomplete_custom_order_renders_error_banner` (each asserts the specific service message at HTTP 200, not a 500), `test_custom_selection_drives_chart_order` (avalanche leads with the higher-rate debt; a custom order opposite of that puts the other debt first -- a real discriminator for selection). The baseline/avalanche/snowball except is route-unreachable (schema bounds extra/strategy; zero-payment loans skipped) so NOT tested via mocking (rule 13, no tests for impossible scenarios) |
 
 ## Sweep results (files 2-14, run `wvq2yd9aa`, 2026-06-05)
 
