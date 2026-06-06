@@ -85,8 +85,10 @@ def _generate_debt_schedules(
             .all()
         )
         state = loan_resolver.resolve_loan(
-            params, anchor_events, ctx.payments,
-            ctx.rate_changes, today,
+            loan_resolver.LoanInputs(
+                params, anchor_events, ctx.payments, ctx.rate_changes,
+            ),
+            today,
         )
         schedules[account.id] = state.schedule
 

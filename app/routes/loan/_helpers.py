@@ -188,7 +188,10 @@ def _resolve(account, params) -> tuple[LoanState, LoanContext]:
     ctx = load_loan_context(account.id, scenario_id, params)
     anchor_events = _load_anchor_events(account.id)
     state = loan_resolver.resolve_loan(
-        params, anchor_events, ctx.payments, ctx.rate_changes, date.today(),
+        loan_resolver.LoanInputs(
+            params, anchor_events, ctx.payments, ctx.rate_changes,
+        ),
+        date.today(),
     )
     return state, ctx
 

@@ -166,7 +166,13 @@ def test_no_display_read_of_current_principal():
         # reads ``state.current_balance`` / ``ad["current_balance"]``,
         # never the demoted column.
         "services/savings_dashboard_service/",  # comments only
-        "services/loan_resolver.py:",
+        # ``loan_resolver`` became a package in the Phase-3 pylint-cleanup
+        # split; the directory prefix matches every sub-module.  The
+        # ``.current_principal`` hits are prose only (the package docstring
+        # in ``__init__.py`` and the ``LoanState`` docstring in
+        # ``_state.py`` naming the demoted column); the resolver reads
+        # ``state.current_balance``, never the column.
+        "services/loan_resolver/",  # comments only
         # PayoffRequest parameter-object field (F-28): the pure-function
         # amortization engine has no DB access and imports no model, so
         # ``request.current_principal`` reads the resolver-derived

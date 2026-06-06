@@ -128,8 +128,10 @@ def _load_debt_accounts(user_id):
         )
         ctx = load_loan_context(account.id, scenario_id, params)
         state = loan_resolver.resolve_loan(
-            params, anchor_events, ctx.payments,
-            ctx.rate_changes, today,
+            loan_resolver.LoanInputs(
+                params, anchor_events, ctx.payments, ctx.rate_changes,
+            ),
+            today,
         )
 
         # Skip debts with zero principal or zero payment (fully paid

@@ -282,8 +282,11 @@ def _resolve_balance(
         account_id, scenario_id, loan_params,
     )
     state = loan_resolver.resolve_loan(
-        loan_params, anchor_events, context.payments,
-        context.rate_changes, as_of,
+        loan_resolver.LoanInputs(
+            loan_params, anchor_events, context.payments,
+            context.rate_changes,
+        ),
+        as_of,
     )
     return state.current_balance
 

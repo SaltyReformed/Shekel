@@ -16,6 +16,7 @@ future reader can verify the assertion by hand.
 
 import inspect
 import io
+import pathlib
 import tokenize
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -29,11 +30,28 @@ from app.services.amortization_engine import (
     RateChangeRecord,
 )
 from app.services.loan_resolver import (
+    LoanInputs,
     LoanState,
     PayoffScenarios,
     compute_payoff_scenarios,
     resolve_loan,
 )
+
+
+def _loan_resolver_package_source() -> str:
+    """Concatenated source of every module in the ``loan_resolver`` package.
+
+    The E-18 resolver was split into the ``app/services/loan_resolver/``
+    package (Phase-3 pylint cleanup), so ``inspect.getsource(loan_resolver)``
+    now returns only ``__init__.py``.  The purity / rounding / no-engine
+    source guards must scan every sub-module where the resolver's code
+    actually lives, so they read the package directory directly.
+    """
+    package_dir = pathlib.Path(loan_resolver.__file__).parent
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(package_dir.glob("*.py"))
+    )
 
 
 # -- Duck-typed fixtures ----------------------------------------------------
@@ -149,7 +167,7 @@ def test_arm_payment_constant_in_fixed_window():
     for month_offset in range(60):
         as_of = _add_months(params.origination_date, month_offset)
         state = resolve_loan(
-            params, [anchor], None, None, as_of,
+            LoanInputs(params, [anchor], None, None), as_of,
         )
         payments_observed.add(state.monthly_payment)
 
@@ -174,11 +192,11 @@ def test_arm_no_creep_month_24_vs_25():
     anchor = _origination_anchor(params)
 
     state_24 = resolve_loan(
-        params, [anchor], None, None,
+        LoanInputs(params, [anchor], None, None),
         _add_months(params.origination_date, 24),
     )
     state_25 = resolve_loan(
-        params, [anchor], None, None,
+        LoanInputs(params, [anchor], None, None),
         _add_months(params.origination_date, 25),
     )
 
@@ -235,7 +253,7 @@ def test_confirmed_payment_reduces_balance():
     )
 
     state = resolve_loan(
-        params, [anchor], [payment], None, date(2026, 3, 1),
+        LoanInputs(params, [anchor], [payment], None), date(2026, 3, 1),
     )
 
     assert state.current_balance == Decimal("299701.35")
@@ -266,7 +284,7 @@ def test_projected_payment_not_replayed():
     )
 
     state = resolve_loan(
-        params, [anchor], [projected], None, date(2026, 3, 1),
+        LoanInputs(params, [anchor], [projected], None), date(2026, 3, 1),
     )
 
     # No confirmed payments; balance equals the anchor balance
@@ -307,7 +325,7 @@ def test_fixed_rate_replays_from_origination_anchor():
     ]
 
     state = resolve_loan(
-        params, [anchor], payments, None, date(2026, 5, 1),
+        LoanInputs(params, [anchor], payments, None), date(2026, 5, 1),
     )
 
     assert state.current_balance == Decimal("299099.57")
@@ -364,10 +382,12 @@ def test_anchor_trueup_resets_replay():
     ]
 
     state = resolve_loan(
-        params,
-        [origination_anchor, trueup_anchor],
-        payments,
-        None,
+        LoanInputs(
+            params,
+            [origination_anchor, trueup_anchor],
+            payments,
+            None,
+        ),
         date(2026, 6, 1),
     )
 
@@ -425,10 +445,12 @@ def test_payment_due_after_trueup_replays_though_pay_period_started_before():
     ]
 
     state = resolve_loan(
-        params,
-        [origination_anchor, trueup_anchor],
-        payments,
-        None,
+        LoanInputs(
+            params,
+            [origination_anchor, trueup_anchor],
+            payments,
+            None,
+        ),
         date(2026, 6, 2),
     )
 
@@ -471,10 +493,10 @@ def test_rate_change_after_window_applied():
     ]
 
     state_feb = resolve_loan(
-        params, [anchor], None, rate_changes, date(2031, 2, 1),
+        LoanInputs(params, [anchor], None, rate_changes), date(2031, 2, 1),
     )
     state_later = resolve_loan(
-        params, [anchor], None, rate_changes, date(2033, 6, 1),
+        LoanInputs(params, [anchor], None, rate_changes), date(2033, 6, 1),
     )
 
     # Period recast of the reduced month-60 balance at 7% (NOT the old
@@ -502,7 +524,7 @@ def test_resolver_is_pure_no_flask_no_db():
     legitimate prose explaining why the resolver avoids them) do
     not trip the guard.  Only executable code is inspected.
     """
-    source = inspect.getsource(loan_resolver)
+    source = _loan_resolver_package_source()
     code_tokens = []
     for tok in tokenize.generate_tokens(io.StringIO(source).readline):
         # Exclude string literals (including docstrings) and comments;
@@ -526,7 +548,7 @@ def test_resolver_is_pure_no_flask_no_db():
     )
     for marker in forbidden:
         assert marker not in code_only, (
-            f"loan_resolver.py contains forbidden marker "
+            f"the loan_resolver package contains forbidden marker "
             f"{marker!r} in executable code; the resolver "
             f"must remain pure."
         )
@@ -546,13 +568,13 @@ def test_resolver_rounds_via_round_money_only():
     half-cent boundaries.  ``round_money`` is the only boundary
     rounding called from this module.
     """
-    source = inspect.getsource(loan_resolver)
+    source = _loan_resolver_package_source()
     assert ".quantize(" not in source, (
-        "loan_resolver.py reached .quantize directly; route through "
-        "app.utils.money.round_money instead (E-26 boundary rule)."
+        "the loan_resolver package reached .quantize directly; route "
+        "through app.utils.money.round_money instead (E-26 boundary rule)."
     )
     assert "round_money(" in source, (
-        "loan_resolver.py must import and use round_money."
+        "the loan_resolver package must import and use round_money."
     )
 
 
@@ -580,7 +602,7 @@ def test_zero_rate_loan_payment_is_principal_over_n():
     anchor = _origination_anchor(params)
 
     state = resolve_loan(
-        params, [anchor], None, None, date(2026, 2, 1),
+        LoanInputs(params, [anchor], None, None), date(2026, 2, 1),
     )
 
     assert state.monthly_payment == Decimal("1000.00")
@@ -652,7 +674,7 @@ def test_payoff_date_and_total_interest():
     anchor = _origination_anchor(params)
 
     state = resolve_loan(
-        params, [anchor], None, None, date(2026, 2, 1),
+        LoanInputs(params, [anchor], None, None), date(2026, 2, 1),
     )
 
     assert state.payoff_date == date(2027, 1, 1)
@@ -676,7 +698,7 @@ def test_empty_anchor_events_raises_value_error():
     """
     params = _arm_400k_params()
     with pytest.raises(ValueError, match="at least one LoanAnchorEvent"):
-        resolve_loan(params, [], None, None, date(2026, 6, 1))
+        resolve_loan(LoanInputs(params, [], None, None), date(2026, 6, 1))
 
 
 def test_latest_anchor_breaks_tie_by_created_at():
@@ -707,7 +729,7 @@ def test_latest_anchor_breaks_tie_by_created_at():
     )
 
     state = resolve_loan(
-        params, [earlier, later], None, None, date(2026, 7, 1),
+        LoanInputs(params, [earlier, later], None, None), date(2026, 7, 1),
     )
 
     # Latest anchor's balance is returned (no confirmed payments
@@ -726,7 +748,7 @@ def test_loan_state_is_frozen():
     params = _arm_400k_params()
     anchor = _origination_anchor(params)
     state = resolve_loan(
-        params, [anchor], None, None, date(2026, 6, 1),
+        LoanInputs(params, [anchor], None, None), date(2026, 6, 1),
     )
 
     with pytest.raises(AttributeError):
@@ -761,17 +783,15 @@ def test_arm_trueup_does_not_change_payment():
 
     # Resolve at two as_of dates past the trueup.
     state_a = resolve_loan(
-        params,
-        [origination_anchor, trueup_anchor],
-        None,
-        None,
+        LoanInputs(
+            params, [origination_anchor, trueup_anchor], None, None,
+        ),
         date(2028, 6, 1),
     )
     state_b = resolve_loan(
-        params,
-        [origination_anchor, trueup_anchor],
-        None,
-        None,
+        LoanInputs(
+            params, [origination_anchor, trueup_anchor], None, None,
+        ),
         date(2030, 6, 1),
     )
 
@@ -819,17 +839,17 @@ def test_arm_second_period_uses_recorded_recast_held_constant():
     # Two as_of dates inside the second period -> the recorded recast,
     # held constant (no month-to-month re-amortization).
     state_early = resolve_loan(
-        params, [anchor], None, rate_changes, date(2032, 6, 1),
+        LoanInputs(params, [anchor], None, rate_changes), date(2032, 6, 1),
     )
     state_late = resolve_loan(
-        params, [anchor], None, rate_changes, date(2035, 6, 1),
+        LoanInputs(params, [anchor], None, rate_changes), date(2035, 6, 1),
     )
     assert state_early.monthly_payment == Decimal("2500.00")
     assert state_early.monthly_payment == state_late.monthly_payment
 
     # The origination period is unaffected: still the contractual P&I.
     state_p0 = resolve_loan(
-        params, [anchor], None, rate_changes, date(2028, 1, 1),
+        LoanInputs(params, [anchor], None, rate_changes), date(2028, 1, 1),
     )
     assert state_p0.monthly_payment == Decimal("2398.20")
 
@@ -854,10 +874,10 @@ def test_no_generate_schedule_in_resolver():
     in any form would surface here loud before reaching any
     downstream consumer.
     """
-    source = inspect.getsource(loan_resolver)
+    source = _loan_resolver_package_source()
     assert "generate_schedule" not in source, (
-        "loan_resolver.py references generate_schedule; the resolver "
-        "must route schedule generation through "
+        "the loan_resolver package references generate_schedule; the "
+        "resolver must route schedule generation through "
         "compute_payoff_scenarios (Phase 6 / Commit 6 of the "
         "amortization-engine split)."
     )
@@ -897,7 +917,7 @@ def test_history_rows_marked_confirmed():
     ]
 
     state = resolve_loan(
-        params, [anchor], payments, None, date(2026, 5, 1),
+        LoanInputs(params, [anchor], payments, None), date(2026, 5, 1),
     )
 
     # First three rows are the replayed confirmed payments.
@@ -939,7 +959,7 @@ def test_forward_rows_marked_unconfirmed():
     ]
 
     state = resolve_loan(
-        params, [anchor], payments, None, date(2026, 5, 1),
+        LoanInputs(params, [anchor], payments, None), date(2026, 5, 1),
     )
 
     # All rows past the three history rows are forward projections.
@@ -1031,10 +1051,12 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=_four_contractual_payments_jan_to_apr_2026(),
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=_four_contractual_payments_jan_to_apr_2026(),
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("0.00"),
             as_of=self.AS_OF,
         )
@@ -1062,10 +1084,12 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=_four_contractual_payments_jan_to_apr_2026(),
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=_four_contractual_payments_jan_to_apr_2026(),
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1098,10 +1122,12 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=_four_contractual_payments_jan_to_apr_2026(),
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=_four_contractual_payments_jan_to_apr_2026(),
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1144,10 +1170,12 @@ class TestComputePayoffScenarios:
             PaymentRecord(date(2026, 6, 18), Decimal("1798.65"), False),
         ]
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=anchors,
-            payments=payments,
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=anchors,
+                payments=payments,
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("0.00"),
             as_of=date(2026, 6, 2),
         )
@@ -1173,10 +1201,12 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=_four_contractual_payments_jan_to_apr_2026(),
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=_four_contractual_payments_jan_to_apr_2026(),
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1205,10 +1235,12 @@ class TestComputePayoffScenarios:
             PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=payments,
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=payments,
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1235,10 +1267,12 @@ class TestComputePayoffScenarios:
             PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=payments,
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=payments,
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("0.00"),
             as_of=self.AS_OF,
         )
@@ -1270,10 +1304,12 @@ class TestComputePayoffScenarios:
             PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=payments,
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=payments,
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1320,10 +1356,12 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=_four_contractual_payments_jan_to_apr_2026(),
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=_four_contractual_payments_jan_to_apr_2026(),
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1353,10 +1391,12 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=_four_contractual_payments_jan_to_apr_2026(),
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=_four_contractual_payments_jan_to_apr_2026(),
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1404,10 +1444,12 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=_four_contractual_payments_jan_to_apr_2026(),
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=_four_contractual_payments_jan_to_apr_2026(),
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1474,10 +1516,12 @@ class TestComputePayoffScenarios:
             anchor = _origination_anchor(params)
             payments = _four_contractual_payments_jan_to_apr_2026()
             scenarios = compute_payoff_scenarios(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=payments,
-                rate_changes=None,
+                loan_inputs=LoanInputs(
+                    loan_params=params,
+                    anchor_events=[anchor],
+                    payments=payments,
+                    rate_changes=None,
+                ),
                 extra_monthly=Decimal("500.00"),
                 as_of=self.AS_OF,
             )
@@ -1536,10 +1580,12 @@ class TestComputePayoffScenarios:
             PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=payments,
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=payments,
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
@@ -1617,10 +1663,12 @@ class TestComputePayoffScenarios:
             PaymentRecord(date(2026, 2, 1), Decimal("2398.20"), True),
         ]
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor_origin, anchor_trueup],
-            payments=payments,
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor_origin, anchor_trueup],
+                payments=payments,
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("0.00"),
             as_of=date(2026, 3, 1),
         )
@@ -1673,10 +1721,12 @@ class TestComputePayoffScenarios:
             PaymentRecord(date(2026, 8, 1), Decimal("2500.00"), True),
         ]
         scenarios = compute_payoff_scenarios(
-            loan_params=params,
-            anchor_events=[anchor],
-            payments=payments,
-            rate_changes=None,
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=payments,
+                rate_changes=None,
+            ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )

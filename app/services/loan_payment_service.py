@@ -559,8 +559,10 @@ def live_loan_transfer_amounts(
         if not anchor_events:
             continue
         state = loan_resolver.resolve_loan(
-            params, anchor_events, context.payments,
-            context.rate_changes, today,
+            loan_resolver.LoanInputs(
+                params, anchor_events, context.payments, context.rate_changes,
+            ),
+            today,
         )
         piti_by_loan[loan_account_id] = (
             state.monthly_payment + context.monthly_escrow

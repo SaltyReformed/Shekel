@@ -178,8 +178,10 @@ def _loan_ever_paid_off(acct_loan_params, anchor_events, loan_ctx):
     if not has_confirmed:
         return False
     ever_state = loan_resolver.resolve_loan(
-        acct_loan_params, anchor_events,
-        loan_ctx.payments, loan_ctx.rate_changes,
+        loan_resolver.LoanInputs(
+            acct_loan_params, anchor_events,
+            loan_ctx.payments, loan_ctx.rate_changes,
+        ),
         date.max,
     )
     return ever_state.current_balance == Decimal("0.00")
@@ -213,8 +215,11 @@ def _compute_loan_account(acct, acct_loan_params, scenario_id, all_periods):
     )
     today = date.today()
     state = loan_resolver.resolve_loan(
-        acct_loan_params, anchor_events, loan_ctx.payments,
-        loan_ctx.rate_changes, today,
+        loan_resolver.LoanInputs(
+            acct_loan_params, anchor_events,
+            loan_ctx.payments, loan_ctx.rate_changes,
+        ),
+        today,
     )
     projected = _loan_projected_horizons(
         state.schedule, all_periods,

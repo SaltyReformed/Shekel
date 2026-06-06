@@ -321,13 +321,15 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
         )
 
         resolver_state = loan_resolver.resolve_loan(
-            loan_params,
-            db.session.query(LoanAnchorEvent)
-                .filter_by(account_id=account.id).all(),
-            loan_payment_service.load_loan_context(
-                account.id, seed_user["scenario"].id, loan_params,
-            ).payments,
-            None,
+            loan_resolver.LoanInputs(
+                loan_params,
+                db.session.query(LoanAnchorEvent)
+                    .filter_by(account_id=account.id).all(),
+                loan_payment_service.load_loan_context(
+                    account.id, seed_user["scenario"].id, loan_params,
+                ).payments,
+                None,
+            ),
             date.today(),
         )
         assert resolver_state.current_balance == FIXED_PRINCIPAL, (
@@ -393,11 +395,13 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
             account.id, scenario_id, loan_params,
         )
         resolver_state = loan_resolver.resolve_loan(
-            loan_params,
-            db.session.query(LoanAnchorEvent)
-                .filter_by(account_id=account.id).all(),
-            ctx.payments,
-            ctx.rate_changes,
+            loan_resolver.LoanInputs(
+                loan_params,
+                db.session.query(LoanAnchorEvent)
+                    .filter_by(account_id=account.id).all(),
+                ctx.payments,
+                ctx.rate_changes,
+            ),
             date.today(),
         )
         assert resolver_state.current_balance == BALANCE_AFTER_ONE_SETTLE
@@ -458,11 +462,13 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
             account.id, seed_user["scenario"].id, loan_params,
         )
         resolver_state = loan_resolver.resolve_loan(
-            loan_params,
-            db.session.query(LoanAnchorEvent)
-                .filter_by(account_id=account.id).all(),
-            ctx.payments,
-            ctx.rate_changes,
+            loan_resolver.LoanInputs(
+                loan_params,
+                db.session.query(LoanAnchorEvent)
+                    .filter_by(account_id=account.id).all(),
+                ctx.payments,
+                ctx.rate_changes,
+            ),
             date.today(),
         )
         # Resolver-side stability lock: the same value Commit 13's

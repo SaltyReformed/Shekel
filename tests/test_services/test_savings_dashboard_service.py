@@ -2369,7 +2369,10 @@ class TestLoanProjectedBalanceDispatcher:
             )
             today = date.today()
             state = loan_resolver.resolve_loan(
-                lp, events, ctx.payments, ctx.rate_changes, today,
+                loan_resolver.LoanInputs(
+                    lp, events, ctx.payments, ctx.rate_changes,
+                ),
+                today,
             )
             all_periods = pay_period_service.get_all_periods(
                 seed_user["user"].id,
@@ -2457,7 +2460,10 @@ class TestLoanProjectedBalanceDispatcher:
             )
             today = date.today()
             state = loan_resolver.resolve_loan(
-                lp, events, ctx.payments, ctx.rate_changes, today,
+                loan_resolver.LoanInputs(
+                    lp, events, ctx.payments, ctx.rate_changes,
+                ),
+                today,
             )
             all_periods = pay_period_service.get_all_periods(
                 seed_user["user"].id,

@@ -330,19 +330,23 @@ def _build_dashboard_scenarios(params, anchor_events, payments, rate_changes, as
         Tuple of (scenarios_main, scenarios_floor) PayoffScenarios.
     """
     scenarios_main = loan_resolver.compute_payoff_scenarios(
-        loan_params=params,
-        anchor_events=anchor_events,
-        payments=payments,
-        rate_changes=rate_changes,
+        loan_inputs=loan_resolver.LoanInputs(
+            loan_params=params,
+            anchor_events=anchor_events,
+            payments=payments,
+            rate_changes=rate_changes,
+        ),
         extra_monthly=Decimal("0.00"),
         as_of=as_of,
     )
     confirmed_payments = [p for p in payments if p.is_confirmed]
     scenarios_floor = loan_resolver.compute_payoff_scenarios(
-        loan_params=params,
-        anchor_events=anchor_events,
-        payments=confirmed_payments,
-        rate_changes=rate_changes,
+        loan_inputs=loan_resolver.LoanInputs(
+            loan_params=params,
+            anchor_events=anchor_events,
+            payments=confirmed_payments,
+            rate_changes=rate_changes,
+        ),
         extra_monthly=Decimal("0.00"),
         as_of=as_of,
     )

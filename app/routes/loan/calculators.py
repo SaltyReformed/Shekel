@@ -102,10 +102,12 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     """
     extra = Decimal(str(data.get("extra_monthly", "0")))
     scenarios = loan_resolver.compute_payoff_scenarios(
-        loan_params=params,
-        anchor_events=_load_anchor_events(account_id),
-        payments=ctx.loan.payments,
-        rate_changes=ctx.loan.rate_changes,
+        loan_inputs=loan_resolver.LoanInputs(
+            loan_params=params,
+            anchor_events=_load_anchor_events(account_id),
+            payments=ctx.loan.payments,
+            rate_changes=ctx.loan.rate_changes,
+        ),
         extra_monthly=extra,
         as_of=date.today(),
     )

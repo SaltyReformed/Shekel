@@ -185,7 +185,9 @@ def _resolver_state(account, loan_params, as_of):
         .all()
     )
     return loan_resolver.resolve_loan(
-        loan_params, anchor_events, ctx.payments, ctx.rate_changes,
+        loan_resolver.LoanInputs(
+            loan_params, anchor_events, ctx.payments, ctx.rate_changes,
+        ),
         as_of,
     )
 
@@ -445,7 +447,10 @@ def test_months_saved_single_quantity(
     sync with its own forward slices).
     """
     # pylint: disable=import-outside-toplevel
-    from app.services.loan_resolver import compute_payoff_scenarios
+    from app.services.loan_resolver import (
+        LoanInputs,
+        compute_payoff_scenarios,
+    )
 
     with app.app_context():
         account, loan_params = _create_fixed_loan(
@@ -463,10 +468,12 @@ def test_months_saved_single_quantity(
 
         extra = Decimal("200.00")
         scenarios = compute_payoff_scenarios(
-            loan_params=loan_params,
-            anchor_events=anchor_events,
-            payments=ctx.payments,
-            rate_changes=ctx.rate_changes,
+            loan_inputs=LoanInputs(
+                loan_params=loan_params,
+                anchor_events=anchor_events,
+                payments=ctx.payments,
+                rate_changes=ctx.rate_changes,
+            ),
             extra_monthly=extra,
             as_of=date.today(),
         )
