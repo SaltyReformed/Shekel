@@ -1,12 +1,14 @@
 # Quality Pass -- second-pass design review of pylint-cleanup-touched code
 
-**Status: File 1/14 (`paycheck_calculator.py`) DONE -- independent review + refinements applied (full
-suite 5755 passed, app/ 9.88 held). The project-wide bundle fork is RULED: honesty-first -- a private
-helper's too-many-args/locals smell is a signal to DECOMPOSE, not to wrap; bundle only for a genuine
-cohesive named concept (see [[feedback_tm_args_param_object]] / the rubric below). `_PaycheckContext`
+**Status: COMPLETE for design quality. All 14 files reviewed; every design-quality fix-batch
+(B1-B7) is resolved (full suite 5766 passed). The only outstanding item is B8 -- 8 cosmetic
+`line-too-long` in `salary/` -- which belongs to the Phase-4 mechanical lint-floor sweep in `plan.md`,
+not this pass. The project-wide bundle fork is RULED: honesty-first -- a private helper's
+too-many-args/locals smell is a signal to DECOMPOSE, not to wrap; bundle only for a genuine cohesive
+named concept (see [[feedback_tm_args_param_object]] / the rubric below). `_PaycheckContext`
 (forwarded superset) was collapsed; `_DeductionContext` (leaf reads all fields) kept; the new
-`_WageBasis` is the cohesive-concept exception. Remaining 13 files: workflow fan-out next.** This is a
-distinct effort
+`_WageBasis` is the cohesive-concept exception. Net verdict across the sweep: 0 REVERT-OVERREACH --
+the bundles were used cohesively; `_PaycheckContext` was the lone outlier.** This is a distinct effort
 from the pylint 10/10 cleanup (`plan.md`). The cleanup is a *floor* -- it removes mechanical smells
 (too-many-args, duplicate-code, too-many-locals). This pass chases the *ceiling*: is the code now the
 most pythonic, DRY, SOLID, robust, maintainable, and future-proof it can be?
@@ -194,8 +196,8 @@ Full suite 5755 passed (= baseline) after every commit below; each file held/ret
 | B3 loan | `1f48c01` | DONE (F1 tuple-narrow, F2 shared `_resolve` core, F3 `_RouteLoanContext` composing `LoanContext`, F4 `_render_rate_history`) |
 | B5 grid | `e212629` | DONE (dead `txn_by_period` field removed) |
 | B6 docs | `9395d3b` | DONE (salary `_bp` module list, `RecurrenceFormContext` framing, `_ProjectionContext` feed/dual-source note) |
-| B4 transactions | - | PENDING -- F1 has a nuance (see below); F2 FK re-keying is future-proofing |
-| B7 test-gaps | - | PENDING -- 4 new value-pinning tests |
+| B4 transactions | `11a4837` | DONE -- F1 applied (both intermediate sinks take `_RenderTarget`, leaf stays plain); **F2 ACCEPTED as-is** (re-key would trade footgun for reorder-fragility -- see below) |
+| B7 test-gaps | `f1cab18` | DONE -- 11 new value-pinning tests across the 4 gaps (full suite 5766 = 5755 baseline + 11) |
 
 **B2-F1 -- ACCEPTED as-is (2026-06-06, will NOT reshape):** reshaping `_ProjectionInputs` to the
 investment trio + fanning out `debt_schedules`/`interest_params_map` is an invasive 5-file change to
@@ -203,22 +205,33 @@ correct, well-tested projection plumbing for a *partial* gain (the trio is still
 each chain). The reviewer rated it the weakest offender (REFINE; honest-docstring minimum bar already
 met) and F2 already shipped the clear win, so the developer chose to leave F1. Do NOT re-raise it.
 
-### Resume point for the next session
+### B4 + B7 done (2026-06-06, continued) -- fix-batch sweep complete
 
-Two batches remain (both intentionally left for a fresh session with full context budget):
-- **B4 transactions** -- F1 `_RenderTarget` read-as-unit (apply the nuance below), F2 re-key
-  `_resolve_owned_fks` off model-class. Files: `app/routes/transactions/_helpers.py` (sinks at
-  `_mark_done_success_response`/`_stale_transaction_response`/`_render_mobile_card`; `_resolve_owned_fks`
-  ~292) + the `target.*` unpack sites in `mutations.py` (~425/511/519). Gate: `test_transactions.py`.
-- **B7 test-gaps** -- 4 value-pinning tests: retirement gap-net-biweekly scaling
-  (`test_retirement_dashboard_service.py`), investment zero-annual-limit branches
-  (`test_investment.py`), recurrence no-auto-offset-on-update invariant
-  (`test_recurrence_form_helpers.py`), inactive-source-account transfer guard
-  (`test_investment.py`/`test_loan.py`). Hand-computed values, per testing-standards.
+Both remaining MEDIUM batches are landed. The only outstanding item is **B8** (8 `line-too-long` in
+`salary/`), which is a Phase-4 mechanical lint-floor sweep tracked in `plan.md`, not a design-quality
+finding -- the design-quality fix-batches (B1-B7) are now all resolved.
 
-**B4-F1 nuance (apply on resume):** the review said make all three `_RenderTarget` sinks take the bundle, but
-`_render_mobile_card` reads only 2 of the 3 fields (`card_prefix`/`can_edit`, not `render_mode`) and
-`_stale_transaction_response` has non-mobile callers with no target. Making *those* take the full
-bundle would be superset-forwarding (the same smell). The honest version: only the genuine
-all-three-field consumers take the bundle; the subset/no-target ones stay plain. To confirm before
-implementing.
+**B4-F1 -- `_RenderTarget` threaded (applied, `11a4837`):** confirmed the nuance against the code and
+went one step past the "stays plain" note. `_mark_done_success_response` (single caller, reads all
+three fields) and `_stale_transaction_response` now take the bundle; the latter as **optional**
+(`target=None`) so its 7 non-mobile callers pass nothing -- no empty-bundle ceremony -- while the 2
+mobile callers stop unpacking. `_render_mobile_card` stays plain (it reads only `card_prefix`/
+`can_edit`, never `render_mode` -- the genuine subset leaf). Bonus: an optional `_RenderTarget` is a
+*stronger* contract than three independently-defaulted scalars, which permitted half-specified states
+(`render_mode="mobile_card"` with a defaulted `card_prefix`). Behavior preserved; 170 route tests +
+full suite green.
+
+**B4-F2 -- `_resolve_owned_fks` ACCEPTED as-is (will NOT re-key):** the reviewer flagged the
+model-class-keyed return as a "silent-overwrite trap if two FKs share a model." Verified: every spec
+is ownership-checked in the loop regardless of dict collisions, so the 404 IDOR gate is **never**
+weakened -- a collision touches only the convenience map, and all 6 call sites use distinct models.
+Re-keying to a positional list would trade that hypothetical, no-security-impact footgun for
+*reorder-misassignment* fragility (a broader risk for an IDOR probe), and the model-keyed `objs[Model]`
+access is self-documenting and reorder-robust. A guard against duplicate models would be rule-13
+handling of an impossible scenario. Resolution: documented the one-spec-per-model precondition in the
+docstring (neutralizes the "trap" quality) and left the structure. **If you disagree, this is the one
+B4 call to revisit.**
+
+**B7 -- 4 test-gaps closed (`f1cab18`):** 11 hand-computed value-pinning tests; each gap verified to be
+genuinely uncovered before writing. See the commit body and register rows for the arithmetic. Full
+suite 5766 = 5755 baseline + 11.
