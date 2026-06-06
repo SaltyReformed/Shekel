@@ -13,6 +13,7 @@ per-account payoff timelines.
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -35,6 +36,7 @@ from app.services.debt_strategy_service import (
     STRATEGY_CUSTOM,
     STRATEGY_SNOWBALL,
     StrategyRequest,
+    StrategyResult,
     calculate_strategy,
 )
 from app.services.loan_payment_service import load_loan_context
@@ -50,6 +52,46 @@ debt_strategy_bp = Blueprint("debt_strategy", __name__)
 # ``strategy``, and ``custom_order`` get the same field-level Range,
 # OneOf, and Length validators a JSON caller would.
 _calculate_schema = DebtStrategyCalculateSchema()
+
+
+# ---------------------------------------------------------------------------
+# Internal control-flow + result types
+# ---------------------------------------------------------------------------
+
+class _ResultsError(Exception):
+    """Abort :func:`calculate` and render the error banner.
+
+    The calculate endpoint has a single error contract: render
+    ``_results.html`` with an ``error`` message and HTTP 200 so the
+    HTMX form shows an inline banner.  Every user-input failure -- a
+    schema rejection, a malformed custom order, no debt accounts, or a
+    simulation that raises ``ValueError`` -- raises this so the
+    failures funnel through one handler in :func:`calculate` instead of
+    a separate early return per failure mode.  The exception's string
+    value is the user-facing message.
+    """
+
+
+@dataclass(frozen=True)
+class _StrategyResults:
+    """The strategy simulations computed for one calculate request.
+
+    Bundled so :func:`calculate` and its render helpers pass one named
+    value instead of four positional results.
+
+    Attributes:
+        baseline: The no-extra-payment avalanche run, used as the
+            comparison reference point for interest/months saved.
+        avalanche: Avalanche run with the user's extra payment.
+        snowball: Snowball run with the user's extra payment.
+        custom: Custom-order run, or ``None`` when the user did not
+            select the custom strategy.
+    """
+
+    baseline: StrategyResult
+    avalanche: StrategyResult
+    snowball: StrategyResult
+    custom: StrategyResult | None
 
 
 # ---------------------------------------------------------------------------
@@ -272,57 +314,135 @@ def calculate():
     (commit C-27 / F-040): ``extra_monthly`` is range-bounded,
     ``strategy`` is restricted to the three known constants, and
     the cross-field rule rejects ``custom`` without a
-    ``custom_order``.  Schema errors render the legacy
-    ``_results.html`` partial with the first per-field message so
-    the existing HTMX UX -- inline error banner inside the form's
-    results target -- is preserved.
+    ``custom_order``.  Every user-input failure -- a schema error, a
+    malformed custom order, no debt accounts, or a simulation that
+    raises ``ValueError`` -- is signalled as a :class:`_ResultsError`
+    and rendered into the legacy ``_results.html`` partial's error
+    banner, preserving the existing HTMX UX (HTTP 200, inline error
+    inside the form's results target).  A custom order that names an
+    account the user does not own returns 404 (the IDOR response
+    rule).
     """
-    # --- Parse and validate the form payload ---
+    today = date.today()
+
     try:
-        data = _calculate_schema.load(request.form)
-    except ValidationError as exc:
-        return render_template(
-            "debt_strategy/_results.html",
-            error=_first_validation_message(exc),
+        extra_monthly, strategy, custom_order = _parse_calculate_form(
+            request.form,
         )
+        # Re-load debt accounts each request (safe, no stale data).
+        debt_accounts, has_arm = _load_debt_accounts(current_user.id)
+        if not debt_accounts:
+            raise _ResultsError("No active debt accounts found.")
+        if custom_order is not None and _custom_order_has_unknown_account(
+            custom_order, debt_accounts,
+        ):
+            return "Not found", 404
+        results = _compute_strategies(
+            debt_accounts, extra_monthly, strategy, custom_order, today,
+        )
+    except _ResultsError as exc:
+        return render_template("debt_strategy/_results.html", error=str(exc))
+
+    comparison = _build_comparison(results)
+    selected_result = _select_result(results, strategy)
+    chart_data_json = _prepare_chart_data(selected_result, today)
+
+    return render_template(
+        "debt_strategy/_results.html",
+        comparison=comparison,
+        selected_result=selected_result,
+        selected_strategy=strategy,
+        has_arm=has_arm,
+        chart_data_json=chart_data_json,
+    )
+
+
+def _parse_calculate_form(form):
+    """Parse and validate the calculate form payload.
+
+    Loads the form through :data:`_calculate_schema` and, for the
+    custom strategy, coerces the comma-separated ``custom_order`` into
+    a list of integers.  The schema validates ``custom_order``'s
+    presence and length only; the per-element integer coercion lives
+    here so a malformed entry is reported as a user-friendly error
+    rather than a generic Marshmallow message.
+
+    Args:
+        form: The POSTed ``request.form`` MultiDict.
+
+    Returns:
+        Tuple of (extra_monthly, strategy, custom_order) where
+        custom_order is a list[int] for the custom strategy or None
+        otherwise.
+
+    Raises:
+        _ResultsError: When the schema rejects the payload (carrying
+            the first user-facing validation message) or the custom
+            order is not a comma-separated list of integers.
+    """
+    try:
+        data = _calculate_schema.load(form)
+    except ValidationError as exc:
+        raise _ResultsError(_first_validation_message(exc)) from exc
 
     extra_monthly: Decimal = data["extra_monthly"]
     strategy: str = data["strategy"]
-    custom_raw: str | None = data.get("custom_order")
-
-    # --- Parse custom_order: schema validated presence/length only;
-    # the per-element integer coercion lives here so a malformed
-    # entry is reported as a user-friendly error rather than a
-    # generic Marshmallow message. ---
-    custom_order = None
+    custom_order: list[int] | None = None
     if strategy == STRATEGY_CUSTOM:
+        custom_raw: str | None = data.get("custom_order")
         try:
             custom_order = [int(x.strip()) for x in custom_raw.split(",")]
-        except ValueError:
-            return render_template(
-                "debt_strategy/_results.html",
-                error="Invalid custom order format.",
-            )
+        except ValueError as exc:
+            raise _ResultsError("Invalid custom order format.") from exc
+    return extra_monthly, strategy, custom_order
 
-    # --- Re-load debt accounts (safe, no stale data) ---
-    debt_accounts, has_arm = _load_debt_accounts(current_user.id)
 
-    if not debt_accounts:
-        return render_template(
-            "debt_strategy/_results.html",
-            error="No active debt accounts found.",
-        )
+def _custom_order_has_unknown_account(custom_order, debt_accounts):
+    """Return True if any custom-order ID is not one of the user's debts.
 
-    # --- IDOR check for custom order ---
-    if custom_order is not None:
-        valid_ids = {d.account_id for d in debt_accounts}
-        for aid in custom_order:
-            if aid not in valid_ids:
-                return "Not found", 404
+    The IDOR guard for the custom strategy: ``debt_accounts`` is
+    already filtered to the authenticated user's active debts, so an
+    ID outside that set is either nonexistent or owned by another
+    user.  Either way :func:`calculate` returns 404 (the security
+    response rule: identical 404 for "not found" and "not yours").
 
-    # --- Compute strategies ---
-    today = date.today()
+    Args:
+        custom_order: User-supplied list of account IDs.
+        debt_accounts: The user's loaded :class:`DebtAccount` list.
 
+    Returns:
+        True if at least one ID is not owned by the user.
+    """
+    valid_ids = {d.account_id for d in debt_accounts}
+    return any(aid not in valid_ids for aid in custom_order)
+
+
+def _compute_strategies(debt_accounts, extra_monthly, strategy, custom_order,
+                        today):
+    """Run the baseline/avalanche/snowball (and optional custom) simulations.
+
+    Always computes the three standard scenarios; adds the custom
+    scenario only when the user selected it.  A simulation that raises
+    ``ValueError`` is logged with its scenario label and re-raised as a
+    :class:`_ResultsError` so :func:`calculate` renders the message in
+    the ``_results.html`` error banner.
+
+    Args:
+        debt_accounts: The user's loaded :class:`DebtAccount` list.
+        extra_monthly: The extra monthly payment to apply (the baseline
+            run forces this to zero).
+        strategy: The selected strategy constant.
+        custom_order: User-supplied account-ID priority order, or None.
+        today: The first month of every projection.
+
+    Returns:
+        A :class:`_StrategyResults` bundle; ``custom`` is None unless
+        the user selected and the run produced a custom result.
+
+    Raises:
+        _ResultsError: When any simulation raises ``ValueError`` (the
+            exception message is preserved for the error banner).
+    """
     try:
         baseline = calculate_strategy(StrategyRequest(
             debt_accounts, Decimal("0"), STRATEGY_AVALANCHE,
@@ -338,10 +458,7 @@ def calculate():
         ))
     except ValueError as exc:
         logger.warning("Strategy calculation failed: %s", exc)
-        return render_template(
-            "debt_strategy/_results.html",
-            error=str(exc),
-        )
+        raise _ResultsError(str(exc)) from exc
 
     custom_result = None
     if strategy == STRATEGY_CUSTOM and custom_order is not None:
@@ -352,56 +469,48 @@ def calculate():
             ))
         except ValueError as exc:
             logger.warning("Custom strategy calculation failed: %s", exc)
-            return render_template(
-                "debt_strategy/_results.html",
-                error=str(exc),
-            )
+            raise _ResultsError(str(exc)) from exc
 
-    # --- Derive comparison metrics ---
-    comparison = _build_comparison(baseline, avalanche, snowball, custom_result)
-
-    # --- Determine which result to show in the per-account timeline ---
-    if strategy == STRATEGY_CUSTOM and custom_result is not None:
-        selected_result = custom_result
-    elif strategy == STRATEGY_SNOWBALL:
-        selected_result = snowball
-    else:
-        selected_result = avalanche
-
-    # --- Prepare chart data for the selected strategy ---
-    chart_data_json = _prepare_chart_data(selected_result, today)
-
-    return render_template(
-        "debt_strategy/_results.html",
-        comparison=comparison,
-        baseline=baseline,
-        avalanche=avalanche,
-        snowball=snowball,
-        custom_result=custom_result,
-        selected_result=selected_result,
-        selected_strategy=strategy,
-        extra_monthly=extra_monthly,
-        has_arm=has_arm,
-        debt_accounts=debt_accounts,
-        chart_data_json=chart_data_json,
-    )
+    return _StrategyResults(baseline, avalanche, snowball, custom_result)
 
 
-def _build_comparison(baseline, avalanche, snowball, custom_result):
+def _select_result(results, strategy):
+    """Pick the strategy result shown in the per-account timeline + chart.
+
+    Mirrors the user's selection: the custom run when chosen (and
+    successfully computed), otherwise snowball or avalanche.
+
+    Args:
+        results: The computed :class:`_StrategyResults` bundle.
+        strategy: The selected strategy constant.
+
+    Returns:
+        The :class:`StrategyResult` to render in the timeline + chart.
+    """
+    if strategy == STRATEGY_CUSTOM and results.custom is not None:
+        return results.custom
+    if strategy == STRATEGY_SNOWBALL:
+        return results.snowball
+    return results.avalanche
+
+
+def _build_comparison(results):
     """Build the comparison metrics dict for the template.
 
     Computes interest saved and months saved relative to the no-extra
     baseline for each strategy.
 
     Args:
-        baseline: StrategyResult with extra_monthly=0.
-        avalanche: StrategyResult with user's extra, avalanche strategy.
-        snowball: StrategyResult with user's extra, snowball strategy.
-        custom_result: StrategyResult for custom strategy, or None.
+        results: The computed :class:`_StrategyResults` bundle
+            (baseline + avalanche + snowball + optional custom).
 
     Returns:
         Dict with keys for each column in the comparison table.
     """
+    baseline = results.baseline
+    avalanche = results.avalanche
+    snowball = results.snowball
+    custom_result = results.custom
     return {
         "baseline": {
             "debt_free_date": baseline.debt_free_date,
