@@ -10,9 +10,29 @@
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.89/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 154 visible messages.
-Full suite 5766 passed.** Phase 3 (design smells) has THIRTEEN files plus the form-mutation helper
-family complete. The newest, **`routes/templates.py` DONE** (`1c26575`), cleared all 4 design smells
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 150 visible messages.
+Full suite 5767 passed.** Phase 3 (design smells) has FOURTEEN files plus the form-mutation helper
+family complete. The newest, **`services/growth_engine.py` DONE** (`dcf0d4e`), cleared all 4 design
+smells (`project_balance` tm-locals/args/positional; `ProjectedBalance` tm-instance-attributes).
+tm-locals by genuine decomposition mirroring `amortization_engine`: a frozen `_PeriodInputs` (the
+loop's fixed constants) + a mutable `_ProjectionState` (the evolving balance/YTD/limit/year carry) +
+`_project_one_period`, leaving `project_balance` a ~14-local orchestrator; the byte-identical
+period-day->compound-rate math shared by the forward + reverse projections extracted to the shared
+`_period_return_rate` -- a genuine 2-site DRY win that makes the forward/reverse can't-diverge
+invariant structural. The `project_balance` args (8/5) and the `ProjectedBalance` 9-attr DTO were the
+developer-chosen documented scoped+named+commented disables: the pure-leaf engine's 8 inputs vary
+independently per caller (the what-if overlay overrides `periodic_contribution` + nulls
+`contributions`, year-end forces ytd=0 -- a param object would be stamp coupling; reusing
+`InvestmentInputs` would cycle since it imports `growth_engine`; all callers pass keyword so
+tm-positional is moot), and `ProjectedBalance` is a cohesive per-period schedule row mirroring
+`AmortizationRow` (`is_confirmed` = the deliberately-plumbed confirmed/projected distinction). The
+independent quality-pass review (fresh subagent, A-G rubric, all 6 behavior-equivalence points
+verified line-for-line against HEAD): ACCEPT overall, both disables upheld, 0 REVERT-OVERREACH; 2 LOW
+REFINE folded in (tightened `contribution_lookup` -> `dict[date, tuple[Decimal, bool]] | None`; added
+`test_degenerate_period_falls_back_to_14_days` for the now-shared `period_days <= 0 -> 14` branch).
++2 documented disable lines (82->84); 0 new R0801; 0 useless-suppression; instance-attrs 11->10
+visible. Score 9.89 held; visible 154->150; smell items 59->55 (45 8-symbol + 10 instance-attr).
+Before it, **`routes/templates.py` DONE** (`1c26575`), cleared all 4 design smells
 (`update_template` tm-locals/return/branches; `preview_recurrence` tm-locals) PLUS the
 `preview_recurrence` protected-access by genuine decomposition (no disables, behavior bit-identical;
 242 targeted + full suite 5766 the gate): the developer-chosen shared `_validate_template_form`
@@ -302,7 +322,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (13 files + the form-helper family done: `templates.py`, `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (14 files + the form-helper family done: `growth_engine.py`, `templates.py`, `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -1101,7 +1121,13 @@ documented disables), with commit SHA.
 - services/loan_resolver.py: `resolve_loan`:383 tm-locals; `compute_payoff_scenarios`:658 tm-args/locals -- `-`
 - services/retirement_gap_calculator.py: `calculate_gap`:39 tm-args/pos/locals -- `-`
 - services/calibration_service.py: `derive_effective_rates`:35 tm-args/pos/locals -- `-`
-- services/growth_engine.py: `project_balance`:206 tm-args/pos/locals -- `-`
+- services/growth_engine.py: **DONE** (`dcf0d4e`) -- `project_balance` tm-locals (23/15)
+  by `_PeriodInputs`+`_ProjectionState`+`_project_one_period` decomposition (mirrors
+  `amortization_engine`); tm-args/pos (8/5) by a developer-chosen documented scoped disable
+  (pure stdlib leaf; the 8 inputs vary independently per caller); the period-day->rate math
+  shared with `reverse_project_balance` via the new `_period_return_rate` (2-site DRY).
+  `ProjectedBalance` (9/7) documented disable (see instance-attr table). file 10.00/10, zero
+  smell messages.
 - services/recurrence_engine.py: `_match_periods`:453 tm-return **RESOLVED** (`1c26575`; renamed to
   the public `match_periods` + single-return accumulator -- pulled in with the `routes/templates.py`
   protected-access fix, developer-chosen broad scope). `generate_for_template`:55 tm-locals was
@@ -1147,7 +1173,7 @@ rule-named + commented inline disable. Count/limit shown as reported at the defa
 | services/budget_variance_service.py:41 | 8/7 | - |
 | services/budget_variance_service.py:55 | 9/7 | - |
 | services/budget_variance_service.py:82 | 8/7 | - |
-| services/growth_engine.py:24 | 9/7 | - |
+| services/growth_engine.py:24 | 9/7 | **DISABLE (documented), `dcf0d4e`** -- `ProjectedBalance` cohesive per-period schedule-row DTO mirroring `AmortizationRow`; scoped+named+commented |
 | services/amortization_engine.py:164 | 9/7 | **DISABLE (documented), `c4f01e6`** -- `AmortizationRow` cohesive schedule-row DTO; scoped+named+commented |
 | services/amortization_engine.py:708 | 10/7 | **DISABLE (documented), `7cc8fe1`** -- `PayoffRequest` Parameter Object (NOT one of the original 13; introduced by the `calculate_payoff_by_date` param-object refactor and immediately disabled); scoped+named+commented |
 
@@ -1172,12 +1198,15 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-06 after `routes/templates.py` DONE `1c26575`; 59 smell
-items remain [48 of the 8-symbol set + 11 `too-many-instance-attributes`], down from 64): the band at
-4 each is now the three financial cores -- `services/growth_engine.py` / `services/loan_resolver.py` /
+Next by live density (re-measured 2026-06-06 after `services/growth_engine.py` DONE `dcf0d4e`; 55 smell
+items remain [45 of the 8-symbol set + 10 `too-many-instance-attributes`], down from 59): the band at
+4 each is now the two remaining financial cores -- `services/loan_resolver.py` /
 `services/retirement_gap_calculator.py` (each 3 8-symbol + 1 instance-attr; plan-first per the
-developer's cadence). None of the remaining top files are module tm-lines (only `schemas/validation.py`
-+ `services/carry_forward_service.py` carry that, both Tier-3 -> package split per decision #5).
+developer's cadence). Then the band at 3: `app/ref_cache.py`, `routes/debt_strategy.py`,
+`services/budget_variance_service.py`, `services/calibration_service.py`,
+`services/investment_projection.py`. None of the remaining top files are module tm-lines (only
+`schemas/validation.py` + `services/carry_forward_service.py` carry that, both Tier-3 -> package split
+per decision #5).
 
 ---
 
@@ -1446,3 +1475,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `59ba11a` | 3 | **_transfer_creation_helpers.py -- externalize `derive_from_loan` from `build_recurring_transfer_template` (developer-chosen genuine structural reduction) -- file DONE:** the last `too-many-arguments` in the form-mutation helper layer cleared WITHOUT a param object or a disable. The 6-field shared `TransferTemplate` factory was flagged because a param object there would only mirror the entity's own columns (single-consumer stamp coupling, zero DRY payoff -- unlike the `8e01099` bundles that dissolved real cross-function duplication), and a disable would break the 0-added streak. Instead `derive_from_loan` was dropped from the helper (6->5 args, at the limit), relying on the column's verified `False` model/server default for investment contributions and every generic transfer; the loan-payment creator -- the ONLY caller that needs it -- assigns `template.derive_from_loan` itself on the returned row before the `flush_template_or_namedup_redirect` flush (`_resolve_transfer_amount` returns the computed bool: `True` for the monthly-payment default path, `False` for a user-supplied amount override), keeping the loan-only concern at the loan call site. Behavior bit-identical. Investment caller unchanged (never passed the flag). **Closed a coverage gap:** strengthened the route test `test_create_transfer_success` with `assert tpl.derive_from_loan is True` -- previously the route's setting of the flag was unasserted (no `amount` posted -> live-derivation path), so this both covers it and locks the refactor; the `False` override path is NOT separately asserted because the model default is also `False` (an assertion there would not distinguish the code from the default). 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held; visible 166->165; smell items 69->68 (57 8-symbol + 11 instance-attr). 253 targeted (investment + loan) + **full suite 5755 passed.** | 9.88/10 | 165 |
 | 2026-06-05 | `86541bb` | 3 | **grid.py -- bundle row-data into `_GridRowData` + pass `_GridContext` to `_build_plan_view` (developer-chosen ctx-passing with a new `user_id` field) -- file DONE:** all 4 design smells (`_build_plan_view` tm-args/pos/locals; `index` tm-locals) resolved by genuine decomposition (no disables, behavior bit-identical). New frozen `_GridRowData` NamedTuple (6 fields) replaces `_build_grid_row_data`'s 6-tuple return -- the per-render "row contract" spliced into grid.html; naming the six values collapses the 6-local unpack to ONE in both `index` (clears tm-locals) and `_build_plan_view` (halves its locals). `_build_plan_view` 8->5 args (clears tm-args + tm-positional) by taking the existing `_GridContext` (`ctx`, given a new `user_id` field) instead of unpacking account/scenario/current_period/user_id; the 4 remaining loaded values fan out to different consumers so they stay unbundled (stamp-coupling avoided). Impact-traced clean (private helpers, no external callers / test constructors; `RowKey`/`grid_bp` untouched). Fixed two stale docstring counts ("5-tuple"->named-6; "eight"->"six" `plan_*` keys). file 10.00/10, 0 smell messages; 0 new R0801; instance-attrs unchanged at 11 (NamedTuple fields not counted by R0902); 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held; visible 165->161; smell items 68->64 (53 8-symbol + 11 instance-attr). 221 grid + 93 companion targeted + **full suite 5755 passed.** | 9.88/10 | 161 |
 | 2026-06-06 | `1c26575` | 3 | **templates.py -- decompose update_template + preview_recurrence + publicize match_periods (developer-chosen broad scope) -- file DONE:** all 4 live design smells (`update_template` tm-locals 16/15 + tm-return 8/6 + tm-branches 15/12; `preview_recurrence` tm-locals 17/15) PLUS the `preview_recurrence` protected-access (716) resolved by genuine decomposition (no disables, behavior bit-identical). `update_template` via the shared `_validate_template_form` (account/category ownership + envelope-only-on-expense, now used by BOTH create_template + update_template -- 2-site DRY; create's required FKs are always in `data`, so the `in data` guards preserve both paths -- verified vs TemplateCreateSchema) + `_apply_fields_and_propagate_rename` -> ~11 locals/6 returns/8 branches (8->6 returns collapses the 3 FK/tracking guards to 1; no disable, as a disable at the 6/6 limit would be a useless-suppression). `preview_recurrence` via `_build_preview_rule` (request.args -> transient rule) + `_render_preview_html` -> ~9 locals; the every_n condition was wrapped (cleared 1 line-too-long). Protected-access cleared by promoting `recurrence_engine._match_periods` -> public `match_periods` (pure, 27 direct unit tests, cross-module caller -- the underscore mislabeled a de-facto public API), which ALSO cleared the Tier-3 `match_periods` tm-return (8/6) via a single-return accumulator (developer-chosen over a dispatch dict); renamed 2 internal callers + 2 doc refs + the test import/27 calls + the TEST_PLAN.md header (name-only, decision #5). Independent quality-pass review (fresh subagent, A-G rubric, all 7 behavior-equivalence points verified against the code): ALL ACCEPT, 0 REFINE/REVERT-OVERREACH; the lone stale-doc finding folded into the rename. 0 disables added (82); 0 new R0801; instance-attrs unchanged at 11. Score 9.88->9.89; visible 161->154; smell items 64->59 (48 8-symbol + 11 instance-attr). 242 targeted + **full suite 5766 passed.** | 9.89/10 | 154 |
+| 2026-06-06 | `dcf0d4e` | 3 | **growth_engine.py -- decompose project_balance + share _period_return_rate (developer-chosen documented disables for the irreducible args/DTO) -- file DONE:** all 4 design smells resolved. **tm-locals** (`project_balance` 23/15) by genuine decomposition mirroring `amortization_engine`: a frozen `_PeriodInputs` (the loop's fixed constants) + a mutable `_ProjectionState` (the evolving balance/YTD/limit/year carry) + `_project_one_period`, leaving `project_balance` a ~14-local orchestrator. **DRY win:** the byte-identical period-day->compound-rate math in `project_balance` + `reverse_project_balance` (R0801-invisible; the surrounding code differed) extracted to the shared `_period_return_rate` -- and since reverse inverts the forward formula, sharing the rate makes "the two cannot diverge" structural, not incidental. **tm-arguments/tm-positional** (`project_balance` 8/5): documented scoped+named+commented disable (the pure stdlib leaf's 8 inputs vary independently per caller -- the what-if overlay overrides `periodic_contribution` + nulls `contributions`, year-end forces ytd=0 -- so a param object = stamp coupling; reusing `InvestmentInputs` would cycle since it imports `growth_engine`; all callers pass keyword so tm-positional is moot). **tm-instance-attributes** (`ProjectedBalance` 9/7): documented disable -- a cohesive per-period schedule row mirroring `AmortizationRow`; `is_confirmed` is the deliberately-plumbed confirmed/projected distinction (`implementation_plan_section5.md`). Independent quality-pass review (fresh subagent, A-G rubric): **ACCEPT overall**, all 6 behavior-equivalence points verified line-for-line, both disables upheld, **0 REVERT-OVERREACH**; 2 LOW REFINE folded in -- tightened `contribution_lookup` -> `dict[date, tuple[Decimal, bool]] | None`, added `test_degenerate_period_falls_back_to_14_days` (the `period_days <= 0 -> 14` branch, now shared by both directions, was untested). file 10.00/10, 0 smell messages; +2 documented disable lines (82->84); 0 new R0801; useless-suppression 0; E/F 0. Score 9.89 held; visible 154->150; smell items 59->55 (45 8-symbol + 10 instance-attr). 66 growth + 242 consumer + **full suite 5767 passed.** | 9.89/10 | 150 |

@@ -131,6 +131,7 @@ Order = correctness blast-radius x refactor aggressiveness. Financial core first
 | 13 | `routes/_recurrence_form_helpers.py` + `_commit_helpers.py` | `8e01099` | REVIEWED (M2: docstring honesty, test-gap) |
 | 14 | `routes/_transfer_creation_helpers.py` | `59ba11a` | REVIEWED (M1: inactive-source test-gap) |
 | 15 | `routes/templates.py` + `recurrence_engine.match_periods` | `1c26575` | REVIEWED -- **clean** (all ACCEPT, 0 REFINE/REVERT-OVERREACH; first going-forward Phase-3 file under the folded-in rubric) |
+| 16 | `services/growth_engine.py` | `dcf0d4e` | REVIEWED -- **ACCEPT** (behavior-equivalence verified line-for-line; both documented disables upheld, 0 REVERT-OVERREACH; 2 LOW REFINE applied -- type-precision + degenerate-period test) |
 
 ## Fold into Phase 3 going forward
 
@@ -146,6 +147,19 @@ ALL ACCEPT -- no REFINE/REVERT-OVERREACH design change was needed. The single fi
 `tests/TEST_PLAN.md` reference to the renamed `_match_periods`) was a rule-7 completeness fix folded
 into the same commit, not a design refinement, so no separate follow-up commit was required. See the
 register rows below.
+
+**Second going-forward file: `services/growth_engine.py` (`dcf0d4e`, 2026-06-06).** The mechanical
+commit cleared all 4 smells -- `project_balance` tm-locals by the `_PeriodInputs` / `_ProjectionState`
+/ `_project_one_period` decomposition (mirroring `amortization_engine`), and the `project_balance`
+tm-args/pos + `ProjectedBalance` tm-instance-attrs by developer-chosen documented disables -- and
+surfaced a genuine 2-site DRY win (`_period_return_rate`, shared by the forward and reverse
+projections). The independent reviewer (fresh subagent, A-G rubric) verified all 6
+behavior-equivalence points line-for-line against HEAD and returned ACCEPT overall with 0
+REVERT-OVERREACH; both documented disables survived the "bundle the 8 args / split the row"
+over-engineering challenge. Unlike templates.py, this one carried two LOW REFINE findings -- a bare
+`contribution_lookup: dict` annotation and the untested `period_days <= 0 -> 14` degenerate-period
+fallback (now shared by both directions) -- both verified against the code, then folded into the same
+commit. See the register rows below.
 
 ## Register (findings + verdicts)
 
@@ -165,6 +179,11 @@ One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:l
 | `templates.py` (`1c26575`) | A4 | `_render_preview_html` is single-use, ~7-line presentation relocation | ACCEPT (lean REFINE) | Reviewer: harmless presentation-isolation that aids the route read; not worth churn -- kept |
 | `recurrence_engine.py` (`1c26575`) | F3/D1/E4 | `_match_periods` -> public `match_periods`; tm-return (8/6) cleared via a single-return accumulator rather than a dispatch dict | ACCEPT | The fn is pure, tested by 27 direct units, and called cross-module -- the underscore mislabeled de-facto public API. Accumulator is simpler here: heterogeneous branch locals (`n`/`offset`, month+day) would force lambda shims in a dict. All 8 cases (incl. unknown-default + the `or 1` divide guard) map 1:1; `EVERY_PERIOD` aliases `candidates` exactly as before, and no caller mutates the result |
 | `templates.py` (`1c26575`) | F2/Rule-7 | Stale `tests/TEST_PLAN.md:190` reference to `_match_periods()` after the rename | REFINE (folded into `1c26575`) | Updated to `match_periods()`. The dozen dated audit/investigation/plan docs (`docs/audits/*`, `bug_investigation_02`, `financial_calculations` inventory) are intentionally LEFT as point-in-time snapshots -- editing them would falsify the historical record (rule 6) |
+| `growth_engine.py` (`dcf0d4e`) | A1/A2/A3 | `_PeriodInputs` (255) + `_ProjectionState` (281) -- are these count-lowering bags? Every field is read by `_project_one_period`; the frozen-constants vs mutable-carry split is meaningful and mirrors `amortization_engine`'s ProjectionInputs/_ProjectionState | ACCEPT | Real concepts, not bags; matches the blessed sibling-engine pattern. The internal `_PeriodInputs` is consistent with keeping `project_balance`'s public 8-arg signature (callers never see it) |
+| `growth_engine.py` (`dcf0d4e`) | B1/B2/A4 | `_period_return_rate` (228) shared by `project_balance` + `reverse_project_balance` -- false-DRY check: could the two rates legitimately diverge? | ACCEPT | No: reverse INVERTS the forward formula, so the rate is the same number by definition. Genuine 2-site DRY; sharing makes the can't-diverge invariant structural rather than incidental |
+| `growth_engine.py` (`dcf0d4e`) | A3/F3 | The two documented disables -- `project_balance` tm-args/pos (400) and `ProjectedBalance` tm-instance-attrs (24). Reviewer tested "bundle the 8 args" and "split the row" | ACCEPT | Both survive the over-engineering challenge: callers vary the 8 args independently (param object = stamp coupling), DTO fields are irreducible columns mirroring `AmortizationRow`. Honesty-first, symbol-named, why-commented |
+| `growth_engine.py` (`dcf0d4e`) | D2 | `_project_one_period`'s `contribution_lookup: dict` (310) was bare; the lookup's element type is fully known | REFINE (folded into `dcf0d4e`) | Tightened to `dict[date, tuple[Decimal, bool]]` (or None). `employer_params` left `dict`-or-None -- heterogeneous config, untyped module-wide; a TypedDict is out of this file's scope |
+| `growth_engine.py` (`dcf0d4e`) | G3/E1 | The `period_days <= 0 -> 14` degenerate-period fallback (247), now shared by BOTH projection directions, had no direct unit test | REFINE (folded into `dcf0d4e`) | Added `test_degenerate_period_falls_back_to_14_days` -- a 0-day period grows exactly as a real 14-day period (hand-pinned 25.98); closes the now-doubly-load-bearing branch |
 
 ## Sweep results (files 2-14, run `wvq2yd9aa`, 2026-06-05)
 
