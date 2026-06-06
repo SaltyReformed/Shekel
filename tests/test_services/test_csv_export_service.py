@@ -66,14 +66,30 @@ class FakeYearOverview:
 
 
 @dataclass(frozen=True)
-class FakeTransactionVariance:
-    """Minimal TransactionVariance for CSV tests."""
-    transaction_id: int = 1
-    name: str = "Rent Payment"
+class FakeVarianceFigures:
+    """Minimal VarianceFigures stand-in for CSV tests."""
     estimated: Decimal = Decimal("1200.00")
     actual: Decimal = Decimal("1200.00")
     variance: Decimal = Decimal("0.00")
     variance_pct: Decimal | None = Decimal("0.00")
+
+
+def _zero_figures() -> FakeVarianceFigures:
+    """Zero figures with a null percentage -- the empty-report default."""
+    return FakeVarianceFigures(
+        estimated=Decimal("0.00"),
+        actual=Decimal("0.00"),
+        variance=Decimal("0.00"),
+        variance_pct=None,
+    )
+
+
+@dataclass(frozen=True)
+class FakeTransactionVariance:
+    """Minimal TransactionVariance for CSV tests."""
+    transaction_id: int = 1
+    name: str = "Rent Payment"
+    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
     is_paid: bool = True
     due_date: date | None = None
 
@@ -84,10 +100,7 @@ class FakeCategoryItemVariance:
     category_id: int = 1
     group_name: str = "Home"
     item_name: str = "Rent"
-    estimated_total: Decimal = Decimal("1200.00")
-    actual_total: Decimal = Decimal("1200.00")
-    variance: Decimal = Decimal("0.00")
-    variance_pct: Decimal | None = Decimal("0.00")
+    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
     transaction_count: int = 1
     transactions: list = field(default_factory=list)
 
@@ -96,10 +109,7 @@ class FakeCategoryItemVariance:
 class FakeCategoryGroupVariance:
     """Minimal CategoryGroupVariance for CSV tests."""
     group_name: str = "Home"
-    estimated_total: Decimal = Decimal("1200.00")
-    actual_total: Decimal = Decimal("1200.00")
-    variance: Decimal = Decimal("0.00")
-    variance_pct: Decimal | None = Decimal("0.00")
+    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
     items: list = field(default_factory=list)
 
 
@@ -109,10 +119,7 @@ class FakeVarianceReport:
     window_type: str = "pay_period"
     window_label: str = "Jan 02 - Jan 15, 2026"
     groups: list = field(default_factory=list)
-    total_estimated: Decimal = Decimal("0.00")
-    total_actual: Decimal = Decimal("0.00")
-    total_variance: Decimal = Decimal("0.00")
-    total_variance_pct: Decimal | None = None
+    figures: FakeVarianceFigures = field(default_factory=_zero_figures)
     transaction_count: int = 0
 
 
@@ -252,17 +259,11 @@ class TestVarianceExport:
 
     def test_export_variance_pct_none(self, app):
         """C17-extra8: None variance_pct exported as empty string."""
-        txn = FakeTransactionVariance(variance_pct=None)
-        item = FakeCategoryItemVariance(
-            transactions=[txn], variance_pct=None,
-        )
-        group = FakeCategoryGroupVariance(
-            items=[item], variance_pct=None,
-        )
-        report = FakeVarianceReport(
-            groups=[group],
-            total_variance_pct=None,
-        )
+        none_pct = FakeVarianceFigures(variance_pct=None)
+        txn = FakeTransactionVariance(figures=none_pct)
+        item = FakeCategoryItemVariance(transactions=[txn], figures=none_pct)
+        group = FakeCategoryGroupVariance(items=[item], figures=none_pct)
+        report = FakeVarianceReport(groups=[group], figures=none_pct)
         result = export_variance_csv(report)
         assert "None" not in result
 
@@ -451,33 +452,22 @@ def _build_year_end_data(with_timeliness=False):
 
 
 def _build_variance_report():
-    """Build a VarianceReport with one group, one item, one txn."""
-    txn = FakeTransactionVariance(
-        name="Jan Rent",
+    """Build a VarianceReport with one group, one item, one txn.
+
+    The same figures (est 1200, act 1250, variance 50.00, pct 4.17) apply
+    at every level, matching how a single-transaction report rolls up.
+    """
+    figures = FakeVarianceFigures(
         estimated=Decimal("1200.00"),
         actual=Decimal("1250.00"),
         variance=Decimal("50.00"),
         variance_pct=Decimal("4.17"),
     )
-    item = FakeCategoryItemVariance(
-        estimated_total=Decimal("1200.00"),
-        actual_total=Decimal("1250.00"),
-        variance=Decimal("50.00"),
-        variance_pct=Decimal("4.17"),
-        transactions=[txn],
-    )
-    group = FakeCategoryGroupVariance(
-        estimated_total=Decimal("1200.00"),
-        actual_total=Decimal("1250.00"),
-        variance=Decimal("50.00"),
-        variance_pct=Decimal("4.17"),
-        items=[item],
-    )
+    txn = FakeTransactionVariance(name="Jan Rent", figures=figures)
+    item = FakeCategoryItemVariance(figures=figures, transactions=[txn])
+    group = FakeCategoryGroupVariance(figures=figures, items=[item])
     return FakeVarianceReport(
         groups=[group],
-        total_estimated=Decimal("1200.00"),
-        total_actual=Decimal("1250.00"),
-        total_variance=Decimal("50.00"),
-        total_variance_pct=Decimal("4.17"),
+        figures=figures,
         transaction_count=1,
     )

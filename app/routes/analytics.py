@@ -545,9 +545,9 @@ def _build_variance_chart_data(report):
     """
     return {
         "labels": [g.group_name for g in report.groups],
-        "estimated": [float(g.estimated_total) for g in report.groups],
-        "actual": [float(g.actual_total) for g in report.groups],
-        "variance": [float(g.variance) for g in report.groups],
+        "estimated": [float(g.figures.estimated) for g in report.groups],
+        "actual": [float(g.figures.actual) for g in report.groups],
+        "variance": [float(g.figures.variance) for g in report.groups],
     }
 
 

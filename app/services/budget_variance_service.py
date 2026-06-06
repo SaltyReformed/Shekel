@@ -38,15 +38,51 @@ _HUNDRED = Decimal("100")
 
 
 @dataclass(frozen=True)
+class VarianceFigures:
+    """Estimated vs. actual amounts with the derived variance and percentage.
+
+    The (estimated, actual, variance, variance_pct) quad that every level
+    of the variance hierarchy reports.  Build one with :meth:`of` so the
+    variance and percentage are derived identically at every level rather
+    than recomputed by hand for each transaction, item, group, and total.
+    """
+
+    estimated: Decimal
+    actual: Decimal
+    variance: Decimal
+    variance_pct: Decimal | None
+
+    @classmethod
+    def of(cls, estimated: Decimal, actual: Decimal) -> "VarianceFigures":
+        """Build figures from an estimated/actual pair.
+
+        ``variance`` is ``actual - estimated``; ``variance_pct`` is that
+        variance as a percentage of the estimated base, or ``None`` when
+        the base is zero (see :func:`_pct`).
+
+        Args:
+            estimated: The budgeted/estimated amount (the percentage base).
+            actual: The realized actual amount.
+
+        Returns:
+            A VarianceFigures with the derived variance and percentage.
+        """
+        variance = actual - estimated
+        return cls(
+            estimated=estimated,
+            actual=actual,
+            variance=variance,
+            variance_pct=_pct(variance, estimated),
+        )
+
+
+@dataclass(frozen=True)
 class TransactionVariance:
     """Variance data for a single transaction."""
 
     transaction_id: int
     name: str
-    estimated: Decimal
-    actual: Decimal
-    variance: Decimal
-    variance_pct: Decimal | None
+    figures: VarianceFigures
     is_paid: bool
     due_date: date | None
 
@@ -58,10 +94,7 @@ class CategoryItemVariance:
     category_id: int
     group_name: str
     item_name: str
-    estimated_total: Decimal
-    actual_total: Decimal
-    variance: Decimal
-    variance_pct: Decimal | None
+    figures: VarianceFigures
     transaction_count: int
     transactions: list[TransactionVariance]
 
@@ -71,10 +104,7 @@ class CategoryGroupVariance:
     """Variance data for a category group (e.g., 'Auto')."""
 
     group_name: str
-    estimated_total: Decimal
-    actual_total: Decimal
-    variance: Decimal
-    variance_pct: Decimal | None
+    figures: VarianceFigures
     items: list[CategoryItemVariance]
 
 
@@ -85,10 +115,7 @@ class VarianceReport:
     window_type: str
     window_label: str
     groups: list[CategoryGroupVariance]
-    total_estimated: Decimal
-    total_actual: Decimal
-    total_variance: Decimal
-    total_variance_pct: Decimal | None
+    figures: VarianceFigures
     transaction_count: int
 
 
@@ -133,19 +160,17 @@ def compute_variance(  # pylint: disable=too-many-arguments,too-many-positional-
     )
 
     groups = _build_group_hierarchy(transactions)
-    total_est = sum(g.estimated_total for g in groups)
-    total_act = sum(g.actual_total for g in groups)
-    total_var = total_act - total_est
+    figures = VarianceFigures.of(
+        sum(g.figures.estimated for g in groups),
+        sum(g.figures.actual for g in groups),
+    )
     txn_count = sum(len(tv.transactions) for g in groups for tv in g.items)
 
     return VarianceReport(
         window_type=window_type,
         window_label=_build_window_label(window_type, period, month, year),
         groups=groups,
-        total_estimated=total_est,
-        total_actual=total_act,
-        total_variance=total_var,
-        total_variance_pct=_pct(total_var, total_est),
+        figures=figures,
         transaction_count=txn_count,
     )
 
@@ -319,18 +344,15 @@ def _build_group_hierarchy(
     # Build CategoryItemVariance for each item.
     group_items: dict[str, list[CategoryItemVariance]] = defaultdict(list)
     for (group_name, cat_id, item_name), txn_vars in item_map.items():
-        txn_vars.sort(key=lambda t: abs(t.variance), reverse=True)
-        est = sum(t.estimated for t in txn_vars)
-        act = sum(t.actual for t in txn_vars)
-        var = act - est
+        txn_vars.sort(key=lambda t: abs(t.figures.variance), reverse=True)
         group_items[group_name].append(CategoryItemVariance(
             category_id=cat_id,
             group_name=group_name,
             item_name=item_name,
-            estimated_total=est,
-            actual_total=act,
-            variance=var,
-            variance_pct=_pct(var, est),
+            figures=VarianceFigures.of(
+                sum(t.figures.estimated for t in txn_vars),
+                sum(t.figures.actual for t in txn_vars),
+            ),
             transaction_count=len(txn_vars),
             transactions=txn_vars,
         ))
@@ -338,20 +360,17 @@ def _build_group_hierarchy(
     # Build CategoryGroupVariance for each group.
     groups: list[CategoryGroupVariance] = []
     for group_name, items in group_items.items():
-        items.sort(key=lambda i: abs(i.variance), reverse=True)
-        est = sum(i.estimated_total for i in items)
-        act = sum(i.actual_total for i in items)
-        var = act - est
+        items.sort(key=lambda i: abs(i.figures.variance), reverse=True)
         groups.append(CategoryGroupVariance(
             group_name=group_name,
-            estimated_total=est,
-            actual_total=act,
-            variance=var,
-            variance_pct=_pct(var, est),
+            figures=VarianceFigures.of(
+                sum(i.figures.estimated for i in items),
+                sum(i.figures.actual for i in items),
+            ),
             items=items,
         ))
 
-    groups.sort(key=lambda g: abs(g.variance), reverse=True)
+    groups.sort(key=lambda g: abs(g.figures.variance), reverse=True)
     return groups
 
 
@@ -362,17 +381,10 @@ def _build_txn_variance(txn: Transaction) -> TransactionVariance:
     estimated_amount if actual is NULL).  Projected transactions
     use estimated_amount for both sides, yielding zero variance.
     """
-    estimated = txn.estimated_amount
-    actual = _compute_actual(txn)
-    variance = actual - estimated
-
     return TransactionVariance(
         transaction_id=txn.id,
         name=txn.name,
-        estimated=estimated,
-        actual=actual,
-        variance=variance,
-        variance_pct=_pct(variance, estimated),
+        figures=VarianceFigures.of(txn.estimated_amount, _compute_actual(txn)),
         is_paid=bool(txn.status and txn.status.is_settled),
         due_date=txn.due_date,
     )

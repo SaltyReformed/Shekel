@@ -349,29 +349,29 @@ def export_variance_csv(report) -> str:
     for group in report.groups:
         rows.append([
             "Group", group.group_name, "", "",
-            _dec(group.estimated_total), _dec(group.actual_total),
-            _dec(group.variance), _pct(group.variance_pct), "",
+            _dec(group.figures.estimated), _dec(group.figures.actual),
+            _dec(group.figures.variance), _pct(group.figures.variance_pct), "",
         ])
         for item in group.items:
             rows.append([
                 "Item", item.group_name, item.item_name, "",
-                _dec(item.estimated_total), _dec(item.actual_total),
-                _dec(item.variance), _pct(item.variance_pct), "",
+                _dec(item.figures.estimated), _dec(item.figures.actual),
+                _dec(item.figures.variance), _pct(item.figures.variance_pct), "",
             ])
             for txn in item.transactions:
                 rows.append([
                     "Transaction", item.group_name, item.item_name,
                     _safe(txn.name),
-                    _dec(txn.estimated), _dec(txn.actual),
-                    _dec(txn.variance), _pct(txn.variance_pct),
+                    _dec(txn.figures.estimated), _dec(txn.figures.actual),
+                    _dec(txn.figures.variance), _pct(txn.figures.variance_pct),
                     _bool_yn(txn.is_paid),
                 ])
 
     # Totals row.
     rows.append([
         "Total", "", "", "",
-        _dec(report.total_estimated), _dec(report.total_actual),
-        _dec(report.total_variance), _pct(report.total_variance_pct), "",
+        _dec(report.figures.estimated), _dec(report.figures.actual),
+        _dec(report.figures.variance), _pct(report.figures.variance_pct), "",
     ])
 
     return _write_csv(rows)
