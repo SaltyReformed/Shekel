@@ -421,9 +421,7 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
         logger.info(
             "Stale-data conflict on mark_done shadow id=%d", txn_id,
         )
-        return _stale_transaction_response(
-            txn_id, target.render_mode, target.card_prefix, target.can_edit,
-        )
+        return _stale_transaction_response(txn_id, target)
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
@@ -507,17 +505,13 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
         logger.info(
             "Stale-data conflict on mark_done id=%d", txn_id,
         )
-        return _stale_transaction_response(
-            txn_id, target.render_mode, target.card_prefix, target.can_edit,
-        )
+        return _stale_transaction_response(txn_id, target)
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
     logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
 
-    return _mark_done_success_response(
-        txn, target.render_mode, target.card_prefix, target.can_edit,
-    )
+    return _mark_done_success_response(txn, target)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-done", methods=["POST"])

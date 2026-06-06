@@ -155,35 +155,36 @@ def _render_mobile_card(txn, *, card_prefix, can_edit):
     )
 
 
-def _mark_done_success_response(txn, render_mode, card_prefix, can_edit):
+def _mark_done_success_response(txn, target):
     """Build the success response tuple for a mark_done request.
 
     Forks on the rendering surface the request came from:
 
-      * ``render_mode == "mobile_card"``: return the single re-rendered
-        mobile card + ``HX-Trigger: mobileCardSettled``.  The card swaps
-        in place (no reload); the owner This Period summary blocks
-        listen for ``mobileCardSettled`` and self-refresh, while the
-        companion page has no summary blocks so only the card updates.
+      * ``target.render_mode == "mobile_card"``: return the single
+        re-rendered mobile card + ``HX-Trigger: mobileCardSettled``.  The
+        card swaps in place (no reload); the owner This Period summary
+        blocks listen for ``mobileCardSettled`` and self-refresh, while
+        the companion page has no summary blocks so only the card
+        updates.
       * otherwise (desktop grid / full-edit popover): the desktop cell +
         ``HX-Trigger: gridRefresh`` -- the existing reload-driven path,
         unchanged.
 
     Args:
         txn: The settled Transaction.
-        render_mode: The ``render`` form field (``"mobile_card"`` or
-            absent/empty).
-        card_prefix: The ``card_prefix`` form field (per-tab id
-            namespace) -- only meaningful for the mobile_card path.
-        can_edit: The ``can_edit`` form field as a bool -- only
-            meaningful for the mobile_card path.
+        target: The :class:`_RenderTarget` describing the response
+            surface.  ``render_mode`` selects the mobile-card vs desktop
+            path; ``card_prefix`` / ``can_edit`` are forwarded to the
+            card render and are only meaningful on the mobile_card path.
 
     Returns:
         A Flask ``(html, status, headers)`` response tuple.
     """
-    if render_mode == "mobile_card":
+    if target.render_mode == "mobile_card":
         return (
-            _render_mobile_card(txn, card_prefix=card_prefix, can_edit=can_edit),
+            _render_mobile_card(
+                txn, card_prefix=target.card_prefix, can_edit=target.can_edit,
+            ),
             200,
             {"HX-Trigger": "mobileCardSettled"},
         )
@@ -219,9 +220,7 @@ def _credit_payback_idempotent_response(exc, txn_id):
     )
 
 
-def _stale_transaction_response(
-    txn_id, render_mode="", card_prefix="", can_edit=False,
-):
+def _stale_transaction_response(txn_id, target=None):
     """Roll back the session and render the cell in conflict mode + 409.
 
     Used by every PATCH/POST/DELETE handler that can race a
@@ -232,11 +231,11 @@ def _stale_transaction_response(
     indicator.  Returns a 404 if the row was hard-deleted by the
     winning request.
 
-    The mobile/companion Mark Paid path passes ``render_mode=
-    "mobile_card"`` so the 409 body is the re-rendered mobile card
-    (latest state) rather than the desktop cell; the card's
-    ``hx-target`` is the card wrapper, so a desktop-cell body would not
-    swap.  That path re-fetches through
+    The mobile/companion Mark Paid path passes a :class:`_RenderTarget`
+    with ``render_mode == "mobile_card"`` so the 409 body is the
+    re-rendered mobile card (latest state) rather than the desktop cell;
+    the card's ``hx-target`` is the card wrapper, so a desktop-cell body
+    would not swap.  That path re-fetches through
     :func:`get_accessible_transaction` so a companion's
     conflict resolves against the linked owner's row (the desktop path
     uses :func:`_get_owned_transaction`, which is owner-only).
@@ -245,12 +244,12 @@ def _stale_transaction_response(
         txn_id: Primary key of the transaction the route was trying
             to mutate.  Used to re-fetch under ownership checks so
             the conflict UI renders the correct row.
-        render_mode: ``"mobile_card"`` to return a mobile card body;
-            anything else returns the desktop cell.
-        card_prefix: Per-tab id namespace for the mobile card wrapper
-            id (only used when ``render_mode == "mobile_card"``).
-        can_edit: Owner-vs-companion flag forwarded to the mobile card
-            render (only used for the mobile_card path).
+        target: The :class:`_RenderTarget` for the mobile/companion Mark
+            Paid path, or ``None`` (the default) for the desktop-cell
+            conflict every non-mobile caller wants.  When present and
+            ``render_mode == "mobile_card"`` the 409 body is the mobile
+            card; ``card_prefix`` / ``can_edit`` drive its wrapper id and
+            the owner-vs-companion edit affordance.
 
     Returns:
         Flask response tuple ``(html, 409)`` or ``("Not found", 404)``
@@ -258,12 +257,14 @@ def _stale_transaction_response(
     """
     db.session.rollback()
     db.session.expire_all()
-    if render_mode == "mobile_card":
+    if target is not None and target.render_mode == "mobile_card":
         txn = get_accessible_transaction(txn_id)
         if txn is None:
             return "Not found", 404
         return (
-            _render_mobile_card(txn, card_prefix=card_prefix, can_edit=can_edit),
+            _render_mobile_card(
+                txn, card_prefix=target.card_prefix, can_edit=target.can_edit,
+            ),
             409,
         )
     txn = _get_owned_transaction(txn_id)
@@ -311,7 +312,13 @@ def _resolve_owned_fks(specs):
     the form-partial routes read ids straight off the query string.
 
     Args:
-        specs: ordered ``(model, obj_id, not_found_msg)`` tuples.
+        specs: ordered ``(model, obj_id, not_found_msg)`` tuples.  Use a
+            distinct model class per spec: the returned map is keyed by
+            model, so two specs sharing one model collapse to the last
+            row fetched.  That precondition holds for every caller today;
+            note it touches only the convenience map -- every spec is
+            still ownership-checked, so a collision could never weaken
+            the 404 gate.
 
     Returns:
         ``(resolved, None)`` on success, where *resolved* maps each
