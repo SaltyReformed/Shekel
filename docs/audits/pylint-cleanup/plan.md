@@ -1,5 +1,14 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
+> **Definition of done has TWO gates.** This tracker is the mechanical floor. A
+> file is not DONE here until it has also passed the design-quality rubric in
+> [`quality-pass.md`](quality-pass.md): an independent reviewer arguing both
+> "simpler?" and "right abstraction for the next feature?", findings triaged to
+> ACCEPT/REFINE/REVERT-OVERREACH with `file:line` citations and recorded in that
+> doc's register, fixes shipped as their own commit with the full suite as the
+> gate. Verify every finding against the code before applying. The auto-loaded
+> `.claude/rules/pylint-cleanup.md` carries the short form.
+
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.88/10 with ZERO
 `duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 161 visible messages.
 Full suite 5755 passed.** Phase 3 (design smells) has TWELVE files plus the form-mutation helper
