@@ -24,7 +24,10 @@ from app.models.transaction import Transaction
 from app.services import income_service, pay_period_service
 from app.services.projection_inputs import load_active_deductions_for_accounts
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.savings_dashboard_service._types import _DashboardCoreData
+from app.services.savings_dashboard_service._types import (
+    _AccountParams,
+    _DashboardCoreData,
+)
 from app.utils.balance_predicates import balance_excluded_status_ids
 
 
@@ -133,11 +136,14 @@ def _load_loan_params_and_escrow(accounts):
     return loan_params_map, escrow_map
 
 
-def _load_account_params(user_id, accounts):
+def _load_account_params(
+    user_id: int, accounts: list[Account],
+) -> _AccountParams:
     """Batch-load all account-type-specific parameters.
 
-    Returns a dict with maps for each param type and supporting data
-    needed by the projection loop.
+    Returns an :class:`_AccountParams` with the six account-type
+    parameter maps (each keyed by ``account_id``) the projection loop
+    reads.  This is the single place all six are constructed.
     """
     interest_params_map = {}
     interest_account_ids = [
@@ -186,14 +192,14 @@ def _load_account_params(user_id, accounts):
 
     loan_params_map, escrow_map = _load_loan_params_and_escrow(accounts)
 
-    return {
-        "interest_params_map": interest_params_map,
-        "investment_params_map": investment_params_map,
-        "deductions_by_account": deductions_by_account,
-        "salary_gross_biweekly": salary_gross_biweekly,
-        "loan_params_map": loan_params_map,
-        "escrow_map": escrow_map,
-    }
+    return _AccountParams(
+        interest_params_map=interest_params_map,
+        investment_params_map=investment_params_map,
+        deductions_by_account=deductions_by_account,
+        salary_gross_biweekly=salary_gross_biweekly,
+        loan_params_map=loan_params_map,
+        escrow_map=escrow_map,
+    )
 
 
 def _load_archived_accounts(user_id: int) -> list[dict]:

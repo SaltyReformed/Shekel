@@ -564,7 +564,7 @@ class TestConsumerIntegration:
             savings_params = savings_dashboard_service._data._load_account_params(
                 user_id, accounts=[],
             )
-            assert savings_params["salary_gross_biweekly"] == canonical
+            assert savings_params.salary_gross_biweekly == canonical
 
             # Year-end consumer: thin delegator over income_service
             # (moved to the ._data sub-module in the Phase 2 split).

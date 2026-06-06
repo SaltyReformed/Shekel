@@ -52,15 +52,17 @@ def compute_dashboard_data(user_id):
 
     # ── Load account-type-specific parameters ───────────────────
     params = _load_account_params(user_id, core.accounts)
-    params["scenario_id"] = core.scenario.id if core.scenario else None
 
     # ── Compute per-account projections ─────────────────────────
+    # scenario_id is request-scoped (off the baseline scenario), not an
+    # account-type parameter, so it rides on the context, not in params.
     ctx = _ProjectionContext(
         all_transactions=core.all_transactions,
         all_shadow_income=core.all_shadow_income,
         all_periods=core.all_periods,
         current_period=core.current_period,
         params=params,
+        scenario_id=core.scenario.id if core.scenario else None,
     )
     account_data = _compute_account_projections(core.accounts, ctx)
 
@@ -68,7 +70,7 @@ def compute_dashboard_data(user_id):
     # One income producer feeds every income-derived figure on the
     # page: the income-relative-goal trajectory's net biweekly pay AND
     # the DTI denominator's gross monthly income.  Pre-Commit-26 the
-    # DTI path took ``params["salary_gross_biweekly"]`` (the off-engine
+    # DTI path took ``params.salary_gross_biweekly`` (the off-engine
     # raw ``annual_salary / pay_periods`` recompute) and silently dropped
     # any applicable ``SalaryRaise`` rows, so a user with a 3% recurring
     # raise saw a DTI computed against a denominator ~$260/mo too low
@@ -107,7 +109,7 @@ def compute_dashboard_data(user_id):
 
     # ── Debt summary and DTI ───────────────────────────────────
     debt_summary = _compute_debt_summary(
-        account_data, params["escrow_map"],
+        account_data, params.escrow_map,
     )
     if debt_summary is not None:
         # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine

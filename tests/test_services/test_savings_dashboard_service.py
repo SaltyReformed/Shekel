@@ -1626,8 +1626,13 @@ class TestDTIRaiseAware:
             "engine breakdown (MED-06 / F-032)."
         )
 
-        # Guard 1b: negative lock -- no Subscript node in
-        # compute_dashboard_data reads ``params["salary_gross_biweekly"]``.
+        # Guard 1b: negative lock -- compute_dashboard_data must not read
+        # the off-engine ``salary_gross_biweekly`` for DTI, by either the
+        # legacy dict subscript ``params["salary_gross_biweekly"]`` or the
+        # current dataclass attribute ``params.salary_gross_biweekly``
+        # (``params`` became the frozen ``_AccountParams`` in the
+        # type-precision quality pass; the attribute form is the access a
+        # regression would now use).
         tree = ast.parse(inspect.getsource(_orchestrator))
         target_fn = None
         for node in ast.walk(tree):
@@ -1639,17 +1644,22 @@ class TestDTIRaiseAware:
             "compute_dashboard_data not found in module source"
         )
         for node in ast.walk(target_fn):
-            if (
+            reads_off_engine = (
                 isinstance(node, ast.Subscript)
                 and isinstance(node.value, ast.Name)
                 and node.value.id == "params"
                 and isinstance(node.slice, ast.Constant)
                 and node.slice.value == "salary_gross_biweekly"
-            ):
+            ) or (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "params"
+                and node.attr == "salary_gross_biweekly"
+            )
+            if reads_off_engine:
                 raise AssertionError(
-                    "compute_dashboard_data must not read the "
-                    "off-engine params['salary_gross_biweekly'] "
-                    "value for DTI (MED-06 / F-032)."
+                    "compute_dashboard_data must not read the off-engine "
+                    "salary_gross_biweekly value for DTI (MED-06 / F-032)."
                 )
 
         # Guard 2: package-wide -- no bare 26/12 literal in any

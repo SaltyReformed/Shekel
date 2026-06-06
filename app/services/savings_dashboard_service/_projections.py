@@ -55,7 +55,7 @@ def _compute_base_balances(acct, kind, acct_interest_params, ctx):
     anchor_period_id = acct.current_anchor_period_id or (
         ctx.current_period.id if ctx.current_period else None
     )
-    scenario_id = ctx.params.get("scenario_id")
+    scenario_id = ctx.scenario_id
 
     balances = {}
     # MED-01 / S6-03: one flag-driven classifier shared with the
@@ -292,7 +292,7 @@ def _investment_horizons(projection, all_periods, current_period):
 
 def _project_investment(acct, investment_params, current_bal, ctx):
     """Compute growth projections for an investment/retirement account."""
-    acct_deductions = ctx.params["deductions_by_account"].get(acct.id, [])
+    acct_deductions = ctx.params.deductions_by_account.get(acct.id, [])
     adapted_deductions = adapt_deductions(acct_deductions)
     acct_contributions = [
         t for t in ctx.all_shadow_income
@@ -302,7 +302,7 @@ def _project_investment(acct, investment_params, current_bal, ctx):
     inputs = build_investment_projection_inputs(
         acct.id, investment_params, adapted_deductions, acct_contributions,
         ctx.all_periods, ctx.current_period,
-        ctx.params["salary_gross_biweekly"],
+        ctx.params.salary_gross_biweekly,
     )
 
     future_periods = [
@@ -345,9 +345,9 @@ def _project_one_account(acct, ctx):
         monthly_payment + payoff_date).
     """
     kind = classify_account(acct)
-    acct_interest_params = ctx.params["interest_params_map"].get(acct.id)
-    acct_loan_params = ctx.params["loan_params_map"].get(acct.id)
-    acct_investment_params = ctx.params["investment_params_map"].get(acct.id)
+    acct_interest_params = ctx.params.interest_params_map.get(acct.id)
+    acct_loan_params = ctx.params.loan_params_map.get(acct.id)
+    acct_investment_params = ctx.params.investment_params_map.get(acct.id)
 
     balances, current_bal = _compute_base_balances(
         acct, kind, acct_interest_params, ctx,
@@ -356,7 +356,7 @@ def _project_one_account(acct, ctx):
     loan_result = None
     if acct_loan_params:
         loan_result = _compute_loan_account(
-            acct, acct_loan_params, ctx.params.get("scenario_id"),
+            acct, acct_loan_params, ctx.scenario_id,
             ctx.all_periods,
         )
         current_bal = loan_result.current_balance

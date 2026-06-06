@@ -12,7 +12,12 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
+from app.models.interest_params import InterestParams
+from app.models.investment_params import InvestmentParams
+from app.models.loan_features import EscrowComponent
+from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
+from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 
@@ -35,20 +40,40 @@ class _DashboardCoreData:
 
 
 @dataclass(frozen=True)
+class _AccountParams:
+    """Batch-loaded, account-type-specific parameter maps for the loop.
+
+    Built once per request by :func:`_load_account_params` -- the single
+    place all six maps are constructed -- and read per account inside the
+    projection loop.  Each map is keyed by ``account_id``.  Request-scoped
+    state that is not an account-type parameter (the baseline
+    ``scenario_id``) lives on :class:`_ProjectionContext`, not here.
+    """
+
+    interest_params_map: dict[int, InterestParams]
+    investment_params_map: dict[int, InvestmentParams]
+    deductions_by_account: dict[int, list[PaycheckDeduction]]
+    salary_gross_biweekly: Decimal
+    loan_params_map: dict[int, LoanParams]
+    escrow_map: dict[int, list[EscrowComponent]]
+
+
+@dataclass(frozen=True)
 class _ProjectionContext:
     """Loop-invariant inputs shared across the per-account projection loop.
 
     Every account in ``_compute_account_projections`` projects against
-    the same transactions, periods, current period, and loaded parameter
-    maps; bundling them keeps the per-account helpers to a small,
-    cohesive argument list.
+    the same transactions, periods, current period, loaded parameter
+    maps, and baseline scenario; bundling them keeps the per-account
+    helpers to a small, cohesive argument list.
     """
 
     all_transactions: list[Transaction]
     all_shadow_income: list[Transaction]
     all_periods: list[PayPeriod]
     current_period: PayPeriod | None
-    params: dict
+    params: _AccountParams
+    scenario_id: int | None
 
 
 @dataclass(frozen=True)
