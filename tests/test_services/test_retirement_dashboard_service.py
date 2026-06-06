@@ -24,6 +24,7 @@ from app.services import (
     account_service,
     balance_resolver,
     pay_period_service,
+    paycheck_calculator,
     retirement_dashboard_service,
 )
 
@@ -138,6 +139,103 @@ class TestComputeGapData:
             )
             assert len(result["pensions"]) == 1
             assert result["pension_benefit"] is not None
+
+
+class TestComputeGapNetBiweekly:
+    """Pin the gap-comparison net-biweekly scaling (quality-pass B7).
+
+    ``_compute_gap_net_biweekly`` scales the projected final-year gross
+    biweekly by the current effective take-home rate (net / gross) so the
+    gap calculator compares retirement income against a raise-adjusted
+    pre-retirement take-home figure rather than today's pay.  The cleanup
+    (ce65229) reshaped the inputs into the ``_CurrentPay`` snapshot but
+    left the scaling arithmetic itself unpinned; these tests assert the
+    formula and its two early-return guards on hand-computed values,
+    independent of the tax engine that produces the real net / gross.
+
+    Supplying ``salary_by_year`` directly keeps the helper pure (no DB,
+    no ref_cache, no paycheck engine) so the asserted numbers depend only
+    on the scaling math under test.
+    """
+
+    def test_scales_final_gross_by_current_take_home_rate(self):
+        """Final-year gross is scaled by today's net/gross take-home rate.
+
+        Inputs chosen so every step is exact and hand-checkable:
+
+          effective take-home rate = 2000.00 / 2500.00 = 0.80
+          final-year gross biweekly = 131,000.00 / 26
+                                    = 5038.4615...  -> 5038.46 (quantize .01)
+          gap net biweekly = 5038.46 * 0.80
+                           = 4030.768  -> 4030.77 (quantize .01)
+
+        Exact equality catches a regression in either quantize step or in
+        the rate denominator -- the engine ``gross_biweekly`` is reused so
+        the rate stays raise-aware (the pre-Commit-17 ``annual / periods``
+        recompute silently dropped any applicable raise).
+        """
+        profile = SalaryProfile(pay_periods_per_year=26)
+        pay = retirement_dashboard_service._CurrentPay(
+            all_periods=[],
+            current_period=None,
+            net_biweekly=Decimal("2000.00"),
+            current_breakdown=paycheck_calculator.PaycheckBreakdown(
+                period=paycheck_calculator.PeriodInfo(period_id=1),
+                earnings=paycheck_calculator.Earnings(
+                    annual_salary=Decimal("65000.00"),
+                    gross_biweekly=Decimal("2500.00"),
+                ),
+            ),
+        )
+        salary_by_year = [
+            (2026, Decimal("120000.00")),
+            (2055, Decimal("131000.00")),
+        ]
+        result = retirement_dashboard_service._compute_gap_net_biweekly(
+            [profile], date(2055, 1, 1), pay, salary_by_year,
+        )
+        assert result == Decimal("4030.77")
+
+    def test_returns_current_net_when_no_retirement_horizon(self):
+        """No planned retirement date -> current net biweekly, unscaled.
+
+        The first guard returns ``pay.net_biweekly`` verbatim when any of
+        salary profile / horizon / positive current pay is missing.  A
+        ``None`` horizon must not scale (and must not raise), so the gap
+        calculator falls back to comparing against today's take-home.
+        """
+        profile = SalaryProfile(pay_periods_per_year=26)
+        pay = retirement_dashboard_service._CurrentPay(
+            all_periods=[],
+            current_period=None,
+            net_biweekly=Decimal("1800.00"),
+            current_breakdown=None,
+        )
+        result = retirement_dashboard_service._compute_gap_net_biweekly(
+            [profile], None, pay, [(2026, Decimal("120000.00"))],
+        )
+        assert result == Decimal("1800.00")
+
+    def test_returns_current_net_when_current_gross_is_zero(self):
+        """No current breakdown -> gross 0.00 -> unscaled, no divide-by-zero.
+
+        Past the first guard (profile + horizon + positive net all
+        present) the rate denominator is ``current_breakdown.earnings.
+        gross_biweekly``; a missing breakdown resolves it to 0.00.  The
+        helper must return the current net biweekly rather than divide by
+        zero, so a no-current-period user still gets a defined comparison.
+        """
+        profile = SalaryProfile(pay_periods_per_year=26)
+        pay = retirement_dashboard_service._CurrentPay(
+            all_periods=[],
+            current_period=None,
+            net_biweekly=Decimal("1500.00"),
+            current_breakdown=None,
+        )
+        result = retirement_dashboard_service._compute_gap_net_biweekly(
+            [profile], date(2055, 1, 1), pay, [(2055, Decimal("131000.00"))],
+        )
+        assert result == Decimal("1500.00")
 
 
 class TestComputeSliderDefaults:

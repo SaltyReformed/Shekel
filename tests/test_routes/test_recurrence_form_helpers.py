@@ -17,6 +17,7 @@ run (Flask refuses ``app.add_url_rule`` once a request has been
 handled).
 """
 import logging
+from types import SimpleNamespace
 
 from flask import Response
 
@@ -36,6 +37,8 @@ from app.routes._recurrence_form_helpers import (
     build_recurrence_rule_from_form,
     handle_recurrence_conflict,
     handle_stale_form_conflict,
+    resolve_recurrence_rule_for_update,
+    update_recurrence_rule_from_form,
 )
 from app.routes._redirect_target import RedirectTarget
 
@@ -253,6 +256,130 @@ class TestBuildRecurrenceRuleFromForm:
             assert result.due_day_of_month == 15
             assert "due_day_of_month" not in data
             db.session.rollback()
+
+
+class TestUpdateRecurrenceNoAutoOffset:
+    """Pin the no-auto-offset-on-update invariant (quality-pass B7).
+
+    ``build_recurrence_rule_from_form`` auto-derives ``offset_periods``
+    from the start period for ``EVERY_N_PERIODS`` (C2-3 above:
+    ``period_index % interval_n``).  The update path deliberately does
+    NOT: the edit form never re-collects ``start_period_id`` (it is fixed
+    at creation), so the submitted ``offset_periods`` is taken verbatim.
+    The cleanup (8e01099) extracted ``update_recurrence_rule_from_form``
+    and the ``resolve_recurrence_rule_for_update`` dispatcher but left
+    this asymmetry unpinned; these tests assert the submitted offset
+    survives unchanged on both the direct-update and dispatcher paths, so
+    a future edit that copies the create-side auto-offset into the update
+    side surfaces here.
+    """
+
+    def test_update_uses_submitted_offset_verbatim_for_every_n(
+        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    ):
+        """EVERY_N_PERIODS update keeps the submitted offset, not derived.
+
+        A create with this pattern + a start period would overwrite the
+        submitted ``offset_periods`` with ``period_index % interval_n``
+        (C2-3).  The update path has no start period to derive from, so
+        the submitted ``3`` must land on the rule verbatim.  The rule's
+        pre-update ``offset_periods`` of 99 also proves the field was
+        actually written (not left stale).
+        """
+        with app.test_request_context():
+            every_n_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_N_PERIODS,
+            )
+            once_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.ONCE,
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=once_id,
+                interval_n=1,
+                offset_periods=99,
+            )
+            data = {
+                "recurrence_pattern": str(every_n_id),
+                "interval_n": 4,
+                "offset_periods": 3,
+                "day_of_month": None,
+                "month_of_year": None,
+                "due_day_of_month": None,
+            }
+            result = update_recurrence_rule_from_form(
+                rule,
+                data,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template", {"template_id": 1},
+                    ),
+                    include_due_day_of_month=True,
+                ),
+            )
+            assert result is None
+            # Verbatim from the payload -- NOT auto-derived (3, not 3 % 4
+            # or any period-index computation).
+            assert rule.offset_periods == 3
+            assert rule.interval_n == 4
+            assert rule.pattern_id == every_n_id
+            # All recurrence keys popped so the caller's setattr loop
+            # never sees a stray kwarg.
+            assert data == {}
+
+    def test_resolve_existing_rule_preserves_submitted_offset(
+        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    ):
+        """Dispatcher routes an existing rule to the no-auto-offset updater.
+
+        ``resolve_recurrence_rule_for_update`` takes the in-place update
+        branch when the template already owns a rule and a pattern is
+        submitted.  Pins that the EVERY_N_PERIODS offset still arrives
+        verbatim (5) through the dispatcher -- the real path the
+        ``update_template`` / ``update_transfer_template`` routes take.
+        """
+        with app.test_request_context():
+            every_n_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_N_PERIODS,
+            )
+            once_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.ONCE,
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=once_id,
+                interval_n=1,
+                offset_periods=0,
+            )
+            template = SimpleNamespace(
+                recurrence_rule=rule,
+                user_id=seed_user["user"].id,
+                recurrence_rule_id=None,
+            )
+            data = {
+                "recurrence_pattern": str(every_n_id),
+                "interval_n": 7,
+                "offset_periods": 5,
+                "day_of_month": None,
+                "month_of_year": None,
+                "due_day_of_month": None,
+            }
+            result = resolve_recurrence_rule_for_update(
+                template,
+                data,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template", {"template_id": 1},
+                    ),
+                    include_due_day_of_month=True,
+                ),
+            )
+            assert result is None
+            assert rule.offset_periods == 5
+            assert rule.interval_n == 7
+            assert rule.pattern_id == every_n_id
 
 
 class TestHandleStaleConflict:

@@ -15,7 +15,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.services import account_service
+from app.services import account_service, investment_dashboard_service
 
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
@@ -120,6 +120,99 @@ class TestInvestmentDashboard:
         assert b"Brokerage" in resp.data
         assert b"25,000.00" in resp.data
         assert b"Assumed Return" in resp.data
+
+
+class TestContributionLimitZeroCap:
+    """Pin the zero-vs-None annual-limit branches (quality-pass B7).
+
+    Commit 24 / HIGH-06 / E-12 replaced Python truthiness on
+    ``annual_contribution_limit`` with explicit ``is None`` checks so a
+    stored ``Decimal("0")`` ("capped at zero this year") stays distinct
+    from ``None`` ("no cap configured").  The cleanup left those three
+    branches in ``_compute_limit_info`` and the zero-cap branch in
+    ``_compute_suggested_contribution`` unpinned; these unit tests assert
+    each on hand-reasoned values.  Both helpers read only
+    ``annual_contribution_limit``, so an in-memory params object and an
+    empty period list keep them pure (no DB, no engine).
+    """
+
+    def test_limit_info_zero_cap_with_ytd_is_fully_used(self):
+        """Zero cap + positive YTD -> card renders at 100% used.
+
+        ``limit`` is 0 (not ``None``), so the card is shown rather than
+        hidden; any positive YTD is over a zero cap, so ``pct`` saturates
+        at 100 (matching the growth engine's ``min(contribution, 0) = 0``
+        semantics).  A truthiness regression would treat the zero cap as
+        "no cap" and hide the card (return ``None``).
+        """
+        params = InvestmentParams(annual_contribution_limit=Decimal("0"))
+        result = investment_dashboard_service._compute_limit_info(
+            params, Decimal("100.00"),
+        )
+        assert result == {
+            "limit": Decimal("0"),
+            "ytd": Decimal("100.00"),
+            "pct": 100,
+        }
+
+    def test_limit_info_zero_cap_zero_ytd_is_zero_used(self):
+        """Zero cap + zero YTD -> card renders at 0% used.
+
+        Both cap and YTD are zero: nothing contributed against a zero
+        cap, so ``pct`` is 0 (the ``elif ytd > 0`` branch is not taken).
+        The card still renders (``limit`` is 0, not ``None``).
+        """
+        params = InvestmentParams(annual_contribution_limit=Decimal("0"))
+        result = investment_dashboard_service._compute_limit_info(
+            params, Decimal("0"),
+        )
+        assert result == {
+            "limit": Decimal("0"),
+            "ytd": Decimal("0"),
+            "pct": 0,
+        }
+
+    def test_limit_info_none_cap_hides_card(self):
+        """No cap configured (``None``) -> hide the card (return ``None``).
+
+        The contrast case to the zero cap above: ``None`` means
+        "Brokerage-style, no IRS limit," which hides the card entirely.
+        Keeping this distinct from the zero cap is the whole point of the
+        ``is None`` fix.
+        """
+        params = InvestmentParams(annual_contribution_limit=None)
+        result = investment_dashboard_service._compute_limit_info(
+            params, Decimal("100.00"),
+        )
+        assert result is None
+
+    def test_suggested_contribution_zero_cap_is_zero(self):
+        """Zero cap -> $0.00 per-period suggestion, never a phantom default.
+
+        Remaining limit = max(0 - ytd, 0) = 0, so the suggestion is
+        ``(0 / max(periods, 1)).quantize(.01) = 0.00`` regardless of the
+        period list.  Pins that a zero cap suggests nothing within the
+        cap rather than the legacy $500 fallback truthiness once produced.
+        """
+        params = InvestmentParams(annual_contribution_limit=Decimal("0"))
+        result = investment_dashboard_service._compute_suggested_contribution(
+            params, Decimal("0"), [],
+        )
+        assert result == Decimal("0.00")
+
+    def test_suggested_contribution_none_cap_is_zero(self):
+        """No cap configured (``None``) -> $0.00 suggestion (no IRS limit).
+
+        The brokerage path returns ``Decimal("0")`` immediately: there is
+        no annual limit to spread over the remaining periods.  Pins the
+        contrast to a positive cap and guards against a reintroduced
+        non-zero default for the no-cap case.
+        """
+        params = InvestmentParams(annual_contribution_limit=None)
+        result = investment_dashboard_service._compute_suggested_contribution(
+            params, Decimal("0"), [],
+        )
+        assert result == Decimal("0")
 
 
 class TestInvestmentParams:
@@ -843,6 +936,64 @@ class TestContributionPrompt:
         assert resp.status_code == 302
         assert f"/accounts/{acct.id}/investment" in resp.headers.get(
             "Location", "",
+        )
+
+    def test_create_transfer_rejects_inactive_source(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Inactive source account -> rejected, no transfer wired (B7).
+
+        ``validate_and_resolve_source_account`` refuses to route a
+        recurring contribution out of a deactivated account.  The source
+        is owned (so ``get_or_404`` passes -- it checks ownership, not
+        ``is_active``) but inactive, so the guard redirects with the
+        ``Source account is inactive.`` flash.  The load-bearing assertion
+        is the money-routing guard: NO ``TransferTemplate`` is created, so
+        no shadow transactions are generated against the destination.
+        """
+        from app.models.transfer_template import TransferTemplate as TT
+
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        acct.current_anchor_period_id = seed_periods_today[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        checking = seed_user["account"]
+        checking.is_active = False
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/create-contribution-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": "269.23",
+            },
+        )
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/investment" in resp.headers.get(
+            "Location", "",
+        )
+
+        # Money-routing guard: an inactive source gets no transfer wired
+        # up -- no TransferTemplate against the destination, hence no
+        # shadow transactions move money into it.
+        tpl = (
+            db.session.query(TT)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is None
+
+        # The user-facing reason is surfaced.  The redirect was not
+        # followed, so the flash is still unconsumed in the session.
+        with auth_client.session_transaction() as sess:
+            flashes = sess.get("_flashes", [])
+        assert any(
+            "inactive" in message.lower() for _category, message in flashes
         )
 
     def test_create_transfer_idor(
