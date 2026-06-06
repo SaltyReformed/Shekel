@@ -180,3 +180,32 @@ recommendation to **verify-then-apply** (confirm the claim against the code firs
 
 Full per-finding detail (LOWs + ACCEPT rationales) in run `wvq2yd9aa` output. LOWs are predominantly
 ACCEPTs validating good design, plus minor nits foldable into the batches above.
+
+### Fix-batch progress (session of 2026-06-06)
+
+Full suite 5755 passed (= baseline) after every commit below; each file held/returned to 10.00/10.
+
+| Batch | Commit | Status |
+|---|---|---|
+| HIGH (latent 500) | `92f2bd0` | DONE -- endpoint fixed; **reframed: unreachable dead branch, not a live 500** (route always sets `salary_profile_url` in the deduction path). Regression-pinned the reachable invariant |
+| B1 type-precision | `bfbdd65` | DONE (retirement `_ProjectionBatch`, investment `_PeriodList` union + projection/contribution types) |
+| B1b savings params | `c4f4551` | DONE (`_AccountParams` typed dataclass; `scenario_id` off the params bag) |
+| B2 year_end | `5c2308a` | **F2 DONE** (balance-map `_base`/`_dispatch` split). **F1 DEFERRED** -- needs developer call (see below) |
+| B3 loan | `1f48c01` | DONE (F1 tuple-narrow, F2 shared `_resolve` core, F3 `_RouteLoanContext` composing `LoanContext`, F4 `_render_rate_history`) |
+| B5 grid | `e212629` | DONE (dead `txn_by_period` field removed) |
+| B6 docs | `9395d3b` | DONE (salary `_bp` module list, `RecurrenceFormContext` framing, `_ProjectionContext` feed/dual-source note) |
+| B4 transactions | - | PENDING -- F1 has a nuance (see below); F2 FK re-keying is future-proofing |
+| B7 test-gaps | - | PENDING -- 4 new value-pinning tests |
+
+**B2-F1 deferral rationale:** reshaping `_ProjectionInputs` to the investment trio + fanning out
+`debt_schedules`/`interest_params_map` is an invasive 5-file change to correct, well-tested
+projection plumbing for a *partial* gain (the trio is still subset-read within each chain). The
+reviewer rated it the weakest offender (REFINE; honest-docstring minimum bar already met). Awaiting a
+go/no-go before touching byte-identical financial code for marginal benefit.
+
+**B4-F1 nuance:** the review said make all three `_RenderTarget` sinks take the bundle, but
+`_render_mobile_card` reads only 2 of the 3 fields (`card_prefix`/`can_edit`, not `render_mode`) and
+`_stale_transaction_response` has non-mobile callers with no target. Making *those* take the full
+bundle would be superset-forwarding (the same smell). The honest version: only the genuine
+all-three-field consumers take the bundle; the subset/no-target ones stay plain. To confirm before
+implementing.
