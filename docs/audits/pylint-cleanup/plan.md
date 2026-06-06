@@ -9,10 +9,28 @@
 > gate. Verify every finding against the code before applying. The auto-loaded
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.88/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 161 visible messages.
-Full suite 5755 passed.** Phase 3 (design smells) has TWELVE files plus the form-mutation helper
-family complete. The newest, **`routes/grid.py` DONE** (`86541bb`), cleared all 4 design smells by
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.89/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 154 visible messages.
+Full suite 5766 passed.** Phase 3 (design smells) has THIRTEEN files plus the form-mutation helper
+family complete. The newest, **`routes/templates.py` DONE** (`1c26575`), cleared all 4 design smells
+(`update_template` tm-locals/return/branches; `preview_recurrence` tm-locals) PLUS the
+`preview_recurrence` protected-access by genuine decomposition (no disables, behavior bit-identical;
+242 targeted + full suite 5766 the gate): the developer-chosen shared `_validate_template_form`
+(account/category ownership + envelope-only-on-expense) now drives BOTH `create_template` and
+`update_template` -- genuine 2-site DRY (create's required `account_id`/`category_id` are always in
+`data`, so the `in data` guards preserve both paths) -- plus `_apply_fields_and_propagate_rename`
+collapse `update_template` to ~11 locals/6 returns/8 branches; `preview_recurrence` -> ~9 locals via
+`_build_preview_rule` (request.args -> transient rule) + `_render_preview_html`. The protected-access
+(`recurrence_engine._match_periods`) cleared by the developer-chosen BROAD scope: promote the pure,
+directly-tested, cross-module-called matcher to the public `match_periods`, which ALSO cleared its
+own Tier-3 tm-return (8/6) via a single-return accumulator (developer-chosen over a dispatch dict --
+the branches' heterogeneous locals would force lambda shims; the reviewer agreed). Renamed 2 internal
+callers + 2 doc refs + the test import/27 call sites + the TEST_PLAN.md header (name-only, decision
+#5). Independent quality-pass review (fresh subagent, A-G rubric, all 7 behavior-equivalence points
+verified against the code): ALL ACCEPT, 0 REFINE/REVERT-OVERREACH design changes; the lone finding a
+stale `TEST_PLAN.md` reference folded into the rename. 0 disables added (82); 0 new R0801;
+instance-attrs unchanged at 11. Score 9.88->9.89; visible 161->154; smell items 64->59 (48 8-symbol +
+11 instance-attr). Before it, **`routes/grid.py` DONE** (`86541bb`), cleared all 4 design smells by
 genuine decomposition (no disables, behavior bit-identical): a frozen `_GridRowData` NamedTuple
 replacing `_build_grid_row_data`'s 6-tuple return (the six values are the per-render "row contract"
 spliced into `grid/grid.html`, so naming them collapses the 6-local unpack to ONE local in both
@@ -284,7 +302,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (12 files + the form-helper family done: `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (13 files + the form-helper family done: `templates.py`, `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -923,8 +941,35 @@ documented disables), with commit SHA.
   `calculate` handler keeps its pre-existing tm-locals/return/branches smells (separate Tier-3
   item, untouched -- wrapping the calls added no locals/branches/returns). 66 targeted + full
   suite 5755 passed.
-- **routes/templates.py** (`update_template`:290 tm-locals/return/branches/statements;
-  `preview_recurrence`:651 tm-locals) -- Status: `-`
+- **routes/templates.py** -- Status: **DONE** (`1c26575`; file now 9.96/10, only the pre-existing
+  `line-too-long`:324 Phase-4 residue remains). All 4 LIVE design smells (`update_template`
+  tm-locals 16/15 + tm-return 8/6 + tm-branches 15/12; `preview_recurrence` tm-locals 17/15) PLUS
+  the `preview_recurrence` protected-access (716) resolved by genuine decomposition (no disables,
+  behavior bit-identical). **`update_template`:** the developer-chosen shared `_validate_template_form`
+  (account/category ownership + envelope-only-on-expense) replaces the near-duplicate inline blocks in
+  BOTH `create_template` and `update_template` -- genuine 2-site DRY collapsing the 3 FK/tracking
+  guard-returns to 1 (8->6 returns, no disable: a disable at the 6/6 limit would itself be a
+  useless-suppression). Verified behavior-identical: `TemplateCreateSchema` makes
+  `account_id`/`category_id` required, so they are always in `data` on create -- the `in data` guards
+  match the old unconditional create checks AND the old optional update checks. `_apply_fields_and_propagate_rename`
+  (allowlist write + the rename-desync propagation) drops the remaining locals/branches; net ~11
+  locals / 6 returns / 8 branches. **`preview_recurrence`:** `_build_preview_rule` (parse `request.args`
+  -> transient `RecurrenceRule`, so the route reads `rule.interval_n`/`rule.start_period_id` instead of
+  separate locals) + `_render_preview_html`; ~9 locals. The every_n offset condition was wrapped en
+  route (cleared 1 `line-too-long`). **Protected-access (developer-chosen BROAD scope):** promoted
+  `recurrence_engine._match_periods` -> public `match_periods` (it is a pure function, tested directly
+  by 27 units, and called cross-module by this preview route -- the leading underscore mislabeled a
+  de-facto public API), which ALSO cleared the Tier-3 `match_periods` tm-return (see the Tier-3 entry).
+  Impact-traced: 2 internal callers (`_resolve_generation_plan`, `can_generate_in_period`), 2 doc refs
+  (`can_generate_in_period` docstring, `_recurrence_common` comment), the test import + 27 call sites,
+  and the `TEST_PLAN.md` pattern-matching header -- all name-only (decision #5), no assertion change.
+  Independent quality-pass review (`1c26575` working tree, fresh subagent, A-G rubric): verified all 7
+  behavior-equivalence points against the code, returned ALL ACCEPT (0 REFINE/REVERT-OVERREACH design
+  changes); the lone finding -- a stale `TEST_PLAN.md` reference -- was a rule-7 completeness fix folded
+  into the rename commit. **(The plan's earlier `update_template` tm-statements was already stale -- the
+  live tree had no tm-statements smell here.)** 0 disables added (82); 0 new R0801; instance-attrs
+  unchanged at 11. Score 9.88->9.89; visible 161->154; smell items 64->59. 242 targeted (recurrence +
+  templates + template_flags + optimistic_locking) + **full suite 5766 passed.**
 - **services/retirement_dashboard_service.py** -- Status: **DONE** (`ce65229`; file now
   10.00/10, zero smell messages). All 5 design smells + the dead `salary_profiles` parameter
   resolved by genuine decomposition (no disables, behavior bit-identical; full suite 5755 the
@@ -1057,7 +1102,10 @@ documented disables), with commit SHA.
 - services/retirement_gap_calculator.py: `calculate_gap`:39 tm-args/pos/locals -- `-`
 - services/calibration_service.py: `derive_effective_rates`:35 tm-args/pos/locals -- `-`
 - services/growth_engine.py: `project_balance`:206 tm-args/pos/locals -- `-`
-- services/recurrence_engine.py: `generate_for_template`:55 tm-locals; `_match_periods`:453 tm-return -- `-`
+- services/recurrence_engine.py: `_match_periods`:453 tm-return **RESOLVED** (`1c26575`; renamed to
+  the public `match_periods` + single-return accumulator -- pulled in with the `routes/templates.py`
+  protected-access fix, developer-chosen broad scope). `generate_for_template`:55 tm-locals was
+  already absent in the live tree (stale plan entry). File now 10.00/10, zero smell messages.
 - app/ref_cache.py: `init`:101 tm-locals/branches/statements -- `-`
 - app/ref_seeds.py: `seed_reference_data`:114 tm-locals/branches -- `-`
 - routes/accounts/detail.py: `interest_detail`:50 tm-locals; `checking_detail`:237 tm-locals -- `-`
@@ -1124,13 +1172,12 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after `routes/grid.py` DONE `86541bb`; 64 smell items
-remain [53 of the 8-symbol set + 11 `too-many-instance-attributes`], down from 68): a band at 4 each
--- `routes/templates.py` and `services/growth_engine.py` / `services/loan_resolver.py` /
-`services/retirement_gap_calculator.py` (the last three are 3 8-symbol + 1 instance-attr; the
-financial cores plan-first per the developer's cadence). None of the remaining top files are module
-tm-lines (only `schemas/validation.py` + `services/carry_forward_service.py` carry that, both
-Tier-3 -> package split per decision #5).
+Next by live density (re-measured 2026-06-06 after `routes/templates.py` DONE `1c26575`; 59 smell
+items remain [48 of the 8-symbol set + 11 `too-many-instance-attributes`], down from 64): the band at
+4 each is now the three financial cores -- `services/growth_engine.py` / `services/loan_resolver.py` /
+`services/retirement_gap_calculator.py` (each 3 8-symbol + 1 instance-attr; plan-first per the
+developer's cadence). None of the remaining top files are module tm-lines (only `schemas/validation.py`
++ `services/carry_forward_service.py` carry that, both Tier-3 -> package split per decision #5).
 
 ---
 
@@ -1398,3 +1445,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `8e01099` | 3 | **_recurrence_form_helpers.py + _commit_helpers.py -- bundle redirect/stale-conflict/recurrence-form args (developer-chosen Max-DRY + RedirectTarget) -- both files DONE:** all 8 design smells (5 in `_recurrence_form_helpers`, 3 in `_commit_helpers`) resolved by genuine decomposition (no disables, behavior bit-identical; full suite 5755 the gate). New frozen `RedirectTarget(endpoint, kwargs)` value type in new module `routes/_redirect_target.py` (+ `to_response()` -- the single home for the `redirect(url_for(e, **(k or {})))` idiom shared ~9 ways across the helper layer; also unified the `redirect_kwargs` vs `redirect_endpoint_kwargs` naming drift between `_transfer_creation_helpers` and the others), composed into two frozen contexts. `RecurrenceFormContext` (`end_date_value`/`redirect`/`include_due_day_of_month`) collapses the verbatim triplicated signature tail shared by `build_recurrence_rule_from_form` (7->4 args + 16->13 locals) / `update_recurrence_rule_from_form` (6->3) / `resolve_recurrence_rule_for_update` (6->3). Shared `StaleConflictContext` (`logger`/`log_label`/`log_id`/`flash_message`/`redirect`) lives in `_commit_helpers.py` (the canonical handler's home; imported by `_recurrence_form_helpers` -- one-way edge, no cycle) and drives `handle_stale_conflict`/`commit_or_handle_stale`/`regenerate_and_commit_or_stale` (6/6/7->1/1/2) AND the pre-flush mirror `handle_stale_form_conflict` (8->3). ~30 call sites rewrapped across 8 route files (templates/transfers/accounts/savings/salary/investment/loan); `_transfer_creation_helpers`' `validate_and_resolve_source_account` + `flush_template_or_namedup_redirect` moved to `RedirectTarget` too. Test patch update (decision #5, no assertion change): `test_recurrence_form_helpers.py` 9 call-shapes rewrapped, asserted values frozen byte-identical. **Split-trap check: 0 new R0801** -- the repeated `StaleConflictContext(...)`/`RecurrenceFormContext(...)` wrapping did NOT cluster (log_labels / flash strings / endpoints differ; existing one-sided dup disables on the create/update preambles still cover them). 0 disables added (82); useless-suppression 0; E/F 0. **NOT yet DONE:** `_transfer_creation_helpers.build_recurring_transfer_template` (6-field `TransferTemplate` constructor, an unrelated argument clump) remains -- a separate pending design decision. Score 9.87->9.88; visible 174->166; smell items 77->69 (58 8-symbol + 11 instance-attr). 754 targeted (helper + 7 route suites) + **full suite 5755 passed.** | 9.88/10 | 166 |
 | 2026-06-05 | `59ba11a` | 3 | **_transfer_creation_helpers.py -- externalize `derive_from_loan` from `build_recurring_transfer_template` (developer-chosen genuine structural reduction) -- file DONE:** the last `too-many-arguments` in the form-mutation helper layer cleared WITHOUT a param object or a disable. The 6-field shared `TransferTemplate` factory was flagged because a param object there would only mirror the entity's own columns (single-consumer stamp coupling, zero DRY payoff -- unlike the `8e01099` bundles that dissolved real cross-function duplication), and a disable would break the 0-added streak. Instead `derive_from_loan` was dropped from the helper (6->5 args, at the limit), relying on the column's verified `False` model/server default for investment contributions and every generic transfer; the loan-payment creator -- the ONLY caller that needs it -- assigns `template.derive_from_loan` itself on the returned row before the `flush_template_or_namedup_redirect` flush (`_resolve_transfer_amount` returns the computed bool: `True` for the monthly-payment default path, `False` for a user-supplied amount override), keeping the loan-only concern at the loan call site. Behavior bit-identical. Investment caller unchanged (never passed the flag). **Closed a coverage gap:** strengthened the route test `test_create_transfer_success` with `assert tpl.derive_from_loan is True` -- previously the route's setting of the flag was unasserted (no `amount` posted -> live-derivation path), so this both covers it and locks the refactor; the `False` override path is NOT separately asserted because the model default is also `False` (an assertion there would not distinguish the code from the default). 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held; visible 166->165; smell items 69->68 (57 8-symbol + 11 instance-attr). 253 targeted (investment + loan) + **full suite 5755 passed.** | 9.88/10 | 165 |
 | 2026-06-05 | `86541bb` | 3 | **grid.py -- bundle row-data into `_GridRowData` + pass `_GridContext` to `_build_plan_view` (developer-chosen ctx-passing with a new `user_id` field) -- file DONE:** all 4 design smells (`_build_plan_view` tm-args/pos/locals; `index` tm-locals) resolved by genuine decomposition (no disables, behavior bit-identical). New frozen `_GridRowData` NamedTuple (6 fields) replaces `_build_grid_row_data`'s 6-tuple return -- the per-render "row contract" spliced into grid.html; naming the six values collapses the 6-local unpack to ONE in both `index` (clears tm-locals) and `_build_plan_view` (halves its locals). `_build_plan_view` 8->5 args (clears tm-args + tm-positional) by taking the existing `_GridContext` (`ctx`, given a new `user_id` field) instead of unpacking account/scenario/current_period/user_id; the 4 remaining loaded values fan out to different consumers so they stay unbundled (stamp-coupling avoided). Impact-traced clean (private helpers, no external callers / test constructors; `RowKey`/`grid_bp` untouched). Fixed two stale docstring counts ("5-tuple"->named-6; "eight"->"six" `plan_*` keys). file 10.00/10, 0 smell messages; 0 new R0801; instance-attrs unchanged at 11 (NamedTuple fields not counted by R0902); 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held; visible 165->161; smell items 68->64 (53 8-symbol + 11 instance-attr). 221 grid + 93 companion targeted + **full suite 5755 passed.** | 9.88/10 | 161 |
+| 2026-06-06 | `1c26575` | 3 | **templates.py -- decompose update_template + preview_recurrence + publicize match_periods (developer-chosen broad scope) -- file DONE:** all 4 live design smells (`update_template` tm-locals 16/15 + tm-return 8/6 + tm-branches 15/12; `preview_recurrence` tm-locals 17/15) PLUS the `preview_recurrence` protected-access (716) resolved by genuine decomposition (no disables, behavior bit-identical). `update_template` via the shared `_validate_template_form` (account/category ownership + envelope-only-on-expense, now used by BOTH create_template + update_template -- 2-site DRY; create's required FKs are always in `data`, so the `in data` guards preserve both paths -- verified vs TemplateCreateSchema) + `_apply_fields_and_propagate_rename` -> ~11 locals/6 returns/8 branches (8->6 returns collapses the 3 FK/tracking guards to 1; no disable, as a disable at the 6/6 limit would be a useless-suppression). `preview_recurrence` via `_build_preview_rule` (request.args -> transient rule) + `_render_preview_html` -> ~9 locals; the every_n condition was wrapped (cleared 1 line-too-long). Protected-access cleared by promoting `recurrence_engine._match_periods` -> public `match_periods` (pure, 27 direct unit tests, cross-module caller -- the underscore mislabeled a de-facto public API), which ALSO cleared the Tier-3 `match_periods` tm-return (8/6) via a single-return accumulator (developer-chosen over a dispatch dict); renamed 2 internal callers + 2 doc refs + the test import/27 calls + the TEST_PLAN.md header (name-only, decision #5). Independent quality-pass review (fresh subagent, A-G rubric, all 7 behavior-equivalence points verified against the code): ALL ACCEPT, 0 REFINE/REVERT-OVERREACH; the lone stale-doc finding folded into the rename. 0 disables added (82); 0 new R0801; instance-attrs unchanged at 11. Score 9.88->9.89; visible 161->154; smell items 64->59 (48 8-symbol + 11 instance-attr). 242 targeted + **full suite 5766 passed.** | 9.89/10 | 154 |

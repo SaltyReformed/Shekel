@@ -130,6 +130,7 @@ Order = correctness blast-radius x refactor aggressiveness. Financial core first
 | 12 | `routes/grid.py` | `86541bb` | REVIEWED (M1: dead `txn_by_period` field canonized) |
 | 13 | `routes/_recurrence_form_helpers.py` + `_commit_helpers.py` | `8e01099` | REVIEWED (M2: docstring honesty, test-gap) |
 | 14 | `routes/_transfer_creation_helpers.py` | `59ba11a` | REVIEWED (M1: inactive-source test-gap) |
+| 15 | `routes/templates.py` + `recurrence_engine.match_periods` | `1c26575` | REVIEWED -- **clean** (all ACCEPT, 0 REFINE/REVERT-OVERREACH; first going-forward Phase-3 file under the folded-in rubric) |
 
 ## Fold into Phase 3 going forward
 
@@ -137,6 +138,14 @@ For every Phase 3 file still to be refactored, this rubric review becomes part o
 done: the mechanical smell-clearing commit, then an independent rubric review, then any
 REFINE/REVERT-OVERREACH follow-up -- before the file is marked DONE in `plan.md`. This stops the pass
 from accruing new debt while the retroactive sweep clears the backlog above.
+
+**First going-forward file: `routes/templates.py` (`1c26575`, 2026-06-06).** The mechanical commit
+cleared all 4 design smells + the `preview_recurrence` protected-access; the independent reviewer
+(fresh subagent, A-G rubric) verified all 7 behavior-equivalence points against the code and returned
+ALL ACCEPT -- no REFINE/REVERT-OVERREACH design change was needed. The single finding (a stale
+`tests/TEST_PLAN.md` reference to the renamed `_match_periods`) was a rule-7 completeness fix folded
+into the same commit, not a design refinement, so no separate follow-up commit was required. See the
+register rows below.
 
 ## Register (findings + verdicts)
 
@@ -151,6 +160,11 @@ One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:l
 | `paycheck_calculator.py` | A1/A2/F9 | Output sections `PeriodInfo`/`Earnings`/`TaxLines`/`DeductionBreakdown` (82-157) name real concepts, read as cohesive groups by every consumer, totals on the owning section | ACCEPT | Strongest part of the refactor -- this is the model the input contexts should have aspired to |
 | `paycheck_calculator.py` | A4/C1 | `_residue_cents` (516) + `_compute_deductions` (285) are single-site but genuinely clarify (isolate audited arithmetic / co-locate pre+post pairing) | ACCEPT | -- |
 | `paycheck_calculator.py` | E2/G1/G3/G4 | Net-pay sum is Decimal-exact-equivalent; high-risk edges (full-year reconciliation, FICA cap crossing, calibration/bracket agreement, partial-context fallback, determinism) pinned with hand-computed values, public-API tests dominate | ACCEPT | Behavior preserved; suite is strong enough to keep refactoring safely |
+| `templates.py` (`1c26575`) | A1/A4/B1 | `_validate_template_form` shared by `create_template` + `update_template` (2 sites); the old create validated FKs unconditionally, the old update only `if "X" in data` -- the unified `in data` helper preserves both because `TemplateCreateSchema` makes `account_id`/`category_id` required (always in `data`) | ACCEPT | Genuine 2-site DRY; behavior verified against the schema, not assumed |
+| `templates.py` (`1c26575`) | A4/C2/F2 | `_apply_fields_and_propagate_rename` and `_build_preview_rule` are single-site but cohesive: the former carries the rename-desync rationale + isolates the bulk name UPDATE; the latter isolates the `request.args` parsing so the route reads `rule.interval_n`/`rule.start_period_id` | ACCEPT | Genuinely clarifying, not pure relocation |
+| `templates.py` (`1c26575`) | A4 | `_render_preview_html` is single-use, ~7-line presentation relocation | ACCEPT (lean REFINE) | Reviewer: harmless presentation-isolation that aids the route read; not worth churn -- kept |
+| `recurrence_engine.py` (`1c26575`) | F3/D1/E4 | `_match_periods` -> public `match_periods`; tm-return (8/6) cleared via a single-return accumulator rather than a dispatch dict | ACCEPT | The fn is pure, tested by 27 direct units, and called cross-module -- the underscore mislabeled de-facto public API. Accumulator is simpler here: heterogeneous branch locals (`n`/`offset`, month+day) would force lambda shims in a dict. All 8 cases (incl. unknown-default + the `or 1` divide guard) map 1:1; `EVERY_PERIOD` aliases `candidates` exactly as before, and no caller mutates the result |
+| `templates.py` (`1c26575`) | F2/Rule-7 | Stale `tests/TEST_PLAN.md:190` reference to `_match_periods()` after the rename | REFINE (folded into `1c26575`) | Updated to `match_periods()`. The dozen dated audit/investigation/plan docs (`docs/audits/*`, `bug_investigation_02`, `financial_calculations` inventory) are intentionally LEFT as point-in-time snapshots -- editing them would falsify the historical record (rule 6) |
 
 ## Sweep results (files 2-14, run `wvq2yd9aa`, 2026-06-05)
 
