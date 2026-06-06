@@ -872,7 +872,7 @@ def _project_one_account(
             if t.account_id == acct.id
         ]
         inputs = build_investment_projection_inputs(
-            acct.id, params, adapted_deductions, acct_contributions,
+            params, adapted_deductions, acct_contributions,
             ctx.all_periods, ctx.current_period, batch.salary_gross_biweekly,
         )
         annual_return = (

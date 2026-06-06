@@ -220,7 +220,7 @@ def _load_projection_context(
         account.id, [p.id for p in all_periods],
     )
     inputs = build_investment_projection_inputs(
-        account.id, params, adapted_deductions, acct_contributions,
+        params, adapted_deductions, acct_contributions,
         all_periods, current_period, salary_gross_biweekly,
     )
     contributions = build_contribution_timeline(

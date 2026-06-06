@@ -102,46 +102,25 @@ def _compute_deduction_per_period(deduction, pct_id):
     return amt, gross
 
 
-def calculate_investment_inputs(
-    account_id,
-    investment_params,
-    deductions,
-    all_contributions,
-    all_periods,
-    current_period,
-    salary_gross_biweekly=None,
-):
-    """Compute projection inputs for an investment account.
+def _periodic_from_deductions(deductions, salary_gross_biweekly):
+    """Sum the per-period contribution from paycheck deductions.
 
     Args:
-        account_id:         int -- the investment account ID.
-        investment_params:  Object with employer fields and annual_contribution_limit.
-        deductions:         List of deduction-like objects with:
-                            .amount, .calc_method_id, .annual_salary, .pay_periods_per_year
-        all_contributions:  List of shadow income transactions (transfer_id IS NOT NULL)
-                            in this account.  Each has .estimated_amount and .pay_period_id.
-        all_periods:        List of period objects with .id, .start_date, .period_index
-        current_period:     The current period object.
+        deductions:            List of deduction-like objects with
+                               .amount, .calc_method_id, .annual_salary,
+                               .pay_periods_per_year.
+        salary_gross_biweekly: Engine gross per pay period (Decimal or
+                               None), used as the fallback gross when no
+                               deduction supplied one.
 
     Returns:
-        InvestmentInputs dataclass.
+        Tuple of (periodic_contribution: Decimal, gross_biweekly: Decimal).
+        gross_biweekly is the deduction-derived gross, falling back to
+        ``salary_gross_biweekly`` and then ZERO.
     """
-    # Step 1: Periodic contribution from paycheck deductions.
+    pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
     periodic_contribution = ZERO
     gross_biweekly = ZERO
-
-    # Routed through the centralized ``status_contributes_to_balance``
-    # helper (D6-09 / MED-02) so the "is this contribution counted"
-    # rule shares one definition with the SQL filters in
-    # ``year_end_summary_service`` / ``savings_dashboard_service`` and
-    # the Python ``is_balance_contributing`` predicate.  The
-    # status-only variant is required because the caller passes in
-    # already-deleted-filtered rows whose duck-typed test fakes
-    # (``FakeContribTransaction``) deliberately omit ``is_deleted``.
-    # Lazy import matches this module's no-top-level-app-imports
-    # convention.
-
-    pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
 
     for ded in deductions:
         amt, gross = _compute_deduction_per_period(ded, pct_id)
@@ -152,61 +131,162 @@ def calculate_investment_inputs(
     if gross_biweekly == ZERO and salary_gross_biweekly is not None:
         gross_biweekly = Decimal(str(salary_gross_biweekly))
 
-    # Step 2: Transfer-based contributions (average per period).
-    # all_contributions are shadow income transactions already filtered
-    # to this account by the caller.  Exclude cancelled/credit
-    # transactions (status.excludes_from_balance=True) so they do not
-    # inflate the periodic contribution average.
-    if all_contributions:
-        active_contributions = [
-            t for t in all_contributions
-            if status_contributes_to_balance(t)
-        ]
-        total_contrib = sum(
-            Decimal(str(t.estimated_amount)) for t in active_contributions
-        )
-        num_periods_with_contrib = len(
-            set(t.pay_period_id for t in active_contributions)
-        )
-        if num_periods_with_contrib > 0:
-            periodic_contribution += (total_contrib / num_periods_with_contrib).quantize(
-                TWO_PLACES
-            )
+    return periodic_contribution, gross_biweekly
 
-    # Step 3: Employer params.
-    employer_params = None
+
+def _average_transfer_contribution(all_contributions):
+    """Average per-period contribution from shadow income transactions.
+
+    ``all_contributions`` are shadow income transactions already filtered
+    to one account by the caller.  Cancelled/credit transactions
+    (status.excludes_from_balance=True) are excluded via the centralized
+    ``status_contributes_to_balance`` helper (D6-09 / MED-02) so the
+    "is this contribution counted" rule shares one definition with the
+    SQL filters in ``year_end_summary_service`` /
+    ``savings_dashboard_service`` and the Python ``is_balance_contributing``
+    predicate.  The status-only variant is required because the caller
+    passes in already-deleted-filtered rows whose duck-typed test fakes
+    (``FakeContribTransaction``) deliberately omit ``is_deleted``.
+
+    Args:
+        all_contributions: List of shadow income transactions with
+                           .estimated_amount, .pay_period_id, .status.
+
+    Returns:
+        The per-period average contribution (Decimal), or ZERO when no
+        active contributions exist.
+    """
+    if not all_contributions:
+        return ZERO
+
+    active_contributions = [
+        t for t in all_contributions
+        if status_contributes_to_balance(t)
+    ]
+    total_contrib = sum(
+        Decimal(str(t.estimated_amount)) for t in active_contributions
+    )
+    num_periods_with_contrib = len(
+        set(t.pay_period_id for t in active_contributions)
+    )
+    if num_periods_with_contrib > 0:
+        return (total_contrib / num_periods_with_contrib).quantize(TWO_PLACES)
+    return ZERO
+
+
+def _employer_params(investment_params, gross_biweekly):
+    """Build the employer-contribution params dict, or None.
+
+    Args:
+        investment_params: Object with ``employer_contribution_type`` and
+                           the ``employer_*_percentage`` fields.
+        gross_biweekly:    Engine gross per pay period (Decimal), embedded
+                           so the growth engine can size a
+                           percentage-of-gross employer match.
+
+    Returns:
+        A dict describing the employer contribution, or None when the
+        account has no employer contribution configured.
+    """
     emp_type = getattr(investment_params, "employer_contribution_type", "none")
-    if emp_type and emp_type != "none":
-        employer_params = {
-            "type": emp_type,
-            "flat_percentage": getattr(investment_params, "employer_flat_percentage", None) or ZERO,
-            "match_percentage": getattr(investment_params, "employer_match_percentage", None) or ZERO,
-            "match_cap_percentage": getattr(investment_params, "employer_match_cap_percentage", None) or ZERO,
-            "gross_biweekly": gross_biweekly,
-        }
+    if not emp_type or emp_type == "none":
+        return None
+    return {
+        "type": emp_type,
+        "flat_percentage": getattr(
+            investment_params, "employer_flat_percentage", None) or ZERO,
+        "match_percentage": getattr(
+            investment_params, "employer_match_percentage", None) or ZERO,
+        "match_cap_percentage": getattr(
+            investment_params, "employer_match_cap_percentage", None) or ZERO,
+        "gross_biweekly": gross_biweekly,
+    }
 
-    # Step 4: YTD contributions from shadow transactions.
+
+def _ytd_contributions(all_contributions, all_periods, current_period):
+    """Sum year-to-date contributions from shadow income transactions.
+
+    Sums ``estimated_amount`` for active contributions whose pay period
+    falls in the current calendar year up to and including
+    ``current_period``.  Uses the same status filter as
+    ``_average_transfer_contribution``.
+
+    Args:
+        all_contributions: Shadow income transactions for one account
+                           (.estimated_amount, .pay_period_id, .status).
+        all_periods:       Period objects with .id and .start_date.
+        current_period:    The current period object, or None.
+
+    Returns:
+        The YTD contribution total (Decimal); ZERO when current_period
+        is None.
+    """
+    if current_period is None:
+        return ZERO
+
+    current_year = current_period.start_date.year
+    ytd_period_ids = {
+        p.id for p in all_periods
+        if p.start_date.year == current_year
+        and p.start_date <= current_period.start_date
+    }
     ytd_contributions = ZERO
-    if current_period:
-        current_year = current_period.start_date.year
-        ytd_period_ids = {
-            p.id for p in all_periods
-            if p.start_date.year == current_year
-            and p.start_date <= current_period.start_date
-        }
-        for t in all_contributions:
-            if (t.pay_period_id in ytd_period_ids
-                    and status_contributes_to_balance(t)):
-                ytd_contributions += Decimal(str(t.estimated_amount))
+    for t in all_contributions:
+        if (t.pay_period_id in ytd_period_ids
+                and status_contributes_to_balance(t)):
+            ytd_contributions += Decimal(str(t.estimated_amount))
+    return ytd_contributions
 
-    # Step 5: Annual contribution limit.
-    annual_limit = getattr(investment_params, "annual_contribution_limit", None)
+
+def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    investment_params,
+    deductions,
+    all_contributions,
+    all_periods,
+    current_period,
+    salary_gross_biweekly=None,
+):
+    """Compute projection inputs for an investment account.
+
+    The six inputs are independent, heterogeneous projection inputs
+    (account config, two contribution feeds, the period calendar, and a
+    salary-gross fallback); each is consumed by a different step, so a
+    param object would be stamp coupling.  The scoped disable mirrors the
+    immediately-downstream ``growth_engine.project_balance``, which takes
+    the same documented disable for the same reason.
+
+    Args:
+        investment_params:     Object with employer fields and
+                               ``annual_contribution_limit``.
+        deductions:            List of deduction-like objects with
+                               .amount, .calc_method_id, .annual_salary,
+                               .pay_periods_per_year.
+        all_contributions:     List of shadow income transactions
+                               (transfer_id IS NOT NULL) in this account.
+                               Each has .estimated_amount, .pay_period_id,
+                               .status.
+        all_periods:           List of period objects with .id,
+                               .start_date, .period_index.
+        current_period:        The current period object, or None.
+        salary_gross_biweekly: Engine gross per pay period used as the
+                               fallback gross when no deduction supplied
+                               one (Decimal or None).
+
+    Returns:
+        InvestmentInputs dataclass.
+    """
+    periodic_contribution, gross_biweekly = _periodic_from_deductions(
+        deductions, salary_gross_biweekly,
+    )
+    periodic_contribution += _average_transfer_contribution(all_contributions)
 
     return InvestmentInputs(
         periodic_contribution=periodic_contribution,
-        employer_params=employer_params,
-        annual_contribution_limit=annual_limit,
-        ytd_contributions=ytd_contributions,
+        employer_params=_employer_params(investment_params, gross_biweekly),
+        annual_contribution_limit=getattr(
+            investment_params, "annual_contribution_limit", None),
+        ytd_contributions=_ytd_contributions(
+            all_contributions, all_periods, current_period),
         gross_biweekly=gross_biweekly,
     )
 
@@ -249,7 +329,7 @@ def build_contribution_timeline(
         list if no deductions and no qualifying transactions exist.
     """
     # Centralized ``status_contributes_to_balance`` helper
-    # (D6-09 / MED-02); see ``calculate_investment_inputs`` above
+    # (D6-09 / MED-02); see ``_average_transfer_contribution`` above
     # for why the status-only variant is the right primitive here.
 
     records = []

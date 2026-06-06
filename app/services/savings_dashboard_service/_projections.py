@@ -305,7 +305,7 @@ def _project_investment(acct, investment_params, current_bal, ctx):
     ]
 
     inputs = build_investment_projection_inputs(
-        acct.id, investment_params, adapted_deductions, acct_contributions,
+        investment_params, adapted_deductions, acct_contributions,
         ctx.all_periods, ctx.current_period,
         ctx.params.salary_gross_biweekly,
     )

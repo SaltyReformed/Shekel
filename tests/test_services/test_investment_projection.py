@@ -75,7 +75,7 @@ class TestCalculateInvestmentInputs:
         )
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=[],
+            investment_params=params, deductions=[],
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.periodic_contribution == Decimal("0")
@@ -94,7 +94,7 @@ class TestCalculateInvestmentInputs:
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=deductions,
+            investment_params=params, deductions=deductions,
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.periodic_contribution == Decimal("500.00")
@@ -110,7 +110,7 @@ class TestCalculateInvestmentInputs:
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=deductions,
+            investment_params=params, deductions=deductions,
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
@@ -130,7 +130,7 @@ class TestCalculateInvestmentInputs:
         ]
         periods = [FakePeriod(id=i, start_date=date(2026, 1, 2), period_index=i) for i in range(1, 4)]
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=[],
+            investment_params=params, deductions=[],
             all_contributions=contributions, all_periods=periods, current_period=periods[0],
         )
         assert result.periodic_contribution == Decimal("233.33")
@@ -145,7 +145,7 @@ class TestCalculateInvestmentInputs:
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=deductions,
+            investment_params=params, deductions=deductions,
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is not None
@@ -165,7 +165,7 @@ class TestCalculateInvestmentInputs:
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=deductions,
+            investment_params=params, deductions=deductions,
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is not None
@@ -194,7 +194,7 @@ class TestCalculateInvestmentInputs:
             FakeContribution(estimated_amount=Decimal("500"), pay_period_id=5),
         ]
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=[],
+            investment_params=params, deductions=[],
             all_contributions=contributions, all_periods=periods, current_period=periods[3],
         )
         assert result.ytd_contributions == Decimal("1500")
@@ -214,7 +214,7 @@ class TestCalculateInvestmentInputs:
         periods = [FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
                     FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1)]
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=deductions,
+            investment_params=params, deductions=deductions,
             all_contributions=contributions, all_periods=periods, current_period=periods[0],
         )
         assert result.periodic_contribution == Decimal("700.00")
@@ -230,7 +230,6 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
 
         result = calculate_investment_inputs(
-            account_id=10,
             investment_params=params,
             deductions=[],
             all_contributions=[],
@@ -262,7 +261,6 @@ class TestCalculateInvestmentInputs:
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
 
         result = calculate_investment_inputs(
-            account_id=10,
             investment_params=params,
             deductions=deductions,
             all_contributions=[],
@@ -282,7 +280,7 @@ class TestCalculateInvestmentInputs:
         )
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=[],
+            investment_params=params, deductions=[],
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is None
@@ -300,7 +298,7 @@ class TestCalculateInvestmentInputs:
             employer_contribution_type="none",
         )
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=[],
+            investment_params=params, deductions=[],
             all_contributions=[], all_periods=[], current_period=None,
         )
         assert result.periodic_contribution == Decimal("0")
@@ -329,7 +327,7 @@ class TestCalculateInvestmentInputs:
         )]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=deductions,
+            investment_params=params, deductions=deductions,
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         # gross * 0% = 0
@@ -360,7 +358,7 @@ class TestCalculateInvestmentInputs:
         )]
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=deductions,
+            investment_params=params, deductions=deductions,
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.periodic_contribution == Decimal("-500.00")
@@ -386,7 +384,7 @@ class TestCalculateInvestmentInputs:
             FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
         ]
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=[],
+            investment_params=params, deductions=[],
             all_contributions=contributions, all_periods=periods, current_period=periods[0],
         )
         # 1 contribution across 1 period -- periodic = $200
@@ -415,7 +413,7 @@ class TestCalculateInvestmentInputs:
             FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
         ]
         result = calculate_investment_inputs(
-            account_id=10, investment_params=params, deductions=[],
+            investment_params=params, deductions=[],
             all_contributions=contributions, all_periods=periods, current_period=None,
         )
         # (200 + 400) / 2 periods = 300

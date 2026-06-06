@@ -203,7 +203,7 @@ def _project_investment_for_year(
     # Compute periodic contribution and employer params.
     # F-22 / Commit 18: shared kwargs-splat helper.
     proj_inputs = build_investment_projection_inputs(
-        account.id, investment_params, adapted_deductions, acct_contributions,
+        investment_params, adapted_deductions, acct_contributions,
         all_periods, year_periods[0], inputs.salary_gross_biweekly,
     )
 

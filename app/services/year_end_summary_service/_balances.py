@@ -351,7 +351,7 @@ def _build_investment_balance_map(
         account.id, scenario.id, [p.id for p in post_anchor],
     )
     proj_inputs = build_investment_projection_inputs(
-        account.id, investment_params,
+        investment_params,
         adapt_deductions(inputs.deductions_by_account.get(account.id, [])),
         acct_contributions, periods,
         post_anchor[0] if post_anchor else pre_anchor[-1],

@@ -204,8 +204,7 @@ def load_shadow_income_contributions_for_account(
     )
 
 
-def build_investment_projection_inputs(
-    account_id: int,
+def build_investment_projection_inputs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     params: InvestmentParams,
     deductions: list,
     contributions: list,
@@ -215,12 +214,17 @@ def build_investment_projection_inputs(
 ) -> InvestmentInputs:
     """Build :class:`InvestmentInputs` for one account.
 
-    The single home for the seven-keyword splat into
+    The single home for the keyword splat into
     :func:`~app.services.investment_projection.calculate_investment_inputs`
     that was duplicated across the investment / retirement / savings /
     year-end services pre-Commit-18.  Centralising the splat removes
     the R0801 duplicate and means a future signature change to
     ``calculate_investment_inputs`` only needs to update one site.
+
+    The scoped disable mirrors the wrapped
+    ``calculate_investment_inputs``: this is a thin 1:1 forward of the
+    same six independent projection inputs, so bundling them would be the
+    same stamp coupling rejected there.
 
     Callers supply ``deductions`` (already adapted via
     :func:`~app.services.investment_projection.adapt_deductions`) and
@@ -239,7 +243,6 @@ def build_investment_projection_inputs(
     pattern, so the gate passes when only this helper site has it.
 
     Args:
-        account_id: ID of the investment / retirement account.
         params: :class:`InvestmentParams` row for the account.
         deductions: List of adapted deduction objects
             (:class:`~app.services.investment_projection.AdaptedDeduction`
@@ -258,7 +261,6 @@ def build_investment_projection_inputs(
         and engine gross-biweekly fields the growth engine needs.
     """
     return calculate_investment_inputs(
-        account_id=account_id,
         investment_params=params,
         deductions=deductions,
         all_contributions=contributions,
