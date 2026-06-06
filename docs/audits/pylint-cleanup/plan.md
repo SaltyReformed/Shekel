@@ -1,9 +1,17 @@
 # Pylint 10/10 Cleanup -- Master Plan and Progress Tracker
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-05 app/ is 9.88/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 166 visible messages.
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 165 visible messages.
 Full suite 5755 passed.** Phase 3 (design smells) has ELEVEN files plus the form-mutation helper
-family complete. The newest, **`routes/_recurrence_form_helpers.py` + `routes/_commit_helpers.py`
+family complete. The newest, **`routes/_transfer_creation_helpers.py` DONE** (`59ba11a`), cleared
+its last `too-many-arguments` (the `build_recurring_transfer_template` 6-field `TransferTemplate`
+factory) by a developer-chosen genuine structural reduction -- NOT a param object or a disable:
+`derive_from_loan` dropped from the helper (6->5 args), relying on the column's `False` model/server
+default for contributions, while the loan-payment creator (the only caller that needs it) sets
+`template.derive_from_loan` itself on the returned row before the flush -- keeping the loan-only
+concern at the loan call site, 0 disables added (82). Strengthened `test_create_transfer_success`
+with `assert tpl.derive_from_loan is True` (previously-unasserted route coverage that now locks the
+flag). Before it, **`routes/_recurrence_form_helpers.py` + `routes/_commit_helpers.py`
 DONE** (`8e01099`), dissolved all 8 design smells across the two files by the developer-chosen
 Max-DRY decomposition (no disables, behavior bit-identical; full suite 5755 the gate): a new frozen
 `RedirectTarget(endpoint, kwargs)` value type (+ `to_response()`, the single home for the
@@ -18,8 +26,8 @@ shared `StaleConflictContext` (logger/log_label/log_id/flash_message/redirect, d
 across 8 route files (templates/transfers/accounts/savings/salary/investment/loan) + 9 test
 call-shapes (decision #5, values frozen byte-identical); 0 new R0801 (the repeated context-wrapping
 did not cluster), 0 disables (82). `_transfer_creation_helpers` redirect helpers moved to
-`RedirectTarget` too; only its `build_recurring_transfer_template` (6-field `TransferTemplate`
-constructor, an unrelated clump) remains -- left for a separate pass. Before it,
+`RedirectTarget` too (its remaining `build_recurring_transfer_template` smell then cleared in the
+next commit, `59ba11a` -- see above). Before it,
 **`services/retirement_dashboard_service.py` DONE** (`ce65229`), dissolved all 5 design smells +
 the dead `salary_profiles` parameter by genuine decomposition (no disables, behavior bit-identical;
 full suite 5755 the gate): `compute_gap_data` (38 locals/51 stmts) -> 14 locals as a thin
@@ -252,7 +260,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (11 files + the form-helper family done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (11 files + the form-helper family done: `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -950,11 +958,25 @@ documented disables), with commit SHA.
   values frozen byte-identical. **Split-trap check: 0 new R0801** -- the repeated context-wrapping
   did NOT cluster (log_labels / flash strings / endpoints differ; the existing one-sided
   `duplicate-code` disables on the templates/transfers create-update preambles still cover them).
-  0 disables added (82); useless-suppression 0; E/F 0. **`_transfer_creation_helpers.py` is NOT yet
-  DONE:** only its `build_recurring_transfer_template` (6-field `TransferTemplate` constructor, an
-  unrelated argument clump) remains -- a separate Phase-3 item, not addressable by `RedirectTarget`.
-  Score 9.87->9.88; visible 174->166; smell items 77->69 (58 8-symbol + 11 instance-attr). 754
-  targeted (helper + 7 route suites) + **full suite 5755 passed.**
+  0 disables added (82); useless-suppression 0; E/F 0. Score 9.87->9.88; visible 174->166; smell
+  items 77->69 (58 8-symbol + 11 instance-attr). 754 targeted (helper + 7 route suites) + **full
+  suite 5755 passed.**
+- **routes/_transfer_creation_helpers.py** -- Status: **DONE** (`59ba11a`; file now 10.00/10,
+  smell-free). Its last smell -- `build_recurring_transfer_template` (a 6-field shared
+  `TransferTemplate` factory, an argument clump unrelated to the redirect/stale-conflict bundles
+  above) -- cleared by a developer-chosen **genuine structural reduction**, explicitly NOT a param
+  object (which would only mirror the entity's own columns -- single-consumer stamp coupling, zero
+  DRY payoff) and NOT a disable: `derive_from_loan` dropped from the helper (6->5 args, at the
+  limit), relying on the column's `False` model/server default for contributions and every generic
+  transfer; the loan-payment creator -- the only caller that needs it -- assigns
+  `template.derive_from_loan` itself on the returned row before the flush (`_resolve_transfer_amount`
+  returns the computed bool: `True` for the monthly-payment default, `False` for a user-supplied
+  amount override), keeping the loan-only concern at the loan call site. Behavior bit-identical.
+  Strengthened the route test `test_create_transfer_success` with `assert tpl.derive_from_loan is
+  True` -- previously-unasserted coverage (no `amount` posted -> the route opts into live derivation)
+  that now locks the flag. 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held;
+  visible 166->165; smell items 69->68 (57 8-symbol + 11 instance-attr). 253 targeted (investment +
+  loan) + **full suite 5755 passed.**
 - **routes/grid.py** (`_build_plan_view`:342 tm-args/pos/locals; `index`:433 tm-locals) -- Status: `-`
 - **services/paycheck_calculator.py** -- Status: **DONE** (`15bcfd1`; file now 10.00/10, zero smell
   messages). All 5 design smells resolved by genuine decomposition (no disables, behavior
@@ -1060,17 +1082,14 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-05 after the form-helper family DONE `8e01099`; 69 smell
-items remain [58 of the 8-symbol set + 11 `too-many-instance-attributes`], down from 77): a band at
-4 each -- `routes/grid.py` / `routes/templates.py` and `services/growth_engine.py` /
-`services/loan_resolver.py` / `services/retirement_gap_calculator.py` (the last three are
-3 8-symbol + 1 instance-attr; the financial cores plan-first per the developer's cadence). Also
-outstanding from this batch: `routes/_transfer_creation_helpers.py`'s `build_recurring_transfer_template`
-(1 `too-many-arguments` -- a 6-field `TransferTemplate` constructor; a param object there would just
-mirror the model, so its disposition -- bundle vs. inline-construct at its 2 call sites vs. documented
-disable -- is a pending design decision, NOT resolved by `RedirectTarget`). None of the remaining top
-files are module tm-lines (only `schemas/validation.py` + `services/carry_forward_service.py` carry
-that, both Tier-3 -> package split per decision #5).
+Next by live density (re-measured 2026-06-05 after the form-mutation helper layer DONE
+`8e01099`+`59ba11a`; 68 smell items remain [57 of the 8-symbol set + 11
+`too-many-instance-attributes`], down from 77): a band at 4 each -- `routes/grid.py` /
+`routes/templates.py` and `services/growth_engine.py` / `services/loan_resolver.py` /
+`services/retirement_gap_calculator.py` (the last three are 3 8-symbol + 1 instance-attr; the
+financial cores plan-first per the developer's cadence). None of the remaining top files are module
+tm-lines (only `schemas/validation.py` + `services/carry_forward_service.py` carry that, both
+Tier-3 -> package split per decision #5).
 
 ---
 
@@ -1336,3 +1355,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-05 | `15bcfd1` | 3 | **paycheck_calculator.py -- restructure PaycheckBreakdown into nested sections + decompose calculate_paycheck (developer-chosen full 4-group restructure + two-context ISP + deduction bundle) -- file DONE:** all 5 design smells resolved by genuine decomposition (no disables, behavior bit-identical; full suite 5755 the gate). **`PaycheckBreakdown` 13/7 -> 4/7** by restructuring into 4 cohesive nested sections `period`(`PeriodInfo`)/`earnings`(`Earnings`)/`taxes`(`TaxLines`)/`deductions`(`DeductionBreakdown`), section totals moved onto the owning section (`taxes.total`, `deductions.total_pre_tax`/`total_post_tax`, `earnings.take_home_rate_pct`). **I corrected a bad attribute count mid-decision** (told the developer a TaxLines-only nest was "11->8"; it is actually 13->10/7 and still fails -- only the full 4-group nest reaches 4/7) and **flagged that the chosen full consumer-migration (Option B) was ~400 sites incl. 371 test assertions** vs the safer delegating-property facade (which I argued is itself a DRY/maintainability smell); developer chose Option B. Consumer migration to nested form: app services (income_service, year_end/_income_tax, salary/_helpers+profiles, recurrence_engine, savings/_orchestrator, retirement_dashboard, dashboard_service), the 2 salary templates that actually render a breakdown (breakdown.html, projection.html; the other 7 "matches" disambiguated as collisions), 6 test files **path-only/values-frozen** (test_paycheck_calculator 371 assertions + 11 nested constructors + 7 `_calculate_deductions` call updates; savings C26-3 source guard repointed to `current_breakdown.earnings.gross_biweekly`). `calculate_paycheck` 37->13 locals via frozen `_DeductionContext`(5)+`_PaycheckContext`(5) + `_compute_deductions`/`_compute_tax_lines`/`_bracket_federal`/`_bracket_state`; `_calculate_deductions` 7->2 args (takes `_DeductionContext`, resolves pct_id internally); `_gross_biweekly_for_period` 16->12 via `_residue_cents`; removed the now-dead test `_pct_id` + its unused import. file 10.00/10, 0 smell messages; 0 new R0801; 0 disables added (82); useless-suppression 0; E/F 0; no new line-too-long; 3 total-property `missing-function-docstring` (Phase 4) cleared as a bonus. Score 9.86->9.87; visible 188->180; smell items 87->82 (71 8-symbol + 11 instance-attr). 590 targeted + **full suite 5755 passed.** | 9.87/10 | 180 |
 | 2026-06-05 | `ce65229` | 3 | **retirement_dashboard_service.py -- decompose `compute_gap_data` + `_project_retirement_accounts` (functional pipeline + cohesive frozen bundles, developer-chosen) -- file DONE:** all 5 design smells + the dead `salary_profiles` parameter resolved by genuine decomposition (no disables, behavior bit-identical). **Architecture (developer-reviewed):** chose the functional-pipeline style (pure helpers + frozen bundles) over a threaded mutable accumulator (fights robustness) or a stateful class (against the plain-function service convention; would relocate the smell to instance-attrs). `compute_gap_data` (38 locals/51 stmts) -> 14 locals as a thin delegation pipeline -- `_compute_pension_benefit`(`_PensionSummary`) / `_compute_current_pay`(`_CurrentPay`) / `_resolve_planned_retirement_date` / `_build_projection_context` / `_compute_gap_net_biweekly` (gap-comparison salary block rewritten as guard clauses, verified result-identical) / `_resolve_estimated_tax_rate` / `_build_chart_data`; the central `calculate_gap` kept VISIBLE in the orchestrator (6 genuine cross-phase inputs -> wrapping it only relocates the smell). `_project_retirement_accounts` 8 args/8 pos/31 locals -> 1 arg (`ctx`) via the frozen `_RetirementProjectionContext`(7) + `_load_projection_batch`(`_ProjectionBatch`) / `_resolve_current_balances` / `_project_one_account`; the dead `salary_profiles` param removed at root (cleared the `unused-argument`). **Bundle granularity decided by the travel-together cohesion test:** four cohesive frozen dataclasses kept; NO `_RetirementBaseData` for the three top-level loads -- they FAN OUT to different consumers, so bundling = stamp coupling (ISP smell), kept as plain locals. Per-account projection dict shape (calculate_gap/slider/template/test contract) preserved verbatim; `_resolve_swr_fraction` / `compute_slider_defaults` / docstring / constants byte-identical (`git diff`-verified); CRIT-04/E-12 `is None` + LOW-05 carry-open verbatim so the source guard stays green. Removed a pre-existing dead module `logger` (+ unused `import logging`, developer-approved). file 10.00/10, 0 smell messages; 0 new R0801; 0 new tm-instance-attributes; 0 disables (82); E/F 0; useless-suppression 0. Score 9.87 held; visible 180->174; smell items 82->77. 94 targeted + **full suite 5755 passed.** | 9.87/10 | 174 |
 | 2026-06-05 | `8e01099` | 3 | **_recurrence_form_helpers.py + _commit_helpers.py -- bundle redirect/stale-conflict/recurrence-form args (developer-chosen Max-DRY + RedirectTarget) -- both files DONE:** all 8 design smells (5 in `_recurrence_form_helpers`, 3 in `_commit_helpers`) resolved by genuine decomposition (no disables, behavior bit-identical; full suite 5755 the gate). New frozen `RedirectTarget(endpoint, kwargs)` value type in new module `routes/_redirect_target.py` (+ `to_response()` -- the single home for the `redirect(url_for(e, **(k or {})))` idiom shared ~9 ways across the helper layer; also unified the `redirect_kwargs` vs `redirect_endpoint_kwargs` naming drift between `_transfer_creation_helpers` and the others), composed into two frozen contexts. `RecurrenceFormContext` (`end_date_value`/`redirect`/`include_due_day_of_month`) collapses the verbatim triplicated signature tail shared by `build_recurrence_rule_from_form` (7->4 args + 16->13 locals) / `update_recurrence_rule_from_form` (6->3) / `resolve_recurrence_rule_for_update` (6->3). Shared `StaleConflictContext` (`logger`/`log_label`/`log_id`/`flash_message`/`redirect`) lives in `_commit_helpers.py` (the canonical handler's home; imported by `_recurrence_form_helpers` -- one-way edge, no cycle) and drives `handle_stale_conflict`/`commit_or_handle_stale`/`regenerate_and_commit_or_stale` (6/6/7->1/1/2) AND the pre-flush mirror `handle_stale_form_conflict` (8->3). ~30 call sites rewrapped across 8 route files (templates/transfers/accounts/savings/salary/investment/loan); `_transfer_creation_helpers`' `validate_and_resolve_source_account` + `flush_template_or_namedup_redirect` moved to `RedirectTarget` too. Test patch update (decision #5, no assertion change): `test_recurrence_form_helpers.py` 9 call-shapes rewrapped, asserted values frozen byte-identical. **Split-trap check: 0 new R0801** -- the repeated `StaleConflictContext(...)`/`RecurrenceFormContext(...)` wrapping did NOT cluster (log_labels / flash strings / endpoints differ; existing one-sided dup disables on the create/update preambles still cover them). 0 disables added (82); useless-suppression 0; E/F 0. **NOT yet DONE:** `_transfer_creation_helpers.build_recurring_transfer_template` (6-field `TransferTemplate` constructor, an unrelated argument clump) remains -- a separate pending design decision. Score 9.87->9.88; visible 174->166; smell items 77->69 (58 8-symbol + 11 instance-attr). 754 targeted (helper + 7 route suites) + **full suite 5755 passed.** | 9.88/10 | 166 |
+| 2026-06-05 | `59ba11a` | 3 | **_transfer_creation_helpers.py -- externalize `derive_from_loan` from `build_recurring_transfer_template` (developer-chosen genuine structural reduction) -- file DONE:** the last `too-many-arguments` in the form-mutation helper layer cleared WITHOUT a param object or a disable. The 6-field shared `TransferTemplate` factory was flagged because a param object there would only mirror the entity's own columns (single-consumer stamp coupling, zero DRY payoff -- unlike the `8e01099` bundles that dissolved real cross-function duplication), and a disable would break the 0-added streak. Instead `derive_from_loan` was dropped from the helper (6->5 args, at the limit), relying on the column's verified `False` model/server default for investment contributions and every generic transfer; the loan-payment creator -- the ONLY caller that needs it -- assigns `template.derive_from_loan` itself on the returned row before the `flush_template_or_namedup_redirect` flush (`_resolve_transfer_amount` returns the computed bool: `True` for the monthly-payment default path, `False` for a user-supplied amount override), keeping the loan-only concern at the loan call site. Behavior bit-identical. Investment caller unchanged (never passed the flag). **Closed a coverage gap:** strengthened the route test `test_create_transfer_success` with `assert tpl.derive_from_loan is True` -- previously the route's setting of the flag was unasserted (no `amount` posted -> live-derivation path), so this both covers it and locks the refactor; the `False` override path is NOT separately asserted because the model default is also `False` (an assertion there would not distinguish the code from the default). 0 disables added (82); useless-suppression 0; E/F 0. Score 9.88 held; visible 166->165; smell items 69->68 (57 8-symbol + 11 instance-attr). 253 targeted (investment + loan) + **full suite 5755 passed.** | 9.88/10 | 165 |
