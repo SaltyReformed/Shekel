@@ -297,9 +297,6 @@ class _GridRowData(NamedTuple):
         entry_lists: Pre-rendered inline mobile entries list per
             envelope card (``{txn_id -> list data}``), computed
             server-side to avoid per-card HTMX fan-out.
-        txn_by_period: Per-period transaction index (``{period_id ->
-            [Transaction]}``) surfaced by the grid template context
-            contract.
     """
 
     income_row_keys: list[RowKey]
@@ -307,7 +304,6 @@ class _GridRowData(NamedTuple):
     matched_by_row_period: dict[tuple[int, int | None, str, int], list[Transaction]]
     entry_sums: dict[int, dict]
     entry_lists: dict[int, dict]
-    txn_by_period: dict[int, list[Transaction]]
 
 
 def _build_grid_row_data(transactions, periods, show_all, all_categories):
@@ -330,14 +326,9 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     were never going to render.
 
     Returns a :class:`_GridRowData` carrying ``income_row_keys``,
-    ``expense_row_keys``, ``matched_by_row_period``, ``entry_sums``,
-    ``entry_lists``, and ``txn_by_period``.  ``entry_sums`` is the
-    pre-computed tracked-progress map for the cell template's
-    "spent / budget" display.  ``txn_by_period`` is the per-period
-    transaction index that the grid template context contract still
-    surfaces; ``matched_by_row_period`` rebuilds the same index
-    internally so the dual exposure is intentional dead weight pending
-    a separate cleanup commit.
+    ``expense_row_keys``, ``matched_by_row_period``, ``entry_sums``, and
+    ``entry_lists``.  ``entry_sums`` is the pre-computed tracked-progress
+    map for the cell template's "spent / budget" display.
     """
     if show_all:
         row_source_txns = transactions
@@ -368,17 +359,12 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     # and the over-limit cards stuck on the loading spinner forever.
     entry_lists = build_entry_lists_dict(transactions)
 
-    txn_by_period = {}
-    for txn in transactions:
-        txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
-
     return _GridRowData(
         income_row_keys=income_row_keys,
         expense_row_keys=expense_row_keys,
         matched_by_row_period=matched_by_row_period,
         entry_sums=entry_sums,
         entry_lists=entry_lists,
-        txn_by_period=txn_by_period,
     )
 
 
@@ -541,7 +527,6 @@ def index():
         periods=ctx.periods,
         current_period=ctx.current_period,
         balances=balances,
-        txn_by_period=row_data.txn_by_period,
         subtotals=_build_grid_subtotals(
             ctx.account, ctx.scenario, ctx.periods,
             amount_overrides=amount_overrides,
