@@ -613,6 +613,34 @@ class TestProjectBalance:
             f"Expected 50.17, got {long_result[0].growth}"
         )
 
+    def test_degenerate_period_falls_back_to_14_days(self):
+        """A zero-length period uses the 14-day biweekly fallback.
+
+        ``_period_return_rate`` clamps ``period_days <= 0`` to 14 (a branch
+        now shared by both the forward and reverse projections), so a
+        degenerate period whose start_date == end_date must grow exactly
+        as a real 14-day period would.
+
+        Hand calculation for balance 10000 at 7%, 14 days:
+          return = (1.07)^(14/365) - 1; growth = 10000 * return
+          quantized HALF_UP -> 25.98
+        """
+        degenerate = [FakePeriod(date(2026, 1, 2), date(2026, 1, 2), 1)]
+        real_14_day = [FakePeriod(date(2026, 1, 2), date(2026, 1, 16), 1)]
+
+        degenerate_growth = project_balance(
+            Decimal("10000"), Decimal("0.07"), degenerate,
+        )[0].growth
+        real_growth = project_balance(
+            Decimal("10000"), Decimal("0.07"), real_14_day,
+        )[0].growth
+
+        assert degenerate_growth == Decimal("25.98"), (
+            f"Expected 25.98, got {degenerate_growth}"
+        )
+        # The fallback maps a 0-day period onto the 14-day cadence.
+        assert degenerate_growth == real_growth
+
 
 class TestGenerateProjectionPeriods:
     def test_basic_generation(self):
