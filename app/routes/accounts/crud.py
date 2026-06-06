@@ -43,9 +43,11 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes._commit_helpers import (
+    StaleConflictContext,
     commit_or_handle_stale,
     regenerate_and_commit_or_stale,
 )
+from app.routes._redirect_target import RedirectTarget
 from app.routes.accounts._bp import accounts_bp
 from app.services import (
     account_service,
@@ -349,15 +351,19 @@ def update_account(account_id):
     # the commit (it flushes and can itself raise StaleDataError).
     conflict = regenerate_and_commit_or_stale(
         _clear_anchor_entries_if_changed,
-        logger=logger,
-        log_label="update_account",
-        log_id=account_id,
-        flash_message=(
-            "This account was changed by another action while you were "
-            "editing.  Please reload and try again."
+        ctx=StaleConflictContext(
+            logger=logger,
+            log_label="update_account",
+            log_id=account_id,
+            flash_message=(
+                "This account was changed by another action while you were "
+                "editing.  Please reload and try again."
+            ),
+            redirect=RedirectTarget(
+                "accounts.edit_account",
+                {"account_id": account_id},
+            ),
         ),
-        redirect_endpoint="accounts.edit_account",
-        redirect_endpoint_kwargs={"account_id": account_id},
     )
     if conflict is not None:
         return conflict
@@ -406,7 +412,7 @@ def archive_account(account_id):
         return redirect(url_for("accounts.list_accounts"))
 
     account.is_active = False
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="archive_account",
         log_id=account_id,
@@ -414,8 +420,8 @@ def archive_account(account_id):
             "This account was changed by another action.  Please reload "
             "the page and try again."
         ),
-        redirect_endpoint="accounts.list_accounts",
-    )
+        redirect=RedirectTarget("accounts.list_accounts"),
+    ))
     if conflict is not None:
         return conflict
     logger.info("Archived account: %s (id=%d)", account.name, account.id)
@@ -436,7 +442,7 @@ def unarchive_account(account_id):
         abort(404)
 
     account.is_active = True
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="unarchive_account",
         log_id=account_id,
@@ -444,8 +450,8 @@ def unarchive_account(account_id):
             "This account was changed by another action.  Please reload "
             "the page and try again."
         ),
-        redirect_endpoint="accounts.list_accounts",
-    )
+        redirect=RedirectTarget("accounts.list_accounts"),
+    ))
     if conflict is not None:
         return conflict
     logger.info("Unarchived account: %s (id=%d)", account.name, account.id)
@@ -530,7 +536,7 @@ def hard_delete_account(account_id):
         )
         if account.is_active:
             account.is_active = False
-            conflict = commit_or_handle_stale(
+            conflict = commit_or_handle_stale(StaleConflictContext(
                 logger=logger,
                 log_label="hard_delete_account archive-fallback",
                 log_id=account_id,
@@ -538,8 +544,8 @@ def hard_delete_account(account_id):
                     "This account was changed by another action.  "
                     "Please reload the page and try again."
                 ),
-                redirect_endpoint="accounts.list_accounts",
-            )
+                redirect=RedirectTarget("accounts.list_accounts"),
+            ))
             if conflict is not None:
                 return conflict
         return redirect(url_for("accounts.list_accounts"))
@@ -583,7 +589,7 @@ def hard_delete_account(account_id):
     # handler converts into a flash + redirect rather than a 500.
     account_name = account.name
     db.session.delete(account)
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="hard_delete_account",
         log_id=account_id,
@@ -591,8 +597,8 @@ def hard_delete_account(account_id):
             "This account was changed by another action.  Please reload "
             "the page and try again."
         ),
-        redirect_endpoint="accounts.list_accounts",
-    )
+        redirect=RedirectTarget("accounts.list_accounts"),
+    ))
     if conflict is not None:
         return conflict
 

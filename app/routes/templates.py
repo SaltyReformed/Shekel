@@ -34,15 +34,20 @@ from app.services import (
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.exceptions import RecurrenceConflict
-from app.routes._commit_helpers import commit_or_handle_stale
+from app.routes._commit_helpers import (
+    StaleConflictContext,
+    commit_or_handle_stale,
+)
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
+    RecurrenceFormContext,
     build_recurrence_rule_from_form,
     handle_recurrence_conflict,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
+from app.routes._redirect_target import RedirectTarget
 
 logger = logging.getLogger(__name__)
 
@@ -224,9 +229,11 @@ def create_template():
         data,
         user_id=current_user.id,
         start_period_id=start_period_id,
-        end_date_value=end_date,
-        redirect_endpoint="templates.new_template",
-        include_due_day_of_month=True,
+        ctx=RecurrenceFormContext(
+            end_date_value=end_date,
+            redirect=RedirectTarget("templates.new_template"),
+            include_due_day_of_month=True,
+        ),
     )
     if isinstance(rule_or_redirect, Response):
         return rule_or_redirect
@@ -330,16 +337,20 @@ def update_template(template_id):
     submitted_version = data.pop("version_id", None)
     if submitted_version is not None and submitted_version != template.version_id:
         return handle_stale_form_conflict(
-            logger=logger,
-            log_label="update_template",
-            log_id=template_id,
+            StaleConflictContext(
+                logger=logger,
+                log_label="update_template",
+                log_id=template_id,
+                flash_message=STALE_EDITING_MESSAGE.format(
+                    noun="recurring transaction",
+                ),
+                redirect=RedirectTarget(
+                    "templates.edit_template",
+                    {"template_id": template_id},
+                ),
+            ),
             submitted=submitted_version,
             current=template.version_id,
-            flash_message=STALE_EDITING_MESSAGE.format(
-                noun="recurring transaction",
-            ),
-            redirect_endpoint="templates.edit_template",
-            redirect_endpoint_kwargs={"template_id": template_id},
         )
 
     effective_from = data.pop("effective_from", date.today())
@@ -356,10 +367,14 @@ def update_template(template_id):
     redirect_response = resolve_recurrence_rule_for_update(
         template,
         data,
-        end_date_value=end_date,
-        redirect_endpoint="templates.edit_template",
-        redirect_endpoint_kwargs={"template_id": template_id},
-        include_due_day_of_month=True,
+        ctx=RecurrenceFormContext(
+            end_date_value=end_date,
+            redirect=RedirectTarget(
+                "templates.edit_template",
+                {"template_id": template_id},
+            ),
+            include_due_day_of_month=True,
+        ),
     )
     if redirect_response is not None:
         return redirect_response
@@ -425,16 +440,18 @@ def update_template(template_id):
                 conflict=conflict,
             )
 
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="update_template",
         log_id=template_id,
         flash_message=STALE_EDITING_MESSAGE.format(
             noun="recurring transaction",
         ),
-        redirect_endpoint="templates.edit_template",
-        redirect_endpoint_kwargs={"template_id": template_id},
-    )
+        redirect=RedirectTarget(
+            "templates.edit_template",
+            {"template_id": template_id},
+        ),
+    ))
     if conflict is not None:
         return conflict
     flash(f"Recurring transaction '{template.name}' updated.", "success")
@@ -469,15 +486,15 @@ def archive_template(template_id):
         Transaction.is_deleted.is_(False),
     ).update({"is_deleted": True}, synchronize_session="fetch")
 
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="archive_template",
         log_id=template_id,
         flash_message=STALE_ACTION_MESSAGE.format(
             noun="recurring transaction",
         ),
-        redirect_endpoint="templates.list_templates",
-    )
+        redirect=RedirectTarget("templates.list_templates"),
+    ))
     if conflict is not None:
         return conflict
 
@@ -520,15 +537,15 @@ def unarchive_template(template_id):
                 template, periods, scenario.id, effective_from=date.today(),
             )
 
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="unarchive_template",
         log_id=template_id,
         flash_message=STALE_ACTION_MESSAGE.format(
             noun="recurring transaction",
         ),
-        redirect_endpoint="templates.list_templates",
-    )
+        redirect=RedirectTarget("templates.list_templates"),
+    ))
     if conflict is not None:
         return conflict
 
@@ -598,15 +615,15 @@ def hard_delete_template(template_id):
                 is_projected_clause(Transaction),
                 Transaction.is_deleted.is_(False),
             ).update({"is_deleted": True}, synchronize_session="fetch")
-            conflict = commit_or_handle_stale(
+            conflict = commit_or_handle_stale(StaleConflictContext(
                 logger=logger,
                 log_label="hard_delete_template archive-fallback",
                 log_id=template_id,
                 flash_message=STALE_ACTION_MESSAGE.format(
                     noun="recurring transaction",
                 ),
-                redirect_endpoint="templates.list_templates",
-            )
+                redirect=RedirectTarget("templates.list_templates"),
+            ))
             if conflict is not None:
                 return conflict
         return redirect(url_for("templates.list_templates"))
@@ -628,15 +645,15 @@ def hard_delete_template(template_id):
     ).delete(synchronize_session="fetch")
 
     db.session.delete(template)
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="hard_delete_template",
         log_id=template_id,
         flash_message=STALE_ACTION_MESSAGE.format(
             noun="recurring transaction",
         ),
-        redirect_endpoint="templates.list_templates",
-    )
+        redirect=RedirectTarget("templates.list_templates"),
+    ))
     if conflict is not None:
         return conflict
 

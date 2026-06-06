@@ -36,9 +36,11 @@ from app.services import (
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.routes._commit_helpers import (
+    StaleConflictContext,
     commit_or_handle_stale,
     regenerate_and_commit_or_stale,
 )
+from app.routes._redirect_target import RedirectTarget
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _PROFILE_UPDATE_FIELDS,
@@ -317,15 +319,19 @@ def update_profile(profile_id):
         # so it must run inside the same stale-race guard as the commit.
         conflict = regenerate_and_commit_or_stale(
             lambda: _regenerate_salary_transactions(profile),
-            logger=logger,
-            log_label="update_profile",
-            log_id=profile_id,
-            flash_message=(
-                "This salary profile was changed by another action while you "
-                "were editing.  Please reload and try again."
+            ctx=StaleConflictContext(
+                logger=logger,
+                log_label="update_profile",
+                log_id=profile_id,
+                flash_message=(
+                    "This salary profile was changed by another action while "
+                    "you were editing.  Please reload and try again."
+                ),
+                redirect=RedirectTarget(
+                    "salary.edit_profile",
+                    {"profile_id": profile_id},
+                ),
             ),
-            redirect_endpoint="salary.edit_profile",
-            redirect_endpoint_kwargs={"profile_id": profile_id},
         )
         if conflict is not None:
             return conflict
@@ -363,7 +369,7 @@ def delete_profile(profile_id):
     if profile.template:
         profile.template.is_active = False
 
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="delete_profile",
         log_id=profile_id,
@@ -371,8 +377,8 @@ def delete_profile(profile_id):
             "This salary profile was changed by another action.  "
             "Please reload and try again."
         ),
-        redirect_endpoint="salary.list_profiles",
-    )
+        redirect=RedirectTarget("salary.list_profiles"),
+    ))
     if conflict is not None:
         return conflict
     logger.info("user_id=%d deactivated salary profile %d", current_user.id, profile_id)

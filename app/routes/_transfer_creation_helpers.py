@@ -22,7 +22,8 @@ steps so each route keeps only its genuinely-distinct middle.
 
 Route-layer module (leading underscore = route-internal) rather than a
 service because every helper consumes Flask globals (``request``,
-``flash``, ``redirect``, ``url_for``, ``current_user``);
+``flash``, ``redirect``, ``url_for``, ``current_user`` -- the redirect /
+url_for pair via :class:`~app.routes._redirect_target.RedirectTarget`);
 ``CLAUDE.md::Architecture`` keeps services isolated from Flask.  None of
 these helpers create or mutate transfer shadow transactions directly --
 shadow atomicity stays inside ``transfer_recurrence.generate_for_template``
@@ -33,7 +34,7 @@ import logging
 from decimal import Decimal
 from typing import Any
 
-from flask import Response, abort, flash, redirect, request, url_for
+from flask import Response, abort, flash, request
 from flask_login import current_user
 from sqlalchemy.exc import IntegrityError
 
@@ -41,6 +42,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
+from app.routes._redirect_target import RedirectTarget
 from app.services import pay_period_service, transfer_recurrence
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import get_or_404
@@ -66,8 +68,7 @@ def validate_and_resolve_source_account(
     schema: Any,
     *,
     dest_account_id: int,
-    redirect_endpoint: str,
-    redirect_kwargs: dict[str, Any] | None = None,
+    redirect: RedirectTarget,
 ) -> tuple[Account, dict[str, Any]] | Response:
     """Validate a transfer form and resolve + check its source account.
 
@@ -90,28 +91,26 @@ def validate_and_resolve_source_account(
             against ``request.form``.
         dest_account_id: The destination account id from the route URL,
             compared against the submitted source to reject self-transfers.
-        redirect_endpoint: Flask endpoint to redirect to on any
-            validation failure (each route's own dashboard).
-        redirect_kwargs: ``url_for`` kwargs for that endpoint (e.g.
-            ``{"account_id": account_id}``).
+        redirect: Where to redirect on any recoverable validation
+            failure -- invalid form, inactive source, or self-transfer
+            (each route's own dashboard).
 
     Returns:
         * ``(source_account, data)`` -- the owned, active source
           :class:`Account` and the loaded payload, when every check
           passes.
-        * :class:`Response` -- a Flask redirect to ``redirect_endpoint``
-          for a recoverable failure (invalid form, inactive source,
+        * :class:`Response` -- a Flask redirect to ``redirect`` for a
+          recoverable failure (invalid form, inactive source,
           self-transfer); the caller returns it directly.
 
     Raises:
         werkzeug.exceptions.NotFound: via ``abort(404)`` when the source
             account does not exist or is not owned by the current user.
     """
-    redirect_kwargs = redirect_kwargs or {}
     errors = schema.validate(request.form)
     if errors:
         flash(_TRANSFER_VALIDATION_FLASH, "danger")
-        return redirect(url_for(redirect_endpoint, **redirect_kwargs))
+        return redirect.to_response()
 
     data = schema.load(request.form)
     source_account_id = data["source_account_id"]
@@ -122,11 +121,11 @@ def validate_and_resolve_source_account(
 
     if not source_account.is_active:
         flash("Source account is inactive.", "danger")
-        return redirect(url_for(redirect_endpoint, **redirect_kwargs))
+        return redirect.to_response()
 
     if source_account_id == dest_account_id:
         flash("Source and destination accounts must be different.", "danger")
-        return redirect(url_for(redirect_endpoint, **redirect_kwargs))
+        return redirect.to_response()
 
     return source_account, data
 
@@ -181,8 +180,7 @@ def build_recurring_transfer_template(
 
 def flush_template_or_namedup_redirect(
     *,
-    redirect_endpoint: str,
-    redirect_kwargs: dict[str, Any] | None = None,
+    redirect: RedirectTarget,
     name_dup_message: str = TRANSFER_NAME_DUP_MESSAGE,
 ) -> Response | None:
     """Flush the session, translating a name-collision into flash+redirect.
@@ -195,8 +193,7 @@ def flush_template_or_namedup_redirect(
     canonical "name already exists" flash + redirect rather than a 500.
 
     Args:
-        redirect_endpoint: Flask endpoint to redirect to on collision.
-        redirect_kwargs: ``url_for`` kwargs for that endpoint.
+        redirect: Where to redirect on collision.
         name_dup_message: Flash text for the collision; defaults to
             :data:`TRANSFER_NAME_DUP_MESSAGE`.  The generic create-
             template path passes its own non-"recurring" wording.
@@ -212,9 +209,7 @@ def flush_template_or_namedup_redirect(
     except IntegrityError:
         db.session.rollback()
         flash(name_dup_message, "warning")
-        return redirect(url_for(
-            redirect_endpoint, **(redirect_kwargs or {}),
-        ))
+        return redirect.to_response()
 
 
 def generate_transfers_for_all_periods(

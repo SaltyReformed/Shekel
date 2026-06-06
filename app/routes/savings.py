@@ -19,7 +19,11 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.ref import GoalMode, IncomeUnit
 from app.models.savings_goal import SavingsGoal
-from app.routes._commit_helpers import commit_or_handle_stale
+from app.routes._commit_helpers import (
+    StaleConflictContext,
+    commit_or_handle_stale,
+)
+from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import account_service, savings_dashboard_service
 
@@ -229,7 +233,7 @@ def update_goal(goal_id):
         if field in _GOAL_UPDATE_FIELDS:
             setattr(goal, field, value)
 
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="update_goal",
         log_id=goal_id,
@@ -237,9 +241,8 @@ def update_goal(goal_id):
             "This savings goal was changed by another action while you "
             "were editing.  Please reload and try again."
         ),
-        redirect_endpoint="savings.edit_goal",
-        redirect_endpoint_kwargs={"goal_id": goal_id},
-    )
+        redirect=RedirectTarget("savings.edit_goal", {"goal_id": goal_id}),
+    ))
     if conflict is not None:
         return conflict
     logger.info("user_id=%d updated savings goal %d", current_user.id, goal_id)
@@ -263,7 +266,7 @@ def delete_goal(goal_id):
         abort(404)
 
     goal.is_active = False
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="delete_goal",
         log_id=goal_id,
@@ -271,8 +274,8 @@ def delete_goal(goal_id):
             "This savings goal was changed by another action.  "
             "Please reload and try again."
         ),
-        redirect_endpoint="savings.dashboard",
-    )
+        redirect=RedirectTarget("savings.dashboard"),
+    ))
     if conflict is not None:
         return conflict
     logger.info("user_id=%d deleted savings goal %d", current_user.id, goal_id)

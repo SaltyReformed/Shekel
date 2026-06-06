@@ -25,14 +25,19 @@ from app.enums import RecurrencePatternEnum
 from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
-from app.routes._commit_helpers import handle_stale_conflict
+from app.routes._commit_helpers import (
+    StaleConflictContext,
+    handle_stale_conflict,
+)
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
+    RecurrenceFormContext,
     build_recurrence_rule_from_form,
     handle_recurrence_conflict,
     handle_stale_form_conflict,
 )
+from app.routes._redirect_target import RedirectTarget
 
 
 class TestBuildRecurrenceRuleFromForm:
@@ -63,9 +68,11 @@ class TestBuildRecurrenceRuleFromForm:
                 data,
                 user_id=seed_user["user"].id,
                 start_period_id=None,
-                end_date_value=None,
-                redirect_endpoint="templates.new_template",
-                include_due_day_of_month=True,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget("templates.new_template"),
+                    include_due_day_of_month=True,
+                ),
             )
             assert result is None
             assert data == {"name": "Should survive"}
@@ -91,9 +98,11 @@ class TestBuildRecurrenceRuleFromForm:
                 data,
                 user_id=seed_user["user"].id,
                 start_period_id=None,
-                end_date_value=None,
-                redirect_endpoint="transfers.new_transfer_template",
-                include_due_day_of_month=False,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget("transfers.new_transfer_template"),
+                    include_due_day_of_month=False,
+                ),
             )
             assert result is None
             # ``due_day_of_month`` survives because the helper did not
@@ -112,9 +121,11 @@ class TestBuildRecurrenceRuleFromForm:
                 data,
                 user_id=seed_user["user"].id,
                 start_period_id=None,
-                end_date_value=None,
-                redirect_endpoint="templates.new_template",
-                include_due_day_of_month=True,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget("templates.new_template"),
+                    include_due_day_of_month=True,
+                ),
             )
             assert isinstance(result, Response)
             assert result.status_code == 302
@@ -155,9 +166,11 @@ class TestBuildRecurrenceRuleFromForm:
                 data,
                 user_id=seed_user["user"].id,
                 start_period_id=chosen.id,
-                end_date_value=None,
-                redirect_endpoint="templates.new_template",
-                include_due_day_of_month=True,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget("templates.new_template"),
+                    include_due_day_of_month=True,
+                ),
             )
             assert isinstance(result, RecurrenceRule)
             # 1 % 4 = 1
@@ -191,10 +204,14 @@ class TestBuildRecurrenceRuleFromForm:
                 data,
                 user_id=seed_user["user"].id,
                 start_period_id=99_999_999,  # nonexistent
-                end_date_value=None,
-                redirect_endpoint="templates.edit_template",
-                redirect_endpoint_kwargs={"template_id": 42},
-                include_due_day_of_month=True,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template",
+                        {"template_id": 42},
+                    ),
+                    include_due_day_of_month=True,
+                ),
             )
             assert isinstance(result, Response)
             assert result.status_code == 302
@@ -226,9 +243,11 @@ class TestBuildRecurrenceRuleFromForm:
                 data,
                 user_id=seed_user["user"].id,
                 start_period_id=None,
-                end_date_value=None,
-                redirect_endpoint="templates.new_template",
-                include_due_day_of_month=True,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget("templates.new_template"),
+                    include_due_day_of_month=True,
+                ),
             )
             assert isinstance(result, RecurrenceRule)
             assert result.due_day_of_month == 15
@@ -254,16 +273,18 @@ class TestHandleStaleConflict:
             # ``except`` block where a commit just raised.  No
             # commit happened here, so rollback is a no-op -- the
             # assertion focuses on the redirect contract.
-            response = handle_stale_conflict(
+            response = handle_stale_conflict(StaleConflictContext(
                 logger=test_logger,
                 log_label="test_route",
                 log_id=123,
                 flash_message=STALE_EDITING_MESSAGE.format(
                     noun="test object",
                 ),
-                redirect_endpoint="templates.edit_template",
-                redirect_endpoint_kwargs={"template_id": 123},
-            )
+                redirect=RedirectTarget(
+                    "templates.edit_template",
+                    {"template_id": 123},
+                ),
+            ))
             assert isinstance(response, Response)
             assert response.status_code == 302
             assert "/templates/123" in response.headers["Location"]
@@ -314,16 +335,20 @@ class TestHandleStaleFormConflict:
                 logger="test_handle_stale_form_conflict",
             ):
                 response = handle_stale_form_conflict(
-                    logger=test_logger,
-                    log_label="update_template",
-                    log_id=42,
+                    StaleConflictContext(
+                        logger=test_logger,
+                        log_label="update_template",
+                        log_id=42,
+                        flash_message=STALE_EDITING_MESSAGE.format(
+                            noun="recurring transaction",
+                        ),
+                        redirect=RedirectTarget(
+                            "templates.edit_template",
+                            {"template_id": 42},
+                        ),
+                    ),
                     submitted=7,
                     current=9,
-                    flash_message=STALE_EDITING_MESSAGE.format(
-                        noun="recurring transaction",
-                    ),
-                    redirect_endpoint="templates.edit_template",
-                    redirect_endpoint_kwargs={"template_id": 42},
                 )
             assert isinstance(response, Response)
             assert response.status_code == 302

@@ -25,6 +25,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.recurrence_rule import RecurrenceRule
+from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
     build_recurring_transfer_template,
     flush_template_or_namedup_redirect,
@@ -160,8 +161,7 @@ def create_contribution_transfer(account_id):
     result = validate_and_resolve_source_account(
         _transfer_schema,
         dest_account_id=account_id,
-        redirect_endpoint="investment.dashboard",
-        redirect_kwargs={"account_id": account_id},
+        redirect=RedirectTarget("investment.dashboard", {"account_id": account_id}),
     )
     if isinstance(result, Response):
         return result
@@ -224,8 +224,7 @@ def create_contribution_transfer(account_id):
     )
 
     namedup_redirect = flush_template_or_namedup_redirect(
-        redirect_endpoint="investment.dashboard",
-        redirect_kwargs={"account_id": account_id},
+        redirect=RedirectTarget("investment.dashboard", {"account_id": account_id}),
     )
     if namedup_redirect is not None:
         return namedup_redirect

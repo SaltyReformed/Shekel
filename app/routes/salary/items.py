@@ -28,7 +28,11 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app import ref_cache
 from app.enums import CalcMethodEnum
 from app.utils.db_errors import is_unique_violation
-from app.routes._commit_helpers import regenerate_and_commit_or_stale
+from app.routes._commit_helpers import (
+    StaleConflictContext,
+    regenerate_and_commit_or_stale,
+)
+from app.routes._redirect_target import RedirectTarget
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _DEDUCTION_UPDATE_FIELDS,
@@ -152,15 +156,19 @@ def delete_raise(raise_id):
     try:
         conflict = regenerate_and_commit_or_stale(
             lambda: _regenerate_salary_transactions(profile),
-            logger=logger,
-            log_label="delete_raise",
-            log_id=raise_id,
-            flash_message=(
-                "This raise was changed by another action.  "
-                "Please reload and try again."
+            ctx=StaleConflictContext(
+                logger=logger,
+                log_label="delete_raise",
+                log_id=raise_id,
+                flash_message=(
+                    "This raise was changed by another action.  "
+                    "Please reload and try again."
+                ),
+                redirect=RedirectTarget(
+                    "salary.edit_profile",
+                    {"profile_id": profile.id},
+                ),
             ),
-            redirect_endpoint="salary.edit_profile",
-            redirect_endpoint_kwargs={"profile_id": profile.id},
         )
         if conflict is not None:
             return conflict
@@ -242,15 +250,19 @@ def update_raise(raise_id):  # pylint: disable=too-many-return-statements
     try:
         conflict = regenerate_and_commit_or_stale(
             lambda: _regenerate_salary_transactions(profile),
-            logger=logger,
-            log_label="update_raise",
-            log_id=raise_id,
-            flash_message=(
-                "This raise was changed by another action while you were "
-                "editing.  Please reload and try again."
+            ctx=StaleConflictContext(
+                logger=logger,
+                log_label="update_raise",
+                log_id=raise_id,
+                flash_message=(
+                    "This raise was changed by another action while you were "
+                    "editing.  Please reload and try again."
+                ),
+                redirect=RedirectTarget(
+                    "salary.edit_profile",
+                    {"profile_id": profile.id},
+                ),
             ),
-            redirect_endpoint="salary.edit_profile",
-            redirect_endpoint_kwargs={"profile_id": profile.id},
         )
         if conflict is not None:
             return conflict
@@ -413,15 +425,19 @@ def delete_deduction(ded_id):
     try:
         conflict = regenerate_and_commit_or_stale(
             lambda: _regenerate_salary_transactions(profile),
-            logger=logger,
-            log_label="delete_deduction",
-            log_id=ded_id,
-            flash_message=(
-                "This deduction was changed by another action.  "
-                "Please reload and try again."
+            ctx=StaleConflictContext(
+                logger=logger,
+                log_label="delete_deduction",
+                log_id=ded_id,
+                flash_message=(
+                    "This deduction was changed by another action.  "
+                    "Please reload and try again."
+                ),
+                redirect=RedirectTarget(
+                    "salary.edit_profile",
+                    {"profile_id": profile.id},
+                ),
             ),
-            redirect_endpoint="salary.edit_profile",
-            redirect_endpoint_kwargs={"profile_id": profile.id},
         )
         if conflict is not None:
             return conflict
@@ -505,15 +521,19 @@ def update_deduction(ded_id):  # pylint: disable=too-many-return-statements
     try:
         conflict = regenerate_and_commit_or_stale(
             lambda: _regenerate_salary_transactions(profile),
-            logger=logger,
-            log_label="update_deduction",
-            log_id=ded_id,
-            flash_message=(
-                "This deduction was changed by another action while you "
-                "were editing.  Please reload and try again."
+            ctx=StaleConflictContext(
+                logger=logger,
+                log_label="update_deduction",
+                log_id=ded_id,
+                flash_message=(
+                    "This deduction was changed by another action while you "
+                    "were editing.  Please reload and try again."
+                ),
+                redirect=RedirectTarget(
+                    "salary.edit_profile",
+                    {"profile_id": profile.id},
+                ),
             ),
-            redirect_endpoint="salary.edit_profile",
-            redirect_endpoint_kwargs={"profile_id": profile.id},
         )
         if conflict is not None:
             return conflict

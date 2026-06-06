@@ -42,17 +42,20 @@ from app.exceptions import (
 )
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
+    StaleConflictContext,
     commit_or_handle_stale,
     handle_stale_conflict,
 )
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
+    RecurrenceFormContext,
     build_recurrence_rule_from_form,
     handle_recurrence_conflict,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
+from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
     generate_transfers_for_all_periods,
@@ -183,9 +186,11 @@ def create_transfer_template():
         data,
         user_id=current_user.id,
         start_period_id=start_period_id,
-        end_date_value=end_date,
-        redirect_endpoint="transfers.new_transfer_template",
-        include_due_day_of_month=False,
+        ctx=RecurrenceFormContext(
+            end_date_value=end_date,
+            redirect=RedirectTarget("transfers.new_transfer_template"),
+            include_due_day_of_month=False,
+        ),
     )
     if isinstance(rule_or_redirect, Response):
         return rule_or_redirect
@@ -199,7 +204,7 @@ def create_transfer_template():
     db.session.add(template)
 
     namedup_redirect = flush_template_or_namedup_redirect(
-        redirect_endpoint="transfers.list_transfer_templates",
+        redirect=RedirectTarget("transfers.list_transfer_templates"),
         name_dup_message="A transfer with that name already exists.",
     )
     if namedup_redirect is not None:
@@ -277,16 +282,20 @@ def update_transfer_template(template_id):
     submitted_version = data.pop("version_id", None)
     if submitted_version is not None and submitted_version != template.version_id:
         return handle_stale_form_conflict(
-            logger=logger,
-            log_label="update_transfer_template",
-            log_id=template_id,
+            StaleConflictContext(
+                logger=logger,
+                log_label="update_transfer_template",
+                log_id=template_id,
+                flash_message=STALE_EDITING_MESSAGE.format(
+                    noun="recurring transfer",
+                ),
+                redirect=RedirectTarget(
+                    "transfers.edit_transfer_template",
+                    {"template_id": template_id},
+                ),
+            ),
             submitted=submitted_version,
             current=template.version_id,
-            flash_message=STALE_EDITING_MESSAGE.format(
-                noun="recurring transfer",
-            ),
-            redirect_endpoint="transfers.edit_transfer_template",
-            redirect_endpoint_kwargs={"template_id": template_id},
         )
 
     effective_from = data.pop("effective_from", date.today())
@@ -301,10 +310,14 @@ def update_transfer_template(template_id):
     redirect_response = resolve_recurrence_rule_for_update(
         template,
         data,
-        end_date_value=end_date,
-        redirect_endpoint="transfers.edit_transfer_template",
-        redirect_endpoint_kwargs={"template_id": template_id},
-        include_due_day_of_month=False,
+        ctx=RecurrenceFormContext(
+            end_date_value=end_date,
+            redirect=RedirectTarget(
+                "transfers.edit_transfer_template",
+                {"template_id": template_id},
+            ),
+            include_due_day_of_month=False,
+        ),
     )
     if redirect_response is not None:
         return redirect_response
@@ -324,8 +337,10 @@ def update_transfer_template(template_id):
     # Flush template changes first so name-uniqueness violations are caught
     # before regeneration dirties the session with transfer deletes/creates.
     namedup_redirect = flush_template_or_namedup_redirect(
-        redirect_endpoint="transfers.edit_transfer_template",
-        redirect_kwargs={"template_id": template_id},
+        redirect=RedirectTarget(
+            "transfers.edit_transfer_template",
+            {"template_id": template_id},
+        ),
     )
     if namedup_redirect is not None:
         return namedup_redirect
@@ -374,15 +389,15 @@ def archive_transfer_template(template_id):
     for xfer in transfers_to_delete:
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
 
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="archive_transfer_template",
         log_id=template_id,
         flash_message=STALE_ACTION_MESSAGE.format(
             noun="recurring transfer",
         ),
-        redirect_endpoint="transfers.list_transfer_templates",
-    )
+        redirect=RedirectTarget("transfers.list_transfer_templates"),
+    ))
     if conflict is not None:
         return conflict
 
@@ -433,15 +448,15 @@ def unarchive_transfer_template(template_id):
     if template.recurrence_rule:
         generate_transfers_for_all_periods(template, effective_from=date.today())
 
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="unarchive_transfer_template",
         log_id=template_id,
         flash_message=STALE_ACTION_MESSAGE.format(
             noun="recurring transfer",
         ),
-        redirect_endpoint="transfers.list_transfer_templates",
-    )
+        redirect=RedirectTarget("transfers.list_transfer_templates"),
+    ))
     if conflict is not None:
         return conflict
     flash(
@@ -518,15 +533,15 @@ def hard_delete_transfer_template(template_id):
             )
             for xfer in transfers_to_delete:
                 transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
-            conflict = commit_or_handle_stale(
+            conflict = commit_or_handle_stale(StaleConflictContext(
                 logger=logger,
                 log_label="hard_delete_transfer_template archive-fallback",
                 log_id=template_id,
                 flash_message=STALE_ACTION_MESSAGE.format(
                     noun="recurring transfer",
                 ),
-                redirect_endpoint="transfers.list_transfer_templates",
-            )
+                redirect=RedirectTarget("transfers.list_transfer_templates"),
+            ))
             if conflict is not None:
                 return conflict
         return redirect(url_for("transfers.list_transfer_templates"))
@@ -565,15 +580,15 @@ def hard_delete_transfer_template(template_id):
         transfer_service.delete_transfer(xfer.id, current_user.id, soft=False)
 
     db.session.delete(template)
-    conflict = commit_or_handle_stale(
+    conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="hard_delete_transfer_template",
         log_id=template_id,
         flash_message=STALE_ACTION_MESSAGE.format(
             noun="recurring transfer",
         ),
-        redirect_endpoint="transfers.list_transfer_templates",
-    )
+        redirect=RedirectTarget("transfers.list_transfer_templates"),
+    ))
     if conflict is not None:
         return conflict
 
@@ -723,16 +738,18 @@ def _regenerate_and_commit_template(template, effective_from, template_id):
     try:
         db.session.commit()
     except StaleDataError:
-        return handle_stale_conflict(
+        return handle_stale_conflict(StaleConflictContext(
             logger=logger,
             log_label="update_transfer_template",
             log_id=template_id,
             flash_message=STALE_EDITING_MESSAGE.format(
                 noun="recurring transfer",
             ),
-            redirect_endpoint="transfers.edit_transfer_template",
-            redirect_endpoint_kwargs={"template_id": template_id},
-        )
+            redirect=RedirectTarget(
+                "transfers.edit_transfer_template",
+                {"template_id": template_id},
+            ),
+        ))
     except IntegrityError:
         db.session.rollback()
         flash("A recurring transfer with that name already exists.", "warning")
