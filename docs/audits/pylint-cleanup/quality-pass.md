@@ -133,6 +133,7 @@ Order = correctness blast-radius x refactor aggressiveness. Financial core first
 | 15 | `routes/templates.py` + `recurrence_engine.match_periods` | `1c26575` | REVIEWED -- **clean** (all ACCEPT, 0 REFINE/REVERT-OVERREACH; first going-forward Phase-3 file under the folded-in rubric) |
 | 16 | `services/growth_engine.py` | `dcf0d4e` | REVIEWED -- **ACCEPT** (behavior-equivalence verified line-for-line; both documented disables upheld, 0 REVERT-OVERREACH; 2 LOW REFINE applied -- type-precision + degenerate-period test) |
 | 17 | `services/loan_resolver/` (pkg) | `41f42a8` | REVIEWED -- **ACCEPT** (all 6 behavior-equivalence points verified line-for-line; `LoanInputs` bundle + `_replay_from_anchor` sharing + `_ProjectionPrep` + `PayoffScenarios` disable all upheld; 0 REVERT-OVERREACH, 0 REFINE; F8 the lone LOW note, backstopped, no change) |
+| 18 | `services/retirement_gap_calculator.py` | `2b0f5ca` | REVIEWED -- **ACCEPT** (all 4 behavior-equivalence points verified line-for-line incl. whole-expression quantize order; dead `planned_retirement_date` removal grep-confirmed write-only; `too-many-instance-attributes` disable upheld; 0 REVERT-OVERREACH, 0 REFINE; lone LOW note on single-use `_sum_projected_balances`, accepted) |
 
 ## Fold into Phase 3 going forward
 
@@ -177,6 +178,26 @@ so the resolver's "balance derived independently of projection" invariant holds 
 read by one consumer; `PayoffRequest`/`AmortizationRow` precedent). The lone LOW note (F8) is a
 non-issue backstopped by the package-wide purity guard -- no code change. See the register rows below.
 
+**Fourth going-forward file: `services/retirement_gap_calculator.py` (`2b0f5ca`, 2026-06-06).** The
+mechanical commit cleared all 4 design smells (`calculate_gap` tm-args/pos/locals; `RetirementGapAnalysis`
+tm-instance-attributes). This is the first file where the trust-but-verify pass overturned the plan's own
+ratified approach: the 2026-06-06 paired-fork session had ratified "keyword-only + relocate
+`planned_retirement_date` to the caller (KEEP the field)", but verification before coding showed the
+result field is write-only (read by NO production consumer -- template, `_build_chart_data`, all of app/),
+so the developer chose FULL removal (param AND field) as the root-cause/DRY fix; and dropping the param to
+5 args clears tm-positional by itself at the default max=5, so keyword-only was dropped as an unrequested
+interface change. tm-locals cleared by two pure helpers (`_after_tax_projected_savings`,
+`_sum_projected_balances`); `RetirementGapAnalysis`(10/7) took a documented disable (flat row-per-field
+aggregate; `AmortizationRow`/`PayoffRequest`/`ProjectedBalance` precedent). The independent reviewer (fresh
+subagent, A-G rubric) verified all 4 behavior-equivalence points line-for-line -- including that
+`_after_tax_projected_savings` quantizes the *whole* `(traditional*(1-rate)+roth)` expression (no premature
+rounding) and that the dead-field removal breaks nothing (independent grep) -- and returned **ACCEPT, 0
+REVERT-OVERREACH, 0 REFINE**. The lone LOW note (single-use `_sum_projected_balances`) was accepted; the
+reviewer's stated justification ("reverting re-trips tm-locals") was verified WRONG and corrected --
+inlining the sum alone leaves exactly 15 locals, which passes -- so the helper is kept for
+orchestrator-altitude cohesion, not threshold-necessity. No code change beyond the mechanical commit. See
+the register rows below.
+
 ## Register (findings + verdicts)
 
 One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:line`.
@@ -207,6 +228,12 @@ One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:l
 | `loan_resolver/` (pkg) (`41f42a8`) | C3/F3 | Package layering + public surface | ACCEPT | Acyclic DAG `_periods <- _payoff <- _state` (`_state` depends on both, still acyclic); `__init__` re-exports 6 public symbols with a correct sorted `__all__`; every import path preserved; 0 new R0801 (no split-trap) |
 | `test_loan_resolver.py` (`41f42a8`) | G1/G2/G3 | ~52 wrapped call sites + repointed source guards | ACCEPT | All wraps byte-identical (same arg order/values); hand-computed assertions intact ($2,398.20 ARM constant, etc.); edge cases still covered (empty anchors, projected-only, ARM window, trueup, zero-rate, tie-break, confirmed-past-as_of). `_loan_resolver_package_source()` globs the package dir generically (survives a future re-split) and tokenizes cleanly |
 | `test_loan_resolver.py` (`41f42a8`) | G2 | F8: `inspect.getsource(compute_payoff_scenarios)` (composer-only purity guard) no longer reaches the extracted `_build_forward_inputs` | ACCEPT (LOW, no change) | No coverage gap: the package-wide guard `test_resolver_is_pure_no_flask_no_db` scans `_payoff.py` in full (incl. `_build_forward_inputs`). Repointing the composer-only guard too is optional polish, not worth churn (reviewer concurred) |
+| `retirement_gap_calculator.py` (`2b0f5ca`) | E2 | `_after_tax_projected_savings` (`66-94`) -- does the extraction preserve the original rounding ORDER (quantize the whole `traditional*(1-rate)+roth`, not quantize-then-add)? | ACCEPT | Verified line-for-line vs HEAD: helper quantizes the whole expression with `ROUND_HALF_UP`, identical to the inline original; the hand-pinned `420000.00`/`100000.00`/`540000.00` after-tax assertions still pass. No premature rounding introduced |
+| `retirement_gap_calculator.py` (`2b0f5ca`) | E3/F1 | Removing the `planned_retirement_date` param AND result field -- root-cause fix or loss of a contract field? | ACCEPT | The field was write-only: independently grep-confirmed that NO production consumer reads `gap_result.planned_retirement_date` (template renders 10 other fields; `_build_chart_data` reads 3; nowhere else in app/). Removing dead result state is the anti-band-aid fix; the date stays available to any future view via `settings`/pension columns, so re-adding is a one-liner if a real need appears (rule 13) |
+| `retirement_gap_calculator.py` (`2b0f5ca`) | A4/C2 | `_after_tax_projected_savings` is single-site -- genuine clarification or count-dodge? | ACCEPT | Genuine: it has real branching (traditional vs Roth bucketing), names a domain concept, documents the *why* (traditional taxed on withdrawal). Decomposition, not a wrapper; it is the load-bearing extraction (without it `calculate_gap` is 18 locals > 15) |
+| `retirement_gap_calculator.py` (`2b0f5ca`) | A4 | `_sum_projected_balances` (`50-63`) -- branchless 3-line sum whose name restates `sum`; borderline "relocates code" | ACCEPT (LOW, no change) | Kept for orchestrator-altitude symmetry with `_after_tax_projected_savings` (calculate_gap reads as a uniform Step 1-6 delegation; inlining one raw accumulator amid delegating steps reads worse). NOTE: the reviewer's "reverting re-trips too-many-locals" rationale was verified WRONG -- inlining the sum alone leaves exactly 15 locals (passes); the helper is a cohesion choice, not threshold-necessary |
+| `retirement_gap_calculator.py` (`2b0f5ca`) | A1/A3/F3 | `RetirementGapAnalysis` `too-many-instance-attributes` disable (10/7) -- restructure into nested sections (PaycheckBreakdown style) instead? | ACCEPT | Documented disable correct: `_gap_analysis.html` renders all 10 as a flat row-per-field table with pre-tax/after-tax counterparts side-by-side and NO sub-totals (unlike `PaycheckBreakdown`'s `taxes.total`/`deductions.total_pre_tax`), so nesting would fragment one concept for zero gain. Matches the ratified `AmortizationRow`/`PayoffRequest`/`ProjectedBalance` precedent; symbol-named + why-commented |
+| `test_retirement_gap_calculator.py` (`2b0f5ca`) | G1/G3/G4 + rule-5 | Deleted `test_planned_retirement_date_passed_through`; updated `test_result_field_completeness` 11->10 fields | ACCEPT | Deletion is the sanctioned rule-5 exception (it asserted a field that no longer exists -- removed behavior, not a test edited to pass); the field-contract guard lives in `test_result_field_completeness`, which is updated to the 10-field set, so contract coverage is preserved. Section-E edges (zero/negative SWR, 0/100/negative tax, negative pay, empty/all-zero accounts, large values) all still pinned with hand-computed values |
 
 ## Sweep results (files 2-14, run `wvq2yd9aa`, 2026-06-05)
 

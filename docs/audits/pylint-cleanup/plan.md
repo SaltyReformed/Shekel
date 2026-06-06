@@ -9,10 +9,28 @@
 > gate. Verify every finding against the code before applying. The auto-loaded
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.89/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 146 visible messages.
-Full suite 5767 passed.** Phase 3 (design smells) has FIFTEEN files plus the form-mutation helper
-family complete. The newest, **`services/loan_resolver.py` DONE** (`41f42a8`; two-phase in one
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.90/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 142 visible messages.
+Full suite 5766 passed.** Phase 3 (design smells) has SIXTEEN files plus the form-mutation helper
+family complete. The newest, **`services/retirement_gap_calculator.py` DONE** (`2b0f5ca`), cleared all
+4 design smells (`calculate_gap` tm-args/pos/locals; `RetirementGapAnalysis` tm-instance-attributes) by
+a developer-chosen root-cause REMOVAL of the dead `planned_retirement_date`. Verification showed the
+result field is write-only (read by no production consumer -- not `_gap_analysis.html`, not
+`_build_chart_data`, nowhere in app/), so dropping both the param (6->5 args clears tm-args +
+tm-positional at the pylint default max=5, NO disable) AND the `RetirementGapAnalysis` field (11->10
+attrs) is the DRY fix, not relocating the write (developer chose full removal over the plan's ratified
+relocate-option once the dead-field finding surfaced; keyword-only proved unnecessary). `calculate_gap`
+tm-locals (19->14) via the pure `_after_tax_projected_savings` (trad/Roth bucketing + whole-expression
+quantize -- the load-bearing extraction) + `_sum_projected_balances` (orchestrator-altitude symmetry,
+not threshold-necessary). `RetirementGapAnalysis`(10/7) documented scoped disable (flat row-per-field
+aggregate; `AmortizationRow`/`PayoffRequest`/`ProjectedBalance` precedent). Single keyword caller + 27
+test calls updated; deleted `test_planned_retirement_date_passed_through` (rule-5 exception);
+`test_result_field_completeness` 11->10. Independent quality-pass (fresh subagent, A-G rubric, all 4
+behavior-equivalence points verified line-for-line incl. the whole-expression quantize order): ACCEPT,
+0 REVERT-OVERREACH, 0 REFINE (lone LOW note on `_sum_projected_balances` accepted; the reviewer's
+threshold rationale corrected -- inlining the sum alone leaves 15, which passes). +1 documented disable
+(85->86); 0 new R0801; visible 146->142; smell items 51->47 (39 8-symbol + 8 instance-attr); score
+9.89->9.90; full suite 5766 passed. Before it, **`services/loan_resolver.py` DONE** (`41f42a8`; two-phase in one
 commit, developer-chosen), cleared all 4 design smells (`resolve_loan` tm-locals;
 `compute_payoff_scenarios` tm-args + tm-locals; `PayoffScenarios` tm-instance-attributes) by the
 developer-chosen **`LoanInputs` bundle + package split**. `LoanInputs(loan_params, anchor_events,
@@ -349,7 +367,7 @@ highest-goal-value work (disables, DRY, complexity) in the middle; lock in via C
 | 0 | Re-baseline + audit `.pylintrc` | -87 type-doc; +13 surfaced via max-attributes revert | DONE (`10936f4`) |
 | 1 | Audit all 74 inline disables | the disables themselves | **DONE** (74->61; 13 removed, 46 KEEP, 15->P3) |
 | 2 | duplicate-code / DRY | 75 clusters | **DONE** (76->0; model clusters via 6 mixins + 5 disables; route/service via shared helpers + 16 documented one-sided disables; commits `e2dc36a`/`7b1236d`/`86eb309`/`6475429`/`eb56235`) |
-| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (15 files + the form-helper family done: `loan_resolver/`, `growth_engine.py`, `templates.py`, `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
+| 3 | Design-smell refactors | 158 visible smells + smells revealed by Phase 1 | IN PROGRESS (16 files + the form-helper family done: `retirement_gap_calculator.py`, `loan_resolver/`, `growth_engine.py`, `templates.py`, `grid.py`, `salary/`, `amortization_engine.py`, `savings_dashboard_service/`, `year_end_summary_service/`, `transactions/`, `transfers/`, `loan/`, `debt_strategy_service.py`, `investment_dashboard_service.py`, `paycheck_calculator.py`, `retirement_dashboard_service.py`, `_recurrence_form_helpers.py` + `_commit_helpers.py` + `_transfer_creation_helpers.py`) |
 | 4 | Mechanical residue sweep | line-too-long, missing docstrings | NOT STARTED |
 | 5 | Lock it in (CI) + scripts/ | CI gate, then scripts/ to 10 | NOT STARTED |
 
@@ -1157,7 +1175,21 @@ documented disables), with commit SHA.
   (`_periods`/`_state`/`_payoff` + `__init__` re-exports; import paths preserved; 0 new R0801). ~52
   call sites wrapped (values frozen); 3 source guards + the C15-3 allow-list repointed to the package.
   Independent quality-pass: ACCEPT, 0 REVERT/REFINE. Package 10.00/10; full suite 5767 passed.
-- services/retirement_gap_calculator.py: `calculate_gap`:39 tm-args/pos/locals -- `-`
+- services/retirement_gap_calculator.py: **DONE** (`2b0f5ca`; file clears all 4 design smells, only the
+  pre-existing `line-too-long`:145 Phase-4 residue remains). `calculate_gap` tm-args/pos (6 params)
+  cleared by REMOVING the dead `planned_retirement_date` pass-through param (6->5 args clears both at the
+  pylint default max=5, NO disable) -- developer chose full removal over the plan's ratified
+  relocate-the-write option once verification showed `gap_result.planned_retirement_date` is write-only
+  (read by no production consumer: not `_gap_analysis.html`, not `_build_chart_data`, nowhere in app/);
+  the field was also dropped from `RetirementGapAnalysis` (11->10 attrs). `calculate_gap` tm-locals
+  (19->14) via the pure helpers `_after_tax_projected_savings` (the trad/Roth bucketing + whole-expression
+  quantize -- the load-bearing extraction) + `_sum_projected_balances` (per-account total, kept for
+  orchestrator-altitude symmetry, not threshold-necessary). `RetirementGapAnalysis`(10/7) documented
+  scoped disable (see instance-attr table). Single keyword caller (`retirement_dashboard_service`) + 27
+  test calls updated; deleted `test_planned_retirement_date_passed_through` (rule-5 exception -- removed
+  behavior); `test_result_field_completeness` 11->10 fields; removed the now-unused `datetime.date`
+  import. Independent quality-pass: ACCEPT, 0 REVERT-OVERREACH, 0 REFINE. +1 documented disable (85->86);
+  0 new R0801; visible 146->142; smell items 51->47; full suite 5766 passed.
 - services/calibration_service.py: `derive_effective_rates`:35 tm-args/pos/locals -- `-`
 - services/growth_engine.py: **DONE** (`dcf0d4e`) -- `project_balance` tm-locals (23/15)
   by `_PeriodInputs`+`_ProjectionState`+`_project_one_period` decomposition (mirrors
@@ -1203,7 +1235,7 @@ rule-named + commented inline disable. Count/limit shown as reported at the defa
 | services/paycheck_calculator.py:83 | 13/7 | **RESTRUCTURED (no disable), `15bcfd1`** -- `PaycheckBreakdown` split into 4 nested sections (period/earnings/taxes/deductions) -> 4/7; see the Tier-2 entry |
 | services/spending_trend_service.py:52 | 11/7 | - |
 | services/spending_trend_service.py:81 | 8/7 | - |
-| services/retirement_gap_calculator.py:24 | 11/7 | - |
+| services/retirement_gap_calculator.py:23 (`RetirementGapAnalysis`) | 10/7 | **DISABLE (documented), `2b0f5ca`** -- cohesive single-return result aggregate (10 figures rendered as a flat row-per-field table by `retirement/_gap_analysis.html`); count reduced 11->10 by removing the dead `planned_retirement_date` field; `AmortizationRow`/`PayoffRequest`/`ProjectedBalance` precedent; scoped+named+commented |
 | services/loan_resolver/_payoff.py (`PayoffScenarios`) | 10/7 | **DISABLE (documented), `41f42a8`** -- cohesive single-return result aggregate (3 chart slices + history + 6 summary metrics read flat by one consumer); `PayoffRequest`/`AmortizationRow` precedent; scoped+named+commented |
 | services/calendar_service.py:71 | 10/7 | - |
 | services/calendar_service.py:87 | 10/7 | - |
@@ -1236,23 +1268,22 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-06 after `services/loan_resolver.py` DONE `41f42a8`; 51 smell
-items remain [42 of the 8-symbol set + 9 `too-many-instance-attributes`], down from 55): the one
-remaining financial core in the band at 4 is **`services/retirement_gap_calculator.py`** (3 8-symbol:
-`calculate_gap` tm-args/pos/locals + 1 instance-attr: `RetirementGapAnalysis` 11/7; plan-first per the
-developer's cadence). **Approach already ratified with the developer (2026-06-06, paired-fork
-session):** make `calculate_gap` keyword-only (clears tm-positional; single caller + all 27 tests
-already pass keyword) AND **drop the `planned_retirement_date` pass-through param** -- it is never used
-in the math and read by no production consumer (only 2 pass-through test asserts + the template never
-reads it), so 6->5 args clears tm-arguments with NO disable (the `derive_from_loan` precedent
-`59ba11a`; the single caller sets `result.planned_retirement_date` itself; the 2 pass-through tests
-update to the moved contract); decompose `calculate_gap` tm-locals into step helpers; and
-`RetirementGapAnalysis`(11/7) -> documented scoped disable (the template reads 10 flat fields, so
-nesting is high-cost/low-value; `AmortizationRow`/`PayoffRequest` precedent). Then the band at 3:
-`app/ref_cache.py`, `routes/debt_strategy.py`, `services/budget_variance_service.py`,
-`services/calibration_service.py`, `services/investment_projection.py`. The only remaining module
-tm-lines are `schemas/validation.py` + `services/carry_forward_service.py` (both Tier-3 -> package
-split per decision #5).
+Next by live density (re-measured 2026-06-06 after `services/retirement_gap_calculator.py` DONE
+`2b0f5ca`; 47 smell items remain [39 of the 8-symbol set + 8 `too-many-instance-attributes`], down
+from 51): the band at 3 -- **`app/ref_cache.py`** (`init` tm-locals/branches/statements),
+**`routes/debt_strategy.py`** (`calculate` tm-locals/return/branches), **`services/budget_variance_service.py`**
+(3 result dataclasses each tm-instance-attributes: `TransactionVariance` 8/7, `CategoryItemVariance` 9/7,
+`VarianceReport` 8/7), **`services/calibration_service.py`** (`derive_effective_rates` tm-args/pos/locals),
+**`services/investment_projection.py`** (`calculate_investment_inputs` tm-args/pos/locals). Plan-first
+per the developer's cadence. **Note on the retirement_gap_calculator approach (trust-but-verify
+divergence from the 2026-06-06 paired-fork ratification):** the ratified plan was keyword-only +
+relocate `planned_retirement_date` to the caller (KEEP the field). Verification before coding showed
+(a) the result field is write-only -- read by NO production consumer (template, `_build_chart_data`,
+all of app/) -- so the developer chose FULL removal (param AND field) as the root-cause/DRY fix, not
+relocation; and (b) dropping the param to 5 args clears tm-positional by itself at the default max=5,
+so keyword-only was unnecessary and skipped (no unrequested interface change). The only remaining
+module tm-lines are `schemas/validation.py` + `services/carry_forward_service.py` (both Tier-3 ->
+package split per decision #5).
 
 ---
 
@@ -1523,3 +1554,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-06 | `1c26575` | 3 | **templates.py -- decompose update_template + preview_recurrence + publicize match_periods (developer-chosen broad scope) -- file DONE:** all 4 live design smells (`update_template` tm-locals 16/15 + tm-return 8/6 + tm-branches 15/12; `preview_recurrence` tm-locals 17/15) PLUS the `preview_recurrence` protected-access (716) resolved by genuine decomposition (no disables, behavior bit-identical). `update_template` via the shared `_validate_template_form` (account/category ownership + envelope-only-on-expense, now used by BOTH create_template + update_template -- 2-site DRY; create's required FKs are always in `data`, so the `in data` guards preserve both paths -- verified vs TemplateCreateSchema) + `_apply_fields_and_propagate_rename` -> ~11 locals/6 returns/8 branches (8->6 returns collapses the 3 FK/tracking guards to 1; no disable, as a disable at the 6/6 limit would be a useless-suppression). `preview_recurrence` via `_build_preview_rule` (request.args -> transient rule) + `_render_preview_html` -> ~9 locals; the every_n condition was wrapped (cleared 1 line-too-long). Protected-access cleared by promoting `recurrence_engine._match_periods` -> public `match_periods` (pure, 27 direct unit tests, cross-module caller -- the underscore mislabeled a de-facto public API), which ALSO cleared the Tier-3 `match_periods` tm-return (8/6) via a single-return accumulator (developer-chosen over a dispatch dict); renamed 2 internal callers + 2 doc refs + the test import/27 calls + the TEST_PLAN.md header (name-only, decision #5). Independent quality-pass review (fresh subagent, A-G rubric, all 7 behavior-equivalence points verified against the code): ALL ACCEPT, 0 REFINE/REVERT-OVERREACH; the lone stale-doc finding folded into the rename. 0 disables added (82); 0 new R0801; instance-attrs unchanged at 11. Score 9.88->9.89; visible 161->154; smell items 64->59 (48 8-symbol + 11 instance-attr). 242 targeted + **full suite 5766 passed.** | 9.89/10 | 154 |
 | 2026-06-06 | `dcf0d4e` | 3 | **growth_engine.py -- decompose project_balance + share _period_return_rate (developer-chosen documented disables for the irreducible args/DTO) -- file DONE:** all 4 design smells resolved. **tm-locals** (`project_balance` 23/15) by genuine decomposition mirroring `amortization_engine`: a frozen `_PeriodInputs` (the loop's fixed constants) + a mutable `_ProjectionState` (the evolving balance/YTD/limit/year carry) + `_project_one_period`, leaving `project_balance` a ~14-local orchestrator. **DRY win:** the byte-identical period-day->compound-rate math in `project_balance` + `reverse_project_balance` (R0801-invisible; the surrounding code differed) extracted to the shared `_period_return_rate` -- and since reverse inverts the forward formula, sharing the rate makes "the two cannot diverge" structural, not incidental. **tm-arguments/tm-positional** (`project_balance` 8/5): documented scoped+named+commented disable (the pure stdlib leaf's 8 inputs vary independently per caller -- the what-if overlay overrides `periodic_contribution` + nulls `contributions`, year-end forces ytd=0 -- so a param object = stamp coupling; reusing `InvestmentInputs` would cycle since it imports `growth_engine`; all callers pass keyword so tm-positional is moot). **tm-instance-attributes** (`ProjectedBalance` 9/7): documented disable -- a cohesive per-period schedule row mirroring `AmortizationRow`; `is_confirmed` is the deliberately-plumbed confirmed/projected distinction (`implementation_plan_section5.md`). Independent quality-pass review (fresh subagent, A-G rubric): **ACCEPT overall**, all 6 behavior-equivalence points verified line-for-line, both disables upheld, **0 REVERT-OVERREACH**; 2 LOW REFINE folded in -- tightened `contribution_lookup` -> `dict[date, tuple[Decimal, bool]] | None`, added `test_degenerate_period_falls_back_to_14_days` (the `period_days <= 0 -> 14` branch, now shared by both directions, was untested). file 10.00/10, 0 smell messages; +2 documented disable lines (82->84); 0 new R0801; useless-suppression 0; E/F 0. Score 9.89 held; visible 154->150; smell items 59->55 (45 8-symbol + 10 instance-attr). 66 growth + 242 consumer + **full suite 5767 passed.** | 9.89/10 | 150 |
 | 2026-06-06 | `41f42a8` | 3 | **loan_resolver.py -- bundle loan inputs (LoanInputs) + split into a package (developer-chosen, two-phase in one commit) -- file DONE:** all 4 design smells (`resolve_loan` tm-locals 16; `compute_payoff_scenarios` tm-args 6/5 + tm-locals 26; `PayoffScenarios` tm-instance-attributes 10/7) resolved. The frozen `LoanInputs(loan_params, anchor_events, payments, rate_changes)` -- the data clump EVERY caller already co-loads (three separate loads per site: a params query + `load_loan_context` + an anchor-event query) -- is shared by `resolve_loan` (5->2 args, tm-locals 16->~10) and `compute_payoff_scenarios` (6->3 args); `compute_monthly_payment_baseline` was left untouched (its `unused-argument` disable ties to OPEN problem P-1). The shared `_replay_from_anchor` dedupes the anchor-select+replay both use -- replay ONLY, never `project_forward`, so the resolver's documented "current_balance derived independently of the schedule generation" invariant holds structurally (genuine 2-site DRY). `compute_payoff_scenarios` tm-locals (26->~13) via `_build_forward_inputs` -> the frozen `_ProjectionPrep`(3) setup bundle (replay/contractual/override/history/projection_inputs), leaving a thin "project three ways, then summarize" orchestrator (summary metrics kept inline, byte-identical to the original). `PayoffScenarios`(10/7) -> documented scoped+named+commented disable (cohesive single-return result aggregate: 3 chart slices + history + 6 summary metrics read flat by one consumer; `PayoffRequest`/`AmortizationRow` precedent). **Package split (decision #5):** the decomposition pushed the module to 1009 lines (new too-many-lines), so it became the `app/services/loan_resolver/` package -- `_periods` (rate periods/anchor/replay + `LoanInputs`) / `_state` (`LoanState` + `resolve_loan` + `compute_monthly_payment_baseline`) / `_payoff` (`PayoffScenarios` + composer + helpers); `__init__` re-exports the 6 public names (+`__all__`) so every import path is preserved; acyclic DAG `_periods <- _payoff <- _state`; **0 new R0801** (no split-trap). ~52 call sites wrapped in `LoanInputs(...)` across 8 files (6 app + 46 test, values frozen byte-identical); 3 test source-inspection guards repointed to scan the package dir via the new `_loan_resolver_package_source()` helper; the C15-3 demoted-column allow-list `services/loan_resolver.py:` -> `services/loan_resolver/` (the `.current_principal` prose moved to the `__init__`/`_state` docstrings). Independent quality-pass review (fresh subagent, A-G rubric, all 6 behavior-equivalence points verified line-for-line): **ACCEPT overall, 0 REVERT-OVERREACH, 0 REFINE**; F8 the lone LOW note (the composer-only `inspect.getsource(compute_payoff_scenarios)` purity guard's reach narrowed by the `_build_forward_inputs` extraction, but the package-wide purity guard scans `_payoff.py` in full -- no gap, no change). +1 documented disable (84->85); package 10.00/10; score 9.89 held; visible 150->146; smell items 55->51 (42 8-symbol + 9 instance-attr); 0 R0801/E/F/useless-suppression. 53 resolver + 313 consumer (loan/debt_strategy/savings/loan_payment) targeted + **full suite 5767 passed (after both the decomposition and the split).** | 9.89/10 | 146 |
+| 2026-06-06 | `2b0f5ca` | 3 | **retirement_gap_calculator.py -- remove dead `planned_retirement_date` + decompose `calculate_gap` (developer-chosen full removal over the plan's relocate-the-write option) -- file DONE:** all 4 design smells resolved by genuine root-cause change (behavior bit-identical). Verification showed `gap_result.planned_retirement_date` is **write-only** -- read by NO production consumer (not `_gap_analysis.html`, not `_build_chart_data`, nowhere in app/; grep-confirmed independently by the quality-pass reviewer) -- so dropping the param AND the `RetirementGapAnalysis` field is the DRY fix, not relocating the write. `calculate_gap` **tm-arguments + tm-positional** (6 params) cleared by dropping the param 6->5 (both clear at the pylint default max=5, NO disable -- the `derive_from_loan`/`59ba11a` precedent, except here the relocated attribute would be dead so it was removed outright). **tm-locals** (19->14) via the pure helpers `_after_tax_projected_savings` (trad/Roth bucketing + whole-expression quantize -- the load-bearing extraction; without it 18>15) + `_sum_projected_balances` (per-account total -- kept for orchestrator-altitude symmetry, NOT threshold-necessary: inlining the sum alone leaves exactly 15, which passes). `RetirementGapAnalysis` **tm-instance-attributes** (11->10 after the field drop, still >7) -> documented scoped+named+commented disable (cohesive single-return aggregate, flat row-per-field render; `AmortizationRow`/`PayoffRequest`/`ProjectedBalance` precedent). Single keyword caller (`retirement_dashboard_service`) + 27 test calls updated; deleted `test_planned_retirement_date_passed_through` (rule-5 exception -- tested removed behavior); `test_result_field_completeness` 11->10 fields; removed the now-unused `datetime.date` import. Independent quality-pass review (fresh subagent, A-G rubric, all 4 behavior-equivalence points verified line-for-line incl. the whole-expression quantize order): **ACCEPT, 0 REVERT-OVERREACH, 0 REFINE** (the lone LOW note on `_sum_projected_balances` accepted; the reviewer's "reverting re-trips tm-locals" rationale was wrong and corrected -- inlining the sum leaves 15). File clears all design smells (only the pre-existing `line-too-long:145` Phase-4 residue remains); +1 documented disable (85->86); 0 new R0801; E/F 0; useless-suppression 0. Score 9.89->9.90; visible 146->142; smell items 51->47 (39 8-symbol + 8 instance-attr). 122 targeted (calculator + dashboard service + route) + **full suite 5766 passed.** | 9.90/10 | 142 |
