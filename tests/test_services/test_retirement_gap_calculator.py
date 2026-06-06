@@ -5,7 +5,6 @@ Tests the gap analysis pipeline including income calculation,
 pension integration, required savings, and after-tax views.
 """
 
-from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -33,7 +32,6 @@ class TestCalculateGap:
                 {"projected_balance": Decimal("500000"), "is_traditional": False},
             ],
             safe_withdrawal_rate=Decimal("0.04"),
-            planned_retirement_date=date(2050, 1, 1),
         )
         assert result.pre_retirement_net_monthly == Decimal("5416.67"), (
             f"Expected net monthly 5416.67, "
@@ -204,15 +202,6 @@ class TestCalculateGap:
         )
         assert result.after_tax_projected_savings is None
         assert result.after_tax_surplus_or_shortfall is None
-
-    def test_planned_retirement_date_passed_through(self):
-        """Retirement date stored in result."""
-        dt = date(2050, 6, 15)
-        result = calculate_gap(
-            net_biweekly_pay=Decimal("2000"),
-            planned_retirement_date=dt,
-        )
-        assert result.planned_retirement_date == dt
 
     def test_pension_taxed_when_tax_rate_provided(self):
         """Pension income reduced by estimated tax rate when provided."""
@@ -517,7 +506,6 @@ class TestCalculateGap:
                 {"projected_balance": Decimal("200000"), "is_traditional": False},
             ],
             safe_withdrawal_rate=Decimal("0.04"),
-            planned_retirement_date=date(2050, 1, 1),
             estimated_tax_rate=Decimal("0.20"),
         )
         assert isinstance(result, RetirementGapAnalysis)
@@ -529,10 +517,9 @@ class TestCalculateGap:
         assert isinstance(result.projected_total_savings, Decimal)
         assert isinstance(result.savings_surplus_or_shortfall, Decimal)
         assert isinstance(result.safe_withdrawal_rate, Decimal)
-        assert isinstance(result.planned_retirement_date, date)
         assert isinstance(result.after_tax_projected_savings, Decimal)
         assert isinstance(result.after_tax_surplus_or_shortfall, Decimal)
-        # Verify all 11 dataclass fields are present.
+        # Verify all 10 dataclass fields are present.
         import dataclasses
         field_names = {f.name for f in dataclasses.fields(RetirementGapAnalysis)}
         assert field_names == {
@@ -540,7 +527,7 @@ class TestCalculateGap:
             "after_tax_monthly_pension", "monthly_income_gap",
             "required_retirement_savings", "projected_total_savings",
             "savings_surplus_or_shortfall", "safe_withdrawal_rate",
-            "planned_retirement_date", "after_tax_projected_savings",
+            "after_tax_projected_savings",
             "after_tax_surplus_or_shortfall",
         }
 

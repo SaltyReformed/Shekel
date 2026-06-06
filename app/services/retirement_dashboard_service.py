@@ -293,7 +293,6 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         monthly_pension_income=pension.monthly_income,
         retirement_account_projections=retirement_account_projections,
         safe_withdrawal_rate=swr,
-        planned_retirement_date=planned_retirement_date,
         estimated_tax_rate=_resolve_estimated_tax_rate(settings),
     )
     chart_data = _build_chart_data(gap_result, pension.monthly_income, swr)
