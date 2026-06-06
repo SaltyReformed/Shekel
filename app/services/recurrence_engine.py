@@ -119,7 +119,7 @@ def _resolve_generation_plan(
     if effective_from is None and periods:
         effective_from = periods[0].start_date
 
-    matching_periods = _match_periods(rule, pattern_id, periods, effective_from)
+    matching_periods = match_periods(rule, pattern_id, periods, effective_from)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     return _GenerationPlan(rule, matching_periods, projected_id)
 
@@ -222,7 +222,7 @@ def can_generate_in_period(template, period, scenario_id):
       2. Template must have a recurrence rule.
       3. Rule pattern must not be ``Once`` (manual placement only).
       4. The period must match the rule's pattern via
-         ``_match_periods`` (effective_from / end_date / pattern
+         ``match_periods`` (effective_from / end_date / pattern
          filters all apply).
       5. The (template, period, scenario) tuple must have NO existing
          rows -- not even soft-deleted ones.  The engine's per-row
@@ -262,7 +262,7 @@ def can_generate_in_period(template, period, scenario_id):
     else:
         effective_from = period.start_date
 
-    matching = _match_periods(rule, pattern_id, [period], effective_from)
+    matching = match_periods(rule, pattern_id, [period], effective_from)
     if not matching:
         return False
 
@@ -445,8 +445,13 @@ def _rp_id(member):
     return ref_cache.recurrence_pattern_id(member)
 
 
-def _match_periods(rule, pattern_id, periods, effective_from):
+def match_periods(rule, pattern_id, periods, effective_from):
     """Return the subset of periods that match the recurrence pattern.
+
+    Public, pure period-matcher: the recurrence engine generates against it
+    internally, and the templates preview route renders against it, so it is
+    deliberately part of this module's public surface rather than a
+    leading-underscore helper.
 
     Args:
         rule:           The RecurrenceRule object.
@@ -465,38 +470,37 @@ def _match_periods(rule, pattern_id, periods, effective_from):
     if rule.end_date is not None:
         candidates = [p for p in candidates if p.start_date <= rule.end_date]
 
+    # Dispatch on pattern through a single exit.  Each branch resolves the
+    # matching subset from the pre-filtered candidates; ``Once`` is absent by
+    # design (manual placement only) and falls through to the empty default.
     if pattern_id == _rp_id(RecurrencePatternEnum.EVERY_PERIOD):
-        return candidates
-
-    if pattern_id == _rp_id(RecurrencePatternEnum.EVERY_N_PERIODS):
+        matches = candidates
+    elif pattern_id == _rp_id(RecurrencePatternEnum.EVERY_N_PERIODS):
         n = rule.interval_n or 1
         offset = rule.offset_periods or 0
-        return [p for p in candidates if (p.period_index - offset) % n == 0]
+        matches = [p for p in candidates if (p.period_index - offset) % n == 0]
+    elif pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY):
+        matches = _match_monthly(candidates, rule.day_of_month or 1)
+    elif pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY_FIRST):
+        matches = _match_monthly_first(candidates)
+    elif pattern_id == _rp_id(RecurrencePatternEnum.QUARTERLY):
+        matches = _match_quarterly(
+            candidates, rule.month_of_year or 1, rule.day_of_month or 1,
+        )
+    elif pattern_id == _rp_id(RecurrencePatternEnum.SEMI_ANNUAL):
+        matches = _match_semi_annual(
+            candidates, rule.month_of_year or 1, rule.day_of_month or 1,
+        )
+    elif pattern_id == _rp_id(RecurrencePatternEnum.ANNUAL):
+        matches = _match_annual(
+            candidates, rule.month_of_year or 1, rule.day_of_month or 1,
+        )
+    else:
+        # Unknown pattern -- match nothing.
+        logger.warning("Unknown recurrence pattern ID: %s", pattern_id)
+        matches = []
 
-    if pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY):
-        return _match_monthly(candidates, rule.day_of_month or 1)
-
-    if pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY_FIRST):
-        return _match_monthly_first(candidates)
-
-    if pattern_id == _rp_id(RecurrencePatternEnum.QUARTERLY):
-        start_month = rule.month_of_year or 1
-        day = rule.day_of_month or 1
-        return _match_quarterly(candidates, start_month, day)
-
-    if pattern_id == _rp_id(RecurrencePatternEnum.SEMI_ANNUAL):
-        start_month = rule.month_of_year or 1
-        day = rule.day_of_month or 1
-        return _match_semi_annual(candidates, start_month, day)
-
-    if pattern_id == _rp_id(RecurrencePatternEnum.ANNUAL):
-        month = rule.month_of_year or 1
-        day = rule.day_of_month or 1
-        return _match_annual(candidates, month, day)
-
-    # Unknown pattern -- return nothing.
-    logger.warning("Unknown recurrence pattern ID: %s", pattern_id)
-    return []
+    return matches
 
 
 def _match_monthly(periods, day_of_month):

@@ -187,7 +187,7 @@ deductions, 3rd-paycheck detection, inflation, cumulative wages, and projections
 `generate_for_template()`, `regenerate_for_template()`, `resolve_conflicts()`, and salary-linked
 amounts covered.
 
-#### Pattern Matching -- `_match_periods()`
+#### Pattern Matching -- `match_periods()`
 
 | Category | Tests Needed                                                      |
 | -------- | ----------------------------------------------------------------- |

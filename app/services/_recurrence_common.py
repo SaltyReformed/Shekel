@@ -19,7 +19,7 @@ place, where the two cannot drift:
 The model-specific halves -- constructing a ``Transaction`` vs routing
 a ``Transfer`` through ``transfer_service`` for shadow atomicity -- stay
 in their respective engines.  The pattern-matching preamble that needs
-``recurrence_engine._match_periods`` lives there too
+``recurrence_engine.match_periods`` lives there too
 (``_resolve_generation_plan``), since hoisting it here would create an
 import cycle.
 
