@@ -1,0 +1,151 @@
+# Quality Pass -- second-pass design review of pylint-cleanup-touched code
+
+**Status: File 1/14 (`paycheck_calculator.py`) DONE -- independent review + refinements applied (full
+suite 5755 passed, app/ 9.88 held). The project-wide bundle fork is RULED: honesty-first -- a private
+helper's too-many-args/locals smell is a signal to DECOMPOSE, not to wrap; bundle only for a genuine
+cohesive named concept (see [[feedback_tm_args_param_object]] / the rubric below). `_PaycheckContext`
+(forwarded superset) was collapsed; `_DeductionContext` (leaf reads all fields) kept; the new
+`_WageBasis` is the cohesive-concept exception. Remaining 13 files: workflow fan-out next.** This is a
+distinct effort
+from the pylint 10/10 cleanup (`plan.md`). The cleanup is a *floor* -- it removes mechanical smells
+(too-many-args, duplicate-code, too-many-locals). This pass chases the *ceiling*: is the code now the
+most pythonic, DRY, SOLID, robust, maintainable, and future-proof it can be?
+
+## Why this pass exists
+
+Pylint cannot see design quality. Worse: the dominant move the Phase 3 refactors made -- introduce a
+context/param object + extract helpers to dissolve a smell -- is itself an unreviewed judgment call,
+and it sits on a knife's edge:
+
+- A cohesive value object that names a real domain concept -> **excellent** (the intended outcome).
+- A bag of unrelated fields assembled only to get the argument/local count under threshold ->
+  **stamp coupling / gold-plating** -- a *worse* design that happens to score 10/10 (CLAUDE.md rule 13).
+
+Every such call was made by the author, in-flight, anchored on the refactor just committed. None has
+had a second set of eyes. Re-verifying those calls with fresh eyes is the highest-value work here.
+
+## Ground rule (inherited from `plan.md`)
+
+**If you cannot cite it, you cannot claim it.** Every finding cites `file:line`. Every verdict is
+recorded in the register. Behavior must stay correct: a file is not "best" if its tests are too weak
+to catch a regression the next refactor could introduce -- test quality is part of the bar.
+
+## How to run the pass on one file
+
+1. Gather three inputs: the file, its test(s), and the **cleanup diff** (`git show <sha>` for the
+   commit(s) that refactored it -- so the reviewer can judge what changed and why).
+2. Hand an **independent** reviewer (a fresh subagent -- you are anchored) those three inputs plus the
+   rubric below. Require it to argue *both* directions: "could this be simpler?" and "is this the
+   right abstraction for the next feature?" Over-engineering findings are first-class, not an
+   afterthought.
+3. Confirm test quality (section G) -- weak or brittle tests are findings in their own right.
+4. Triage every finding to a verdict and record it: **ACCEPT** (it is right), **REFINE** (improve
+   further), or **REVERT-OVERREACH** (the cleanup over-engineered it; collapse the abstraction back).
+5. Apply REFINE / REVERT-OVERREACH fixes as their own commit (`refactor(<scope>): ...`), targeted
+   tests per change, full suite as the gate. ACCEPT rows need no code change -- they are the audit
+   trail that the design was actually examined.
+
+## The rubric
+
+Each item is a yes/no question; a "no" is a finding. Sections A and G carry the most weight for this
+codebase (A = the cleanup's dominant risk; G = the safety net that lets refactoring continue).
+
+### A. Right abstraction (highest-risk dimension for this cleanup)
+
+- A1. Does every newly-introduced bundle (context/param object, NamedTuple, dataclass) name a concept
+  that exists in the domain -- or is it a bag assembled only to lower an arg/local count?
+- A2. Are a bundle's fields used *together* by ~all of its consumers? If each consumer reads a
+  different subset, that is stamp coupling; the fields should fan out as plain arguments.
+- A3. Counterfactual: would this abstraction exist if pylint thresholds did not? If no, it is ceremony.
+- A4. Is each extracted helper either called from >=2 sites or genuinely clarifying one site? A
+  single-use helper that only relocates code adds indirection without paying for it.
+- A5. Is the abstraction at the right altitude -- not leaking implementation, not mixing raw inputs
+  with derived values in one "context"?
+
+### B. DRY (real, not superficial)
+
+- B1. Is duplicated *logic* (not merely duplicated text) extracted to one home?
+- B2. Conversely: is anything DRYed that should not be -- two sites that look alike today but change
+  for different reasons (false DRY couples them)?
+
+### C. SOLID / cohesion
+
+- C1. One reason to change per unit (single responsibility)?
+- C2. Did decomposition improve cohesion -- or scatter one cohesive operation across many helpers you
+  must read in sequence to understand the whole?
+- C3. Do dependencies point the right way (services never import Flask; no layer violations)?
+
+### D. Pythonic
+
+- D1. Idiomatic constructs over manual/clever code?
+- D2. Names read at the call site; types precise (no bare `list`/`dict`/`object`/`Any` where a real
+  type fits)?
+- D3. Guard clauses over deep nesting (max depth 3); no truthiness on business values
+  (`is None`, not `not x`, for money/IDs)?
+
+### E. Robust (financial correctness)
+
+- E1. Edge cases handled: empty / None / zero / negative / boundary (period boundaries, cap
+  crossings, zero gross, single-period inputs)?
+- E2. Decimal discipline: never float in money math; constructed from strings; rounding mode explicit
+  and consistent across paths that must agree?
+- E3. No impossible-scenario handling that is really gold-plating (rule 13) -- and, conversely, no
+  defensive branch that silently hides a real bug?
+- E4. Determinism: order-independent where inputs may arrive unsorted?
+
+### F. Maintainable / future-proof
+
+- F1. Would a plausible next feature slot in, or fight the abstraction?
+- F2. Docstrings explain *why*; comments are not redundant restatements; no stale comments or counts?
+- F3. Public surface minimal and stable; private helpers genuinely private (single module, leading
+  underscore)?
+
+### G. Test quality (safety to keep changing)
+
+- G1. Do tests pin behavior at the right granularity -- concrete values asserted, not just "it runs"?
+- G2. Are any tests over-coupled to internals the refactor reshaped (brittle to the next refactor)?
+- G3. Are the section-E edge cases actually covered by a test?
+- G4. Any assertion that is hand-waved, tautological, or computed by the code under test rather than
+  by hand?
+
+## Worklist (files touched by the cleanup, financial-core first)
+
+Order = correctness blast-radius x refactor aggressiveness. Financial core first, then routes.
+
+| # | File / package | Cleanup commit(s) | Review status |
+|---|---|---|---|
+| 1 | `services/paycheck_calculator.py` | `15bcfd1` | **DONE** -- reviewed + refined (honesty-first bundle ruling applied) |
+| 2 | `services/amortization_engine.py` | `0e8b986` `c4f01e6` `7cc8fe1` | - |
+| 3 | `services/debt_strategy_service.py` | `a1d076e` | - |
+| 4 | `services/retirement_dashboard_service.py` | `ce65229` | - |
+| 5 | `services/investment_dashboard_service.py` | `e3dbea7` | - |
+| 6 | `services/savings_dashboard_service/` (pkg) | `d05758b` `0ec5586` | - |
+| 7 | `services/year_end_summary_service/` (pkg) | `5eeb020` `b96b8b8` | - |
+| 8 | `routes/loan/` (pkg) | `e8b910b` `f07fb1c` | - |
+| 9 | `routes/transfers/` (pkg) | `21f2a31` `c4e9015` | - |
+| 10 | `routes/transactions/` (pkg) | `41cab0e` `27e99f2` | - |
+| 11 | `routes/salary/` (pkg) | `4d7d7c1` `e834635` `131d648` | - |
+| 12 | `routes/grid.py` | `86541bb` | - |
+| 13 | `routes/_recurrence_form_helpers.py` + `_commit_helpers.py` | `8e01099` | - |
+| 14 | `routes/_transfer_creation_helpers.py` | `59ba11a` | - |
+
+## Fold into Phase 3 going forward
+
+For every Phase 3 file still to be refactored, this rubric review becomes part of its definition of
+done: the mechanical smell-clearing commit, then an independent rubric review, then any
+REFINE/REVERT-OVERREACH follow-up -- before the file is marked DONE in `plan.md`. This stops the pass
+from accruing new debt while the retroactive sweep clears the backlog above.
+
+## Register (findings + verdicts)
+
+One row per finding. Verdict is ACCEPT / REFINE / REVERT-OVERREACH. Cite `file:line`.
+
+| File | Rubric | Finding (file:line) | Verdict | Resolution / commit |
+|---|---|---|---|---|
+| `paycheck_calculator.py` | A1/A2/A3 | `_PaycheckContext` (170-178) overlapped `_DeductionContext` on 4/5 fields; `_compute_tax_lines` read all 5 but forwarded to `_bracket_federal` which read only 3 -- a transient arg-folder for the locals threshold, not a domain concept | **REVERT-OVERREACH (done)** | Bundle fork ruled honesty-first. Collapsed `_PaycheckContext`; split `_compute_tax_lines` into `_calibrated_tax_lines`/`_bracket_tax_lines`; `cumulative_wages` computed in the orchestrator; introduced the cohesive `_WageBasis` (gross/taxable/cumulative) so both halves stay <=5 args honestly. `_DeductionContext` kept (leaf reads all 5) |
+| `paycheck_calculator.py` | A4/D2 | `_bracket_federal` (370) took opaque `ctx` then unpacked it; sibling `_bracket_state` (400) took plain args -- asymmetric, ctx not needed | **REFINE (done)** | `_bracket_federal` now takes plain args (`profile, gross_biweekly, pay_periods_per_year, bracket_set, annual_pre_tax`), matching `_bracket_state` |
+| `paycheck_calculator.py` | D2 | `DeductionBreakdown.pre_tax/post_tax: list` (99-100) -- coding standard requires specific collection types | **REFINE (done)** | Now `list[DeductionLine]` |
+| `paycheck_calculator.py` | E3/G3 | `group.index(period)` `except ValueError` (503-509) silently returned `floor_value` in a money-reconciliation path; effectively dead for real callers and untested | **REFINE (done)** | Removed per rule 13 (no handling for impossible scenarios). `period` is guaranteed in `group` by construction (its own year + `annual_salary` derived from it); a genuine invariant violation now fails loud rather than silently under-paying a cent |
+| `paycheck_calculator.py` | A1/A2/F9 | Output sections `PeriodInfo`/`Earnings`/`TaxLines`/`DeductionBreakdown` (82-157) name real concepts, read as cohesive groups by every consumer, totals on the owning section | ACCEPT | Strongest part of the refactor -- this is the model the input contexts should have aspired to |
+| `paycheck_calculator.py` | A4/C1 | `_residue_cents` (516) + `_compute_deductions` (285) are single-site but genuinely clarify (isolate audited arithmetic / co-locate pre+post pairing) | ACCEPT | -- |
+| `paycheck_calculator.py` | E2/G1/G3/G4 | Net-pay sum is Decimal-exact-equivalent; high-risk edges (full-year reconciliation, FICA cap crossing, calibration/bracket agreement, partial-context fallback, determinism) pinned with hand-computed values, public-API tests dominate | ACCEPT | Behavior preserved; suite is strong enough to keep refactoring safely |

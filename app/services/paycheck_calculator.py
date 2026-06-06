@@ -96,8 +96,8 @@ class TaxLines:
 @dataclass
 class DeductionBreakdown:
     """Pre- and post-tax deduction line items for a single paycheck."""
-    pre_tax: list = field(default_factory=list)
-    post_tax: list = field(default_factory=list)
+    pre_tax: list[DeductionLine] = field(default_factory=list)
+    post_tax: list[DeductionLine] = field(default_factory=list)
 
     @property
     def total_pre_tax(self) -> Decimal:
@@ -168,13 +168,17 @@ class _DeductionContext:
 
 
 @dataclass(frozen=True)
-class _PaycheckContext:
-    """Immutable per-paycheck inputs the tax-line computation reads."""
-    profile: object
-    period: object
-    all_periods: list
-    pay_periods_per_year: int
+class _WageBasis:
+    """The per-paycheck wage figures withholding is computed from.
+
+    The three figures travel together through both tax paths (calibrated
+    and bracket-based): the period gross, the period taxable amount (gross
+    less pre-tax deductions, floored at zero), and the year-to-date
+    cumulative gross that drives the FICA Social Security wage-base cap.
+    """
     gross_biweekly: Decimal
+    taxable_biweekly: Decimal
+    cumulative_wages: Decimal
 
 
 def calculate_paycheck(profile, period, all_periods, tax_configs,
@@ -232,13 +236,25 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     # Step 5: Taxable income (for display -- taxes computed via Pub 15-T).
     taxable_biweekly = max(gross_biweekly - deductions.total_pre_tax, ZERO)
 
-    # Steps 6-7: Tax calculation -- calibrated or bracket-based.
-    pay_ctx = _PaycheckContext(
-        profile, period, all_periods, pay_periods_per_year, gross_biweekly,
+    # Steps 6-7: Tax calculation -- calibrated or bracket-based.  Both
+    # paths read the same wage figures; the cumulative YTD gross is
+    # computed once here and feeds the FICA SS wage-base cap on both paths
+    # (CRIT-03 / F-037: the calibration path used to skip this and
+    # over-charged SS after the cap on high earners).
+    wages = _WageBasis(
+        gross_biweekly,
+        taxable_biweekly,
+        _get_cumulative_wages(profile, period, all_periods),
     )
-    taxes = _compute_tax_lines(
-        pay_ctx, taxable_biweekly, deductions.total_pre_tax, tax_configs, calibration,
-    )
+    if calibration is not None and getattr(calibration, "is_active", False):
+        taxes = _calibrated_tax_lines(
+            wages, calibration, tax_configs.get("fica_config"),
+        )
+    else:
+        taxes = _bracket_tax_lines(
+            profile, wages, pay_periods_per_year,
+            deductions.total_pre_tax, tax_configs,
+        )
 
     # Step 9: Net pay.
     net_pay = (
@@ -305,59 +321,71 @@ def _compute_deductions(ctx):
     )
 
 
-def _compute_tax_lines(ctx, taxable_biweekly, total_pre_tax, tax_configs, calibration):
-    """Compute the four withholding lines, calibrated or bracket-based.
+def _calibrated_tax_lines(wages, calibration, fica_config):
+    """Compute the four withholding lines from effective calibrated rates.
 
-    When an active calibration is supplied, effective pay-stub rates drive
-    the lines (the SS line inside ``apply_calibration`` delegates to
+    The Social Security line inside :func:`apply_calibration` delegates to
     ``capped_social_security`` so the wage-base cap is enforced identically
-    to the bracket path).  Otherwise the lines come from IRS Pub 15-T
-    bracket withholding plus FICA.  Cumulative YTD wages are computed once
-    and fed to both paths for the SS wage-base cap (CRIT-03 / F-037: the
-    calibration path used to skip this and over-charged SS after the cap on
-    high earners).
+    to the bracket path (CRIT-03 / F-037).
 
     Args:
-        ctx: The per-paycheck :class:`_PaycheckContext`.
-        taxable_biweekly: Gross less pre-tax deductions, floored at zero.
-        total_pre_tax: Per-period pre-tax deduction total (annualised for
-            the bracket federal calculation).
-        tax_configs: dict with bracket_set, state_config, fica_config.
-        calibration: Optional CalibrationOverride with effective rates.
+        wages: The per-paycheck :class:`_WageBasis` (gross, taxable, and the
+            cumulative YTD gross that drives the SS wage-base cap).
+        calibration: An active CalibrationOverride with effective rates.
+        fica_config: The FicaConfig (or None) for the SS wage-base cap.
 
     Returns:
         TaxLines with the federal, state, social_security, and medicare
         withholding amounts.
     """
-    fica_config = tax_configs.get("fica_config")
-    cumulative_wages = _get_cumulative_wages(ctx.profile, ctx.period, ctx.all_periods)
+    cal_taxes = apply_calibration(
+        wages.gross_biweekly,
+        wages.taxable_biweekly,
+        calibration,
+        cumulative_wages=wages.cumulative_wages,
+        fica_config=fica_config,
+    )
+    return TaxLines(
+        federal=cal_taxes["federal"],
+        state=cal_taxes["state"],
+        social_security=cal_taxes["ss"],
+        medicare=cal_taxes["medicare"],
+    )
 
-    if calibration is not None and getattr(calibration, "is_active", False):
-        cal_taxes = apply_calibration(
-            ctx.gross_biweekly,
-            taxable_biweekly,
-            calibration,
-            cumulative_wages=cumulative_wages,
-            fica_config=fica_config,
-        )
-        return TaxLines(
-            federal=cal_taxes["federal"],
-            state=cal_taxes["state"],
-            social_security=cal_taxes["ss"],
-            medicare=cal_taxes["medicare"],
-        )
 
+def _bracket_tax_lines(profile, wages, pay_periods_per_year, total_pre_tax, tax_configs):
+    """Compute the four withholding lines from IRS Pub 15-T brackets plus FICA.
+
+    The cumulative YTD gross on ``wages`` feeds the FICA SS wage-base cap so
+    it is enforced identically to the calibration path (CRIT-03 / F-037).
+
+    Args:
+        profile: The SalaryProfile (read for the W-4 federal inputs).
+        wages: The per-paycheck :class:`_WageBasis` (gross, taxable, and the
+            cumulative YTD gross that drives the SS wage-base cap).
+        pay_periods_per_year: The full-year denominator (typically 26).
+        total_pre_tax: Per-period pre-tax deduction total (annualised for
+            the bracket federal calculation).
+        tax_configs: dict with bracket_set, state_config, fica_config.
+
+    Returns:
+        TaxLines with the federal, state, social_security, and medicare
+        withholding amounts.
+    """
     bracket_set = tax_configs.get("bracket_set")
     federal = (
-        _bracket_federal(ctx, bracket_set, total_pre_tax * ctx.pay_periods_per_year)
+        _bracket_federal(
+            profile, wages.gross_biweekly, pay_periods_per_year,
+            bracket_set, total_pre_tax * pay_periods_per_year,
+        )
         if bracket_set
         else ZERO
     )
     state = _bracket_state(
-        taxable_biweekly, ctx.pay_periods_per_year, tax_configs.get("state_config")
+        wages.taxable_biweekly, pay_periods_per_year, tax_configs.get("state_config")
     )
     fica = tax_calculator.calculate_fica(
-        ctx.gross_biweekly, fica_config, cumulative_wages
+        wages.gross_biweekly, tax_configs.get("fica_config"), wages.cumulative_wages
     )
     return TaxLines(
         federal=federal,
@@ -367,24 +395,26 @@ def _compute_tax_lines(ctx, taxable_biweekly, total_pre_tax, tax_configs, calibr
     )
 
 
-def _bracket_federal(ctx, bracket_set, annual_pre_tax):
+def _bracket_federal(profile, gross_biweekly, pay_periods_per_year, bracket_set,
+                     annual_pre_tax):
     """Return the bracket-based biweekly federal withholding (IRS Pub 15-T).
 
-    Reads the W-4 inputs off ``ctx.profile`` and delegates to
+    Reads the W-4 inputs off ``profile`` and delegates to
     :func:`tax_calculator.calculate_federal_withholding`.
 
     Args:
-        ctx: The per-paycheck :class:`_PaycheckContext`.
+        profile: The SalaryProfile (read for the W-4 inputs).
+        gross_biweekly: The period gross to withhold against.
+        pay_periods_per_year: The full-year denominator (typically 26).
         bracket_set: The TaxBracketSet to withhold against.
         annual_pre_tax: Annualised pre-tax deduction total.
 
     Returns:
         Decimal biweekly federal withholding.
     """
-    profile = ctx.profile
     return tax_calculator.calculate_federal_withholding(
-        gross_pay=ctx.gross_biweekly,
-        pay_periods=ctx.pay_periods_per_year,
+        gross_pay=gross_biweekly,
+        pay_periods=pay_periods_per_year,
         bracket_set=bracket_set,
         additional_income=Decimal(str(getattr(profile, "additional_income", 0) or 0)),
         pre_tax_deductions=annual_pre_tax,
@@ -500,15 +530,12 @@ def _gross_biweekly_for_period(
     if residue_cents <= 0:
         return floor_value
 
-    try:
-        idx = group.index(period)
-    except ValueError:
-        # ``period`` is not in ``all_periods`` (defensive: real callers
-        # always include it).  Fall back to the floor value so the
-        # caller still receives a deterministic Decimal.
-        return floor_value
-
-    if idx < residue_cents:
+    # ``period`` is guaranteed to be in ``group``: it shares its own
+    # calendar year and (by construction, since ``annual_salary`` was
+    # computed from it) the group's effective annual salary, so it
+    # survives both filters above.  The earliest ``residue_cents`` periods
+    # in group order receive the +$0.01 adjustment.
+    if group.index(period) < residue_cents:
         return floor_value + ONE_CENT
     return floor_value
 
