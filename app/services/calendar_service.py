@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
@@ -33,6 +32,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_balance_contributing,
+    monthly_attribution_clause,
 )
 
 logger = logging.getLogger(__name__)
@@ -281,15 +281,24 @@ def _query_transactions_for_range(
     Cancelled) -- intentionally wider than the grid period subtotal's
     Projected-only predicate.  The two surfaces diverge by design.
     """
-    # Pylint: ``duplicate-code`` -- the overlapping-periods + eager-loaded
-    # Transaction query below is structurally parallel to
-    # ``budget_variance_service``'s period query, but the two diverge by
-    # design (see the docstring above): this calendar query uses the wider
-    # ``balance_contributing_clause`` while budget-variance uses the
-    # Projected-only / explicit-status-exclusion gate.  Documented one-sided
-    # ``duplicate-code`` disable rather than a shared query builder that
-    # would re-introduce the divergent predicate as a parameter
-    # (coding-standards rule 13).
+    # Pylint: ``duplicate-code`` -- the overlapping-periods preamble +
+    # eager-loaded ``Transaction`` query below (``get_overlapping_periods``
+    # then ``query(Transaction).options(joinedload(category), joinedload(
+    # status), ...)``) is incidental SQLAlchemy boilerplate structurally
+    # parallel to ``budget_variance_service._query_by_date_range`` (the
+    # R0801 preamble cluster).  The genuinely shared logic has already been
+    # lifted out: the monthly-attribution business rule into
+    # ``monthly_attribution_clause`` (called by both), and both queries
+    # apply the IDENTICAL balance-contributing gate -- calendar's
+    # ``balance_contributing_clause()`` is exactly budget-variance's
+    # ``is_deleted.is_(False)`` + ``~status_id.in_(balance_excluded_status_ids())``
+    # (NOT a "Projected-only" gate, as a prior rationale wrongly claimed).
+    # The only genuine divergence is eager-loads: calendar adds
+    # ``joinedload(template -> recurrence_rule)`` for ``_is_infrequent``'s
+    # day-cell display; budget-variance never reads templates.  A shared
+    # query builder would parameterize that per-consumer eager-load set for
+    # no logic saved (coding-standards rule 13), so the preamble stays a
+    # documented one-sided disable.
     # pylint: disable=duplicate-code
     overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]
@@ -308,12 +317,7 @@ def _query_transactions_for_range(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
             balance_contributing_clause(),
-            or_(
-                Transaction.due_date.between(first_day, last_day),
-                Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(
-                    period_ids if period_ids else [-1],
-                ),
-            ),
+            monthly_attribution_clause(first_day, last_day, period_ids),
         )
         .all()
     )

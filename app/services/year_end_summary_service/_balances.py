@@ -11,10 +11,6 @@ from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload
-
-from app import ref_cache
-from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
@@ -36,13 +32,15 @@ from app.services.account_projection import (
 )
 from app.services.interest_projection import calculate_interest
 from app.services.investment_projection import adapt_deductions
-from app.services.loan_payment_service import load_loan_context
+from app.services.loan_payment_service import (
+    load_loan_context,
+    query_shadow_income,
+)
 from app.services.projection_inputs import build_investment_projection_inputs
 from app.services.year_end_summary_service._periods import (
     _get_anchor_period_index,
 )
 from app.services.year_end_summary_service._types import _ProjectionInputs
-from app.utils.balance_predicates import balance_excluded_status_ids
 
 ZERO = Decimal("0")
 
@@ -519,35 +517,14 @@ def _load_shadow_contributions(
     if not period_ids:
         return []
 
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    # Shadow-income definition + status/pay_period eager-loads come from
+    # the shared ``query_shadow_income`` builder (the R0801 sibling is
+    # ``loan_payment_service.get_payment_history``, NOT ``budget_variance``
+    # as a prior rationale wrongly claimed); the year-end feed scopes it to
+    # this year's periods.
     return (
-        db.session.query(Transaction)
-        .options(
-            # Pylint: ``duplicate-code`` -- the joinedload(status,
-            # pay_period) + account/scenario filter preamble below is
-            # generic SQLAlchemy boilerplate that incidentally matches
-            # ``budget_variance_service._query_by_period`` -- a
-            # semantically unrelated query (it also joinedloads
-            # ``category``, filters by a single period / date range, and
-            # feeds variance computation, not the growth-engine
-            # contribution history).  Extracting a shared helper across
-            # the two would wrongly couple the year-end aggregation to the
-            # variance service (coding-standards rule 13), so a one-sided
-            # ``duplicate-code`` disable documents the incidental
-            # similarity instead.
-            # pylint: disable=duplicate-code
-            joinedload(Transaction.status),
-            joinedload(Transaction.pay_period),
-        )
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-            ~Transaction.status_id.in_(balance_excluded_status_ids()),
-        )
+        query_shadow_income(account_id, scenario_id)
+        .filter(Transaction.pay_period_id.in_(period_ids))
         .all()
     )
 
@@ -567,34 +544,12 @@ def _sum_shadow_income(
     Returns:
         Decimal total contributions from shadow income transactions.
     """
-    if not period_ids:
-        return ZERO
-
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-
-    # Status filter routes through the centralized
-    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02): one
-    # exclusion-set definition shared with every other
-    # ``[CREDIT, CANCELLED]`` filter in the codebase.  Filtering by
-    # ``Transaction.status_id`` lets the query drop the ``Status``
-    # join entirely; the audit-trigger row count is unchanged and
-    # the SQL is one INNER JOIN shorter.
-    shadow_txns = (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-            ~Transaction.status_id.in_(balance_excluded_status_ids()),
-        )
-        .all()
-    )
-
+    # Reuse the shared shadow-income loader so the contribution sum and the
+    # contribution timeline can never disagree on which rows count.  An
+    # empty ``period_ids`` flows through ``_load_shadow_contributions``'s
+    # own empty-list guard, so the loop yields ZERO.
     total = ZERO
-    for txn in shadow_txns:
+    for txn in _load_shadow_contributions(account_id, scenario_id, period_ids):
         total += txn.effective_amount
     return total
 

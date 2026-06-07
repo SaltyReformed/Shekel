@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from app.extensions import db
@@ -24,7 +23,10 @@ from app.models.transaction import Transaction
 from app.services.account_resolver import resolve_analytics_account
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
-from app.utils.balance_predicates import balance_excluded_status_ids
+from app.utils.balance_predicates import (
+    balance_excluded_status_ids,
+    monthly_attribution_clause,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -324,12 +326,7 @@ def _query_by_date_range(
             Transaction.scenario_id == scope.scenario_id,
             Transaction.is_deleted.is_(False),
             ~Transaction.status_id.in_(scope.excluded_status_ids),
-            or_(
-                Transaction.due_date.between(first_day, last_day),
-                Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(
-                    period_ids if period_ids else [-1],
-                ),
-            ),
+            monthly_attribution_clause(first_day, last_day, period_ids),
         )
         .all()
     )

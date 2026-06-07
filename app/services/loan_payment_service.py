@@ -194,6 +194,53 @@ def load_loan_context(
     )
 
 
+def query_shadow_income(account_id: int, scenario_id: int):
+    """Return the base query for shadow-income transactions on an account.
+
+    Shadow income is the income-leg shadow of a transfer INTO the account:
+    a payment received by a loan, or a contribution into an investment
+    account.  It is identified by ``transfer_id IS NOT NULL`` plus the
+    Income transaction type, excluding soft-deleted rows and the
+    balance-excluded statuses (Credit, Cancelled, via the centralized
+    ``balance_excluded_status_ids`` accessor).  Centralizing that predicate
+    keeps the loan-payment history and the year-end contribution feeds from
+    drifting on what counts as shadow income (MED-02): a one-sided change
+    to the rule would otherwise desynchronize the two surfaces.
+
+    ``status`` and ``pay_period`` are eager-loaded because both current
+    consumers read ``txn.status`` / ``txn.pay_period`` downstream without an
+    N+1.  Period scoping and ordering stay with the caller because they
+    differ: the payment history covers every period and orders by period
+    start; the year-end feeds filter to a specific set of period IDs.
+
+    Args:
+        account_id: The account receiving the transfers.
+        scenario_id: The active budget scenario.
+
+    Returns:
+        A SQLAlchemy ``Query`` over ``Transaction`` filtered to the
+        account's shadow income (status + pay_period eager-loaded), NOT yet
+        executed -- callers chain ``.filter`` / ``.join`` / ``.order_by`` /
+        ``.all`` as their surface requires.
+    """
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    return (
+        db.session.query(Transaction)
+        .options(
+            joinedload(Transaction.status),
+            joinedload(Transaction.pay_period),
+        )
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type_id,
+            Transaction.is_deleted.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
+        )
+    )
+
+
 def get_payment_history(
     account_id: int, scenario_id: int,
 ) -> list[PaymentRecord]:
@@ -228,49 +275,18 @@ def get_payment_history(
         List of PaymentRecord instances sorted by payment date
         (ascending).  Empty list if no qualifying transactions exist.
     """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-
-    # Query shadow income transactions with eager-loaded status and
-    # pay_period to avoid N+1 queries when iterating results.
-    # Status filter routes through the centralized
-    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02): the
-    # exclusion-set definition lives in one place.  The
-    # ``join(Transaction.pay_period)`` is retained because the
-    # subsequent ``order_by(PayPeriod.start_date)`` requires the
-    # PayPeriod alias to be in scope; ``join(Transaction.status)``
-    # is dropped because the ``Transaction.status_id`` filter no
-    # longer needs it.  ``joinedload(Transaction.status)`` still
-    # eager-loads the status row for the downstream ``is_settled``
-    # consumer.
-    # Pylint: ``duplicate-code`` -- shadow-income transaction query for
-    # live loan-payment amounts.  Its account / scenario / is-deleted /
-    # status-exclusion core coincides with ``budget_variance_service``'s
-    # query, but this one adds the loan-specific constraints
-    # (``transfer_id IS NOT NULL`` + income type) that make it a distinct
-    # query, not a shared builder (rule 13).  One-sided ``duplicate-code``
-    # disable (see plan.md Phase 2 notes).
-    # pylint: disable=duplicate-code
+    # Shadow-income transactions for this account across every period,
+    # ordered by period start for the chronological payment timeline.
+    # ``query_shadow_income`` owns the shared "what counts as shadow income"
+    # predicate; the explicit ``join(Transaction.pay_period)`` brings the
+    # PayPeriod alias into scope for the ``order_by`` (the builder's
+    # ``joinedload`` is the separate N+1-avoiding eager-load).
     txns = (
-        db.session.query(Transaction)
+        query_shadow_income(account_id, scenario_id)
         .join(Transaction.pay_period)
-        .options(
-            joinedload(Transaction.status),
-            joinedload(Transaction.pay_period),
-        )
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-            # Exclude statuses that do not represent real payments
-            # (Cancelled, Credit).  These have excludes_from_balance=True.
-            ~Transaction.status_id.in_(balance_excluded_status_ids()),
-        )
         .order_by(PayPeriod.start_date)
         .all()
     )
-    # pylint: enable=duplicate-code
 
     payments = []
     for txn in txns:
