@@ -10,9 +10,24 @@
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.92/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 108 visible messages.
-Full suite 5770 passed.** Phase 3 (design smells) has TWENTY-EIGHT files plus the form-mutation helper
-family complete. The newest, **`app/routes/entries.py` DONE** (`6e3c32d`), cleared `update_entry`'s
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 107 visible messages.
+Full suite 5770 passed.** Phase 3 (design smells) has TWENTY-NINE files plus the form-mutation helper
+family complete. The newest, **`app/__init__.py` DONE** (`e22a1a5`), cleared
+`_register_blueprints`'s `too-many-locals` (24/15) at the root by replacing the 23 explicit deferred
+`from app.routes.X import X_bp` imports + 23 register calls with a data-driven loop over the new
+`_BLUEPRINT_MODULES` tuple (the 23 module names, canonical order), registering
+`getattr(module, f"{name}_bp")` after an `importlib.import_module` -- 24->3 locals. Because no import
+statements remain in the function, the now-useless `import-outside-toplevel` disable was REMOVED
+(disables **83->82**). Behavior bit-identical (verified 4 ways: same 23 modules in the same order; all
+`getattr` resolve to the same Blueprint objects incl. the 5 package + 3 multiword names; a full
+`create_app` build registers all 23 in order, 166 URL rules). The `<name>_bp` convention is total
+across `app/routes` and fails LOUD (AttributeError/ModuleNotFoundError at startup) on violation.
+Independent quality-pass: behavior_equivalent=yes, all ACCEPT, 0 REVERT-OVERREACH (the
+data-driven-loop-vs-explicit+disable fork argued both ways -- the loop ruled correct: DRY win + disable
+eliminated, the lone cost being greppability of individual `_bp` registrations, mitigated by the
+documented convention). 0 disables added; visible 108->107; smell items 19->18 (13 8-symbol + 5
+instance-attr); score 9.92 held; full suite 5770 passed. Before it, **`app/routes/entries.py` DONE**
+(`6e3c32d`), cleared `update_entry`'s
 `too-many-return-statements` (8/6) by extracting the service-call + commit + 4-way error-translation
 tail into the private `_execute_entry_update(entry_id, txn, data)` (the `transfers._execute_transfer_update`
 precedent) -- `update_entry` 8->5 returns, the helper 4; no disable. Helper body byte-identical to the
@@ -1471,7 +1486,26 @@ documented disables), with commit SHA.
   TYPE_CHECKING block (PayPeriod/Scenario/AnchorPoint, zero runtime imports). 0 disables added (83); 0
   new R0801; visible 113->111; smell items 24->22; score 9.92 held; full suite 5770 passed.
 - services/loan_payment_service.py: `prepare_payments_for_engine`:362 tm-locals; `live_loan_transfer_amounts`:463 tm-locals -- `-`
-- app/__init__.py: `_register_blueprints`:435 tm-locals -- `-`
+- app/__init__.py: **DONE** (`e22a1a5`; `_register_blueprints` tm-locals cleared). The 23 explicit
+  deferred `from app.routes.X import X_bp` imports (each bound a local; deferred inside the function to
+  avoid the blueprint<->`app` cycle) + 23 `register_blueprint` calls replaced by a data-driven loop
+  over the new module-level `_BLUEPRINT_MODULES` tuple (the 23 module names, canonical registration
+  order), registering `getattr(module, f"{name}_bp")` after `importlib.import_module(f"app.routes.{name}")`.
+  24->3 locals. Since no `import`/`from` statements remain in the function, the now-useless
+  `import-outside-toplevel` disable was REMOVED (a bonus -- disables 83->82, no useless-suppression, no
+  newly-firing import-outside-toplevel since `importlib.import_module` is a CALL not an import). Behavior
+  bit-identical (reviewer verified 4 ways: identical module set + order; every `getattr` resolves to the
+  same Blueprint incl. the 5 package blueprints + 3 multiword names; full `create_app` build registers
+  all 23 in order = 166 URL rules; grep of all `*_bp = Blueprint` returns exactly these 23). The
+  `<name>_bp` convention is total + filesystem-enforced and fails LOUD (AttributeError/ModuleNotFoundError
+  at startup) on any violation. **Design fork RESOLVED (data-driven loop over explicit-imports+disable):**
+  the quality-pass argued both ways -- greppability of individual `_bp` registrations is lost (mitigated
+  by the documented convention) but the loop is the genuine refactor (decision #3), eliminates the 23x
+  import+register pairing AND the disable, and adding a blueprint is now a one-line tuple append.
+  Independent quality-pass: behavior_equivalent=yes, all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH. (The 5
+  pre-existing `W0613` framework-mandated error-handler `e` args in `_register_error_handlers` are a
+  separate item, untouched.) disables 83->82; visible 108->107; smell items 19->18; score 9.92 held;
+  full suite 5770 passed.
 - routes/accounts/anchor.py: **DONE** (`ab16669`; file now 10.00/10, zero messages). `true_up`
   tm-return (7/6) cleared by (a) merging the two success returns -- DUPLICATE_SAME_DAY + COMMITTED
   build the identical OOB success response, so an if/else sets up `account` (DUPLICATE re-fetches the
@@ -1624,14 +1658,14 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-06 after **`routes/entries.py` DONE** `6e3c32d`; 19
-smell items remain [14 of the 8-symbol set + 5 `too-many-instance-attributes`], down from 20).
+Next by live density (re-measured 2026-06-06 after **`app/__init__.py` DONE** `e22a1a5`; 18
+smell items remain [13 of the 8-symbol set + 5 `too-many-instance-attributes`], down from 19).
 **Working order is now low-fork-batch-first** (developer direction 2026-06-06): clear the
 function-decomposition + tm-args-param-object files, THEN consult on the package splits
 (`carry_forward_service`, `schemas/validation`), the instance-attr dispositions
 (`calendar_service`/`spending_trend_service`/`carry_forward_service` -- developer prefers RESTRUCTURE
 where feasible over a documented disable), and the 2 criticals (`auth.py`, `transfer_service.py`).
-The remaining low-fork files: `app/__init__.py` (`_register_blueprints` tm-locals),
+The remaining low-fork files:
 `services/savings_goal_service.py` (`amount_to_monthly` tm-return), `services/interest_projection.py`
 (`calculate_interest` tm-locals), `services/loan_payment_service.py` (`prepare_payments_for_engine` +
 `live_loan_transfer_amounts` tm-locals -- note OPEN P-1 here), `services/balance_calculator.py`
@@ -1971,3 +2005,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-06 | `5b32148` | 3 | **categories.py -- extract shared create-form error response (no disable) -- file DONE; starts the low-fork batch:** `create_category` tm-return (7/6) cleared by extracting the dual HTMX-or-flash error response (byte-identical at the schema-validation + blank-name guards -- the HX branch was literally identical, only the errors dict + message varied) into the typed private `_create_form_error_response(errors, flash_message) -> Response | tuple[Response, int]` (400 JSON for HTMX, else flash danger + redirect to settings#categories); each guard `return`s it, dropping 7->5 returns. Genuine 2-site DRY (the salary.py form-route tm-return methodology -- real DRY drops the count, no disable). The duplicate guard (flash warning + redirect, no HTMX jsonify -- pre-existing asymmetry, intentionally preserved) + both success returns (HTMX `_category_row.html`; flash + redirect) byte-unchanged; `edit_category` NOT folded in (its guards have no HTMX-jsonify branch -- a different contract, rule 13 forbids a suppress-HX flag). Behavior bit-identical; the create error paths are pinned by existing tests (`test_create_category_htmx_validation_error` 400 JSON, `test_create_category_validation_error` non-HX flash, `test_create_category_empty_{group,item}_name_after_trim` the blank-name message). Independent quality-pass (single fresh reviewer; proportionate to a 2-site extract): behavior_equivalent=yes, **6 ACCEPT, 0 REFINE, 0 REVERT-OVERREACH** (A4 genuine 2-site DRY, D2 `Response | tuple[Response, int]` precise, F1 keep-create-specific upheld). file 10.00/10, 0 smell messages; 0 disables added (83); 0 new R0801; useless-suppression 0; E/F 0. Score 9.92 held; visible 111->110; smell items 22->21 (16 8-symbol + 5 instance-attr). 65 categories targeted + **full suite 5770 passed.** | 9.92/10 | 110 |
 | 2026-06-06 | `ab16669` | 3 | **accounts/anchor.py -- merge true_up success returns + extract conflict response (no disable) -- file DONE:** `true_up` tm-return (7/6) cleared by (a) merging the two success returns: DUPLICATE_SAME_DAY + COMMITTED build the byte-identical OOB success response (cell + "as of" OOB snippet + `HX-Trigger: balanceChanged`), so an if/else sets up `account` (DUPLICATE `db.session.get` re-fetches the committed row -- the service returns DUPLICATE *after* `rollback()`, expiring the in-memory row; COMMITTED `db.session.refresh` reloads the audit-trigger `updated_at`, and logs) then a SINGLE shared success build/return; and (b) extracting `_anchor_conflict_response(account) -> tuple[str, int]` -- the 409 `grid/_anchor_edit.html` conflict render shared by the pre-flush form-version guard + the post-service STALE_CONFLICT outcome (genuine 2-site DRY; NOT shared with `inline_anchor_update`, which uses `accounts/_anchor_cell.html` + `acct=` -- a deliberately distinct surface). Returns 7->6 (the R0911 limit; the 6 map 1:1 onto 6 distinct HTTP outcomes -- 404 / 400-validation / 400-no-period / 409-form-stale / 409-service-stale / 200-success -- irreducible, no disable, no `obscures-distinct-flashes` problem). Behavior bit-identical: the independent reviewer verified against `anchor_service.py`'s outcome/rollback contract (`:243-255`, `:346-360`) that the DUPLICATE re-fetch (post-rollback) vs COMMITTED refresh asymmetry and the COMMITTED-only `logger.info` are preserved exactly, and the success f-string + header are byte-identical. Independent quality-pass (single fresh reviewer): behavior_equivalent=yes, **all ACCEPT (5 findings), 0 REFINE, 0 REVERT-OVERREACH** (A4 conflict-helper DRY, B2 success-merge not false-DRY, D2 `tuple[str, int]` correct, irreducible-at-6 upheld). **Watch-item (PRE-EXISTING, out of scope):** `test_double_submit_creates_one_history_row` does not assert r2's body shows the committed balance -- the DUPLICATE re-fetch my merge preserves rests on inspection; a 1-line `assert <balance> in r2.data` would close it (deferred -- needs the rendered format verified, predates the cleanup). file 10.00/10, 0 smell messages; 0 disables added (83); 0 new R0801; useless-suppression 0; E/F 0. Score 9.92 held; visible 110->109; smell items 21->20 (15 8-symbol + 5 instance-attr). 146 accounts + grid-regression targeted + **full suite 5770 passed.** | 9.92/10 | 109 |
 | 2026-06-06 | `6e3c32d` | 3 | **entries.py -- extract _execute_entry_update from update_entry (no disable) -- file DONE:** `update_entry` tm-return (8/6) cleared by extracting the service-call + commit + 4-way error-translation tail into `_execute_entry_update(entry_id, txn, data)` -- StaleDataError->409 conflict list; the C-19 IntegrityError backstop->idempotent credit-payback; (NotFoundError, ValidationError)->400; success->`_render_entry_list(txn)` + 200 + balanceChanged trigger. `update_entry` 8->5 returns (keeps its 2 ownership-guard 404s + 422 validation + 409 stale-form check + the helper call); the helper has 4 returns (under 6). The `transfers._execute_transfer_update` precedent -- sharpens cohesion (route = guards/validation; helper = commit/error-translation), not count-shifting (the 4 error returns are distinct mandated failure modes). Helper body byte-identical to the replaced block (`version_id` popped at the route before the call, never forwarded to the service); left UNTYPED to match the file's untyped sibling response helpers; the divergence from `_execute_transfer_update` (returns the response itself, not None) is correct -- this route has a fixed post-commit success render with no caller-side branching. Independent quality-pass (single fresh reviewer; byte-verified the helper body against HEAD): behavior_equivalent=yes, **all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH** (A4 genuine cohesive execute+translate unit, extraction-over-disable the right call, the untyped helper justified by siblings). **Two deferred tracker notes (out of scope, reported not fixed):** (1) the entries private-helper cluster is a candidate for a coordinated typing pass (`flask.typing.ResponseReturnValue`); (2) the 7-line `txn`/`entry` ownership preamble shared verbatim by `update_entry`/`toggle_cleared`/`delete_entry` is a genuine DRY opportunity (a separate refactor). file 10.00/10, 0 smell messages; 0 disables added (83); 0 new R0801; useless-suppression 0; E/F 0. Score 9.92 held; visible 109->108; smell items 20->19 (14 8-symbol + 5 instance-attr). 49 entries targeted + **full suite 5770 passed.** | 9.92/10 | 108 |
+| 2026-06-06 | `e22a1a5` | 3 | **app/__init__.py -- data-driven blueprint registration loop (no disable; removes one) -- `_register_blueprints` DONE:** tm-locals (24/15) cleared at the root -- the 23 explicit deferred `from app.routes.X import X_bp` imports (each a local; deferred to avoid the blueprint<->`app` cycle) + 23 `register_blueprint` calls replaced by a loop over the new `_BLUEPRINT_MODULES` tuple (23 module names, canonical order), registering `getattr(module, f"{name}_bp")` after `importlib.import_module`. 24->3 locals. **Bonus: the now-useless `import-outside-toplevel` disable REMOVED** (`importlib.import_module` is a CALL, not an import statement, so no import-outside-toplevel fires and the disable would be useless-suppression) -- disables **83->82**. Behavior bit-identical, reviewer-verified 4 ways: `_BLUEPRINT_MODULES` == the old 23-module register order (diff identical); every `getattr(module, "<name>_bp")` resolves to the same Blueprint (incl. the 5 package blueprints defining `Blueprint()` in `_bp.py` + re-exporting, and the multiword pay_periods/debt_strategy/static_pass); a full `create_app("testing")` build registers all 23 in order = 166 URL rules; a grep of every `*_bp = Blueprint(...)` under `app/routes/` returns exactly these 23. The `<name>_bp` convention is total + filesystem-enforced and fails LOUD (AttributeError/ModuleNotFoundError at startup) on violation -- the right failure mode for the app factory. **Design fork (data-driven loop vs explicit-imports+documented disable):** the reviewer argued both -- greppability of `grep auth_bp` is lost (mitigated: the convention is documented two lines up) but the loop is the genuine decision-#3 refactor (DRY: removes the 23x import+register pairing; the disable disappears rather than parks; adding a blueprint is a one-line append). Independent quality-pass (single fresh reviewer): behavior_equivalent=yes, **all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH**. (The 5 pre-existing `W0613` error-handler `e` args are a separate framework-mandated item, untouched.) too-many-locals cleared; disables 83->82; 0 new R0801; useless-suppression 0; E/F 0. Score 9.92 held; visible 108->107; smell items 19->18 (13 8-symbol + 5 instance-attr). 114 auth-required + **full suite 5770 passed.** | 9.92/10 | 107 |
