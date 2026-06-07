@@ -84,7 +84,7 @@ BLOCK_TEMPLATE_MISSING = "template_missing"
 
 
 @dataclass(frozen=True)
-class CarryForwardPlan:
+class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
     """One row's planned action under ``carry_forward_unpaid``.
 
     Attributes:
@@ -121,6 +121,17 @@ class CarryForwardPlan:
             canonical does not yet exist and the recurrence engine
             would create it as part of the carry-forward.  ``False``
             otherwise.
+
+    Pylint note: ``too-many-instance-attributes`` (10) is suppressed
+    because this is a cohesive value record -- one source row's planned
+    carry-forward action -- read flat by its sole consumer, the
+    carry-forward preview modal, which iterates ``preview.plans`` and
+    renders one list item per plan.  The block metadata and the envelope
+    rollover numbers are not read as separable units: the modal
+    interleaves the rollover figures within a single rendered sentence and
+    gates list-item styling on ``blocked`` apart from rendering
+    ``block_reason``.  Every field is an irreducible column of the row;
+    splitting it would fragment one domain concept for no design gain.
     """
 
     transaction: Transaction

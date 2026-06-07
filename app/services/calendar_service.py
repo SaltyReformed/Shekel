@@ -68,8 +68,21 @@ _INFREQUENT_PATTERNS = frozenset({
 
 
 @dataclass(frozen=True)
-class DayEntry:
-    """A single transaction's representation on a calendar day."""
+class DayEntry:  # pylint: disable=too-many-instance-attributes
+    """A single transaction's representation on a calendar day.
+
+    Pylint note: ``too-many-instance-attributes`` (10) is suppressed
+    because this is a cohesive value record -- one transaction's row on a
+    calendar day -- consumed verbatim by the calendar surface: the CSV
+    month export reads the display fields as adjacent columns (folding the
+    booleans into single Income/Expense, Status, Large, and Infrequent
+    columns), the month-detail table renders name/category/amount and the
+    income/paid flags as individual cells, and the route reads
+    amount/is_income for day totals.  The two category fields are read as
+    independent columns, never as a unit.  Every field is an irreducible
+    column of the row; splitting it would fragment one domain concept and
+    break every consumer for no design gain.
+    """
 
     transaction_id: int
     name: str
@@ -84,8 +97,19 @@ class DayEntry:
 
 
 @dataclass(frozen=True)
-class MonthSummary:
-    """Aggregated data for one calendar month."""
+class MonthSummary:  # pylint: disable=too-many-instance-attributes
+    """Aggregated data for one calendar month.
+
+    Pylint note: ``too-many-instance-attributes`` (9) is suppressed
+    because this is a cohesive single-return aggregate -- one calendar
+    month's summary -- whose fields are flat columns read together by the
+    calendar surface: the month and year templates render the money fields
+    and is_third_paycheck_month, and the CSV year export emits them as one
+    row per month.  The three money fields are the month's headline
+    numbers read individually, not a sub-object read as a unit, so there is
+    no section to extract; nesting would fragment one contract across the
+    templates and the exporter for no design gain.
+    """
 
     year: int
     month: int

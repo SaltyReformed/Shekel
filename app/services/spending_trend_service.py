@@ -49,8 +49,19 @@ _TOP_N = 5
 
 
 @dataclass(frozen=True)
-class ItemTrend:
-    """Trend data for a single category item."""
+class ItemTrend:  # pylint: disable=too-many-instance-attributes
+    """Trend data for a single category item.
+
+    Pylint note: ``too-many-instance-attributes`` (11) is suppressed
+    because this is a cohesive value record -- one category's trend row,
+    produced in a single pass by _compute_item_trend -- consumed verbatim
+    by row-rendering surfaces: the trends template reads the fields
+    interleaved within one list item, and the CSV export emits them as
+    adjacent columns.  No consumer reads any subset (identity, magnitude,
+    trend metrics, timing) as a unit, and no field owns a section total.
+    Every field is an irreducible column of the row; splitting it would
+    fragment one domain concept for no design gain.
+    """
 
     category_id: int
     group_name: str
@@ -78,8 +89,19 @@ class GroupTrend:
 
 
 @dataclass(frozen=True)
-class TrendReport:
-    """Complete trend detection report."""
+class TrendReport:  # pylint: disable=too-many-instance-attributes
+    """Complete trend detection report.
+
+    Pylint note: ``too-many-instance-attributes`` (8) is suppressed
+    because this is one cohesive result aggregate for the trends tab.  The
+    four window fields (window_months, window_periods, data_sufficiency,
+    threshold) describe and gate the report; the four collections
+    (top_increasing, top_decreasing, all_items, group_trends) are its
+    ranked, grouped, and full item views.  Every field is read scattered
+    across the trends template, the CSV export, and the route -- never as
+    a sub-group -- so there is no section to extract; nesting would
+    fragment one contract for no design gain.
+    """
 
     window_months: int
     window_periods: int
