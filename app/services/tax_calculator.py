@@ -14,6 +14,7 @@ Federal withholding follows the IRS Publication 15-T Percentage Method:
 """
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
@@ -34,18 +35,58 @@ TWO_PLACES = Decimal("0.01")
 # ── Federal Withholding (IRS Pub 15-T Percentage Method) ──────────
 
 
-def calculate_federal_withholding(
-    gross_pay,
-    pay_periods,
-    bracket_set,
-    *,
-    additional_income=ZERO,
-    pre_tax_deductions=ZERO,
-    additional_deductions=ZERO,
-    qualifying_children=0,
-    other_dependents=0,
-    extra_withholding=ZERO,
-):
+@dataclass(frozen=True)
+class W4Inputs:
+    """The employee's W-4 / pre-tax withholding adjustments.
+
+    Bundles the per-employee inputs to :func:`calculate_federal_withholding`
+    beyond gross pay, the pay-period count, and the bracket set: the W-4
+    Step 3 dependent counts, the Step 4(a)/(b)/(c) amounts, and the
+    annualized pre-tax deductions.  All fields default to "none" so an
+    employee with a blank W-4 is ``W4Inputs()``.
+
+    ``__post_init__`` coerces each field to its target type (``Decimal``
+    constructed from strings for money, ``int`` for the counts), so callers
+    may pass raw model values and the calculator consumes them directly --
+    the same construct-from-strings discipline the function previously
+    applied to each argument, now in one place.
+
+    Fields:
+        additional_income:     W-4 Step 4(a) -- other annual income.
+        pre_tax_deductions:    Total annual pre-tax deductions (retirement,
+                               Section 125, health premiums).
+        additional_deductions: W-4 Step 4(b) -- additional annual deductions.
+        qualifying_children:   W-4 Step 3 -- qualifying children under 17.
+        other_dependents:      W-4 Step 3 -- other dependents.
+        extra_withholding:     W-4 Step 4(c) -- extra withholding per period.
+    """
+
+    additional_income: Decimal = ZERO
+    pre_tax_deductions: Decimal = ZERO
+    additional_deductions: Decimal = ZERO
+    qualifying_children: int = 0
+    other_dependents: int = 0
+    extra_withholding: Decimal = ZERO
+
+    def __post_init__(self):
+        for money_field in (
+            "additional_income",
+            "pre_tax_deductions",
+            "additional_deductions",
+            "extra_withholding",
+        ):
+            object.__setattr__(
+                self, money_field, Decimal(str(getattr(self, money_field))),
+            )
+        object.__setattr__(
+            self, "qualifying_children", int(self.qualifying_children),
+        )
+        object.__setattr__(
+            self, "other_dependents", int(self.other_dependents),
+        )
+
+
+def calculate_federal_withholding(gross_pay, pay_periods, bracket_set, w4=W4Inputs()):
     """Calculate per-period federal income tax withholding.
 
     Implements the IRS Publication 15-T Percentage Method (2026+).
@@ -58,18 +99,11 @@ def calculate_federal_withholding(
         bracket_set:            TaxBracketSet with .standard_deduction,
                                 .child_credit_amount, .other_dependent_credit_amount,
                                 and .brackets (list of TaxBracket).
-        additional_income:      W-4 Step 4(a) -- other annual income (default 0).
-        pre_tax_deductions:     Total annual pre-tax deductions (retirement,
-                                Section 125, health premiums) already subtracted
-                                from gross before this function (default 0).
-        additional_deductions:  W-4 Step 4(b) -- additional annual deductions
-                                (default 0).
-        qualifying_children:    W-4 Step 3 -- number of qualifying children
-                                under 17 (default 0).
-        other_dependents:       W-4 Step 3 -- number of other dependents
-                                (default 0).
-        extra_withholding:      W-4 Step 4(c) -- extra withholding per period
-                                (default 0).
+        w4:                     :class:`W4Inputs` -- the employee's W-4 /
+                                pre-tax withholding adjustments (Step 3
+                                dependent counts, Step 4(a)/(b)/(c) amounts,
+                                annualized pre-tax deductions).  Defaults to an
+                                empty ``W4Inputs()`` (a blank W-4).
 
     Returns:
         Decimal -- per-period federal withholding amount.
@@ -83,12 +117,6 @@ def calculate_federal_withholding(
     # ── Input validation ──────────────────────────────────────────
     gross_pay = Decimal(str(gross_pay))
     pay_periods = int(pay_periods)
-    additional_income = Decimal(str(additional_income))
-    pre_tax_deductions = Decimal(str(pre_tax_deductions))
-    additional_deductions = Decimal(str(additional_deductions))
-    extra_withholding = Decimal(str(extra_withholding))
-    qualifying_children = int(qualifying_children)
-    other_dependents = int(other_dependents)
 
     if gross_pay < ZERO:
         raise InvalidGrossPayError(gross_pay)
@@ -96,22 +124,28 @@ def calculate_federal_withholding(
         raise InvalidPayPeriodsError(pay_periods)
     if bracket_set is None:
         raise InvalidFilingStatusError(None)
-    if qualifying_children < 0:
-        raise InvalidDependentCountError("qualifying_children", qualifying_children)
-    if other_dependents < 0:
-        raise InvalidDependentCountError("other_dependents", other_dependents)
+    if w4.qualifying_children < 0:
+        raise InvalidDependentCountError(
+            "qualifying_children", w4.qualifying_children,
+        )
+    if w4.other_dependents < 0:
+        raise InvalidDependentCountError(
+            "other_dependents", w4.other_dependents,
+        )
 
     # ── Step 1 -- Annualize income ─────────────────────────────────
     # IRS Pub 15-T: multiply periodic gross pay by the number of
     # pay periods, then add any additional annual income from W-4 4(a).
-    annual_income = (gross_pay * pay_periods) + additional_income
+    annual_income = (gross_pay * pay_periods) + w4.additional_income
 
     logger.debug("Step 1 -- annual_income: %s", annual_income)
 
     # ── Step 2 -- Pre-tax adjustments ──────────────────────────────
     # Subtract annualized pre-tax deductions (retirement, Sec 125, etc.)
     # and W-4 Step 4(b) additional deductions.
-    adjusted_income = annual_income - pre_tax_deductions - additional_deductions
+    adjusted_income = (
+        annual_income - w4.pre_tax_deductions - w4.additional_deductions
+    )
     adjusted_income = max(adjusted_income, ZERO)
 
     # ── Step 3 -- Subtract standard deduction ──────────────────────
@@ -133,16 +167,9 @@ def calculate_federal_withholding(
     )
 
     # ── Step 5 -- Apply credits (W-4 Step 3) ───────────────────────
-    child_credit_amount = Decimal(
-        str(getattr(bracket_set, "child_credit_amount", 0) or 0)
+    total_credits = _dependent_credits(
+        bracket_set, w4.qualifying_children, w4.other_dependents,
     )
-    other_credit_amount = Decimal(
-        str(getattr(bracket_set, "other_dependent_credit_amount", 0) or 0)
-    )
-
-    child_credit_total = qualifying_children * child_credit_amount
-    other_credit_total = other_dependents * other_credit_amount
-    total_credits = child_credit_total + other_credit_total
 
     logger.debug("Step 5 -- total_credits: %s", total_credits)
 
@@ -156,7 +183,7 @@ def calculate_federal_withholding(
     # ── Step 6 -- De-annualize ─────────────────────────────────────
     per_period_withholding = (
         annual_tax_after_credits / pay_periods
-    ) + extra_withholding
+    ) + w4.extra_withholding
 
     per_period_withholding = per_period_withholding.quantize(
         TWO_PLACES, rounding=ROUND_HALF_UP
@@ -167,6 +194,26 @@ def calculate_federal_withholding(
     )
 
     return per_period_withholding
+
+
+def _dependent_credits(bracket_set, qualifying_children, other_dependents):
+    """Return the total annual W-4 Step 3 dependent credits.
+
+    The child credit (per qualifying child under 17) plus the
+    other-dependent credit, read from the bracket set's
+    ``child_credit_amount`` / ``other_dependent_credit_amount`` (treated as
+    0 when unset).
+    """
+    child_credit_amount = Decimal(
+        str(getattr(bracket_set, "child_credit_amount", 0) or 0)
+    )
+    other_credit_amount = Decimal(
+        str(getattr(bracket_set, "other_dependent_credit_amount", 0) or 0)
+    )
+    return (
+        qualifying_children * child_credit_amount
+        + other_dependents * other_credit_amount
+    )
 
 
 def _apply_marginal_brackets(taxable_income, brackets):

@@ -12,6 +12,7 @@ import pytest
 from decimal import Decimal
 
 from app.services.tax_calculator import (
+    W4Inputs,
     calculate_federal_withholding,
     calculate_state_tax,
     calculate_fica,
@@ -97,7 +98,7 @@ class TestZeroTaxScenario:
             gross_pay=Decimal("1153.85"),  # ~$30k / 26
             pay_periods=26,
             bracket_set=single_bracket_set,
-            qualifying_children=3,
+            w4=W4Inputs(qualifying_children=3),
         )
         assert result == Decimal("0.00")
 
@@ -179,7 +180,7 @@ class TestPositiveTaxScenario:
             gross_pay=Decimal("2307.69"),
             pay_periods=26,
             bracket_set=single_bracket_set,
-            extra_withholding=Decimal("50.00"),
+            w4=W4Inputs(extra_withholding=Decimal("50.00")),
         )
         assert with_extra == base + Decimal("50.00")
 
@@ -202,7 +203,7 @@ class TestPositiveTaxScenario:
             gross_pay=Decimal("2307.69"),
             pay_periods=26,
             bracket_set=single_bracket_set,
-            additional_income=Decimal("10000"),
+            w4=W4Inputs(additional_income=Decimal("10000")),
         )
         assert base == Decimal("219.23")
         assert with_additional == Decimal("303.85"), (
@@ -229,7 +230,7 @@ class TestPositiveTaxScenario:
             gross_pay=Decimal("2307.69"),
             pay_periods=26,
             bracket_set=single_bracket_set,
-            additional_deductions=Decimal("5000"),
+            w4=W4Inputs(additional_deductions=Decimal("5000")),
         )
         assert base == Decimal("219.23")
         assert with_deductions == Decimal("176.92"), (
@@ -256,7 +257,7 @@ class TestPositiveTaxScenario:
             gross_pay=Decimal("2307.69"),
             pay_periods=26,
             bracket_set=single_bracket_set,
-            pre_tax_deductions=Decimal("6000"),
+            w4=W4Inputs(pre_tax_deductions=Decimal("6000")),
         )
         assert base == Decimal("219.23")
         assert with_pretax == Decimal("172.31"), (
@@ -447,7 +448,7 @@ class TestInputValidation:
                 gross_pay=Decimal("2000"),
                 pay_periods=26,
                 bracket_set=single_bracket_set,
-                qualifying_children=-1,
+                w4=W4Inputs(qualifying_children=-1),
             )
 
     def test_negative_other_dependents(self, single_bracket_set):
@@ -456,7 +457,7 @@ class TestInputValidation:
                 gross_pay=Decimal("2000"),
                 pay_periods=26,
                 bracket_set=single_bracket_set,
-                other_dependents=-2,
+                w4=W4Inputs(other_dependents=-2),
             )
 
 
@@ -492,7 +493,7 @@ class TestDependentCredits:
             gross_pay=Decimal("3846.15"),
             pay_periods=26,
             bracket_set=single_bracket_set,
-            qualifying_children=2,
+            w4=W4Inputs(qualifying_children=2),
         )
         assert no_kids == Decimal("557.69"), (
             f"No-kids withholding: expected 557.69, got {no_kids}"
@@ -525,7 +526,7 @@ class TestDependentCredits:
             gross_pay=Decimal("3846.15"),
             pay_periods=26,
             bracket_set=single_bracket_set,
-            other_dependents=2,
+            w4=W4Inputs(other_dependents=2),
         )
         assert no_deps == Decimal("557.69"), (
             f"No-deps withholding: expected 557.69, got {no_deps}"

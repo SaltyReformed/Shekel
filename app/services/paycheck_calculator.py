@@ -412,18 +412,16 @@ def _bracket_federal(profile, gross_biweekly, pay_periods_per_year, bracket_set,
     Returns:
         Decimal biweekly federal withholding.
     """
-    return tax_calculator.calculate_federal_withholding(
-        gross_pay=gross_biweekly,
-        pay_periods=pay_periods_per_year,
-        bracket_set=bracket_set,
-        additional_income=Decimal(str(getattr(profile, "additional_income", 0) or 0)),
+    w4 = tax_calculator.W4Inputs(
+        additional_income=getattr(profile, "additional_income", 0) or 0,
         pre_tax_deductions=annual_pre_tax,
-        additional_deductions=Decimal(
-            str(getattr(profile, "additional_deductions", 0) or 0)
-        ),
-        qualifying_children=int(getattr(profile, "qualifying_children", 0) or 0),
-        other_dependents=int(getattr(profile, "other_dependents", 0) or 0),
-        extra_withholding=Decimal(str(getattr(profile, "extra_withholding", 0) or 0)),
+        additional_deductions=getattr(profile, "additional_deductions", 0) or 0,
+        qualifying_children=getattr(profile, "qualifying_children", 0) or 0,
+        other_dependents=getattr(profile, "other_dependents", 0) or 0,
+        extra_withholding=getattr(profile, "extra_withholding", 0) or 0,
+    )
+    return tax_calculator.calculate_federal_withholding(
+        gross_biweekly, pay_periods_per_year, bracket_set, w4,
     )
 
 
