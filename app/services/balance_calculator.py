@@ -124,17 +124,10 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
     return balances, stale_anchor_warning
 
 
-def calculate_balances_with_interest(
+def calculate_balances_with_interest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     anchor_balance, anchor_period_id, periods, transactions,
     interest_params=None, amount_overrides=None,
 ):
-    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    # The six inputs are cohesive balance-projection parameters (anchor
-    # balance, anchor period id, period list, transactions, interest config,
-    # and the Workstream B income-override seam forwarded verbatim to
-    # calculate_balances).  A params object would be gratuitous churn across
-    # every caller of a pure function; the arg/local counts are inherent to
-    # a balance projection, not a decomposition smell.
     """Same as calculate_balances but also returns interest earned per period.
 
     When interest_params is provided (an object with .apy and
@@ -156,6 +149,15 @@ def calculate_balances_with_interest(
         (balances, interest_by_period) where:
             balances: OrderedDict mapping period_id -> Decimal end balance
             interest_by_period: dict mapping period_id -> Decimal interest earned
+
+    Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
+    (6/5) -- these six are independent balance-projection inputs, not a
+    cohesive entity: this is the sibling :func:`calculate_balances`'s five-arg
+    signature plus ``interest_params``, forwarding five of them verbatim, so a
+    param object would force the same bundle onto the clean sibling (and its
+    many callers) or split two near-identical signatures.  Bundling would be
+    stamp coupling, mirroring the ``projection_inputs`` / ``growth_engine``
+    documented disables.
     """
     # First compute base balances without interest.
     base_balances, _ = calculate_balances(
@@ -163,16 +165,37 @@ def calculate_balances_with_interest(
         amount_overrides=amount_overrides,
     )
 
-    interest_by_period = {}
-
     if not interest_params or not hasattr(interest_params, "apy"):
-        return base_balances, interest_by_period
+        return base_balances, {}
 
+    return _layer_interest(base_balances, periods, interest_params)
+
+
+def _layer_interest(base_balances, periods, interest_params):
+    """Layer per-period interest on top of pre-computed base balances.
+
+    Re-walks the periods in order, compounding interest forward: each
+    period's interest is computed on its base balance plus the interest
+    accrued in prior periods, then folded into the running balance.
+
+    Args:
+        base_balances: OrderedDict period_id -> Decimal end balance, the
+            no-interest balances from :func:`calculate_balances`.
+        periods: List of PayPeriod objects, ordered by period_index.
+        interest_params: Object with .apy (Decimal) and
+            .compounding_frequency (str).
+
+    Returns:
+        (balances, interest_by_period) where balances is an OrderedDict
+        period_id -> Decimal end balance with interest layered in, and
+        interest_by_period maps period_id -> Decimal interest earned.
+    """
     apy = interest_params.apy  # Already Decimal from Numeric(7,5) column.
     compounding = interest_params.compounding_frequency
 
     # Re-walk periods, layering interest on top of the base balances.
     balances = OrderedDict()
+    interest_by_period = {}
     running_balance = None
     interest_cumulative = Decimal("0.00")
 
