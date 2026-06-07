@@ -573,9 +573,9 @@ def _get_debt_summary(user_id: int) -> dict | None:
     Reuses existing logic from savings_dashboard_service to avoid
     duplicating debt computation.  Returns None if no debt accounts.
     """
-    # Deferred: savings_dashboard_service pulls the heaviest service import
-    # chain (+27 modules, measured); loaded only when the debt-summary path
-    # runs, not on every dashboard_service import.
+    # Pylint: ``import-outside-toplevel`` -- Deferred: savings_dashboard_service
+    # pulls the heaviest service import chain (+27 modules, measured); loaded only
+    # when the debt-summary path runs, not on every dashboard_service import.
     from app.services import savings_dashboard_service  # pylint: disable=import-outside-toplevel
 
     try:
@@ -657,13 +657,13 @@ def _sum_settled_expenses(
     ]
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
-    # Single-period settled-expense query.  ``budget_variance_service``
-    # sums settled expenses with the same status/type predicate, but over
-    # a LIST of period_ids and returning rows for its own aggregation; this
-    # one scopes a single ``period_id`` and sums inline.  The differing
-    # period scope + return shape keep them separate rather than one
-    # over-parameterised builder (coding-standards rule 13).
-    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # Pylint: ``duplicate-code`` -- Single-period settled-expense query.
+    # ``budget_variance_service`` sums settled expenses with the same status/type
+    # predicate, but over a LIST of period_ids and returning rows for its own
+    # aggregation; this one scopes a single ``period_id`` and sums inline.  The
+    # differing period scope + return shape keep them separate rather than one
+    # over-parameterised builder (coding-standards rule 13).  One-sided
+    # ``duplicate-code`` disable (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
     txns = (
         db.session.query(Transaction)

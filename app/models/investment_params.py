@@ -91,13 +91,14 @@ class InvestmentParams(TimestampMixin, db.Model):
         {"schema": "budget"},
     )
 
+    # Pylint: ``duplicate-code`` -- The id-PK + per-account FK preamble
+    # below is structurally identical to the other per-account
+    # parameter/feature tables (loan_params, loan_anchor_event).  The
+    # similarity is incidental -- the FK targets, ondelete actions, and
+    # table semantics differ -- so extracting a shared base would wrongly
+    # couple unrelated tables (coding-standards rule 13).  One-sided
+    # disable: the sibling blocks stay un-disabled.
     # pylint: disable=duplicate-code
-    # The id-PK + per-account FK preamble below is structurally identical
-    # to the other per-account parameter/feature tables (loan_params,
-    # loan_anchor_event).  The similarity is incidental -- the FK targets,
-    # ondelete actions, and table semantics differ -- so extracting a
-    # shared base would wrongly couple unrelated tables (coding-standards
-    # rule 13).  One-sided disable: the sibling blocks stay un-disabled.
     id = db.Column(db.Integer, primary_key=True)
     account_id = db.Column(
         db.Integer,

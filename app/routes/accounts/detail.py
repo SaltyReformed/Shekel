@@ -111,12 +111,13 @@ def _load_account_transactions(
     period_ids = [p.id for p in all_periods]
     if not scenario or not period_ids:
         return []
-    # The filter shape coincides with the savings dashboard's aggregate
-    # query, but the two are different scopes by design (a single account's
-    # detail view here vs the dashboard's all-accounts aggregation, which
-    # omits the ``account_id`` filter), so extracting one parameterised
-    # query builder would couple unrelated surfaces (coding-standards rule
-    # 13).  One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # Pylint: ``duplicate-code`` -- the filter shape coincides with the
+    # savings dashboard's aggregate query, but the two are different scopes
+    # by design (a single account's detail view here vs the dashboard's
+    # all-accounts aggregation, which omits the ``account_id`` filter), so
+    # extracting one parameterised query builder would couple unrelated
+    # surfaces (coding-standards rule 13).  One-sided ``duplicate-code``
+    # disable (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
     transactions = (
         db.session.query(Transaction)

@@ -540,7 +540,8 @@ def setup_logging(app: Flask) -> None:
         # Uses SET LOCAL (transaction-scoped, not session-scoped).
         try:
             if current_user.is_authenticated:
-                # Deferred: app.extensions imports this logging module during
+                # Pylint: ``import-outside-toplevel`` -- Deferred:
+                # app.extensions imports this logging module during
                 # logging setup, so a module-top import here would be circular.
                 from app.extensions import db  # pylint: disable=import-outside-toplevel
                 db.session.execute(

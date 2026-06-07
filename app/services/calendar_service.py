@@ -71,7 +71,7 @@ _INFREQUENT_PATTERNS = frozenset({
 class DayEntry:  # pylint: disable=too-many-instance-attributes
     """A single transaction's representation on a calendar day.
 
-    Pylint note: ``too-many-instance-attributes`` (10) is suppressed
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
     because this is a cohesive value record -- one transaction's row on a
     calendar day -- consumed verbatim by the calendar surface: the CSV
     month export reads the display fields as adjacent columns (folding the
@@ -100,7 +100,7 @@ class DayEntry:  # pylint: disable=too-many-instance-attributes
 class MonthSummary:  # pylint: disable=too-many-instance-attributes
     """Aggregated data for one calendar month.
 
-    Pylint note: ``too-many-instance-attributes`` (9) is suppressed
+    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed
     because this is a cohesive single-return aggregate -- one calendar
     month's summary -- whose fields are flat columns read together by the
     calendar surface: the month and year templates render the money fields
@@ -280,14 +280,15 @@ def _query_transactions_for_range(
     Cancelled) -- intentionally wider than the grid period subtotal's
     Projected-only predicate.  The two surfaces diverge by design.
     """
-    # The overlapping-periods + eager-loaded Transaction query below is
-    # structurally parallel to ``budget_variance_service``'s period query,
-    # but the two diverge by design (see the docstring above): this
-    # calendar query uses the wider ``balance_contributing_clause`` while
-    # budget-variance uses the Projected-only / explicit-status-exclusion
-    # gate.  Documented one-sided ``duplicate-code`` disable rather than a
-    # shared query builder that would re-introduce the divergent predicate
-    # as a parameter (coding-standards rule 13).
+    # Pylint: ``duplicate-code`` -- the overlapping-periods + eager-loaded
+    # Transaction query below is structurally parallel to
+    # ``budget_variance_service``'s period query, but the two diverge by
+    # design (see the docstring above): this calendar query uses the wider
+    # ``balance_contributing_clause`` while budget-variance uses the
+    # Projected-only / explicit-status-exclusion gate.  Documented one-sided
+    # ``duplicate-code`` disable rather than a shared query builder that
+    # would re-introduce the divergent predicate as a parameter
+    # (coding-standards rule 13).
     # pylint: disable=duplicate-code
     overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]

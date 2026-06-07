@@ -219,9 +219,9 @@ def init(db_session):
         RuntimeError: If any ref table EXISTS but is missing rows for
             one or more of its enum members.
     """
-    # Deferred import to avoid circular dependencies.  The models module
-    # imports from extensions, which must be initialized before the cache
-    # loads.
+    # Pylint: ``import-outside-toplevel`` -- deferred import to avoid circular
+    # dependencies.  The models module imports from extensions, which must be
+    # initialized before the cache loads.
     import app.models.ref as ref_models  # pylint: disable=import-outside-toplevel
 
     specs = _build_ref_specs(ref_models)

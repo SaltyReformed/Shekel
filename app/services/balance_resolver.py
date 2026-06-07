@@ -390,6 +390,10 @@ def live_amount_overrides(account, scenario_id, transactions):
     a candidate -- the common case -- so the override threading stays a
     structural no-op for those surfaces.
     """
+    # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
+    # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
+    # stacks off ``balance_resolver``'s module-load path and out of any import
+    # cycle; the helpers are only needed at call time.
     # pylint: disable=import-outside-toplevel
     from app.services import income_service, loan_payment_service
     income_overrides = income_service.live_projected_net(
@@ -562,11 +566,11 @@ def period_subtotal(
         amount_overrides = live_amount_overrides(
             account, scenario_id, transactions,
         )
-    # pylint: disable=protected-access
-    # ``_sum_all`` is an internal helper of ``balance_calculator``;
-    # the resolver is its sibling canonical producer (see module
-    # docstring) and the audit's E-25 mandate explicitly reuses the
+    # Pylint: ``protected-access`` -- ``_sum_all`` is an internal helper of
+    # ``balance_calculator``; the resolver is its sibling canonical producer
+    # (see module docstring) and the audit's E-25 mandate explicitly reuses the
     # engine's math rather than rewriting it (CLAUDE.md rule 10).
+    # pylint: disable=protected-access
     income, expense = balance_calculator._sum_all(transactions, amount_overrides)
     rounded_income = round_money(income)
     rounded_expense = round_money(expense)
@@ -627,15 +631,17 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
     if not is_projected(txn):
         return txn.effective_amount
 
-    # The credit / cleared-debit / uncleared-debit entry-bucketing loop
-    # below mirrors ``balance_calculator._entry_aware_amount`` -- but this
-    # dated variant adds the ``entry.entry_date > as_of`` window filter and
-    # the ``any_in_window`` special case, so the two are a deliberate
+    # Pylint: ``duplicate-code`` -- the credit / cleared-debit / uncleared-debit
+    # entry-bucketing loop below mirrors ``balance_calculator._entry_aware_amount``
+    # -- but this dated variant adds the ``entry.entry_date > as_of`` window
+    # filter and the ``any_in_window`` special case, so the two are a deliberate
     # parallel, not a clean shared helper.  The engine already shares its
     # summation math with this resolver via the audited ``_sum_all`` reuse
     # (E-25); folding this loop into one helper would entangle the as-of
     # window with the undated path and risk the core balance math for a few
-    # lines (coding-standards rule 13).  One-sided ``duplicate-code`` disable.
+    # lines (coding-standards rule 13).  One-sided ``duplicate-code`` disable:
+    # the sibling ``balance_calculator._entry_aware_amount`` carries no matching
+    # disable, so the suppression is applied to only one of the two parallels.
     # pylint: disable=duplicate-code
     cleared_debit = Decimal("0")
     uncleared_debit = Decimal("0")
@@ -712,7 +718,8 @@ def _sum_period_as_of(
         if not is_projected(txn):
             continue
         if txn.is_income:
-            # Workstream B live projected-net seam; reuse the engine
+            # Pylint: ``protected-access`` -- Workstream B live projected-net
+            # seam; reuse ``balance_calculator``'s internal ``_income_amount``
             # helper so the date-cut path and ``_sum_all`` cannot drift.
             # pylint: disable=protected-access
             income += balance_calculator._income_amount(txn, amount_overrides)

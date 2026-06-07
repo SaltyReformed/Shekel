@@ -52,8 +52,8 @@ _TOP_N = 5
 class ItemTrend:  # pylint: disable=too-many-instance-attributes
     """Trend data for a single category item.
 
-    Pylint note: ``too-many-instance-attributes`` (11) is suppressed
-    because this is a cohesive value record -- one category's trend row,
+    Pylint: ``too-many-instance-attributes`` (11/7) -- this is a cohesive
+    value record -- one category's trend row,
     produced in a single pass by _compute_item_trend -- consumed verbatim
     by row-rendering surfaces: the trends template reads the fields
     interleaved within one list item, and the CSV export emits them as
@@ -92,8 +92,8 @@ class GroupTrend:
 class TrendReport:  # pylint: disable=too-many-instance-attributes
     """Complete trend detection report.
 
-    Pylint note: ``too-many-instance-attributes`` (8) is suppressed
-    because this is one cohesive result aggregate for the trends tab.  The
+    Pylint: ``too-many-instance-attributes`` (8/7) -- this is one cohesive
+    result aggregate for the trends tab.  The
     four window fields (window_months, window_periods, data_sufficiency,
     threshold) describe and gate the report; the four collections
     (top_increasing, top_decreasing, all_items, group_trends) are its
@@ -266,12 +266,13 @@ def _query_paid_expenses(
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     settled_ids = _get_settled_status_ids()
 
-    # Settled-expense query for the spending-trend report.  The account /
-    # scenario / period / expense-type filter core coincides with
-    # ``dashboard_service``'s expense query, but the two diverge on the
-    # parts that matter (eager-loads and the settled-vs-projected status
-    # gate), so a shared builder would need both as parameters and save no
-    # logic (coding-standards rule 13).  One-sided ``duplicate-code`` disable.
+    # Pylint: ``duplicate-code`` -- settled-expense query for the
+    # spending-trend report.  The account / scenario / period /
+    # expense-type filter core coincides with ``dashboard_service``'s
+    # expense query, but the two diverge on the parts that matter
+    # (eager-loads and the settled-vs-projected status gate), so a shared
+    # builder would need both as parameters and save no logic
+    # (coding-standards rule 13).  One-sided ``duplicate-code`` disable.
     # pylint: disable=duplicate-code
     return (
         db.session.query(Transaction)

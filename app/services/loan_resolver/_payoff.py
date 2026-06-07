@@ -35,7 +35,7 @@ from ._periods import (
 class PayoffScenarios:  # pylint: disable=too-many-instance-attributes
     """Single-return-value bundle for the Payoff Calculator's three scenarios.
 
-    Pylint note: ``too-many-instance-attributes`` (10) is suppressed
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
     because this is a deliberate single-return result aggregate -- the
     chart series (``history_rows`` plus the three forward slices) and
     the four summary metrics are the one cohesive contract the Payoff

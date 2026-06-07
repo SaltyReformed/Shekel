@@ -138,7 +138,7 @@ def create_contribution_transfer(account_id):
     The amount defaults to a suggested per-period contribution based on
     the annual limit and remaining periods.  The user may override it.
     """
-    # This route is the parallel near-fork of
+    # Pylint: ``duplicate-code`` -- this route is the parallel near-fork of
     # ``loan.create_payment_transfer``: both run the same
     # validate-source -> compute-amount -> build-rule -> build-template ->
     # flush -> generate -> commit -> notify sequence, diverging only in the

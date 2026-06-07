@@ -116,14 +116,14 @@ def carry_forward(period_id):
         return err
     _source_period, current_period, scenario = ctx
 
-    # The commit + ``NotFoundError`` -> 404 / ``ValidationError`` ->
-    # rollback -> 400 translation below is generic Flask error-handling
-    # boilerplate that also appears in ``mutations.unmark_credit`` (and
-    # ~3 other route files), but the two routes are unrelated -- a
-    # period-batch carry-forward vs a single-row credit unmark -- and
-    # differ in everything around it (StaleData handling, the ``count``
-    # return value, the success body), so a shared wrapper would
-    # over-couple them (coding-standards rule 13).  One-sided
+    # Pylint: ``duplicate-code`` -- the commit + ``NotFoundError`` -> 404 /
+    # ``ValidationError`` -> rollback -> 400 translation below is generic
+    # Flask error-handling boilerplate that also appears in
+    # ``mutations.unmark_credit`` (and ~3 other route files), but the two
+    # routes are unrelated -- a period-batch carry-forward vs a single-row
+    # credit unmark -- and differ in everything around it (StaleData
+    # handling, the ``count`` return value, the success body), so a shared
+    # wrapper would over-couple them (coding-standards rule 13).  One-sided
     # ``duplicate-code`` disable (see plan.md Phase 3 split-trap notes);
     # ``mutations.unmark_credit`` stays un-disabled.
     # pylint: disable=duplicate-code

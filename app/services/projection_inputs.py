@@ -221,10 +221,11 @@ def build_investment_projection_inputs(  # pylint: disable=too-many-arguments,to
     the R0801 duplicate and means a future signature change to
     ``calculate_investment_inputs`` only needs to update one site.
 
-    The scoped disable mirrors the wrapped
-    ``calculate_investment_inputs``: this is a thin 1:1 forward of the
-    same six independent projection inputs, so bundling them would be the
-    same stamp coupling rejected there.
+    Pylint: ``too-many-arguments`` (6/5) /
+    ``too-many-positional-arguments`` (6/5) -- the scoped disable mirrors
+    the wrapped ``calculate_investment_inputs``: this is a thin 1:1
+    forward of the same six independent projection inputs, so bundling
+    them would be the same stamp coupling rejected there.
 
     Callers supply ``deductions`` (already adapted via
     :func:`~app.services.investment_projection.adapt_deductions`) and

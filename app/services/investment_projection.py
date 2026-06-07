@@ -248,13 +248,6 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
 ):
     """Compute projection inputs for an investment account.
 
-    The six inputs are independent, heterogeneous projection inputs
-    (account config, two contribution feeds, the period calendar, and a
-    salary-gross fallback); each is consumed by a different step, so a
-    param object would be stamp coupling.  The scoped disable mirrors the
-    immediately-downstream ``growth_engine.project_balance``, which takes
-    the same documented disable for the same reason.
-
     Args:
         investment_params:     Object with employer fields and
                                ``annual_contribution_limit``.
@@ -274,6 +267,14 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
 
     Returns:
         InvestmentInputs dataclass.
+
+    Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
+    (6/5) -- the six inputs are independent, heterogeneous projection inputs
+    (account config, two contribution feeds, the period calendar, and a
+    salary-gross fallback); each is consumed by a different step, so a
+    param object would be stamp coupling.  The scoped disable mirrors the
+    immediately-downstream ``growth_engine.project_balance``, which takes
+    the same documented disable for the same reason.
     """
     periodic_contribution, gross_biweekly = _periodic_from_deductions(
         deductions, salary_gross_biweekly,

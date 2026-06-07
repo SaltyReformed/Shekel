@@ -520,19 +520,21 @@ def _load_shadow_contributions(
         return []
 
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    # The joinedload(status, pay_period) + account/scenario filter
-    # preamble below is generic SQLAlchemy boilerplate that incidentally
-    # matches ``budget_variance_service._query_by_period`` -- a
-    # semantically unrelated query (it also joinedloads ``category``,
-    # filters by a single period / date range, and feeds variance
-    # computation, not the growth-engine contribution history).
-    # Extracting a shared helper across the two would wrongly couple the
-    # year-end aggregation to the variance service (coding-standards
-    # rule 13), so a one-sided ``duplicate-code`` disable documents the
-    # incidental similarity instead.
     return (
         db.session.query(Transaction)
         .options(
+            # Pylint: ``duplicate-code`` -- the joinedload(status,
+            # pay_period) + account/scenario filter preamble below is
+            # generic SQLAlchemy boilerplate that incidentally matches
+            # ``budget_variance_service._query_by_period`` -- a
+            # semantically unrelated query (it also joinedloads
+            # ``category``, filters by a single period / date range, and
+            # feeds variance computation, not the growth-engine
+            # contribution history).  Extracting a shared helper across
+            # the two would wrongly couple the year-end aggregation to the
+            # variance service (coding-standards rule 13), so a one-sided
+            # ``duplicate-code`` disable documents the incidental
+            # similarity instead.
             # pylint: disable=duplicate-code
             joinedload(Transaction.status),
             joinedload(Transaction.pay_period),

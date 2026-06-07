@@ -338,11 +338,11 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     -- this is one "transfer to create" request, mirroring the columns
     of the ``Transfer`` row it produces.
 
-    Carries a scoped ``too-many-instance-attributes`` disable (12/7):
-    these are the irreducible inputs of one creation request, read as a
-    flat unit by the single consumer; there is NO cohesive sub-group to
-    nest, so splitting would fragment one concept for no gain.  Mirrors
-    the ``AmortizationRow`` / ``PayoffScenarios`` precedent.  Frozen so a
+    Pylint: ``too-many-instance-attributes`` (12/7) -- these are the
+    irreducible inputs of one creation request, read as a flat unit by
+    the single consumer; there is NO cohesive sub-group to nest, so
+    splitting would fragment one concept for no gain.  Mirrors the
+    ``AmortizationRow`` / ``PayoffScenarios`` precedent.  Frozen so a
     constructed spec is an immutable record of one request.
 
     Attributes:

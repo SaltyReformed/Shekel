@@ -274,7 +274,9 @@ def create_template():
     # reuses ``start_period_id`` afterward (its one-time-transfer branch)
     # while this route does not -- a wrapper that popped it internally
     # would have to thread it back out (coding-standards rule 13).
-    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # Pylint: ``duplicate-code`` -- one-sided disable; only this call site
+    # repeats the transfers-side create-form preamble, and it cannot be
+    # hoisted further (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
     # Extract start_period_id and end_date before creating the rule.
     start_period_id = data.pop("start_period_id", None)
@@ -387,8 +389,10 @@ def update_template(template_id):
     # domains (transaction-template envelope tracking + name propagation vs
     # transfer-template name-uniqueness + shadow invariants) behind awkward
     # multi-value returns for no real gain (coding-standards rule 13).
-    # One-sided ``duplicate-code`` disable per the R0801 mechanics in
-    # ``docs/audits/pylint-cleanup/plan.md`` (Phase 2 working notes).
+    # Pylint: ``duplicate-code`` -- one-sided disable; only the call sequence
+    # is shared with ``transfers.update_transfer_template`` per the R0801
+    # mechanics in ``docs/audits/pylint-cleanup/plan.md`` (Phase 2 working
+    # notes).
     # pylint: disable=duplicate-code
     data = _update_schema.load(request.form)
 
@@ -636,7 +640,9 @@ def hard_delete_template(template_id):
     # soft-delete that follows differ.  The shared part is too thin and
     # too coupled to its two parallel routes to extract without
     # indirection that removes no logic (coding-standards rule 13).
-    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # Pylint: ``duplicate-code`` -- one-sided disable; the paid-history-blocked
+    # branch mirrors ``transfers.hard_delete_transfer_template`` but is too
+    # thin and too coupled to extract (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
     if archive_helpers.template_has_paid_history(template.id):
         flash(

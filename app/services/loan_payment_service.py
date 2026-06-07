@@ -242,12 +242,13 @@ def get_payment_history(
     # longer needs it.  ``joinedload(Transaction.status)`` still
     # eager-loads the status row for the downstream ``is_settled``
     # consumer.
-    # Shadow-income transaction query for live loan-payment amounts.  Its
-    # account / scenario / is-deleted / status-exclusion core coincides
-    # with ``budget_variance_service``'s query, but this one adds the
-    # loan-specific constraints (``transfer_id IS NOT NULL`` + income type)
-    # that make it a distinct query, not a shared builder (rule 13).
-    # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # Pylint: ``duplicate-code`` -- shadow-income transaction query for
+    # live loan-payment amounts.  Its account / scenario / is-deleted /
+    # status-exclusion core coincides with ``budget_variance_service``'s
+    # query, but this one adds the loan-specific constraints
+    # (``transfer_id IS NOT NULL`` + income type) that make it a distinct
+    # query, not a shared builder (rule 13).  One-sided ``duplicate-code``
+    # disable (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
     txns = (
         db.session.query(Transaction)
@@ -349,9 +350,10 @@ def compute_contractual_pi(
     if params.original_principal is None or params.interest_rate is None:
         return Decimal("0")
     if anchor_events:
-        # Local import: avoids a top-level circular import (loan_resolver
-        # imports nothing from this module today, but the policy
-        # boundary is one-way and the local import documents that).
+        # Pylint: ``import-outside-toplevel`` -- local import avoids a
+        # top-level circular import (loan_resolver imports nothing from
+        # this module today, but the policy boundary is one-way and the
+        # local import documents that).
         from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
         return loan_resolver.compute_monthly_payment_baseline(
             params,
@@ -487,8 +489,9 @@ def _resolve_loan_piti(
     ``resolve_loan(...).monthly_payment`` is the rate-period P&I;
     ``context.monthly_escrow`` adds the escrow component to reach PITI.
     """
-    # loan_resolver imports nothing from this module, so resolving it here
-    # rather than at module top keeps the dependency one-directional.
+    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports nothing
+    # from this module, so resolving it here rather than at module top
+    # keeps the dependency one-directional.
     from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
     params = (
         db.session.query(LoanParams)

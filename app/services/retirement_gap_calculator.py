@@ -23,7 +23,7 @@ TWO_PLACES = Decimal("0.01")
 class RetirementGapAnalysis:  # pylint: disable=too-many-instance-attributes
     """Result of a retirement income gap calculation.
 
-    Pylint note: ``too-many-instance-attributes`` (10) is suppressed
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
     because this is a cohesive single-return result aggregate -- every
     field is one figure the ``retirement/_gap_analysis.html`` template
     renders as a flat row-per-field table -- mirroring

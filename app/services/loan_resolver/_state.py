@@ -111,10 +111,10 @@ def compute_monthly_payment_baseline(
         Rounded Decimal monthly P&I, equal to
         ``resolve_loan(...).monthly_payment`` for the same inputs.
     """
-    # ``anchor_events`` and ``payments`` are unused: the current
-    # period's level P&I is anchor-independent -- a property of the
-    # loan's contractual rate-period structure, not of the running
-    # balance.  Both stay in the signature for caller compatibility
+    # Pylint: ``unused-argument`` -- ``anchor_events`` and ``payments`` are
+    # unused: the current period's level P&I is anchor-independent -- a
+    # property of the loan's contractual rate-period structure, not of the
+    # running balance.  Both stay in the signature for caller compatibility
     # (loan_payment_service.compute_contractual_pi passes them).
     # pylint: disable=unused-argument
     return period_for_date(

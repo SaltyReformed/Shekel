@@ -294,13 +294,17 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
             target period, and (where relevant) the failing condition
             so the user can act on it.
     """
-    # Defer the recurrence-engine import to avoid a circular dependency
-    # at module load time: recurrence_engine is service-layer code and
-    # this module is service-layer code; importing at top level works
-    # in current code but the deferred form documents the intentional
-    # one-way dependency (carry-forward depends on recurrence-engine,
-    # never the reverse).
+    # Pylint: ``import-outside-toplevel`` -- defer the recurrence-engine
+    # import to avoid a circular dependency at module load time:
+    # recurrence_engine is service-layer code and this module is
+    # service-layer code; importing at top level works in current code
+    # but the deferred form documents the intentional one-way dependency
+    # (carry-forward depends on recurrence-engine, never the reverse).
     from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
+    # Pylint: ``import-outside-toplevel`` -- same deferred-import
+    # rationale: transaction_service is service-layer code reached only
+    # from inside this function, so the local import keeps the module's
+    # top-level dependency graph free of the service-to-service cycle.
     from app.services import transaction_service  # pylint: disable=import-outside-toplevel
 
     # Compute leftover BEFORE looking at the target so a downstream

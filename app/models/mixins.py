@@ -353,6 +353,10 @@ class OptimisticLockMixin:
 
     @declared_attr
     def __mapper_args__(cls):  # pylint: disable=no-self-argument
-        # declared_attr passes the mapped class, not an instance; the
-        # `cls` name is the SQLAlchemy-mandated convention here.
+        """Map the version counter so each subclass locks on its own copy.
+
+        Pylint: ``no-self-argument`` -- declared_attr passes the mapped
+        class, not an instance; the ``cls`` name is the
+        SQLAlchemy-mandated convention here.
+        """
         return {"version_id_col": cls.version_id}

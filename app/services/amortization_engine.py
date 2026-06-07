@@ -169,7 +169,7 @@ class AmortizationRow:  # pylint: disable=too-many-instance-attributes
     (Paid/Settled status), False when projected or computed from the
     contractual payment formula.
 
-    Pylint note: ``too-many-instance-attributes`` (9) is suppressed
+    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed
     because this is a cohesive value record -- one amortization-table
     row -- consumed verbatim across the loan routes, year-end summary,
     and resolver.  Every field is an irreducible column of that row;
@@ -717,7 +717,7 @@ class PayoffRequest:  # pylint: disable=too-many-instance-attributes
     plus the question" object, distinct from the lower-level projection
     primitive.
 
-    Pylint note: ``too-many-instance-attributes`` (10) is suppressed
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
     because this is a deliberate Parameter Object -- its entire purpose
     is to bundle the ten inputs ``calculate_payoff_by_date`` needs into
     one cohesive argument.  The ten positional parameters the smell

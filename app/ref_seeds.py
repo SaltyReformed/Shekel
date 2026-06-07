@@ -42,11 +42,11 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 # fmt: off
+# Pylint: ``line-too-long`` -- columnar alignment is intentional for
+# readability: each row is one account type and the columns correspond
+# to the tuple docstring above.  Wrapping individual rows harms
+# scannability.
 # pylint: disable=line-too-long
-#
-# Columnar alignment is intentional for readability -- each row is
-# one account type and the columns correspond to the tuple docstring
-# above.  Wrapping individual rows harms scannability.
 
 ACCT_TYPE_SEEDS = [
     # name              category      params amort  interest pretax liquid icon               max_term
@@ -165,16 +165,16 @@ def seed_reference_data(session: Session, *, verbose: bool = False) -> None:
     Returns:
         None.
     """
+    # Pylint: ``import-outside-toplevel`` -- deferred import:
+    # ``app.models.ref`` imports ``app.extensions`` which constructs the
+    # SQLAlchemy() singleton -- importing at module load would force
+    # ``app`` initialisation as a side-effect of ``import
+    # app.ref_seeds``, which the test bootstrap (which needs to set
+    # environment variables before app import) cannot tolerate.  The
+    # deferred import keeps this module side-effect free at import time.
+    # ``ref_models`` is threaded into the per-step helpers so they
+    # inherit the same deferral (no module-level import).
     # pylint: disable=import-outside-toplevel
-    #
-    # Deferred import: ``app.models.ref`` imports ``app.extensions``
-    # which constructs the SQLAlchemy() singleton -- importing at
-    # module load would force ``app`` initialisation as a side-effect
-    # of ``import app.ref_seeds``, which the test bootstrap (which
-    # needs to set environment variables before app import) cannot
-    # tolerate.  The deferred import keeps this module side-effect
-    # free at import time.  ``ref_models`` is threaded into the per-step
-    # helpers so they inherit the same deferral (no module-level import).
     from app.models import ref as ref_models
 
     _seed_account_type_categories(session, ref_models, verbose=verbose)

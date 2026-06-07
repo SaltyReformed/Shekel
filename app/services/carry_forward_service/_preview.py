@@ -84,16 +84,16 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
             would create it as part of the carry-forward.  ``False``
             otherwise.
 
-    Pylint note: ``too-many-instance-attributes`` (10) is suppressed
-    because this is a cohesive value record -- one source row's planned
-    carry-forward action -- read flat by its sole consumer, the
-    carry-forward preview modal, which iterates ``preview.plans`` and
-    renders one list item per plan.  The block metadata and the envelope
-    rollover numbers are not read as separable units: the modal
-    interleaves the rollover figures within a single rendered sentence and
-    gates list-item styling on ``blocked`` apart from rendering
-    ``block_reason``.  Every field is an irreducible column of the row;
-    splitting it would fragment one domain concept for no design gain.
+    Pylint: ``too-many-instance-attributes`` (10/7) -- this is a cohesive
+    value record -- one source row's planned carry-forward action -- read
+    flat by its sole consumer, the carry-forward preview modal, which
+    iterates ``preview.plans`` and renders one list item per plan.  The
+    block metadata and the envelope rollover numbers are not read as
+    separable units: the modal interleaves the rollover figures within a
+    single rendered sentence and gates list-item styling on ``blocked``
+    apart from rendering ``block_reason``.  Every field is an irreducible
+    column of the row; splitting it would fragment one domain concept for
+    no design gain.
     """
 
     transaction: Transaction
@@ -390,11 +390,12 @@ def _resolve_envelope_target_fields(source_txn, target_period,
         }
     else:
         # Fully empty period -- ask whether the engine would create
-        # the canonical on its own.  Deferred import: recurrence_engine
-        # and carry_forward_service are at the same layer; the
-        # deferred form documents that the dependency is one-way
-        # (carry-forward depends on recurrence-engine but not vice
-        # versa).
+        # the canonical on its own.
+        # Pylint: ``import-outside-toplevel`` -- deferred import:
+        # recurrence_engine and carry_forward_service are at the same
+        # layer; the deferred form documents that the dependency is
+        # one-way (carry-forward depends on recurrence-engine but not
+        # vice versa).
         from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
 
         if not recurrence_engine.can_generate_in_period(

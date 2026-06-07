@@ -24,7 +24,7 @@ TWO_PLACES = Decimal("0.01")
 class ProjectedBalance:  # pylint: disable=too-many-instance-attributes
     """A single period's projected investment balance.
 
-    Pylint note: ``too-many-instance-attributes`` (9) is suppressed
+    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed
     because this is a cohesive value record -- one period's full
     projection row -- mirroring ``amortization_engine.AmortizationRow``.
     ``is_confirmed`` distinguishes confirmed contributions from projected
@@ -80,7 +80,7 @@ class ContributionRecord:
                 a Decimal, or is_confirmed is not a bool.
             ValueError: If amount is negative.
         """
-        # This field-validation body mirrors
+        # Pylint: ``duplicate-code`` -- this field-validation body mirrors
         # ``amortization_engine.PaymentRecord.__post_init__`` -- both
         # reject a non-date date field, a non-Decimal/negative amount, and
         # a non-bool ``is_confirmed``.  The two are independent engine
@@ -434,8 +434,8 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
     Returns:
         List of ProjectedBalance, one per period.
 
-    Pylint note: ``too-many-arguments`` / ``too-many-positional-arguments``
-    (8) are suppressed because ``growth_engine`` is a pure stdlib leaf
+    Pylint: ``too-many-arguments`` (8/5) / ``too-many-positional-arguments``
+    (8/5) -- suppressed because ``growth_engine`` is a pure stdlib leaf
     whose design is "all data passed in as arguments."  These eight are
     genuinely distinct projection inputs that callers vary independently
     -- the what-if overlay overrides ``periodic_contribution`` and nulls

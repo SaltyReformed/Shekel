@@ -738,7 +738,12 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
         # testing-standards-preferred patch target).  A module-level
         # ``from ... import load_tax_configs`` would bind the name once at
         # import and not see the patch, so this import stays local.
+        # Pylint: ``import-outside-toplevel`` -- kept local so the fallback
+        # tests' patches of app.services.paycheck_calculator take effect.
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- kept local so the fallback
+        # tests' patches of app.services.tax_config_service.load_tax_configs
+        # take effect.
         from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
 
         tax_year = period.start_date.year
