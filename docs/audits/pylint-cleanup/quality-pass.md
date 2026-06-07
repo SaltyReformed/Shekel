@@ -519,14 +519,21 @@ stripping all four leaves R0801 at 0; disables 77 -> 73). `investment:154` was c
 **CAUGHT, TEED UP (real DRY behind an "incidental" disable -- developer decision, some financial
 core):** four clusters are the SAME operation, not incidental, and several rationales name the WRONG
 R0801 sibling (the splits re-paired them):
-- `investment_params` <-> `loan_params`: byte-identical unique-account FK; the deferred unique-FK
-  clique `AccountScopedMixin` (mixins.py:89-92) explicitly left -> introduce `AccountScopedUniqueMixin`.
-- `balance_calculator` <-> `balance_resolver`: the 3-bucket entry partition + reservation formula
-  (financial core) -> shared helper.
-- the shadow-income / monthly-attribution query family `budget_variance` / `calendar_service` /
-  `loan_payment_service` / `year_end._balances` -> shared query builder(s); their rationales cite
-  `budget_variance` but the real siblings differ.
-- `debt_strategy` <-> `year_end._balances`: the LoanParams-load -> `resolve_loan` preamble -> helper.
-- `growth_engine.project_balance`: 4 of its 8 args are field-unpacks of `InvestmentInputs` at all 6
-  callers; a bundle exists, but `InvestmentInputs` imports `growth_engine` (cycle), which may still
-  justify the disable -- needs a judgment call.
+- **DONE (`3998fa3`):** `investment_params` <-> `loan_params` -- byte-identical unique-account FK
+  extracted into the new `AccountScopedUniqueMixin` (the unique variant `AccountScopedMixin` documented
+  deferring). Schema-equivalent (column-reorder only; `flask db migrate` -> "No changes detected"; the
+  per-table `<table>_account_id_key` unchanged); R0801 cluster dissolved; one-sided disable removed;
+  independent quality-pass ACCEPT. **The developer chose #1 only (2026-06-07);** the four below are
+  DEFERRED -- they remain documented disables whose rationales the re-audit flagged as needing
+  correction (wrong sibling / overstated "incidental") in a future pass.
+- DEFERRED: `balance_calculator` <-> `balance_resolver` -- the 3-bucket entry partition + reservation
+  formula (financial core) -> shared helper.
+- DEFERRED: the shadow-income / monthly-attribution query family `budget_variance` / `calendar_service`
+  / `loan_payment_service` / `year_end._balances` -> shared query builder(s); their rationales cite
+  `budget_variance` but the real siblings differ (`calendar`<->`budget_variance`,
+  `loan_payment`<->`_balances`, `_balances:538`<->`spending_trend`).
+- DEFERRED: `debt_strategy` <-> `year_end._balances` -- the LoanParams-load -> `resolve_loan` preamble.
+- HOLDS (verified, no action): `growth_engine.project_balance` -- 4 of its 8 args are field-unpacks of
+  `InvestmentInputs`, but `investment_projection` imports `growth_engine` (`from app.services.growth_engine
+  import ContributionRecord`, line 23), so bundling would be a circular import. The disable is justified;
+  the agent's CONCERN resolved to HOLDS on verification.
