@@ -367,6 +367,53 @@ def compute_contractual_pi(
     )
 
 
+def _redistribute_to_distinct_months(
+    payments: list[PaymentRecord], payment_day: int
+) -> list[PaymentRecord]:
+    """Shift payments sharing a monthly DUE month to consecutive months.
+
+    Biweekly pay periods sometimes place two mortgage payments in the same
+    calendar month; the monthly engine would sum them, double-counting one
+    month and leaving the next empty.  At most one extra payment per month
+    (~2x/year) is expected, so cascading collisions are not, but the
+    while-loop handles them defensively.  The collision key is the true
+    monthly DUE month (``monthly_due_date`` of the pay-period start), NOT
+    the pay-period-start month: two pay periods that both fall before the
+    same ``payment_day`` (e.g. Apr 10 and Apr 24, both due May 1) collide on
+    the May schedule row, and the schedule/override key everything by due
+    month -- a pay-period-start-month key would leave that collision
+    unresolved and sum both into a single double payment.
+    """
+    result: list[PaymentRecord] = []
+    allocated_months: set[tuple[int, int]] = set()
+    for p in payments:
+        due = monthly_due_date(p.payment_date, payment_day)
+        ym = (due.year, due.month)
+        if ym not in allocated_months:
+            result.append(p)
+            allocated_months.add(ym)
+        else:
+            y, m = ym
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+            while (y, m) in allocated_months:
+                m += 1
+                if m > 12:
+                    m = 1
+                    y += 1
+            max_day = calendar.monthrange(y, m)[1]
+            new_date = date(y, m, min(payment_day, max_day))
+            result.append(PaymentRecord(
+                payment_date=new_date,
+                amount=p.amount,
+                is_confirmed=p.is_confirmed,
+            ))
+            allocated_months.add((y, m))
+    return result
+
+
 def prepare_payments_for_engine(
     payments: list[PaymentRecord],
     payment_day: int,
@@ -426,46 +473,45 @@ def prepare_payments_for_engine(
         sorted_payments = adjusted
 
     # Step 2: Redistribute payments that share a monthly DUE month to
-    # consecutive months.  Biweekly pay periods produce at most one extra
-    # payment per month (~2 times per year), so cascading collisions are
-    # not expected, but the while-loop handles them defensively.  The
-    # collision key is the true monthly due month (``monthly_due_date`` of
-    # the pay-period start), NOT the pay-period-start month: two pay
-    # periods that both fall before the same payment_day (e.g. Apr 10 and
-    # Apr 24, both due May 1) collide on the May schedule row, and the
-    # schedule/override key everything by due month -- so a pay-period-
-    # start-month key would leave that collision unresolved and the
-    # override would sum both into a single double payment.
-    result = []
-    allocated_months: set[tuple[int, int]] = set()
+    # consecutive months so the monthly engine sees one per due month.
+    return _redistribute_to_distinct_months(sorted_payments, payment_day)
 
-    for p in sorted_payments:
-        due = monthly_due_date(p.payment_date, payment_day)
-        ym = (due.year, due.month)
-        if ym not in allocated_months:
-            result.append(p)
-            allocated_months.add(ym)
-        else:
-            y, m = ym
-            m += 1
-            if m > 12:
-                m = 1
-                y += 1
-            while (y, m) in allocated_months:
-                m += 1
-                if m > 12:
-                    m = 1
-                    y += 1
-            max_day = calendar.monthrange(y, m)[1]
-            new_date = date(y, m, min(payment_day, max_day))
-            result.append(PaymentRecord(
-                payment_date=new_date,
-                amount=p.amount,
-                is_confirmed=p.is_confirmed,
-            ))
-            allocated_months.add((y, m))
 
-    return result
+def _resolve_loan_piti(
+    loan_account_id: int, scenario_id: int, as_of: date
+) -> Decimal | None:
+    """Resolve a loan's full live monthly payment (P&I + escrow), or None.
+
+    Returns None when the loan has no ``LoanParams`` row or no anchor
+    events (it cannot be resolved, so its shadows keep their stored amount).
+    ``resolve_loan(...).monthly_payment`` is the rate-period P&I;
+    ``context.monthly_escrow`` adds the escrow component to reach PITI.
+    """
+    # loan_resolver imports nothing from this module, so resolving it here
+    # rather than at module top keeps the dependency one-directional.
+    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
+    params = (
+        db.session.query(LoanParams)
+        .filter_by(account_id=loan_account_id)
+        .first()
+    )
+    if params is None:
+        return None
+    context = load_loan_context(loan_account_id, scenario_id, params)
+    anchor_events = (
+        db.session.query(LoanAnchorEvent)
+        .filter_by(account_id=loan_account_id)
+        .all()
+    )
+    if not anchor_events:
+        return None
+    state = loan_resolver.resolve_loan(
+        loan_resolver.LoanInputs(
+            params, anchor_events, context.payments, context.rate_changes,
+        ),
+        as_of,
+    )
+    return state.monthly_payment + context.monthly_escrow
 
 
 def live_loan_transfer_amounts(
@@ -509,11 +555,6 @@ def live_loan_transfer_amounts(
         ``dict`` mapping transaction id to the live PITI Decimal; empty
         when no derive-from-loan transfer is present.
     """
-    # loan_resolver imports nothing from this module, so resolving it here
-    # rather than at module top keeps the dependency one-directional.
-    # pylint: disable=import-outside-toplevel
-    from app.services import loan_resolver
-
     candidates = [
         txn for txn in transactions
         if txn.transfer_id is not None
@@ -543,30 +584,9 @@ def live_loan_transfer_amounts(
     today = date.today()
     piti_by_loan: dict[int, Decimal] = {}
     for loan_account_id in set(loan_by_transfer.values()):
-        params = (
-            db.session.query(LoanParams)
-            .filter_by(account_id=loan_account_id)
-            .first()
-        )
-        if params is None:
-            continue
-        context = load_loan_context(loan_account_id, scenario_id, params)
-        anchor_events = (
-            db.session.query(LoanAnchorEvent)
-            .filter_by(account_id=loan_account_id)
-            .all()
-        )
-        if not anchor_events:
-            continue
-        state = loan_resolver.resolve_loan(
-            loan_resolver.LoanInputs(
-                params, anchor_events, context.payments, context.rate_changes,
-            ),
-            today,
-        )
-        piti_by_loan[loan_account_id] = (
-            state.monthly_payment + context.monthly_escrow
-        )
+        piti = _resolve_loan_piti(loan_account_id, scenario_id, today)
+        if piti is not None:
+            piti_by_loan[loan_account_id] = piti
 
     overrides: dict[int, Decimal] = {}
     for txn in candidates:
