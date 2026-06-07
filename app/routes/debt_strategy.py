@@ -25,11 +25,8 @@ from app.utils.auth_helpers import require_owner
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.schemas.validation import DebtStrategyCalculateSchema
-from app.services import loan_resolver
 from app.services.debt_strategy_service import (
     DebtAccount,
     STRATEGY_AVALANCHE,
@@ -39,7 +36,7 @@ from app.services.debt_strategy_service import (
     StrategyResult,
     calculate_strategy,
 )
-from app.services.loan_payment_service import load_loan_context
+from app.services.loan_payment_service import resolve_account_loan
 from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)
@@ -142,40 +139,15 @@ def _load_debt_accounts(user_id):
     debt_accounts = []
     has_arm = False
 
-    # Pylint: ``duplicate-code`` -- The per-account "load LoanParams, skip
-    # if unconfigured" preamble below coincides with the same generic
-    # SQLAlchemy idiom in ``year_end_summary_service``; the extracted body
-    # would be identical to the inline form, and the two consumers are
-    # unrelated domains (debt-strategy view vs year-end summary).  One-sided
-    # ``duplicate-code`` disable (coding-standards rule 13; see plan.md
-    # Phase 2 notes).
-    # pylint: disable=duplicate-code
     for account in accounts:
-        params = (
-            db.session.query(LoanParams)
-            .filter_by(account_id=account.id)
-            .first()
-        )
-        if params is None:
+        resolved = resolve_account_loan(account.id, scenario_id, today)
+        if resolved is None:
             # Account exists but loan details not yet configured.
             continue
-        # pylint: enable=duplicate-code
+        params, state = resolved
 
         if params.is_arm:
             has_arm = True
-
-        anchor_events = (
-            db.session.query(LoanAnchorEvent)
-            .filter_by(account_id=account.id)
-            .all()
-        )
-        ctx = load_loan_context(account.id, scenario_id, params)
-        state = loan_resolver.resolve_loan(
-            loan_resolver.LoanInputs(
-                params, anchor_events, ctx.payments, ctx.rate_changes,
-            ),
-            today,
-        )
 
         # Skip debts with zero principal or zero payment (fully paid
         # off or degenerate loan parameters).  Resolver-derived

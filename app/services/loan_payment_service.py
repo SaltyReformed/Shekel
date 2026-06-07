@@ -30,6 +30,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import joinedload
 
@@ -49,6 +50,13 @@ from app.utils.balance_predicates import (
     balance_excluded_status_ids,
     is_projected,
 )
+
+if TYPE_CHECKING:
+    # Type-only import: ``loan_resolver`` imports from this module
+    # (``load_loan_context``), so a runtime top-level import would be
+    # circular.  ``resolve_account_loan`` returns its ``LoanState``; the
+    # value is produced via the function-local import below.
+    from app.services.loan_resolver import LoanState
 
 logger = logging.getLogger(__name__)
 
@@ -493,6 +501,55 @@ def prepare_payments_for_engine(
     # Step 2: Redistribute payments that share a monthly DUE month to
     # consecutive months so the monthly engine sees one per due month.
     return _redistribute_to_distinct_months(sorted_payments, payment_day)
+
+
+def resolve_account_loan(
+    account_id: int, scenario_id: int, today: date
+) -> "tuple[LoanParams, LoanState] | None":
+    """Load a debt account's ``LoanParams`` and run the resolver as of ``today``.
+
+    The per-account "load LoanParams (skip if unconfigured), load anchor
+    events + context, run the resolver" preamble shared by the debt-strategy
+    route and the year-end schedule generation.  Centralizing it keeps the
+    two consumers from drifting on HOW a loan account is resolved (which
+    inputs feed :func:`loan_resolver.resolve_loan`, in what order).
+
+    Returns ``None`` when the account has no ``LoanParams`` row (it is not a
+    configured loan); the caller skips it.  Unlike
+    :func:`_resolve_loan_piti`, an account WITH params but no anchor events
+    is still resolved here -- both callers screen those out downstream
+    (debt-strategy via its zero-balance/zero-payment guard, the year-end
+    feed via the resulting empty schedule), so the no-anchor short-circuit
+    that PITI needs is intentionally absent.
+
+    Args:
+        account_id: The debt account to resolve.
+        scenario_id: The active budget scenario (for payment history).
+        today: The as-of date passed through to the resolver.
+
+    Returns:
+        ``(params, state)`` -- the loaded :class:`LoanParams` and the
+        resolved :class:`~app.services.loan_resolver.LoanState` -- or
+        ``None`` if the account has no ``LoanParams``.
+    """
+    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports from this
+    # module (``load_loan_context``), so resolving it here rather than at
+    # module top keeps the dependency one-directional.
+    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
+    params = db.session.query(LoanParams).filter_by(account_id=account_id).first()
+    if params is None:
+        return None
+    anchor_events = db.session.query(LoanAnchorEvent).filter_by(
+        account_id=account_id,
+    ).all()
+    ctx = load_loan_context(account_id, scenario_id, params)
+    state = loan_resolver.resolve_loan(
+        loan_resolver.LoanInputs(
+            params, anchor_events, ctx.payments, ctx.rate_changes,
+        ),
+        today,
+    )
+    return params, state
 
 
 def _resolve_loan_piti(

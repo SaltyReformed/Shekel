@@ -15,7 +15,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -23,7 +22,6 @@ from app.services import (
     balance_calculator,
     balance_resolver,
     growth_engine,
-    loan_resolver,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -33,8 +31,8 @@ from app.services.account_projection import (
 from app.services.interest_projection import calculate_interest
 from app.services.investment_projection import adapt_deductions
 from app.services.loan_payment_service import (
-    load_loan_context,
     query_shadow_income,
+    resolve_account_loan,
 )
 from app.services.projection_inputs import build_investment_projection_inputs
 from app.services.year_end_summary_service._periods import (
@@ -68,26 +66,10 @@ def _generate_debt_schedules(
     today = date.today()
 
     for account in debt_accounts:
-        params = (
-            db.session.query(LoanParams)
-            .filter_by(account_id=account.id)
-            .first()
-        )
-        if params is None:
+        resolved = resolve_account_loan(account.id, scenario_id, today)
+        if resolved is None:
             continue
-
-        ctx = load_loan_context(account.id, scenario_id, params)
-        anchor_events = (
-            db.session.query(LoanAnchorEvent)
-            .filter_by(account_id=account.id)
-            .all()
-        )
-        state = loan_resolver.resolve_loan(
-            loan_resolver.LoanInputs(
-                params, anchor_events, ctx.payments, ctx.rate_changes,
-            ),
-            today,
-        )
+        _, state = resolved
         schedules[account.id] = state.schedule
 
     return schedules
