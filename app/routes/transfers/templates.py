@@ -636,22 +636,24 @@ def _materialize_initial_transfers(template, rule, start_period_id):
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             try:
                 transfer_service.create_transfer(
-                    user_id=current_user.id,
-                    from_account_id=template.from_account_id,
-                    to_account_id=template.to_account_id,
-                    pay_period_id=period.id,
-                    scenario_id=scenario.id,
-                    amount=template.default_amount,
-                    status_id=projected_id,
-                    category_id=template.category_id,
-                    name=template.name,
-                    transfer_template_id=template.id,
-                    # Compute the due date from the rule via the same
-                    # shared helper the recurrence engine uses.  A ONCE
-                    # rule carries no day_of_month, so this resolves to
-                    # period.start_date -- an improvement on the prior
-                    # NULL and consistent with every other transfer path.
-                    due_date=_compute_due_date(rule, period),
+                    transfer_service.TransferSpec(
+                        user_id=current_user.id,
+                        from_account_id=template.from_account_id,
+                        to_account_id=template.to_account_id,
+                        pay_period_id=period.id,
+                        scenario_id=scenario.id,
+                        amount=template.default_amount,
+                        status_id=projected_id,
+                        category_id=template.category_id,
+                        name=template.name,
+                        transfer_template_id=template.id,
+                        # Compute the due date from the rule via the same
+                        # shared helper the recurrence engine uses.  A ONCE
+                        # rule carries no day_of_month, so this resolves to
+                        # period.start_date -- an improvement on the prior
+                        # NULL and consistent with every other transfer path.
+                        due_date=_compute_due_date(rule, period),
+                    ),
                 )
             except (NotFoundError, ShekelValidationError) as exc:
                 db.session.rollback()

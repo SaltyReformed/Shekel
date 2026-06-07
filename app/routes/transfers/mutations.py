@@ -228,17 +228,19 @@ def create_ad_hoc():
     # changes no behavior.
     try:
         xfer = transfer_service.create_transfer(
-            user_id=current_user.id,
-            from_account_id=data["from_account_id"],
-            to_account_id=data["to_account_id"],
-            pay_period_id=data["pay_period_id"],
-            scenario_id=data["scenario_id"],
-            amount=data["amount"],
-            status_id=projected_id,
-            category_id=data["category_id"],
-            name=data.get("name"),
-            notes=data.get("notes"),
-            due_date=data.get("due_date"),
+            transfer_service.TransferSpec(
+                user_id=current_user.id,
+                from_account_id=data["from_account_id"],
+                to_account_id=data["to_account_id"],
+                pay_period_id=data["pay_period_id"],
+                scenario_id=data["scenario_id"],
+                amount=data["amount"],
+                status_id=projected_id,
+                category_id=data["category_id"],
+                name=data.get("name"),
+                notes=data.get("notes"),
+                due_date=data.get("due_date"),
+            ),
         )
         db.session.commit()
     except NotFoundError:

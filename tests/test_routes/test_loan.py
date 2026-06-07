@@ -20,7 +20,7 @@ from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.ref import AccountType
-from app.services.transfer_service import create_transfer
+from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service
 
 from tests._test_helpers import (
@@ -1560,14 +1560,16 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
     code path.  Does NOT directly insert shadow transactions.
     """
     return create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=loan_account.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        amount=amount,
-        status_id=ref_cache.status_id(status_enum),
-        category_id=seed_user["categories"]["Rent"].id,
+        TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=loan_account.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=ref_cache.status_id(status_enum),
+            category_id=seed_user["categories"]["Rent"].id,
+        ),
     )
 
 

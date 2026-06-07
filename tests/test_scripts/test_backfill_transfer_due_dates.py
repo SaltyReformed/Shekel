@@ -173,15 +173,17 @@ def test_backfill_skips_immutable_override_and_adhoc(
 
         # An ad-hoc transfer (no template) with a stale due date.
         adhoc = transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            amount=Decimal("77.00"),
-            status_id=db.session.query(Status).filter_by(name="Projected").one().id,
-            category_id=seed_user["categories"]["Rent"].id,
-            due_date=seed_periods[0].start_date,
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("77.00"),
+                status_id=db.session.query(Status).filter_by(name="Projected").one().id,
+                category_id=seed_user["categories"]["Rent"].id,
+                due_date=seed_periods[0].start_date,
+            ),
         )
         db.session.commit()
 

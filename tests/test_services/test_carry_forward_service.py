@@ -584,15 +584,17 @@ def _create_transfer_in_period(seed_user, seed_periods, period_index=0):
     savings = _create_savings(seed_user)
     projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings.id,
-        pay_period_id=seed_periods[period_index].id,
-        scenario_id=seed_user["scenario"].id,
-        amount=Decimal("200.00"),
-        status_id=projected.id,
-        category_id=seed_user["categories"]["Rent"].id,
-        name="CF Transfer",
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            pay_period_id=seed_periods[period_index].id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("200.00"),
+            status_id=projected.id,
+            category_id=seed_user["categories"]["Rent"].id,
+            name="CF Transfer",
+        ),
     )
     db.session.flush()
     return xfer
@@ -788,15 +790,17 @@ class TestCarryForwardShadowTransactions:
 
             xfer1 = _create_transfer_in_period(seed_user, seed_periods, 0)
             xfer2 = transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings2.id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("150.00"),
-                status_id=projected.id,
-                category_id=seed_user["categories"]["Rent"].id,
-                name="CF Transfer 2",
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings2.id,
+                    pay_period_id=seed_periods[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("150.00"),
+                    status_id=projected.id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                    name="CF Transfer 2",
+                ),
             )
             reg = _create_transaction(seed_user, seed_periods, name="Reg")
             db.session.flush()
@@ -1152,31 +1156,35 @@ class TestCarryForwardOverrideSiblingTransfers:
 
             # Rule-generated transfer in source period (period 0).
             source_xfer = transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=template.default_amount,
-                status_id=projected.id,
-                category_id=template.category_id,
-                name=template.name,
-                transfer_template_id=template.id,
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=template.default_amount,
+                    status_id=projected.id,
+                    category_id=template.category_id,
+                    name=template.name,
+                    transfer_template_id=template.id,
+                ),
             )
             # Rule-generated transfer already in target period (period 1)
             # -- the recurrence engine has already produced this period's
             # instance.
             target_xfer = transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods[1].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=template.default_amount,
-                status_id=projected.id,
-                category_id=template.category_id,
-                name=template.name,
-                transfer_template_id=template.id,
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=template.default_amount,
+                    status_id=projected.id,
+                    category_id=template.category_id,
+                    name=template.name,
+                    transfer_template_id=template.id,
+                ),
             )
             db.session.flush()
 

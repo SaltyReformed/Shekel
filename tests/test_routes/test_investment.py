@@ -1773,15 +1773,17 @@ class TestEmployerMatchCapped:
         received_id = ref_cache.status_id(StatusEnum.RECEIVED)
         cat = seed_user["categories"]["Groceries"]
         xfer = transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=to_account.id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            amount=amount,
-            status_id=received_id,
-            category_id=cat.id,
-            name="YTD seed",
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=to_account.id,
+                pay_period_id=period.id,
+                scenario_id=seed_user["scenario"].id,
+                amount=amount,
+                status_id=received_id,
+                category_id=cat.id,
+                name="YTD seed",
+            ),
         )
         db_session.commit()
         return xfer

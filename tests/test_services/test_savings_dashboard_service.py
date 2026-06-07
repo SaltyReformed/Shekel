@@ -676,19 +676,21 @@ class TestPaidOffFlag:
         """
         from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -735,19 +737,21 @@ class TestPaidOffFlag:
         """
         from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("500.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("500.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -772,19 +776,21 @@ class TestPaidOffFlag:
         """
         from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.PROJECTED),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.PROJECTED),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -1078,7 +1084,7 @@ class TestDebtSummary:
         """
         from app import ref_cache as rc
         from app.enums import StatusEnum
-        from app.services.transfer_service import create_transfer
+        from app.services.transfer_service import TransferSpec, create_transfer
 
         with app.app_context():
             active = _create_small_loan(
@@ -1090,14 +1096,16 @@ class TestDebtSummary:
             )
             # Pay off the second loan with a confirmed transfer.
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=paid_off.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=paid_off.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -1125,19 +1133,21 @@ class TestDebtSummary:
         """
         from app import ref_cache as rc
         from app.enums import StatusEnum
-        from app.services.transfer_service import create_transfer
+        from app.services.transfer_service import TransferSpec, create_transfer
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -1379,7 +1389,7 @@ class TestDTI:
         """C-5.12-13: Salary exists, all loans paid off -> DTI = 0.0%."""
         from app import ref_cache as rc
         from app.enums import StatusEnum
-        from app.services.transfer_service import create_transfer
+        from app.services.transfer_service import TransferSpec, create_transfer
 
         with app.app_context():
             filing = db.session.query(FilingStatus).first()
@@ -1394,14 +1404,16 @@ class TestDTI:
             db.session.add(profile)
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 

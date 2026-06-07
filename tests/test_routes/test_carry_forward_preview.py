@@ -186,15 +186,17 @@ def _make_transfer(seed_user, period):
     savings = _make_savings_account(seed_user)
     projected = db.session.query(Status).filter_by(name="Projected").one()
     return transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        amount=Decimal("75.00"),
-        status_id=projected.id,
-        category_id=seed_user["categories"]["Rent"].id,
-        name="CFP Transfer",
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("75.00"),
+            status_id=projected.id,
+            category_id=seed_user["categories"]["Rent"].id,
+            name="CFP Transfer",
+        ),
     )
 
 

@@ -223,7 +223,7 @@ def _make_transfer(td, **overrides):
         category_id=td["category"].id,
     )
     kwargs.update(overrides)
-    return transfer_service.create_transfer(**kwargs)
+    return transfer_service.create_transfer(transfer_service.TransferSpec(**kwargs))
 
 
 class TestTransferServiceLogging:

@@ -352,14 +352,16 @@ class TestTransferShadowMarkDoneStateMachine:
 
         projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
         xfer = transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            amount=Decimal("100.00"),
-            status_id=projected_id,
-            category_id=seed_user["categories"]["Rent"].id,
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("100.00"),
+                status_id=projected_id,
+                category_id=seed_user["categories"]["Rent"].id,
+            ),
         )
         db_session.commit()
         return xfer

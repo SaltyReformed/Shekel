@@ -232,15 +232,17 @@ def _create_piti_transfer(  # pylint: disable=too-many-arguments,too-many-positi
     """
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     xfer = transfer_service.create_transfer(
-        user_id=user_id,
-        from_account_id=from_account_id,
-        to_account_id=to_account_id,
-        pay_period_id=pay_period_id,
-        scenario_id=scenario_id,
-        amount=amount,
-        status_id=projected_id,
-        category_id=category_id,
-        notes="C14 PITI transfer",
+        transfer_service.TransferSpec(
+            user_id=user_id,
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            pay_period_id=pay_period_id,
+            scenario_id=scenario_id,
+            amount=amount,
+            status_id=projected_id,
+            category_id=category_id,
+            notes="C14 PITI transfer",
+        ),
     )
     return xfer
 

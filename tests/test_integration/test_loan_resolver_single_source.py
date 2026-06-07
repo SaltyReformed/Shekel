@@ -196,15 +196,17 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
     xfer = transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=checking.id,
-        to_account_id=loan_account.id,
-        pay_period_id=period.id,
-        scenario_id=scenario.id,
-        amount=FIXED_PI,
-        status_id=projected_id,
-        category_id=category.id,
-        notes="C15 PITI settle",
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=checking.id,
+            to_account_id=loan_account.id,
+            pay_period_id=period.id,
+            scenario_id=scenario.id,
+            amount=FIXED_PI,
+            status_id=projected_id,
+            category_id=category.id,
+            notes="C15 PITI settle",
+        ),
     )
     db.session.commit()
 

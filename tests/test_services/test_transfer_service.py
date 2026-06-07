@@ -63,14 +63,16 @@ def transfer_data(app, db, seed_full_user_data):
 def _create_basic_transfer(td):
     """Helper: create a transfer using the standard test data."""
     return transfer_service.create_transfer(
-        user_id=td["user"].id,
-        from_account_id=td["account"].id,
-        to_account_id=td["savings_account"].id,
-        pay_period_id=td["periods"][0].id,
-        scenario_id=td["scenario"].id,
-        amount=Decimal("250.00"),
-        status_id=td["projected_status"].id,
-        category_id=td["categories"]["Rent"].id,
+        transfer_service.TransferSpec(
+            user_id=td["user"].id,
+            from_account_id=td["account"].id,
+            to_account_id=td["savings_account"].id,
+            pay_period_id=td["periods"][0].id,
+            scenario_id=td["scenario"].id,
+            amount=Decimal("250.00"),
+            status_id=td["projected_status"].id,
+            category_id=td["categories"]["Rent"].id,
+        ),
     )
 
 
@@ -138,14 +140,16 @@ class TestCreateTransfer:
             rent_cat = td["categories"]["Rent"]
 
             xfer = transfer_service.create_transfer(
-                user_id=td["user"].id,
-                from_account_id=td["account"].id,
-                to_account_id=td["savings_account"].id,
-                pay_period_id=td["periods"][0].id,
-                scenario_id=td["scenario"].id,
-                amount=Decimal("500.00"),
-                status_id=td["projected_status"].id,
-                category_id=rent_cat.id,
+                transfer_service.TransferSpec(
+                    user_id=td["user"].id,
+                    from_account_id=td["account"].id,
+                    to_account_id=td["savings_account"].id,
+                    pay_period_id=td["periods"][0].id,
+                    scenario_id=td["scenario"].id,
+                    amount=Decimal("500.00"),
+                    status_id=td["projected_status"].id,
+                    category_id=rent_cat.id,
+                ),
             )
 
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -162,15 +166,17 @@ class TestCreateTransfer:
         with app.app_context():
             td = transfer_data
             xfer = transfer_service.create_transfer(
-                user_id=td["user"].id,
-                from_account_id=td["account"].id,
-                to_account_id=td["savings_account"].id,
-                pay_period_id=td["periods"][0].id,
-                scenario_id=td["scenario"].id,
-                amount=Decimal("200.00"),
-                status_id=td["projected_status"].id,
-                category_id=td["categories"]["Rent"].id,
-                transfer_template_id=td["transfer_template"].id,
+                transfer_service.TransferSpec(
+                    user_id=td["user"].id,
+                    from_account_id=td["account"].id,
+                    to_account_id=td["savings_account"].id,
+                    pay_period_id=td["periods"][0].id,
+                    scenario_id=td["scenario"].id,
+                    amount=Decimal("200.00"),
+                    status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
+                    transfer_template_id=td["transfer_template"].id,
+                ),
             )
 
             assert xfer.transfer_template_id == td["transfer_template"].id
@@ -183,15 +189,17 @@ class TestCreateTransfer:
         with app.app_context():
             td = transfer_data
             xfer = transfer_service.create_transfer(
-                user_id=td["user"].id,
-                from_account_id=td["account"].id,
-                to_account_id=td["savings_account"].id,
-                pay_period_id=td["periods"][0].id,
-                scenario_id=td["scenario"].id,
-                amount=Decimal("300.00"),
-                status_id=td["projected_status"].id,
-                category_id=td["categories"]["Rent"].id,
-                name="Mortgage Payment",
+                transfer_service.TransferSpec(
+                    user_id=td["user"].id,
+                    from_account_id=td["account"].id,
+                    to_account_id=td["savings_account"].id,
+                    pay_period_id=td["periods"][0].id,
+                    scenario_id=td["scenario"].id,
+                    amount=Decimal("300.00"),
+                    status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
+                    name="Mortgage Payment",
+                ),
             )
 
             assert xfer.name == "Mortgage Payment"
@@ -226,14 +234,16 @@ class TestCreateTransferValidation:
             td = transfer_data
             with pytest.raises(ValidationError, match="positive"):
                 transfer_service.create_transfer(
-                    user_id=td["user"].id,
-                    from_account_id=td["account"].id,
-                    to_account_id=td["savings_account"].id,
-                    pay_period_id=td["periods"][0].id,
-                    scenario_id=td["scenario"].id,
-                    amount=Decimal("0"),
-                    status_id=td["projected_status"].id,
-                    category_id=td["categories"]["Rent"].id,
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=td["account"].id,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount=Decimal("0"),
+                        status_id=td["projected_status"].id,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
                 )
 
     def test_negative_amount_rejected(self, app, db, transfer_data):
@@ -242,14 +252,16 @@ class TestCreateTransferValidation:
             td = transfer_data
             with pytest.raises(ValidationError, match="positive"):
                 transfer_service.create_transfer(
-                    user_id=td["user"].id,
-                    from_account_id=td["account"].id,
-                    to_account_id=td["savings_account"].id,
-                    pay_period_id=td["periods"][0].id,
-                    scenario_id=td["scenario"].id,
-                    amount=Decimal("-100"),
-                    status_id=td["projected_status"].id,
-                    category_id=td["categories"]["Rent"].id,
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=td["account"].id,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount=Decimal("-100"),
+                        status_id=td["projected_status"].id,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
                 )
 
     def test_same_account_rejected(self, app, db, transfer_data):
@@ -258,14 +270,16 @@ class TestCreateTransferValidation:
             td = transfer_data
             with pytest.raises(ValidationError, match="different"):
                 transfer_service.create_transfer(
-                    user_id=td["user"].id,
-                    from_account_id=td["account"].id,
-                    to_account_id=td["account"].id,
-                    pay_period_id=td["periods"][0].id,
-                    scenario_id=td["scenario"].id,
-                    amount=Decimal("100"),
-                    status_id=td["projected_status"].id,
-                    category_id=td["categories"]["Rent"].id,
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=td["account"].id,
+                        to_account_id=td["account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount=Decimal("100"),
+                        status_id=td["projected_status"].id,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
                 )
 
     def test_wrong_user_account_rejected(self, app, db, transfer_data, second_user):
@@ -274,14 +288,16 @@ class TestCreateTransferValidation:
             td = transfer_data
             with pytest.raises(NotFoundError):
                 transfer_service.create_transfer(
-                    user_id=td["user"].id,
-                    from_account_id=second_user["account"].id,
-                    to_account_id=td["savings_account"].id,
-                    pay_period_id=td["periods"][0].id,
-                    scenario_id=td["scenario"].id,
-                    amount=Decimal("100"),
-                    status_id=td["projected_status"].id,
-                    category_id=td["categories"]["Rent"].id,
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=second_user["account"].id,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount=Decimal("100"),
+                        status_id=td["projected_status"].id,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
                 )
 
     def test_nonexistent_account_rejected(self, app, db, transfer_data):
@@ -290,14 +306,16 @@ class TestCreateTransferValidation:
             td = transfer_data
             with pytest.raises(NotFoundError):
                 transfer_service.create_transfer(
-                    user_id=td["user"].id,
-                    from_account_id=99999,
-                    to_account_id=td["savings_account"].id,
-                    pay_period_id=td["periods"][0].id,
-                    scenario_id=td["scenario"].id,
-                    amount=Decimal("100"),
-                    status_id=td["projected_status"].id,
-                    category_id=td["categories"]["Rent"].id,
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=99999,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount=Decimal("100"),
+                        status_id=td["projected_status"].id,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
                 )
 
     def test_wrong_user_period_rejected(self, app, db, transfer_data, second_user):
@@ -317,14 +335,16 @@ class TestCreateTransferValidation:
 
             with pytest.raises(NotFoundError):
                 transfer_service.create_transfer(
-                    user_id=td["user"].id,
-                    from_account_id=td["account"].id,
-                    to_account_id=td["savings_account"].id,
-                    pay_period_id=other_periods[0].id,
-                    scenario_id=td["scenario"].id,
-                    amount=Decimal("100"),
-                    status_id=td["projected_status"].id,
-                    category_id=td["categories"]["Rent"].id,
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=td["account"].id,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=other_periods[0].id,
+                        scenario_id=td["scenario"].id,
+                        amount=Decimal("100"),
+                        status_id=td["projected_status"].id,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
                 )
 
     def test_wrong_user_category_rejected(self, app, db, transfer_data, second_user):
@@ -335,14 +355,16 @@ class TestCreateTransferValidation:
 
             with pytest.raises(NotFoundError):
                 transfer_service.create_transfer(
-                    user_id=td["user"].id,
-                    from_account_id=td["account"].id,
-                    to_account_id=td["savings_account"].id,
-                    pay_period_id=td["periods"][0].id,
-                    scenario_id=td["scenario"].id,
-                    amount=Decimal("100"),
-                    status_id=td["projected_status"].id,
-                    category_id=other_cat.id,
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=td["account"].id,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount=Decimal("100"),
+                        status_id=td["projected_status"].id,
+                        category_id=other_cat.id,
+                    ),
                 )
 
     def test_invalid_amount_string_rejected(self, app, db, transfer_data):
@@ -351,14 +373,16 @@ class TestCreateTransferValidation:
             td = transfer_data
             with pytest.raises(ValidationError, match="Invalid amount"):
                 transfer_service.create_transfer(
-                    user_id=td["user"].id,
-                    from_account_id=td["account"].id,
-                    to_account_id=td["savings_account"].id,
-                    pay_period_id=td["periods"][0].id,
-                    scenario_id=td["scenario"].id,
-                    amount="not-a-number",
-                    status_id=td["projected_status"].id,
-                    category_id=td["categories"]["Rent"].id,
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=td["account"].id,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount="not-a-number",
+                        status_id=td["projected_status"].id,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
                 )
 
 
@@ -544,14 +568,16 @@ class TestUpdateTransfer:
             rent_cat = td["categories"]["Rent"]
 
             xfer = transfer_service.create_transfer(
-                user_id=td["user"].id,
-                from_account_id=td["account"].id,
-                to_account_id=td["savings_account"].id,
-                pay_period_id=td["periods"][0].id,
-                scenario_id=td["scenario"].id,
-                amount=Decimal("100"),
-                status_id=td["projected_status"].id,
-                category_id=rent_cat.id,
+                transfer_service.TransferSpec(
+                    user_id=td["user"].id,
+                    from_account_id=td["account"].id,
+                    to_account_id=td["savings_account"].id,
+                    pay_period_id=td["periods"][0].id,
+                    scenario_id=td["scenario"].id,
+                    amount=Decimal("100"),
+                    status_id=td["projected_status"].id,
+                    category_id=rent_cat.id,
+                ),
             )
 
             transfer_service.update_transfer(
@@ -1364,15 +1390,17 @@ class TestDueDateAndPaidAtShadows:
         with app.app_context():
             td = transfer_data
             xfer = transfer_service.create_transfer(
-                user_id=td["user"].id,
-                from_account_id=td["account"].id,
-                to_account_id=td["savings_account"].id,
-                pay_period_id=td["periods"][0].id,
-                scenario_id=td["scenario"].id,
-                amount=Decimal("250.00"),
-                status_id=td["projected_status"].id,
-                category_id=td["categories"]["Rent"].id,
-                due_date=date(2026, 1, 15),
+                transfer_service.TransferSpec(
+                    user_id=td["user"].id,
+                    from_account_id=td["account"].id,
+                    to_account_id=td["savings_account"].id,
+                    pay_period_id=td["periods"][0].id,
+                    scenario_id=td["scenario"].id,
+                    amount=Decimal("250.00"),
+                    status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
+                    due_date=date(2026, 1, 15),
+                ),
             )
             db.session.flush()
 
@@ -1393,15 +1421,17 @@ class TestDueDateAndPaidAtShadows:
         with app.app_context():
             td = transfer_data
             xfer = transfer_service.create_transfer(
-                user_id=td["user"].id,
-                from_account_id=td["account"].id,
-                to_account_id=td["savings_account"].id,
-                pay_period_id=td["periods"][0].id,
-                scenario_id=td["scenario"].id,
-                amount=Decimal("250.00"),
-                status_id=td["projected_status"].id,
-                category_id=td["categories"]["Rent"].id,
-                due_date=None,
+                transfer_service.TransferSpec(
+                    user_id=td["user"].id,
+                    from_account_id=td["account"].id,
+                    to_account_id=td["savings_account"].id,
+                    pay_period_id=td["periods"][0].id,
+                    scenario_id=td["scenario"].id,
+                    amount=Decimal("250.00"),
+                    status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
+                    due_date=None,
+                ),
             )
             db.session.flush()
 

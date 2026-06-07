@@ -93,17 +93,19 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         # fall back to period.start_date inside the helper, preserving
         # the payday-dated behaviour for those patterns.
         xfer = transfer_service.create_transfer(
-            user_id=template.user_id,
-            from_account_id=template.from_account_id,
-            to_account_id=template.to_account_id,
-            pay_period_id=period.id,
-            scenario_id=scenario_id,
-            amount=template.default_amount,
-            status_id=plan.projected_id,
-            category_id=template.category_id,
-            name=template.name,
-            transfer_template_id=template.id,
-            due_date=_compute_due_date(plan.rule, period),
+            transfer_service.TransferSpec(
+                user_id=template.user_id,
+                from_account_id=template.from_account_id,
+                to_account_id=template.to_account_id,
+                pay_period_id=period.id,
+                scenario_id=scenario_id,
+                amount=template.default_amount,
+                status_id=plan.projected_id,
+                category_id=template.category_id,
+                name=template.name,
+                transfer_template_id=template.id,
+                due_date=_compute_due_date(plan.rule, period),
+            ),
         )
         created.append(xfer)
 

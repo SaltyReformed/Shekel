@@ -2117,7 +2117,7 @@ class TestTransferInvariantsBalanceRegression:
         """
         from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             user = seed_user["user"]
@@ -2142,14 +2142,16 @@ class TestTransferInvariantsBalanceRegression:
             db.session.commit()
 
             transfer = create_transfer(
-                user_id=user.id,
-                from_account_id=account.id,
-                to_account_id=savings_acct.id,
-                pay_period_id=periods[1].id,
-                scenario_id=scenario.id,
-                amount=Decimal("200.00"),
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=user.id,
+                    from_account_id=account.id,
+                    to_account_id=savings_acct.id,
+                    pay_period_id=periods[1].id,
+                    scenario_id=scenario.id,
+                    amount=Decimal("200.00"),
+                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -2172,7 +2174,7 @@ class TestTransferInvariantsBalanceRegression:
         """
         from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             user = seed_user["user"]
@@ -2198,14 +2200,16 @@ class TestTransferInvariantsBalanceRegression:
 
             transfer_amount = Decimal("350.00")
             transfer = create_transfer(
-                user_id=user.id,
-                from_account_id=account.id,
-                to_account_id=savings_acct.id,
-                pay_period_id=periods[1].id,
-                scenario_id=scenario.id,
-                amount=transfer_amount,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=user.id,
+                    from_account_id=account.id,
+                    to_account_id=savings_acct.id,
+                    pay_period_id=periods[1].id,
+                    scenario_id=scenario.id,
+                    amount=transfer_amount,
+                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -2228,7 +2232,7 @@ class TestTransferInvariantsBalanceRegression:
         """
         from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             user = seed_user["user"]
@@ -2254,14 +2258,16 @@ class TestTransferInvariantsBalanceRegression:
 
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             transfer = create_transfer(
-                user_id=user.id,
-                from_account_id=account.id,
-                to_account_id=savings_acct.id,
-                pay_period_id=periods[2].id,
-                scenario_id=scenario.id,
-                amount=Decimal("100.00"),
-                status_id=projected_id,
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=user.id,
+                    from_account_id=account.id,
+                    to_account_id=savings_acct.id,
+                    pay_period_id=periods[2].id,
+                    scenario_id=scenario.id,
+                    amount=Decimal("100.00"),
+                    status_id=projected_id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -2293,7 +2299,7 @@ class TestTransferInvariantsBalanceRegression:
         """
         from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             user = seed_user["user"]
@@ -2319,14 +2325,16 @@ class TestTransferInvariantsBalanceRegression:
 
             transfer_amount = Decimal("250.00")
             transfer = create_transfer(
-                user_id=user.id,
-                from_account_id=checking.id,
-                to_account_id=savings_acct.id,
-                pay_period_id=periods[1].id,
-                scenario_id=scenario.id,
-                amount=transfer_amount,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=user.id,
+                    from_account_id=checking.id,
+                    to_account_id=savings_acct.id,
+                    pay_period_id=periods[1].id,
+                    scenario_id=scenario.id,
+                    amount=transfer_amount,
+                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 

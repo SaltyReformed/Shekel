@@ -385,14 +385,16 @@ class TestHysaDetailShadowTransactions:
         # Create a $500 transfer from checking to HYSA.
         projected = db.session.query(Status).filter_by(name="Projected").one()
         transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=account.id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            amount=Decimal("500.00"),
-            status_id=projected.id,
-            category_id=outgoing.id,
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=account.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("500.00"),
+                status_id=projected.id,
+                category_id=outgoing.id,
+            ),
         )
         db.session.commit()
 

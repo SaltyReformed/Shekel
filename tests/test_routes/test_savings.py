@@ -1096,14 +1096,16 @@ class TestSavingsDashboardShadowTransactions:
             # Create a $500 transfer from checking to HYSA.
             projected = db.session.query(Status).filter_by(name="Projected").one()
             transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=hysa.id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("500.00"),
-                status_id=projected.id,
-                category_id=outgoing.id,
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=hysa.id,
+                    pay_period_id=seed_periods[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("500.00"),
+                    status_id=projected.id,
+                    category_id=outgoing.id,
+                ),
             )
             db.session.commit()
 
@@ -1169,14 +1171,16 @@ class TestSavingsDashboardShadowTransactions:
 
             projected = db.session.query(Status).filter_by(name="Projected").one()
             transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1000.00"),
-                status_id=projected.id,
-                category_id=outgoing.id,
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1000.00"),
+                    status_id=projected.id,
+                    category_id=outgoing.id,
+                ),
             )
             db.session.commit()
 
@@ -2027,14 +2031,16 @@ def _make_confirmed_transfer(seed_user, to_account, period, amount):
     from app.services import transfer_service  # pylint: disable=import-outside-toplevel
 
     return transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=to_account.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        amount=amount,
-        status_id=ref_cache.status_id(StatusEnum.DONE),
-        category_id=seed_user["categories"]["Rent"].id,
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=to_account.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=ref_cache.status_id(StatusEnum.DONE),
+            category_id=seed_user["categories"]["Rent"].id,
+        ),
     )
 
 
@@ -2107,14 +2113,16 @@ class TestPaidOffBadge:
 
             acct = _create_small_loan(seed_user)
             transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                category_id=seed_user["categories"]["Rent"].id,
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 

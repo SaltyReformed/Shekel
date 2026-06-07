@@ -57,7 +57,7 @@ from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.services import account_service
-from app.services.transfer_service import create_transfer
+from app.services.transfer_service import TransferSpec, create_transfer
 
 
 # ---------------------------------------------------------------------------
