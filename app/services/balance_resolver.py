@@ -584,13 +584,15 @@ def period_subtotal(
 def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
     """Date-cut variant of the balance-calculator entry-aware reduction (E-27).
 
-    Mirrors :func:`~app.services.balance_calculator._entry_aware_amount`
-    bucket-by-bucket but considers only entries whose ``entry_date`` is
-    on or before ``as_of``.  A purchase that has not happened yet
-    (entry dated after ``as_of``) cannot have cleared the bank as of
-    that date and therefore must not contribute to either bucket --
-    inclusion would reduce the reservation prematurely and ship a
-    wrong balance for the calendar month-end (HIGH-02 / W-277).
+    Reuses the engine's shared three-bucket reservation core
+    (:func:`~app.services.balance_calculator._entry_checking_impact`,
+    the same math :func:`~app.services.balance_calculator._entry_aware_amount`
+    runs) but over only the entries whose ``entry_date`` is on or before
+    ``as_of``.  A purchase that has not happened yet (entry dated after
+    ``as_of``) cannot have cleared the bank as of that date and therefore
+    must not contribute to either bucket -- inclusion would reduce the
+    reservation prematurely and ship a wrong balance for the calendar
+    month-end (HIGH-02 / W-277).
 
     The formula is otherwise identical to the engine helper:
 
@@ -631,35 +633,11 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
     if not is_projected(txn):
         return txn.effective_amount
 
-    # Pylint: ``duplicate-code`` -- the credit / cleared-debit / uncleared-debit
-    # entry-bucketing loop below mirrors ``balance_calculator._entry_aware_amount``
-    # -- but this dated variant adds the ``entry.entry_date > as_of`` window
-    # filter and the ``any_in_window`` special case, so the two are a deliberate
-    # parallel, not a clean shared helper.  The engine already shares its
-    # summation math with this resolver via the audited ``_sum_all`` reuse
-    # (E-25); folding this loop into one helper would entangle the as-of
-    # window with the undated path and risk the core balance math for a few
-    # lines (coding-standards rule 13).  One-sided ``duplicate-code`` disable:
-    # the sibling ``balance_calculator._entry_aware_amount`` carries no matching
-    # disable, so the suppression is applied to only one of the two parallels.
-    # pylint: disable=duplicate-code
-    cleared_debit = Decimal("0")
-    uncleared_debit = Decimal("0")
-    sum_credit = Decimal("0")
-    any_in_window = False
-    for entry in entries:
-        if entry.entry_date > as_of:
-            continue
-        any_in_window = True
-        if entry.is_credit:
-            sum_credit += entry.amount
-        elif entry.is_cleared:
-            cleared_debit += entry.amount
-        else:
-            uncleared_debit += entry.amount
-    # pylint: enable=duplicate-code
-
-    if not any_in_window:
+    # Window the entries to those that have occurred on or before
+    # ``as_of``: a purchase dated later cannot have cleared the bank yet,
+    # so it must not contribute to either bucket (HIGH-02 / W-277).
+    windowed = [entry for entry in entries if entry.entry_date <= as_of]
+    if not windowed:
         # No purchase has occurred yet as of ``as_of``; the full
         # estimated reservation is still pending.  ``effective_amount``
         # collapses to estimated for an unfilled Projected expense
@@ -667,9 +645,16 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
         # this matches the engine helper's empty-entries branch.
         return txn.effective_amount
 
-    return max(
-        txn.estimated_amount - cleared_debit - sum_credit,
-        uncleared_debit,
+    # Pylint: ``protected-access`` -- the credit / cleared-debit /
+    # uncleared-debit bucketing + reservation formula is the engine's
+    # internal ``_entry_checking_impact``.  The resolver is
+    # ``balance_calculator``'s sibling canonical producer (E-25/E-27) and
+    # reuses the engine's math over the windowed entries rather than
+    # keeping a second copy that could drift (CLAUDE.md rule 10); the
+    # as-of window stays here, the bucketing lives once in the engine.
+    # pylint: disable=protected-access
+    return balance_calculator._entry_checking_impact(
+        windowed, txn.estimated_amount,
     )
 
 
