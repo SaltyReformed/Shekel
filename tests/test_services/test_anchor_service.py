@@ -69,11 +69,13 @@ def _make_checking_account(seed_user, periods, anchor_balance="1000.00"):
         name="Checking",
     ).one()
     return account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=checking_type.id,
-        name="Helper Checking",
-        anchor_balance=Decimal(anchor_balance),
-        anchor_period_id=periods[0].id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=checking_type.id,
+            name="Helper Checking",
+            anchor_balance=Decimal(anchor_balance),
+            anchor_period_id=periods[0].id,
+        ),
     )
 
 
@@ -83,11 +85,13 @@ def _make_savings_account(seed_user, periods, anchor_balance="500.00"):
         name="Savings",
     ).one()
     return account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name="Helper Savings",
-        anchor_balance=Decimal(anchor_balance),
-        anchor_period_id=periods[0].id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="Helper Savings",
+            anchor_balance=Decimal(anchor_balance),
+            anchor_period_id=periods[0].id,
+        ),
     )
 
 
@@ -608,10 +612,12 @@ def _make_loan_account(seed_user, name="Helper Loan",
         name="Auto Loan",
     ).one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=auto_type.id,
-        name=name,
-        anchor_balance=Decimal(original_principal),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=auto_type.id,
+            name=name,
+            anchor_balance=Decimal(original_principal),
+        ),
     )
     db.session.flush()
 

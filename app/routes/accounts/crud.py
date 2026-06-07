@@ -169,11 +169,22 @@ def create_account():
     # raises ``ValidationError``; this route converts that into a
     # redirect to ``/pay-periods/generate`` so the user can fix the
     # missing-periods state and retry.
+    # ``account_type_id`` and ``name`` are required ``AccountCreateSchema``
+    # fields, so they are always present in ``data``; lift them out into
+    # the ``AccountSpec`` and forward any remaining validated columns
+    # through ``**data`` (the same passthrough the prior ``**data`` splat
+    # provided).
+    account_type_id = data.pop("account_type_id")
+    name = data.pop("name")
     try:
         account = account_service.create_account(
-            user_id=current_user.id,
-            anchor_balance=anchor_balance,
-            notes="origination",
+            account_service.AccountSpec(
+                user_id=current_user.id,
+                account_type_id=account_type_id,
+                name=name,
+                anchor_balance=anchor_balance,
+                notes="origination",
+            ),
             **data,
         )
     except ValidationError:

@@ -27,10 +27,12 @@ def _create_savings_account(seed_user):
     """Helper: create a second (savings) account for the test user."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name="Savings",
-        anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add(acct)
     db.session.commit()
@@ -126,12 +128,20 @@ def _create_other_user_with_template():
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
     checking = account_service.create_account(
-        user_id=other_user.id, account_type_id=checking_type.id,
-        name="Other Checking", anchor_balance=Decimal("500.00"),
+        account_service.AccountSpec(
+            user_id=other_user.id,
+            account_type_id=checking_type.id,
+            name="Other Checking",
+            anchor_balance=Decimal("500.00"),
+        ),
     )
     savings = account_service.create_account(
-        user_id=other_user.id, account_type_id=savings_type.id,
-        name="Other Savings", anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=other_user.id,
+            account_type_id=savings_type.id,
+            name="Other Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add_all([checking, savings])
 
@@ -1062,10 +1072,12 @@ def _create_second_user_transfer(second_user_data):
 
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     savings = account_service.create_account(
-        user_id=second_user_data["user"].id,
-        account_type_id=savings_type.id,
-        name="Other Savings",
-        anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=second_user_data["user"].id,
+            account_type_id=savings_type.id,
+            name="Other Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add(savings)
     db.session.flush()

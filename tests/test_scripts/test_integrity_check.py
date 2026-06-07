@@ -633,12 +633,13 @@ class TestDataConsistency:
 
         checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
         account2 = account_service.create_account(
-            user_id=user2.id,
-            account_type_id=checking_type.id,
-            name="User2 Checking",
-
-            anchor_balance=Decimal("0"),
-            anchor_period_id=_bootstrap2.id,
+            account_service.AccountSpec(
+                user_id=user2.id,
+                account_type_id=checking_type.id,
+                name="User2 Checking",
+                anchor_balance=Decimal("0"),
+                anchor_period_id=_bootstrap2.id,
+            ),
         )
         db.session.flush()
 

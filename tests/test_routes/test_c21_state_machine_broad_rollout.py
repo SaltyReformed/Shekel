@@ -329,11 +329,13 @@ class TestTransferShadowMarkDoneStateMachine:
             db_session.query(AccountType).filter_by(name="Savings").one()
         )
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("500.00"),
-            anchor_period_id=seed_periods_today[0].id,
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("500.00"),
+                anchor_period_id=seed_periods_today[0].id,
+            ),
         )
         db_session.add(savings)
         db_session.flush()

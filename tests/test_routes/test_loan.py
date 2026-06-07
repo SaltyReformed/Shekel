@@ -86,10 +86,12 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
 
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=principal,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=principal,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -151,10 +153,12 @@ def _create_other_loan(second_user, db_session, type_name="Auto Loan"):
     """Create a loan account owned by the second user."""
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=second_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Other Loan",
-        anchor_balance=Decimal("15000.00"),
+        account_service.AccountSpec(
+            user_id=second_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Other Loan",
+            anchor_balance=Decimal("15000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -193,11 +197,12 @@ class TestLoanDashboard:
         """Dashboard renders setup page when params don't exist yet."""
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Loan",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -272,11 +277,12 @@ class TestLoanSetup:
         """POST valid params creates LoanParams record."""
         loan_type = db.session.query(AccountType).filter_by(name=type_name).one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=f"Setup {type_name}",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name=f"Setup {type_name}",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -321,11 +327,12 @@ class TestLoanSetup:
         """Auto loan rejects term > 120 (type-specific max_term_months)."""
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Term Test Auto",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Term Test Auto",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -351,11 +358,12 @@ class TestLoanSetup:
         """Mortgage accepts term=360 (max_term_months=600)."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Long Term Mortgage",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Long Term Mortgage",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -2371,10 +2379,12 @@ class TestPaymentBreakdown:
             name="Mortgage",
         ).one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Mortgage",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Mortgage",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -2559,10 +2569,12 @@ def _create_loan_account_exact(seed_user, db_session, type_name, name,
     """Like _create_loan_account but with explicit original_principal."""
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=current_principal,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=current_principal,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -2824,10 +2836,12 @@ class TestAmortizationSchedule:
         """
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Loan",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -4060,11 +4074,12 @@ class TestRecurrenceEndDateUpdate:
 
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Loan",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.flush()
@@ -4159,10 +4174,12 @@ def _create_exact_mortgage(seed_user, db_session):
     """
     loan_type = db_session.query(AccountType).filter_by(name="Mortgage").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Exact Test Mortgage",
-        anchor_balance=Decimal("200000.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Exact Test Mortgage",
+            anchor_balance=Decimal("200000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -4463,10 +4480,12 @@ class TestRefinanceCalculator:
         """C-5.10-13: Loan with no LoanParams returns 404."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Mortgage",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Mortgage",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(acct)
         db.session.commit()
@@ -4522,10 +4541,12 @@ class TestRefinanceCalculator:
         """C-5.10-16: Loan without params shows setup page, no Refinance tab."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Mortgage",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Mortgage",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(acct)
         db.session.commit()
@@ -5240,10 +5261,12 @@ class TestLoanParamsInterestRateUpperBoundCheck:
             name="Auto Loan",
         ).one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="F-18 Raw-SQL Test Loan",
-            anchor_balance=Decimal("10000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="F-18 Raw-SQL Test Loan",
+                anchor_balance=Decimal("10000.00"),
+            ),
         )
         db_session.add(acct)
         db_session.commit()

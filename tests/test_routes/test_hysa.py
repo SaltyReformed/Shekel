@@ -26,11 +26,13 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA", anchor_period_id
     """
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=hysa_type.id,
-        name=name,
-        anchor_balance=Decimal("10000.00"),
-        anchor_period_id=anchor_period_id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=hysa_type.id,
+            name=name,
+            anchor_balance=Decimal("10000.00"),
+            anchor_period_id=anchor_period_id,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -56,10 +58,12 @@ def _create_other_hysa(second_user, db_session):
     """
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
     account = account_service.create_account(
-        user_id=second_user["user"].id,
-        account_type_id=hysa_type.id,
-        name="Other HYSA",
-        anchor_balance=Decimal("5000.00"),
+        account_service.AccountSpec(
+            user_id=second_user["user"].id,
+            account_type_id=hysa_type.id,
+            name="Other HYSA",
+            anchor_balance=Decimal("5000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()

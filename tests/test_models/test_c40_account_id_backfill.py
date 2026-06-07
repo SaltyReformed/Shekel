@@ -214,10 +214,12 @@ class TestBackfillResolution:
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("0.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("0.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -293,10 +295,12 @@ class TestBackfillResolution:
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("0.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("0.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -354,10 +358,12 @@ class TestBackfillResolution:
             db.session.query(AccountType).filter_by(name="Checking").one()
         )
         active_checking = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=checking_type.id,
-            name="Active Checking",
-            anchor_balance=Decimal("0.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Active Checking",
+                anchor_balance=Decimal("0.00"),
+            ),
             is_active=True,
         )
         db.session.add(active_checking)
@@ -419,10 +425,12 @@ class TestBackfillResolution:
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("0.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("0.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()

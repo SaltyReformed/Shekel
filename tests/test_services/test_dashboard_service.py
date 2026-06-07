@@ -766,10 +766,12 @@ class TestSavingsGoals:
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
             savings_acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Goal Account",
-                anchor_balance=Decimal("2500.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Goal Account",
+                    anchor_balance=Decimal("2500.00"),
+                ),
             )
             db.session.add(savings_acct)
             db.session.flush()
@@ -801,10 +803,12 @@ class TestSavingsGoals:
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
             rich_acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Over Goal",
-                anchor_balance=Decimal("15000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Over Goal",
+                    anchor_balance=Decimal("15000.00"),
+                ),
             )
             db.session.add(rich_acct)
             db.session.flush()

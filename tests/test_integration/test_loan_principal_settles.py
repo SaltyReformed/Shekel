@@ -166,12 +166,14 @@ def _create_mortgage(  # pylint: disable=too-many-arguments,too-many-positional-
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     account = account_service.create_account(
-        user_id=user_id,
-        account_type_id=loan_type.id,
-        name="Principal-Settle Mortgage",
-        anchor_balance=original_principal,
-        anchor_period_id=anchor_period_id,
-        notes="C14 mortgage origination",
+        account_service.AccountSpec(
+            user_id=user_id,
+            account_type_id=loan_type.id,
+            name="Principal-Settle Mortgage",
+            anchor_balance=original_principal,
+            anchor_period_id=anchor_period_id,
+            notes="C14 mortgage origination",
+        ),
     )
     db.session.flush()
 

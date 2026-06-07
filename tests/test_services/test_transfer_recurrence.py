@@ -75,10 +75,12 @@ class TestTransferGeneration:
         )
 
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("500.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("500.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -173,10 +175,12 @@ class TestTransferGeneration:
                 .one()
             )
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("500.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("500.00"),
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -272,10 +276,12 @@ class TestTransferRegeneration:
         )
 
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("500.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("500.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -461,10 +467,12 @@ class TestTransferResolveConflicts:
         )
 
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("500.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("500.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -731,10 +739,12 @@ class TestNegativePaths:
                 .one()
             )
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings NP",
-                anchor_balance=Decimal("500.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings NP",
+                    anchor_balance=Decimal("500.00"),
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -967,10 +977,12 @@ class TestShadowTransactionCreation:
         ).one()
 
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings Shadow",
-            anchor_balance=Decimal("500.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings Shadow",
+                anchor_balance=Decimal("500.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -1168,10 +1180,12 @@ class TestResolveConflictsServiceRouting:
         )
 
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings L1",
-            anchor_balance=Decimal("500.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings L1",
+                anchor_balance=Decimal("500.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -1477,10 +1491,12 @@ class TestRegenerateDeletionRoutedThroughService:
             .one()
         )
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings C34",
-            anchor_balance=Decimal("500.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings C34",
+                anchor_balance=Decimal("500.00"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()

@@ -67,12 +67,14 @@ def run_benchmark():
 
         checking = db.session.query(AccountType).filter_by(name="Checking").one()
         account = account_service.create_account(
-            user_id=user.id,
-            account_type_id=checking.id,
-            name="Bench Checking",
-            anchor_balance=Decimal("5000.00"),
-            anchor_period_id=periods[0].id,
-            notes="origination (benchmark_triggers.py)",
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=checking.id,
+                name="Bench Checking",
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=periods[0].id,
+                notes="origination (benchmark_triggers.py)",
+            ),
         )
 
         scenario = Scenario(user_id=user.id, name="Baseline", is_baseline=True)

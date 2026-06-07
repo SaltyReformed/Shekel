@@ -42,10 +42,12 @@ def _create_loan_account(seed_user):
     """
     loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Test Mortgage",
-        anchor_balance=Decimal("200000.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Test Mortgage",
+            anchor_balance=Decimal("200000.00"),
+        ),
     )
     db.session.add(account)
     db.session.flush()

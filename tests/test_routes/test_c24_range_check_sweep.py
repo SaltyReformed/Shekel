@@ -516,10 +516,12 @@ def _insert_account(seed_user, name, type_name):
         db.session.query(AccountType).filter_by(name=type_name).one()
     )
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=acct_type.id,
-        name=name,
-        anchor_balance=Decimal("0.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name=name,
+            anchor_balance=Decimal("0.00"),
+        ),
     )
     db.session.add(account)
     db.session.commit()

@@ -98,11 +98,13 @@ def _create_fixed_loan(seed_user, period_id):
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Single-Source Mortgage",
-        anchor_balance=FIXED_PRINCIPAL,
-        anchor_period_id=period_id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Single-Source Mortgage",
+            anchor_balance=FIXED_PRINCIPAL,
+            anchor_period_id=period_id,
+        ),
     )
     db.session.flush()
 
@@ -142,11 +144,13 @@ def _create_arm_loan(seed_user, period_id):
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Single-Source ARM",
-        anchor_balance=ARM_PRINCIPAL,
-        anchor_period_id=period_id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Single-Source ARM",
+            anchor_balance=ARM_PRINCIPAL,
+            anchor_period_id=period_id,
+        ),
     )
     db.session.flush()
 

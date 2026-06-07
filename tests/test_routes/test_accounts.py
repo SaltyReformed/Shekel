@@ -66,12 +66,14 @@ def _create_other_user_account():
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = account_service.create_account(
-        user_id=other_user.id,
-        account_type_id=checking_type.id,
-        name="Other Checking",
-        anchor_balance=Decimal("500.00"),
-        anchor_period_id=bootstrap.id,
-        notes="_create_other_user_account fixture",
+        account_service.AccountSpec(
+            user_id=other_user.id,
+            account_type_id=checking_type.id,
+            name="Other Checking",
+            anchor_balance=Decimal("500.00"),
+            anchor_period_id=bootstrap.id,
+            notes="_create_other_user_account fixture",
+        ),
     )
     db.session.commit()
 
@@ -191,11 +193,13 @@ class TestAccountUpdate:
             # Create a second account first.
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             second = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("0"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("0"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
             )
             db.session.add(second)
             db.session.commit()
@@ -288,11 +292,13 @@ class TestAccountArchive:
             # Create a second account and an active transfer template.
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("0"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("0"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -828,11 +834,13 @@ class TestTrueUpClearsEntries:
                 name="Savings",
             ).one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("1000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(savings)
             db.session.commit()
@@ -1032,11 +1040,13 @@ class TestAccountTypes:
             db.session.flush()
 
             using_account = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=in_use_type.id,
-                name="Custom Account",
-                anchor_balance=Decimal("100.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=in_use_type.id,
+                    name="Custom Account",
+                    anchor_balance=Decimal("100.00"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
             )
             db.session.add(using_account)
             db.session.commit()
@@ -1887,11 +1897,13 @@ class TestInterestDispatch:
         with app.app_context():
             hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                name="HSA Detail Test",
-                account_type_id=hsa_type.id,
-                anchor_balance=500,
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hsa_type.id,
+                    name="HSA Detail Test",
+                    anchor_balance=500,
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -1919,11 +1931,13 @@ class TestInterestDispatch:
         with app.app_context():
             hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                name="HSA No Params",
-                account_type_id=hsa_type.id,
-                anchor_balance=100,
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hsa_type.id,
+                    name="HSA No Params",
+                    anchor_balance=100,
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.commit()
@@ -2071,11 +2085,13 @@ class TestWizardBanner:
                 name="HYSA"
             ).one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=hysa_type.id,
-                name="Banner HYSA",
-                anchor_balance=Decimal("5000.00"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="Banner HYSA",
+                    anchor_balance=Decimal("5000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -2096,11 +2112,13 @@ class TestWizardBanner:
                 name="HYSA"
             ).one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=hysa_type.id,
-                name="No Banner HYSA",
-                anchor_balance=Decimal("5000.00"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="No Banner HYSA",
+                    anchor_balance=Decimal("5000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -2120,11 +2138,13 @@ class TestWizardBanner:
                 name="401(k)"
             ).one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=k401_type.id,
-                name="Banner 401k",
-                anchor_balance=Decimal("10000.00"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=k401_type.id,
+                    name="Banner 401k",
+                    anchor_balance=Decimal("10000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -2147,11 +2167,13 @@ class TestWizardBanner:
                 name="401(k)"
             ).one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=k401_type.id,
-                name="No Banner 401k",
-                anchor_balance=Decimal("10000.00"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=k401_type.id,
+                    name="No Banner 401k",
+                    anchor_balance=Decimal("10000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -2177,11 +2199,13 @@ class TestCheckingDetail:
         """
         checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=checking_type.id,
-            name="Detail Checking",
-            anchor_balance=Decimal(balance),
-            anchor_period_id=periods[0].id,
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Detail Checking",
+                anchor_balance=Decimal(balance),
+                anchor_period_id=periods[0].id,
+            ),
         )
         db.session.add(acct)
         return acct
@@ -2346,11 +2370,13 @@ class TestCheckingDetail:
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="My Savings",
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="My Savings",
+                    anchor_balance=Decimal("1000.00"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
             )
             db.session.add(savings)
             db.session.commit()
@@ -2762,11 +2788,13 @@ class TestCheckingDetailCanonicalProducer:
                 name="Checking",
             ).one()
             account_b = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=checking_type.id,
-                name="Second Checking",
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=current_period.id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Second Checking",
+                    anchor_balance=Decimal("1000.00"),
+                    anchor_period_id=current_period.id,
+                ),
             )
             db.session.flush()
 
@@ -2854,11 +2882,13 @@ class TestCheckingDetailCanonicalProducer:
                 name="Checking",
             ).one()
             account = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=checking_type.id,
-                name="Zero Anchor Checking",
-                anchor_balance=Decimal("0.00"),
-                anchor_period_id=periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Zero Anchor Checking",
+                    anchor_balance=Decimal("0.00"),
+                    anchor_period_id=periods[0].id,
+                ),
             )
             db.session.flush()
             db.session.commit()
@@ -2977,11 +3007,13 @@ class TestCheckingDashboardLink:
             # Create a savings account.
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="My Savings",
-                anchor_balance=Decimal("0"),
-                anchor_period_id=periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="My Savings",
+                    anchor_balance=Decimal("0"),
+                    anchor_period_id=periods[0].id,
+                ),
             )
             db.session.add(savings)
 
@@ -3221,11 +3253,13 @@ class TestAccountConcurrentMutationStaleData:
                 .filter_by(name="Checking").one()
             )
             spare = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=checking_type.id,
-                name="Spare",
-                anchor_balance=Decimal("0.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Spare",
+                    anchor_balance=Decimal("0.00"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
             )
             db.session.add(spare)
             db.session.commit()
@@ -3580,11 +3614,13 @@ class TestArchiveAndDeleteStaleData:
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
             spare = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=checking_type.id,
-                name="Archive Target",
-                anchor_balance=Decimal("0.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Archive Target",
+                    anchor_balance=Decimal("0.00"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
                 is_active=True,
             )
             db.session.add(spare)
@@ -3633,11 +3669,13 @@ class TestArchiveAndDeleteStaleData:
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
             spare = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=checking_type.id,
-                name="Delete Target",
-                anchor_balance=Decimal("0.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Delete Target",
+                    anchor_balance=Decimal("0.00"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
             )
             db.session.add(spare)
             db.session.commit()

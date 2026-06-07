@@ -191,10 +191,12 @@ def _make_savings_account(user_id):
         db.session.query(AccountType).filter_by(name="Savings").one()
     )
     acct = account_service.create_account(
-        user_id=user_id,
-        account_type_id=savings_type.id,
-        name="Optimistic-Lock Savings",
-        anchor_balance=Decimal("0.00"),
+        account_service.AccountSpec(
+            user_id=user_id,
+            account_type_id=savings_type.id,
+            name="Optimistic-Lock Savings",
+            anchor_balance=Decimal("0.00"),
+        ),
     )
     db.session.add(acct)
     db.session.commit()

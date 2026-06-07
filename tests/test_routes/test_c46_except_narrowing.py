@@ -650,10 +650,12 @@ class TestInvestmentInvalidOperationCatch:
 
             from app.models.account import Account
             account = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=retirement_type.id,
-                name="My 401k",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=retirement_type.id,
+                    name="My 401k",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(account)
             db.session.commit()

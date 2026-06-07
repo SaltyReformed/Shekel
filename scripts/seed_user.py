@@ -163,12 +163,14 @@ def seed_user():
     # path.  Decimal("0.00") is a real value per E-12, not "missing."
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account_service.create_account(
-        user_id=user.id,
-        account_type_id=checking_type.id,
-        name="Checking",
-        anchor_balance=Decimal("0.00"),
-        anchor_period_id=bootstrap_period.id,
-        notes="origination (seed_user.py)",
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=checking_type.id,
+            name="Checking",
+            anchor_balance=Decimal("0.00"),
+            anchor_period_id=bootstrap_period.id,
+            notes="origination (seed_user.py)",
+        ),
     )
     print("  + Checking account created with origination anchor history.")
 

@@ -54,11 +54,13 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = account_service.create_account(
-        user_id=other_user.id,
-        account_type_id=checking_type.id,
-        name="Other Checking",
-        anchor_balance=Decimal("500.00"),
-        anchor_period_id=other_periods[0].id,
+        account_service.AccountSpec(
+            user_id=other_user.id,
+            account_type_id=checking_type.id,
+            name="Other Checking",
+            anchor_balance=Decimal("500.00"),
+            anchor_period_id=other_periods[0].id,
+        ),
     )
     db.session.add(account)
 

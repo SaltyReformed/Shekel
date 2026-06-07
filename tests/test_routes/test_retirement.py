@@ -95,10 +95,12 @@ def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
     """Helper to create a retirement account with investment params."""
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=acct_type.id,
-        name=f"Test {type_name}",
-        anchor_balance=Decimal("10000.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name=f"Test {type_name}",
+            anchor_balance=Decimal("10000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -1410,10 +1412,12 @@ class TestReturnRateClarity:
         # Create a second account with a different rate.
         acct_type = db.session.query(AccountType).filter_by(name="Roth IRA").one()
         acct2 = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=acct_type.id,
-            name="Test Roth IRA",
-            anchor_balance=Decimal("5000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=acct_type.id,
+                name="Test Roth IRA",
+                anchor_balance=Decimal("5000.00"),
+            ),
         )
         db.session.add(acct2)
         db.session.flush()
@@ -1567,11 +1571,13 @@ class TestIsPretaxDispatch:
             db.session.flush()
 
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                name="My 403(b)",
-                account_type_id=custom_type.id,
-                anchor_balance=Decimal("50000"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="My 403(b)",
+                    anchor_balance=Decimal("50000"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -1610,11 +1616,13 @@ class TestIsPretaxDispatch:
             db.session.flush()
 
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                name="My Roth Solo 401(k)",
-                account_type_id=custom_type.id,
-                anchor_balance=Decimal("25000"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="My Roth Solo 401(k)",
+                    anchor_balance=Decimal("25000"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()

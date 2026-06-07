@@ -194,10 +194,12 @@ def _create_other_user_txn():
         name="Checking",
     ).one()
     account = account_service.create_account(
-        user_id=other_user.id,
-        account_type_id=checking_type.id,
-        name="Other Checking",
-        anchor_balance=Decimal("500.00"),
+        account_service.AccountSpec(
+            user_id=other_user.id,
+            account_type_id=checking_type.id,
+            name="Other Checking",
+            anchor_balance=Decimal("500.00"),
+        ),
     )
     db.session.add(account)
 

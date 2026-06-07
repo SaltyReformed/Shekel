@@ -23,10 +23,12 @@ def _create_investment_account(seed_user, db_session, type_name="401(k)",
     """Helper to create an investment/retirement account."""
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=acct_type.id,
-        name=name,
-        anchor_balance=Decimal(balance),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name=name,
+            anchor_balance=Decimal(balance),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -57,10 +59,12 @@ def _create_other_investment(second_user, db_session):
     """
     acct_type = db_session.query(AccountType).filter_by(name="401(k)").one()
     account = account_service.create_account(
-        user_id=second_user["user"].id,
-        account_type_id=acct_type.id,
-        name="Other 401k",
-        anchor_balance=Decimal("10000.00"),
+        account_service.AccountSpec(
+            user_id=second_user["user"].id,
+            account_type_id=acct_type.id,
+            name="Other 401k",
+            anchor_balance=Decimal("10000.00"),
+        ),
     )
     db_session.add(account)
     db_session.commit()

@@ -567,10 +567,12 @@ def _create_savings(seed_user):
     """Create a savings account for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name="CF Savings",
-        anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="CF Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add(acct)
     db.session.flush()
@@ -772,10 +774,12 @@ class TestCarryForwardShadowTransactions:
                 name="Savings"
             ).one()
             savings2 = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="CF Savings 2",
-                anchor_balance=Decimal("0"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="CF Savings 2",
+                    anchor_balance=Decimal("0"),
+                ),
             )
             db.session.add(savings2)
             db.session.flush()

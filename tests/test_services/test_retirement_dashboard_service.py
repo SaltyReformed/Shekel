@@ -475,10 +475,12 @@ class TestRetirementProjectionEntryAware:
             # consistent dated source of truth without an explicit
             # override.
             acct = account_service.create_account(
-                user_id=user.id,
-                account_type_id=inv_type.id,
-                name="C8 401k",
-                anchor_balance=Decimal("50000.00"),
+                account_service.AccountSpec(
+                    user_id=user.id,
+                    account_type_id=inv_type.id,
+                    name="C8 401k",
+                    anchor_balance=Decimal("50000.00"),
+                ),
             )
             db.session.flush()
             assert acct.current_anchor_period_id == current_period.id
@@ -578,10 +580,12 @@ def _make_retirement_account(user, name, anchor_balance):
         .filter_by(name="401(k)").one()
     )
     return account_service.create_account(
-        user_id=user.id,
-        account_type_id=inv_type.id,
-        name=name,
-        anchor_balance=anchor_balance,
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=inv_type.id,
+            name=name,
+            anchor_balance=anchor_balance,
+        ),
     )
 
 

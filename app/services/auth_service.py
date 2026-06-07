@@ -804,12 +804,14 @@ def register_user(email, password, display_name):
     # Decimal("0.00") is a real value per E-12, not "missing".
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     account_service.create_account(
-        user_id=user.id,
-        account_type_id=checking_type_id,
-        name="Checking",
-        anchor_balance=Decimal("0.00"),
-        anchor_period_id=bootstrap_period.id,
-        notes="origination (sign-up)",
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=checking_type_id,
+            name="Checking",
+            anchor_balance=Decimal("0.00"),
+            anchor_period_id=bootstrap_period.id,
+            notes="origination (sign-up)",
+        ),
     )
 
     # Create baseline scenario.

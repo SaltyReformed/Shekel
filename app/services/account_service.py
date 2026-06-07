@@ -29,6 +29,7 @@ raw SQL.
 """
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 
 from app import ref_cache
@@ -86,25 +87,23 @@ def _resolve_anchor_period_id(user_id: int) -> int:
     return earliest.id
 
 
-def create_account(
-    *,
-    user_id: int,
-    account_type_id: int,
-    name: str,
-    anchor_balance: Decimal,
-    anchor_period_id: int | None = None,
-    notes: str = "origination",
-    **extra_columns,
-) -> Account:
-    """Construct an Account row plus its matching AccountAnchorHistory.
+@dataclass(frozen=True)
+class AccountSpec:
+    """The canonical inputs for creating an account.
 
-    Performs the E-19 / CRIT-01 invariant work in one place: resolves
-    the anchor period (if not supplied), constructs the Account with
-    non-NULL anchor columns, flushes to assign ``account.id``, then
-    inserts the origination history row.  The pair is appended to
-    the current session; the caller commits.
+    Bundles the six fields every :func:`create_account` call site
+    supplies into one cohesive value object so the factory takes a
+    single argument instead of a long keyword list.  The clump is what
+    every caller co-loads: a new account is always created from an
+    owner, a type, a name, and a real-money anchor (with an optional
+    explicit anchor period and an audit-trail note).  Open-ended
+    ``Account`` columns are NOT part of this concept -- they pass
+    through :func:`create_account`'s ``**extra_columns`` instead.
 
-    Args:
+    Frozen so a constructed spec is an immutable record of one
+    creation request.
+
+    Attributes:
         user_id: ``auth.users.id`` of the account owner.
         account_type_id: ``ref.account_types.id`` of the account type.
             Caller is responsible for the C-28 ownership guard (a
@@ -124,6 +123,29 @@ def create_account(
             audit trail names the originating path.  Defaults to
             ``"origination"``; callers like the seed scripts override
             to e.g. ``"origination (seed_user.py)"``.
+    """
+
+    user_id: int
+    account_type_id: int
+    name: str
+    anchor_balance: Decimal
+    anchor_period_id: int | None = None
+    notes: str = "origination"
+
+
+def create_account(spec: AccountSpec, **extra_columns) -> Account:
+    """Construct an Account row plus its matching AccountAnchorHistory.
+
+    Performs the E-19 / CRIT-01 invariant work in one place: resolves
+    the anchor period (if not supplied), constructs the Account with
+    non-NULL anchor columns, flushes to assign ``account.id``, then
+    inserts the origination history row.  The pair is appended to
+    the current session; the caller commits.
+
+    Args:
+        spec: The :class:`AccountSpec` carrying the owner, type, name,
+            anchor balance, optional anchor period, and audit note for
+            the account to create.
         **extra_columns: Additional ``Account`` columns (e.g.
             ``sort_order``, ``is_active``).  Forwarded verbatim to
             the model constructor.
@@ -147,6 +169,7 @@ def create_account(
     # Decimal and is a common test-fixture shorthand for "exactly $0";
     # we coerce it.  ``float`` is rejected outright -- ``Decimal(0.1)``
     # introduces silent precision drift, and the project forbids it.
+    anchor_balance = spec.anchor_balance
     if isinstance(anchor_balance, float):
         raise TypeError(
             f"anchor_balance must be Decimal (got float -- floats "
@@ -160,13 +183,14 @@ def create_account(
             f"anchor_balance must be Decimal, got {type(anchor_balance).__name__}"
         )
 
+    anchor_period_id = spec.anchor_period_id
     if anchor_period_id is None:
-        anchor_period_id = _resolve_anchor_period_id(user_id)
+        anchor_period_id = _resolve_anchor_period_id(spec.user_id)
 
     account = Account(
-        user_id=user_id,
-        account_type_id=account_type_id,
-        name=name,
+        user_id=spec.user_id,
+        account_type_id=spec.account_type_id,
+        name=spec.name,
         current_anchor_balance=anchor_balance,
         current_anchor_period_id=anchor_period_id,
         **extra_columns,
@@ -182,12 +206,12 @@ def create_account(
         account_id=account.id,
         pay_period_id=anchor_period_id,
         anchor_balance=anchor_balance,
-        notes=notes,
+        notes=spec.notes,
     ))
 
     logger.info(
         "Created account %s (id=%d, user_id=%d) anchored to period %d at $%s",
-        name, account.id, user_id, anchor_period_id, anchor_balance,
+        spec.name, account.id, spec.user_id, anchor_period_id, anchor_balance,
     )
     return account
 

@@ -35,10 +35,12 @@ class TestResolveGridAccount:
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("5000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("5000.00"),
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -57,12 +59,13 @@ class TestResolveGridAccount:
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("0"),
+                ),
                 is_active=False,
-            
-                anchor_balance=Decimal("0"),
             )
             db.session.add(savings)
             db.session.flush()
@@ -81,11 +84,12 @@ class TestResolveGridAccount:
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-            
-                anchor_balance=Decimal("0"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("0"),
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -132,11 +136,12 @@ class TestResolveGridAccount:
 
             checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
             other_acct = account_service.create_account(
-                user_id=other_user.id,
-                account_type_id=checking_type.id,
-                name="Other Checking",
-
-                anchor_balance=Decimal("0"),
+                account_service.AccountSpec(
+                    user_id=other_user.id,
+                    account_type_id=checking_type.id,
+                    name="Other Checking",
+                    anchor_balance=Decimal("0"),
+                ),
             )
             db.session.add(other_acct)
             db.session.commit()
@@ -168,11 +173,12 @@ class TestResolveGridAccount:
 
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-            
-                anchor_balance=Decimal("0"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("0"),
+                ),
             )
             db.session.add(savings)
             db.session.commit()
@@ -188,12 +194,13 @@ class TestResolveGridAccount:
             # The seed checking account has sort_order=0.  Create another with sort_order=0
             # but it will have a higher id.
             checking2 = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=checking_type.id,
-                name="Checking 2",
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Checking 2",
+                    anchor_balance=Decimal("0"),
+                ),
                 sort_order=0,
-            
-                anchor_balance=Decimal("0"),
             )
             db.session.add(checking2)
             db.session.commit()
@@ -207,12 +214,13 @@ class TestResolveGridAccount:
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             inactive = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Inactive Savings",
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Inactive Savings",
+                    anchor_balance=Decimal("0"),
+                ),
                 is_active=False,
-            
-                anchor_balance=Decimal("0"),
             )
             db.session.add(inactive)
             db.session.commit()

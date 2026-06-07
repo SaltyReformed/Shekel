@@ -225,10 +225,12 @@ class TestCreateEntry:
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
             second_account = account_service.create_account(
-                user_id=user_id,
-                account_type_id=checking_type.id,
-                name="Savings",
-                anchor_balance=Decimal("500.00"),
+                account_service.AccountSpec(
+                    user_id=user_id,
+                    account_type_id=checking_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("500.00"),
+                ),
             )
             db.session.add(second_account)
             db.session.flush()

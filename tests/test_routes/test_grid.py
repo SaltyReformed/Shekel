@@ -1379,11 +1379,13 @@ class TestAccountScopedGrid:
         """Helper: create a savings account with anchor balance and period."""
         savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
         savings = account_service.create_account(
-            user_id=user.id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("5000.00"),
-            anchor_period_id=periods[0].id,
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=periods[0].id,
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -2585,10 +2587,12 @@ class TestTransactionNameRows:
             # Create a savings account for the transfer destination.
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings_acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(savings_acct)
             db.session.flush()

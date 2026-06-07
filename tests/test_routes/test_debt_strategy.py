@@ -42,10 +42,12 @@ def _create_debt_account(user, db_session, type_name, name, principal,
     """
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=principal,
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=principal,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -168,11 +170,12 @@ class TestDebtStrategyDashboard:
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         # Create account without LoanParams.
         account = account_service.create_account(
-            user_id=user.id,
-            account_type_id=loan_type.id,
-            name="No Params Loan",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -611,10 +614,12 @@ class TestDebtStrategyMetrics:
         user = seed_user["user"]
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         arm_acct = account_service.create_account(
-            user_id=user.id,
-            account_type_id=loan_type.id,
-            name="ARM Mortgage",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=loan_type.id,
+                name="ARM Mortgage",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(arm_acct)
         db.session.flush()

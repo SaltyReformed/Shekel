@@ -248,11 +248,13 @@ def _create_mortgage_account(user, periods):
         .filter_by(name="Mortgage").one()
     )
     mortgage_acct = account_service.create_account(
-        user_id=user.id,
-        account_type_id=mortgage_type.id,
-        name="Home Mortgage",
-        anchor_balance=Decimal("240000.00"),
-        anchor_period_id=periods[0].id,
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=mortgage_type.id,
+            name="Home Mortgage",
+            anchor_balance=Decimal("240000.00"),
+            anchor_period_id=periods[0].id,
+        ),
     )
     db.session.add(mortgage_acct)
     db.session.flush()
@@ -297,11 +299,13 @@ def _create_investment_account(
         .filter_by(name="401(k)").one()
     )
     inv_acct = account_service.create_account(
-        user_id=user.id,
-        account_type_id=inv_type.id,
-        name="401k",
-        anchor_balance=Decimal("10000.00"),
-        anchor_period_id=periods[0].id,
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=inv_type.id,
+            name="401k",
+            anchor_balance=Decimal("10000.00"),
+            anchor_period_id=periods[0].id,
+        ),
     )
     db.session.add(inv_acct)
     db.session.flush()
@@ -333,11 +337,13 @@ def _create_hysa_account(user, periods):
         .filter_by(name="HYSA").one()
     )
     hysa_acct = account_service.create_account(
-        user_id=user.id,
-        account_type_id=hysa_type.id,
-        name="High Yield Savings",
-        anchor_balance=Decimal("5000.00"),
-        anchor_period_id=periods[0].id,
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=hysa_type.id,
+            name="High Yield Savings",
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=periods[0].id,
+        ),
     )
     db.session.add(hysa_acct)
     db.session.flush()
@@ -632,11 +638,13 @@ class TestMortgageInterest:
             .filter_by(name="Mortgage").one()
         )
         mortgage_acct = account_service.create_account(
-            user_id=user.id,
-            account_type_id=mortgage_type.id,
-            name="New Mortgage",
-            anchor_balance=Decimal("200000.00"),
-            anchor_period_id=periods[0].id,
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=mortgage_type.id,
+                name="New Mortgage",
+                anchor_balance=Decimal("200000.00"),
+                anchor_period_id=periods[0].id,
+            ),
         )
         db.session.add(mortgage_acct)
         db.session.flush()
@@ -922,11 +930,13 @@ class TestTransfersSummary:
             .filter_by(name="Savings").one()
         )
         savings_acct = account_service.create_account(
-            user_id=user.id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("0"),
-            anchor_period_id=periods[0].id,
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("0"),
+                anchor_period_id=periods[0].id,
+            ),
         )
         db.session.add(savings_acct)
 
@@ -935,11 +945,13 @@ class TestTransfersSummary:
             .filter_by(name="Mortgage").one()
         )
         mortgage_acct = account_service.create_account(
-            user_id=user.id,
-            account_type_id=mortgage_type.id,
-            name="Mortgage",
-            anchor_balance=Decimal("200000.00"),
-            anchor_period_id=periods[0].id,
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=mortgage_type.id,
+                name="Mortgage",
+                anchor_balance=Decimal("200000.00"),
+                anchor_period_id=periods[0].id,
+            ),
         )
         db.session.add(mortgage_acct)
         db.session.flush()
@@ -989,11 +1001,13 @@ class TestTransfersSummary:
             ("Savings C", Decimal("300.00"), 2),
         ]:
             dest = account_service.create_account(
-                user_id=user.id,
-                account_type_id=savings_type.id,
-                name=name,
-                anchor_balance=ZERO,
-                anchor_period_id=periods[0].id,
+                account_service.AccountSpec(
+                    user_id=user.id,
+                    account_type_id=savings_type.id,
+                    name=name,
+                    anchor_balance=ZERO,
+                    anchor_period_id=periods[0].id,
+                ),
             )
             db.session.add(dest)
             db.session.flush()
@@ -2085,11 +2099,13 @@ class TestSavingsProgressPreAnchor:
             .filter_by(name="Roth IRA").one()
         )
         ira_acct = account_service.create_account(
-            user_id=user.id,
-            account_type_id=ira_type.id,
-            name="Roth IRA",
-            anchor_balance=Decimal("5000.00"),
-            anchor_period_id=periods[5].id,
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=ira_type.id,
+                name="Roth IRA",
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=periods[5].id,
+            ),
         )
         db.session.add(ira_acct)
         db.session.flush()
