@@ -374,7 +374,7 @@ class TestCarryForwardStatusRecheck:
             paid_status_id = ref_cache.status_id(StatusEnum.DONE)
 
             real_build = (
-                carry_forward_service._build_carry_forward_context  # pylint: disable=protected-access
+                carry_forward_service._execute._build_carry_forward_context  # pylint: disable=protected-access
             )
 
             def racing_build(*args, **kwargs):
@@ -400,7 +400,7 @@ class TestCarryForwardStatusRecheck:
                 return ctx
 
             with patch.object(
-                carry_forward_service, "_build_carry_forward_context",
+                carry_forward_service._execute, "_build_carry_forward_context",
                 side_effect=racing_build,
             ):
                 count = carry_forward_service.carry_forward_unpaid(
@@ -450,7 +450,7 @@ class TestCarryForwardStatusRecheck:
             tid = txn.id
 
             real_build = (
-                carry_forward_service._build_carry_forward_context  # pylint: disable=protected-access
+                carry_forward_service._execute._build_carry_forward_context  # pylint: disable=protected-access
             )
 
             def racing_build(*args, **kwargs):
@@ -468,7 +468,7 @@ class TestCarryForwardStatusRecheck:
                 return ctx
 
             with patch.object(
-                carry_forward_service, "_build_carry_forward_context",
+                carry_forward_service._execute, "_build_carry_forward_context",
                 side_effect=racing_build,
             ):
                 count = carry_forward_service.carry_forward_unpaid(
