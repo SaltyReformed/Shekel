@@ -8,10 +8,10 @@ Stores type-specific parameters for investment and retirement accounts
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import AccountScopedUniqueMixin, TimestampMixin
 
 
-class InvestmentParams(TimestampMixin, db.Model):
+class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     """Parameters for an investment or retirement account.
 
     ``annual_contribution_limit`` semantics (E-12 / HIGH-06 / Commit
@@ -91,21 +91,7 @@ class InvestmentParams(TimestampMixin, db.Model):
         {"schema": "budget"},
     )
 
-    # Pylint: ``duplicate-code`` -- The id-PK + per-account FK preamble
-    # below is structurally identical to the other per-account
-    # parameter/feature tables (loan_params, loan_anchor_event).  The
-    # similarity is incidental -- the FK targets, ondelete actions, and
-    # table semantics differ -- so extracting a shared base would wrongly
-    # couple unrelated tables (coding-standards rule 13).  One-sided
-    # disable: the sibling blocks stay un-disabled.
-    # pylint: disable=duplicate-code
     id = db.Column(db.Integer, primary_key=True)
-    account_id = db.Column(
-        db.Integer,
-        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-    )
     # E-11 / HIGH-06 (Commit 24): Python-side ``default`` is a
     # ``Decimal`` constructed from a string per coding-standards
     # rule "Construct Decimals from strings; ``Decimal(0.1)``

@@ -27,10 +27,10 @@ remediation_plan.md`` Section 5 OPT-1).
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import AccountScopedUniqueMixin, TimestampMixin
 
 
-class LoanParams(TimestampMixin, db.Model):
+class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     """Loan parameters linked one-to-one with an Account.
 
     Serves the amortization engine for all installment loan types
@@ -86,12 +86,6 @@ class LoanParams(TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    account_id = db.Column(
-        db.Integer,
-        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-    )
     original_principal = db.Column(db.Numeric(12, 2), nullable=False)
     # Non-authoritative seed; resolver is source of truth (E-18).
     # Demoted to nullable by migration ``c4f0a5b71e83`` (Commit 15).

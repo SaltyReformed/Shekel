@@ -89,7 +89,8 @@ class AccountScopedMixin:
     EXCLUDES tables whose ``account_id`` differs:
 
       * ``loan_params`` / ``investment_params`` -- ``unique=True`` (1:1
-        with the account), a different column.
+        with the account): the unique-FK clique, centralized in the sibling
+        :class:`AccountScopedUniqueMixin` rather than here.
       * ``transaction`` / ``transaction_template`` -- ``ON DELETE
         RESTRICT`` (a transaction must not silently vanish with its
         account).
@@ -103,6 +104,33 @@ class AccountScopedMixin:
     account_id = db.Column(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
         nullable=False,
+    )
+
+
+class AccountScopedUniqueMixin:
+    """Owning-account foreign key for 1:1 per-account satellite tables.
+
+    Adds one column:
+
+      ``account_id`` -- INTEGER NOT NULL UNIQUE, ``FK budget.accounts.id
+                        ON DELETE CASCADE``.  The ``unique`` qualifier makes
+                        the satellite row one-to-one with the account (one
+                        ``LoanParams`` / ``InvestmentParams`` per account);
+                        deleting the account cascades to the row.
+
+    The unique variant of :class:`AccountScopedMixin`.  Applied to
+    ``loan_params`` and ``investment_params``, whose ``account_id`` blocks
+    are byte-identical (NOT NULL, CASCADE, ``unique=True``, convention-
+    generated names) -- the unique-FK clique :class:`AccountScopedMixin`
+    documents deferring.  Same mid-table reorder + order-independence
+    argument as :class:`UserScopedMixin` (column order is load-bearing
+    nowhere; ``flask db migrate`` autogenerate sees no diff, and the
+    per-table unique index name derives from the table at mapping time).
+    """
+
+    account_id = db.Column(
+        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
+        nullable=False, unique=True,
     )
 
 
