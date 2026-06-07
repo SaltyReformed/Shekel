@@ -221,21 +221,33 @@ def _get_window_periods(
 ) -> list[PayPeriod]:
     """Return pay periods whose start_date falls within the window.
 
-    The window ends at the end of the current month and extends
-    back window_months months.
+    The window spans the first of the month ``window_months`` before the
+    current month, up to (but not including) the first of next month -- so
+    it covers history through the end of the current month and EXCLUDES
+    future pay periods.  The app projects ~2 years of pay periods forward;
+    without the upper bound those future, never-settled periods would
+    zero-fill into ``period_average`` (inflating the divisor) and drag
+    every category's regression slope toward "decreasing".
     """
     today = date.today()
-    # End of current month.
-    end_year = today.year
-    end_month = today.month
 
-    # Start of window: window_months before current month.
-    start_month = end_month - window_months
-    start_year = end_year
+    # Upper bound (exclusive): the first of next month.  Periods that
+    # start anywhere in the current month are included; future months are
+    # not.
+    next_month = today.month + 1
+    next_year = today.year
+    if next_month > 12:
+        next_month = 1
+        next_year += 1
+    window_end = date(next_year, next_month, 1)
+
+    # Lower bound: the first of the month ``window_months`` before the
+    # current month.
+    start_month = today.month - window_months
+    start_year = today.year
     while start_month < 1:
         start_month += 12
         start_year -= 1
-
     first_day = date(start_year, start_month, 1)
 
     return (
@@ -243,6 +255,7 @@ def _get_window_periods(
         .filter(
             PayPeriod.user_id == user_id,
             PayPeriod.start_date >= first_day,
+            PayPeriod.start_date < window_end,
         )
         .order_by(PayPeriod.period_index)
         .all()
@@ -371,7 +384,9 @@ def _trend_change(period_totals: list[Decimal], n_periods: int) -> tuple[Decimal
 
     first_predicted = intercept
     last_predicted = intercept + slope * Decimal(str(n_periods - 1))
-    pct_change = _safe_pct_change(first_predicted, last_predicted)
+    pct_change = _safe_pct_change(
+        first_predicted, last_predicted, period_totals, n_periods,
+    )
 
     return absolute_change, pct_change
 
@@ -531,15 +546,41 @@ def _compute_linear_regression(
 def _safe_pct_change(
     first_predicted: Decimal,
     last_predicted: Decimal,
+    period_totals: list[Decimal],
+    n_periods: int,
 ) -> Decimal:
     """Compute percentage change between regression endpoints.
 
-    Returns Decimal("0") if first_predicted is zero (cannot divide).
-    Rounds to 2 decimal places.
+    The base is the regression-predicted first-period value
+    (``first_predicted``).  When that base is non-positive -- a category
+    that ramps up from zero produces a negative intercept -- a percentage
+    relative to it is meaningless and SIGN-UNSTABLE: dividing the
+    (positive) change by a negative base flips the sign and mislabels a
+    rising category as decreasing.  In that case fall back to the window's
+    mean spend (``sum(period_totals) / n_periods``, always >= 0) as the
+    base, so ``pct_change`` keeps the sign of the actual change (which
+    equals the slope's sign).  This guarantees ``pct_change`` and
+    ``absolute_change`` never disagree in direction.
+
+    Returns ``Decimal("0")`` only when no positive base exists at all (an
+    all-zero window).  Rounds to 2 decimal places.
+
+    Args:
+        first_predicted: Regression value at the first period (intercept).
+        last_predicted: Regression value at the last period.
+        period_totals: Per-period spending totals; their mean is the
+            fallback base when the intercept is non-positive.
+        n_periods: Number of periods in the window.
+
+    Returns:
+        The percentage change, signed to match the slope, at 2 places.
     """
-    if first_predicted == _ZERO:
+    base = first_predicted
+    if base <= _ZERO:
+        base = sum(period_totals) / Decimal(str(n_periods)) if n_periods else _ZERO
+    if base <= _ZERO:
         return _ZERO
-    change = (last_predicted - first_predicted) / first_predicted * _HUNDRED
+    change = (last_predicted - first_predicted) / base * _HUNDRED
     return change.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
