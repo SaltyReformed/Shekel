@@ -33,6 +33,11 @@ checkers, CI); fix what a gate flags at the root, never with a bare disable.
 - **Substantive docstrings on every module, class, function**; comments explain
   *why*, not *what*. **snake_case**; organized imports (stdlib / third-party /
   local). Fix pylint findings, do not suppress them.
+- **A justified `# pylint: disable=` carries a `Pylint:` why-comment in a fixed
+  place** (gate: `shekel-disable-rationale`): definition-scoped (on a `def`/`class`)
+  -> a `` Pylint: ``rule`` (n/limit) -- why `` note in the docstring; statement-scoped
+  -> a `` # Pylint: ``rule`` -- why `` comment immediately above the line. Name every
+  disabled rule. Full spec in `docs/coding-standards.md`.
 
 ## Reference tables
 

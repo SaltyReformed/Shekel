@@ -60,8 +60,26 @@ or a real quality problem in this project.
   not decrease the current score.
 - **Fix Pylint violations, do not suppress them.** The only acceptable `# pylint: disable=` is
   for genuine false positives. When truly necessary, it must: (a) be scoped to one line,
-  (b) name the specific rule, and (c) include a comment explaining why. NEVER use
-  `# pylint: disable=all`.
+  (b) name the specific rule, and (c) carry a why-comment in the standard location and format
+  below. NEVER use `# pylint: disable=all`. (Presence, location, and rule-naming are enforced
+  by the `shekel-disable-rationale` checker.)
+- **Disable why-comment: standard location and format.** Every disable's rationale is greppable
+  via the `Pylint:` marker (`grep -rn "Pylint:" app/`). Where the rationale lives depends on
+  what the directive is attached to:
+  - **Definition-scoped** -- the directive sits on a `def`/`class` line (`too-many-*`,
+    `too-many-instance-attributes`, a per-method `no-self-argument`): put the rationale in that
+    symbol's **docstring** as a trailing note. It survives line-number drift, shows in `help()`,
+    and reads alongside the contract. Format:
+    `` Pylint: ``<rule>`` (<count>/<limit>) -- <why it is intentional/irreducible>. ``
+  - **Statement-scoped** -- the directive sits on any other line (`broad-except`,
+    `protected-access`, `import-outside-toplevel`, a module-level `too-many-lines`): put the
+    rationale in a comment **immediately above** the disabled line. Format:
+    `` # Pylint: ``<rule>`` -- <why>. ``
+
+  The rationale must name every rule the directive disables. `(<count>/<limit>)` is required for
+  the count-based smells (`too-many-*`) and omitted where there is no count (e.g.
+  `broad-except`). The `shekel-disable-rationale` checker enforces marker presence, location,
+  and rule-naming; the `(<count>/<limit>)` shape is a documented convention, not machine-checked.
 - **snake_case** for all variables, functions, modules, and database columns.
 - **No unused imports.** Fix immediately.
 - **Import organization.** Three sections separated by blank lines: standard library,
