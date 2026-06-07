@@ -16,6 +16,7 @@ Architecture:
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -120,13 +121,32 @@ def resolve_owner_id(user_id: int) -> int:
 _resolve_owner_id = resolve_owner_id
 
 
+@dataclass(frozen=True)
+class EntryDetails:
+    """The content of a purchase entry -- the add-purchase form's inputs.
+
+    The user-supplied fields of a :class:`TransactionEntry` (what was
+    bought, how much, when, and whether paid by credit card), bundled so
+    ``create_entry`` takes them as one cohesive argument distinct from the
+    routing/ownership context (the parent transaction and the acting user).
+
+    Fields:
+        amount:      Positive Decimal for the purchase amount.
+        description: Store name or brief note (1--200 chars).
+        entry_date:  Date of the purchase.
+        is_credit:   Whether this was paid with a credit card.
+    """
+
+    amount: Decimal
+    description: str
+    entry_date: date
+    is_credit: bool = False
+
+
 def create_entry(
     transaction_id: int,
     user_id: int,
-    amount: Decimal,
-    description: str,
-    entry_date: date,
-    is_credit: bool = False,
+    details: EntryDetails,
 ) -> TransactionEntry:
     """Create a new purchase entry against a transaction.
 
@@ -137,10 +157,8 @@ def create_entry(
     Args:
         transaction_id: Parent transaction ID.
         user_id: The creating user's ID (owner or companion).
-        amount: Positive Decimal for the purchase amount.
-        description: Store name or brief note (1--200 chars).
-        entry_date: Date of the purchase.
-        is_credit: Whether this was paid with a credit card.
+        details: :class:`EntryDetails` -- the purchase content (amount,
+            description, entry_date, is_credit).
 
     Returns:
         The newly created TransactionEntry (flushed, id available).
@@ -202,10 +220,10 @@ def create_entry(
     entry = TransactionEntry(
         transaction_id=transaction_id,
         user_id=user_id,
-        amount=amount,
-        description=description,
-        entry_date=entry_date,
-        is_credit=is_credit,
+        amount=details.amount,
+        description=details.description,
+        entry_date=details.entry_date,
+        is_credit=details.is_credit,
     )
     db.session.add(entry)
     db.session.flush()
@@ -217,8 +235,8 @@ def create_entry(
         owner_id=owner_id,
         transaction_id=transaction_id,
         entry_id=entry.id,
-        amount=str(amount),
-        is_credit=is_credit,
+        amount=str(details.amount),
+        is_credit=details.is_credit,
     )
 
     sync_entry_payback(transaction_id, owner_id)

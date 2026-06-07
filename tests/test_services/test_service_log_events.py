@@ -451,10 +451,12 @@ class TestEntryServiceLogging:
             entry = entry_service.create_entry(
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("12.50"),
-                description="Coffee",
-                entry_date=date(2026, 1, 15),
-                is_credit=False,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("12.50"),
+                    description="Coffee",
+                    entry_date=date(2026, 1, 15),
+                    is_credit=False,
+                ),
             )
 
         record = cap.find(EVT_ENTRY_CREATED)
@@ -472,9 +474,11 @@ class TestEntryServiceLogging:
             entry = entry_service.create_entry(
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("12.50"),
-                description="Coffee",
-                entry_date=date(2026, 1, 15),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("12.50"),
+                    description="Coffee",
+                    entry_date=date(2026, 1, 15),
+                ),
             )
             db.session.commit()
             with _LogCapture("app.services.entry_service") as cap:
@@ -495,9 +499,11 @@ class TestEntryServiceLogging:
             entry = entry_service.create_entry(
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("12.50"),
-                description="Coffee",
-                entry_date=date(2026, 1, 15),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("12.50"),
+                    description="Coffee",
+                    entry_date=date(2026, 1, 15),
+                ),
             )
             db.session.commit()
             entry_id = entry.id
@@ -514,9 +520,11 @@ class TestEntryServiceLogging:
             entry = entry_service.create_entry(
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("12.50"),
-                description="Coffee",
-                entry_date=date(2026, 1, 15),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("12.50"),
+                    description="Coffee",
+                    entry_date=date(2026, 1, 15),
+                ),
             )
             db.session.commit()
             assert entry.is_cleared is False
@@ -539,10 +547,12 @@ class TestEntryServiceLogging:
             entry_service.create_entry(
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("12.50"),
-                description="Coffee",
-                # Past-dated so it is eligible for the anchor true-up flip.
-                entry_date=date(2026, 1, 1),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("12.50"),
+                    description="Coffee",
+                    # Past-dated so it is eligible for the anchor true-up flip.
+                    entry_date=date(2026, 1, 1),
+                ),
             )
             db.session.commit()
             with _LogCapture("app.services.entry_service") as cap:
@@ -575,10 +585,12 @@ class TestEntryCreditWorkflowLogging:
                 entry1 = entry_service.create_entry(
                     transaction_id=_envelope_transaction.id,
                     user_id=seed_user["user"].id,
-                    amount=Decimal("25.00"),
-                    description="Card 1",
-                    entry_date=date(2026, 1, 10),
-                    is_credit=True,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("25.00"),
+                        description="Card 1",
+                        entry_date=date(2026, 1, 10),
+                        is_credit=True,
+                    ),
                 )
             assert cap.find(EVT_ENTRY_PAYBACK_CREATED) is not None
 
@@ -589,10 +601,12 @@ class TestEntryCreditWorkflowLogging:
                 entry_service.create_entry(
                     transaction_id=_envelope_transaction.id,
                     user_id=seed_user["user"].id,
-                    amount=Decimal("10.00"),
-                    description="Card 2",
-                    entry_date=date(2026, 1, 11),
-                    is_credit=True,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("10.00"),
+                        description="Card 2",
+                        entry_date=date(2026, 1, 11),
+                        is_credit=True,
+                    ),
                 )
             update_record = cap.find(EVT_ENTRY_PAYBACK_UPDATED)
             assert update_record is not None
@@ -900,9 +914,11 @@ class TestTransactionServiceLogging:
             entry_service.create_entry(
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("33.00"),
-                description="Test entry",
-                entry_date=date(2026, 1, 10),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("33.00"),
+                    description="Test entry",
+                    entry_date=date(2026, 1, 10),
+                ),
             )
             db.session.commit()
 

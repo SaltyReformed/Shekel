@@ -224,7 +224,7 @@ def create_entry(txn_id):
         entry_service.create_entry(
             transaction_id=txn.id,
             user_id=current_user.id,
-            **data,
+            details=entry_service.EntryDetails(**data),
         )
         db.session.commit()
     except IntegrityError as exc:
