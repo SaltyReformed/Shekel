@@ -366,14 +366,6 @@ def update_settings():
         )
         if not settings:
             settings = UserSettings(user_id=current_user.id)
-        # Pylint: ``duplicate-code`` -- validation-error re-render of the
-        # settings dashboard with the non-active sections zeroed out: the
-        # standard Flask "re-render the shared template with empty
-        # collections + 422" shape it shares with the parallel ``settings``
-        # section handler.  The context differs only by ``active_section``
-        # and the domain form_data; a shared builder would just relocate
-        # the kwargs list (coding-standards rule 13).  One-sided disable.
-        # pylint: disable=duplicate-code
         return render_template(
             "settings/dashboard.html",
             active_section="retirement",

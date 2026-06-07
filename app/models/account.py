@@ -151,12 +151,6 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
         {"schema": "budget"},
     )
 
-    # Pylint: ``duplicate-code`` -- Incidental: the per-day UTC unique-index
-    # expression coincides with loan_anchor_event (another append-only
-    # per-account history table) but the tables are unrelated in domain, so a
-    # shared base would couple them wrongly (coding-standards rule 13).
-    # One-sided disable: the loan_anchor_event block stays un-disabled.
-    # pylint: disable=duplicate-code
     id = db.Column(db.Integer, primary_key=True)
     pay_period_id = db.Column(
         db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="CASCADE"),

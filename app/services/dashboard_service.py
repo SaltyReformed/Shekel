@@ -657,14 +657,6 @@ def _sum_settled_expenses(
     ]
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
-    # Pylint: ``duplicate-code`` -- Single-period settled-expense query.
-    # ``budget_variance_service`` sums settled expenses with the same status/type
-    # predicate, but over a LIST of period_ids and returning rows for its own
-    # aggregation; this one scopes a single ``period_id`` and sums inline.  The
-    # differing period scope + return shape keep them separate rather than one
-    # over-parameterised builder (coding-standards rule 13).  One-sided
-    # ``duplicate-code`` disable (see plan.md Phase 2 notes).
-    # pylint: disable=duplicate-code
     txns = (
         db.session.query(Transaction)
         .filter(
@@ -677,7 +669,6 @@ def _sum_settled_expenses(
         )
         .all()
     )
-    # pylint: enable=duplicate-code
 
     return sum(abs(txn.effective_amount) for txn in txns)
 
