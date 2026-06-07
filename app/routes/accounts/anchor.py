@@ -199,6 +199,23 @@ def inline_anchor_display(account_id):
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
 
 
+def _anchor_conflict_response(account: Account) -> tuple[str, int]:
+    """Render the grid anchor-edit cell in conflict mode (HTTP 409).
+
+    Shared by ``true_up``'s pre-flush version-mismatch guard and its
+    post-service ``StaleDataError`` outcome so the C-17 / F-009
+    optimistic-lock conflict UX is identical for the stale-form and the
+    truly-concurrent cases.
+    """
+    return (
+        render_template(
+            "grid/_anchor_edit.html",
+            account=account, editing=False, conflict=True,
+        ),
+        409,
+    )
+
+
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
 @login_required
 @require_owner
@@ -238,13 +255,7 @@ def true_up(account_id):
             "(submitted=%d, current=%d)",
             account_id, submitted_version, account.version_id,
         )
-        return (
-            render_template(
-                "grid/_anchor_edit.html",
-                account=account, editing=False, conflict=True,
-            ),
-            409,
-        )
+        return _anchor_conflict_response(account)
 
     # Find the current pay period and set it as the anchor period.
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -268,38 +279,25 @@ def true_up(account_id):
 
     if outcome is AnchorTrueUpOutcome.STALE_CONFLICT:
         account = db.session.get(Account, account_id)
-        return (
-            render_template(
-                "grid/_anchor_edit.html",
-                account=account, editing=False, conflict=True,
-            ),
-            409,
-        )
+        return _anchor_conflict_response(account)
 
+    # DUPLICATE_SAME_DAY and COMMITTED share the success response (the
+    # updated cell + an OOB "as of" snippet + the HX-Trigger that
+    # recomputes other grid cells), so they converge on one return.
     if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
-        # F-103 idempotent success: matches the success response shape
-        # (OOB swap + HX-Trigger) so the grid behaves consistently
-        # whether the second click landed before or after the first
-        # commit.
+        # F-103 idempotent success: re-fetch the already-current row so
+        # the partial renders the committed balance.
         account = db.session.get(Account, account_id)
-        html = render_template(
-            "grid/_anchor_edit.html", account=account, editing=False,
+    else:
+        # COMMITTED: refresh the in-memory account so the partial shows
+        # the post-commit state (notably ``updated_at``, refreshed by the
+        # audit trigger server-side).
+        db.session.refresh(account)
+        logger.info(
+            "True-up: account %d set to $%s at period %d",
+            account.id, new_balance, current_period.id,
         )
-        as_of_html = (
-            f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
-            f'as of {account.updated_at.strftime("%b %-d, %Y")}'
-            f'</small>'
-        )
-        return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
 
-    db.session.refresh(account)
-
-    logger.info(
-        "True-up: account %d set to $%s at period %d",
-        account.id, new_balance, current_period.id,
-    )
-
-    # Return the updated balance display + OOB swap for the "as of" date.
     html = render_template(
         "grid/_anchor_edit.html",
         account=account,
