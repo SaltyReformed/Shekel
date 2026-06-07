@@ -259,29 +259,28 @@ def amount_to_monthly(
     )
 
     if pattern_id == once_id:
+        # One-time patterns are not a recurring monthly commitment.
         return None
 
+    # Single-return dispatch (one Decimal-or-None per pattern); the per-pattern
+    # conversion factors are documented in the module docstring above.
     if pattern_id == every_period_id:
-        return amount * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-
-    if pattern_id == every_n_id:
+        monthly = amount * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+    elif pattern_id == every_n_id:
         n = Decimal(str(interval_n or 1))
-        return amount * PAY_PERIODS_PER_YEAR / n / MONTHS_PER_YEAR
-
-    if pattern_id in (monthly_id, monthly_first_id):
-        return amount
-
-    if pattern_id == quarterly_id:
-        return amount / Decimal("3")
-
-    if pattern_id == semi_annual_id:
-        return amount / Decimal("6")
-
-    if pattern_id == annual_id:
-        return amount / MONTHS_PER_YEAR
-
-    # Unknown pattern.
-    return None
+        monthly = amount * PAY_PERIODS_PER_YEAR / n / MONTHS_PER_YEAR
+    elif pattern_id in (monthly_id, monthly_first_id):
+        monthly = amount
+    elif pattern_id == quarterly_id:
+        monthly = amount / Decimal("3")
+    elif pattern_id == semi_annual_id:
+        monthly = amount / Decimal("6")
+    elif pattern_id == annual_id:
+        monthly = amount / MONTHS_PER_YEAR
+    else:
+        # Unrecognized pattern id.
+        monthly = None
+    return monthly
 
 
 def calculate_trajectory(
