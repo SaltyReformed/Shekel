@@ -27,6 +27,20 @@ has_amortization, has_interest, is_pretax, is_liquid, icon_class,
 max_term_months)
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Typing-only imports: keep this module side-effect free at import
+    # time (see the deferred ``app.models.ref`` import inside
+    # ``seed_reference_data``).  ``from __future__ import annotations``
+    # makes every annotation a lazy string, so neither the SQLAlchemy
+    # ORM nor the model layer is imported when ``app.ref_seeds`` loads.
+    from types import ModuleType
+
+    from sqlalchemy.orm import Session
+
 # fmt: off
 # pylint: disable=line-too-long
 #
@@ -111,7 +125,7 @@ _REF_TABLE_SEEDS = (
 _ACCT_TYPE_CATEGORY_SEEDS = ("Asset", "Liability", "Retirement", "Investment")
 
 
-def seed_reference_data(session, *, verbose=False):
+def seed_reference_data(session: Session, *, verbose: bool = False) -> None:
     """Idempotently populate every ref-schema lookup table.
 
     Runs the three-step seed:
@@ -159,10 +173,35 @@ def seed_reference_data(session, *, verbose=False):
     # of ``import app.ref_seeds``, which the test bootstrap (which
     # needs to set environment variables before app import) cannot
     # tolerate.  The deferred import keeps this module side-effect
-    # free at import time.
+    # free at import time.  ``ref_models`` is threaded into the per-step
+    # helpers so they inherit the same deferral (no module-level import).
     from app.models import ref as ref_models
 
-    # ── Step 1: seed AccountTypeCategory ─────────────────────────────
+    _seed_account_type_categories(session, ref_models, verbose=verbose)
+    # Flush so the category PKs are visible to the AccountType FK in
+    # step 2.  Without this, those INSERTs would either fail with NOT
+    # NULL on ``category_id`` or pick up stale IDs from a prior session.
+    session.flush()
+    _seed_account_types(session, ref_models, verbose=verbose)
+    _seed_other_ref_tables(session, ref_models, verbose=verbose)
+
+
+def _seed_account_type_categories(
+    session: Session, ref_models: ModuleType, *, verbose: bool = False
+) -> None:
+    """Insert the 4 fixed ``AccountTypeCategory`` rows (idempotent).
+
+    Asset / Liability / Retirement / Investment.  Existing rows are
+    left untouched; only missing rows are INSERTed.  The caller must
+    ``flush`` after this step so the category PKs are visible to the
+    AccountType FK in :func:`_seed_account_types`.
+
+    Args:
+        session: SQLAlchemy session bound to the target database.
+        ref_models: The ``app.models.ref`` module (passed in to keep
+            the deferred-import discipline of the public entry point).
+        verbose: When True, prints one line per inserted row.
+    """
     for cat_name in _ACCT_TYPE_CATEGORY_SEEDS:
         existing = (
             session.query(ref_models.AccountTypeCategory)
@@ -173,19 +212,30 @@ def seed_reference_data(session, *, verbose=False):
             session.add(ref_models.AccountTypeCategory(name=cat_name))
             if verbose:
                 print(f"  + account_type_categories: {cat_name}")
-    # Flush so the category PKs are visible to the AccountType FK
-    # below.  Without this, the INSERTs below would either fail with
-    # NOT NULL on ``category_id`` or pick up stale IDs from a prior
-    # session.
-    session.flush()
 
-    # Build name -> id lookup for AccountType seeding.
+
+def _seed_account_types(
+    session: Session, ref_models: ModuleType, *, verbose: bool = False
+) -> None:
+    """Upsert the 18 ``AccountType`` rows from ``ACCT_TYPE_SEEDS``.
+
+    Missing rows are INSERTed; existing rows have their metadata
+    columns refreshed in place so a column-shape change in a future
+    migration propagates correctly on the next seed (the canonical
+    behaviour shared by the conftest, ``app/__init__.py`` and
+    ``scripts/seed_ref_tables.py`` seed paths).  Requires the
+    ``AccountTypeCategory`` rows to already be flushed -- their PKs back
+    the ``category_id`` FK.
+
+    Args:
+        session: SQLAlchemy session bound to the target database.
+        ref_models: The ``app.models.ref`` module.
+        verbose: When True, prints one line per inserted row.
+    """
     cat_lookup = {
         c.name: c.id
         for c in session.query(ref_models.AccountTypeCategory).all()
     }
-
-    # ── Step 2: seed AccountType (upsert with metadata refresh) ──────
     for (name, cat_name, has_params, has_amort,
          has_int, is_pre, is_liq, icon, max_term) in ACCT_TYPE_SEEDS:
         existing = (
@@ -208,12 +258,6 @@ def seed_reference_data(session, *, verbose=False):
             if verbose:
                 print(f"  + account_types: {name}")
         else:
-            # Refresh metadata on existing rows so a column-shape
-            # change in a future migration propagates correctly on
-            # the next seed.  The conftest version did this; the
-            # ``app/__init__.py`` version did this; the
-            # ``scripts/seed_ref_tables.py`` version did this --
-            # the behaviour is canonical.
             existing.has_parameters = has_params
             existing.has_amortization = has_amort
             existing.has_interest = has_int
@@ -222,7 +266,23 @@ def seed_reference_data(session, *, verbose=False):
             existing.icon_class = icon
             existing.max_term_months = max_term
 
-    # ── Step 3: seed every other ref table ───────────────────────────
+
+def _seed_other_ref_tables(
+    session: Session, ref_models: ModuleType, *, verbose: bool = False
+) -> None:
+    """Insert any missing rows in the non-AccountType ref tables.
+
+    Driven by ``_REF_TABLE_SEEDS``.  Existing rows are left untouched
+    (these tables carry only ``name`` plus, for ``Status``, three
+    migration-managed runtime booleans -- so there is no in-place
+    metadata refresh as in step 2).  Dict entries carry the non-name
+    columns (``Status``); every other entry is name-only.
+
+    Args:
+        session: SQLAlchemy session bound to the target database.
+        ref_models: The ``app.models.ref`` module.
+        verbose: When True, prints one line per inserted row.
+    """
     for model_attr_name, entries in _REF_TABLE_SEEDS:
         model = getattr(ref_models, model_attr_name)
         for entry in entries:
