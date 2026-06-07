@@ -30,6 +30,30 @@ from app.utils.balance_predicates import is_projected
 logger = logging.getLogger(__name__)
 
 
+def _detect_stale_anchor(periods, anchor_period_id, txn_by_period):
+    """Return True if a settled (done/received) transaction exists in any
+    post-anchor period -- a signal the anchor balance may be stale.
+
+    Settled post-anchor transactions are excluded from the balance
+    calculation (the anchor already reflects them IF it was true-up'd); but
+    if the anchor was NOT updated, the projection will be wrong, so this is
+    surfaced as an informational warning.  Operates on the already-grouped
+    in-memory ``txn_by_period`` -- it issues NO query (Transfer Invariant 5
+    binds the caller that builds ``transactions``, not this scan).
+    """
+    past_anchor = False
+    for period in periods:
+        if period.id == anchor_period_id:
+            past_anchor = True
+            continue  # Skip the anchor period itself.
+        if not past_anchor:
+            continue
+        for txn in txn_by_period.get(period.id, []):
+            if txn.status and txn.status.is_settled:
+                return True
+    return False
+
+
 def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
                        amount_overrides=None):
     """Compute projected end balances from the anchor forward.
@@ -90,26 +114,12 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
 
         balances[period.id] = running_balance
 
-    # Detect stale anchor: check for done/received transactions in
-    # post-anchor periods.  These are excluded from balance calculations
-    # (correctly -- the anchor already reflects them IF it was updated),
-    # but if the anchor was NOT updated, projections will be wrong.
-    stale_anchor_warning = False
-    past_anchor = False
-    for period in periods:
-        if period.id == anchor_period_id:
-            past_anchor = True
-            continue  # Skip the anchor period itself.
-        if not past_anchor:
-            continue
-        for txn in txn_by_period.get(period.id, []):
-            # Settled transactions in post-anchor periods suggest the
-            # anchor balance may be stale (not yet true-up'd).
-            if txn.status and txn.status.is_settled:
-                stale_anchor_warning = True
-                break
-        if stale_anchor_warning:
-            break
+    # Detect stale anchor: a settled transaction in a post-anchor period
+    # suggests the anchor balance may not reflect recent activity.  Purely
+    # informational -- it does not change the calculated balances.
+    stale_anchor_warning = _detect_stale_anchor(
+        periods, anchor_period_id, txn_by_period,
+    )
 
     return balances, stale_anchor_warning
 
