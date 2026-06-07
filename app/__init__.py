@@ -6,6 +6,7 @@ with an optional config_name ('development', 'testing', 'production')
 to get a fully wired Flask instance.
 """
 
+import importlib
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -432,56 +433,32 @@ def _register_context_processors(app):
         return {"mfa_nag_visible": not has_enabled_mfa}
 
 
-def _register_blueprints(app):
-    """Import and register all route blueprints."""
-    # pylint: disable=import-outside-toplevel
-    from app.routes.auth import auth_bp
-    from app.routes.grid import grid_bp
-    from app.routes.transactions import transactions_bp
-    from app.routes.templates import templates_bp
-    from app.routes.pay_periods import pay_periods_bp
-    from app.routes.accounts import accounts_bp
-    from app.routes.categories import categories_bp
-    from app.routes.settings import settings_bp
-    from app.routes.salary import salary_bp
-    from app.routes.transfers import transfers_bp
-    from app.routes.savings import savings_bp
-    from app.routes.loan import loan_bp
-    from app.routes.investment import investment_bp
-    from app.routes.retirement import retirement_bp
-    from app.routes.charts import charts_bp
-    from app.routes.analytics import analytics_bp
-    from app.routes.dashboard import dashboard_bp
-    from app.routes.debt_strategy import debt_strategy_bp
-    from app.routes.obligations import obligations_bp
-    from app.routes.health import health_bp
-    from app.routes.entries import entries_bp
-    from app.routes.companion import companion_bp
-    from app.routes.static_pass import static_pass_bp
+# Route modules registered (IN ORDER) by ``_register_blueprints``.  Each
+# exposes a ``<name>_bp`` Flask Blueprint.  They are imported lazily inside the
+# function (every route module imports ``app``, so a module-level import here
+# would cycle).  Registration order is significant -- URL-rule precedence and
+# error-handler resolution -- so this tuple IS the canonical order.  Adding a
+# route module is a one-line append here; a module that breaks the ``<name>_bp``
+# convention fails loud (``AttributeError`` at startup), never silently.
+_BLUEPRINT_MODULES = (
+    "auth", "grid", "transactions", "templates", "pay_periods", "accounts",
+    "categories", "settings", "salary", "transfers", "savings", "loan",
+    "investment", "retirement", "charts", "analytics", "dashboard",
+    "debt_strategy", "obligations", "health", "entries", "companion",
+    "static_pass",
+)
 
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(grid_bp)
-    app.register_blueprint(transactions_bp)
-    app.register_blueprint(templates_bp)
-    app.register_blueprint(pay_periods_bp)
-    app.register_blueprint(accounts_bp)
-    app.register_blueprint(categories_bp)
-    app.register_blueprint(settings_bp)
-    app.register_blueprint(salary_bp)
-    app.register_blueprint(transfers_bp)
-    app.register_blueprint(savings_bp)
-    app.register_blueprint(loan_bp)
-    app.register_blueprint(investment_bp)
-    app.register_blueprint(retirement_bp)
-    app.register_blueprint(charts_bp)
-    app.register_blueprint(analytics_bp)
-    app.register_blueprint(dashboard_bp)
-    app.register_blueprint(debt_strategy_bp)
-    app.register_blueprint(obligations_bp)
-    app.register_blueprint(health_bp)
-    app.register_blueprint(entries_bp)
-    app.register_blueprint(companion_bp)
-    app.register_blueprint(static_pass_bp)
+
+def _register_blueprints(app):
+    """Import (lazily) and register every route blueprint.
+
+    Lazy per-module import avoids the blueprint<->``app`` cycle that a
+    module-level import would create.  See ``_BLUEPRINT_MODULES`` for the
+    canonical registration order and the ``<name>_bp`` naming convention.
+    """
+    for name in _BLUEPRINT_MODULES:
+        module = importlib.import_module(f"app.routes.{name}")
+        app.register_blueprint(getattr(module, f"{name}_bp"))
 
 
 def _register_error_handlers(app):
