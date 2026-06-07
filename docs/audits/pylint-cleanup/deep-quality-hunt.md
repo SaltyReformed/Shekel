@@ -6,11 +6,20 @@ Adversarial multi-agent sweep of `app/` (2026-06-07) for issues the pylint-10 cl
 
 **Totals (union):** 88 unique verified findings -- 6 HIGH, 34 MED, 48 LOW; 21 corroborated by both runs.  Pre-existing OPEN items tracked elsewhere (NOT listed): P-1 (loan escrow threshold), P-3 (negative paycheck deduction).
 
-## Status (fixes applied)
+## Status / dispositions (as of 2026-06-07)
 
-- [x] **SECURITY/HIGH** Pension `salary_profile_id` IDOR -- `app/routes/retirement.py` -- FIXED `f964bad` (independent code-reviewer ACCEPT).
-- [x] **SECURITY/HIGH** `create_transaction` `category_id` IDOR -- `app/routes/transactions/create.py` -- FIXED `8e3bb82` (independent code-reviewer ACCEPT).
-- [ ] Remaining findings below, by severity.
+**FIXED (shipped on branch `fix/deep-hunt-security-idor`, each independent code-reviewer ACCEPT):**
+- [x] **SECURITY/HIGH** Pension `salary_profile_id` IDOR -- `app/routes/retirement.py` -- `f964bad`.
+- [x] **SECURITY/HIGH** `create_transaction` `category_id` IDOR -- `app/routes/transactions/create.py` -- `8e3bb82`.
+- [x] **CORRECTNESS/HIGH x2** Spending-trend sign-flip + unbounded window -- `app/services/spending_trend_service.py` -- `6555a4a` (analytics, not money-math).
+
+**CLOSED -- WON'T FIX:**
+- [~] **CORRECTNESS/HIGH** ARM recast `monthly_pi` divergence (`amortization_engine.project_forward`). Reconciled against the `docs/audits/financial_calculations` remediation: that work locks card==schedule==debt-strategy==savings-PITI for real (paid/replayed) loans (Symptom #2/#4; tests C13-1/C13-2, C15-2, C17-5). The hunt's divergence requires a synthetic state (a recorded recast sitting in the forward-projection path with no confirming replay) the locks don't cover and production does not reach. Developer decision 2026-06-07: do not touch hard-won, working, remediated ARM code.
+
+**PAUSED -- all remaining FINANCIAL-CORE findings (annual_cap, rounding-mode consistency, raise ordering, single-tax-year, escrow rounding, and the other money-math rows below).** Developer decision 2026-06-07: these overlap the prior `docs/audits/financial_calculations` audit + remediation; do NOT treat as fresh bugs. A dedicated later session must cross-reference each against `08_findings.md` + the remediation docs before any change.
+  - **annual_cap specifically:** the audit already records it as `svc-write: NONE` (`04_source_of_truth.md:1855`) -- known-unenforced -- and a SEPARATE `InvestmentParams.annual_contribution_limit` IS enforced at the investment layer (`growth_engine.py:164`). Enforcing the deduction-level cap in the paycheck calculator needs a layer/double-enforcement design decision; the earlier "enforce" lean predated this context.
+
+**NOT STARTED -- non-financial findings (held for developer review 2026-06-07):** CSV formula-injection (security), `companion_reactivate` freshness + recurrence `start_period_id` IDOR (security), dead-code/lazy cleanups, logging redaction gaps, DRY/SOLID, and test-quality gaps.
 
 **Follow-up (pre-existing, out of scope, surfaced during review):** the pension form's "-- None --" unlink option silently no-ops -- `PensionProfileUpdateSchema.normalize_inputs` strips `salary_profile_id=""` before load, so a pension's salary link cannot be cleared via the UI. Predates this work; needs its own ticket.
 
