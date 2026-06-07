@@ -10,46 +10,52 @@
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-07 (session 2) app/ is 9.93/10 with
-ZERO `duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 96 visible messages (89
-of the long-standing set -- 64 line-too-long, 18 missing-function-docstring, 5 unused-argument, 1
-too-many-lines `schemas/validation`, 1 missing-class-docstring -- PLUS 7 transient
-`shekel-disable-rationale` on the still-undisposed Tier-2 disables). 81 inline disables. Full suite
-5771 passed.**
+ZERO `duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F, and zero
+`shekel-disable-rationale` (W9903 = every disable is now standard-compliant); 89 visible messages, all
+Phase-4 mechanical or documented Phase-1 keeps (64 line-too-long, 18 missing-function-docstring, 5
+unused-argument, 1 too-many-lines `schemas/validation`, 1 missing-class-docstring). 77 inline disables.
+Full suite 5772 passed.**
 
-**This session (the disable-comment-standard + undisposed-disable workstream):**
+**This session (the disable-comment-standard + undisposed-disable workstream -- COMPLETE):**
 1. **Disable why-comment standard codified + enforced.** `docs/coding-standards.md` +
-   `.claude/rules/coding.md` now mandate a greppable `Pylint:` rationale in a fixed location:
-   a docstring note for a def/class-scoped directive, a `# Pylint:` comment immediately above for a
+   `.claude/rules/coding.md` mandate a greppable `Pylint:` rationale in a fixed location: a docstring
+   note for a def/class-scoped directive, a `# Pylint:` comment immediately above for a
    statement-scoped one, naming every disabled rule. Backed by the NEW `shekel-disable-rationale`
-   (W9903) raw checker in `tools/pylint/shekel_checkers.py` (+12 unit tests, 28 total; commit
-   `ef1a226`). Gate-wiring into `--fail-on` / the per-edit hook is DEFERRED until W9903 reaches 0
-   (so it goes green immediately) -- tracked below.
+   (W9903) raw checker in `tools/pylint/shekel_checkers.py` (+12 unit tests, 28 total; `ef1a226`).
 2. **Sweep (`9d9b457`).** All 74 settled-KEEP disables across 38 files reformatted to the standard,
    each existing rationale preserved. Trust-but-verify catches: restored `balance_resolver`'s dropped
-   "one-sided" caveat; and the 18 bare `app/__init__` factory-import disables had cycle claims
-   *derived* by the sweep -- empirically disproved (every target imports cleanly standalone) and
-   rewritten to the accurate Flask app-factory / post-seed-timing reason (the 2 genuine cycles,
-   `ref_cache`->`models.ref` and `logging_config`->`extensions`, keep their classifier-verified claims).
-3. **Tier 1 -- the 5 bare service disables DECOMPOSED (`380215d`).** Genuine decomposition, no
-   disables, behavior bit-identical, each file 10.00/10, independent quality-pass (run `wsicruuku`,
-   all 3 behavior_equivalent): `budget_variance_service` (3 tm-args/pos -> `VarianceWindow` selector +
-   `_QueryScope` 2-site-DRY), `calendar_service` (`_build_month_summary` tm-args -> `_MonthBuildContext`
-   resolved-once-reused bundle), `spending_trend_service` (`_compute_item_trend` tm-locals -> 3
-   sub-step helpers + 3 single-use inlines). 2 docstring REFINEs applied; the borderline
-   `_item_category_names` was adjudicated ACCEPT over a documented disable.
+   "one-sided" caveat; the 18 bare `app/__init__` factory-import disables had cycle claims *derived* by
+   the sweep -- empirically disproved (every target imports cleanly standalone) and rewritten to the
+   accurate Flask app-factory / post-seed-timing reason (the 2 genuine cycles, `ref_cache`->`models.ref`
+   and `logging_config`->`extensions`, keep their classifier-verified claims).
+3. **Tier 1 -- 5 bare service disables DECOMPOSED (`380215d`).** No disables, behavior bit-identical,
+   each file 10.00/10, independent quality-pass (run `wsicruuku`): `budget_variance_service`
+   (3 tm-args/pos -> `VarianceWindow` selector + `_QueryScope` 2-site-DRY), `calendar_service`
+   (`_build_month_summary` -> `_MonthBuildContext`), `spending_trend_service` (`_compute_item_trend`
+   tm-locals -> 3 sub-step helpers + inlines). 2 docstring REFINEs applied.
+4. **Tier 2 -- documented-but-unverified disables DISPOSED** (run `w0stdzktx` + code-reviewer
+   quality-passes): `salary/items` (`b137e06`) `update_raise`/`update_deduction` tm-return cleared by
+   the single-return accumulator (collapse each IntegrityError block's two same-target exits, distinct
+   messages preserved); `balance_calculator` (`4b4f47c`, FINANCIAL CORE) extracted `_layer_interest`
+   for tm-locals + KEPT the args/positional disable, reframed from the backwards "cohesive" to
+   "independent inputs / 1:1 forward of the sibling = stamp coupling" (Invariant #5 holds, byte-identical);
+   `auth.py` (`0851836`, SECURITY-CRITICAL, functions-first) reauth + mfa_confirm collapses + the
+   `_check_mfa_code` extraction (clears mfa_verify's tm-branches; the 9 irreducible distinct security
+   exits KEEP a documented tm-return disable), + a regression test for the C-26 schema-reject path.
+   **Result: W9903 -> 0; every disable in `app/` is now decomposed away or documented to the standard.**
 
-**Remaining (the 7 `shekel-disable-rationale` W9903 = the Tier-2 undisposed disables):**
-`auth.py` (module `too-many-lines` split per decision #5 + `reauth`/`mfa_verify`/`mfa_confirm`
-return/branch disables -- security-critical, do NOT rewrite from scratch), `salary/items.py`
-`update_raise`/`update_deduction` `too-many-return-statements` (the sibling form handlers were
-DECOMPOSED, not disabled -- trust-but-verify whether a shared-helper extraction beats two disables),
-and `balance_calculator.py:131` `calculate_balances_with_interest` tm-args/pos/locals (FINANCIAL CORE;
-its documented "params-object = churn" rationale was never quality-passed -- verify against the
-bundle-everywhere precedent). Then: wire `shekel-disable-rationale` as a hard gate (CI `--fail-on` +
-per-edit hook + `/standards`); the `schemas/validation.py` module split (decision #5); Phase 4
-mechanical (line-too-long + docstrings); Phase 5 (CI lock-in, scripts/). The PRIOR `account_service`,
-`carry_forward_service`, and `transfer_service.create/update` smell items recorded below are DONE
-(`53809b5`/`4f7737e`/`36a4fbb`) -- the older "4 remaining" headline they appeared in was stale.
+**Remaining (broader pylint-10 effort, beyond the undisposed-disable workstream):**
+- **Wire `shekel-disable-rationale` as a hard gate** now that W9903 = 0 (CI `--fail-on`, the per-edit
+  hook hard-block tier, `/standards`) -- the lock-in for the standard.
+- **`auth.py` package split** (decision #5; deferred from Tier-2 functions-first) -- the module
+  `too-many-lines` disable's tracked follow-up; its own dedicated, quality-passed sub-task.
+- **`schemas/validation.py` module split** (decision #5) -- the SOLE remaining *visible* design smell.
+- **Phase 4 mechanical** (64 line-too-long + 18+1 docstrings) and **Phase 5** (CI 10/10 lock-in,
+  then `scripts/`).
+
+The PRIOR `account_service`, `carry_forward_service`, and `transfer_service.create/update` smell items
+recorded below are DONE (`53809b5`/`4f7737e`/`36a4fbb`) -- the older "4 remaining" headline they
+appeared in was stale.
 The newest, **the 5 `too-many-instance-attributes` classes DISPOSED** (`98fcb91`+`cf76c2a`): a 5-analyst
 workflow + an independent reviewer found ALL FIVE -- `calendar_service` DayEntry (10/7) / MonthSummary
 (9/7), `spending_trend_service` ItemTrend (11/7) / TrendReport (8/7), `carry_forward_service`
