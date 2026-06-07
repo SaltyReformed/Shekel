@@ -10,9 +10,30 @@
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.91/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 123 visible messages.
-Full suite 5769 passed.** Phase 3 (design smells) has TWENTY files plus the form-mutation helper
-family complete. The newest, **`services/calibration_service.py` DONE** (`4e625fe`), cleared all 3
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 119 visible messages.
+Full suite 5770 passed.** Phase 3 (design smells) has TWENTY-ONE files plus the form-mutation helper
+family complete. The newest, **`app/ref_cache.py` DONE** (`ebcda36`), cleared all 3 design smells on
+`init` (`too-many-locals` 31/15, `too-many-branches` 51/12, `too-many-statements` 124/50) AND removed
+the 5 `global`-statement disables + a 15x-duplicated init-guard -- the developer-chosen from-scratch
+best design (C'-dict). The 14 module globals (13 maps + `_initialized`) became one never-rebound
+`_RefState` (`_cache`) whose 13 maps collapse into a single `enum_ids` registry keyed by enum class,
+which keeps the dataclass under `too-many-instance-attributes` with NO disable (the named-fields
+alternative would have needed one -- verified that the `ProjectedBalance`/`AmortizationRow` dataclasses
+carry exactly that disable). A frozen `_RefSpec` (derived `label`==`__tablename__` /
+`error_prefix`==`__name__`; a `query` method carrying the `account_types` built-in-only filter) +
+`_build_ref_specs` drive a single load/sweep loop; a `_require_init()` helper replaces the 15x guard.
+`init()` mutates `_cache` in place, so ZERO `global` statements remain; the file is 10.00/10 with only
+the unavoidable circular-import `import-outside-toplevel` (KEEP). Behavior byte-identical: the public
+free-function accessor API, the `unavailable` return contract (consumed by `app/__init__.py:192` to
+gate Jinja globals), and the missing-row `RuntimeError` text/order are unchanged (error prefixes/labels
+derive from the model, verified equal for all 12 incl. `RoleEnum`->`UserRole`; the single load+sweep
+loop preserves the DB query/rollback order). Independent quality-pass (fresh subagent, A-G rubric):
+ACCEPT, 0 REVERT-OVERREACH, behavior verified BYTE-IDENTICAL empirically (the reviewer built a harness
+running old-vs-new through every edge case); 1 REFINE applied -- F5, a hand-pinned regression test for
+the previously-untested bootstrap/`unavailable` path (`test(ref-cache)` `d2b1c31`). 88->83 disables
+(the 5 `global` removed); 0 new R0801; visible 123->119; smell items 33->30 (25 8-symbol + 5
+instance-attr); score 9.91 held; full suite 5769->5770 passed. Before it,
+**`services/calibration_service.py` DONE** (`4e625fe`), cleared all 3
 design smells on `derive_effective_rates` (`too-many-arguments` 6/5, `too-many-positional-arguments`
 6/5, `too-many-locals` 16/15) by bundling its 6 inputs into a new frozen `PayStubActuals` value object
 -- the cohesive pay-stub snapshot both callers co-load (the five `actual_*` mirror the
@@ -639,11 +660,11 @@ reconcile against `grep -rn "pylint: disable" app/` when working this register.)
 | app/models/loan_anchor_event.py:168 (_block_update) | unused-argument | **REMOVED** | Renamed the SQLAlchemy-mandated unused `mapper, connection` -> `_mapper, _connection` (matches `.pylintrc ignored-argument-names=_.*`); disable no longer needed. 13 immutability tests pass; pylint 10.00 on file. |
 | app/models/loan_anchor_event.py:183 (_block_delete) | unused-argument | **REMOVED** | Same rename as `_block_update`. |
 | app/services/loan_resolver.py:377 (`compute_monthly_payment_baseline`) | unused-argument | **KEEP** | Verified against code + caller: body is one expression using only `loan_params, rate_changes, as_of`; `anchor_events`/`payments` genuinely unused, kept for a deliberate uniform signature mirroring `resolve_loan`. Caller `loan_payment_service.compute_contractual_pi` passes `payments=` BY KEYWORD, so rename is unsafe; `_`-prefixing a public-API param is wrong. Disable is correct + documented. (But see problem P-1.) |
-| app/ref_cache.py:147 | global-statement | - | lazy-cache init; likely KEEP+DOC |
-| app/ref_cache.py:148 | global-statement | - | lazy-cache init; likely KEEP+DOC |
-| app/ref_cache.py:149 | global-statement | - | lazy-cache init; likely KEEP+DOC |
-| app/ref_cache.py:150 | global-statement | - | lazy-cache init; likely KEEP+DOC |
-| app/ref_cache.py:151 | global-statement | - | lazy-cache init; likely KEEP+DOC |
+| app/ref_cache.py:147 | global-statement | **REMOVED** (`ebcda36`, Phase 3) | The 5 `global` rebinds (147-151) eliminated by the C'-dict refactor: the 13 maps + `_initialized` moved onto a single never-rebound `_RefState` (`_cache`) whose dicts `init()` mutates in place, so no `global` is needed. Phase 1 classified these KEEP+DOC; Phase 3 resolved them at the root instead. |
+| app/ref_cache.py:148 | global-statement | **REMOVED** (`ebcda36`, Phase 3) | (same C'-dict refactor; see :147) |
+| app/ref_cache.py:149 | global-statement | **REMOVED** (`ebcda36`, Phase 3) | (same C'-dict refactor; see :147) |
+| app/ref_cache.py:150 | global-statement | **REMOVED** (`ebcda36`, Phase 3) | (same C'-dict refactor; see :147) |
+| app/ref_cache.py:151 | global-statement | **REMOVED** (`ebcda36`, Phase 3) | (same C'-dict refactor; see :147) |
 | app/routes/obligations.py:54 | global-statement | **REMOVED** | Replaced the hand-rolled module-global lazy-init (`_FREQUENCY_LABELS = None` + `global` + null-check) with `@functools.cache` on `_get_frequency_labels()`. Behaviorally identical (memoize once per process; pattern IDs stable across cloned test DBs). Only referenced inside this module; 18 obligations route tests pass; pylint file 9.80->9.85. |
 | app/ref_seeds.py:31 | line-too-long | - | long data literal; reflow or KEEP+DOC. NB: 6 other long lines in this file are visible (Phase 4) |
 | app/routes/accounts/__init__.py:57 | wrong-import-position | - | blueprint registration order; verify, KEEP+DOC |
@@ -1300,7 +1321,21 @@ documented disables), with commit SHA.
   the public `match_periods` + single-return accumulator -- pulled in with the `routes/templates.py`
   protected-access fix, developer-chosen broad scope). `generate_for_template`:55 tm-locals was
   already absent in the live tree (stale plan entry). File now 10.00/10, zero smell messages.
-- app/ref_cache.py: `init`:101 tm-locals/branches/statements -- `-`
+- app/ref_cache.py: **DONE** (`ebcda36`; file now 10.00/10, zero smell messages, and ZERO disables
+  except the unavoidable circular-import `import-outside-toplevel`). `init` tm-locals/branches/statements
+  (31/15, 51/12, 124/50) cleared by the developer-chosen from-scratch best design (C'-dict): the 14
+  module globals (13 maps + `_initialized`) collapsed into one never-rebound `_RefState` (`_cache`)
+  holding a single `enum_ids` registry keyed by enum class (keeps it under
+  `too-many-instance-attributes` with NO disable, where a 14-named-field dataclass would have needed
+  one) + `acct_type_meta` + `initialized`. A frozen `_RefSpec` (derived `label`/`error_prefix`; a
+  `query` method carrying the `account_types` built-in-only filter) + `_build_ref_specs` drive a single
+  load/sweep loop; a `_require_init()` helper DRYs the 15x init-guard. In-place `_cache` mutation
+  removed all 5 `global` disables. Behavior byte-identical (public free-function API, the `unavailable`
+  return contract, and `RuntimeError` text/order; the 12 error prefixes/labels derive from
+  `model.__name__`/`__tablename__`, `RoleEnum`->`UserRole` verified; single load+sweep preserves DB
+  query/rollback order). Independent quality-pass: ACCEPT, 0 REVERT-OVERREACH, equivalence verified
+  empirically; 1 REFINE applied -- F5 hand-pinned bootstrap/`unavailable` regression test (`d2b1c31`).
+  Full suite 5769->5770 passed.
 - app/ref_seeds.py: `seed_reference_data`:114 tm-locals/branches -- `-`
 - routes/accounts/detail.py: `interest_detail`:50 tm-locals; `checking_detail`:237 tm-locals -- `-`
 - services/loan_payment_service.py: `prepare_payments_for_engine`:362 tm-locals; `live_loan_transfer_amounts`:463 tm-locals -- `-`
@@ -1372,22 +1407,23 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-06 after `services/calibration_service.py` DONE
-`4e625fe`; 33 smell items remain [28 of the 8-symbol set + 5 `too-many-instance-attributes`], down
-from 36): the densest single file is now **`app/ref_cache.py`** (`init` tm-locals/branches/statements,
-3 smells). The verified-clean approach is a genuine DRY registry refactor: `init` hand-writes 12 ref
-tables 4x each (a `_load_rows` call, an `unavailable` tuple row, a `or {}` normalization, a
-near-identical enum-sweep loop). Verified before coding: nothing outside `ref_cache.py` references the
-13 module maps (every consumer imports `ref_cache` and goes through the accessor functions), and
-`model.__name__` reproduces each fatal-`RuntimeError` enum-prefix exactly (Status, TransactionType,
-AccountType, ...), so a registry-driven loop is byte-identical and keeps `test_ref_cache` green.
-**Open design fork for the developer:** clearing the 5 `global`-rebind disables via in-place
-`clear()`/`update()` leaves one irreducible `global _initialized` (Fork A: contained, accessors
-untouched, one documented disable) vs. full state-encapsulation in a single cache object that drops
-ALL globals but touches ~16 accessors and changes the storage model (Fork B; the in-code comment at
-`ref_cache.py:147-151` scoped a class out of the lint cleanup). Plan-first per the developer's cadence.
-The remaining `too-many-instance-attributes`: `calendar_service` (2),
-`spending_trend_service` (2), `carry_forward_service` (1). **Note on the retirement_gap_calculator approach (trust-but-verify
+Next by live density (re-measured 2026-06-06 after **`app/ref_cache.py` DONE** `ebcda36`; 30 smell
+items remain [25 of the 8-symbol set + 5 `too-many-instance-attributes`], down from 33): no single file
+now dominates -- the densest are all 2-smell files, led by **`app/ref_seeds.py`**
+(`seed_reference_data` tm-locals/branches), then `routes/settings.py`, `routes/obligations.py`,
+`routes/accounts/detail.py`, `services/carry_forward_service.py`, `services/tax_calculator.py`,
+`services/entry_service.py`, `services/calendar_service.py`, `services/spending_trend_service.py`,
+`services/loan_payment_service.py`. **`ref_cache.py` design fork RESOLVED:** the developer chose the
+full-encapsulation route (the plan's Fork B) over the contained Fork A, refined during planning into
+**C'-dict** -- a single never-rebound `_RefState` whose 13 maps live in one `enum_ids` registry keyed
+by enum class, rather than 13 named fields. That refinement was forced by a trust-but-verify catch: a
+14-named-field dataclass trips `too-many-instance-attributes` (verified -- `ProjectedBalance` /
+`AmortizationRow` are dataclasses that carry exactly that disable), so named fields would NOT have
+reached the zero-disable goal that motivated Fork B; the `enum_ids` collapse stays disable-free AND is
+more DRY (the registry already treats the 13 maps uniformly). In-place `_cache` mutation removed all 5
+`global` disables with NO residual `global _initialized` -- Fork A's one-disable compromise proved
+unnecessary once the flag became an object attribute. The remaining `too-many-instance-attributes`:
+`calendar_service` (2), `spending_trend_service` (2), `carry_forward_service` (1). **Note on the retirement_gap_calculator approach (trust-but-verify
 divergence from the 2026-06-06 paired-fork ratification):** the ratified plan was keyword-only +
 relocate `planned_retirement_date` to the caller (KEEP the field). Verification before coding showed
 (a) the result field is write-only -- read by NO production consumer (template, `_build_chart_data`,
@@ -1526,7 +1562,11 @@ unreviewed. Final disposition:
   (`pension_calculator:97`); measurably-heavy lazy-load (`dashboard:592` -> savings_dashboard +27);
   testability/source-patch (`recurrence_engine:736/737`); init-timing (`ref_seeds:154`).
 - **global-statement (5):** `ref_cache` cache-init (`global` rebinds the module-level maps the
-  accessors read; class encapsulation out of scope).
+  accessors read; class encapsulation out of scope). **CORRECTED in Phase 3 (`ebcda36`):** the
+  "encapsulation out of scope" rationale was a Phase-1 *lint*-scoping call; the Phase-3 quality pass
+  applied the *design* lens and the developer chose full encapsulation (C'-dict) -- the 13 maps +
+  `_initialized` moved onto a single never-rebound `_RefState` whose dicts `init()` mutates in place,
+  so all 5 `global` statements are gone with no residual disable.
 - **wrong-import-position (4):** `accounts/__init__` blueprint side-effect registration.
   **CORRECTED in Phase 3 (see Progress Log):** these 4 -- plus the 5 added later by the
   `salary/__init__` package split (`131d648`) -- were classified KEEP on a mistaken rationale that
