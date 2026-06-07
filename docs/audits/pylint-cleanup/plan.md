@@ -9,10 +9,28 @@
 > gate. Verify every finding against the code before applying. The auto-loaded
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.91/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 117 visible messages.
-Full suite 5770 passed.** Phase 3 (design smells) has TWENTY-TWO files plus the form-mutation helper
-family complete. The newest, **`app/ref_seeds.py` DONE** (`32c403a`), cleared `seed_reference_data`'s
+**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.92/10 with ZERO
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 115 visible messages.
+Full suite 5770 passed.** Phase 3 (design smells) has TWENTY-THREE files plus the form-mutation helper
+family complete. The newest, **`app/routes/settings.py` DONE** (`1d52d3f`), cleared `show`'s
+`too-many-locals` (21/15) + `update`'s `too-many-branches` (13/12) by genuine decomposition (no
+disable): `show`'s ~19 parallel template-variable locals collapse into a single
+`_empty_section_context()` default dict that per-section loaders (`_load_categories_context` /
+`_load_tax_context` / `_load_account_types_context` / `_load_security_context`; the existing
+`_load_companions_context` reused; trivial `general` stays inline) override via `context.update(...)`
+-- the ratified `routes/loan` dashboard per-section-builder precedent -- and `update`'s six identical
+`field in data and ... is not None` copies collapse into an allowlist loop over the new
+`_SIMPLE_SETTINGS_FIELDS` (the IDOR-checked `default_grid_account_id` branch stays inline). The
+`_empty_section_context()` helper ALSO dissolved the empty-defaults contract that was triplicated
+(`show` inline + `_empty_companions_context` + `_render_companions_section`'s hand-listed kwargs):
+`_empty_companions_context` removed, `_render_companions_section` routed through the shared helper --
+a genuine DRY win the quality-pass ruled justified, not scope creep. Independent 3-lens quality-pass:
+all `behavior_equivalent=yes` (all 8 sections' 19 render kwargs byte-identical per set-diff; the
+`update` loop + IDOR branch + 3 flash/redirect paths unchanged), 0 REVERT-OVERREACH, 0 REFINE; the
+lone LOW D2 note (the lifted icon list as a list) folded in as the immutable tuple
+`_ACCOUNT_TYPE_ICON_CHOICES`. 0 disables (83); 0 new R0801; visible 117->115; smell items 28->26 (21
+8-symbol + 5 instance-attr); score 9.91->9.92; full suite 5770 passed. Before it,
+**`app/ref_seeds.py` DONE** (`32c403a`), cleared `seed_reference_data`'s
 `too-many-locals` (19/15) + `too-many-branches` (15/12) by genuine decomposition into a thin
 orchestrator + three cohesive single-responsibility step helpers
 (`_seed_account_type_categories`/`_seed_account_types`/`_seed_other_ref_tables`) -- NO disable --
@@ -1377,7 +1395,25 @@ documented disables), with commit SHA.
 - routes/categories.py: `create_category`:38 tm-return -- `-`
 - routes/entries.py: `update_entry`:287 tm-return -- `-`
 - routes/obligations.py: `_next_occurrence`:102 tm-return; `summary`:324 tm-locals -- `-`
-- routes/settings.py: `show`:43 tm-locals; `update`:191 tm-branches -- `-`
+- routes/settings.py: **DONE** (`1d52d3f`; file now 10.00/10, zero messages). `show` tm-locals
+  (21/15) cleared by replacing the ~19 parallel template-variable locals with a single
+  `_empty_section_context()` default dict + per-section loaders (`_load_categories_context` /
+  `_load_tax_context` / `_load_account_types_context` / `_load_security_context`; `_load_companions_context`
+  reused; trivial `general` inline) merged via `context.update(...)` -- the `routes/loan` dashboard
+  per-section-builder precedent. `update` tm-branches (13/12) cleared by collapsing the six identical
+  `field in data and ... is not None` field-copies into an allowlist loop over the new
+  `_SIMPLE_SETTINGS_FIELDS` (the E-28/HIGH-06/PA-01 percent->fraction rationale moved onto the
+  constant comment); the IDOR-checked `default_grid_account_id` branch + its flash/redirect stay
+  inline. `_empty_section_context()` also DRYs the empty-defaults contract that was triplicated:
+  `_empty_companions_context` removed (subsumed), `_render_companions_section` routed through the
+  shared helper (quality-pass ruled this a justified DRY win, not rule-6 scope creep, since all three
+  shared the one template-default contract the smell forced). Static icon list lifted to the
+  immutable tuple `_ACCOUNT_TYPE_ICON_CHOICES`. Behavior bit-identical (all 8 sections' 19 render
+  kwargs byte-identical per set-diff; `update` field set/guard + IDOR + 3 flash/redirect paths
+  unchanged). Public show/update endpoints + URLs unchanged; no source guard. Independent 3-lens
+  quality-pass: all `behavior_equivalent=yes`, 0 REVERT-OVERREACH, 0 REFINE (the lone LOW D2 icon-list
+  note folded in as the tuple). 0 disables added (83); 0 new R0801; visible 117->115; smell items
+  28->26; score 9.91->9.92; full suite 5770 passed.
 - services/account_service.py: `create_account`:86 tm-args -- `-`
 - services/balance_calculator.py: `calculate_balances`:33 tm-branches -- `-`
 - services/entry_service.py: `create_entry`:129 tm-args/pos -- `-`
@@ -1440,11 +1476,11 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-06 after **`app/ref_seeds.py` DONE** `32c403a`; 28 smell
-items remain [23 of the 8-symbol set + 5 `too-many-instance-attributes`], down from 30): no single file
-now dominates -- the densest are all 2-smell files, led by **`routes/settings.py`** (`show` tm-locals
-+ `update` tm-branches), then `routes/obligations.py` (`_next_occurrence` tm-return + `summary`
-tm-locals), `routes/accounts/detail.py` (`interest_detail` + `checking_detail` tm-locals),
+Next by live density (re-measured 2026-06-06 after **`routes/settings.py` DONE** `1d52d3f`; 26 smell
+items remain [21 of the 8-symbol set + 5 `too-many-instance-attributes`], down from 28): no single file
+now dominates -- the densest are all 2-smell files, led by **`routes/obligations.py`**
+(`_next_occurrence` tm-return + `summary` tm-locals), then
+`routes/accounts/detail.py` (`interest_detail` + `checking_detail` tm-locals),
 `services/carry_forward_service.py` (module tm-lines + `CarryForwardPlan` instance-attr),
 `services/tax_calculator.py` (`calculate_federal_withholding` tm-args/locals),
 `services/entry_service.py` (`create_entry` tm-args/pos), `services/calendar_service.py`
@@ -1776,3 +1812,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-06 | `4e625fe` | 3 | **calibration_service.py -- bundle derive_effective_rates inputs into the frozen PayStubActuals param object -- file DONE:** all 3 design smells on `derive_effective_rates` (`too-many-arguments` 6/5, `too-many-positional-arguments` 6/5, `too-many-locals` 16/15) cleared by bundling its 6 inputs into a new frozen `PayStubActuals` value object (1 arg, ~11 locals; NO disable, behavior bit-identical -- the `Decimal(str(...))` construct-from-strings coercion preserved verbatim). The bundle is a genuine domain concept, NOT a count-dodge: the five `actual_*` mirror the `CalibrationOverride` columns (the model persists them as a cohesive unit with one CHECK constraint per field), and `taxable_income` is the route-computed federal/state divisor (gross minus pre-tax deductions -- NOT a stored column). The 2 production callers (`salary/calibration.py` `calibrate_preview` + `calibrate_confirm`) + 13 test call sites (`test_calibration_service.py` 12, `test_paycheck_calculator.py` 1) rewrapped in `PayStubActuals(...)`, every monetary value frozen byte-identical (the string-input test keeps its strings -- a call-shape change, not a rule-5 assertion change). Independent quality-pass review (fresh subagent, A-G rubric, behavior verified line-for-line incl. the string-coercion path + both `ValidationError` guards + the four rate computes): **ACCEPT, 0 REVERT-OVERREACH, 0 REFINE** -- 3 findings, all ACCEPT after verification: (A1/A2/A5) `PayStubActuals` clears the cohesive-named-concept bar -- all 6 fields are consumed together by both routes + the function, no stamp coupling, the raw+derived altitude mix is documented; (C1/F1) `frozen=True` upheld as correct for an immutable snapshot, the non-frozen sibling `DerivedRates` left untouched (out of scope, rule 6); (D2/E2) the `Decimal` field hints match the production contract -- verified `CalibrationSchema`/`CalibrationConfirmSchema` use `fields.Decimal` (validation.py:2199-2266) so production always passes Decimal, the string path is test-only defensiveness pinning the standard construct-from-strings idiom, so widening to `Decimal \| str` would misrepresent the contract. file 10.00/10, 0 smell messages; 0 disables added (88); 0 new R0801; useless-suppression 0; E/F 0. Score 9.91 held; visible 126->123; smell items 36->33 (28 8-symbol + 5 instance-attr). 236 targeted (calibration + paycheck + salary) + **full suite 5769 passed.** | 9.91/10 | 123 |
 | 2026-06-06 | `ebcda36` (+ test `d2b1c31`) | 3 | **ref_cache.py -- replace 14 module globals with a never-rebound `_RefState` + spec registry (developer-chosen C'-dict / full encapsulation) -- file DONE** (backfilled row; full detail in the status banner + the Tier-3 register): `init` tm-locals (31/15) + tm-branches (51/12) + tm-statements (124/50) cleared by a from-scratch redesign -- the 13 maps + `_initialized` collapsed onto one never-rebound `_RefState` (`_cache`) holding a single `enum_ids` registry keyed by enum class (stays under `too-many-instance-attributes` with NO disable, where 14 named fields would have needed one), driven by a frozen `_RefSpec` + `_build_ref_specs` single load/sweep loop and a `_require_init()` guard helper. In-place `_cache` mutation removed all **5 `global`-statement disables** (88->83). Behavior byte-identical (public free-function API, the `unavailable` return contract consumed by `app/__init__.py:192`, RuntimeError text/order; error prefixes/labels derive from the model, `RoleEnum`->`UserRole` verified). Independent quality-pass: ACCEPT, 0 REVERT-OVERREACH, behavior verified BYTE-IDENTICAL empirically (old-vs-new harness over every edge case); 1 REFINE applied -- F5 hand-pinned bootstrap/`unavailable` regression test (`d2b1c31`). 0 new R0801; visible 123->119; smell items 33->30 (25 8-symbol + 5 instance-attr); score 9.91 held; full suite 5769->5770 passed. | 9.91/10 | 119 |
 | 2026-06-06 | `32c403a` | 3 | **ref_seeds.py -- decompose seed_reference_data into per-step helpers (no disable) + type the signatures -- file DONE:** `seed_reference_data` tm-locals (19/15) + tm-branches (15/12) cleared by genuine decomposition into a thin orchestrator + three cohesive single-responsibility step helpers (`_seed_account_type_categories` insert-only categories / `_seed_account_types` upsert-with-metadata-refresh / `_seed_other_ref_tables` name-only+dict inserts) -- NO disable. The one load-bearing cross-step invariant -- the `session.flush()` that makes the AccountTypeCategory PKs visible to the AccountType FK -- lifted to the orchestrator altitude (between steps 1 and 2, where it cannot be missed) and restated in the helper docstrings; `ref_models` threaded into each helper so the deferred `app.models.ref` import stays in exactly one place, preserving the module's side-effect-free-at-import discipline (verified: importing `app.ref_seeds` loads the same module set as HEAD; the change is runtime-import-neutral). All 4 signatures typed via a `TYPE_CHECKING` block + `from __future__ import annotations` (`session: Session`, `ref_models: ModuleType`, `verbose: bool`, `-> None` -- lazy-string annotations, ZERO runtime imports added; mirrors the sibling `loan_resolver/_periods.py` pattern). This was the developer-chosen resolution of the quality-pass's lone LOW D2 finding (untyped signatures): add the hints via the import-free pattern rather than ACCEPT per the `ref_cache`/`growth_engine` precedent. Public `seed_reference_data(session, *, verbose=False)` + the 3 script/app call sites (`app/__init__.py:851`, `scripts/seed_ref_tables.py:36`, `scripts/build_test_template.py:226`) + conftest unchanged; no structural/source guard pins the function. Independent 3-lens quality-pass (behavior-equivalence / simplicity / right-abstraction): all `behavior_equivalent=yes` -- one reviewer proved deep-AST equality of the inlined-after body vs the original single-function body (loop interiors included) -- 0 REVERT-OVERREACH, 0 HIGH/MED. 0 disables added (83); 0 new R0801; visible 119->117; smell items 30->28 (23 8-symbol + 5 instance-attr); score 9.91 held; 38 seed-dependent targeted + **full suite 5770 passed.** | 9.91/10 | 117 |
+| 2026-06-06 | `1d52d3f` | 3 | **settings.py -- decompose show/update + single home for the dashboard context (no disable) -- file DONE:** `show` tm-locals (21/15) cleared by replacing its ~19 parallel template-variable locals with a single `_empty_section_context()` default dict + per-section loaders (`_load_categories_context` / `_load_tax_context` / `_load_account_types_context` / `_load_security_context`; `_load_companions_context` reused; trivial `general` inline) merged via `context.update(...)` -- the ratified `routes/loan` dashboard per-section-builder precedent (show -> ~3 locals). `update` tm-branches (13/12) cleared by collapsing the six identical `field in data and data[field] is not None -> settings.field = data[field]` copies into a loop over the new allowlist constant `_SIMPLE_SETTINGS_FIELDS` + `setattr` (the E-28/HIGH-06/PA-01 percent->fraction domain rationale moved onto the constant comment, `is not None` guard preserved for E-12 zero-is-a-value); the IDOR-checked `default_grid_account_id` branch + its flash/redirect stay inline. **DRY:** `_empty_section_context()` dissolved the empty-defaults contract that was triplicated (`show` inline + `_empty_companions_context` + `_render_companions_section`'s hand-listed kwargs) -- `_empty_companions_context` removed (subsumed), `_render_companions_section` routed through the shared helper so the GET render and the companion-form re-render can no longer drift; static icon list lifted to the immutable tuple `_ACCOUNT_TYPE_ICON_CHOICES`. Behavior bit-identical: all 8 sections supply byte-identical render kwargs (the template's "all keys always supplied" contract preserved -- verified by empty set-diff both directions), the `update` loop applies the same fields with the same guard, and the IDOR branch + all 3 flash/redirect paths are untouched. Independent 3-lens quality-pass (behavior-equivalence / simplicity / right-abstraction): all `behavior_equivalent=yes`, **0 REVERT-OVERREACH, 0 REFINE**; the scope of touching the non-flagged `_render_companions_section` ruled justified DRY (one shared template-default contract), and the lone LOW D2 note (the lifted icon list as a `list`) folded in as a `tuple`. (Note: a transient 7-"error" full-suite run was a `SKIP_DB_RESTART=1` stale-worker-DB `DuplicateDatabase` flake under concurrent `pylint app/` load, NOT a regression -- the errored files passed in isolation and a clean restart-first run was green.) file 10.00/10, 0 smell messages; 0 disables added (83); 0 new R0801; useless-suppression 0; E/F 0. Score 9.91->9.92; visible 117->115; smell items 28->26 (21 8-symbol + 5 instance-attr). 91 settings + companion targeted + **full suite 5770 passed.** | 9.92/10 | 115 |
