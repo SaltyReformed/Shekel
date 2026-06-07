@@ -146,7 +146,6 @@ class TestMonthDetailEmpty:
             assert result.total_expenses == Decimal("0")
             assert result.net == Decimal("0")
             assert result.day_entries == {}
-            assert result.large_transactions == []
 
 
 class TestMonthDetailIncomeAndExpenses:
@@ -354,7 +353,6 @@ class TestLargeTransactions:
             )
             entry = result.day_entries[5][0]
             assert entry.is_large is True
-            assert len(result.large_transactions) == 1
 
     def test_large_threshold_boundary(self, app, seed_user, seed_periods, db):
         """Txn exactly $500 with threshold=500 is flagged (>= not >)."""
@@ -389,7 +387,6 @@ class TestLargeTransactions:
                 large_threshold=500,
             )
             assert result.day_entries[5][0].is_large is False
-            assert len(result.large_transactions) == 0
 
 
 class TestIncomeExpenseClassification:

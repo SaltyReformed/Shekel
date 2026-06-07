@@ -94,7 +94,6 @@ class MonthSummary:
     net: Decimal
     projected_end_balance: Decimal
     is_third_paycheck_month: bool
-    large_transactions: list[DayEntry]
     day_entries: dict[int, list[DayEntry]]
     paycheck_days: list[int]
 
@@ -413,10 +412,6 @@ def _build_month_summary(  # pylint: disable=too-many-arguments,too-many-positio
         transactions, year, month, large_threshold,
     )
 
-    large_txns = [
-        e for entries in day_entries.values() for e in entries if e.is_large
-    ]
-
     end_balance = _compute_month_end_balance(account, year, month, scenario)
     third_paycheck_months = _detect_third_paycheck_months(periods, year)
 
@@ -434,7 +429,6 @@ def _build_month_summary(  # pylint: disable=too-many-arguments,too-many-positio
         net=total_income - total_expenses,
         projected_end_balance=end_balance,
         is_third_paycheck_month=month in third_paycheck_months,
-        large_transactions=large_txns,
         day_entries=day_entries,
         paycheck_days=paycheck_days,
     )

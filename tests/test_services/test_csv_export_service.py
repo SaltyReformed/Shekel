@@ -50,7 +50,6 @@ class FakeMonthSummary:
     net: Decimal = Decimal("1000.00")
     projected_end_balance: Decimal = Decimal("5000.00")
     is_third_paycheck_month: bool = False
-    large_transactions: list = field(default_factory=list)
     day_entries: dict = field(default_factory=dict)
     paycheck_days: list = field(default_factory=list)
 
