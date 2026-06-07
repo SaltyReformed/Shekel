@@ -483,7 +483,8 @@ full suite green.
 **B4-F2 -- `_resolve_owned_fks` ACCEPTED as-is (will NOT re-key):** the reviewer flagged the
 model-class-keyed return as a "silent-overwrite trap if two FKs share a model." Verified: every spec
 is ownership-checked in the loop regardless of dict collisions, so the 404 IDOR gate is **never**
-weakened -- a collision touches only the convenience map, and all 6 call sites use distinct models.
+weakened -- a collision touches only the convenience map, and all call sites use distinct models
+(5 sites after the transactions package split: create.py x2 + forms.py x3; re-audit run w1a7fwxl3).
 Re-keying to a positional list would trade that hypothetical, no-security-impact footgun for
 *reorder-misassignment* fragility (a broader risk for an IDOR probe), and the model-keyed `objs[Model]`
 access is self-documenting and reorder-robust. A guard against duplicate models would be rule-13
@@ -494,3 +495,38 @@ B4 call to revisit.**
 **B7 -- 4 test-gaps closed (`f1cab18`):** 11 hand-computed value-pinning tests; each gap verified to be
 genuinely uncovered before writing. See the commit body and register rows for the arithmetic. Full
 suite 5766 = 5755 baseline + 11.
+
+## Disable re-audit (run `w1a7fwxl3`, 2026-06-07)
+
+Trust-but-verify pass over EVERY live disable + the ACCEPT register, each claim re-checked against
+the actual code (44 independent verifiers + an authoritative R0801 cluster map built by stripping all
+`duplicate-code` disables at once and re-running pylint).
+
+**HELD (the plan's dispositions are sound):** all 11 `too-many-instance-attributes` disables are
+genuinely flat-irreducible (no consumer reads a sub-group as a unit); 4/6 function disables hold
+(`auth.mfa_verify`, `investment_projection`, `projection_inputs`, `balance_calculator` -- bundling
+their independent inputs would be stamp coupling); ~13 of the 23 `duplicate-code` disables are
+genuinely incidental + correctly one-sided; and 80/80 ACCEPT register rows still match the code (one
+stale count fixed: B4-F2 `_resolve_owned_fks` "6 call sites" -> 5 after the transactions split).
+
+**CAUGHT + FIXED NOW:** **four `duplicate-code` disables were DEAD** -- their R0801 cluster no longer
+fires because the sibling code moved with the Phase-3 package splits, and cross-file R0801 (anchored
+at `logging_config:1`) is invisible to `useless-suppression`, so they sat as silent cargo-cult.
+Removed `dashboard_service:667`, `account:159`, `accounts/detail:121`, `retirement:376` (verified:
+stripping all four leaves R0801 at 0; disables 77 -> 73). `investment:154` was checked and is LIVE
+(block-scoped over the `loan.payment_transfer` clusters at 216/226).
+
+**CAUGHT, TEED UP (real DRY behind an "incidental" disable -- developer decision, some financial
+core):** four clusters are the SAME operation, not incidental, and several rationales name the WRONG
+R0801 sibling (the splits re-paired them):
+- `investment_params` <-> `loan_params`: byte-identical unique-account FK; the deferred unique-FK
+  clique `AccountScopedMixin` (mixins.py:89-92) explicitly left -> introduce `AccountScopedUniqueMixin`.
+- `balance_calculator` <-> `balance_resolver`: the 3-bucket entry partition + reservation formula
+  (financial core) -> shared helper.
+- the shadow-income / monthly-attribution query family `budget_variance` / `calendar_service` /
+  `loan_payment_service` / `year_end._balances` -> shared query builder(s); their rationales cite
+  `budget_variance` but the real siblings differ.
+- `debt_strategy` <-> `year_end._balances`: the LoanParams-load -> `resolve_loan` preamble -> helper.
+- `growth_engine.project_balance`: 4 of its 8 args are field-unpacks of `InvestmentInputs` at all 6
+  callers; a bundle exists, but `InvestmentInputs` imports `growth_engine` (cycle), which may still
+  justify the disable -- needs a judgment call.
