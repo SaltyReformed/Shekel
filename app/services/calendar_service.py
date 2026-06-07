@@ -181,10 +181,12 @@ def get_month_detail(
         account.id, scenario.id, user_id, first_day, last_day,
     )
 
-    return _build_month_summary(
-        year, month, account, periods, transactions,
-        large_threshold, scenario,
+    ctx = _MonthBuildContext(
+        year=year, account=account, periods=periods,
+        transactions=transactions, large_threshold=large_threshold,
+        scenario=scenario,
     )
+    return _build_month_summary(month, ctx)
 
 
 def get_year_overview(
@@ -228,13 +230,12 @@ def get_year_overview(
         account.id, scenario.id, user_id, first_day, last_day,
     )
 
-    months = [
-        _build_month_summary(
-            year, m, account, periods, all_txns,
-            large_threshold, scenario,
-        )
-        for m in range(1, 13)
-    ]
+    ctx = _MonthBuildContext(
+        year=year, account=account, periods=periods,
+        transactions=all_txns, large_threshold=large_threshold,
+        scenario=scenario,
+    )
+    months = [_build_month_summary(m, ctx) for m in range(1, 13)]
 
     annual_income = sum(ms.total_income for ms in months)
     annual_expenses = sum(ms.total_expenses for ms in months)
@@ -406,48 +407,56 @@ def _assign_transactions_to_days(
     return dict(day_map), total_income, total_expenses
 
 
-def _build_month_summary(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    year: int,
-    month: int,
-    account: Account,
-    periods: list[PayPeriod],
-    transactions: list[Transaction],
-    large_threshold: int,
-    scenario: Scenario,
-) -> MonthSummary:
-    """Assemble a MonthSummary from pre-queried data.
+@dataclass(frozen=True)
+class _MonthBuildContext:
+    """The pre-queried data and config shared across a year's month summaries.
+
+    ``get_year_overview`` resolves the account, scenario, overlapping
+    periods, and transaction set once and builds twelve summaries from
+    them, varying only the month (``get_month_detail`` builds one).
+    Bundling these into the context the build shares keeps
+    :func:`_build_month_summary` a two-argument call and makes that
+    resolved-once-reused relationship explicit.
+    """
+
+    year: int
+    account: Account
+    periods: list[PayPeriod]
+    transactions: list[Transaction]
+    large_threshold: int
+    scenario: Scenario
+
+
+def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
+    """Assemble a MonthSummary for one month from pre-queried context.
 
     Assigns each transaction to a calendar day via _get_display_day,
     deduplicating by transaction ID to prevent double-counting when
     periods overlap month boundaries.
 
     Args:
-        year: Target calendar year.
         month: Target calendar month (1-12).
-        account: The account being summarized.
-        periods: All periods overlapping the date range.
-        transactions: All transactions across those periods.
-        large_threshold: Amount threshold for large flags.
-        scenario: The baseline scenario.
+        ctx: The year/account/periods/transactions/threshold/scenario
+            shared across the build (see :class:`_MonthBuildContext`).
 
     Returns:
         A MonthSummary for the target month.
     """
     day_entries, total_income, total_expenses = _assign_transactions_to_days(
-        transactions, year, month, large_threshold,
+        ctx.transactions, ctx.year, month, ctx.large_threshold,
     )
 
-    end_balance = _compute_month_end_balance(account, year, month, scenario)
-    third_paycheck_months = _detect_third_paycheck_months(periods, year)
+    end_balance = _compute_month_end_balance(ctx.account, ctx.year, month, ctx.scenario)
+    third_paycheck_months = _detect_third_paycheck_months(ctx.periods, ctx.year)
 
     paycheck_days = sorted({
         p.start_date.day
-        for p in periods
-        if p.start_date.year == year and p.start_date.month == month
+        for p in ctx.periods
+        if p.start_date.year == ctx.year and p.start_date.month == month
     })
 
     return MonthSummary(
-        year=year,
+        year=ctx.year,
         month=month,
         total_income=total_income,
         total_expenses=total_expenses,

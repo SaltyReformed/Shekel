@@ -248,14 +248,11 @@ def variance_tab():
     )
 
     window_type, period_id, month, year = _resolve_variance_params(today)
-
-    report = budget_variance_service.compute_variance(
-        user_id=current_user.id,
-        window_type=window_type,
-        period_id=period_id,
-        month=month,
-        year=year,
+    window = budget_variance_service.VarianceWindow(
+        window_type=window_type, period_id=period_id, month=month, year=year,
     )
+
+    report = budget_variance_service.compute_variance(current_user.id, window)
 
     if request.args.get("format") == "csv":
         fname = _variance_csv_filename(window_type, period_id, month, year)

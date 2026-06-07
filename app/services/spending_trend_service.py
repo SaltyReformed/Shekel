@@ -324,7 +324,59 @@ def _build_item_trends(
     return items
 
 
-def _compute_item_trend(  # pylint: disable=too-many-locals
+def _item_category_names(txns: list[Transaction]) -> tuple[str, str]:
+    """Resolve the (group_name, item_name) labels for a category's rows.
+
+    Read from the first transaction's category, falling back to
+    "Uncategorized" for rows with no category.
+    """
+    sample = txns[0]
+    group_name = sample.category.group_name if sample.category else "Uncategorized"
+    item_name = sample.category.item_name if sample.category else "Uncategorized"
+    return group_name, item_name
+
+
+def _period_totals_for_item(
+    txns: list[Transaction],
+    period_index_map: dict[int, int],
+    n_periods: int,
+) -> tuple[list[Decimal], int]:
+    """Bucket a category's transactions into per-period spending totals.
+
+    Returns the per-period totals (zero-filled for periods with no
+    activity) and the count of distinct periods that had a data point.
+    """
+    period_totals: list[Decimal] = [_ZERO] * n_periods
+    data_point_periods: set[int] = set()
+
+    for txn in txns:
+        idx = period_index_map.get(txn.pay_period_id)
+        if idx is None:
+            continue
+        period_totals[idx] += abs(txn.effective_amount)
+        data_point_periods.add(idx)
+
+    return period_totals, len(data_point_periods)
+
+
+def _trend_change(period_totals: list[Decimal], n_periods: int) -> tuple[Decimal, Decimal]:
+    """Derive the absolute and percentage change across the window.
+
+    Runs linear regression over the per-period totals: ``absolute_change``
+    is the per-period slope; ``pct_change`` is the regression-predicted
+    change from the first to the last period.
+    """
+    slope, intercept = _compute_linear_regression(period_totals)
+    absolute_change = slope.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+
+    first_predicted = intercept
+    last_predicted = intercept + slope * Decimal(str(n_periods - 1))
+    pct_change = _safe_pct_change(first_predicted, last_predicted)
+
+    return absolute_change, pct_change
+
+
+def _compute_item_trend(
     cat_id: int,
     txns: list[Transaction],
     period_index_map: dict[int, int],
@@ -337,54 +389,32 @@ def _compute_item_trend(  # pylint: disable=too-many-locals
     regression, and derives direction/flagging.  Also computes
     avg_days_before_due from the days_paid_before_due property.
     """
-    # Metadata from first transaction with a category.
-    sample = txns[0]
-    group_name = sample.category.group_name if sample.category else "Uncategorized"
-    item_name = sample.category.item_name if sample.category else "Uncategorized"
+    group_name, item_name = _item_category_names(txns)
 
-    # Per-period totals -- initialize all periods to zero.
-    period_totals: list[Decimal] = [_ZERO] * n_periods
-    data_point_periods: set[int] = set()
-
-    for txn in txns:
-        idx = period_index_map.get(txn.pay_period_id)
-        if idx is None:
-            continue
-        period_totals[idx] += abs(txn.effective_amount)
-        data_point_periods.add(idx)
+    period_totals, data_points = _period_totals_for_item(
+        txns, period_index_map, n_periods,
+    )
 
     total_spending = sum(period_totals)
     period_average = (
         total_spending / Decimal(str(n_periods))
     ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP) if n_periods > 0 else _ZERO
 
-    # Linear regression.
-    slope, intercept = _compute_linear_regression(period_totals)
-    absolute_change = slope.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
-
-    # Percentage change over the window.
-    first_predicted = intercept
-    last_predicted = intercept + slope * Decimal(str(n_periods - 1))
-    pct_change = _safe_pct_change(first_predicted, last_predicted)
-
-    direction = _direction_from_pct(pct_change)
-    is_flagged = abs(pct_change) >= threshold * _HUNDRED
-
-    # OP-3: average days before due date.
-    avg_days = _compute_avg_days_before_due(txns)
+    absolute_change, pct_change = _trend_change(period_totals, n_periods)
 
     return ItemTrend(
         category_id=cat_id,
         group_name=group_name,
         item_name=item_name,
         period_average=period_average,
-        trend_direction=direction,
+        trend_direction=_direction_from_pct(pct_change),
         pct_change=pct_change,
         absolute_change=absolute_change,
-        is_flagged=is_flagged,
-        data_points=len(data_point_periods),
+        is_flagged=abs(pct_change) >= threshold * _HUNDRED,
+        data_points=data_points,
         total_spending=total_spending,
-        avg_days_before_due=avg_days,
+        # OP-3: average days a bill is paid before its due date.
+        avg_days_before_due=_compute_avg_days_before_due(txns),
     )
 
 
