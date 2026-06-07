@@ -99,6 +99,29 @@ def pension_list():
     )
 
 
+def _require_owned_salary_profile(data):
+    """Abort 404 if the payload links a salary profile the user does not own.
+
+    The pension form's salary-profile dropdown lists only the current
+    user's own active profiles, so a foreign or non-existent
+    ``salary_profile_id`` in the submission is a forged FK (IDOR) that
+    would otherwise read another user's salary and raise history into
+    this user's retirement projection.  ``get_or_404`` verifies ownership
+    and emits the cross-user denial audit event; its ``None`` result maps
+    to a 404 per the security response rule (404 for both "not found" and
+    "not yours").  An absent or ``None`` id means "no pension-salary
+    link" and is left to the normal create/update path.
+
+    Args:
+        data: The schema-loaded form payload.
+    """
+    salary_profile_id = data.get("salary_profile_id")
+    if salary_profile_id is None:
+        return
+    if get_or_404(SalaryProfile, salary_profile_id) is None:
+        abort(404)
+
+
 @retirement_bp.route("/retirement/pension", methods=["POST"])
 @login_required
 @require_owner
@@ -126,6 +149,7 @@ def create_pension():
         ), 422
 
     data = _pension_create_schema.load(request.form)
+    _require_owned_salary_profile(data)
 
     # F-17 / Commit 12: percent-to-fraction conversion happens in the
     # schema's @pre_load; ``benefit_multiplier`` arrives already
@@ -221,6 +245,7 @@ def update_pension(pension_id):
         ), 422
 
     data = _pension_update_schema.load(request.form)
+    _require_owned_salary_profile(data)
 
     # F-17 / Commit 12: schema's @pre_load owns the percent-to-fraction
     # conversion; ``benefit_multiplier`` arrives already as a fraction.
