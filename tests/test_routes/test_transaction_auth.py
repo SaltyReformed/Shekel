@@ -287,6 +287,41 @@ class TestCreateOwnership:
             })
             assert resp.status_code == 404
 
+    def test_create_with_other_users_category(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """POST /transactions rejects another user's category_id.
+
+        ``category_id`` is required on TransactionCreateSchema and is
+        persisted via ``Transaction(**data)``, so the ad-hoc create must
+        ownership-check it (mirroring create_inline): a foreign category
+        otherwise satisfies the FK constraint (the row exists) and links
+        the victim's category onto the attacker's transaction.
+        """
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods_today)
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+
+            resp = auth_client.post("/transactions", data={
+                "name": "Sneaky Category",
+                "estimated_amount": "100.00",
+                "pay_period_id": seed_periods_today[0].id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": other["category"].id,  # Other user's category
+                "transaction_type_id": expense_type.id,
+                "account_id": str(seed_user["account"].id),
+            })
+            assert resp.status_code == 404
+
+            # No transaction should have been created referencing the
+            # other user's category.
+            txn = db.session.query(Transaction).filter_by(
+                name="Sneaky Category"
+            ).first()
+            assert txn is None
+
     def test_create_with_other_users_scenario_id(
         self, app, auth_client, seed_user, seed_periods_today
     ):
@@ -392,7 +427,17 @@ class TestCreateOwnership:
     def test_create_with_nonexistent_category_id(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions with nonexistent category_id returns 400."""
+        """POST /transactions with nonexistent category_id returns 404.
+
+        Behaviour corrected alongside the create_transaction category
+        ownership fix: category_id is now resolved through the same
+        ``_resolve_owned_fks`` IDOR probe as the other user-scoped FKs, so
+        a nonexistent (or foreign) category returns 404 -- the security
+        rule's "404 for both not-found and not-yours" -- consistent with
+        the scenario_id / pay_period_id / account_id cases above and with
+        create_inline.  (Previously it fell through to the IntegrityError
+        handler and returned 400, a side effect of the missing check.)
+        """
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
@@ -407,7 +452,8 @@ class TestCreateOwnership:
                 "transaction_type_id": expense_type.id,
                 "account_id": str(seed_user["account"].id),
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 404
+            assert b"Category not found" in resp.data
 
             count = db.session.query(Transaction).filter_by(
                 name="Ghost Category"

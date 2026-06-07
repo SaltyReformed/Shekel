@@ -96,7 +96,10 @@ def create_inline():
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
-    logger.info("user_id=%d created inline transaction: %s (id=%d)", current_user.id, txn.name, txn.id)
+    logger.info(
+        "user_id=%d created inline transaction: %s (id=%d)",
+        current_user.id, txn.name, txn.id,
+    )
 
     # Return the cell wrapped in a div with a unique ID, matching
     # the pattern used in grid.html for existing transactions.
@@ -116,10 +119,15 @@ def create_transaction():
     data = _create_schema.load(request.form)
 
     # Verify every user-scoped FK belongs to the current user before any
-    # write (same IDOR probe as create_inline; this route carries no
-    # category).  None of the resolved rows are needed afterward.
+    # write (same IDOR probe as create_inline).  ``category_id`` is a
+    # required field on TransactionCreateSchema and is persisted via
+    # ``Transaction(**data)``, so it must be ownership-checked here too:
+    # a foreign category_id otherwise satisfies the FK constraint (the row
+    # exists) and links another user's category onto this transaction.
+    # None of the resolved rows are needed afterward.
     _, err = _resolve_owned_fks([
         (Account, data["account_id"], "Not found"),
+        (Category, data["category_id"], "Category not found"),
         (PayPeriod, data["pay_period_id"], "Pay period not found"),
         (Scenario, data["scenario_id"], "Not found"),
     ])
@@ -137,7 +145,10 @@ def create_transaction():
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
-    logger.info("user_id=%d created ad-hoc transaction: %s (id=%d)", current_user.id, txn.name, txn.id)
+    logger.info(
+        "user_id=%d created ad-hoc transaction: %s (id=%d)",
+        current_user.id, txn.name, txn.id,
+    )
 
     response = _render_cell(txn)
     return response, 201, {"HX-Trigger": "balanceChanged"}
