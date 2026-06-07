@@ -241,6 +241,39 @@ def create_entry(txn_id):
     return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
+def _execute_entry_update(entry_id, txn, data):
+    """Run the entry update + commit, translating service outcomes to HTTP.
+
+    ``StaleDataError`` at flush -> 409 conflict entry list; the C-19
+    ``IntegrityError`` backstop -> the idempotent credit-payback response;
+    ``NotFoundError`` / ``ValidationError`` -> 400.  On success, the
+    refreshed entry list + a ``balanceChanged`` HX-Trigger.  Extracted so
+    ``update_entry`` keeps only its ownership guards + form validation;
+    this owns the service-call/commit/error-translation tail (the
+    ``transfers._execute_transfer_update`` precedent).
+    """
+    try:
+        entry_service.update_entry(entry_id, current_user.id, **data)
+        db.session.commit()
+    except StaleDataError:
+        logger.info(
+            "Stale-data conflict on update_entry id=%d", entry_id,
+        )
+        return _stale_entry_response(txn)
+    except IntegrityError as exc:
+        # Defensive backstop for commit C-19 -- see
+        # ``_credit_payback_idempotent_response`` docstring.
+        return _credit_payback_idempotent_response(
+            exc, txn.id, f"update_entry id={entry_id}",
+        )
+    except (NotFoundError, ValidationError) as exc:
+        db.session.rollback()
+        return str(exc), 400
+
+    response = _render_entry_list(txn)
+    return response, 200, {"HX-Trigger": "balanceChanged"}
+
+
 @entries_bp.route(
     "/transactions/<int:txn_id>/entries/<int:entry_id>",
     methods=["PATCH"],
@@ -287,26 +320,7 @@ def update_entry(txn_id, entry_id):
         )
         return _stale_entry_response(txn)
 
-    try:
-        entry_service.update_entry(entry_id, current_user.id, **data)
-        db.session.commit()
-    except StaleDataError:
-        logger.info(
-            "Stale-data conflict on update_entry id=%d", entry_id,
-        )
-        return _stale_entry_response(txn)
-    except IntegrityError as exc:
-        # Defensive backstop for commit C-19 -- see
-        # ``_credit_payback_idempotent_response`` docstring.
-        return _credit_payback_idempotent_response(
-            exc, txn.id, f"update_entry id={entry_id}",
-        )
-    except (NotFoundError, ValidationError) as exc:
-        db.session.rollback()
-        return str(exc), 400
-
-    response = _render_entry_list(txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return _execute_entry_update(entry_id, txn, data)
 
 
 @entries_bp.route(
