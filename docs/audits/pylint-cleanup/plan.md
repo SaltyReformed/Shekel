@@ -10,9 +10,22 @@
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
 **Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-06 app/ is 9.92/10 with ZERO
-`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 106 visible messages.
-Full suite 5770 passed.** Phase 3 (design smells) has THIRTY files plus the form-mutation helper
-family complete. The newest, **`services/savings_goal_service.py` DONE** (`7dad8d7`), cleared
+`duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F; 105 visible messages.
+Full suite 5771 passed (new baseline -- +1 the Q4-rollover test below).** Phase 3 (design smells) has
+THIRTY-ONE files plus the form-mutation helper family complete. The newest,
+**`services/interest_projection.py` DONE** (`62fd7a2`), cleared `calculate_interest`'s `too-many-locals`
+(17/15) by extracting the quarterly branch's dense quarter-length arithmetic into
+`_days_in_quarter(period_start)` (parallels the existing `_days_in_year_for_window` divisor helper) --
+17->13 locals, no disable. FINANCIAL: byte-identical (only `days_in_quarter =` -> `return`), the
+quarterly formula + daily/monthly branches + guards + round_money untouched. The reviewer ruled the
+full-3-branch-dispatcher alternative REVERT-OVERREACH gold-plating (the math is deliberately asymmetric;
+co-locating the formulas has review value), and flagged a pre-existing gap the extraction made
+load-bearing -- the Q4 `next_q_month > 12` year-rollover branch was untested -- so this commit ALSO adds
+`test_q4_year_rollover_period` (Q4 2026 = 92 days; interest 17.12 hand-computed independently) + fixes a
+stale `/91` test docstring. Independent quality-pass: behavior_equivalent=yes (byte-for-byte), all
+ACCEPT, 0 REFINE, 0 REVERT-OVERREACH. 0 disables (82); 0 new R0801; visible 106->105; smell items 17->16
+(11 8-symbol + 5 instance-attr); score 9.92 held; full suite 5770->5771 passed. Before it,
+**`services/savings_goal_service.py` DONE** (`7dad8d7`), cleared
 `amount_to_monthly`'s `too-many-return-statements` (8/6) by a single-return accumulator -- the explicit
 `once` early `return None` kept, then an if/elif assigns `monthly = <expr>` per pattern (`else =`
 None for unrecognized ids), one final `return monthly`; 8->2 returns, no disable. A financial function:
@@ -1607,7 +1620,25 @@ documented disables), with commit SHA.
 - services/account_service.py: `create_account`:86 tm-args -- `-`
 - services/balance_calculator.py: `calculate_balances`:33 tm-branches -- `-`
 - services/entry_service.py: `create_entry`:129 tm-args/pos -- `-`
-- services/interest_projection.py: `calculate_interest`:81 tm-locals -- `-`
+- services/interest_projection.py: **DONE** (`62fd7a2`; file now 10.00/10, zero messages).
+  `calculate_interest` tm-locals (17/15) cleared by extracting the quarterly branch's quarter-length
+  arithmetic (`q_start_month`/`q_start`/`next_q_month`/`q_end` -- 4 intermediate locals) into
+  `_days_in_quarter(period_start) -> Decimal`, parallel to the existing `_days_in_year_for_window`
+  divisor helper. 17->13 locals; no disable. FINANCIAL: the helper body is byte-identical to the old
+  inline calc (only `days_in_quarter =` -> `return`), the quarterly formula
+  `balance * quarterly_rate * (period_days / days_in_quarter)` + the daily/monthly branches + the early
+  guards + `round_money` are untouched; `Decimal(str(...))` discipline preserved; the L-05 actual-length
+  rationale moved into the helper docstring. Untyped to match the file's untyped helpers. Independent
+  quality-pass: behavior_equivalent=yes (byte-for-byte vs HEAD), all ACCEPT, 0 REFINE, 0
+  REVERT-OVERREACH -- the extract-the-divisor altitude ruled correct, and extracting ALL 3 compounding
+  branches into a dispatcher ruled REVERT-OVERREACH (gold-plating: the math is deliberately asymmetric;
+  co-locating the 3 monetary formulas has review value). **Closed a reviewer-flagged PRE-EXISTING gap
+  the extraction made load-bearing** (same commit): the Q4 `next_q_month > 12` year-rollover branch in
+  `_days_in_quarter` was untested -- added `test_q4_year_rollover_period` (Q4 2026 = Oct 31 + Nov 30 +
+  Dec 31 = 92 days; interest 17.12, hand-computed independently, NOT via the function under test) + fixed
+  the `TestQuarterlyCompounding` docstring's stale `/91` to the actual-length behavior. 0 disables added
+  (82); 0 new R0801; visible 106->105; smell items 17->16; score 9.92 held; full suite 5770->5771
+  passed.
 - services/projection_inputs.py: **DONE** (`bf111f0`; file now 10.00/10, zero smell messages).
   `build_investment_projection_inputs` tm-args/pos cleared jointly with the wrapped
   `calculate_investment_inputs`: dropped the dead `account_id` (6->... still 6 after removal, 1 over
@@ -1679,16 +1710,15 @@ for the rest:
   (vars named differently dodge R0801) that the decomposition can dedupe for free.
 - **module tm-lines:** split into a package per ratified decision #5 (see its TRAP note re:
   R0801 re-surfacing + monkeypatch-path updates).
-Next by live density (re-measured 2026-06-06 after **`services/savings_goal_service.py` DONE** `7dad8d7`; 17
-smell items remain [12 of the 8-symbol set + 5 `too-many-instance-attributes`], down from 18).
+Next by live density (re-measured 2026-06-06 after **`services/interest_projection.py` DONE** `62fd7a2`; 16
+smell items remain [11 of the 8-symbol set + 5 `too-many-instance-attributes`], down from 17).
 **Working order is now low-fork-batch-first** (developer direction 2026-06-06): clear the
 function-decomposition + tm-args-param-object files, THEN consult on the package splits
 (`carry_forward_service`, `schemas/validation`), the instance-attr dispositions
 (`calendar_service`/`spending_trend_service`/`carry_forward_service` -- developer prefers RESTRUCTURE
 where feasible over a documented disable), and the 2 criticals (`auth.py`, `transfer_service.py`).
 The remaining low-fork files:
-`services/interest_projection.py`
-(`calculate_interest` tm-locals), `services/loan_payment_service.py` (`prepare_payments_for_engine` +
+`services/loan_payment_service.py` (`prepare_payments_for_engine` +
 `live_loan_transfer_amounts` tm-locals -- note OPEN P-1 here), `services/balance_calculator.py`
 (`calculate_balances` tm-branches + the `:121` block disable). The tm-args param objects in the batch:
 `services/tax_calculator.py` (`calculate_federal_withholding` tm-args/locals) and
@@ -2028,3 +2058,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-06 | `6e3c32d` | 3 | **entries.py -- extract _execute_entry_update from update_entry (no disable) -- file DONE:** `update_entry` tm-return (8/6) cleared by extracting the service-call + commit + 4-way error-translation tail into `_execute_entry_update(entry_id, txn, data)` -- StaleDataError->409 conflict list; the C-19 IntegrityError backstop->idempotent credit-payback; (NotFoundError, ValidationError)->400; success->`_render_entry_list(txn)` + 200 + balanceChanged trigger. `update_entry` 8->5 returns (keeps its 2 ownership-guard 404s + 422 validation + 409 stale-form check + the helper call); the helper has 4 returns (under 6). The `transfers._execute_transfer_update` precedent -- sharpens cohesion (route = guards/validation; helper = commit/error-translation), not count-shifting (the 4 error returns are distinct mandated failure modes). Helper body byte-identical to the replaced block (`version_id` popped at the route before the call, never forwarded to the service); left UNTYPED to match the file's untyped sibling response helpers; the divergence from `_execute_transfer_update` (returns the response itself, not None) is correct -- this route has a fixed post-commit success render with no caller-side branching. Independent quality-pass (single fresh reviewer; byte-verified the helper body against HEAD): behavior_equivalent=yes, **all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH** (A4 genuine cohesive execute+translate unit, extraction-over-disable the right call, the untyped helper justified by siblings). **Two deferred tracker notes (out of scope, reported not fixed):** (1) the entries private-helper cluster is a candidate for a coordinated typing pass (`flask.typing.ResponseReturnValue`); (2) the 7-line `txn`/`entry` ownership preamble shared verbatim by `update_entry`/`toggle_cleared`/`delete_entry` is a genuine DRY opportunity (a separate refactor). file 10.00/10, 0 smell messages; 0 disables added (83); 0 new R0801; useless-suppression 0; E/F 0. Score 9.92 held; visible 109->108; smell items 20->19 (14 8-symbol + 5 instance-attr). 49 entries targeted + **full suite 5770 passed.** | 9.92/10 | 108 |
 | 2026-06-06 | `e22a1a5` | 3 | **app/__init__.py -- data-driven blueprint registration loop (no disable; removes one) -- `_register_blueprints` DONE:** tm-locals (24/15) cleared at the root -- the 23 explicit deferred `from app.routes.X import X_bp` imports (each a local; deferred to avoid the blueprint<->`app` cycle) + 23 `register_blueprint` calls replaced by a loop over the new `_BLUEPRINT_MODULES` tuple (23 module names, canonical order), registering `getattr(module, f"{name}_bp")` after `importlib.import_module`. 24->3 locals. **Bonus: the now-useless `import-outside-toplevel` disable REMOVED** (`importlib.import_module` is a CALL, not an import statement, so no import-outside-toplevel fires and the disable would be useless-suppression) -- disables **83->82**. Behavior bit-identical, reviewer-verified 4 ways: `_BLUEPRINT_MODULES` == the old 23-module register order (diff identical); every `getattr(module, "<name>_bp")` resolves to the same Blueprint (incl. the 5 package blueprints defining `Blueprint()` in `_bp.py` + re-exporting, and the multiword pay_periods/debt_strategy/static_pass); a full `create_app("testing")` build registers all 23 in order = 166 URL rules; a grep of every `*_bp = Blueprint(...)` under `app/routes/` returns exactly these 23. The `<name>_bp` convention is total + filesystem-enforced and fails LOUD (AttributeError/ModuleNotFoundError at startup) on violation -- the right failure mode for the app factory. **Design fork (data-driven loop vs explicit-imports+documented disable):** the reviewer argued both -- greppability of `grep auth_bp` is lost (mitigated: the convention is documented two lines up) but the loop is the genuine decision-#3 refactor (DRY: removes the 23x import+register pairing; the disable disappears rather than parks; adding a blueprint is a one-line append). Independent quality-pass (single fresh reviewer): behavior_equivalent=yes, **all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH**. (The 5 pre-existing `W0613` error-handler `e` args are a separate framework-mandated item, untouched.) too-many-locals cleared; disables 83->82; 0 new R0801; useless-suppression 0; E/F 0. Score 9.92 held; visible 108->107; smell items 19->18 (13 8-symbol + 5 instance-attr). 114 auth-required + **full suite 5770 passed.** | 9.92/10 | 107 |
 | 2026-06-06 | `7dad8d7` | 3 | **savings_goal_service.py -- single-return accumulator in amount_to_monthly (no disable) -- file DONE:** `amount_to_monthly` tm-return (8/6) cleared -- the 7 `if pattern_id == X: return <expr>` branches + trailing `return None` became a single-return accumulator: the explicit `once` (known valid-non-recurring) stays an early `return None`, then an if/elif assigns `monthly = <expr>` per pattern with `else: monthly = None` (unrecognized id), then one `return monthly`. Returns 8->2. The `match_periods`/`obligations._next_occurrence` precedent (a dispatch dict would be worse -- `every_n` needs an extra `n` local, two ids share an arm, one arm is a bare passthrough, so a dict forces lambdas + per-call constant construction). FINANCIAL function: every per-pattern Decimal expression byte-identical (operand/division order preserved), `Decimal(str(interval_n or 1))` construction intact, NO `quantize`/`round` introduced (the docstring's "NOT quantized" contract + the conversion-factor table still match). `once` kept explicit + distinct from `else` (both yield None; the sole consumer `obligations_aggregator.py:147` does `if monthly is not None: total += monthly`, skipping both uniformly -- the fold is behavior-safe). Independent quality-pass (single fresh reviewer; byte-for-byte branch table vs HEAD): behavior_equivalent=yes, **all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH** (D1/D3 accumulator the right shape, E2/E3 Decimal discipline + the once-vs-unknown distinction upheld, F2 comments/docstring accurate). file 10.00/10, 0 smell messages; 0 disables added (82); 0 new R0801; useless-suppression 0; E/F 0. Score 9.92 held; visible 107->106; smell items 18->17 (12 8-symbol + 5 instance-attr). 53 savings_goal + obligations_aggregator targeted + **full suite 5770 passed.** | 9.92/10 | 106 |
+| 2026-06-06 | `62fd7a2` | 3 | **interest_projection.py -- extract _days_in_quarter + pin the Q4 year-rollover branch (no disable) -- file DONE:** `calculate_interest` tm-locals (17/15) cleared by extracting the quarterly branch's quarter-length arithmetic (`q_start_month`/`q_start`/`next_q_month`/`q_end` -- 4 intermediate locals) into `_days_in_quarter(period_start) -> Decimal`, parallel to the existing `_days_in_year_for_window` divisor helper (the established "extract the divisor when non-trivial, inline the formula" pattern). 17->13 locals. FINANCIAL: the helper body is byte-identical to the old inline calc (only `days_in_quarter =` became `return`), the quarterly formula + daily/monthly branches + the early guard (`balance<=0 or apy<=0 or start>=end -> ZERO`) + `else: ZERO` + `round_money` all untouched; `Decimal(str(...))` discipline intact; the L-05 actual-length rationale moved into the helper docstring (verified accurate: 90-92 day range). Untyped to match `_days_in_year_for_window`/`calculate_interest`. Independent quality-pass (single fresh reviewer; byte-for-byte vs HEAD): behavior_equivalent=yes, **all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH** -- A4 the extracted divisor genuinely clarifying (not count-shifting), and extracting ALL 3 compounding branches into a dispatcher explicitly ruled **REVERT-OVERREACH gold-plating** (rule 13; the math is deliberately asymmetric -- daily needs a year-divisor helper, monthly is a one-liner, quarterly needs the quarter-divisor -- and co-locating the 3 monetary formulas has review value). **Closed the reviewer-flagged PRE-EXISTING gap the extraction made load-bearing** (same commit): the Q4 `next_q_month > 12` year-rollover branch (Q4 spans into Jan 1 next year) had NO test -- added `test_q4_year_rollover_period` (Q4 2026 = Oct 31 + Nov 30 + Dec 31 = 92 days; `interest = 10000 * 0.01125 * (14/92) = 17.1195... -> 17.12`, hand-computed independently per rule G4, NOT via the function under test) + fixed the stale `/91` `TestQuarterlyCompounding` docstring (it described the pre-L-05 hardcoded behavior). file 10.00/10, 0 smell messages; 0 disables added (82); 0 new R0801; useless-suppression 0; E/F 0. Score 9.92 held; visible 106->105; smell items 17->16 (11 8-symbol + 5 instance-attr). **Full-suite baseline 5770->5771** (the +1 Q4 test). 26 interest_projection targeted + **full suite 5771 passed.** | 9.92/10 | 105 |
