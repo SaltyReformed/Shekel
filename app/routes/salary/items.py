@@ -191,7 +191,7 @@ def delete_raise(raise_id):
 @salary_bp.route("/salary/raises/<int:raise_id>/edit", methods=["POST"])
 @login_required
 @require_owner
-def update_raise(raise_id):  # pylint: disable=too-many-return-statements
+def update_raise(raise_id):
     """Update an existing raise on a salary profile.
 
     Optimistic locking (commit C-18 / F-010): the edit form ships
@@ -199,15 +199,16 @@ def update_raise(raise_id):  # pylint: disable=too-many-return-statements
     submission is rejected with a flash + redirect; the
     SQLAlchemy-tier check catches the truly-concurrent case at
     flush time and produces the same response.
+
+    The exits are all coding-standards-mandated guard clauses or
+    audit-documented error paths -- input validation, the C-18/F-010
+    stale-form pre-check, the flush-time StaleDataError returned by the
+    commit guard, the duplicate-key IntegrityError (F-051/C-23), and the
+    SQLAlchemyError (C-46/F-145) catch -- each surfacing a distinct
+    user-facing flash; the duplicate/unexpected IntegrityError pair share
+    a single redirect via a message accumulator so the count stays within
+    the guard-clause budget.
     """
-    # ``too-many-return-statements`` disabled above: the seven exits are
-    # all coding-standards-mandated guard clauses or audit-documented
-    # error paths -- input validation, the C-18/F-010 stale-form
-    # pre-check, the flush-time StaleDataError (C-18/F-010) returned by
-    # the commit guard, the duplicate-key IntegrityError (F-051/C-23), and
-    # the SQLAlchemyError (C-46/F-145) catch, each surfacing a distinct
-    # user-facing flash.  Collapsing them into one exit would obscure
-    # those distinct messages; the guard-clause form is kept.
     salary_raise = get_owned_via_parent(
         SalaryRaise, raise_id, "salary_profile",
     )
@@ -282,19 +283,20 @@ def update_raise(raise_id):  # pylint: disable=too-many-return-statements
                 "(unexpected IntegrityError)",
                 current_user.id, raise_id, profile.id,
             )
-            flash("Failed to update raise. Please try again.", "danger")
-            return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-        logger.info(
-            "Duplicate-key conflict on update_raise id=%d "
-            "(another raise already covers this profile/type/date)",
-            raise_id,
-        )
-        flash(
-            "Another raise on this profile already covers that "
-            "type and effective date.  Edit or remove it before "
-            "applying these changes.",
-            "warning",
-        )
+            message, category = "Failed to update raise. Please try again.", "danger"
+        else:
+            logger.info(
+                "Duplicate-key conflict on update_raise id=%d "
+                "(another raise already covers this profile/type/date)",
+                raise_id,
+            )
+            message, category = (
+                "Another raise on this profile already covers that "
+                "type and effective date.  Edit or remove it before "
+                "applying these changes.",
+                "warning",
+            )
+        flash(message, category)
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): the StaleDataError race is handled
@@ -460,7 +462,7 @@ def delete_deduction(ded_id):
 @salary_bp.route("/salary/deductions/<int:ded_id>/edit", methods=["POST"])
 @login_required
 @require_owner
-def update_deduction(ded_id):  # pylint: disable=too-many-return-statements
+def update_deduction(ded_id):
     """Update an existing deduction on a salary profile.
 
     Optimistic locking (commit C-18 / F-010): the edit form ships
@@ -468,15 +470,16 @@ def update_deduction(ded_id):  # pylint: disable=too-many-return-statements
     submission is rejected with a flash + redirect; the
     SQLAlchemy-tier check catches the truly-concurrent case at
     flush time and produces the same response.
+
+    The exits are all coding-standards-mandated guard clauses or
+    audit-documented error paths -- input validation, the C-18/F-010
+    stale-form pre-check, the flush-time StaleDataError returned by the
+    commit guard, the name-collision IntegrityError (F-052/C-23), and the
+    SQLAlchemyError (C-46/F-145) catch -- each surfacing a distinct
+    user-facing flash; the duplicate/unexpected IntegrityError pair share
+    a single redirect via a message accumulator so the count stays within
+    the guard-clause budget.
     """
-    # ``too-many-return-statements`` disabled above: the seven exits are
-    # all coding-standards-mandated guard clauses or audit-documented
-    # error paths -- input validation, the C-18/F-010 stale-form
-    # pre-check, the flush-time StaleDataError (C-18/F-010) returned by
-    # the commit guard, the name-collision IntegrityError (F-052/C-23),
-    # and the SQLAlchemyError (C-46/F-145) catch, each surfacing a
-    # distinct user-facing flash.  Collapsing them into one exit would
-    # obscure those distinct messages; the guard-clause form is kept.
     deduction = get_owned_via_parent(
         PaycheckDeduction, ded_id, "salary_profile",
     )
@@ -552,19 +555,20 @@ def update_deduction(ded_id):  # pylint: disable=too-many-return-statements
                 "(unexpected IntegrityError)",
                 current_user.id, ded_id, profile.id,
             )
-            flash("Failed to update deduction. Please try again.", "danger")
-            return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-        logger.info(
-            "Duplicate-name conflict on update_deduction id=%d "
-            "(another deduction with this name exists on the profile)",
-            ded_id,
-        )
-        flash(
-            "Another deduction on this profile already uses that "
-            "name.  Choose a different name or remove the existing "
-            "deduction first.",
-            "warning",
-        )
+            message, category = "Failed to update deduction. Please try again.", "danger"
+        else:
+            logger.info(
+                "Duplicate-name conflict on update_deduction id=%d "
+                "(another deduction with this name exists on the profile)",
+                ded_id,
+            )
+            message, category = (
+                "Another deduction on this profile already uses that "
+                "name.  Choose a different name or remove the existing "
+                "deduction first.",
+                "warning",
+            )
+        flash(message, category)
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): the StaleDataError race is handled
