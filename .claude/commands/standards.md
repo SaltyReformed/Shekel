@@ -12,7 +12,8 @@ report first.
 2. Lint:
    - `pylint app/` (the custom checkers in tools/pylint/ load via .pylintrc).
      Report the score and every message. The standing goal is 10.00/10, zero
-     messages; `--fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare`
+     messages;
+     `--fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-disable-rationale`
      are hard failures regardless of score.
    - If any changed file is under `tests/`, also run
      `pylint tests/ --disable=all --enable=shekel-decimal-from-float` to catch

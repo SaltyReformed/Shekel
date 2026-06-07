@@ -25,7 +25,7 @@ repos:
         args:
           - app/
           - --fail-under=9.0
-          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare
+          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-disable-rationale
       - id: pylint-tests-decimals
         name: shekel-decimal-from-float on tests/
         entry: pylint
