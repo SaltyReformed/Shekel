@@ -936,6 +936,62 @@ class TestMfaSetup:
             assert follow_up.status_code == 200
             assert b"Invalid code" in follow_up.data
 
+    def test_mfa_confirm_oversized_code_rejected_before_verifier(
+        self, app, auth_client, seed_user, db, monkeypatch,
+    ):
+        """POST /mfa/confirm with an over-length code is rejected at the schema.
+
+        The C-26 length cap (``MfaConfirmSchema``) must reject an oversized
+        ``totp_code`` BEFORE it reaches ``verify_totp_setup_code`` so an
+        attacker cannot drive pyotp with a megabyte payload.  The schema-
+        reject path funnels through the same "Invalid code." flash + /mfa/setup
+        redirect as a wrong-but-valid-length code, and pending state is
+        preserved for retry.  Guards the refactor that routed the schema
+        rejection through a ``matched_step = None`` sentinel (the verifier is
+        in the same ``try`` as the schema load, so a load failure must skip it).
+        """
+        with app.app_context():
+            # Fail loudly if the over-length payload ever reaches the verifier:
+            # the schema cap (and the route sentinel) must short-circuit first.
+            def _must_not_run(_secret, _code):
+                raise AssertionError(
+                    "verify_totp_setup_code reached on an oversized code",
+                )
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_setup_code", _must_not_run,
+            )
+
+            auth_client.get("/mfa/setup")
+            pending_before = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            ciphertext_before = pending_before.pending_secret_encrypted
+            expires_before = pending_before.pending_secret_expires_at
+            assert ciphertext_before is not None
+
+            response = auth_client.post("/mfa/confirm", data={
+                "totp_code": "0" * 100,
+            }, follow_redirects=False)
+            assert response.status_code == 302
+            assert "mfa/setup" in response.headers.get("Location", "")
+
+            db.session.refresh(pending_before)
+            # Pending columns are unchanged -- the user can retry.
+            assert pending_before.pending_secret_encrypted == ciphertext_before
+            assert pending_before.pending_secret_expires_at == expires_before
+            # MFA was NOT enabled.
+            assert pending_before.is_enabled in (False, None)
+            assert pending_before.totp_secret_encrypted is None
+            assert pending_before.confirmed_at is None
+
+            follow_up = auth_client.get(
+                response.headers["Location"], follow_redirects=False,
+            )
+            assert follow_up.status_code == 200
+            assert b"Invalid code" in follow_up.data
+
     def test_mfa_confirm_no_pending_state(self, app, auth_client, seed_user):
         """POST /mfa/confirm with no pending secret in DB shows expired flash.
 
