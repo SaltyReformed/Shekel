@@ -39,3 +39,26 @@ def add_months(start: date, months: int) -> date:
 
     day = min(start.day, calendar.monthrange(year, month)[1])
     return date(year, month, day)
+
+
+def months_between(start: date, end: date) -> int:
+    """Return whole calendar months from ``start`` to ``end`` (day ignored).
+
+    Computes ``(end.year - start.year) * 12 + (end.month - start.month)``:
+    the number of month boundaries between the two dates, with the
+    day-of-month disregarded.  The delta from 2026-01-15 to 2027-01-01 is
+    12, and from 2026-01-31 to 2026-02-01 is 1.
+
+    The result is signed and unclamped -- an ``end`` before ``start``
+    yields a negative count.  Callers that need a floor (e.g. "months
+    remaining cannot drop below zero") or an inclusive ``+ 1`` clamp or
+    adjust at the call site, because the bound differs per caller.
+
+    Args:
+        start: The earlier reference date.
+        end: The later reference date.
+
+    Returns:
+        The signed whole-month delta as an ``int``.
+    """
+    return (end.year - start.year) * 12 + (end.month - start.month)

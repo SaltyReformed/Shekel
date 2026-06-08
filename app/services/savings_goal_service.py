@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum
-from app.utils.dates import add_months
+from app.utils.dates import add_months, months_between
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
 
 logger = logging.getLogger(__name__)
@@ -406,10 +406,7 @@ def _compute_required_monthly(
     if target_date <= today:
         return None
 
-    months_available = (
-        (target_date.year - today.year) * 12
-        + (target_date.month - today.month)
-    )
+    months_available = months_between(today, target_date)
 
     if months_available <= 0:
         return None

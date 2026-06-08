@@ -48,6 +48,7 @@ from app.services.amortization_engine import (
     AmortizationRow,
     calculate_monthly_payment,
 )
+from app.utils.dates import months_between
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
 ZERO_MONEY = Decimal("0.00")
@@ -174,16 +175,6 @@ class BalanceAnchor:
     as_of_date: date
 
 
-def _months_between(start: date, end: date) -> int:
-    """Return whole calendar months from ``start`` to ``end`` (day ignored).
-
-    Matches :func:`amortization_engine.calculate_remaining_months`'
-    convention: the delta between 2026-01-15 and 2027-01-01 is 12.
-    Negative deltas are returned as-is; callers clamp where needed.
-    """
-    return (end.year - start.year) * 12 + (end.month - start.month)
-
-
 def payment_number(origination_date: date, payment_date: date) -> int:
     """Return the scheduled-payment number (from origination) for a payment date.
 
@@ -206,7 +197,7 @@ def payment_number(origination_date: date, payment_date: date) -> int:
         month itself returns 0; callers display contractual schedules
         whose first row is one month after origination (payment 1).
     """
-    return _months_between(origination_date, payment_date)
+    return months_between(origination_date, payment_date)
 
 
 def _add_months(start: date, months: int) -> date:
@@ -473,7 +464,7 @@ def build_rate_periods(
     balance = Decimal(str(terms.original_principal))
     for index, start_date in enumerate(boundaries):
         annual_rate = _rate_at_date(rate_changes, start_date, terms.base_rate)
-        start_month_index = _months_between(terms.origination_date, start_date)
+        start_month_index = months_between(terms.origination_date, start_date)
         term_at_start = terms.term_months - start_month_index
         recorded = _recorded_pi_at_date(recorded_period_pi, start_date)
         if recorded is not None:
@@ -494,7 +485,7 @@ def build_rate_periods(
         # next period's derived recast amortizes the right remaining
         # balance.  Skipped after the final period.
         if index + 1 < len(boundaries):
-            months_in_period = _months_between(
+            months_in_period = months_between(
                 start_date, boundaries[index + 1],
             )
             balance = _amortize_forward(
@@ -569,7 +560,7 @@ def _replay_payment_row(
         if new_balance < 0:
             new_balance = ZERO_MONEY
     return AmortizationRow(
-        month=_months_between(origination_date, pay_date),
+        month=months_between(origination_date, pay_date),
         payment_date=pay_date,
         payment=round_money(payment),
         principal=round_money(principal),
@@ -691,7 +682,7 @@ def replay_schedule(
     remaining_months_as_of = max(
         0,
         periods[0].term_months_at_start
-        - max(0, _months_between(origination_date, next_pay_date) - 1),
+        - max(0, months_between(origination_date, next_pay_date) - 1),
     )
 
     return ScheduleReplay(

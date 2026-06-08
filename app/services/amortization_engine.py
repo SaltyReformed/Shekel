@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.utils.dates import months_between
 from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
@@ -153,10 +154,7 @@ def calculate_remaining_months(
     """
     if as_of is None:
         as_of = date.today()
-    months_elapsed = (
-        (as_of.year - origination_date.year) * 12
-        + (as_of.month - origination_date.month)
-    )
+    months_elapsed = months_between(origination_date, as_of)
     return max(0, term_months - months_elapsed)
 
 
@@ -941,19 +939,11 @@ def calculate_payoff_by_date(
     if standard_payoff <= request.target_date:
         return Decimal("0.00")
 
-    # Calculate how many months until target_date based on the same
-    # starting reference point ``starting_date`` would land on.  The
-    # inclusive ``+ 1`` matches the legacy convention so the "target
-    # in the past" / "target later than remaining_months" gates fire
-    # for the same inputs as before.
-    start_year = starting_date.year
-    start_month = starting_date.month
-
-    target_months = (
-        (request.target_date.year - start_year) * 12
-        + (request.target_date.month - start_month)
-        + 1  # inclusive
-    )
+    # Calculate how many months until target_date from ``starting_date``.
+    # The inclusive ``+ 1`` matches the legacy convention so the "target
+    # in the past" / "target later than remaining_months" gates fire for
+    # the same inputs as before.
+    target_months = months_between(starting_date, request.target_date) + 1
 
     if target_months <= 0:
         return None  # Target date is in the past.
