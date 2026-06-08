@@ -236,16 +236,28 @@ def _check_pwned_password(plain_password):
         return
 
     for line in response.text.splitlines():
-        # Each line is "<35-char SHA-1 suffix>:<count>".  An invalid
-        # line (no colon, malformed suffix, non-integer count) is a
-        # protocol violation by HIBP rather than a security risk; skip
-        # it and continue scanning.  A malicious response that omits
-        # the colon would be safer to ignore than to crash the form.
+        # Each line is "<35-char SHA-1 suffix>:<count>".  A line with no
+        # colon is a protocol violation by HIBP rather than a security
+        # risk; skip it and continue scanning.  A malicious response
+        # that omits the colon would be safer to ignore than to crash
+        # the form.
         parts = line.split(":", 1)
         if len(parts) != 2:
             continue
         record_suffix = parts[0].strip().upper()
-        if record_suffix == suffix:
+        if record_suffix != suffix:
+            continue
+        # The suffix matches; the count decides whether it is a real
+        # breach record.  Honour the Add-Padding protocol requested
+        # above: padded lines carry a count of 0 and are bogus noise, so
+        # only a positive count is a genuine breach.  A non-integer
+        # count is a malformed line -- skip it rather than treat a
+        # matching suffix as a confirmed breach.
+        try:
+            count = int(parts[1].strip())
+        except ValueError:
+            continue
+        if count > 0:
             log_event(
                 logger, logging.INFO, EVT_HIBP_CHECK_REJECTED, AUTH,
                 "HIBP rejected breached password at hash time",

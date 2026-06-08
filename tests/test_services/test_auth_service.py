@@ -983,9 +983,10 @@ def _hibp_response_for(plain_password, count=1, extra_lines=()):
         plain_password: The plaintext to embed (the suffix is computed
             from its SHA-1).
         count: The breach count to associate with the matched suffix.
-            Tests use 1 or higher; zero counts are HIBP padding noise
-            and the service treats them like normal lines (the suffix
-            still raises if it matches).
+            Tests use 1 or higher for a real breach record; a zero count
+            is HIBP padding noise and the service ignores it (a matching
+            suffix with count 0 does NOT raise -- see
+            test_zero_count_match_not_rejected).
         extra_lines: Iterable of additional ``(suffix, count)`` tuples
             mixed into the response to simulate real HIBP output.
 
@@ -1060,6 +1061,47 @@ class TestHibpCheck:
         )
         with pytest.raises(ValidationError, match="known data breach"):
             auth_service._check_pwned_password(password)
+
+    def test_zero_count_match_not_rejected(self, monkeypatch):
+        """A matching suffix with count 0 is HIBP padding, not a breach.
+
+        deep-quality-hunt #43: the loop now honours the Add-Padding
+        protocol the request asks for (`Add-Padding: true`).  Padded
+        lines carry a count of 0; a count-0 line whose suffix happens to
+        equal the queried suffix must NOT be treated as a breach.  Before
+        the fix the loop ignored the count entirely and raised on any
+        suffix match, contradicting its own docstring.
+        """
+        monkeypatch.setenv("HIBP_CHECK_ENABLED", "true")
+        password = "padding-collision-not-a-real-breach"
+        body = _hibp_response_for(password, count=0)
+        monkeypatch.setattr(
+            requests, "get",
+            lambda *args, **kwargs: _FakeHibpResponse(body),
+        )
+        # Returns None and does NOT raise -- a count-0 match is padding.
+        result = auth_service._check_pwned_password(password)  # pylint: disable=assignment-from-none
+        assert result is None
+
+    def test_non_integer_count_match_not_rejected(self, monkeypatch):
+        """A matching suffix with a malformed (non-integer) count is skipped.
+
+        deep-quality-hunt #43: the inline comment documents that a line
+        with a non-integer count is a protocol violation to skip, not a
+        breach.  The loop now parses the count and skips a line whose
+        count is not an integer even when the suffix matches.
+        """
+        monkeypatch.setenv("HIBP_CHECK_ENABLED", "true")
+        password = "malformed-count-line"
+        # The helper f-strings the count, so a non-numeric value yields a
+        # "<suffix>:notanumber" line with a matching suffix.
+        body = _hibp_response_for(password, count="notanumber")
+        monkeypatch.setattr(
+            requests, "get",
+            lambda *args, **kwargs: _FakeHibpResponse(body),
+        )
+        result = auth_service._check_pwned_password(password)  # pylint: disable=assignment-from-none
+        assert result is None
 
     def test_clean_password_passes(self, monkeypatch):
         """A password whose suffix is absent from the response is accepted.
