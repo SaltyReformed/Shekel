@@ -89,8 +89,8 @@ def growth_chart(account_id):
     if not request.headers.get("HX-Request"):
         return redirect(url_for("investment.dashboard", account_id=account_id))
 
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return "", 404
 
     horizon_years = request.args.get("horizon_years", type=int, default=2)

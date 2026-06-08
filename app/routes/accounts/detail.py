@@ -303,8 +303,8 @@ def checking_detail(account_id):
     debits double-subtracted off the anchor).  No interest
     calculations: APY on checking is negligible.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return "Not found", 404
 
     # Verify this is a checking account.
