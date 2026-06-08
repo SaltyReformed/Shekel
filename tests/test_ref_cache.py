@@ -17,10 +17,17 @@ to the Status model.  Verifies that:
 from decimal import Decimal
 
 import pytest
+import sqlalchemy.exc
 
 from app.extensions import db
 from app import ref_cache
-from app.enums import GoalModeEnum, IncomeUnitEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    GoalModeEnum,
+    IncomeUnitEnum,
+    LoanAnchorSourceEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.models.ref import GoalMode, IncomeUnit, Status, TransactionType
 from app.models.transaction import Transaction
 
@@ -65,6 +72,45 @@ class TestRefCacheStatuses:
             db.session.rollback()
 
             # Re-init cache with all rows present.
+            ref_cache.init(db.session)
+
+    def test_init_records_unavailable_table_and_keeps_others_usable(
+        self, app, db, monkeypatch
+    ):
+        """A missing ref table is reported, skipped, and never fatal.
+
+        Simulates the pre-migration bootstrap window by forcing the
+        ``loan_anchor_sources`` query to raise ``ProgrammingError`` (as if
+        the table did not exist yet).  ``init()`` must: record that one table
+        in its returned ``unavailable`` list, still load every other table,
+        and leave the unavailable table's accessor raising ``KeyError`` (an
+        empty map) rather than returning a wrong value.  ``create_app`` relies
+        on a non-empty return here to skip Jinja-globals registration
+        (``app/__init__.py``).
+        """
+        with app.app_context():
+            real_query = db.session.query
+
+            def fake_query(model):
+                if model.__name__ == "LoanAnchorSource":
+                    raise sqlalchemy.exc.ProgrammingError(
+                        "SELECT", {}, Exception("relation does not exist")
+                    )
+                return real_query(model)
+
+            monkeypatch.setattr(db.session, "query", fake_query)
+            unavailable = ref_cache.init(db.session)
+
+            # Only the failed table is reported unavailable.
+            assert unavailable == ["loan_anchor_sources"]
+            # Every other table still loaded and resolves normally.
+            assert isinstance(ref_cache.status_id(StatusEnum.PROJECTED), int)
+            # The unavailable table's accessor raises KeyError, not a wrong ID.
+            with pytest.raises(KeyError):
+                ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.ORIGINATION)
+
+            # Restore a fully-populated cache so later tests are unaffected.
+            monkeypatch.undo()
             ref_cache.init(db.session)
 
 

@@ -30,6 +30,18 @@ from app.services import retirement_dashboard_service
 
 logger = logging.getLogger(__name__)
 
+# Field allowlists for the retirement update routes: which submitted form
+# fields may be written back to each model via setattr.
+_PENSION_FIELDS = {
+    "salary_profile_id", "name", "benefit_multiplier",
+    "consecutive_high_years", "hire_date",
+    "earliest_retirement_date", "planned_retirement_date",
+}
+_SETTINGS_FIELDS = {
+    "safe_withdrawal_rate", "planned_retirement_date",
+    "estimated_retirement_tax_rate",
+}
+
 # Name of the composite unique constraint that backstops the
 # pension-profile double-submit fix (F-105 / C-22).  Mirrors the
 # literal in ``app/models/pension_profile.py:PensionProfile.__table_args__``
@@ -87,6 +99,29 @@ def pension_list():
     )
 
 
+def _require_owned_salary_profile(data):
+    """Abort 404 if the payload links a salary profile the user does not own.
+
+    The pension form's salary-profile dropdown lists only the current
+    user's own active profiles, so a foreign or non-existent
+    ``salary_profile_id`` in the submission is a forged FK (IDOR) that
+    would otherwise read another user's salary and raise history into
+    this user's retirement projection.  ``get_or_404`` verifies ownership
+    and emits the cross-user denial audit event; its ``None`` result maps
+    to a 404 per the security response rule (404 for both "not found" and
+    "not yours").  An absent or ``None`` id means "no pension-salary
+    link" and is left to the normal create/update path.
+
+    Args:
+        data: The schema-loaded form payload.
+    """
+    salary_profile_id = data.get("salary_profile_id")
+    if salary_profile_id is None:
+        return
+    if get_or_404(SalaryProfile, salary_profile_id) is None:
+        abort(404)
+
+
 @retirement_bp.route("/retirement/pension", methods=["POST"])
 @login_required
 @require_owner
@@ -114,6 +149,7 @@ def create_pension():
         ), 422
 
     data = _pension_create_schema.load(request.form)
+    _require_owned_salary_profile(data)
 
     # F-17 / Commit 12: percent-to-fraction conversion happens in the
     # schema's @pre_load; ``benefit_multiplier`` arrives already
@@ -209,6 +245,7 @@ def update_pension(pension_id):
         ), 422
 
     data = _pension_update_schema.load(request.form)
+    _require_owned_salary_profile(data)
 
     # F-17 / Commit 12: schema's @pre_load owns the percent-to-fraction
     # conversion; ``benefit_multiplier`` arrives already as a fraction.
@@ -246,11 +283,6 @@ def update_pension(pension_id):
             errors=date_errors,
         ), 422
 
-    _PENSION_FIELDS = {
-        "salary_profile_id", "name", "benefit_multiplier",
-        "consecutive_high_years", "hire_date",
-        "earliest_retirement_date", "planned_retirement_date",
-    }
     for field_name, value in data.items():
         if field_name in _PENSION_FIELDS:
             setattr(pension, field_name, value)
@@ -359,22 +391,15 @@ def update_settings():
         )
         if not settings:
             settings = UserSettings(user_id=current_user.id)
+        # The dashboard skeleton includes only the active section's
+        # partial; ``_retirement.html`` reads only settings/form_data/
+        # errors, so the 422 re-render supplies exactly those.
         return render_template(
             "settings/dashboard.html",
             active_section="retirement",
             settings=settings,
             form_data=raw_form_data,
             errors=errors,
-            accounts=[],
-            grouped={},
-            filing_statuses=[],
-            tax_types=[],
-            bracket_sets=[],
-            fica_configs=[],
-            state_configs=[],
-            account_types=[],
-            types_in_use=set(),
-            mfa_enabled=False,
         ), 422
 
     data = _settings_schema.load(request.form)
@@ -388,10 +413,6 @@ def update_settings():
         flash("Settings not found.", "danger")
         return redirect(url_for("settings.show", section="retirement"))
 
-    _SETTINGS_FIELDS = {
-        "safe_withdrawal_rate", "planned_retirement_date",
-        "estimated_retirement_tax_rate",
-    }
     for field_name, value in data.items():
         if field_name in _SETTINGS_FIELDS:
             setattr(settings, field_name, value)

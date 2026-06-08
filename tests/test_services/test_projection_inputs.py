@@ -142,7 +142,6 @@ class TestBuildInvestmentProjectionInputsEquivalence:
         # dashboard service.  Reproduced here exactly so a future
         # divergence between the wrapper and the engine surfaces.
         inline_result = calculate_investment_inputs(
-            account_id=10,
             investment_params=params,
             deductions=deductions,
             all_contributions=contributions,
@@ -152,7 +151,7 @@ class TestBuildInvestmentProjectionInputsEquivalence:
         )
 
         helper_result = build_investment_projection_inputs(
-            10, params, deductions, contributions, periods, periods[1], gross_biweekly,
+            params, deductions, contributions, periods, periods[1], gross_biweekly,
         )
 
         assert isinstance(helper_result, InvestmentInputs)
@@ -179,7 +178,7 @@ class TestBuildInvestmentProjectionInputsEquivalence:
         params, deductions, contributions, periods = self._fixture_inputs()
         gross_biweekly = Decimal("3846.15")
         result = build_investment_projection_inputs(
-            10, params, deductions, contributions, periods, periods[1], gross_biweekly,
+            params, deductions, contributions, periods, periods[1], gross_biweekly,
         )
         assert result.periodic_contribution == Decimal("700.00")
         assert result.ytd_contributions == Decimal("400")

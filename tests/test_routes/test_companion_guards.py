@@ -443,10 +443,12 @@ class TestMarkDoneCompanionAccess:
             db.session.query(AccountType).filter_by(name="Checking").one()
         )
         account = account_service.create_account(
-            user_id=second_user.id,
-            account_type_id=checking_type.id,
-            name="Checking",
-            anchor_balance=Decimal("1000.00"),
+            account_service.AccountSpec(
+                user_id=second_user.id,
+                account_type_id=checking_type.id,
+                name="Checking",
+                anchor_balance=Decimal("1000.00"),
+            ),
         )
         db.session.add(account)
 

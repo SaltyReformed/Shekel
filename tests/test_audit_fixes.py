@@ -64,18 +64,22 @@ def _create_other_user():
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
     account = account_service.create_account(
-        user_id=other.id,
-        account_type_id=checking_type.id,
-        name="Other Checking",
-        anchor_balance=Decimal("500.00"),
+        account_service.AccountSpec(
+            user_id=other.id,
+            account_type_id=checking_type.id,
+            name="Other Checking",
+            anchor_balance=Decimal("500.00"),
+        ),
     )
     db.session.add(account)
 
     savings_account = account_service.create_account(
-        user_id=other.id,
-        account_type_id=savings_type.id,
-        name="Other Savings",
-        anchor_balance=Decimal("0.00"),
+        account_service.AccountSpec(
+            user_id=other.id,
+            account_type_id=savings_type.id,
+            name="Other Savings",
+            anchor_balance=Decimal("0.00"),
+        ),
     )
     db.session.add(savings_account)
 
@@ -108,10 +112,12 @@ def _create_savings_account(user_id):
     """Create a savings account for the given user."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
-        user_id=user_id,
-        account_type_id=savings_type.id,
-        name="Savings",
-        anchor_balance=Decimal("0.00"),
+        account_service.AccountSpec(
+            user_id=user_id,
+            account_type_id=savings_type.id,
+            name="Savings",
+            anchor_balance=Decimal("0.00"),
+        ),
     )
     db.session.add(acct)
     db.session.flush()
@@ -481,15 +487,17 @@ class TestBalanceWithTransfers:
         account = seed_user["account"]
 
         xfer = transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=account.id,
-            to_account_id=savings_acct.id,
-            pay_period_id=seed_periods[1].id,
-            scenario_id=seed_user["scenario"].id,
-            amount=Decimal("200.00"),
-            status_id=projected.id,
-            category_id=seed_user["categories"]["Rent"].id,
-            name="To Savings",
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=account.id,
+                to_account_id=savings_acct.id,
+                pay_period_id=seed_periods[1].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("200.00"),
+                status_id=projected.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                name="To Savings",
+            ),
         )
         db.session.commit()
 
@@ -520,15 +528,17 @@ class TestBalanceWithTransfers:
         account = seed_user["account"]
 
         xfer = transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=savings_acct.id,
-            to_account_id=account.id,
-            pay_period_id=seed_periods[1].id,
-            scenario_id=seed_user["scenario"].id,
-            amount=Decimal("300.00"),
-            status_id=projected.id,
-            category_id=seed_user["categories"]["Rent"].id,
-            name="From Savings",
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=savings_acct.id,
+                to_account_id=account.id,
+                pay_period_id=seed_periods[1].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("300.00"),
+                status_id=projected.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                name="From Savings",
+            ),
         )
         db.session.commit()
 
@@ -558,15 +568,17 @@ class TestBalanceWithTransfers:
         account = seed_user["account"]
 
         xfer = transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=account.id,
-            to_account_id=savings_acct.id,
-            pay_period_id=seed_periods[1].id,
-            scenario_id=seed_user["scenario"].id,
-            amount=Decimal("500.00"),
-            status_id=projected.id,
-            category_id=seed_user["categories"]["Rent"].id,
-            name="Cancelled",
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=account.id,
+                to_account_id=savings_acct.id,
+                pay_period_id=seed_periods[1].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("500.00"),
+                status_id=projected.id,
+                category_id=seed_user["categories"]["Rent"].id,
+                name="Cancelled",
+            ),
         )
         # Cancel the transfer (updates both shadows to cancelled).
         transfer_service.update_transfer(

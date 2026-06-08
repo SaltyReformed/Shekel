@@ -84,10 +84,12 @@ def _create_savings_account(seed_user):
         db.session.query(AccountType).filter_by(name="Savings").one()
     )
     acct = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name="XSS Test Savings",
-        anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="XSS Test Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add(acct)
     db.session.commit()
@@ -100,10 +102,12 @@ def _create_mortgage_account_with_params(seed_user):
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     acct = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=mortgage_type.id,
-        name="XSS Test Mortgage",
-        anchor_balance=Decimal("200000"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=mortgage_type.id,
+            name="XSS Test Mortgage",
+            anchor_balance=Decimal("200000"),
+        ),
     )
     db.session.add(acct)
     db.session.flush()
@@ -173,15 +177,17 @@ def _create_transfer(seed_user, seed_periods_today, savings_acct):
         db.session.query(Status).filter_by(name="Projected").one()
     )
     xfer = transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings_acct.id,
-        pay_period_id=seed_periods_today[0].id,
-        scenario_id=seed_user["scenario"].id,
-        amount=Decimal("100.00"),
-        status_id=projected.id,
-        category_id=seed_user["categories"]["Rent"].id,
-        name="Test Transfer",
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings_acct.id,
+            pay_period_id=seed_periods_today[0].id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("100.00"),
+            status_id=projected.id,
+            category_id=seed_user["categories"]["Rent"].id,
+            name="Test Transfer",
+        ),
     )
     db.session.commit()
     return xfer

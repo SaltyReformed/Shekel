@@ -13,6 +13,7 @@ from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.models.mixins import (
+    OptimisticLockMixin,
     SoftDeleteOverridableMixin,
     TimestampMixin,
     TrackingVisibilityMixin,
@@ -20,7 +21,11 @@ from app.models.mixins import (
 
 
 class Transaction(
-    SoftDeleteOverridableMixin, TrackingVisibilityMixin, TimestampMixin, db.Model
+    OptimisticLockMixin,
+    SoftDeleteOverridableMixin,
+    TrackingVisibilityMixin,
+    TimestampMixin,
+    db.Model,
 ):
     """A single income or expense entry within a pay period.
 
@@ -191,21 +196,7 @@ class Transaction(
     # are inert -- the resolved ``tracks_purchases`` /
     # ``visible_to_companion`` properties below defer to the template so
     # the template stays the single source of truth.
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.  NOT NULL with server_default="1" so existing
-    # production rows are filled at ALTER TABLE time and new rows
-    # always start at version 1.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: SQLAlchemy will (a) issue
-    # ``UPDATE ... WHERE id = ? AND version_id = ?`` for every flush
-    # of a dirty Transaction, (b) atomically increment version_id in
-    # the same statement, and (c) raise StaleDataError when rowcount
-    # = 0.  Routes that mutate Transaction MUST catch StaleDataError
-    # and surface a 409 / flash + redirect.  See app/routes/transactions.py.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

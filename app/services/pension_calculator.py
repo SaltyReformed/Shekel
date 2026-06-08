@@ -91,6 +91,11 @@ def project_salaries_by_year(annual_salary, raises, start_year, end_year):
     Returns:
         list of (year, Decimal salary) tuples.
     """
+    # Pylint: ``import-outside-toplevel`` -- Deferred import keeps this
+    # pure-function module a stdlib-only leaf: the paycheck_calculator
+    # tax/calibration chain loads only when raise projection is actually
+    # requested.
+    # pylint: disable=import-outside-toplevel
     from app.services.paycheck_calculator import _apply_raises
 
     class _FakePeriod:

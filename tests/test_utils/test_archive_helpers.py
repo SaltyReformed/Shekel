@@ -122,10 +122,12 @@ def _make_transfer_template_with_status(app, db_, seed_user, period, status_name
     savings_type = db_.session.query(AccountType).filter_by(name="Savings").one()
 
     savings_account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name=f"Savings-{status_name}",
-        anchor_balance=Decimal("0.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name=f"Savings-{status_name}",
+            anchor_balance=Decimal("0.00"),
+        ),
     )
     db_.session.flush()
 

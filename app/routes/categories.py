@@ -6,7 +6,10 @@ CRUD for the flat two-level category system (group + item name).
 
 import logging
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for, jsonify
+from flask import (
+    Blueprint, Response, abort, flash, jsonify, redirect, render_template,
+    request, url_for,
+)
 from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -32,6 +35,22 @@ def list_categories():
     return redirect(url_for("settings.show", section="categories"))
 
 
+def _create_form_error_response(
+    errors: dict, flash_message: str
+) -> Response | tuple[Response, int]:
+    """Return the create-category form's error response.
+
+    A 400 JSON body (``{"errors": ...}``) for an HTMX request, else a
+    flashed ``danger`` message + redirect to the categories settings
+    section.  Shared by ``create_category``'s schema-validation and
+    blank-name guards so the dual HTMX/redirect contract lives in one place.
+    """
+    if request.headers.get("HX-Request"):
+        return jsonify(errors=errors), 400
+    flash(flash_message, "danger")
+    return redirect(url_for("settings.show", section="categories"))
+
+
 @categories_bp.route("/categories", methods=["POST"])
 @login_required
 @require_owner
@@ -39,10 +58,9 @@ def create_category():
     """Create a new category."""
     errors = _create_schema.validate(request.form)
     if errors:
-        if request.headers.get("HX-Request"):
-            return jsonify(errors=errors), 400
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("settings.show", section="categories"))
+        return _create_form_error_response(
+            errors, "Please correct the highlighted errors and try again.",
+        )
 
     data = _create_schema.load(request.form)
 
@@ -50,10 +68,10 @@ def create_category():
     data["group_name"] = data["group_name"].strip()
     data["item_name"] = data["item_name"].strip()
     if not data["group_name"] or not data["item_name"]:
-        if request.headers.get("HX-Request"):
-            return jsonify(errors={"_schema": ["Category names cannot be blank."]}), 400
-        flash("Category names cannot be blank.", "danger")
-        return redirect(url_for("settings.show", section="categories"))
+        return _create_form_error_response(
+            {"_schema": ["Category names cannot be blank."]},
+            "Category names cannot be blank.",
+        )
 
     # Check for duplicates.
     existing = (
@@ -77,10 +95,16 @@ def create_category():
 
     if request.headers.get("HX-Request"):
         # Fresh group list for the edit-form dropdown in the HTMX partial.
+        # Filter to is_active=True so the HTMX-appended row's group
+        # dropdown offers the same active-only set as the full settings
+        # GET render (settings._load_categories_context derives its
+        # group_names from active categories); otherwise a group that
+        # exists only on archived categories would appear here but not on
+        # a settings reload (deep-quality-hunt #41).
         group_names = sorted(
             row[0] for row in
             db.session.query(Category.group_name)
-            .filter_by(user_id=current_user.id)
+            .filter_by(user_id=current_user.id, is_active=True)
             .distinct()
         )
         return render_template(

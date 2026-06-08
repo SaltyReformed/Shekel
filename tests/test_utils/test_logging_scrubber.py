@@ -138,6 +138,56 @@ class TestScrubMessage:
         assert "Bearer-token-value-redacted-please" not in record.msg
         assert "Authorization=[REDACTED]" in record.msg
 
+    def test_set_cookie_underscore_form_redacted(self):
+        """``set_cookie=...`` (the underscore method-name form) is redacted.
+
+        The bare ``cookie`` key alone misses this: the value-scrub
+        lookbehind ``(?<![A-Za-z0-9_])`` treats the ``_`` before
+        ``cookie`` as a word char, so only the explicit
+        ``set[_-]cookie`` entry catches the Flask ``set_cookie`` shape.
+        The hyphen wire-header form stays covered by
+        test_cookie_header_redacted.
+        """
+        scrubber = SensitiveFieldScrubber()
+        record = _make_record('resp set_cookie="session=abc.signed.value"')
+
+        scrubber.filter(record)
+
+        assert "abc.signed.value" not in record.msg
+        assert "[REDACTED]" in record.msg
+
+    def test_bare_token_assignment_redacted(self):
+        """A standalone ``token=...`` debug line is redacted.
+
+        Third-party SDK debug output of the form ``token=<bearer>``
+        carries a live credential; the ``access_token`` / ``refresh_token``
+        entries do not cover the bare form, so a dedicated ``token`` key
+        is required.
+        """
+        scrubber = SensitiveFieldScrubber()
+        record = _make_record("sdk debug token=abcdef.bearer.value end")
+
+        scrubber.filter(record)
+
+        assert "abcdef.bearer.value" not in record.msg
+        assert "[REDACTED]" in record.msg
+
+    def test_underscore_prefixed_token_not_over_redacted(self):
+        """``next_token`` / ``csrf_token`` are NOT redacted by bare ``token``.
+
+        The negative lookbehind treats the ``_`` before ``token`` as a
+        word char and refuses the match, so the bare-token coverage
+        stays scoped to genuine standalone tokens and does not swallow
+        benign pagination / CSRF field values.
+        """
+        scrubber = SensitiveFieldScrubber()
+        record = _make_record("page cursor next_token=cursor123abc")
+
+        scrubber.filter(record)
+
+        assert record.msg == "page cursor next_token=cursor123abc"
+        assert "[REDACTED]" not in record.msg
+
     def test_multiple_secrets_in_one_message_all_redacted(self):
         """Both substrings in the same message are independently redacted."""
         scrubber = SensitiveFieldScrubber()
@@ -277,6 +327,15 @@ class TestScrubExtras:
         scrubber.filter(record)
 
         assert record.totp_secret == "[REDACTED]"
+
+    def test_exact_name_token_field_replaced(self):
+        """A ``token`` extra is replaced wholesale via the exact-name set."""
+        scrubber = SensitiveFieldScrubber()
+        record = _make_record("api call", token="bearer-xyz-live")
+
+        scrubber.filter(record)
+
+        assert record.token == "[REDACTED]"
 
     def test_extra_string_with_pattern_redacted(self):
         """A free-form string extra carrying a secret is pattern-scrubbed."""

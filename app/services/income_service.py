@@ -4,15 +4,15 @@ Shekel Budget App -- Income Service (F-20 / MED-06 / F-032).
 Single source of truth for the raise-aware per-period gross income
 quantity that every income-derived dashboard surface needs.  Wraps
 :func:`paycheck_calculator.calculate_paycheck` so the engine's
-:class:`~app.services.paycheck_calculator.PaycheckBreakdown.gross_biweekly`
-is the canonical value -- never the off-engine
+:attr:`~app.services.paycheck_calculator.Earnings.gross_biweekly`
+(``breakdown.earnings.gross_biweekly``) is the canonical value -- never the off-engine
 ``Decimal(str(profile.annual_salary)) / pay_periods_per_year``
 recompute that silently dropped any applicable
 :class:`~app.models.salary_raise.SalaryRaise` row pre-Commit-17.
 
 Pre-fix, six call sites read the off-engine quantity:
 
-- ``savings_dashboard_service._load_account_params``
+- ``savings_dashboard_service._data._load_account_params``
 - ``year_end_summary_service._load_salary_gross_biweekly``
 - ``retirement_dashboard_service.compute_gap_data`` (projected-salary path)
 - ``retirement_dashboard_service._project_retirement_accounts``
@@ -74,7 +74,7 @@ def get_current_gross_biweekly(
     "current per-period gross" value that downstream code feeds into
     investment / retirement / employer-match math.  Callers that
     already hold a :class:`PaycheckBreakdown` for the same period
-    should read ``breakdown.gross_biweekly`` directly rather than
+    should read ``breakdown.earnings.gross_biweekly`` directly rather than
     re-invoking this helper (avoids re-querying tax configs and
     re-running the engine for an identical result).
 
@@ -94,7 +94,7 @@ def get_current_gross_biweekly(
 
     Returns:
         The paycheck engine's
-        :attr:`~app.services.paycheck_calculator.PaycheckBreakdown.gross_biweekly`
+        :attr:`~app.services.paycheck_calculator.Earnings.gross_biweekly`
         for the resolved profile + period.  Returns ``Decimal("0")``
         when the user has no active salary profile or no pay period
         covers ``as_of`` -- both pre-fix call sites returned
@@ -126,7 +126,7 @@ def get_current_gross_biweekly(
     breakdown = paycheck_calculator.calculate_paycheck(
         profile, current_period, all_periods, tax_configs,
     )
-    return breakdown.gross_biweekly
+    return breakdown.earnings.gross_biweekly
 
 
 def live_projected_net(
@@ -228,7 +228,7 @@ def live_projected_net(
             calibration=profile.calibration,
         )
         net_by_period_per_profile[profile.id] = {
-            bd.period_id: bd.net_pay for bd in breakdowns
+            bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
         }
 
     overrides: dict[int, Decimal] = {}

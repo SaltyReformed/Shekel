@@ -8,10 +8,18 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.mixins import SoftDeleteOverridableMixin, TimestampMixin
+from app.models.mixins import (
+    OptimisticLockMixin,
+    SoftDeleteOverridableMixin,
+    TimestampMixin,
+    UserScopedMixin,
+)
 
 
-class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
+class Transfer(
+    UserScopedMixin, OptimisticLockMixin, SoftDeleteOverridableMixin,
+    TimestampMixin, db.Model,
+):
     """A transfer between two accounts within a pay period.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -89,10 +97,6 @@ class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     from_account_id = db.Column(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,
@@ -125,6 +129,14 @@ class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
         ),
         nullable=False,
     )
+    # Pylint: ``duplicate-code`` -- Incidental scenario_id + status_id FK
+    # pair, shared by structure (not by domain) with the transaction table
+    # -- both are budget events living in a scenario with a status.  They
+    # are deliberately separate tables (the transfer owns the two-shadow
+    # invariant), so a shared base would couple them wrongly
+    # (coding-standards rule 13).  One-sided disable: the transaction block
+    # stays un-disabled.
+    # pylint: disable=duplicate-code
     scenario_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.scenarios.id", ondelete="CASCADE"),
@@ -156,18 +168,7 @@ class Transfer(SoftDeleteOverridableMixin, TimestampMixin, db.Model):
     # shadow ``Transaction.due_date``; this column exists so the parent is
     # a complete record and so edits/display have one source of truth.
     due_date = db.Column(db.Date, nullable=True)
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.  NOT NULL with server_default="1" so existing
-    # production rows are filled at ALTER TABLE time and new rows
-    # always start at version 1.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.  Routes that mutate
-    # Transfer (or call transfer_service helpers that flush) MUST
-    # catch StaleDataError and surface a 409 / flash + redirect.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     template = db.relationship("TransferTemplate", back_populates="transfers")

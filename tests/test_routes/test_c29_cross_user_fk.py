@@ -77,10 +77,12 @@ def _create_savings_account(seed_user):
     """Add a Savings account on the seeded user for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name="C-29 Savings",
-        anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="C-29 Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add(acct)
     db.session.commit()
@@ -97,15 +99,17 @@ def _create_transfer_with_shadows(seed_user, period, savings):
     """
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     xfer = transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        amount=Decimal("100.00"),
-        status_id=projected_id,
-        category_id=seed_user["categories"]["Rent"].id,
-        name="C-29 Transfer",
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("100.00"),
+            status_id=projected_id,
+            category_id=seed_user["categories"]["Rent"].id,
+            name="C-29 Transfer",
+        ),
     )
     db.session.commit()
     return xfer

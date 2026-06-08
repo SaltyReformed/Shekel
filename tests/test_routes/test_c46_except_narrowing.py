@@ -549,7 +549,7 @@ class TestRegenerateHelperNarrowCatch:
 
             with caplog.at_level(logging.ERROR, logger="app.routes.salary"):
                 with patch(
-                    "app.routes.salary.recurrence_engine."
+                    "app.routes.salary._helpers.recurrence_engine."
                     "regenerate_for_template",
                     side_effect=_make_data_error(),
                 ):
@@ -650,10 +650,12 @@ class TestInvestmentInvalidOperationCatch:
 
             from app.models.account import Account
             account = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=retirement_type.id,
-                name="My 401k",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=retirement_type.id,
+                    name="My 401k",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(account)
             db.session.commit()

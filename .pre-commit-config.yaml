@@ -1,0 +1,52 @@
+# Local pre-commit hooks for Shekel. Install once with `pre-commit install`.
+#
+# These mirror the CI gate so a regression is caught before the commit lands,
+# not at PR time. The Claude Code per-edit and Stop hooks are the in-session
+# enforcement layer; this is the layer for commits made outside a Claude session.
+#
+# NOTE: in the Claude Code web/remote flow the container performs the commit, so
+# pre-commit only fires there if a SessionStart hook runs `pre-commit install`.
+# Its primary value is local developer commits; CI remains the enforced gate.
+repos:
+  - repo: local
+    hooks:
+      - id: pylint-app
+        name: pylint app/ (custom checkers + design-smell floor)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^app/.*\.py$
+        pass_filenames: false
+        # Whole-package run: duplicate-code (R0801) is cross-file and cannot be
+        # checked per-file. --fail-under=9.0 mirrors current CI; flip to 10 at the
+        # lock-in step (see docs/audits/pylint-cleanup/plan.md Phase 5). The
+        # shekel-* symbols are hard failures now -- zero current violations, so
+        # this gives immediate protection for the financial-correctness rules.
+        args:
+          - app/
+          - --fail-under=9.0
+          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-disable-rationale
+      - id: pylint-tests-decimals
+        name: shekel-decimal-from-float on tests/
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^tests/.*\.py$
+        pass_filenames: false
+        # tests/ are out of general pylint scope, but a Decimal built from a
+        # float in a hand-computed assertion is a real bug. unknown/bad-option-value
+        # are disabled explicitly so the test files' "disable=X -- explanation"
+        # inline comments do not derail this targeted scan (--disable=all does not
+        # cover option-validity meta-messages).
+        args:
+          - tests/
+          - --disable=all
+          - --enable=shekel-decimal-from-float
+          - --disable=unknown-option-value,bad-option-value
+      - id: shekel-checker-tests
+        name: pylint checker unit tests
+        entry: pytest
+        language: system
+        files: ^tools/pylint/.*\.py$
+        pass_filenames: false
+        args: [tools/pylint/tests, -c, /dev/null, -q]

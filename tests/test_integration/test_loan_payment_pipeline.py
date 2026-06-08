@@ -62,10 +62,12 @@ class TestLoanPaymentPipeline:
                 name="Mortgage",
             ).one()
             mortgage = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=loan_type.id,
-                name="Pipeline Mortgage",
-                anchor_balance=Decimal("200000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=loan_type.id,
+                    name="Pipeline Mortgage",
+                    anchor_balance=Decimal("200000.00"),
+                ),
             )
             db.session.add(mortgage)
             db.session.flush()

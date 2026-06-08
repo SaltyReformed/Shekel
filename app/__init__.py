@@ -6,6 +6,7 @@ with an optional config_name ('development', 'testing', 'production')
 to get a fully wired Flask instance.
 """
 
+import importlib
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -64,6 +65,11 @@ def create_app(config_name=None):
     limiter.init_app(app)
 
     # Flask-Login user loader callback.
+    # Pylint: ``import-outside-toplevel`` -- app-factory pattern: importing a
+    # model eagerly loads the whole ``app.models`` graph (every model is
+    # registered there for Alembic discovery), so it is deferred into create_app
+    # rather than run at ``app``-package import time.  (Verified not a cycle:
+    # ``app.models.user`` imports cleanly on its own.)
     from app.models.user import User  # pylint: disable=import-outside-toplevel
 
     @login_manager.user_loader
@@ -184,7 +190,14 @@ def create_app(config_name=None):
     # would otherwise raise ``KeyError``.  Production never hits this
     # branch -- migrations have already run by the time Gunicorn
     # imports the app.
+    #
+    # Pylint: ``import-outside-toplevel`` -- imported here, after the seed and
+    # migration-check above and inside the app context below, so ``ref_cache.init``
+    # populates against ready ref tables (an app-factory timing deferral, not a
+    # cycle -- ``app.ref_cache`` imports cleanly on its own).
     from app import ref_cache  # pylint: disable=import-outside-toplevel
+    # Pylint: ``import-outside-toplevel`` -- registered at the same post-seed point
+    # as ref_cache above; the Jinja globals it adds read the populated cache.
     from app.jinja_globals import register_ref_id_globals  # pylint: disable=import-outside-toplevel
     with app.app_context():
         unavailable_ref_tables = ref_cache.init(db.session)
@@ -209,6 +222,9 @@ def _register_context_processors(app):
     @app.context_processor
     def inject_onboarding():
         """Inject onboarding status so base.html can show/hide the welcome banner."""
+        # Pylint: ``import-outside-toplevel`` -- imported inside the request-time
+        # context processor (app-factory pattern), kept out of ``app``-package
+        # import.
         from flask_login import current_user  # pylint: disable=import-outside-toplevel
 
         if not current_user.is_authenticated:
@@ -220,7 +236,13 @@ def _register_context_processors(app):
         # templates.  Omit the dict entirely so the banner's `onboarding is
         # defined` guard in base.html evaluates False, and skip the five
         # exists() queries that would otherwise run on every companion page.
+        #
+        # Pylint: ``import-outside-toplevel`` -- imported inside the request-time
+        # context processor (app-factory pattern), kept out of ``app``-package
+        # import.
         from app import ref_cache as _rc  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- RoleEnum imported lazily here for
+        # the same app-factory deferral as the ref_cache import above.
         from app.enums import RoleEnum as _RoleEnum  # pylint: disable=import-outside-toplevel
         try:
             if current_user.role_id == _rc.role_id(_RoleEnum.COMPANION):
@@ -232,11 +254,25 @@ def _register_context_processors(app):
             # answer.
             pass
 
+        # Pylint: ``import-outside-toplevel`` -- the onboarding-exists() lookups
+        # are imported inside the request-time context processor (app-factory
+        # pattern); the models below pull in the ``app.models`` graph, kept out of
+        # ``app``-package import.
         from sqlalchemy import exists  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- Account imported lazily here for
+        # the same app-factory deferral as the imports above.
         from app.models.account import Account  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- Category imported lazily here for
+        # the same app-factory deferral as the imports above.
         from app.models.category import Category  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- PayPeriod imported lazily here for
+        # the same app-factory deferral as the imports above.
         from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- SalaryProfile imported lazily here
+        # for the same app-factory deferral as the imports above.
         from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- TransactionTemplate imported lazily
+        # here for the same app-factory deferral as the imports above.
         from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
 
         uid = current_user.id
@@ -270,7 +306,12 @@ def _register_context_processors(app):
     @app.context_processor
     def inject_role_ids():
         """Make role IDs available in all templates for role-based rendering."""
+        # Pylint: ``import-outside-toplevel`` -- imported inside the request-time
+        # context processor (app-factory pattern), kept out of ``app``-package
+        # import.
         from app import ref_cache as _rc  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- RoleEnum imported lazily here for
+        # the same app-factory deferral as the ref_cache import above.
         from app.enums import RoleEnum as _RoleEnum  # pylint: disable=import-outside-toplevel
         try:
             return {"COMPANION_ROLE_ID": _rc.role_id(_RoleEnum.COMPANION)}
@@ -326,6 +367,9 @@ def _register_context_processors(app):
         Audit reference: F-091 / commit C-16 of the 2026-04-15
         security remediation plan.
         """
+        # Pylint: ``import-outside-toplevel`` -- imported inside the request-time
+        # context processor (app-factory pattern); security_events pulls in the
+        # ``app.models`` graph, kept out of ``app``-package import.
         # pylint: disable=import-outside-toplevel
         from flask_login import current_user
         from app.utils.security_events import (
@@ -395,6 +439,9 @@ def _register_context_processors(app):
         Audit reference: F-095 / commit C-12 of the 2026-04-15
         security remediation plan.
         """
+        # Pylint: ``import-outside-toplevel`` -- the imports in this context
+        # processor run inside the request-time closure (app-factory pattern) and
+        # pull in app extensions/models kept out of ``app``-package import.
         # pylint: disable=import-outside-toplevel
         from flask_login import current_user
         if not current_user.is_authenticated:
@@ -432,56 +479,32 @@ def _register_context_processors(app):
         return {"mfa_nag_visible": not has_enabled_mfa}
 
 
-def _register_blueprints(app):
-    """Import and register all route blueprints."""
-    # pylint: disable=import-outside-toplevel
-    from app.routes.auth import auth_bp
-    from app.routes.grid import grid_bp
-    from app.routes.transactions import transactions_bp
-    from app.routes.templates import templates_bp
-    from app.routes.pay_periods import pay_periods_bp
-    from app.routes.accounts import accounts_bp
-    from app.routes.categories import categories_bp
-    from app.routes.settings import settings_bp
-    from app.routes.salary import salary_bp
-    from app.routes.transfers import transfers_bp
-    from app.routes.savings import savings_bp
-    from app.routes.loan import loan_bp
-    from app.routes.investment import investment_bp
-    from app.routes.retirement import retirement_bp
-    from app.routes.charts import charts_bp
-    from app.routes.analytics import analytics_bp
-    from app.routes.dashboard import dashboard_bp
-    from app.routes.debt_strategy import debt_strategy_bp
-    from app.routes.obligations import obligations_bp
-    from app.routes.health import health_bp
-    from app.routes.entries import entries_bp
-    from app.routes.companion import companion_bp
-    from app.routes.static_pass import static_pass_bp
+# Route modules registered (IN ORDER) by ``_register_blueprints``.  Each
+# exposes a ``<name>_bp`` Flask Blueprint.  They are imported lazily inside the
+# function (every route module imports ``app``, so a module-level import here
+# would cycle).  Registration order is significant -- URL-rule precedence and
+# error-handler resolution -- so this tuple IS the canonical order.  Adding a
+# route module is a one-line append here; a module that breaks the ``<name>_bp``
+# convention fails loud (``AttributeError`` at startup), never silently.
+_BLUEPRINT_MODULES = (
+    "auth", "grid", "transactions", "templates", "pay_periods", "accounts",
+    "categories", "settings", "salary", "transfers", "savings", "loan",
+    "investment", "retirement", "charts", "analytics", "dashboard",
+    "debt_strategy", "obligations", "health", "entries", "companion",
+    "static_pass",
+)
 
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(grid_bp)
-    app.register_blueprint(transactions_bp)
-    app.register_blueprint(templates_bp)
-    app.register_blueprint(pay_periods_bp)
-    app.register_blueprint(accounts_bp)
-    app.register_blueprint(categories_bp)
-    app.register_blueprint(settings_bp)
-    app.register_blueprint(salary_bp)
-    app.register_blueprint(transfers_bp)
-    app.register_blueprint(savings_bp)
-    app.register_blueprint(loan_bp)
-    app.register_blueprint(investment_bp)
-    app.register_blueprint(retirement_bp)
-    app.register_blueprint(charts_bp)
-    app.register_blueprint(analytics_bp)
-    app.register_blueprint(dashboard_bp)
-    app.register_blueprint(debt_strategy_bp)
-    app.register_blueprint(obligations_bp)
-    app.register_blueprint(health_bp)
-    app.register_blueprint(entries_bp)
-    app.register_blueprint(companion_bp)
-    app.register_blueprint(static_pass_bp)
+
+def _register_blueprints(app):
+    """Import (lazily) and register every route blueprint.
+
+    Lazy per-module import avoids the blueprint<->``app`` cycle that a
+    module-level import would create.  See ``_BLUEPRINT_MODULES`` for the
+    canonical registration order and the ``<name>_bp`` naming convention.
+    """
+    for name in _BLUEPRINT_MODULES:
+        module = importlib.import_module(f"app.routes.{name}")
+        app.register_blueprint(getattr(module, f"{name}_bp"))
 
 
 def _register_error_handlers(app):
@@ -672,6 +695,8 @@ def _register_session_activity_refresh(app):
     real activity is to write it on every request.  Cookie size
     impact is negligible (one ISO-8601 string).
     """
+    # Pylint: ``import-outside-toplevel`` -- imported inside this registration
+    # helper (app-factory pattern), kept out of ``app``-package import.
     # pylint: disable=import-outside-toplevel
     from flask_login import current_user
 
@@ -842,6 +867,9 @@ def _seed_ref_tables():
     runs the seed before tables exist (test setup, pre-migration
     deploys).
     """
+    # Pylint: ``import-outside-toplevel`` -- ref_seeds (which imports the
+    # ``app.models`` graph) is loaded only on the dev/test bootstrap path, not at
+    # every ``app``-package import (app-factory deferral, not a cycle).
     # pylint: disable=import-outside-toplevel
     from sqlalchemy.exc import ProgrammingError
 

@@ -24,7 +24,8 @@ from app.schemas.validation import (
 from app.models.category import Category
 from app.models.ref import AccountType, AccountTypeCategory, FilingStatus, TaxType
 from app.models.tax_config import TaxBracketSet, FicaConfig, StateTaxConfig
-from app.models.user import User, UserSettings
+from app.models.user import MfaConfig, User, UserSettings
+from app.services import account_service
 from app.services.auth_service import hash_password
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,34 @@ _VALID_SECTIONS = [
     "general", "categories", "pay-periods", "tax", "account-types",
     "retirement", "companions", "security",
 ]
+
+# The scalar UserSettings fields the POST handler copies straight from the
+# validated form.  All are storage-domain values: UserSettingsSchema's
+# ``@pre_load`` already divided ``default_inflation_rate`` and
+# ``trend_alert_threshold`` from form percent into the [0, 1] decimal fraction
+# the DB CHECK enforces (E-28 / HIGH-06 / PA-01, Commit 24), so the route stores
+# them verbatim.  Zero is a valid value (E-12 "zero is a value"), so each field
+# is applied on ``is not None``, never on truthiness.  ``default_grid_account_id``
+# is deliberately NOT in this list -- it needs a route-level ownership check.
+_SIMPLE_SETTINGS_FIELDS = (
+    "grid_default_periods",
+    "default_inflation_rate",
+    "low_balance_threshold",
+    "large_transaction_threshold",
+    "trend_alert_threshold",
+    "anchor_staleness_days",
+)
+
+# Bootstrap icon classes offered when creating/editing a custom account type.
+# Immutable static data, so it is a module-scope tuple rather than a list rebuilt
+# per request (the template only iterates it -- it is never mutated).
+_ACCOUNT_TYPE_ICON_CHOICES = (
+    "bi-bank", "bi-wallet2", "bi-piggy-bank", "bi-cash-stack",
+    "bi-safe", "bi-heart-pulse", "bi-credit-card", "bi-house",
+    "bi-car-front", "bi-mortarboard", "bi-cash-coin",
+    "bi-graph-up-arrow", "bi-bar-chart-line", "bi-building",
+    "bi-briefcase", "bi-coin", "bi-currency-exchange",
+)
 
 
 @settings_bp.route("/settings", methods=["GET"])
@@ -53,135 +82,32 @@ def show():
         db.session.add(settings)
         db.session.commit()
 
-    # Section-specific data loading.
-    accounts = []
-    grouped = {}
-    errors = {}
-    filing_statuses = []
-    tax_types = []
-    bracket_sets = []
-    fica_configs = []
-    state_configs = []
-    account_types = []
-    types_in_use = set()
-    categories = []
-    archived_categories = []
-    group_names = []
-    icon_choices = []
-    mfa_enabled = False
-
+    # Start from the full default context (every template key the dashboard
+    # expects, at its empty placeholder) and let the active section override
+    # only its own slice.  This preserves the template's "all keys always
+    # supplied" contract while collapsing what used to be a wall of per-section
+    # parallel locals.
+    context = _empty_section_context()
     if section == "general":
-        accounts = (
-            db.session.query(Account)
-            .filter_by(user_id=current_user.id, is_active=True)
-            .order_by(Account.sort_order, Account.name)
-            .all()
-        )
+        context["accounts"] = account_service.list_active_accounts(current_user.id)
     elif section == "categories":
-        all_categories = (
-            db.session.query(Category)
-            .filter_by(user_id=current_user.id)
-            .order_by(Category.sort_order, Category.group_name, Category.item_name)
-            .all()
-        )
-        active_categories = [c for c in all_categories if c.is_active]
-        archived_categories = [c for c in all_categories if not c.is_active]
-        # Distinct group names from active categories for the add/edit dropdown (5A.4-2).
-        group_names = sorted(set(cat.group_name for cat in active_categories))
-        for cat in active_categories:
-            grouped.setdefault(cat.group_name, []).append(cat)
-    elif section == "pay-periods":
-        pass  # Just needs errors={} which is already set.
+        context.update(_load_categories_context())
     elif section == "tax":
-        filing_statuses = db.session.query(FilingStatus).all()
-        tax_types = db.session.query(TaxType).all()
-        bracket_sets = (
-            db.session.query(TaxBracketSet)
-            .filter_by(user_id=current_user.id)
-            .order_by(TaxBracketSet.tax_year.desc(), TaxBracketSet.filing_status_id)
-            .all()
-        )
-        fica_configs = (
-            db.session.query(FicaConfig)
-            .filter_by(user_id=current_user.id)
-            .order_by(FicaConfig.tax_year.desc())
-            .all()
-        )
-        state_configs = (
-            db.session.query(StateTaxConfig)
-            .filter_by(user_id=current_user.id)
-            .all()
-        )
+        context.update(_load_tax_context())
     elif section == "account-types":
-        # The account_types listing is scoped to seeded built-ins
-        # (``user_id IS NULL``) plus the current user's own custom
-        # types (commit C-28 / F-044).  Other owners' custom types
-        # are intentionally invisible.
-        account_types = (
-            db.session.query(AccountType)
-            .filter(db.or_(
-                AccountType.user_id.is_(None),
-                AccountType.user_id == current_user.id,
-            ))
-            .order_by(AccountType.name)
-            .all()
-        )
-        types_in_use = set(
-            row[0] for row in
-            db.session.query(Account.account_type_id)
-            .filter_by(user_id=current_user.id)
-            .distinct()
-            .all()
-        )
-        categories = (
-            db.session.query(AccountTypeCategory)
-            .order_by(AccountTypeCategory.id)
-            .all()
-        )
-        icon_choices = [
-            "bi-bank", "bi-wallet2", "bi-piggy-bank", "bi-cash-stack",
-            "bi-safe", "bi-heart-pulse", "bi-credit-card", "bi-house",
-            "bi-car-front", "bi-mortarboard", "bi-cash-coin",
-            "bi-graph-up-arrow", "bi-bar-chart-line", "bi-building",
-            "bi-briefcase", "bi-coin", "bi-currency-exchange",
-        ]
-    # elif section == "retirement": settings already loaded above.
-    # "companions" is handled inline in the render_template call below
-    # -- no per-branch locals are needed because _load_companions_context
-    # returns the four template variables as a single dict.
+        context.update(_load_account_types_context())
+    elif section == "companions":
+        context.update(_load_companions_context(request.args.get("edit")))
     elif section == "security":
-        from app.models.user import MfaConfig  # pylint: disable=import-outside-toplevel
-        mfa_config = (
-            db.session.query(MfaConfig)
-            .filter_by(user_id=current_user.id)
-            .first()
-        )
-        mfa_enabled = mfa_config.is_enabled if mfa_config else False
+        context.update(_load_security_context())
+    # "pay-periods" and "retirement" need no section-specific data: the former
+    # renders from the default errors={}, the latter from the loaded settings.
 
     return render_template(
         "settings/dashboard.html",
         active_section=section,
         settings=settings,
-        accounts=accounts,
-        grouped=grouped,
-        errors=errors,
-        filing_statuses=filing_statuses,
-        tax_types=tax_types,
-        bracket_sets=bracket_sets,
-        fica_configs=fica_configs,
-        state_configs=state_configs,
-        account_types=account_types,
-        types_in_use=types_in_use,
-        categories=categories,
-        archived_categories=archived_categories,
-        group_names=group_names,
-        icon_choices=icon_choices,
-        mfa_enabled=mfa_enabled,
-        **(
-            _load_companions_context(request.args.get("edit"))
-            if section == "companions"
-            else _empty_companions_context()
-        ),
+        **context,
     )
 
 
@@ -203,34 +129,11 @@ def update():
         settings = UserSettings(user_id=current_user.id)
         db.session.add(settings)
 
-    if "grid_default_periods" in data and data["grid_default_periods"] is not None:
-        settings.grid_default_periods = data["grid_default_periods"]
-
-    if "default_inflation_rate" in data and data["default_inflation_rate"] is not None:
-        # E-28 / HIGH-06 (Commit 24): ``UserSettingsSchema``'s
-        # ``@pre_load`` already divided the form percent by 100, so
-        # ``data["default_inflation_rate"]`` is the storage-domain
-        # decimal fraction the DB CHECK ``[0, 1]`` enforces.
-        settings.default_inflation_rate = data["default_inflation_rate"]
-
-    if "low_balance_threshold" in data and data["low_balance_threshold"] is not None:
-        settings.low_balance_threshold = data["low_balance_threshold"]
-
-    if "large_transaction_threshold" in data and data["large_transaction_threshold"] is not None:
-        settings.large_transaction_threshold = data["large_transaction_threshold"]
-
-    if "trend_alert_threshold" in data and data["trend_alert_threshold"] is not None:
-        # E-28 / HIGH-06 / PA-01 (Commit 24): same schema-level
-        # conversion as ``default_inflation_rate`` above.  Pre-fix
-        # the schema required ``Integer Range(1, 100)`` while the DB
-        # accepted ``[0, 1]`` (nominal-domain mismatch); the storage
-        # column is ``Numeric(5, 4)`` so the route accepts the
-        # post-conversion ``Decimal`` verbatim.  Zero is now a valid
-        # "alert disabled" state per E-12 "zero is a value".
-        settings.trend_alert_threshold = data["trend_alert_threshold"]
-
-    if "anchor_staleness_days" in data and data["anchor_staleness_days"] is not None:
-        settings.anchor_staleness_days = data["anchor_staleness_days"]
+    # Copy the schema-validated scalar settings (the allowlist + the
+    # storage-domain conversion rationale live on _SIMPLE_SETTINGS_FIELDS).
+    for field in _SIMPLE_SETTINGS_FIELDS:
+        if field in data and data[field] is not None:
+            setattr(settings, field, data[field])
 
     # Account ownership check stays in the route (can't be in schema).
     if "default_grid_account_id" in data:
@@ -250,6 +153,128 @@ def update():
     return redirect(url_for("settings.show", section="general"))
 
 
+def _empty_section_context():
+    """Return the dashboard template's full keyword context at defaults.
+
+    ``settings.show`` (and the companion-form re-render) always supply every
+    section's template variable so the dashboard partial can reference any of
+    them regardless of the active section; the active section then overrides
+    only its own slice.  Keeping the defaults in one place stops these keys
+    from drifting between the GET handler and the companion-form re-render.
+    """
+    return {
+        "errors": {},
+        "accounts": [],
+        "grouped": {},
+        "filing_statuses": [],
+        "tax_types": [],
+        "bracket_sets": [],
+        "fica_configs": [],
+        "state_configs": [],
+        "account_types": [],
+        "types_in_use": set(),
+        "categories": [],
+        "archived_categories": [],
+        "group_names": [],
+        "icon_choices": [],
+        "mfa_enabled": False,
+        "active_companions": [],
+        "inactive_companions": [],
+        "edit_companion_id": None,
+        "form_values": {},
+    }
+
+
+def _load_categories_context():
+    """Load the categories section: grouped active categories + the archive.
+
+    Returns ``grouped`` (group_name -> [category]), the sorted distinct
+    ``group_names`` for the add/edit dropdown (5A.4-2), and the
+    ``archived_categories`` list.
+    """
+    all_categories = (
+        db.session.query(Category)
+        .filter_by(user_id=current_user.id)
+        .order_by(Category.sort_order, Category.group_name, Category.item_name)
+        .all()
+    )
+    active_categories = [c for c in all_categories if c.is_active]
+    grouped = {}
+    for cat in active_categories:
+        grouped.setdefault(cat.group_name, []).append(cat)
+    return {
+        "grouped": grouped,
+        "group_names": sorted(set(cat.group_name for cat in active_categories)),
+        "archived_categories": [c for c in all_categories if not c.is_active],
+    }
+
+
+def _load_tax_context():
+    """Load the tax section: filing statuses / tax types (reference) plus the
+    user's bracket sets, FICA configs, and state tax configs.
+    """
+    return {
+        "filing_statuses": db.session.query(FilingStatus).all(),
+        "tax_types": db.session.query(TaxType).all(),
+        "bracket_sets": (
+            db.session.query(TaxBracketSet)
+            .filter_by(user_id=current_user.id)
+            .order_by(TaxBracketSet.tax_year.desc(), TaxBracketSet.filing_status_id)
+            .all()
+        ),
+        "fica_configs": (
+            db.session.query(FicaConfig)
+            .filter_by(user_id=current_user.id)
+            .order_by(FicaConfig.tax_year.desc())
+            .all()
+        ),
+        "state_configs": (
+            db.session.query(StateTaxConfig)
+            .filter_by(user_id=current_user.id)
+            .all()
+        ),
+    }
+
+
+def _load_account_types_context():
+    """Load the account-types section: the user's visible account types, which
+    type IDs are in use, the category list, and the icon choices.
+
+    The listing is scoped to seeded built-ins (``user_id IS NULL``) plus the
+    current user's own custom types (commit C-28 / F-044); other owners' custom
+    types are intentionally invisible.
+    """
+    account_types = (
+        db.session.query(AccountType)
+        .filter(db.or_(
+            AccountType.user_id.is_(None),
+            AccountType.user_id == current_user.id,
+        ))
+        .order_by(AccountType.name)
+        .all()
+    )
+    return {
+        "account_types": account_types,
+        "types_in_use": account_service.get_account_type_ids_in_use(current_user.id),
+        "categories": (
+            db.session.query(AccountTypeCategory)
+            .order_by(AccountTypeCategory.id)
+            .all()
+        ),
+        "icon_choices": _ACCOUNT_TYPE_ICON_CHOICES,
+    }
+
+
+def _load_security_context():
+    """Load the security section: whether MFA is enabled for the user."""
+    mfa_config = (
+        db.session.query(MfaConfig)
+        .filter_by(user_id=current_user.id)
+        .first()
+    )
+    return {"mfa_enabled": mfa_config.is_enabled if mfa_config else False}
+
+
 # --- Companion account management ----------------------------------------
 #
 # Companions are created, edited, deactivated, and reactivated here.
@@ -262,22 +287,6 @@ def update():
 #      one owner today.
 # A failing guard returns 404, matching the project rule "404 for both
 # 'not found' and 'not yours.'"
-
-
-def _empty_companions_context():
-    """Return the default template kwargs for a non-companion section.
-
-    Used by settings.show() when the active section is not
-    ``companions`` so the template still receives the four keys it
-    expects (active_companions, inactive_companions,
-    edit_companion_id, form_values) as empty placeholders.
-    """
-    return {
-        "active_companions": [],
-        "inactive_companions": [],
-        "edit_companion_id": None,
-        "form_values": {},
-    }
 
 
 def _load_companion_or_404(companion_id):
@@ -354,29 +363,22 @@ def _render_companions_section(errors=None, form_values=None,
     would derive from the query string.
     """
     ctx = _load_companions_context(None)
+    # Reuse the GET handler's full default context so the companions
+    # form re-render and settings.show() cannot drift on the template's
+    # key set; override only the error/companion slice.
+    context = _empty_section_context()
+    context.update({
+        "errors": errors or {},
+        "active_companions": ctx["active_companions"],
+        "inactive_companions": ctx["inactive_companions"],
+        "edit_companion_id": edit_companion_id,
+        "form_values": form_values or {},
+    })
     return render_template(
         "settings/dashboard.html",
         active_section="companions",
         settings=current_user.settings,
-        accounts=[],
-        grouped={},
-        errors=errors or {},
-        filing_statuses=[],
-        tax_types=[],
-        bracket_sets=[],
-        fica_configs=[],
-        state_configs=[],
-        account_types=[],
-        types_in_use=set(),
-        categories=[],
-        archived_categories=[],
-        group_names=[],
-        icon_choices=[],
-        mfa_enabled=False,
-        active_companions=ctx["active_companions"],
-        inactive_companions=ctx["inactive_companions"],
-        edit_companion_id=edit_companion_id,
-        form_values=form_values or {},
+        **context,
     )
 
 
@@ -539,6 +541,7 @@ def companion_deactivate(companion_id):
 )
 @login_required
 @require_owner
+@fresh_login_required()
 def companion_reactivate(companion_id):
     """Restore access for a previously deactivated companion.
 

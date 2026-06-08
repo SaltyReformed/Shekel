@@ -10,16 +10,14 @@ constants (``_MFA_PENDING_KEYS``, ``_MFA_PENDING_MAX_AGE``,
 the file along route lines would force cross-module imports of those
 constants and lose the local audit-rationale comments.
 """
-# Pylint module-size waiver: the auth blueprint legitimately spans more
-# than 1000 lines because of the dense per-route audit rationale
-# (every branch carries a F-NNN finding reference and a security-
-# relevant explanation, all of which would lose context if split into
-# separate modules).  Splitting /reauth into its own module would also
-# lose the shared imports of stamp_login_session / stamp_reauth_session
-# / stamp_session_refresh and require duplicating the
-# _verify_totp_with_replay_logging helper (which is the single point
-# of truth for replay-rejection logging across login, MFA verify, MFA
-# disable, AND reauth).  See commit C-10.
+# Pylint: ``too-many-lines`` -- the auth blueprint spans >1000 lines, dense
+# with per-route security audit rationale (every branch carries an F-NNN
+# finding reference).  The decision-#5 package split into ``app/routes/auth/``
+# -- a leaf ``_bp.py`` plus a ``_helpers.py`` single-sourcing the shared
+# constants and the ``_verify_totp_with_replay_logging`` / ``stamp_*`` helpers
+# (the app/routes/salary|loan precedent), keeping the parallel MFA routes
+# co-located so duplicate-code does not re-fire -- is a tracked follow-up; this
+# waiver stands until that split lands.
 # pylint: disable=too-many-lines
 
 import logging
@@ -354,16 +352,15 @@ def _is_safe_redirect(target):
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def login():  # pylint: disable=too-many-return-statements
+def login():
     """Display the login form and handle authentication.
 
-    Pylint note: ``too-many-return-statements`` is suppressed because
-    each early return is a distinct semantic exit (companion-already-
-    logged-in, owner-already-logged-in, MFA-pending redirect,
-    companion-success redirect, owner-success redirect, generic
-    failure render).  Consolidating these into one return path would
-    force a state-machine in the function body that hides per-mode
-    behaviour; the explicit returns are the readable form.
+    Design note: each early return is a distinct semantic exit
+    (companion-already-logged-in, owner-already-logged-in, MFA-pending
+    redirect, companion-success redirect, owner-success redirect,
+    generic failure render).  Consolidating these into one return path
+    would force a state-machine in the function body that hides
+    per-mode behaviour; the explicit returns are the readable form.
     """
     # Already logged in -- redirect to the appropriate landing page.
     if current_user.is_authenticated:
@@ -624,7 +621,7 @@ def invalidate_sessions():
 @auth_bp.route("/reauth", methods=["GET", "POST"])
 @login_required
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def reauth():  # pylint: disable=too-many-return-statements
+def reauth():
     """Step-up re-authentication for high-value operations.
 
     Users land here when ``fresh_login_required`` (commit C-10 /
@@ -728,14 +725,32 @@ def reauth():  # pylint: disable=too-many-return-statements
         logger, logging.INFO, EVT_REAUTH_SUCCESS, AUTH,
         "Step-up re-auth succeeded", user_id=current_user.id,
     )
-    if safe_next:
-        return redirect(safe_next)
-    return redirect(url_for("dashboard.page"))
+    return redirect(safe_next or url_for("dashboard.page"))
+
+
+def _check_mfa_code(mfa_config, user_id, totp_code, backup_code):
+    """Verify a submitted TOTP or backup code; return (valid, used_backup_code).
+
+    Checks the TOTP code if one was submitted, else the backup code (the
+    backup path delegates to :func:`_consume_backup_code` so the
+    verify+remove+commit stays atomic and length-agnostic across the
+    pre-C-03 8-hex and post-C-03 28-hex code formats).  Neither code
+    submitted -> ``(False, False)``.  The caller wraps this in the
+    decrypt try/except, so a missing/rotated encryption key (RuntimeError
+    / InvalidToken, raised by the up-front decrypt or the TOTP verifier's
+    internal decrypt) surfaces there, not here.
+    """
+    if totp_code:
+        return _verify_totp_with_replay_logging(mfa_config, totp_code, user_id), False
+    if backup_code:
+        used = _consume_backup_code(mfa_config, backup_code)
+        return used, used
+    return False, False
 
 
 @auth_bp.route("/mfa/verify", methods=["GET", "POST"])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
-def mfa_verify():  # pylint: disable=too-many-return-statements,too-many-branches
+def mfa_verify():  # pylint: disable=too-many-return-statements
     """Display the MFA verification form and handle code submission.
 
     Requires a pending MFA user_id in the session (set by the login
@@ -748,13 +763,14 @@ def mfa_verify():  # pylint: disable=too-many-return-statements,too-many-branche
     is bounced back to /login with a flash message -- the F-002
     cookie-replay window closes at exactly this gate.
 
-    Pylint note: ``too-many-return-statements`` is suppressed because
-    each early return is a distinct semantic exit (no pending state,
-    stale state, GET render, missing user-or-config, key failure,
-    invalid code, companion success, owner success).  Consolidating
-    these into one return path would force a single flash/redirect
-    template that hides the per-mode messaging; the explicit returns
-    are the readable form.
+    Pylint: ``too-many-return-statements`` (9/6) -- each early return is a
+    distinct semantic exit (no pending state, stale state, GET render,
+    missing user-or-config, key failure, invalid code, companion success,
+    owner success), each with its own clear/flash/redirect side effects, so
+    they cannot be collapsed without merging distinct security messaging.
+    The explicit returns are the readable form.  (``too-many-branches`` is
+    no longer suppressed -- the TOTP/backup-code branching was extracted to
+    :func:`_check_mfa_code`.)
     """
     pending_user_id = flask_session.get("_mfa_pending_user_id")
     if not pending_user_id:
@@ -813,31 +829,19 @@ def mfa_verify():  # pylint: disable=too-many-return-statements,too-many-branche
         _clear_mfa_pending_state()
         return redirect(url_for("auth.login"))
 
-    valid = False
-    used_backup_code = False
-
     # Single try/except wraps both the up-front decrypt (preserving
     # the pre-C-09 fail-fast behaviour: a missing encryption key
-    # disables BOTH the TOTP and backup-code paths) and the TOTP
-    # verifier (which decrypts again internally on the TOTP path).
+    # disables BOTH the TOTP and backup-code paths) and the verifier
+    # (_check_mfa_code decrypts again internally on the TOTP path).
     # Any of three failure modes -- decrypt-now error, verifier
     # decrypt error, or impossible-but-defensive key swap mid-flow --
     # collapses into the same operator-side error message and
     # redirect.
     try:
         mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
-        if totp_code:
-            valid = _verify_totp_with_replay_logging(
-                mfa_config, totp_code, user.id,
-            )
-        elif backup_code:
-            # Backup-code path delegates to _consume_backup_code so
-            # the verify+remove+commit sequence stays atomic and is
-            # not duplicated at any other call site.  Length-
-            # agnostic: pre-C-03 (8 hex) and post-C-03 (28 hex) codes
-            # verify identically through bcrypt.
-            used_backup_code = _consume_backup_code(mfa_config, backup_code)
-            valid = used_backup_code
+        valid, used_backup_code = _check_mfa_code(
+            mfa_config, user.id, totp_code, backup_code,
+        )
     except (RuntimeError, InvalidToken):
         _clear_mfa_pending_state()
         flash(
@@ -966,7 +970,7 @@ def mfa_setup():
 
 @auth_bp.route("/mfa/confirm", methods=["POST"])
 @login_required
-def mfa_confirm():  # pylint: disable=too-many-return-statements
+def mfa_confirm():
     """Verify a TOTP code and enable MFA for the current user.
 
     Reads the encrypted pending secret persisted by ``/mfa/setup``
@@ -1054,16 +1058,21 @@ def mfa_confirm():  # pylint: disable=too-many-return-statements
     # an oversized payload reaching ``verify_totp_setup_code`` (which
     # would still reject it, but at the cost of pyotp processing).
     # See commit C-26.
+    # Both "the submitted code is unusable" outcomes -- a schema rejection
+    # (oversized/malformed payload, per the C-26 cap above) and a code that
+    # matches no step -- converge on one flash+redirect.  matched_step stays
+    # None on a schema failure (the except leaves it untouched), so the single
+    # guard below covers both.  Pending state is preserved either way, so the
+    # user may retry until the 15-minute expiry without re-scanning the QR code.
+    matched_step = None
     try:
         confirm_data = MfaConfirmSchema().load(request.form)
+        matched_step = mfa_service.verify_totp_setup_code(
+            secret, confirm_data["totp_code"],
+        )
     except MarshmallowValidationError:
-        flash("Invalid code. Please try again.", "danger")
-        return redirect(url_for("auth.mfa_setup"))
-    totp_code = confirm_data["totp_code"]
-    matched_step = mfa_service.verify_totp_setup_code(secret, totp_code)
+        pass
     if matched_step is None:
-        # Pending state is preserved -- the user may retry until the
-        # 15-minute expiry without re-scanning the QR code.
         flash("Invalid code. Please try again.", "danger")
         return redirect(url_for("auth.mfa_setup"))
 

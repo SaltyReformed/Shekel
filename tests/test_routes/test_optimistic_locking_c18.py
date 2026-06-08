@@ -191,10 +191,12 @@ def _make_savings_account(user_id):
         db.session.query(AccountType).filter_by(name="Savings").one()
     )
     acct = account_service.create_account(
-        user_id=user_id,
-        account_type_id=savings_type.id,
-        name="Optimistic-Lock Savings",
-        anchor_balance=Decimal("0.00"),
+        account_service.AccountSpec(
+            user_id=user_id,
+            account_type_id=savings_type.id,
+            name="Optimistic-Lock Savings",
+            anchor_balance=Decimal("0.00"),
+        ),
     )
     db.session.add(acct)
     db.session.commit()
@@ -281,15 +283,17 @@ def _make_transfer(seed_user, period):
     )
     cat = seed_user["categories"]["Groceries"]
     xfer = transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        amount=Decimal("250.00"),
-        status_id=projected.id,
-        category_id=cat.id,
-        name="Test Xfer",
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("250.00"),
+            status_id=projected.id,
+            category_id=cat.id,
+            name="Test Xfer",
+        ),
     )
     db.session.commit()
     return xfer

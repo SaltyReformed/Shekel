@@ -1068,6 +1068,135 @@ class TestBalanceAsOfDate:
             # 1000.00 - 300.00 = 700.00.
             assert result == Decimal("700.00")
 
+    # ── C9-5 -----------------------------------------------------------
+
+    def test_calendar_entry_on_as_of_date_included(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C9-5: an entry dated EXACTLY on ``as_of`` IS reflected.
+
+        Pins the inclusive boundary of the entry-date window
+        (``entry_date <= as_of``): a purchase dated the same day as the
+        as-of cutoff HAS happened as of that date and must contribute.
+
+        Setup:
+          - anchor 1000.00 on seed_periods[0].
+          - one Projected envelope expense est=500.00 on period 0
+            with two cleared debits, dated as follows:
+              200.00 cleared on Jan 10 (EXACTLY ``as_of``)
+              250.00 cleared on Jan 20 (after ``as_of``)
+          - ``as_of`` = Jan 10.
+
+        Hand arithmetic with the inclusive cut (entry_date <= Jan 10):
+          cleared_debit (in-window) = 200.00  (the Jan 10 entry counts)
+          uncleared_debit = 0
+          sum_credit = 0
+          impact = max(500.00 - 200.00, 0) = 300.00
+          balance_at_jan_10 = 1000.00 - 300.00 = 700.00
+
+        If the boundary were EXCLUSIVE (the wrong ``entry_date < as_of``)
+        the Jan 10 entry would drop out, cleared_debit would be 0, and
+        the balance would be 1000.00 - 500.00 = 500.00.  The strict
+        difference between 700.00 (correct, inclusive) and 500.00
+        (exclusive) proves the boundary is inclusive.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            anchor_period = seed_periods[0]
+
+            txn = _make_projected_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=anchor_period,
+                estimated=Decimal("500.00"),
+            )
+            _add_entry(
+                db.session,
+                txn=txn,
+                user_id=seed_user["user"].id,
+                amount=Decimal("200.00"),
+                is_cleared=True,
+                entry_date=_date(2026, 1, 10),
+            )
+            _add_entry(
+                db.session,
+                txn=txn,
+                user_id=seed_user["user"].id,
+                amount=Decimal("250.00"),
+                is_cleared=True,
+                entry_date=_date(2026, 1, 20),
+            )
+            db.session.commit()
+
+            result = balance_as_of_date(
+                account, scenario_id, _date(2026, 1, 10),
+            )
+            # cleared_debit (entry_date <= Jan 10) = 200.00 (Jan 10 counts).
+            # impact = max(500.00 - 200.00, 0) = 300.00.
+            # 1000.00 - 300.00 = 700.00.
+            assert result == Decimal("700.00")
+
+    # ── C9-6 -----------------------------------------------------------
+
+    def test_calendar_all_entries_after_as_of_falls_back(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C9-6: a txn whose every entry is after ``as_of`` reserves the full estimate.
+
+        Pins the empty-window short-circuit: when entries EXIST but all
+        are dated strictly after ``as_of``, none has cleared the bank
+        yet, so the full estimated reservation is still pending and the
+        producer falls back to ``effective_amount`` (= estimated for an
+        unfilled Projected expense) -- matching the engine helper's
+        empty-entries branch.
+
+        Setup:
+          - anchor 1000.00 on seed_periods[0].
+          - one Projected envelope expense est=500.00 on period 0
+            with a single cleared debit of 200.00 dated Jan 20
+            (strictly after ``as_of``).
+          - ``as_of`` = Jan 10.
+
+        Hand arithmetic:
+          windowed entries (entry_date <= Jan 10) = []  -> short-circuit
+          impact = effective_amount = estimated = 500.00
+          balance_at_jan_10 = 1000.00 - 500.00 = 500.00
+
+        Without the date cut the Jan 20 debit would reduce the
+        reservation to max(500.00 - 200.00, 0) = 300.00 and yield
+        700.00, so 500.00 vs 700.00 proves the empty-window fallback
+        fires.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            anchor_period = seed_periods[0]
+
+            txn = _make_projected_expense(
+                db.session,
+                seed_user=seed_user,
+                pay_period=anchor_period,
+                estimated=Decimal("500.00"),
+            )
+            _add_entry(
+                db.session,
+                txn=txn,
+                user_id=seed_user["user"].id,
+                amount=Decimal("200.00"),
+                is_cleared=True,
+                entry_date=_date(2026, 1, 20),
+            )
+            db.session.commit()
+
+            result = balance_as_of_date(
+                account, scenario_id, _date(2026, 1, 10),
+            )
+            # No entry dated <= Jan 10 -> empty window -> effective_amount.
+            # effective_amount for an unfilled Projected expense = 500.00.
+            # 1000.00 - 500.00 = 500.00.
+            assert result == Decimal("500.00")
+
     # ── as_of before anchor -------------------------------------------
 
     def test_as_of_before_anchor_returns_anchor_balance(

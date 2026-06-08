@@ -366,9 +366,11 @@ class TestPostPaidEntryMutation:
             entry_service.create_entry(
                 transaction_id=txn_id,
                 user_id=user_id,
-                amount=Decimal("50.00"),
-                description="Late purchase",
-                entry_date=date(2026, 1, 10),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("50.00"),
+                    description="Late purchase",
+                    entry_date=date(2026, 1, 10),
+                ),
             )
             db.session.commit()
 
@@ -471,9 +473,11 @@ class TestPostPaidEntryMutation:
             entry_service.create_entry(
                 transaction_id=txn_id,
                 user_id=user_id,
-                amount=Decimal("100.00"),
-                description="Projected period purchase",
-                entry_date=date(2026, 1, 5),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Projected period purchase",
+                    entry_date=date(2026, 1, 5),
+                ),
             )
             db.session.commit()
 

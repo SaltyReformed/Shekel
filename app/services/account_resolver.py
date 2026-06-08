@@ -33,6 +33,36 @@ from app.extensions import db
 from app.models.account import Account
 
 
+def _first_active_checking_account(user_id) -> Account | None:
+    """Return the user's canonical checking account, or ``None``.
+
+    The single definition of "which account is this user's checking
+    account": the first active account of the CHECKING type, ordered by
+    ``sort_order`` then ``id``.  Both resolvers fall back to this so the
+    grid and analytics surfaces always pick the same account for a user;
+    a change to the selection rule (a new tiebreaker, a primary flag)
+    lives here once.
+
+    Args:
+        user_id: The current user's id.
+
+    Returns:
+        The first active checking :class:`Account`, or ``None`` when the
+        user has no active checking account.
+    """
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    return (
+        db.session.query(Account)
+        .filter_by(
+            user_id=user_id,
+            is_active=True,
+            account_type_id=checking_type_id,
+        )
+        .order_by(Account.sort_order, Account.id)
+        .first()
+    )
+
+
 def resolve_grid_account(user_id, user_settings=None, override_account_id=None):
     """Return the Account to use for grid balance display.
 
@@ -57,13 +87,7 @@ def resolve_grid_account(user_id, user_settings=None, override_account_id=None):
             return acct
 
     # 3. First active checking account.
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    acct = (
-        db.session.query(Account)
-        .filter_by(user_id=user_id, is_active=True, account_type_id=checking_type_id)
-        .order_by(Account.sort_order, Account.id)
-        .first()
-    )
+    acct = _first_active_checking_account(user_id)
     if acct:
         return acct
 
@@ -118,14 +142,4 @@ def resolve_analytics_account(
             return acct
         return None
 
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    return (
-        db.session.query(Account)
-        .filter_by(
-            user_id=user_id,
-            is_active=True,
-            account_type_id=checking_type_id,
-        )
-        .order_by(Account.sort_order, Account.id)
-        .first()
-    )
+    return _first_active_checking_account(user_id)

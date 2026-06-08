@@ -82,13 +82,15 @@ class TestVarianceEmpty:
         """VarianceReport with zero totals when no transactions exist."""
         with app.app_context():
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
-            assert result.total_estimated == Decimal("0")
-            assert result.total_actual == Decimal("0")
-            assert result.total_variance == Decimal("0")
+            assert result.figures.estimated == Decimal("0")
+            assert result.figures.actual == Decimal("0")
+            assert result.figures.variance == Decimal("0")
             assert result.groups == []
             assert result.transaction_count == 0
 
@@ -108,14 +110,16 @@ class TestVarianceExact:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
-            assert result.total_variance == Decimal("0")
+            assert result.figures.variance == Decimal("0")
             txn_var = result.groups[0].items[0].transactions[0]
-            assert txn_var.variance == Decimal("0")
-            assert txn_var.variance_pct == Decimal("0.00")
+            assert txn_var.figures.variance == Decimal("0")
+            assert txn_var.figures.variance_pct == Decimal("0.00")
 
 
 class TestVarianceOverUnder:
@@ -133,13 +137,15 @@ class TestVarianceOverUnder:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             txn_var = result.groups[0].items[0].transactions[0]
-            assert txn_var.variance == Decimal("50.00")
-            assert txn_var.variance_pct == Decimal("10.00")
+            assert txn_var.figures.variance == Decimal("50.00")
+            assert txn_var.figures.variance_pct == Decimal("10.00")
 
     def test_variance_under_budget(self, app, seed_user, seed_periods, db):
         """$500 est, $450 actual -> variance=-50, pct=-10.00."""
@@ -153,13 +159,15 @@ class TestVarianceOverUnder:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             txn_var = result.groups[0].items[0].transactions[0]
-            assert txn_var.variance == Decimal("-50.00")
-            assert txn_var.variance_pct == Decimal("-10.00")
+            assert txn_var.figures.variance == Decimal("-50.00")
+            assert txn_var.figures.variance_pct == Decimal("-10.00")
 
 
 class TestVarianceProjected:
@@ -177,12 +185,14 @@ class TestVarianceProjected:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             txn_var = result.groups[0].items[0].transactions[0]
-            assert txn_var.variance == Decimal("0")
+            assert txn_var.figures.variance == Decimal("0")
             assert txn_var.is_paid is False
 
 
@@ -201,13 +211,15 @@ class TestVarianceEdgeCases:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             txn_var = result.groups[0].items[0].transactions[0]
-            assert txn_var.variance == Decimal("50.00")
-            assert txn_var.variance_pct is None
+            assert txn_var.figures.variance == Decimal("50.00")
+            assert txn_var.figures.variance_pct is None
 
     def test_variance_paid_no_actual_amount(self, app, seed_user, seed_periods, db):
         """Done status but actual_amount=NULL -> falls back to estimated."""
@@ -221,13 +233,15 @@ class TestVarianceEdgeCases:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             txn_var = result.groups[0].items[0].transactions[0]
-            assert txn_var.actual == Decimal("500.00")
-            assert txn_var.variance == Decimal("0")
+            assert txn_var.figures.actual == Decimal("500.00")
+            assert txn_var.figures.variance == Decimal("0")
             assert txn_var.is_paid is True
 
     def test_variance_income_transaction(self, app, seed_user, seed_periods, db):
@@ -242,13 +256,15 @@ class TestVarianceEdgeCases:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             txn_var = result.groups[0].items[0].transactions[0]
             # Positive variance = received more than estimated.
-            assert txn_var.variance == Decimal("100.00")
+            assert txn_var.figures.variance == Decimal("100.00")
 
     def test_variance_pct_decimal_precision(self, app, seed_user, seed_periods, db):
         """$300 est, $310 actual -> pct = 3.33 (rounded, not float noise)."""
@@ -262,13 +278,15 @@ class TestVarianceEdgeCases:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             txn_var = result.groups[0].items[0].transactions[0]
             # 10 / 300 * 100 = 3.333... -> 3.33
-            assert txn_var.variance_pct == Decimal("3.33")
+            assert txn_var.figures.variance_pct == Decimal("3.33")
 
 
 # ── Time Window Tests ────────────────────────────────────────────────
@@ -295,12 +313,14 @@ class TestPayPeriodWindow:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             assert result.transaction_count == 1
-            assert result.total_estimated == Decimal("100.00")
+            assert result.figures.estimated == Decimal("100.00")
 
 
 class TestMonthlyWindow:
@@ -322,13 +342,15 @@ class TestMonthlyWindow:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="month",
-                month=1,
-                year=2026,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="month",
+                    month=1,
+                    year=2026,
+                ),
             )
             assert result.transaction_count == 2
-            assert result.total_estimated == Decimal("300.00")
+            assert result.figures.estimated == Decimal("300.00")
 
     def test_monthly_attribution_uses_due_date(self, app, seed_user, seed_periods, db):
         """Txn with due_date in Feb, period in Jan -> attributed to February."""
@@ -341,20 +363,24 @@ class TestMonthlyWindow:
             db.session.commit()
 
             jan = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="month",
-                month=1,
-                year=2026,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="month",
+                    month=1,
+                    year=2026,
+                ),
             )
             feb = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="month",
-                month=2,
-                year=2026,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="month",
+                    month=2,
+                    year=2026,
+                ),
             )
             assert jan.transaction_count == 0
             assert feb.transaction_count == 1
-            assert feb.total_estimated == Decimal("300.00")
+            assert feb.figures.estimated == Decimal("300.00")
 
     def test_monthly_attribution_fallback(self, app, seed_user, seed_periods, db):
         """Txn with due_date=None uses period start_date month."""
@@ -368,10 +394,12 @@ class TestMonthlyWindow:
 
             # Period 0 starts Jan 2 -> attributed to January.
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="month",
-                month=1,
-                year=2026,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="month",
+                    month=1,
+                    year=2026,
+                ),
             )
             assert result.transaction_count == 1
 
@@ -386,10 +414,12 @@ class TestMonthlyWindow:
             db.session.commit()
 
             jan = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="month",
-                month=1,
-                year=2026,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="month",
+                    month=1,
+                    year=2026,
+                ),
             )
             assert jan.transaction_count == 0
 
@@ -413,12 +443,14 @@ class TestAnnualWindow:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="year",
-                year=2026,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="year",
+                    year=2026,
+                ),
             )
             assert result.transaction_count == 2
-            assert result.total_estimated == Decimal("300.00")
+            assert result.figures.estimated == Decimal("300.00")
 
 
 # ── Grouping and Sorting Tests ───────────────────────────────────────
@@ -454,9 +486,11 @@ class TestCategoryGrouping:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             group_names = {g.group_name for g in result.groups}
             assert "Home" in group_names
@@ -490,9 +524,11 @@ class TestSorting:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             # Home (200 variance) should come before Auto (100).
             assert result.groups[0].group_name == "Home"
@@ -521,17 +557,19 @@ class TestSorting:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             # Both are in "Home" / "Rent" item -> sorted by abs variance.
             item = result.groups[0].items[0]
             txns = item.transactions
-            assert abs(txns[0].variance) >= abs(txns[1].variance)
+            assert abs(txns[0].figures.variance) >= abs(txns[1].figures.variance)
 
     def test_group_totals_sum_from_items(self, app, seed_user, seed_periods, db):
-        """Group estimated_total equals sum of item estimated_totals."""
+        """Group figures.estimated equals sum of item figures.estimated."""
         with app.app_context():
             _add_txn(
                 db.session, seed_user, seed_periods[0],
@@ -550,16 +588,18 @@ class TestSorting:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             for group in result.groups:
-                item_est_sum = sum(i.estimated_total for i in group.items)
-                assert group.estimated_total == item_est_sum
+                item_est_sum = sum(i.figures.estimated for i in group.items)
+                assert group.figures.estimated == item_est_sum
 
     def test_report_totals_sum_from_groups(self, app, seed_user, seed_periods, db):
-        """Report total_estimated equals sum of group estimated_totals."""
+        """Report figures.estimated equals sum of group figures.estimated."""
         with app.app_context():
             _add_txn(
                 db.session, seed_user, seed_periods[0],
@@ -576,12 +616,14 @@ class TestSorting:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
-            group_est_sum = sum(g.estimated_total for g in result.groups)
-            assert result.total_estimated == group_est_sum
+            group_est_sum = sum(g.figures.estimated for g in result.groups)
+            assert result.figures.estimated == group_est_sum
 
     def test_report_total_variance_pct(self, app, seed_user, seed_periods, db):
         """total_variance_pct computed from totals, not averaged from groups."""
@@ -601,13 +643,15 @@ class TestSorting:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             # total_est=500, total_act=550, variance=50
             # pct = 50/500 * 100 = 10.00
-            assert result.total_variance_pct == Decimal("10.00")
+            assert result.figures.variance_pct == Decimal("10.00")
 
 
 # ── Filter Tests ─────────────────────────────────────────────────────
@@ -633,12 +677,14 @@ class TestFilters:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             assert result.transaction_count == 1
-            assert result.total_estimated == Decimal("100.00")
+            assert result.figures.estimated == Decimal("100.00")
 
     def test_excludes_cancelled(self, app, seed_user, seed_periods, db):
         """Cancelled transactions excluded from results."""
@@ -657,12 +703,14 @@ class TestFilters:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             assert result.transaction_count == 1
-            assert result.total_estimated == Decimal("100.00")
+            assert result.figures.estimated == Decimal("100.00")
 
     def test_ownership_filter(self, app, seed_user, second_user, seed_periods, db):
         """Only the queried user's transactions are returned."""
@@ -676,9 +724,11 @@ class TestFilters:
 
             # Second user should see nothing from seed_user's account.
             result = budget_variance_service.compute_variance(
-                user_id=second_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                second_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             assert result.transaction_count == 0
 
@@ -694,8 +744,10 @@ class TestParameterValidation:
         with app.app_context():
             with pytest.raises(ValueError, match="Invalid window_type"):
                 budget_variance_service.compute_variance(
-                    user_id=seed_user["user"].id,
-                    window_type="invalid",
+                    seed_user["user"].id,
+                    budget_variance_service.VarianceWindow(
+                        window_type="invalid",
+                    ),
                 )
 
     def test_pay_period_requires_period_id(self, app, seed_user):
@@ -703,8 +755,10 @@ class TestParameterValidation:
         with app.app_context():
             with pytest.raises(ValueError, match="period_id is required"):
                 budget_variance_service.compute_variance(
-                    user_id=seed_user["user"].id,
-                    window_type="pay_period",
+                    seed_user["user"].id,
+                    budget_variance_service.VarianceWindow(
+                        window_type="pay_period",
+                    ),
                 )
 
     def test_month_requires_month_and_year(self, app, seed_user):
@@ -712,9 +766,11 @@ class TestParameterValidation:
         with app.app_context():
             with pytest.raises(ValueError, match="month and year are required"):
                 budget_variance_service.compute_variance(
-                    user_id=seed_user["user"].id,
-                    window_type="month",
-                    month=1,
+                    seed_user["user"].id,
+                    budget_variance_service.VarianceWindow(
+                        window_type="month",
+                        month=1,
+                    ),
                 )
 
     def test_year_requires_year(self, app, seed_user):
@@ -722,8 +778,10 @@ class TestParameterValidation:
         with app.app_context():
             with pytest.raises(ValueError, match="year is required"):
                 budget_variance_service.compute_variance(
-                    user_id=seed_user["user"].id,
-                    window_type="year",
+                    seed_user["user"].id,
+                    budget_variance_service.VarianceWindow(
+                        window_type="year",
+                    ),
                 )
 
 
@@ -737,9 +795,11 @@ class TestWindowLabels:
         """Pay period label uses start - end, year format."""
         with app.app_context():
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             # Period 0: Jan 02 - Jan 15, 2026.
             assert "Jan 02" in result.window_label
@@ -750,10 +810,12 @@ class TestWindowLabels:
         """Month label uses full month name and year."""
         with app.app_context():
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="month",
-                month=1,
-                year=2026,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="month",
+                    month=1,
+                    year=2026,
+                ),
             )
             assert result.window_label == "January 2026"
 
@@ -761,9 +823,11 @@ class TestWindowLabels:
         """Year label is just the year string."""
         with app.app_context():
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="year",
-                year=2026,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="year",
+                    year=2026,
+                ),
             )
             assert result.window_label == "2026"
 
@@ -787,9 +851,11 @@ class TestTransactionCounts:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             item = result.groups[0].items[0]
             assert item.transaction_count == 3
@@ -826,8 +892,10 @@ class TestTransactionCounts:
             db.session.commit()
 
             result = budget_variance_service.compute_variance(
-                user_id=seed_user["user"].id,
-                window_type="pay_period",
-                period_id=seed_periods[0].id,
+                seed_user["user"].id,
+                budget_variance_service.VarianceWindow(
+                    window_type="pay_period",
+                    period_id=seed_periods[0].id,
+                ),
             )
             assert result.transaction_count == 5

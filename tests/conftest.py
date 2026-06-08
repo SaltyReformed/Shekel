@@ -944,12 +944,14 @@ def seed_user(app, db):
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
     account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=checking_type.id,
-        name="Checking",
-        anchor_balance=Decimal("1000.00"),
-        anchor_period_id=bootstrap_period.id,
-        notes="seed_user fixture origination",
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=checking_type.id,
+            name="Checking",
+            anchor_balance=Decimal("1000.00"),
+            anchor_period_id=bootstrap_period.id,
+            notes="seed_user fixture origination",
+        ),
     )
 
     scenario = Scenario(
@@ -1431,12 +1433,14 @@ def second_user(app, db):
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
     account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=checking_type.id,
-        name="Other Checking",
-        anchor_balance=Decimal("500.00"),
-        anchor_period_id=bootstrap_period.id,
-        notes="second_user fixture origination",
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=checking_type.id,
+            name="Other Checking",
+            anchor_balance=Decimal("500.00"),
+            anchor_period_id=bootstrap_period.id,
+            notes="second_user fixture origination",
+        ),
     )
 
     scenario = Scenario(
@@ -1542,12 +1546,14 @@ def seed_second_user(app, db):
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
     account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=checking_type.id,
-        name="Checking",
-        anchor_balance=Decimal("2000.00"),
-        anchor_period_id=bootstrap_period.id,
-        notes="seed_second_user fixture origination",
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=checking_type.id,
+            name="Checking",
+            anchor_balance=Decimal("2000.00"),
+            anchor_period_id=bootstrap_period.id,
+            notes="seed_second_user fixture origination",
+        ),
     )
 
     scenario = Scenario(
@@ -1718,12 +1724,14 @@ def _build_full_user_data(db, seed_user, periods):
     # c) Savings account + transfer template via the canonical
     # factory (E-19, Commit 3).
     savings_account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=savings_acct_type.id,
-        name="Savings",
-        anchor_balance=Decimal("500.00"),
-        anchor_period_id=periods[0].id,
-        notes="_build_full_user_data savings origination",
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=savings_acct_type.id,
+            name="Savings",
+            anchor_balance=Decimal("500.00"),
+            anchor_period_id=periods[0].id,
+            notes="_build_full_user_data savings origination",
+        ),
     )
 
     transfer_tpl = TransferTemplate(
@@ -1878,12 +1886,14 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     # c) Savings account + transfer template via the canonical
     # factory (E-19, Commit 3).
     savings_account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=savings_acct_type.id,
-        name="Savings",
-        anchor_balance=Decimal("300.00"),
-        anchor_period_id=periods[0].id,
-        notes="seed_full_second_user_data savings origination",
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=savings_acct_type.id,
+            name="Savings",
+            anchor_balance=Decimal("300.00"),
+            anchor_period_id=periods[0].id,
+            notes="seed_full_second_user_data savings origination",
+        ),
     )
 
     transfer_tpl = TransferTemplate(

@@ -36,6 +36,7 @@ import time
 import uuid
 
 from flask import Flask, g, request
+from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
 from pythonjsonlogger.json import JsonFormatter
@@ -172,15 +173,27 @@ _SENSITIVE_KEY_NAMES = (
     r"backup[_-]codes?",
     # Generic credential carriers.  ``cookie`` covers the HTTP
     # ``Set-Cookie`` / ``Cookie`` header forms (with the upper-case
-    # ``Cookie`` matching via the ``re.IGNORECASE`` flag).
+    # ``Cookie`` matching via the ``re.IGNORECASE`` flag).  The
+    # explicit ``set[_-]cookie`` entry additionally catches the
+    # underscore ``set_cookie`` (Flask method-name) shape, which the
+    # bare ``cookie`` key cannot: the value-scrub lookbehind
+    # ``(?<![A-Za-z0-9_])`` treats the ``_`` before ``cookie`` as a
+    # word char and refuses the match, so ``set_cookie=`` would
+    # otherwise leak while ``set-cookie=`` is caught.
     # ``authorization`` matches both bare ``Bearer ...`` and
-    # ``Basic ...`` header values.  ``api[_-]key`` and ``token``
-    # catch the third-party SDK debug-line shape.
+    # ``Basic ...`` header values.  ``api[_-]key``, the ``access`` /
+    # ``refresh`` token forms, and a standalone ``token`` catch the
+    # third-party SDK debug-line shape; that same lookbehind keeps the
+    # bare ``token`` from over-matching ``csrf_token`` / ``next_token``
+    # (the ``_`` before ``token`` blocks it), so only true standalone
+    # ``token=`` (and hyphenated forms) are redacted.
     r"cookie",
+    r"set[_-]cookie",
     r"authorization",
     r"api[_-]key",
     r"access[_-]token",
     r"refresh[_-]token",
+    r"token",
     # Persistence URLs that embed credentials in the userinfo segment
     # (postgres://user:pass@host/db).  Catches the common dev-mode
     # leak where an exception traceback shows the connection string.
@@ -256,6 +269,7 @@ _SENSITIVE_EXTRA_FIELDS = frozenset({
     "api_key",
     "access_token",
     "refresh_token",
+    "token",
     "database_url",
     "sentry_dsn",
 })
@@ -538,8 +552,10 @@ def setup_logging(app: Flask) -> None:
         # so audit triggers can capture who made the change.
         # Uses SET LOCAL (transaction-scoped, not session-scoped).
         try:
-            from flask_login import current_user  # pylint: disable=import-outside-toplevel
             if current_user.is_authenticated:
+                # Pylint: ``import-outside-toplevel`` -- Deferred:
+                # app.extensions imports this logging module during
+                # logging setup, so a module-top import here would be circular.
                 from app.extensions import db  # pylint: disable=import-outside-toplevel
                 db.session.execute(
                     db.text("SET LOCAL app.current_user_id = :uid"),
@@ -586,7 +602,6 @@ def setup_logging(app: Flask) -> None:
         }
 
         try:
-            from flask_login import current_user  # pylint: disable=import-outside-toplevel
             if current_user.is_authenticated:
                 extra_fields["user_id"] = current_user.id
         except (RuntimeError, AttributeError):

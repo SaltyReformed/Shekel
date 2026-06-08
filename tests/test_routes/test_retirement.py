@@ -95,10 +95,12 @@ def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
     """Helper to create a retirement account with investment params."""
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=acct_type.id,
-        name=f"Test {type_name}",
-        anchor_balance=Decimal("10000.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name=f"Test {type_name}",
+            anchor_balance=Decimal("10000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -253,6 +255,56 @@ class TestPensionCRUD:
         db.session.refresh(pension)
         assert pension.name == "Updated Pension"
         assert pension.benefit_multiplier == Decimal("0.02000")
+
+    def test_create_pension_rejects_cross_user_salary_profile(
+        self, auth_client, seed_user, seed_second_user, db, seed_periods_today,
+    ):
+        """IDOR: a foreign salary_profile_id is rejected 404 and not persisted.
+
+        The pension form lists only the user's own active salary profiles,
+        so a salary_profile_id owned by another user is a forged FK that
+        must not link the victim's salary/raise history into this user's
+        pension projection (security rule: 404 for both not-found and
+        not-yours).
+        """
+        foreign = _create_salary_profile(seed_second_user, db.session)
+        resp = auth_client.post("/retirement/pension", data={
+            "name": "IDOR Pension",
+            "salary_profile_id": str(foreign.id),
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        })
+        assert resp.status_code == 404
+        # The forged FK must not have created a pension for the attacker.
+        assert db.session.query(PensionProfile).filter_by(
+            user_id=seed_user["user"].id
+        ).first() is None
+
+    def test_update_pension_rejects_cross_user_salary_profile(
+        self, auth_client, seed_user, seed_second_user, db, seed_periods_today,
+    ):
+        """IDOR: re-linking a pension to a foreign salary_profile_id is rejected.
+
+        The update path must reject a salary_profile_id owned by another
+        user with 404 and leave the existing (owned) link untouched.
+        """
+        own = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=own)
+        foreign = _create_salary_profile(seed_second_user, db.session)
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "name": pension.name,
+            "salary_profile_id": str(foreign.id),
+            "benefit_multiplier": "1.85",
+            "consecutive_high_years": "4",
+            "hire_date": "2018-07-01",
+            "planned_retirement_date": "2048-07-01",
+        })
+        assert resp.status_code == 404
+        db.session.refresh(pension)
+        # The existing owned link is unchanged.
+        assert pension.salary_profile_id == own.id
 
     def test_delete_pension(self, auth_client, seed_user, db, seed_periods_today):
         """POST delete deactivates pension."""
@@ -1410,10 +1462,12 @@ class TestReturnRateClarity:
         # Create a second account with a different rate.
         acct_type = db.session.query(AccountType).filter_by(name="Roth IRA").one()
         acct2 = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=acct_type.id,
-            name="Test Roth IRA",
-            anchor_balance=Decimal("5000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=acct_type.id,
+                name="Test Roth IRA",
+                anchor_balance=Decimal("5000.00"),
+            ),
         )
         db.session.add(acct2)
         db.session.flush()
@@ -1567,11 +1621,13 @@ class TestIsPretaxDispatch:
             db.session.flush()
 
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                name="My 403(b)",
-                account_type_id=custom_type.id,
-                anchor_balance=Decimal("50000"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="My 403(b)",
+                    anchor_balance=Decimal("50000"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -1610,11 +1666,13 @@ class TestIsPretaxDispatch:
             db.session.flush()
 
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                name="My Roth Solo 401(k)",
-                account_type_id=custom_type.id,
-                anchor_balance=Decimal("25000"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="My Roth Solo 401(k)",
+                    anchor_balance=Decimal("25000"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()

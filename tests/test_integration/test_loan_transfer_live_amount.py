@@ -45,10 +45,12 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     loan = account_service.create_account(
-        user_id=user.id,
-        account_type_id=loan_type.id,
-        name="Live Mortgage",
-        anchor_balance=Decimal("200000.00"),
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=loan_type.id,
+            name="Live Mortgage",
+            anchor_balance=Decimal("200000.00"),
+        ),
     )
     db.session.add(loan)
     db.session.flush()

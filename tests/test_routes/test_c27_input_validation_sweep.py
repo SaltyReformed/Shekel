@@ -91,10 +91,12 @@ def _create_savings_account(seed_user):
     """Add a Savings account on the seeded user for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name="C-27 Savings",
-        anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="C-27 Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add(acct)
     db.session.commit()
@@ -105,15 +107,17 @@ def _create_transfer(seed_user, period, savings):
     """Create a transfer + 2 shadow transactions via the service."""
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     xfer = transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        amount=Decimal("100.00"),
-        status_id=projected_id,
-        category_id=seed_user["categories"]["Rent"].id,
-        name="C-27 Transfer",
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("100.00"),
+            status_id=projected_id,
+            category_id=seed_user["categories"]["Rent"].id,
+            name="C-27 Transfer",
+        ),
     )
     db.session.commit()
     return xfer
@@ -153,14 +157,22 @@ def _seed_second_user_transfer_assets():
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     other_checking = account_service.create_account(
-        user_id=other.id, account_type_id=checking_type.id,
-        name="Other Cross Checking", anchor_balance=Decimal("100.00"),
-        anchor_period_id=other_periods[0].id,
+        account_service.AccountSpec(
+            user_id=other.id,
+            account_type_id=checking_type.id,
+            name="Other Cross Checking",
+            anchor_balance=Decimal("100.00"),
+            anchor_period_id=other_periods[0].id,
+        ),
     )
     other_savings = account_service.create_account(
-        user_id=other.id, account_type_id=savings_type.id,
-        name="Other Cross Savings", anchor_balance=Decimal("0"),
-        anchor_period_id=other_periods[0].id,
+        account_service.AccountSpec(
+            user_id=other.id,
+            account_type_id=savings_type.id,
+            name="Other Cross Savings",
+            anchor_balance=Decimal("0"),
+            anchor_period_id=other_periods[0].id,
+        ),
     )
 
     other_scenario = Scenario(

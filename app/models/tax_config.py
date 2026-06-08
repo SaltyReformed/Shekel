@@ -6,10 +6,10 @@ used by the paycheck calculator to compute tax withholdings.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin
+from app.models.mixins import CreatedAtMixin, SortOrderMixin, UserScopedMixin
 
 
-class TaxBracketSet(CreatedAtMixin, db.Model):
+class TaxBracketSet(UserScopedMixin, CreatedAtMixin, db.Model):
     """A set of federal income tax brackets for a specific year and filing status."""
 
     __tablename__ = "tax_bracket_sets"
@@ -32,10 +32,6 @@ class TaxBracketSet(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name on the
     # filing-status ref-table FK.  See app/extensions.py for the
     # full SHEKEL_NAMING_CONVENTION rationale.
@@ -78,7 +74,7 @@ class TaxBracketSet(CreatedAtMixin, db.Model):
         return f"<TaxBracketSet year={self.tax_year} status_id={self.filing_status_id}>"
 
 
-class TaxBracket(db.Model):
+class TaxBracket(SortOrderMixin, db.Model):
     """A single tax bracket within a bracket set."""
 
     __tablename__ = "tax_brackets"
@@ -113,9 +109,7 @@ class TaxBracket(db.Model):
     min_income = db.Column(db.Numeric(12, 2), nullable=False)
     max_income = db.Column(db.Numeric(12, 2))
     rate = db.Column(db.Numeric(5, 4), nullable=False)
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
+    # sort_order: from SortOrderMixin.
 
     # Relationships
     bracket_set = db.relationship("TaxBracketSet", back_populates="brackets")
@@ -124,7 +118,7 @@ class TaxBracket(db.Model):
         return f"<TaxBracket {self.rate} ({self.min_income}-{self.max_income})>"
 
 
-class StateTaxConfig(CreatedAtMixin, db.Model):
+class StateTaxConfig(UserScopedMixin, CreatedAtMixin, db.Model):
     """State-level tax configuration (flat rate or none), per year."""
 
     __tablename__ = "state_tax_configs"
@@ -154,10 +148,6 @@ class StateTaxConfig(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name on the
     # tax-type ref-table FK.  See app/extensions.py for the full
     # SHEKEL_NAMING_CONVENTION rationale.
@@ -182,7 +172,7 @@ class StateTaxConfig(CreatedAtMixin, db.Model):
         return f"<StateTaxConfig {self.state_code} rate={self.flat_rate}>"
 
 
-class FicaConfig(CreatedAtMixin, db.Model):
+class FicaConfig(UserScopedMixin, CreatedAtMixin, db.Model):
     """FICA (Social Security + Medicare) tax configuration per year."""
 
     __tablename__ = "fica_configs"
@@ -209,10 +199,6 @@ class FicaConfig(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     tax_year = db.Column(db.Integer, nullable=False)
     ss_rate = db.Column(
         db.Numeric(5, 4), nullable=False, default=0.0620,

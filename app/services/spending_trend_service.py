@@ -49,8 +49,19 @@ _TOP_N = 5
 
 
 @dataclass(frozen=True)
-class ItemTrend:
-    """Trend data for a single category item."""
+class ItemTrend:  # pylint: disable=too-many-instance-attributes
+    """Trend data for a single category item.
+
+    Pylint: ``too-many-instance-attributes`` (11/7) -- this is a cohesive
+    value record -- one category's trend row,
+    produced in a single pass by _compute_item_trend -- consumed verbatim
+    by row-rendering surfaces: the trends template reads the fields
+    interleaved within one list item, and the CSV export emits them as
+    adjacent columns.  No consumer reads any subset (identity, magnitude,
+    trend metrics, timing) as a unit, and no field owns a section total.
+    Every field is an irreducible column of the row; splitting it would
+    fragment one domain concept for no design gain.
+    """
 
     category_id: int
     group_name: str
@@ -78,8 +89,19 @@ class GroupTrend:
 
 
 @dataclass(frozen=True)
-class TrendReport:
-    """Complete trend detection report."""
+class TrendReport:  # pylint: disable=too-many-instance-attributes
+    """Complete trend detection report.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- this is one cohesive
+    result aggregate for the trends tab.  The
+    four window fields (window_months, window_periods, data_sufficiency,
+    threshold) describe and gate the report; the four collections
+    (top_increasing, top_decreasing, all_items, group_trends) are its
+    ranked, grouped, and full item views.  Every field is read scattered
+    across the trends template, the CSV export, and the route -- never as
+    a sub-group -- so there is no section to extract; nesting would
+    fragment one contract for no design gain.
+    """
 
     window_months: int
     window_periods: int
@@ -199,21 +221,33 @@ def _get_window_periods(
 ) -> list[PayPeriod]:
     """Return pay periods whose start_date falls within the window.
 
-    The window ends at the end of the current month and extends
-    back window_months months.
+    The window spans the first of the month ``window_months`` before the
+    current month, up to (but not including) the first of next month -- so
+    it covers history through the end of the current month and EXCLUDES
+    future pay periods.  The app projects ~2 years of pay periods forward;
+    without the upper bound those future, never-settled periods would
+    zero-fill into ``period_average`` (inflating the divisor) and drag
+    every category's regression slope toward "decreasing".
     """
     today = date.today()
-    # End of current month.
-    end_year = today.year
-    end_month = today.month
 
-    # Start of window: window_months before current month.
-    start_month = end_month - window_months
-    start_year = end_year
+    # Upper bound (exclusive): the first of next month.  Periods that
+    # start anywhere in the current month are included; future months are
+    # not.
+    next_month = today.month + 1
+    next_year = today.year
+    if next_month > 12:
+        next_month = 1
+        next_year += 1
+    window_end = date(next_year, next_month, 1)
+
+    # Lower bound: the first of the month ``window_months`` before the
+    # current month.
+    start_month = today.month - window_months
+    start_year = today.year
     while start_month < 1:
         start_month += 12
         start_year -= 1
-
     first_day = date(start_year, start_month, 1)
 
     return (
@@ -221,6 +255,7 @@ def _get_window_periods(
         .filter(
             PayPeriod.user_id == user_id,
             PayPeriod.start_date >= first_day,
+            PayPeriod.start_date < window_end,
         )
         .order_by(PayPeriod.period_index)
         .all()
@@ -244,6 +279,14 @@ def _query_paid_expenses(
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     settled_ids = _get_settled_status_ids()
 
+    # Pylint: ``duplicate-code`` -- settled-expense query for the
+    # spending-trend report.  The account / scenario / period /
+    # expense-type filter core coincides with ``dashboard_service``'s
+    # expense query, but the two diverge on the parts that matter
+    # (eager-loads and the settled-vs-projected status gate), so a shared
+    # builder would need both as parameters and save no logic
+    # (coding-standards rule 13).  One-sided ``duplicate-code`` disable.
+    # pylint: disable=duplicate-code
     return (
         db.session.query(Transaction)
         .options(
@@ -260,6 +303,7 @@ def _query_paid_expenses(
         )
         .all()
     )
+    # pylint: enable=duplicate-code
 
 
 def _build_item_trends(
@@ -293,7 +337,61 @@ def _build_item_trends(
     return items
 
 
-def _compute_item_trend(  # pylint: disable=too-many-locals
+def _item_category_names(txns: list[Transaction]) -> tuple[str, str]:
+    """Resolve the (group_name, item_name) labels for a category's rows.
+
+    Read from the first transaction's category, falling back to
+    "Uncategorized" for rows with no category.
+    """
+    sample = txns[0]
+    group_name = sample.category.group_name if sample.category else "Uncategorized"
+    item_name = sample.category.item_name if sample.category else "Uncategorized"
+    return group_name, item_name
+
+
+def _period_totals_for_item(
+    txns: list[Transaction],
+    period_index_map: dict[int, int],
+    n_periods: int,
+) -> tuple[list[Decimal], int]:
+    """Bucket a category's transactions into per-period spending totals.
+
+    Returns the per-period totals (zero-filled for periods with no
+    activity) and the count of distinct periods that had a data point.
+    """
+    period_totals: list[Decimal] = [_ZERO] * n_periods
+    data_point_periods: set[int] = set()
+
+    for txn in txns:
+        idx = period_index_map.get(txn.pay_period_id)
+        if idx is None:
+            continue
+        period_totals[idx] += abs(txn.effective_amount)
+        data_point_periods.add(idx)
+
+    return period_totals, len(data_point_periods)
+
+
+def _trend_change(period_totals: list[Decimal], n_periods: int) -> tuple[Decimal, Decimal]:
+    """Derive the absolute and percentage change across the window.
+
+    Runs linear regression over the per-period totals: ``absolute_change``
+    is the per-period slope; ``pct_change`` is the regression-predicted
+    change from the first to the last period.
+    """
+    slope, intercept = _compute_linear_regression(period_totals)
+    absolute_change = slope.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+
+    first_predicted = intercept
+    last_predicted = intercept + slope * Decimal(str(n_periods - 1))
+    pct_change = _safe_pct_change(
+        first_predicted, last_predicted, period_totals, n_periods,
+    )
+
+    return absolute_change, pct_change
+
+
+def _compute_item_trend(
     cat_id: int,
     txns: list[Transaction],
     period_index_map: dict[int, int],
@@ -306,54 +404,32 @@ def _compute_item_trend(  # pylint: disable=too-many-locals
     regression, and derives direction/flagging.  Also computes
     avg_days_before_due from the days_paid_before_due property.
     """
-    # Metadata from first transaction with a category.
-    sample = txns[0]
-    group_name = sample.category.group_name if sample.category else "Uncategorized"
-    item_name = sample.category.item_name if sample.category else "Uncategorized"
+    group_name, item_name = _item_category_names(txns)
 
-    # Per-period totals -- initialize all periods to zero.
-    period_totals: list[Decimal] = [_ZERO] * n_periods
-    data_point_periods: set[int] = set()
-
-    for txn in txns:
-        idx = period_index_map.get(txn.pay_period_id)
-        if idx is None:
-            continue
-        period_totals[idx] += abs(txn.effective_amount)
-        data_point_periods.add(idx)
+    period_totals, data_points = _period_totals_for_item(
+        txns, period_index_map, n_periods,
+    )
 
     total_spending = sum(period_totals)
     period_average = (
         total_spending / Decimal(str(n_periods))
     ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP) if n_periods > 0 else _ZERO
 
-    # Linear regression.
-    slope, intercept = _compute_linear_regression(period_totals)
-    absolute_change = slope.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
-
-    # Percentage change over the window.
-    first_predicted = intercept
-    last_predicted = intercept + slope * Decimal(str(n_periods - 1))
-    pct_change = _safe_pct_change(first_predicted, last_predicted)
-
-    direction = _direction_from_pct(pct_change)
-    is_flagged = abs(pct_change) >= threshold * _HUNDRED
-
-    # OP-3: average days before due date.
-    avg_days = _compute_avg_days_before_due(txns)
+    absolute_change, pct_change = _trend_change(period_totals, n_periods)
 
     return ItemTrend(
         category_id=cat_id,
         group_name=group_name,
         item_name=item_name,
         period_average=period_average,
-        trend_direction=direction,
+        trend_direction=_direction_from_pct(pct_change),
         pct_change=pct_change,
         absolute_change=absolute_change,
-        is_flagged=is_flagged,
-        data_points=len(data_point_periods),
+        is_flagged=abs(pct_change) >= threshold * _HUNDRED,
+        data_points=data_points,
         total_spending=total_spending,
-        avg_days_before_due=avg_days,
+        # OP-3: average days a bill is paid before its due date.
+        avg_days_before_due=_compute_avg_days_before_due(txns),
     )
 
 
@@ -470,15 +546,41 @@ def _compute_linear_regression(
 def _safe_pct_change(
     first_predicted: Decimal,
     last_predicted: Decimal,
+    period_totals: list[Decimal],
+    n_periods: int,
 ) -> Decimal:
     """Compute percentage change between regression endpoints.
 
-    Returns Decimal("0") if first_predicted is zero (cannot divide).
-    Rounds to 2 decimal places.
+    The base is the regression-predicted first-period value
+    (``first_predicted``).  When that base is non-positive -- a category
+    that ramps up from zero produces a negative intercept -- a percentage
+    relative to it is meaningless and SIGN-UNSTABLE: dividing the
+    (positive) change by a negative base flips the sign and mislabels a
+    rising category as decreasing.  In that case fall back to the window's
+    mean spend (``sum(period_totals) / n_periods``, always >= 0) as the
+    base, so ``pct_change`` keeps the sign of the actual change (which
+    equals the slope's sign).  This guarantees ``pct_change`` and
+    ``absolute_change`` never disagree in direction.
+
+    Returns ``Decimal("0")`` only when no positive base exists at all (an
+    all-zero window).  Rounds to 2 decimal places.
+
+    Args:
+        first_predicted: Regression value at the first period (intercept).
+        last_predicted: Regression value at the last period.
+        period_totals: Per-period spending totals; their mean is the
+            fallback base when the intercept is non-positive.
+        n_periods: Number of periods in the window.
+
+    Returns:
+        The percentage change, signed to match the slope, at 2 places.
     """
-    if first_predicted == _ZERO:
+    base = first_predicted
+    if base <= _ZERO:
+        base = sum(period_totals) / Decimal(str(n_periods)) if n_periods else _ZERO
+    if base <= _ZERO:
         return _ZERO
-    change = (last_predicted - first_predicted) / first_predicted * _HUNDRED
+    change = (last_predicted - first_predicted) / base * _HUNDRED
     return change.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 

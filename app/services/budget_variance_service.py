@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from app.extensions import db
@@ -24,7 +23,10 @@ from app.models.transaction import Transaction
 from app.services.account_resolver import resolve_analytics_account
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
-from app.utils.balance_predicates import balance_excluded_status_ids
+from app.utils.balance_predicates import (
+    balance_excluded_status_ids,
+    monthly_attribution_clause,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +40,71 @@ _HUNDRED = Decimal("100")
 
 
 @dataclass(frozen=True)
+class VarianceWindow:
+    """The time window a variance report is computed over.
+
+    A discriminated selector: ``window_type`` decides which of the other
+    fields are meaningful -- ``period_id`` for ``"pay_period"``,
+    ``month`` + ``year`` for ``"month"``, ``year`` for ``"year"``.  The
+    three service helpers that read these fields (``_validate_params``,
+    ``_get_transactions_for_window``, ``_build_window_label``) all consume
+    them as a unit, so they are one cohesive value rather than four loose
+    arguments; the analytics route builds one solely to call
+    :func:`compute_variance`.  Validate one with :func:`_validate_params`.
+    """
+
+    window_type: str
+    period_id: int | None = None
+    month: int | None = None
+    year: int | None = None
+
+
+@dataclass(frozen=True)
+class VarianceFigures:
+    """Estimated vs. actual amounts with the derived variance and percentage.
+
+    The (estimated, actual, variance, variance_pct) quad that every level
+    of the variance hierarchy reports.  Build one with :meth:`of` so the
+    variance and percentage are derived identically at every level rather
+    than recomputed by hand for each transaction, item, group, and total.
+    """
+
+    estimated: Decimal
+    actual: Decimal
+    variance: Decimal
+    variance_pct: Decimal | None
+
+    @classmethod
+    def of(cls, estimated: Decimal, actual: Decimal) -> "VarianceFigures":
+        """Build figures from an estimated/actual pair.
+
+        ``variance`` is ``actual - estimated``; ``variance_pct`` is that
+        variance as a percentage of the estimated base, or ``None`` when
+        the base is zero (see :func:`_pct`).
+
+        Args:
+            estimated: The budgeted/estimated amount (the percentage base).
+            actual: The realized actual amount.
+
+        Returns:
+            A VarianceFigures with the derived variance and percentage.
+        """
+        variance = actual - estimated
+        return cls(
+            estimated=estimated,
+            actual=actual,
+            variance=variance,
+            variance_pct=_pct(variance, estimated),
+        )
+
+
+@dataclass(frozen=True)
 class TransactionVariance:
     """Variance data for a single transaction."""
 
     transaction_id: int
     name: str
-    estimated: Decimal
-    actual: Decimal
-    variance: Decimal
-    variance_pct: Decimal | None
+    figures: VarianceFigures
     is_paid: bool
     due_date: date | None
 
@@ -58,10 +116,7 @@ class CategoryItemVariance:
     category_id: int
     group_name: str
     item_name: str
-    estimated_total: Decimal
-    actual_total: Decimal
-    variance: Decimal
-    variance_pct: Decimal | None
+    figures: VarianceFigures
     transaction_count: int
     transactions: list[TransactionVariance]
 
@@ -71,10 +126,7 @@ class CategoryGroupVariance:
     """Variance data for a category group (e.g., 'Auto')."""
 
     group_name: str
-    estimated_total: Decimal
-    actual_total: Decimal
-    variance: Decimal
-    variance_pct: Decimal | None
+    figures: VarianceFigures
     items: list[CategoryItemVariance]
 
 
@@ -85,22 +137,16 @@ class VarianceReport:
     window_type: str
     window_label: str
     groups: list[CategoryGroupVariance]
-    total_estimated: Decimal
-    total_actual: Decimal
-    total_variance: Decimal
-    total_variance_pct: Decimal | None
+    figures: VarianceFigures
     transaction_count: int
 
 
 # ── Public API ──────────────────────────────────────────────────────
 
 
-def compute_variance(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def compute_variance(
     user_id: int,
-    window_type: str,
-    period_id: int | None = None,
-    month: int | None = None,
-    year: int | None = None,
+    window: VarianceWindow,
     account_id: int | None = None,
 ) -> VarianceReport:
     """Compute budget variance for the given time window.
@@ -112,10 +158,7 @@ def compute_variance(  # pylint: disable=too-many-arguments,too-many-positional-
 
     Args:
         user_id: The user's ID.
-        window_type: One of ``"pay_period"``, ``"month"``, ``"year"``.
-        period_id: Required when window_type is ``"pay_period"``.
-        month: Required (with year) when window_type is ``"month"``.
-        year: Required when window_type is ``"month"`` or ``"year"``.
+        window: The time window to report over (see :class:`VarianceWindow`).
         account_id: Account to scope to.  Defaults to the user's
             first active checking account.
 
@@ -123,29 +166,24 @@ def compute_variance(  # pylint: disable=too-many-arguments,too-many-positional-
         A VarianceReport with the full group -> item -> txn hierarchy.
 
     Raises:
-        ValueError: If window_type is invalid or required parameters
-            are missing.
+        ValueError: If the window is invalid or missing required fields.
     """
-    _validate_params(window_type, period_id, month, year)
+    _validate_params(window)
 
-    transactions, period = _get_transactions_for_window(
-        user_id, window_type, period_id, month, year, account_id,
-    )
+    transactions, period = _get_transactions_for_window(user_id, window, account_id)
 
     groups = _build_group_hierarchy(transactions)
-    total_est = sum(g.estimated_total for g in groups)
-    total_act = sum(g.actual_total for g in groups)
-    total_var = total_act - total_est
+    figures = VarianceFigures.of(
+        sum(g.figures.estimated for g in groups),
+        sum(g.figures.actual for g in groups),
+    )
     txn_count = sum(len(tv.transactions) for g in groups for tv in g.items)
 
     return VarianceReport(
-        window_type=window_type,
-        window_label=_build_window_label(window_type, period, month, year),
+        window_type=window.window_type,
+        window_label=_build_window_label(window, period),
         groups=groups,
-        total_estimated=total_est,
-        total_actual=total_act,
-        total_variance=total_var,
-        total_variance_pct=_pct(total_var, total_est),
+        figures=figures,
         transaction_count=txn_count,
     )
 
@@ -153,32 +191,38 @@ def compute_variance(  # pylint: disable=too-many-arguments,too-many-positional-
 # ── Internal helpers ────────────────────────────────────────────────
 
 
-def _validate_params(
-    window_type: str,
-    period_id: int | None,
-    month: int | None,
-    year: int | None,
-) -> None:
-    """Raise ValueError for invalid or missing parameters."""
-    if window_type not in _VALID_WINDOW_TYPES:
+def _validate_params(window: VarianceWindow) -> None:
+    """Raise ValueError for an invalid or under-specified window."""
+    if window.window_type not in _VALID_WINDOW_TYPES:
         raise ValueError(
-            f"Invalid window_type {window_type!r}. "
+            f"Invalid window_type {window.window_type!r}. "
             f"Must be one of {sorted(_VALID_WINDOW_TYPES)}."
         )
-    if window_type == "pay_period" and period_id is None:
+    if window.window_type == "pay_period" and window.period_id is None:
         raise ValueError("period_id is required when window_type is 'pay_period'.")
-    if window_type == "month" and (month is None or year is None):
+    if window.window_type == "month" and (window.month is None or window.year is None):
         raise ValueError("Both month and year are required when window_type is 'month'.")
-    if window_type == "year" and year is None:
+    if window.window_type == "year" and window.year is None:
         raise ValueError("year is required when window_type is 'year'.")
 
 
-def _get_transactions_for_window(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+@dataclass(frozen=True)
+class _QueryScope:
+    """The resolved account/scenario/exclusion scope shared by both queries.
+
+    ``_get_transactions_for_window`` resolves these three once and passes
+    them to whichever of :func:`_query_by_period` / :func:`_query_by_date_range`
+    runs, so the two query paths cannot drift on what they scope to.
+    """
+
+    account_id: int
+    scenario_id: int
+    excluded_status_ids: frozenset[int]
+
+
+def _get_transactions_for_window(
     user_id: int,
-    window_type: str,
-    period_id: int | None,
-    month: int | None,
-    year: int | None,
+    window: VarianceWindow,
     account_id: int | None,
 ) -> tuple[list[Transaction], PayPeriod | None]:
     """Query transactions for the specified time window.
@@ -207,32 +251,30 @@ def _get_transactions_for_window(  # pylint: disable=too-many-arguments,too-many
     # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02) so the
     # exclusion set is defined once rather than independently
     # re-derived here AND in ``year_end_summary_service``.
-    excluded_status_ids = balance_excluded_status_ids()
-
-    if window_type == "pay_period":
-        return _query_by_period(
-            account.id, scenario.id, period_id, excluded_status_ids,
-        )
-
-    if window_type == "month":
-        first_day = date(year, month, 1)
-        last_day = date(year, month, cal_mod.monthrange(year, month)[1])
-    else:
-        first_day = date(year, 1, 1)
-        last_day = date(year, 12, 31)
-
-    txns = _query_by_date_range(
-        account.id, scenario.id, user_id,
-        first_day, last_day, excluded_status_ids,
+    scope = _QueryScope(
+        account_id=account.id,
+        scenario_id=scenario.id,
+        excluded_status_ids=balance_excluded_status_ids(),
     )
+
+    if window.window_type == "pay_period":
+        return _query_by_period(scope, window.period_id)
+
+    if window.window_type == "month":
+        last_dom = cal_mod.monthrange(window.year, window.month)[1]
+        first_day = date(window.year, window.month, 1)
+        last_day = date(window.year, window.month, last_dom)
+    else:
+        first_day = date(window.year, 1, 1)
+        last_day = date(window.year, 12, 31)
+
+    txns = _query_by_date_range(scope, user_id, first_day, last_day)
     return txns, None
 
 
 def _query_by_period(
-    account_id: int,
-    scenario_id: int,
+    scope: _QueryScope,
     period_id: int,
-    excluded_status_ids: frozenset[int],
 ) -> tuple[list[Transaction], PayPeriod | None]:
     """Query transactions for a specific pay period.
 
@@ -247,24 +289,22 @@ def _query_by_period(
             joinedload(Transaction.pay_period),
         )
         .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
+            Transaction.account_id == scope.account_id,
+            Transaction.scenario_id == scope.scenario_id,
             Transaction.pay_period_id == period_id,
             Transaction.is_deleted.is_(False),
-            ~Transaction.status_id.in_(excluded_status_ids),
+            ~Transaction.status_id.in_(scope.excluded_status_ids),
         )
         .all()
     )
     return txns, period
 
 
-def _query_by_date_range(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    account_id: int,
-    scenario_id: int,
+def _query_by_date_range(
+    scope: _QueryScope,
     user_id: int,
     first_day: date,
     last_day: date,
-    excluded_status_ids: frozenset[int],
 ) -> list[Transaction]:
     """Query transactions attributed to a date range via due_date.
 
@@ -282,16 +322,11 @@ def _query_by_date_range(  # pylint: disable=too-many-arguments,too-many-positio
             joinedload(Transaction.pay_period),
         )
         .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
+            Transaction.account_id == scope.account_id,
+            Transaction.scenario_id == scope.scenario_id,
             Transaction.is_deleted.is_(False),
-            ~Transaction.status_id.in_(excluded_status_ids),
-            or_(
-                Transaction.due_date.between(first_day, last_day),
-                Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(
-                    period_ids if period_ids else [-1],
-                ),
-            ),
+            ~Transaction.status_id.in_(scope.excluded_status_ids),
+            monthly_attribution_clause(first_day, last_day, period_ids),
         )
         .all()
     )
@@ -319,18 +354,15 @@ def _build_group_hierarchy(
     # Build CategoryItemVariance for each item.
     group_items: dict[str, list[CategoryItemVariance]] = defaultdict(list)
     for (group_name, cat_id, item_name), txn_vars in item_map.items():
-        txn_vars.sort(key=lambda t: abs(t.variance), reverse=True)
-        est = sum(t.estimated for t in txn_vars)
-        act = sum(t.actual for t in txn_vars)
-        var = act - est
+        txn_vars.sort(key=lambda t: abs(t.figures.variance), reverse=True)
         group_items[group_name].append(CategoryItemVariance(
             category_id=cat_id,
             group_name=group_name,
             item_name=item_name,
-            estimated_total=est,
-            actual_total=act,
-            variance=var,
-            variance_pct=_pct(var, est),
+            figures=VarianceFigures.of(
+                sum(t.figures.estimated for t in txn_vars),
+                sum(t.figures.actual for t in txn_vars),
+            ),
             transaction_count=len(txn_vars),
             transactions=txn_vars,
         ))
@@ -338,20 +370,17 @@ def _build_group_hierarchy(
     # Build CategoryGroupVariance for each group.
     groups: list[CategoryGroupVariance] = []
     for group_name, items in group_items.items():
-        items.sort(key=lambda i: abs(i.variance), reverse=True)
-        est = sum(i.estimated_total for i in items)
-        act = sum(i.actual_total for i in items)
-        var = act - est
+        items.sort(key=lambda i: abs(i.figures.variance), reverse=True)
         groups.append(CategoryGroupVariance(
             group_name=group_name,
-            estimated_total=est,
-            actual_total=act,
-            variance=var,
-            variance_pct=_pct(var, est),
+            figures=VarianceFigures.of(
+                sum(i.figures.estimated for i in items),
+                sum(i.figures.actual for i in items),
+            ),
             items=items,
         ))
 
-    groups.sort(key=lambda g: abs(g.variance), reverse=True)
+    groups.sort(key=lambda g: abs(g.figures.variance), reverse=True)
     return groups
 
 
@@ -362,17 +391,10 @@ def _build_txn_variance(txn: Transaction) -> TransactionVariance:
     estimated_amount if actual is NULL).  Projected transactions
     use estimated_amount for both sides, yielding zero variance.
     """
-    estimated = txn.estimated_amount
-    actual = _compute_actual(txn)
-    variance = actual - estimated
-
     return TransactionVariance(
         transaction_id=txn.id,
         name=txn.name,
-        estimated=estimated,
-        actual=actual,
-        variance=variance,
-        variance_pct=_pct(variance, estimated),
+        figures=VarianceFigures.of(txn.estimated_amount, _compute_actual(txn)),
         is_paid=bool(txn.status and txn.status.is_settled),
         due_date=txn.due_date,
     )
@@ -405,10 +427,8 @@ def _pct(variance: Decimal, estimated: Decimal) -> Decimal | None:
 
 
 def _build_window_label(
-    window_type: str,
+    window: VarianceWindow,
     period: PayPeriod | None = None,
-    month: int | None = None,
-    year: int | None = None,
 ) -> str:
     """Format the human-readable window label.
 
@@ -416,16 +436,16 @@ def _build_window_label(
     Month: 'January 2026'.
     Year: '2026'.
     """
-    if window_type == "pay_period" and period is not None:
+    if window.window_type == "pay_period" and period is not None:
         start = period.start_date
         end = period.end_date
         return f"{start.strftime('%b %d')} - {end.strftime('%b %d')}, {end.year}"
 
-    if window_type == "month" and month is not None and year is not None:
-        month_name = date(year, month, 1).strftime("%B")
-        return f"{month_name} {year}"
+    if window.window_type == "month" and window.month is not None and window.year is not None:
+        month_name = date(window.year, window.month, 1).strftime("%B")
+        return f"{month_name} {window.year}"
 
-    if window_type == "year" and year is not None:
-        return str(year)
+    if window.window_type == "year" and window.year is not None:
+        return str(window.year)
 
     return ""

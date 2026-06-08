@@ -6,10 +6,14 @@ a specific month/year to adjust the annual salary for paycheck calculation.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin
+from app.models.mixins import (
+    CreatedAtMixin,
+    OptimisticLockMixin,
+    SalaryProfileScopedMixin,
+)
 
 
-class SalaryRaise(CreatedAtMixin, db.Model):
+class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin, db.Model):
     """A scheduled salary raise event.
 
     Optimistic locking: see :class:`Transaction` for the
@@ -88,11 +92,6 @@ class SalaryRaise(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    salary_profile_id = db.Column(
-        db.Integer,
-        db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     # F-073 / C-43: explicit ondelete=RESTRICT + fk_* name.  See
     # app/extensions.py for the full SHEKEL_NAMING_CONVENTION
     # rationale and the close-out story for finding F-078.
@@ -114,14 +113,7 @@ class SalaryRaise(CreatedAtMixin, db.Model):
         server_default=db.text("false"),
     )
     notes = db.Column(db.Text)
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="raises")

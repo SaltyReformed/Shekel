@@ -7,10 +7,12 @@ a payback expense is auto-generated in the next pay period.
 """
 
 import logging
+from decimal import Decimal
 
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.services import pay_period_service
@@ -177,7 +179,6 @@ def mark_as_credit(transaction_id, user_id):
         )
 
     credit_id = ref_cache.status_id(StatusEnum.CREDIT)
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Idempotency: if already credited with existing payback, return it.
     # Routed through the centralized ``is_credit`` predicate
@@ -194,15 +195,12 @@ def mark_as_credit(transaction_id, user_id):
 
     # Only projected transactions can be newly marked as credit.
     # Routed through the centralized ``is_projected`` predicate
-    # (D6-09 / MED-02); the local ``projected_id`` binding above
-    # remains for the payback INSERT below ``status_id=projected_id``.
+    # (D6-09 / MED-02).
     if not is_projected(txn):
         raise ValidationError(
             f"Cannot mark a '{txn.status.name}' transaction as credit. "
             "Only projected transactions can be marked as credit."
         )
-
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
     # Update the original transaction's status.
     txn.status_id = credit_id
@@ -220,7 +218,6 @@ def mark_as_credit(transaction_id, user_id):
     db.session.expire(txn, ["status"])
 
     # Find or create the CC Payback category for this user.
-    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
     period = db.session.get(PayPeriod, txn.pay_period_id)
 
     category = get_or_create_cc_category(user_id)
@@ -235,21 +232,11 @@ def mark_as_credit(transaction_id, user_id):
     # Determine the payback amount (use actual if set, else estimated).
     payback_amount = txn.actual_amount if txn.actual_amount is not None else txn.estimated_amount
 
-    # Create the payback transaction.
-    payback = Transaction(
-        account_id=txn.account_id,
-        template_id=None,  # Ad-hoc, not from a template.
-        pay_period_id=next_period.id,
-        scenario_id=txn.scenario_id,
-        status_id=projected_id,
-        name=f"CC Payback: {txn.name}",
-        category_id=category.id,
-        transaction_type_id=expense_type_id,
-        estimated_amount=payback_amount,
-        credit_payback_for_id=txn.id,
+    # Create the payback transaction via the shared factory (see
+    # entry_credit_workflow for the entry-level twin).
+    payback = create_cc_payback_transaction(
+        txn, next_period, category, payback_amount,
     )
-    db.session.add(payback)
-    db.session.flush()
 
     log_event(
         logger, logging.INFO, EVT_CREDIT_MARKED, BUSINESS,
@@ -377,3 +364,53 @@ def get_or_create_cc_category(user_id: int) -> Category:
         db.session.add(category)
         db.session.flush()
     return category
+
+
+def create_cc_payback_transaction(
+    source_txn: Transaction,
+    next_period: PayPeriod,
+    cc_category: Category,
+    amount: Decimal,
+) -> Transaction:
+    """Build, add, and flush the CC Payback expense for a credit transaction.
+
+    Shared by the transaction-level mark-Credit flow in this module and
+    the entry-level credit payback in
+    :mod:`app.services.entry_credit_workflow`.  Both produce the
+    identical payback shape -- a PROJECTED EXPENSE in the next pay
+    period, categorised to the user's CC Payback category, linked back
+    to the source transaction via ``credit_payback_for_id`` -- and
+    differ only in the amount source (the entry-level path sums the
+    credit entries; the transaction-level path uses the actual-or-
+    estimated amount).  PROJECTED status and EXPENSE type are invariants
+    of a payback, so they are resolved here rather than passed in.
+
+    Args:
+        source_txn: The credit transaction being paid back.  Supplies
+            the account, scenario, name, and ``credit_payback_for_id``
+            link.
+        next_period: The pay period the payback lands in (the period
+            after ``source_txn``'s).
+        cc_category: The user's "Credit Card: Payback" category (from
+            :func:`get_or_create_cc_category`).
+        amount: The payback's ``estimated_amount`` (a Decimal).
+
+    Returns:
+        The newly created payback :class:`Transaction`, flushed so its
+        ``id`` is available for entry linkage and logging.
+    """
+    payback = Transaction(
+        account_id=source_txn.account_id,
+        template_id=None,
+        pay_period_id=next_period.id,
+        scenario_id=source_txn.scenario_id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name=f"CC Payback: {source_txn.name}",
+        category_id=cc_category.id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        estimated_amount=amount,
+        credit_payback_for_id=source_txn.id,
+    )
+    db.session.add(payback)
+    db.session.flush()
+    return payback

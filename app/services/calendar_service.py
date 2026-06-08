@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
@@ -33,6 +32,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_balance_contributing,
+    monthly_attribution_clause,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,8 +68,21 @@ _INFREQUENT_PATTERNS = frozenset({
 
 
 @dataclass(frozen=True)
-class DayEntry:
-    """A single transaction's representation on a calendar day."""
+class DayEntry:  # pylint: disable=too-many-instance-attributes
+    """A single transaction's representation on a calendar day.
+
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
+    because this is a cohesive value record -- one transaction's row on a
+    calendar day -- consumed verbatim by the calendar surface: the CSV
+    month export reads the display fields as adjacent columns (folding the
+    booleans into single Income/Expense, Status, Large, and Infrequent
+    columns), the month-detail table renders name/category/amount and the
+    income/paid flags as individual cells, and the route reads
+    amount/is_income for day totals.  The two category fields are read as
+    independent columns, never as a unit.  Every field is an irreducible
+    column of the row; splitting it would fragment one domain concept and
+    break every consumer for no design gain.
+    """
 
     transaction_id: int
     name: str
@@ -84,8 +97,19 @@ class DayEntry:
 
 
 @dataclass(frozen=True)
-class MonthSummary:
-    """Aggregated data for one calendar month."""
+class MonthSummary:  # pylint: disable=too-many-instance-attributes
+    """Aggregated data for one calendar month.
+
+    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed
+    because this is a cohesive single-return aggregate -- one calendar
+    month's summary -- whose fields are flat columns read together by the
+    calendar surface: the month and year templates render the money fields
+    and is_third_paycheck_month, and the CSV year export emits them as one
+    row per month.  The three money fields are the month's headline
+    numbers read individually, not a sub-object read as a unit, so there is
+    no section to extract; nesting would fragment one contract across the
+    templates and the exporter for no design gain.
+    """
 
     year: int
     month: int
@@ -94,7 +118,6 @@ class MonthSummary:
     net: Decimal
     projected_end_balance: Decimal
     is_third_paycheck_month: bool
-    large_transactions: list[DayEntry]
     day_entries: dict[int, list[DayEntry]]
     paycheck_days: list[int]
 
@@ -158,10 +181,12 @@ def get_month_detail(
         account.id, scenario.id, user_id, first_day, last_day,
     )
 
-    return _build_month_summary(
-        year, month, account, periods, transactions,
-        large_threshold, user_id, scenario,
+    ctx = _MonthBuildContext(
+        year=year, account=account, periods=periods,
+        transactions=transactions, large_threshold=large_threshold,
+        scenario=scenario,
     )
+    return _build_month_summary(month, ctx)
 
 
 def get_year_overview(
@@ -205,13 +230,12 @@ def get_year_overview(
         account.id, scenario.id, user_id, first_day, last_day,
     )
 
-    months = [
-        _build_month_summary(
-            year, m, account, periods, all_txns,
-            large_threshold, user_id, scenario,
-        )
-        for m in range(1, 13)
-    ]
+    ctx = _MonthBuildContext(
+        year=year, account=account, periods=periods,
+        transactions=all_txns, large_threshold=large_threshold,
+        scenario=scenario,
+    )
+    months = [_build_month_summary(m, ctx) for m in range(1, 13)]
 
     annual_income = sum(ms.total_income for ms in months)
     annual_expenses = sum(ms.total_expenses for ms in months)
@@ -257,6 +281,25 @@ def _query_transactions_for_range(
     Cancelled) -- intentionally wider than the grid period subtotal's
     Projected-only predicate.  The two surfaces diverge by design.
     """
+    # Pylint: ``duplicate-code`` -- the overlapping-periods preamble +
+    # eager-loaded ``Transaction`` query below (``get_overlapping_periods``
+    # then ``query(Transaction).options(joinedload(category), joinedload(
+    # status), ...)``) is incidental SQLAlchemy boilerplate structurally
+    # parallel to ``budget_variance_service._query_by_date_range`` (the
+    # R0801 preamble cluster).  The genuinely shared logic has already been
+    # lifted out: the monthly-attribution business rule into
+    # ``monthly_attribution_clause`` (called by both), and both queries
+    # apply the IDENTICAL balance-contributing gate -- calendar's
+    # ``balance_contributing_clause()`` is exactly budget-variance's
+    # ``is_deleted.is_(False)`` + ``~status_id.in_(balance_excluded_status_ids())``
+    # (NOT a "Projected-only" gate, as a prior rationale wrongly claimed).
+    # The only genuine divergence is eager-loads: calendar adds
+    # ``joinedload(template -> recurrence_rule)`` for ``_is_infrequent``'s
+    # day-cell display; budget-variance never reads templates.  A shared
+    # query builder would parameterize that per-consumer eager-load set for
+    # no logic saved (coding-standards rule 13), so the preamble stays a
+    # documented one-sided disable.
+    # pylint: disable=duplicate-code
     overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]
 
@@ -274,15 +317,11 @@ def _query_transactions_for_range(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
             balance_contributing_clause(),
-            or_(
-                Transaction.due_date.between(first_day, last_day),
-                Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(
-                    period_ids if period_ids else [-1],
-                ),
-            ),
+            monthly_attribution_clause(first_day, last_day, period_ids),
         )
         .all()
     )
+    # pylint: enable=duplicate-code
 
 
 def _build_day_entry(
@@ -372,61 +411,62 @@ def _assign_transactions_to_days(
     return dict(day_map), total_income, total_expenses
 
 
-def _build_month_summary(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    year: int,
-    month: int,
-    account: Account,
-    periods: list[PayPeriod],
-    transactions: list[Transaction],
-    large_threshold: int,
-    user_id: int,
-    scenario: Scenario,
-) -> MonthSummary:
-    """Assemble a MonthSummary from pre-queried data.
+@dataclass(frozen=True)
+class _MonthBuildContext:
+    """The pre-queried data and config shared across a year's month summaries.
+
+    ``get_year_overview`` resolves the account, scenario, overlapping
+    periods, and transaction set once and builds twelve summaries from
+    them, varying only the month (``get_month_detail`` builds one).
+    Bundling these into the context the build shares keeps
+    :func:`_build_month_summary` a two-argument call and makes that
+    resolved-once-reused relationship explicit.
+    """
+
+    year: int
+    account: Account
+    periods: list[PayPeriod]
+    transactions: list[Transaction]
+    large_threshold: int
+    scenario: Scenario
+
+
+def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
+    """Assemble a MonthSummary for one month from pre-queried context.
 
     Assigns each transaction to a calendar day via _get_display_day,
     deduplicating by transaction ID to prevent double-counting when
     periods overlap month boundaries.
 
     Args:
-        year: Target calendar year.
         month: Target calendar month (1-12).
-        account: The account being summarized.
-        periods: All periods overlapping the date range.
-        transactions: All transactions across those periods.
-        large_threshold: Amount threshold for large flags.
-        user_id: The user's ID (for balance calculation).
-        scenario: The baseline scenario.
+        ctx: The year/account/periods/transactions/threshold/scenario
+            shared across the build (see :class:`_MonthBuildContext`).
 
     Returns:
         A MonthSummary for the target month.
     """
     day_entries, total_income, total_expenses = _assign_transactions_to_days(
-        transactions, year, month, large_threshold,
+        ctx.transactions, ctx.year, month, ctx.large_threshold,
     )
 
-    large_txns = [
-        e for entries in day_entries.values() for e in entries if e.is_large
-    ]
-
-    end_balance = _compute_month_end_balance(account, year, month, user_id, scenario)
-    third_paycheck_months = _detect_third_paycheck_months(periods, year)
+    end_balance = _compute_month_end_balance(ctx.account, ctx.year, month, ctx.scenario)
+    third_paycheck_months = _detect_third_paycheck_months(ctx.periods, ctx.year)
 
     paycheck_days = sorted({
         p.start_date.day
-        for p in periods
-        if p.start_date.year == year and p.start_date.month == month
+        for p in ctx.periods
+        if p.start_date.year == ctx.year and p.start_date.month == month
     })
 
     return MonthSummary(
-        year=year,
+        year=ctx.year,
         month=month,
         total_income=total_income,
         total_expenses=total_expenses,
         net=total_income - total_expenses,
         projected_end_balance=end_balance,
         is_third_paycheck_month=month in third_paycheck_months,
-        large_transactions=large_txns,
         day_entries=day_entries,
         paycheck_days=paycheck_days,
     )
@@ -498,7 +538,6 @@ def _compute_month_end_balance(
     account: Account,
     year: int,
     month: int,
-    user_id: int,  # pylint: disable=unused-argument
     scenario: Scenario,
 ) -> Decimal:
     """Project the checking balance at the true calendar month-end (E-27).
@@ -518,10 +557,6 @@ def _compute_month_end_balance(
         account: The :class:`~app.models.account.Account` to summarize.
         year: Target calendar year.
         month: Target calendar month (1-12).
-        user_id: The user's id.  Unused after the route through
-            ``balance_as_of_date`` (the producer reads
-            ``account.user_id`` directly); retained in the signature
-            so :func:`_build_month_summary` callers do not change.
         scenario: The baseline :class:`~app.models.scenario.Scenario`.
 
     Returns:

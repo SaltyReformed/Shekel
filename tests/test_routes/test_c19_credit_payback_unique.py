@@ -155,11 +155,13 @@ def _create_concurrent_user(db_session):
         db_session.query(AccountType).filter_by(name="Checking").one()
     )
     account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=checking_type.id,
-        name="Checking",
-        anchor_balance=Decimal("5000.00"),
-        anchor_period_id=_bootstrap.id,
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=checking_type.id,
+            name="Checking",
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=_bootstrap.id,
+        ),
     )
 
     scenario = Scenario(
@@ -1126,7 +1128,7 @@ class TestMarkCreditRouteIntegrityErrorCatch:
             raise forged
 
         with patch(
-            "app.routes.transactions.credit_workflow.mark_as_credit",
+            "app.routes.transactions.mutations.credit_workflow.mark_as_credit",
             _raise_other_integrity_error,
         ):
             resp = auth_client.post(f"/transactions/{source_id}/mark-credit")

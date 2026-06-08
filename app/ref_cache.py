@@ -23,7 +23,11 @@ Flask application; the cache is written once at startup and read-only
 thereafter.
 """
 
+import functools
 import logging
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import TypedDict
 
 import sqlalchemy.exc
 
@@ -42,23 +46,82 @@ from app.enums import (
     TxnTypeEnum,
 )
 
-# Module-level state -- populated by init(), read by accessors.
-_status_map = {}               # StatusEnum member -> int (database PK)
-_txn_type_map = {}             # TxnTypeEnum member -> int (database PK)
-_acct_type_map = {}            # AcctTypeEnum member -> int (database PK)
-_acct_category_map = {}        # AcctCategoryEnum member -> int (database PK)
-_recurrence_pattern_map = {}   # RecurrencePatternEnum member -> int (database PK)
-_deduction_timing_map = {}     # DeductionTimingEnum member -> int (database PK)
-_calc_method_map = {}          # CalcMethodEnum member -> int (database PK)
-_tax_type_map = {}             # TaxTypeEnum member -> int (database PK)
-_goal_mode_map = {}            # GoalModeEnum member -> int (database PK)
-_income_unit_map = {}          # IncomeUnitEnum member -> int (database PK)
-_role_map = {}                 # RoleEnum member -> int (database PK)
-_loan_anchor_source_map = {}   # LoanAnchorSourceEnum member -> int (database PK)
-_acct_type_meta = {}           # int (acct_type PK) -> dict with icon_class, max_term_months
-_initialized = False
-
 _logger = logging.getLogger(__name__)
+
+
+class _AcctTypeMeta(TypedDict):
+    """Cached presentation metadata for a built-in account type."""
+
+    icon_class: str | None
+    max_term_months: int | None
+
+
+@dataclass
+class _RefState:
+    """Process-lifetime reference-cache state.
+
+    A single module-level instance (``_cache``) holds every cached map.
+    ``init()`` mutates this object's dicts in place and never rebinds it
+    or the module name, so no ``global`` statement is required.
+
+    ``enum_ids`` maps each reference enum class to its ``{member: database
+    PK}`` lookup; ``acct_type_meta`` maps an account-type PK to its
+    presentation metadata.  Written once at startup (re-written in tests)
+    and read-only thereafter via the accessor functions below.
+    """
+
+    enum_ids: dict[type[Enum], dict[Enum, int]] = field(default_factory=dict)
+    acct_type_meta: dict[int, _AcctTypeMeta] = field(default_factory=dict)
+    initialized: bool = False
+
+
+_cache = _RefState()
+
+
+@dataclass(frozen=True)
+class _RefSpec:
+    """Declarative description of one reference table for ``init()`` to load.
+
+    ``label`` (the warning text and ``unavailable`` key) and ``error_prefix``
+    (the missing-row error prefix) are derived from the model so there is a
+    single source of truth: ``label`` is the table name and ``error_prefix``
+    the model class name (e.g. the ``RoleEnum`` table's model is ``UserRole``,
+    so its errors read ``UserRole.<member>``).
+    """
+
+    enum: type[Enum]
+    model: type
+    # Filter the query to seeded built-ins (``user_id IS NULL``); set only for
+    # account_types.  After commit C-28 / F-044 owners can register custom
+    # types whose names collide with built-ins (a user's own "HYSA" alongside
+    # the seeded "HYSA").  The cache promises a single stable ID per
+    # ``AcctTypeEnum`` member, so it must see only the built-in rows; custom
+    # types resolve via the ORM relationship in templates, never this cache.
+    builtin_only: bool = False
+
+    @property
+    def label(self) -> str:
+        """Return the reference table name (warning text / unavailable key)."""
+        return self.model.__tablename__
+
+    @property
+    def error_prefix(self) -> str:
+        """Return the model class name used to prefix missing-row errors."""
+        return self.model.__name__
+
+    def query(self, db_session) -> dict[str, int]:
+        """Return a ``{row.name: row.id}`` lookup for this table's rows.
+
+        Args:
+            db_session: An active SQLAlchemy session.
+
+        Returns:
+            dict[str, int]: Row name mapped to its integer primary key.
+        """
+        model_query = db_session.query(self.model)
+        if self.builtin_only:
+            model_query = model_query.filter(self.model.user_id.is_(None))
+        return {row.name: row.id for row in model_query.all()}
 
 
 def _load_rows(db_session, label, query_callable):
@@ -98,6 +161,36 @@ def _load_rows(db_session, label, query_callable):
         return None
 
 
+def _build_ref_specs(ref_models) -> list[_RefSpec]:
+    """Return the ordered reference-table specs for ``init()`` to load.
+
+    Built here (not at module scope) because the ORM models are imported
+    lazily inside ``init()`` to break the import cycle.  The order matches
+    the historical load order, which fixes the order of the ``unavailable``
+    list and of the missing-row error message.
+
+    Args:
+        ref_models: The lazily-imported ``app.models.ref`` module.
+
+    Returns:
+        list[_RefSpec]: One spec per cached reference table.
+    """
+    return [
+        _RefSpec(StatusEnum, ref_models.Status),
+        _RefSpec(TxnTypeEnum, ref_models.TransactionType),
+        _RefSpec(AcctTypeEnum, ref_models.AccountType, builtin_only=True),
+        _RefSpec(AcctCategoryEnum, ref_models.AccountTypeCategory),
+        _RefSpec(RecurrencePatternEnum, ref_models.RecurrencePattern),
+        _RefSpec(DeductionTimingEnum, ref_models.DeductionTiming),
+        _RefSpec(CalcMethodEnum, ref_models.CalcMethod),
+        _RefSpec(TaxTypeEnum, ref_models.TaxType),
+        _RefSpec(GoalModeEnum, ref_models.GoalMode),
+        _RefSpec(IncomeUnitEnum, ref_models.IncomeUnit),
+        _RefSpec(RoleEnum, ref_models.UserRole),
+        _RefSpec(LoanAnchorSourceEnum, ref_models.LoanAnchorSource),
+    ]
+
+
 def init(db_session):
     """Load all reference table IDs into the in-memory cache.
 
@@ -126,259 +219,42 @@ def init(db_session):
         RuntimeError: If any ref table EXISTS but is missing rows for
             one or more of its enum members.
     """
-    # Deferred imports to avoid circular dependencies.  The models
-    # module imports from extensions, which must be initialized before
-    # the cache loads.
-    from app.models.ref import (  # pylint: disable=import-outside-toplevel
-        AccountType,
-        AccountTypeCategory,
-        CalcMethod,
-        DeductionTiming,
-        GoalMode,
-        IncomeUnit,
-        LoanAnchorSource,
-        RecurrencePattern,
-        Status,
-        TaxType,
-        TransactionType,
-        UserRole,
-    )
+    # Pylint: ``import-outside-toplevel`` -- deferred import to avoid circular
+    # dependencies.  The models module imports from extensions, which must be
+    # initialized before the cache loads.
+    import app.models.ref as ref_models  # pylint: disable=import-outside-toplevel
 
-    global _status_map, _txn_type_map, _acct_type_map  # pylint: disable=global-statement
-    global _acct_category_map, _recurrence_pattern_map  # pylint: disable=global-statement
-    global _deduction_timing_map, _calc_method_map, _tax_type_map  # pylint: disable=global-statement
-    global _goal_mode_map, _income_unit_map  # pylint: disable=global-statement
-    global _role_map, _loan_anchor_source_map, _acct_type_meta, _initialized  # pylint: disable=global-statement
+    specs = _build_ref_specs(ref_models)
 
-    # Clear any prior state (supports re-initialization in tests).
-    _status_map = {}
-    _txn_type_map = {}
-    _acct_type_map = {}
-    _acct_category_map = {}
-    _recurrence_pattern_map = {}
-    _deduction_timing_map = {}
-    _calc_method_map = {}
-    _tax_type_map = {}
-    _goal_mode_map = {}
-    _income_unit_map = {}
-    _role_map = {}
-    _loan_anchor_source_map = {}
-    _acct_type_meta = {}
+    # Reset prior state (supports re-initialization in tests).  Mutate the
+    # _cache dicts in place; do NOT reset ``initialized`` here -- a failed
+    # re-init leaves the previous flag value, matching the original behavior.
+    _cache.enum_ids.clear()
+    _cache.acct_type_meta.clear()
+    for spec in specs:
+        _cache.enum_ids[spec.enum] = {}
 
-    # Build name -> id lookup from the database.  ``account_types``
-    # is filtered to seeded built-ins (``user_id IS NULL``) because
-    # after commit C-28 / F-044 owners can register custom types
-    # whose names collide with built-ins (the user's own "HYSA"
-    # alongside the seeded "HYSA").  The cache's enum-to-id contract
-    # promises a single, stable ID per ``AcctTypeEnum`` member; the
-    # filter restores uniqueness and keeps custom types out of a
-    # cache that is loaded once at startup and could not see them
-    # appear later anyway.
-    #
-    # Each query is wrapped in ``_load_rows`` so a missing ref table
-    # (pre-migration bootstrap) does not poison the entire cache.
-    # ``None`` from the loader means the table did not exist; the
-    # enum sweep below skips that table's enum check so accessors
-    # for unrelated tables remain usable.
-    status_rows = _load_rows(
-        db_session, "statuses",
-        lambda: {row.name: row.id for row in db_session.query(Status).all()},
-    )
-    txn_type_rows = _load_rows(
-        db_session, "transaction_types",
-        lambda: {row.name: row.id for row in db_session.query(TransactionType).all()},
-    )
-    acct_type_rows = _load_rows(
-        db_session, "account_types",
-        lambda: {
-            row.name: row.id
-            for row in db_session.query(AccountType)
-            .filter(AccountType.user_id.is_(None))
-            .all()
-        },
-    )
-    acct_category_rows = _load_rows(
-        db_session, "account_type_categories",
-        lambda: {row.name: row.id for row in db_session.query(AccountTypeCategory).all()},
-    )
-    recurrence_pattern_rows = _load_rows(
-        db_session, "recurrence_patterns",
-        lambda: {row.name: row.id for row in db_session.query(RecurrencePattern).all()},
-    )
-    deduction_timing_rows = _load_rows(
-        db_session, "deduction_timings",
-        lambda: {row.name: row.id for row in db_session.query(DeductionTiming).all()},
-    )
-    calc_method_rows = _load_rows(
-        db_session, "calc_methods",
-        lambda: {row.name: row.id for row in db_session.query(CalcMethod).all()},
-    )
-    tax_type_rows = _load_rows(
-        db_session, "tax_types",
-        lambda: {row.name: row.id for row in db_session.query(TaxType).all()},
-    )
-    goal_mode_rows = _load_rows(
-        db_session, "goal_modes",
-        lambda: {row.name: row.id for row in db_session.query(GoalMode).all()},
-    )
-    income_unit_rows = _load_rows(
-        db_session, "income_units",
-        lambda: {row.name: row.id for row in db_session.query(IncomeUnit).all()},
-    )
-    role_rows = _load_rows(
-        db_session, "user_roles",
-        lambda: {row.name: row.id for row in db_session.query(UserRole).all()},
-    )
-    loan_anchor_source_rows = _load_rows(
-        db_session, "loan_anchor_sources",
-        lambda: {
-            row.name: row.id
-            for row in db_session.query(LoanAnchorSource).all()
-        },
-    )
-
-    # Track which tables were unavailable so the enum-completeness
-    # sweep can skip them (a missing-table warning has already been
-    # logged) and the caller can decide whether to skip Jinja globals.
-    unavailable = [
-        label for label, rows in (
-            ("statuses", status_rows),
-            ("transaction_types", txn_type_rows),
-            ("account_types", acct_type_rows),
-            ("account_type_categories", acct_category_rows),
-            ("recurrence_patterns", recurrence_pattern_rows),
-            ("deduction_timings", deduction_timing_rows),
-            ("calc_methods", calc_method_rows),
-            ("tax_types", tax_type_rows),
-            ("goal_modes", goal_mode_rows),
-            ("income_units", income_unit_rows),
-            ("user_roles", role_rows),
-            ("loan_anchor_sources", loan_anchor_source_rows),
-        ) if rows is None
-    ]
-
-    # Replace any ``None`` (missing table) with an empty dict so the
-    # ``.get`` lookups in the enum sweep work uniformly.  The sweep
-    # also skips the "missing row" complaint when the table itself
-    # was unavailable.
-    status_rows = status_rows or {}
-    txn_type_rows = txn_type_rows or {}
-    acct_type_rows = acct_type_rows or {}
-    acct_category_rows = acct_category_rows or {}
-    recurrence_pattern_rows = recurrence_pattern_rows or {}
-    deduction_timing_rows = deduction_timing_rows or {}
-    calc_method_rows = calc_method_rows or {}
-    tax_type_rows = tax_type_rows or {}
-    goal_mode_rows = goal_mode_rows or {}
-    income_unit_rows = income_unit_rows or {}
-    role_rows = role_rows or {}
-    loan_anchor_source_rows = loan_anchor_source_rows or {}
-
-    unavailable_set = set(unavailable)
-
-    # Map each enum member to its database ID, collecting any misses.
-    # A missing row in a TABLE THAT EXISTS is fatal -- that is a
-    # genuine seed/data error.  A missing row in a TABLE THAT DOES
-    # NOT EXIST is not appended (already warned during loading).
+    # Load each ref table and map its enum members to database IDs.  Each
+    # query is wrapped in ``_load_rows`` so a missing ref table (the
+    # pre-migration bootstrap window) is recorded as unavailable rather than
+    # poisoning the whole cache; that table's enum sweep is then skipped.  A
+    # missing row in a table that EXISTS is fatal -- a genuine seed/data error.
+    unavailable = []
     missing = []
-
-    for member in StatusEnum:
-        db_id = status_rows.get(member.value)
-        if db_id is None:
-            if "statuses" not in unavailable_set:
-                missing.append(f"Status.{member.name} (expected name={member.value!r})")
-        else:
-            _status_map[member] = db_id
-
-    for member in TxnTypeEnum:
-        db_id = txn_type_rows.get(member.value)
-        if db_id is None:
-            if "transaction_types" not in unavailable_set:
-                missing.append(f"TransactionType.{member.name} (expected name={member.value!r})")
-        else:
-            _txn_type_map[member] = db_id
-
-    for member in AcctTypeEnum:
-        db_id = acct_type_rows.get(member.value)
-        if db_id is None:
-            if "account_types" not in unavailable_set:
-                missing.append(f"AccountType.{member.name} (expected name={member.value!r})")
-        else:
-            _acct_type_map[member] = db_id
-
-    for member in AcctCategoryEnum:
-        db_id = acct_category_rows.get(member.value)
-        if db_id is None:
-            if "account_type_categories" not in unavailable_set:
-                missing.append(f"AccountTypeCategory.{member.name} (expected name={member.value!r})")
-        else:
-            _acct_category_map[member] = db_id
-
-    for member in RecurrencePatternEnum:
-        db_id = recurrence_pattern_rows.get(member.value)
-        if db_id is None:
-            if "recurrence_patterns" not in unavailable_set:
-                missing.append(f"RecurrencePattern.{member.name} (expected name={member.value!r})")
-        else:
-            _recurrence_pattern_map[member] = db_id
-
-    for member in DeductionTimingEnum:
-        db_id = deduction_timing_rows.get(member.value)
-        if db_id is None:
-            if "deduction_timings" not in unavailable_set:
-                missing.append(f"DeductionTiming.{member.name} (expected name={member.value!r})")
-        else:
-            _deduction_timing_map[member] = db_id
-
-    for member in CalcMethodEnum:
-        db_id = calc_method_rows.get(member.value)
-        if db_id is None:
-            if "calc_methods" not in unavailable_set:
-                missing.append(f"CalcMethod.{member.name} (expected name={member.value!r})")
-        else:
-            _calc_method_map[member] = db_id
-
-    for member in TaxTypeEnum:
-        db_id = tax_type_rows.get(member.value)
-        if db_id is None:
-            if "tax_types" not in unavailable_set:
-                missing.append(f"TaxType.{member.name} (expected name={member.value!r})")
-        else:
-            _tax_type_map[member] = db_id
-
-    for member in GoalModeEnum:
-        db_id = goal_mode_rows.get(member.value)
-        if db_id is None:
-            if "goal_modes" not in unavailable_set:
-                missing.append(f"GoalMode.{member.name} (expected name={member.value!r})")
-        else:
-            _goal_mode_map[member] = db_id
-
-    for member in IncomeUnitEnum:
-        db_id = income_unit_rows.get(member.value)
-        if db_id is None:
-            if "income_units" not in unavailable_set:
-                missing.append(f"IncomeUnit.{member.name} (expected name={member.value!r})")
-        else:
-            _income_unit_map[member] = db_id
-
-    for member in RoleEnum:
-        db_id = role_rows.get(member.value)
-        if db_id is None:
-            if "user_roles" not in unavailable_set:
-                missing.append(f"UserRole.{member.name} (expected name={member.value!r})")
-        else:
-            _role_map[member] = db_id
-
-    for member in LoanAnchorSourceEnum:
-        db_id = loan_anchor_source_rows.get(member.value)
-        if db_id is None:
-            if "loan_anchor_sources" not in unavailable_set:
+    for spec in specs:
+        rows = _load_rows(db_session, spec.label, functools.partial(spec.query, db_session))
+        if rows is None:
+            unavailable.append(spec.label)
+            continue
+        target = _cache.enum_ids[spec.enum]
+        for member in spec.enum:
+            db_id = rows.get(member.value)
+            if db_id is None:
                 missing.append(
-                    f"LoanAnchorSource.{member.name} (expected name={member.value!r})"
+                    f"{spec.error_prefix}.{member.name} (expected name={member.value!r})"
                 )
-        else:
-            _loan_anchor_source_map[member] = db_id
+            else:
+                target[member] = db_id
 
     if missing:
         raise RuntimeError(
@@ -386,27 +262,31 @@ def init(db_session):
             "matching database row:\n  " + "\n  ".join(missing)
         )
 
-    # Build account type metadata cache for icon/term-limit lookups.
-    # Same filter as ``acct_type_rows`` -- the cache is loaded once
-    # at startup and only knows about seeded built-ins.  Owner-scoped
-    # custom types still resolve their icon/max_term via the ORM
-    # relationship in templates (``account.account_type.icon_class``)
-    # without going through this cache.  Wrapped in ``_load_rows``
-    # semantics: a missing ``ref.account_types`` table is already in
-    # ``unavailable_set``, so we skip the meta load too.
-    if "account_types" not in unavailable_set:
+    # Build the account type metadata cache for icon/term-limit lookups.
+    # Same built-in-only filter as the account_types map -- the cache is
+    # loaded once at startup and only knows about seeded built-ins.  Skipped
+    # when that table is unavailable (already warned during loading).
+    # Owner-scoped custom types still resolve their icon/max_term via the ORM
+    # relationship in templates (``account.account_type.icon_class``).
+    if "account_types" not in unavailable:
         for row in (
-            db_session.query(AccountType)
-            .filter(AccountType.user_id.is_(None))
+            db_session.query(ref_models.AccountType)
+            .filter(ref_models.AccountType.user_id.is_(None))
             .all()
         ):
-            _acct_type_meta[row.id] = {
+            _cache.acct_type_meta[row.id] = {
                 "icon_class": row.icon_class,
                 "max_term_months": row.max_term_months,
             }
 
-    _initialized = True
+    _cache.initialized = True
     return unavailable
+
+
+def _require_init():
+    """Raise if the cache has not been initialized via ``init()``."""
+    if not _cache.initialized:
+        raise RuntimeError("ref_cache not initialized -- call init() first.")
 
 
 def status_id(member):
@@ -422,9 +302,8 @@ def status_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid StatusEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _status_map[member]
+    _require_init()
+    return _cache.enum_ids[StatusEnum][member]
 
 
 def txn_type_id(member):
@@ -440,9 +319,8 @@ def txn_type_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid TxnTypeEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _txn_type_map[member]
+    _require_init()
+    return _cache.enum_ids[TxnTypeEnum][member]
 
 
 def transaction_type_is_income(transaction_type_id):
@@ -467,9 +345,8 @@ def transaction_type_is_income(transaction_type_id):
     Raises:
         RuntimeError: If the cache has not been initialized.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return transaction_type_id == _txn_type_map[TxnTypeEnum.INCOME]
+    _require_init()
+    return transaction_type_id == _cache.enum_ids[TxnTypeEnum][TxnTypeEnum.INCOME]
 
 
 def acct_type_id(member):
@@ -485,9 +362,8 @@ def acct_type_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid AcctTypeEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _acct_type_map[member]
+    _require_init()
+    return _cache.enum_ids[AcctTypeEnum][member]
 
 
 def acct_category_id(member):
@@ -503,9 +379,8 @@ def acct_category_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid AcctCategoryEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _acct_category_map[member]
+    _require_init()
+    return _cache.enum_ids[AcctCategoryEnum][member]
 
 
 def recurrence_pattern_id(member):
@@ -522,16 +397,15 @@ def recurrence_pattern_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid RecurrencePatternEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _recurrence_pattern_map[member]
+    _require_init()
+    return _cache.enum_ids[RecurrencePatternEnum][member]
 
 
-def acct_type_icon(acct_type_id):
+def acct_type_icon(type_id):
     """Return the Bootstrap icon class for an account type, or a default.
 
     Args:
-        acct_type_id: The integer primary key of a ``ref.account_types`` row.
+        type_id: The integer primary key of a ``ref.account_types`` row.
 
     Returns:
         str -- the ``icon_class`` value, or ``'bi-bank'`` if unset.
@@ -539,17 +413,16 @@ def acct_type_icon(acct_type_id):
     Raises:
         RuntimeError: If the cache has not been initialized.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    meta = _acct_type_meta.get(acct_type_id, {})
+    _require_init()
+    meta = _cache.acct_type_meta.get(type_id, {})
     return meta.get("icon_class") or "bi-bank"
 
 
-def acct_type_max_term(acct_type_id):
+def acct_type_max_term(type_id):
     """Return the max term months for an account type, or None if no limit.
 
     Args:
-        acct_type_id: The integer primary key of a ``ref.account_types`` row.
+        type_id: The integer primary key of a ``ref.account_types`` row.
 
     Returns:
         int or None -- the ``max_term_months`` value.
@@ -557,31 +430,27 @@ def acct_type_max_term(acct_type_id):
     Raises:
         RuntimeError: If the cache has not been initialized.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    meta = _acct_type_meta.get(acct_type_id, {})
+    _require_init()
+    meta = _cache.acct_type_meta.get(type_id, {})
     return meta.get("max_term_months")
 
 
 def deduction_timing_id(member):
     """Return the integer primary key for a DeductionTimingEnum member."""
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _deduction_timing_map[member]
+    _require_init()
+    return _cache.enum_ids[DeductionTimingEnum][member]
 
 
 def calc_method_id(member):
     """Return the integer primary key for a CalcMethodEnum member."""
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _calc_method_map[member]
+    _require_init()
+    return _cache.enum_ids[CalcMethodEnum][member]
 
 
 def tax_type_id(member):
     """Return the integer primary key for a TaxTypeEnum member."""
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _tax_type_map[member]
+    _require_init()
+    return _cache.enum_ids[TaxTypeEnum][member]
 
 
 def goal_mode_id(member):
@@ -597,9 +466,8 @@ def goal_mode_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid GoalModeEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _goal_mode_map[member]
+    _require_init()
+    return _cache.enum_ids[GoalModeEnum][member]
 
 
 def income_unit_id(member):
@@ -615,9 +483,8 @@ def income_unit_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid IncomeUnitEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _income_unit_map[member]
+    _require_init()
+    return _cache.enum_ids[IncomeUnitEnum][member]
 
 
 def role_id(member):
@@ -633,9 +500,8 @@ def role_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid RoleEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _role_map[member]
+    _require_init()
+    return _cache.enum_ids[RoleEnum][member]
 
 
 def loan_anchor_source_id(member):
@@ -657,6 +523,5 @@ def loan_anchor_source_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid LoanAnchorSourceEnum member.
     """
-    if not _initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
-    return _loan_anchor_source_map[member]
+    _require_init()
+    return _cache.enum_ids[LoanAnchorSourceEnum][member]

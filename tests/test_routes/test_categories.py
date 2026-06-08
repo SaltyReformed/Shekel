@@ -114,6 +114,35 @@ class TestCategoryCreate:
             # HTMX response is a partial HTML row, not a redirect.
             assert b"Netflix" in resp.data
 
+    def test_create_category_htmx_group_names_exclude_archived_only(
+        self, app, auth_client, seed_user,
+    ):
+        """deep-quality-hunt #41: the HTMX create response's group_names
+        dropdown excludes a group that exists only on archived
+        categories, matching the active-only set the settings GET render
+        shows (otherwise the two paths offer different selectable groups).
+        """
+        with app.app_context():
+            # A group that lives ONLY on an archived (is_active=False)
+            # category -- the user does not see it on a settings reload.
+            db.session.add(Category(
+                user_id=seed_user["user"].id,
+                group_name="GhostGroup",
+                item_name="OnlyArchived",
+                is_active=False,
+            ))
+            db.session.commit()
+
+            resp = auth_client.post("/categories", data={
+                "group_name": "Home",
+                "item_name": "Internet",
+            }, headers={"HX-Request": "true"})
+
+            assert resp.status_code == 200
+            # The archived-only group must NOT appear in the row's
+            # group dropdown.
+            assert b"GhostGroup" not in resp.data
+
     def test_create_category_validation_error(self, app, auth_client, seed_user):
         """POST /categories with missing fields shows validation error."""
         with app.app_context():
@@ -1148,10 +1177,12 @@ class TestArchiveHelpers:
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
             savings_account = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings for Transfer Test",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings for Transfer Test",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(savings_account)
             db.session.flush()
@@ -1192,10 +1223,12 @@ class TestArchiveHelpers:
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
             savings_account = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings for Projected Transfer",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings for Projected Transfer",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(savings_account)
             db.session.flush()

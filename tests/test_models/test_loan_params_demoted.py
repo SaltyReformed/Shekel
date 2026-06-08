@@ -85,8 +85,12 @@ def test_no_display_read_of_current_principal():
     ``loan_payment_service.py``) were collapsed by the follow-up
     Commit 15 (F-10): the first two were deleted as dead production
     code; the third was rewritten to read ``original_principal``
-    instead of ``current_principal``.  No ``app/services/`` allow-
-    list entries remain.
+    instead of ``current_principal``.  No engine-internal *read of the
+    demoted column* remains in ``app/services/``.  The one ``services/``
+    entry that post-dates F-10 -- ``amortization_engine.py`` (F-28) --
+    allow-lists the ``PayoffRequest`` parameter-object field, not a
+    ``LoanParams`` read: that module has no DB access and cannot touch
+    the demoted column (see the allow-list comment below).
 
     The grep matches WRITES (``params.current_principal = X``) as
     well as reads -- but Commit 15 leaves the legacy write path in
@@ -136,13 +140,15 @@ def test_no_display_read_of_current_principal():
         "models/loan_params.py:",  # column definition + docstring
         "models/loan_anchor_event.py:",  # docstring reference
         # Commit 16 retargeted the legacy ``update_params`` write path
-        # at the true-up event; ``routes/loan.py`` no longer mutates
-        # the column.  The grep still matches docstring references
-        # (the original write-site allow-list line is preserved here
-        # because those docstrings are the documentation of the
-        # demoted contract -- removing the entry would force every
-        # future docstring touch to bypass the lock).
-        "routes/loan.py:",
+        # at the true-up event; the loan routes no longer mutate the
+        # column.  ``routes/loan.py`` became the ``routes/loan/``
+        # package in the Phase 3 pylint-cleanup split; the directory
+        # prefix matches every sub-module.  The grep still matches
+        # docstring references (the ``_load_loan_context`` /
+        # ``true_up_balance`` docstrings document the demoted contract
+        # in ``_helpers.py`` / ``params.py``); removing the entry would
+        # force every future docstring touch to bypass the lock.
+        "routes/loan/",
         # Commit 16 extends ``anchor_service`` for loan trueups; the
         # module's docstring and the ``apply_loan_anchor_true_up``
         # docstring reference the demoted column to assert the
@@ -152,8 +158,30 @@ def test_no_display_read_of_current_principal():
         # Tests don't live under app/ but the grep pattern is
         # app-only -- listed for completeness; never matched here.
         "routes/debt_strategy.py:",  # comments only
-        "services/savings_dashboard_service.py:",  # comments only
-        "services/loan_resolver.py:",
+        # ``savings_dashboard_service`` became a package in the Phase 3
+        # pylint-cleanup split; the directory prefix matches every
+        # sub-module.  The two ``.current_principal`` hits are prose in
+        # ``_projections.py`` / ``_metrics.py`` (docstring + comment
+        # referencing ``LoanParams.current_principal``); the package code
+        # reads ``state.current_balance`` / ``ad["current_balance"]``,
+        # never the demoted column.
+        "services/savings_dashboard_service/",  # comments only
+        # ``loan_resolver`` became a package in the Phase-3 pylint-cleanup
+        # split; the directory prefix matches every sub-module.  The
+        # ``.current_principal`` hits are prose only (the package docstring
+        # in ``__init__.py`` and the ``LoanState`` docstring in
+        # ``_state.py`` naming the demoted column); the resolver reads
+        # ``state.current_balance``, never the column.
+        "services/loan_resolver/",  # comments only
+        # PayoffRequest parameter-object field (F-28): the pure-function
+        # amortization engine has no DB access and imports no model, so
+        # ``request.current_principal`` reads the resolver-derived
+        # balance the caller passes in (``state.current_balance`` at
+        # ``routes/loan/calculators.py`` payoff_calculate), NOT the demoted
+        # ``LoanParams.current_principal`` column.  The module is
+        # structurally unable to touch LoanParams, so this entry does
+        # not weaken the lock's real protection.
+        "services/amortization_engine.py:",
         # Static / HTML comments + dashboard.html itself:
         "templates/loan/dashboard.html:",
     )

@@ -6,10 +6,19 @@ profile's gross pay to arrive at net pay.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import (
+    IsActiveMixin,
+    OptimisticLockMixin,
+    SalaryProfileScopedMixin,
+    SortOrderMixin,
+    TimestampMixin,
+)
 
 
-class PaycheckDeduction(TimestampMixin, db.Model):
+class PaycheckDeduction(
+    SalaryProfileScopedMixin, SortOrderMixin, IsActiveMixin, OptimisticLockMixin,
+    TimestampMixin, db.Model,
+):
     """A payroll deduction (e.g., 401k, health insurance, Roth IRA).
 
     Optimistic locking: see :class:`Transaction` for the
@@ -83,11 +92,6 @@ class PaycheckDeduction(TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    salary_profile_id = db.Column(
-        db.Integer,
-        db.ForeignKey("salary.salary_profiles.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     # F-073 / C-43: explicit ondelete=RESTRICT + fk_* names on the
     # two ref-table FKs.  See app/extensions.py for the full
     # SHEKEL_NAMING_CONVENTION rationale.
@@ -127,21 +131,8 @@ class PaycheckDeduction(TimestampMixin, db.Model):
         db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
         nullable=True,
     )
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.
-    __mapper_args__ = {"version_id_col": version_id}
+    # sort_order + is_active: from SortOrderMixin / IsActiveMixin.
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="deductions")

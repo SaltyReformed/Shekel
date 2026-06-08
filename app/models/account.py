@@ -6,10 +6,21 @@ for the true-up workflow.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin, TimestampMixin
+from app.models.mixins import (
+    AccountScopedMixin,
+    CreatedAtMixin,
+    IsActiveMixin,
+    OptimisticLockMixin,
+    SortOrderMixin,
+    TimestampMixin,
+    UserScopedMixin,
+)
 
 
-class Account(TimestampMixin, db.Model):
+class Account(
+    UserScopedMixin, SortOrderMixin, IsActiveMixin, OptimisticLockMixin,
+    TimestampMixin, db.Model,
+):
     """A financial account (checking or savings) owned by a user.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
@@ -48,10 +59,6 @@ class Account(TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     account_type_id = db.Column(
         db.Integer, db.ForeignKey("ref.account_types.id", ondelete="RESTRICT"),
         nullable=False,
@@ -77,28 +84,7 @@ class Account(TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
         nullable=False,
     )
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
-    # Optimistic-locking version counter.  See the class docstring
-    # for the contract.  NOT NULL with server_default="1" so existing
-    # production rows are filled at ALTER TABLE time and new rows
-    # always start at version 1.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: SQLAlchemy will (a) issue
-    # ``UPDATE ... WHERE id = ? AND version_id = ?`` for every flush
-    # of a dirty Account, (b) atomically increment version_id in the
-    # same statement, and (c) raise StaleDataError when rowcount = 0.
-    # Routes that mutate Account MUST catch StaleDataError and
-    # return 409 Conflict.  See app/routes/accounts.py.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     account_type = db.relationship("AccountType", lazy="joined")
@@ -114,7 +100,7 @@ class Account(TimestampMixin, db.Model):
         return f"<Account {self.name} ({self.id})>"
 
 
-class AccountAnchorHistory(CreatedAtMixin, db.Model):
+class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     """Audit trail of anchor balance true-ups for an account.
 
     Same-day duplicate prevention (F-103 / C-22): the partial unique
@@ -166,10 +152,6 @@ class AccountAnchorHistory(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    account_id = db.Column(
-        db.Integer, db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     pay_period_id = db.Column(
         db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="CASCADE"),
         nullable=False,

@@ -26,11 +26,13 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA", anchor_period_id
     """
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=hysa_type.id,
-        name=name,
-        anchor_balance=Decimal("10000.00"),
-        anchor_period_id=anchor_period_id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=hysa_type.id,
+            name=name,
+            anchor_balance=Decimal("10000.00"),
+            anchor_period_id=anchor_period_id,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -56,10 +58,12 @@ def _create_other_hysa(second_user, db_session):
     """
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
     account = account_service.create_account(
-        user_id=second_user["user"].id,
-        account_type_id=hysa_type.id,
-        name="Other HYSA",
-        anchor_balance=Decimal("5000.00"),
+        account_service.AccountSpec(
+            user_id=second_user["user"].id,
+            account_type_id=hysa_type.id,
+            name="Other HYSA",
+            anchor_balance=Decimal("5000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -381,14 +385,16 @@ class TestHysaDetailShadowTransactions:
         # Create a $500 transfer from checking to HYSA.
         projected = db.session.query(Status).filter_by(name="Projected").one()
         transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=account.id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            amount=Decimal("500.00"),
-            status_id=projected.id,
-            category_id=outgoing.id,
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=account.id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("500.00"),
+                status_id=projected.id,
+                category_id=outgoing.id,
+            ),
         )
         db.session.commit()
 

@@ -29,12 +29,16 @@ raw SQL.
 """
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.exceptions import ValidationError
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
+from app.models.ref import AccountType
 from app.services import pay_period_service
 
 
@@ -83,25 +87,23 @@ def _resolve_anchor_period_id(user_id: int) -> int:
     return earliest.id
 
 
-def create_account(
-    *,
-    user_id: int,
-    account_type_id: int,
-    name: str,
-    anchor_balance: Decimal,
-    anchor_period_id: int | None = None,
-    notes: str = "origination",
-    **extra_columns,
-) -> Account:
-    """Construct an Account row plus its matching AccountAnchorHistory.
+@dataclass(frozen=True)
+class AccountSpec:
+    """The canonical inputs for creating an account.
 
-    Performs the E-19 / CRIT-01 invariant work in one place: resolves
-    the anchor period (if not supplied), constructs the Account with
-    non-NULL anchor columns, flushes to assign ``account.id``, then
-    inserts the origination history row.  The pair is appended to
-    the current session; the caller commits.
+    Bundles the six fields every :func:`create_account` call site
+    supplies into one cohesive value object so the factory takes a
+    single argument instead of a long keyword list.  The clump is what
+    every caller co-loads: a new account is always created from an
+    owner, a type, a name, and a real-money anchor (with an optional
+    explicit anchor period and an audit-trail note).  Open-ended
+    ``Account`` columns are NOT part of this concept -- they pass
+    through :func:`create_account`'s ``**extra_columns`` instead.
 
-    Args:
+    Frozen so a constructed spec is an immutable record of one
+    creation request.
+
+    Attributes:
         user_id: ``auth.users.id`` of the account owner.
         account_type_id: ``ref.account_types.id`` of the account type.
             Caller is responsible for the C-28 ownership guard (a
@@ -121,6 +123,29 @@ def create_account(
             audit trail names the originating path.  Defaults to
             ``"origination"``; callers like the seed scripts override
             to e.g. ``"origination (seed_user.py)"``.
+    """
+
+    user_id: int
+    account_type_id: int
+    name: str
+    anchor_balance: Decimal
+    anchor_period_id: int | None = None
+    notes: str = "origination"
+
+
+def create_account(spec: AccountSpec, **extra_columns) -> Account:
+    """Construct an Account row plus its matching AccountAnchorHistory.
+
+    Performs the E-19 / CRIT-01 invariant work in one place: resolves
+    the anchor period (if not supplied), constructs the Account with
+    non-NULL anchor columns, flushes to assign ``account.id``, then
+    inserts the origination history row.  The pair is appended to
+    the current session; the caller commits.
+
+    Args:
+        spec: The :class:`AccountSpec` carrying the owner, type, name,
+            anchor balance, optional anchor period, and audit note for
+            the account to create.
         **extra_columns: Additional ``Account`` columns (e.g.
             ``sort_order``, ``is_active``).  Forwarded verbatim to
             the model constructor.
@@ -144,6 +169,7 @@ def create_account(
     # Decimal and is a common test-fixture shorthand for "exactly $0";
     # we coerce it.  ``float`` is rejected outright -- ``Decimal(0.1)``
     # introduces silent precision drift, and the project forbids it.
+    anchor_balance = spec.anchor_balance
     if isinstance(anchor_balance, float):
         raise TypeError(
             f"anchor_balance must be Decimal (got float -- floats "
@@ -157,13 +183,14 @@ def create_account(
             f"anchor_balance must be Decimal, got {type(anchor_balance).__name__}"
         )
 
+    anchor_period_id = spec.anchor_period_id
     if anchor_period_id is None:
-        anchor_period_id = _resolve_anchor_period_id(user_id)
+        anchor_period_id = _resolve_anchor_period_id(spec.user_id)
 
     account = Account(
-        user_id=user_id,
-        account_type_id=account_type_id,
-        name=name,
+        user_id=spec.user_id,
+        account_type_id=spec.account_type_id,
+        name=spec.name,
         current_anchor_balance=anchor_balance,
         current_anchor_period_id=anchor_period_id,
         **extra_columns,
@@ -179,11 +206,82 @@ def create_account(
         account_id=account.id,
         pay_period_id=anchor_period_id,
         anchor_balance=anchor_balance,
-        notes=notes,
+        notes=spec.notes,
     ))
 
     logger.info(
         "Created account %s (id=%d, user_id=%d) anchored to period %d at $%s",
-        name, account.id, user_id, anchor_period_id, anchor_balance,
+        spec.name, account.id, spec.user_id, anchor_period_id, anchor_balance,
     )
     return account
+
+
+def list_active_accounts(user_id: int) -> list[Account]:
+    """Return a user's active accounts ordered for display dropdowns.
+
+    Shared by every form route that renders an account picker (the
+    transaction-template, transfer-template, savings-goal, and settings
+    forms) so the option list is consistently ordered by
+    ``(sort_order, name)`` -- the arrangement the user set on the
+    accounts page.  Archived accounts (``is_active = False``) are
+    excluded because they are not selectable targets for new rows.
+
+    Args:
+        user_id: ``auth.users.id`` of the owner whose accounts to list.
+
+    Returns:
+        The owner's active :class:`Account` rows, ordered by
+        ``sort_order`` then ``name``.
+    """
+    return (
+        db.session.query(Account)
+        .filter_by(user_id=user_id, is_active=True)
+        .order_by(Account.sort_order, Account.name)
+        .all()
+    )
+
+
+def get_account_type_ids_in_use(user_id: int) -> set[int]:
+    """Return the account_type_ids the user currently has accounts of.
+
+    Powers the account-type delete guard (a type that is in use cannot
+    be deleted) shared by the accounts-list page and the settings
+    account-types page.
+
+    Args:
+        user_id: ``auth.users.id`` of the owner.
+
+    Returns:
+        Set of ``account_type_id`` integers in use by the user's
+        accounts.
+    """
+    return {
+        row[0] for row in
+        db.session.query(Account.account_type_id)
+        .filter_by(user_id=user_id)
+        .distinct()
+        .all()
+    }
+
+
+def list_retirement_investment_account_types() -> list[AccountType]:
+    """Return every AccountType in the retirement or investment category.
+
+    The shared source for the salary contribution-target dropdown
+    (:func:`app.routes.salary._helpers._get_investment_accounts`) and the
+    retirement dashboard's pretax/Roth account-type partitioning
+    (:mod:`app.services.retirement_dashboard_service`).  Returns the full
+    rows rather than just the id set because the dashboard reads
+    ``AccountType.is_pretax`` off them.
+
+    Returns:
+        List of :class:`AccountType` rows whose category is RETIREMENT
+        or INVESTMENT.
+    """
+    retirement_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+    investment_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
+    return (
+        db.session.query(AccountType)
+        .filter(AccountType.category_id.in_([retirement_cat_id, investment_cat_id]))
+        .all()
+    )

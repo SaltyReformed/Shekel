@@ -103,15 +103,33 @@ jobs:
           pip install -r requirements-dev.txt
 
       # ── 5. Run pylint ────────────────────────────────────────────
-      # Two-layer pylint gate:
-      #   --fail-on=E,F: always fail on errors (E) or fatal (F), even
-      #     if the score stays above the threshold.
-      #   --fail-under=9.0: also fail if pre-existing warnings
-      #     accumulate enough to drop the score below 9.0.
-      # Together, --fail-under suppresses the bitmask exit code for
-      # C/W/R messages while --fail-on ensures real errors are caught.
+      # Layered pylint gate:
+      #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-disable-rationale:
+      #     always fail on errors (E), fatals (F), and the project's custom
+      #     checkers (tools/pylint/shekel_checkers.py, loaded via .pylintrc) --
+      #     the financial-correctness pair (decimal-from-float, refname-compare)
+      #     and disable-rationale (every `# pylint: disable=` must carry a
+      #     standard `Pylint:` why-comment) -- even if the score stays above the
+      #     threshold.  These have zero violations today, so this only ever
+      #     catches a regression -- it cannot turn the current green build red.
+      #   --fail-under=9.0: also fail if warnings drop the score below 9.0.
+      #     Flip to 10 at the cleanup lock-in (docs/audits/pylint-cleanup/plan.md
+      #     Phase 5), together with `touch scripts/hooks/ENFORCE_PYLINT_FLOOR`.
       - name: Lint with pylint
-        run: pylint app/ --fail-under=9.0 --fail-on=E,F --output-format=colorized
+        run: pylint app/ --fail-under=9.0 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-disable-rationale --output-format=colorized
+
+      # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
+      # The checkers themselves are unit-tested (every "flags" case paired with a
+      # "must-not-flag" case). tests/ are out of general pylint scope, but a
+      # float-sourced Decimal in a hand-computed assertion is a real bug, so the
+      # one monetary-precision checker is applied there too. unknown/bad-option-value
+      # are disabled explicitly (--disable=all does not cover option-validity
+      # meta-messages) so the test files' "disable=X -- explanation" inline
+      # comments do not derail this targeted scan.
+      - name: Test and apply custom pylint checkers
+        run: |
+          pytest tools/pylint/tests -c /dev/null -q
+          pylint tests/ --disable=all --enable=shekel-decimal-from-float --disable=unknown-option-value,bad-option-value --output-format=colorized
 
       # ── 6. Build the per-pytest-session template database ───────
       # Builds ``shekel_test_template``: drops + recreates the

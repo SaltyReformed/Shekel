@@ -68,14 +68,16 @@ def transfer_data(app, seed_full_user_data):
 def _create_basic_transfer(td):
     """Helper: create a transfer using the test data dict."""
     return transfer_service.create_transfer(
-        user_id=td["user"].id,
-        from_account_id=td["account"].id,
-        to_account_id=td["savings_account"].id,
-        pay_period_id=td["periods"][0].id,
-        scenario_id=td["scenario"].id,
-        amount=Decimal("250.00"),
-        status_id=td["projected_status"].id,
-        category_id=td["categories"]["Rent"].id,
+        transfer_service.TransferSpec(
+            user_id=td["user"].id,
+            from_account_id=td["account"].id,
+            to_account_id=td["savings_account"].id,
+            pay_period_id=td["periods"][0].id,
+            scenario_id=td["scenario"].id,
+            amount=Decimal("250.00"),
+            status_id=td["projected_status"].id,
+            category_id=td["categories"]["Rent"].id,
+        ),
     )
 
 

@@ -19,8 +19,11 @@ the split in Commit 21 moved ``checking_detail`` into this module,
 the F-6 guard's file-path reference was updated to point here.
 """
 
+from __future__ import annotations
+
 import logging
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -37,8 +40,90 @@ from app.services import balance_calculator, balance_resolver, pay_period_servic
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.account_validation import _interest_params_schema
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.period_projections import project_balance_horizons
+
+if TYPE_CHECKING:
+    # Typing-only imports for the per-page helper signatures (lazy strings
+    # via ``from __future__ import annotations``; no runtime cost).
+    from app.models.pay_period import PayPeriod
+    from app.models.scenario import Scenario
+    from app.services.balance_resolver import AnchorPoint
 
 logger = logging.getLogger(__name__)
+
+
+# ── Shared detail-page helpers ────────────────────────────────────
+
+
+def _current_period_balance(
+    balances: dict[int, Decimal],
+    current_period: PayPeriod | None,
+    anchor: AnchorPoint | None,
+) -> Decimal | None:
+    """Return the current-period projected balance, else the anchor balance.
+
+    Shared by both detail pages: the projected balance at the current
+    period when one exists, otherwise the resolved anchor balance (E-19),
+    otherwise ``None``.
+    """
+    current_bal = balances.get(current_period.id) if current_period else None
+    if current_bal is None and anchor is not None:
+        current_bal = anchor.balance
+    return current_bal
+
+
+def _build_period_data(
+    all_periods: list[PayPeriod],
+    balances: dict[int, Decimal],
+    interest_by_period: dict[int, Decimal] | None = None,
+) -> list[dict]:
+    """Build the per-period projection rows the detail templates render.
+
+    One row per period that has a projected balance, in ``all_periods``
+    order.  When ``interest_by_period`` is supplied (the interest detail
+    page) each row also carries that period's interest, defaulting to
+    ``0.00`` for a period that has a balance but no recorded interest;
+    the checking page omits the interest field.
+    """
+    rows = []
+    for period in all_periods:
+        if period.id in balances:
+            row = {"period": period, "balance": balances[period.id]}
+            if interest_by_period is not None:
+                row["interest"] = interest_by_period.get(
+                    period.id, Decimal("0.00"),
+                )
+            rows.append(row)
+    return rows
+
+
+def _load_account_transactions(
+    account: Account, scenario: Scenario | None, all_periods: list[PayPeriod]
+) -> list[Transaction]:
+    """Load this account's non-deleted transactions for the projection window.
+
+    Scoped to the account, the given scenario, and the supplied periods,
+    with ``Transaction.entries`` eager-loaded so the entries-aware
+    reduction in ``_entry_aware_amount`` applies unconditionally (closing
+    the CRIT-01 / F-009 silent-degrade seam this route used to share with
+    /savings).  Returns ``[]`` when there is no scenario or no periods.
+    """
+    period_ids = [p.id for p in all_periods]
+    if not scenario or not period_ids:
+        return []
+    transactions = (
+        db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
+        .filter(
+            Transaction.account_id == account.id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.scenario_id == scenario.id,
+            Transaction.is_deleted.is_(False),
+        )
+        .all()
+    )
+    # pylint: enable=duplicate-code
+    return transactions
 
 
 # ── Interest Detail & Params ──────────────────────────────────────
@@ -80,8 +165,6 @@ def interest_detail(account_id):
 
     scenario = get_baseline_scenario(user_id)
 
-    period_ids = [p.id for p in all_periods]
-
     # Resolve the anchor via the canonical date-anchored source of truth
     # (E-19, Commit 4): the latest ``AccountAnchorHistory`` row wins
     # over the ``Account.current_anchor_*`` cache so a future cache
@@ -93,26 +176,12 @@ def interest_detail(account_id):
     # unreachable (CLAUDE.md rule 1: do it right, no shortcuts).
     anchor = balance_resolver.resolve_anchor(account, scenario.id) if scenario else None
 
-    # Load transactions scoped to this account.  ``selectinload`` on
-    # ``Transaction.entries`` closes the silent-degrade seam this route
-    # used to share with /savings (CRIT-01 / F-009): the entries-aware
-    # reduction in ``_entry_aware_amount`` now applies unconditionally,
-    # avoiding the lazy-load N+1 the math-layer fix in Commit 5 would
-    # otherwise incur for this caller.  Interest layering still flows
-    # through ``calculate_balances_with_interest``; MED-01 / Commit 28
-    # collapses the dual interest/no-interest dispatcher into a single
-    # canonical resolver.
-    acct_transactions = (
-        db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.scenario_id == scenario.id,
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    ) if scenario and period_ids else []
+    # Interest layering flows through ``calculate_balances_with_interest``
+    # below (MED-01 / Commit 28: a single canonical resolver, not the old
+    # dual interest/no-interest dispatcher).  The entries-aware per-account
+    # transaction load (CRIT-01 / F-009 silent-degrade seam) is
+    # encapsulated in ``_load_account_transactions``.
+    acct_transactions = _load_account_transactions(account, scenario, all_periods)
 
     balances = {}
     interest_by_period = {}
@@ -125,31 +194,13 @@ def interest_detail(account_id):
             interest_params=params,
         )
 
-    current_bal = (
-        balances.get(current_period.id) if current_period else None
-    )
-    if current_bal is None and anchor is not None:
-        current_bal = anchor.balance
+    current_bal = _current_period_balance(balances, current_period, anchor)
 
     # Build period projection data for the template.
-    period_data = []
-    for p in all_periods:
-        if p.id in balances:
-            period_data.append({
-                "period": p,
-                "balance": balances[p.id],
-                "interest": interest_by_period.get(p.id, Decimal("0.00")),
-            })
+    period_data = _build_period_data(all_periods, balances, interest_by_period)
 
     # 3/6/12 month horizon projections.
-    projected = {}
-    for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
-        if current_period:
-            target_idx = current_period.period_index + offset_count
-            for p in all_periods:
-                if p.period_index == target_idx and p.id in balances:
-                    projected[offset_label] = balances[p.id]
-                    break
+    projected = project_balance_horizons(current_period, all_periods, balances)
 
     return render_template(
         "accounts/interest_detail.html",
@@ -288,30 +339,14 @@ def checking_detail(account_id):
         balances = result.balances
         anchor = balance_resolver.resolve_anchor(account, scenario.id)
 
-    current_bal = (
-        balances.get(current_period.id) if current_period else None
-    )
-    if current_bal is None and anchor is not None:
-        current_bal = anchor.balance
+    current_bal = _current_period_balance(balances, current_period, anchor)
 
     # Build period projection data for the template.
-    period_data = []
-    for p in all_periods:
-        if p.id in balances:
-            period_data.append({
-                "period": p,
-                "balance": balances[p.id],
-            })
+    period_data = _build_period_data(all_periods, balances)
 
-    # 3/6/12 month horizon projections (same offsets as HYSA detail).
-    projected = {}
-    for offset_label, offset_count in [("3 months", 6), ("6 months", 13), ("1 year", 26)]:
-        if current_period:
-            target_idx = current_period.period_index + offset_count
-            for p in all_periods:
-                if p.period_index == target_idx and p.id in balances:
-                    projected[offset_label] = balances[p.id]
-                    break
+    # 3/6/12 month horizon projections (same offsets as HYSA detail; the
+    # shared producer also backs interest_detail and the savings dashboard).
+    projected = project_balance_horizons(current_period, all_periods, balances)
 
     # The anchor period for the template header.  ``resolve_anchor``
     # returns the relationship-loaded ``PayPeriod`` directly, so no

@@ -166,12 +166,14 @@ def _create_mortgage(  # pylint: disable=too-many-arguments,too-many-positional-
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     account = account_service.create_account(
-        user_id=user_id,
-        account_type_id=loan_type.id,
-        name="Principal-Settle Mortgage",
-        anchor_balance=original_principal,
-        anchor_period_id=anchor_period_id,
-        notes="C14 mortgage origination",
+        account_service.AccountSpec(
+            user_id=user_id,
+            account_type_id=loan_type.id,
+            name="Principal-Settle Mortgage",
+            anchor_balance=original_principal,
+            anchor_period_id=anchor_period_id,
+            notes="C14 mortgage origination",
+        ),
     )
     db.session.flush()
 
@@ -230,15 +232,17 @@ def _create_piti_transfer(  # pylint: disable=too-many-arguments,too-many-positi
     """
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     xfer = transfer_service.create_transfer(
-        user_id=user_id,
-        from_account_id=from_account_id,
-        to_account_id=to_account_id,
-        pay_period_id=pay_period_id,
-        scenario_id=scenario_id,
-        amount=amount,
-        status_id=projected_id,
-        category_id=category_id,
-        notes="C14 PITI transfer",
+        transfer_service.TransferSpec(
+            user_id=user_id,
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            pay_period_id=pay_period_id,
+            scenario_id=scenario_id,
+            amount=amount,
+            status_id=projected_id,
+            category_id=category_id,
+            notes="C14 PITI transfer",
+        ),
     )
     return xfer
 
@@ -282,8 +286,11 @@ def _resolve_balance(
         account_id, scenario_id, loan_params,
     )
     state = loan_resolver.resolve_loan(
-        loan_params, anchor_events, context.payments,
-        context.rate_changes, as_of,
+        loan_resolver.LoanInputs(
+            loan_params, anchor_events, context.payments,
+            context.rate_changes,
+        ),
+        as_of,
     )
     return state.current_balance
 

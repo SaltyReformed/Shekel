@@ -18,7 +18,7 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum
 from app.services import recurrence_engine
 from app.services.recurrence_engine import (
-    _match_periods,
+    match_periods,
     _match_monthly,
     _match_monthly_first,
     _match_quarterly,
@@ -453,7 +453,7 @@ class TestMatchAnnual:
 
 
 class TestMatchPeriodsEdgeCases:
-    """Edge case tests for _match_periods() -- pure function, no DB."""
+    """Edge case tests for match_periods() -- pure function, no DB."""
 
     def test_effective_from_filters_earlier_periods(self, biweekly_periods):
         """Only periods on/after effective_from are candidates."""
@@ -461,7 +461,7 @@ class TestMatchPeriodsEdgeCases:
         # Use the 4th period's start_date as effective_from.
         effective_from = biweekly_periods[3].start_date
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26 - 3  # Periods 3-25.
@@ -474,21 +474,21 @@ class TestMatchPeriodsEdgeCases:
         effective_from = biweekly_periods[0].start_date
 
         # Pass a bogus integer pattern_id that doesn't match any known pattern.
-        matched = _match_periods(rule, 99999, biweekly_periods,
+        matched = match_periods(rule, 99999, biweekly_periods,
                                  effective_from)
 
         assert matched == []
 
 
 class TestMatchPeriodsFull:
-    """Integration tests for _match_periods() dispatch -- pure, no DB."""
+    """Integration tests for match_periods() dispatch -- pure, no DB."""
 
     def test_every_period_returns_all_candidates(self, biweekly_periods):
         """every_period returns all periods after effective_from filtering."""
         rule = FakeRule(pattern_name="Every Period")
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26
@@ -497,14 +497,14 @@ class TestMatchPeriodsFull:
         """Empty periods list produces an empty result."""
         rule = FakeRule(pattern_name="Every Period")
 
-        matched = _match_periods(rule, rule.pattern_id, [],
+        matched = match_periods(rule, rule.pattern_id, [],
                                  date(2026, 1, 1))
 
         assert matched == []
 
 
 class TestMatchPeriodsEdgeCaseSafety:
-    """Safety guard tests for invalid inputs to _match_periods.
+    """Safety guard tests for invalid inputs to match_periods.
 
     These tests verify the engine's behavior when given values that
     are prevented at the DB level by CHECK constraints but could
@@ -532,7 +532,7 @@ class TestMatchPeriodsEdgeCaseSafety:
             interval_n=0,
             offset_periods=0,
         )
-        matched = _match_periods(
+        matched = match_periods(
             rule, rule.pattern_id, biweekly_periods,
             biweekly_periods[0].start_date,
         )
@@ -560,7 +560,7 @@ class TestMatchPeriodsEdgeCaseSafety:
             interval_n=None,
             offset_periods=0,
         )
-        matched = _match_periods(
+        matched = match_periods(
             rule, rule.pattern_id, biweekly_periods,
             biweekly_periods[0].start_date,
         )
@@ -576,7 +576,7 @@ class TestMatchPeriodsEdgeCaseSafety:
     def test_day_of_month_zero_via_match_periods(
         self, biweekly_periods
     ):
-        """day_of_month=0 via _match_periods: '0 or 1' = 1.
+        """day_of_month=0 via match_periods: '0 or 1' = 1.
 
         Expected: behaves identically to day_of_month=1.
         DB constraint ck_recurrence_rules_dom prevents
@@ -590,10 +590,10 @@ class TestMatchPeriodsEdgeCaseSafety:
         )
         effective = biweekly_periods[0].start_date
 
-        matched_zero = _match_periods(
+        matched_zero = match_periods(
             rule_zero, rule_zero.pattern_id, biweekly_periods, effective,
         )
-        matched_one = _match_periods(
+        matched_one = match_periods(
             rule_one, rule_one.pattern_id, biweekly_periods, effective,
         )
         # 0 or 1 = 1 in Python (0 is falsy).
@@ -618,11 +618,11 @@ class TestMatchPeriodsEdgeCaseSafety:
 
         Expected: raises ValueError from date(year, month, 0).
         Two layers of defense: DB constraint
-        ck_recurrence_rules_dom prevents storage, _match_periods
+        ck_recurrence_rules_dom prevents storage, match_periods
         'or 1' prevents the crash. Direct call bypasses both.
         """
         # Prevented in production by ck_recurrence_rules_dom.
-        # _match_periods applies 'or 1' for falsy values.
+        # match_periods applies 'or 1' for falsy values.
         # Direct call bypasses both -- date(y, m, 0) raises.
         with pytest.raises(ValueError):
             _match_monthly(biweekly_periods, day_of_month=0)
@@ -671,10 +671,10 @@ class TestMatchPeriodsEdgeCaseSafety:
         )
         effective = biweekly_periods[0].start_date
 
-        matched_none = _match_periods(
+        matched_none = match_periods(
             rule_none, rule_none.pattern_id, biweekly_periods, effective,
         )
-        matched_one = _match_periods(
+        matched_one = match_periods(
             rule_one, rule_one.pattern_id, biweekly_periods, effective,
         )
         # None or 1 = 1 in Python.
@@ -691,9 +691,9 @@ class TestMatchPeriodsEdgeCaseSafety:
     def test_month_of_year_zero_defaults_to_one(
         self, biweekly_periods
     ):
-        """month_of_year=0 via _match_periods: '0 or 1' = 1.
+        """month_of_year=0 via match_periods: '0 or 1' = 1.
 
-        Expected via _match_periods: targets Jan/Apr/Jul/Oct.
+        Expected via match_periods: targets Jan/Apr/Jul/Oct.
         Expected via direct _match_quarterly: targets
         Dec/Mar/Jun/Sep (different due to modular arithmetic).
         DB constraint ck_recurrence_rules_moy prevents
@@ -701,7 +701,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         """
         effective = biweekly_periods[0].start_date
 
-        # Path (a): via _match_periods -- 0 or 1 = 1.
+        # Path (a): via match_periods -- 0 or 1 = 1.
         # Targets {1, 4, 7, 10} (Jan/Apr/Jul/Oct).
         # Prevented in production by ck_recurrence_rules_moy.
         rule_zero = FakeRule(
@@ -714,11 +714,11 @@ class TestMatchPeriodsEdgeCaseSafety:
             month_of_year=1,
             day_of_month=15,
         )
-        matched_zero = _match_periods(
+        matched_zero = match_periods(
             rule_zero, rule_zero.pattern_id,
             biweekly_periods, effective,
         )
-        matched_one = _match_periods(
+        matched_one = match_periods(
             rule_one, rule_one.pattern_id,
             biweekly_periods, effective,
         )
@@ -727,7 +727,7 @@ class TestMatchPeriodsEdgeCaseSafety:
             [p.id for p in matched_zero]
             == [p.id for p in matched_one]
         ), (
-            "month_of_year=0 via _match_periods should behave "
+            "month_of_year=0 via match_periods should behave "
             "identically to month_of_year=1"
         )
 
@@ -755,7 +755,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         assert direct_months == {3, 6, 9, 12}, (
             f"start_month=0 direct should target "
             f"{{3, 6, 9, 12}}, got {direct_months}. "
-            f"Discrepancy: _match_periods converts 0->1 "
+            f"Discrepancy: match_periods converts 0->1 "
             f"but direct call uses modular arithmetic."
         )
 
@@ -765,7 +765,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         """month_of_year=13 is truthy: 'or 1' does NOT apply.
 
         Expected: ValueError from calendar.monthrange(year, 13).
-        The crash propagates through _match_periods since there
+        The crash propagates through match_periods since there
         is no try/except wrapper. Note: quarterly and semi_annual
         safely wrap month=13 via modular arithmetic to
         {1,4,7,10}.
@@ -779,7 +779,7 @@ class TestMatchPeriodsEdgeCaseSafety:
                 biweekly_periods, month=13, day=15,
             )
 
-        # Via _match_periods -- 13 or 1 = 13 (truthy).
+        # Via match_periods -- 13 or 1 = 13 (truthy).
         # No fallback; passes 13 to _match_annual.
         rule = FakeRule(
             pattern_name="Annual",
@@ -787,7 +787,7 @@ class TestMatchPeriodsEdgeCaseSafety:
             day_of_month=15,
         )
         with pytest.raises(ValueError):
-            _match_periods(
+            match_periods(
                 rule, rule.pattern_id, biweekly_periods,
                 biweekly_periods[0].start_date,
             )
@@ -1331,10 +1331,12 @@ class TestResolveConflictsShadowGuard:
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("0.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("0.00"),
+            ),
         )
         db.session.add(savings)
 
@@ -1356,14 +1358,16 @@ class TestResolveConflictsShadowGuard:
         )
 
         xfer = transfer_service.create_transfer(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            amount=Decimal("100.00"),
-            status_id=projected.id,
-            category_id=outgoing.id,
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount=Decimal("100.00"),
+                status_id=projected.id,
+                category_id=outgoing.id,
+            ),
         )
         db.session.flush()
 
@@ -2000,7 +2004,7 @@ class TestEndDate:
         rule = FakeRule(pattern_name="Every Period", end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 5
@@ -2012,7 +2016,7 @@ class TestEndDate:
         rule = FakeRule(pattern_name="Every Period", end_date=None)
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26
@@ -2024,7 +2028,7 @@ class TestEndDate:
                         end_date=date(2026, 3, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         # Should get Jan, Feb, Mar only.
@@ -2038,7 +2042,7 @@ class TestEndDate:
                         end_date=date(2025, 12, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert matched == []
@@ -2050,7 +2054,7 @@ class TestEndDate:
         end = biweekly_periods[10].start_date
         rule = FakeRule(pattern_name="Every Period", end_date=end)
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         # Periods 5 through 10 inclusive.
@@ -2066,7 +2070,7 @@ class TestEndDate:
                         end_date=target_period.start_date)
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         assert target_period in matched
@@ -2079,7 +2083,7 @@ class TestEndDate:
                         offset_periods=0, end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = _match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
 
         # Periods 0, 3, 6, 9 (index % 3 == 0 and start_date <= end).

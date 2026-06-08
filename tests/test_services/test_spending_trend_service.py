@@ -313,6 +313,40 @@ class TestDataSufficiency:
             assert result.data_sufficiency == "sufficient"
             assert result.window_months == 6
 
+    @patch("app.services.spending_trend_service.date")
+    def test_window_excludes_future_periods(self, mock_date, app, seed_user, db):
+        """The window has an upper bound at end-of-current-month.
+
+        The app projects ~2 years of pay periods forward; without the
+        upper bound those future, never-settled periods zero-fill into the
+        regression and period_average, biasing every category toward
+        'decreasing'.  Periods starting on or after the first of next
+        month must be excluded from the window.
+        """
+        mock_date.today.return_value = date(2026, 2, 1)
+        mock_date.side_effect = lambda *a, **k: date(*a, **k)
+
+        with app.app_context():
+            # 12 biweekly periods from 2025-11-07 straddle the window end
+            # (first-of-next-month = 2026-03-01): the later ones fall in or
+            # after March 2026 and must be dropped.
+            periods = _generate_periods(
+                db.session, seed_user["user"].id, date(2025, 11, 7), 12,
+            )
+            db.session.commit()
+
+            in_window = spending_trend_service._get_window_periods(
+                seed_user["user"].id, 6,
+            )
+            window_end = date(2026, 3, 1)
+            assert in_window, "expected at least one in-window period"
+            assert all(p.start_date < window_end for p in in_window)
+
+            future = [p for p in periods if p.start_date >= window_end]
+            assert future, "fixture must include >=1 future period to be meaningful"
+            in_window_ids = {p.id for p in in_window}
+            assert all(p.id not in in_window_ids for p in future)
+
 
 # ── Trend Detection Tests ───────────────────────────────────────────
 
@@ -428,23 +462,46 @@ class TestTrendDetection:
             if car is not None:
                 assert car.data_points == 1
 
-    def test_zero_start_handling(self, app, seed_user, db):
-        """Category with $0 first period -> pct_change=0, no division error."""
+    @patch("app.services.spending_trend_service.date")
+    def test_ramp_from_zero_is_increasing_not_decreasing(
+        self, mock_date, app, seed_user, db,
+    ):
+        """A category ramping up from zero is 'up', never mislabeled 'down'.
+
+        Regression on [0]*6 + [350]*6 yields a NEGATIVE intercept
+        (predicted first-period spend ~= -67.31).  A percentage relative
+        to that negative base would flip the sign (~ -719%) and route this
+        clearly-rising category into top_decreasing.  The slope-based
+        fallback uses the window mean (175) as the base, so the sign tracks
+        the positive slope.
+
+        date.today() is mocked so the full 12-period ramp lands inside the
+        6-month window (otherwise the window slides and the ramp falls out,
+        which is exactly why the prior version of this test silently never
+        exercised the zero-start path).
+        """
+        mock_date.today.return_value = date(2026, 2, 1)
+        mock_date.side_effect = lambda *a, **k: date(*a, **k)
+
         with app.app_context():
+            # 12 biweekly periods from 2025-08-01 span Aug 2025 - Jan 2026
+            # (6 distinct months -> sufficient, window_months=6); the window
+            # [2025-08-01, 2026-03-01) holds all 12, so n_periods == 12.
             periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
+                db.session, seed_user["user"].id, date(2025, 8, 1), 12,
             )
             seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
 
-            # Rent in all periods for sufficiency.
+            # Rent every period for data sufficiency.
             for p in periods:
                 _add_paid_expense(
                     db.session, seed_user, p, "Rent",
                     "1200.00", category_key="Rent",
                 )
-            # Car only in later periods (zero start).
-            for p in periods[4:]:
+            # Car ramps from zero: nothing in the first 6 periods, $350 in
+            # the last 6 -> totals [0]*6 + [350]*6.
+            for p in periods[6:]:
                 _add_paid_expense(
                     db.session, seed_user, p, "Car",
                     "350.00", category_key="Car Payment",
@@ -454,12 +511,23 @@ class TestTrendDetection:
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            car = next(
-                (i for i in result.all_items if i.item_name == "Car Payment"),
-                None,
-            )
-            # Should not crash; pct_change is 0 due to zero-start guard.
-            assert car is not None
+            car = next(i for i in result.all_items if i.item_name == "Car Payment")
+
+            # Slope is positive (rising), so every signal must agree on 'up'.
+            assert car.absolute_change > Decimal("0")
+            assert car.trend_direction == "up"
+            assert car.pct_change > Decimal("0")
+            # Hand-computed over [0]*6+[350]*6 (n=12):
+            #   slope = 6300/143 -> 44.06 (ROUND_HALF_UP)
+            #   intercept = -9625/143 (<= 0 -> fallback base = mean = 2100/12 = 175)
+            #   pct = (last-first)/175*100 = (69300/143)/175*100
+            #       = 6930000/25025 = 276.9230... -> 276.92
+            assert car.absolute_change == Decimal("44.06")
+            assert car.pct_change == Decimal("276.92")
+            assert car.is_flagged is True
+            # It must rank as INCREASING, never decreasing.
+            assert "Car Payment" in [i.item_name for i in result.top_increasing]
+            assert "Car Payment" not in [i.item_name for i in result.top_decreasing]
 
     def test_noisy_data_trend_detected(self, app, seed_user, db):
         """Noisy but upward data -> regression detects 'up' direction."""

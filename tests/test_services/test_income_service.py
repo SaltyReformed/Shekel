@@ -171,7 +171,9 @@ class TestLiveProjectedNet:
         breakdowns = paycheck_calculator.project_salary(
             profile, periods, tax_configs, calibration=profile.calibration,
         )
-        return {bd.period_id: bd.net_pay for bd in breakdowns}[period_id]
+        return {
+            bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
+        }[period_id]
 
     def test_recomputes_live_ignoring_stored_amount(
         self, app, db, seed_user, seed_periods,
@@ -342,7 +344,7 @@ class TestLiveIncomeThroughBalanceResolver:
                 profile, periods, tax_configs, calibration=profile.calibration,
             )
             expected_net = {
-                bd.period_id: bd.net_pay for bd in breakdowns
+                bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
             }[period.id]
             # Sanity: the live net genuinely differs from the stale stored.
             assert expected_net == Decimal("4000.00")
@@ -556,16 +558,18 @@ class TestConsumerIntegration:
             assert canonical == _RAISE_APPLIED_GROSS
 
             # Savings consumer: routed through income_service via
-            # ``_load_account_params``.  ``accounts`` is read but the
-            # salary value is independent of any account.
-            savings_params = savings_dashboard_service._load_account_params(
+            # ``_load_account_params`` (in the package's ``_data``
+            # sub-module after the Phase 2 split).  ``accounts`` is read
+            # but the salary value is independent of any account.
+            savings_params = savings_dashboard_service._data._load_account_params(
                 user_id, accounts=[],
             )
-            assert savings_params["salary_gross_biweekly"] == canonical
+            assert savings_params.salary_gross_biweekly == canonical
 
-            # Year-end consumer: thin delegator over income_service.
+            # Year-end consumer: thin delegator over income_service
+            # (moved to the ._data sub-module in the Phase 2 split).
             year_end_val = (
-                year_end_summary_service._load_salary_gross_biweekly(
+                year_end_summary_service._data._load_salary_gross_biweekly(
                     user_id, scenario,
                 )
             )

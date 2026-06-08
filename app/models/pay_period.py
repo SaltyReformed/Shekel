@@ -6,10 +6,10 @@ to a specific paycheck.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin
+from app.models.mixins import CreatedAtMixin, UserScopedMixin
 
 
-class PayPeriod(CreatedAtMixin, db.Model):
+class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
     """A single pay period defined by start_date (payday) and end_date."""
 
     __tablename__ = "pay_periods"
@@ -22,10 +22,6 @@ class PayPeriod(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     start_date = db.Column(db.Date, nullable=False)
     end_date = db.Column(db.Date, nullable=False)
     period_index = db.Column(db.Integer, nullable=False)

@@ -27,7 +27,7 @@ from app.services.loan_payment_service import (
     get_payment_history,
     prepare_payments_for_engine,
 )
-from app.services.transfer_service import create_transfer
+from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service
 
 
@@ -42,10 +42,12 @@ def _create_loan_account(seed_user):
     """
     loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Test Mortgage",
-        anchor_balance=Decimal("200000.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Test Mortgage",
+            anchor_balance=Decimal("200000.00"),
+        ),
     )
     db.session.add(account)
     db.session.flush()
@@ -89,14 +91,16 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
         Transfer: the created transfer.
     """
     return create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=loan_account.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        amount=amount,
-        status_id=ref_cache.status_id(status_enum),
-        category_id=seed_user["categories"]["Rent"].id,
+        TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=loan_account.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=ref_cache.status_id(status_enum),
+            category_id=seed_user["categories"]["Rent"].id,
+        ),
     )
 
 

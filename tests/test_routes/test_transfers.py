@@ -27,10 +27,12 @@ def _create_savings_account(seed_user):
     """Helper: create a second (savings) account for the test user."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name="Savings",
-        anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add(acct)
     db.session.commit()
@@ -76,16 +78,18 @@ def _create_transfer(
     """
     projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings_acct.id,
-        pay_period_id=seed_periods_today[0].id,
-        scenario_id=seed_user["scenario"].id,
-        amount=amount,
-        status_id=projected.id,
-        category_id=seed_user["categories"]["Rent"].id,
-        transfer_template_id=template.id if template else None,
-        name=name,
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings_acct.id,
+            pay_period_id=seed_periods_today[0].id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=projected.id,
+            category_id=seed_user["categories"]["Rent"].id,
+            transfer_template_id=template.id if template else None,
+            name=name,
+        ),
     )
     db.session.commit()
     return xfer
@@ -126,12 +130,20 @@ def _create_other_user_with_template():
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
 
     checking = account_service.create_account(
-        user_id=other_user.id, account_type_id=checking_type.id,
-        name="Other Checking", anchor_balance=Decimal("500.00"),
+        account_service.AccountSpec(
+            user_id=other_user.id,
+            account_type_id=checking_type.id,
+            name="Other Checking",
+            anchor_balance=Decimal("500.00"),
+        ),
     )
     savings = account_service.create_account(
-        user_id=other_user.id, account_type_id=savings_type.id,
-        name="Other Savings", anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=other_user.id,
+            account_type_id=savings_type.id,
+            name="Other Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add_all([checking, savings])
 
@@ -170,16 +182,18 @@ def _create_other_user_with_template():
 
     projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
-        user_id=other_user.id,
-        from_account_id=checking.id,
-        to_account_id=savings.id,
-        pay_period_id=periods[0].id,
-        scenario_id=scenario.id,
-        amount=Decimal("100.00"),
-        status_id=projected.id,
-        category_id=category.id,
-        transfer_template_id=template.id,
-        name="Other Transfer",
+        transfer_service.TransferSpec(
+            user_id=other_user.id,
+            from_account_id=checking.id,
+            to_account_id=savings.id,
+            pay_period_id=periods[0].id,
+            scenario_id=scenario.id,
+            amount=Decimal("100.00"),
+            status_id=projected.id,
+            category_id=category.id,
+            transfer_template_id=template.id,
+            name="Other Transfer",
+        ),
     )
     db.session.commit()
 
@@ -1062,10 +1076,12 @@ def _create_second_user_transfer(second_user_data):
 
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     savings = account_service.create_account(
-        user_id=second_user_data["user"].id,
-        account_type_id=savings_type.id,
-        name="Other Savings",
-        anchor_balance=Decimal("0"),
+        account_service.AccountSpec(
+            user_id=second_user_data["user"].id,
+            account_type_id=savings_type.id,
+            name="Other Savings",
+            anchor_balance=Decimal("0"),
+        ),
     )
     db.session.add(savings)
     db.session.flush()
@@ -1781,7 +1797,17 @@ class TestOneTimeTransfer:
         self, app, auth_client, seed_user, seed_periods_today,
         seed_second_user, seed_second_periods,
     ):
-        """POST /transfers with another user's period is rejected."""
+        """POST /transfers with another user's period is rejected.
+
+        The cross-user start_period is now caught by the F-24 builder's
+        universal ownership probe (deep-quality-hunt #21), which runs
+        for EVERY pattern -- so it rejects the ONCE case here ("Invalid
+        start period.") before the template is created and before the
+        one-time-transfer re-check in ``_materialize_initial_transfers``
+        ("Invalid pay period for one-time transfer.") would fire.  That
+        re-check is now a redundant second guard; either way the IDOR is
+        blocked and no transfer is persisted.
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             once = db.session.query(RecurrencePattern).filter_by(
@@ -1800,7 +1826,7 @@ class TestOneTimeTransfer:
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"Invalid pay period" in response.data
+            assert b"Invalid start period" in response.data
 
             # No transfer was created.
             xfer_count = (
@@ -1891,16 +1917,18 @@ class TestTransferTemplateHardDelete:
 
             paid_status = db.session.query(Status).filter_by(name="Paid").one()
             xfer_paid = transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods_today[1].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("200.00"),
-                status_id=paid_status.id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transfer_template_id=template.id,
-                name="Monthly Savings",
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods_today[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("200.00"),
+                    status_id=paid_status.id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transfer_template_id=template.id,
+                    name="Monthly Savings",
+                ),
             )
             db.session.commit()
 
@@ -1940,16 +1968,18 @@ class TestTransferTemplateHardDelete:
 
             paid_status = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("200.00"),
-                status_id=paid_status.id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transfer_template_id=template.id,
-                name="Monthly Savings",
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods_today[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("200.00"),
+                    status_id=paid_status.id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transfer_template_id=template.id,
+                    name="Monthly Savings",
+                ),
             )
 
             # Pre-archive.
@@ -1987,16 +2017,18 @@ class TestTransferTemplateHardDelete:
 
             received_status = db.session.query(Status).filter_by(name="Received").one()
             xfer_received = transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("250.00"),
-                status_id=received_status.id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transfer_template_id=template.id,
-                name="Monthly Savings",
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods_today[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("250.00"),
+                    status_id=received_status.id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transfer_template_id=template.id,
+                    name="Monthly Savings",
+                ),
             )
             db.session.commit()
 
@@ -2077,29 +2109,33 @@ class TestTransferTemplateHardDelete:
 
             # RECEIVED transfer in period 0 (must survive).
             xfer_received = transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("250.00"),
-                status_id=received_status.id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transfer_template_id=template.id,
-                name="Past Transfer",
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods_today[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("250.00"),
+                    status_id=received_status.id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transfer_template_id=template.id,
+                    name="Past Transfer",
+                ),
             )
             # PROJECTED transfer in period 1 (must be deleted).
             xfer_projected = transfer_service.create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods_today[1].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("250.00"),
-                status_id=projected_status.id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transfer_template_id=template.id,
-                name="Future Transfer",
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods_today[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("250.00"),
+                    status_id=projected_status.id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                    transfer_template_id=template.id,
+                    name="Future Transfer",
+                ),
             )
             db.session.commit()
 
@@ -2117,7 +2153,7 @@ class TestTransferTemplateHardDelete:
             # The defense-in-depth filter inside the route is what must
             # save the Received transfer plus its two shadows.
             monkeypatch.setattr(
-                "app.routes.transfers.archive_helpers.transfer_template_has_paid_history",
+                "app.routes.transfers.templates.archive_helpers.transfer_template_has_paid_history",
                 lambda _template_id: False,
             )
 
@@ -2175,18 +2211,20 @@ class TestTransferTemplateHardDelete:
             xfer_ids = []
             for i in range(3):
                 xfer = transfer_service.create_transfer(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods_today[i].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("200.00"),
-                    status_id=db.session.query(Status).filter_by(
+                    transfer_service.TransferSpec(
+                        user_id=seed_user["user"].id,
+                        from_account_id=seed_user["account"].id,
+                        to_account_id=savings.id,
+                        pay_period_id=seed_periods_today[i].id,
+                        scenario_id=seed_user["scenario"].id,
+                        amount=Decimal("200.00"),
+                        status_id=db.session.query(Status).filter_by(
                         name="Projected"
                     ).one().id,
-                    category_id=seed_user["categories"]["Rent"].id,
-                    transfer_template_id=template.id,
-                    name="Monthly Savings",
+                        category_id=seed_user["categories"]["Rent"].id,
+                        transfer_template_id=template.id,
+                        name="Monthly Savings",
+                    ),
                 )
                 xfer_ids.append(xfer.id)
             db.session.commit()

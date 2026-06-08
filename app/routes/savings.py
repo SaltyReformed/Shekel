@@ -10,19 +10,26 @@ import logging
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 
 from app.utils.auth_helpers import get_or_404, require_owner
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm.exc import StaleDataError
-
 from app import ref_cache
 from app.enums import GoalModeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import GoalMode, IncomeUnit
 from app.models.savings_goal import SavingsGoal
+from app.routes._commit_helpers import (
+    StaleConflictContext,
+    commit_or_handle_stale,
+)
+from app.routes._recurrence_form_helpers import (
+    STALE_EDITING_MESSAGE,
+    handle_stale_form_conflict,
+)
+from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
-from app.services import savings_dashboard_service
+from app.services import account_service, savings_dashboard_service
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +59,7 @@ def _goal_form_context(goal=None):
     Returns:
         dict with keys: goal, accounts, goal_modes, income_units.
     """
-    accounts = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .order_by(Account.sort_order, Account.name)
-        .all()
-    )
+    accounts = account_service.list_active_accounts(current_user.id)
     goal_modes = GoalMode.query.order_by(GoalMode.id).all()
     income_units = IncomeUnit.query.order_by(IncomeUnit.id).all()
     return {
@@ -199,20 +201,23 @@ def update_goal(goal_id):
 
     data = _update_schema.load(cleaned)
 
-    # Stale-form check (commit C-18 / F-010).
+    # Stale-form check (commit C-18 / F-010).  One shared context drives
+    # both the pre-flush form-side handler and the commit-time handler so
+    # the log label, flash wording, and redirect target are defined once.
     submitted_version = data.pop("version_id", None)
+    stale_ctx = StaleConflictContext(
+        logger=logger,
+        log_label="update_goal",
+        log_id=goal_id,
+        flash_message=STALE_EDITING_MESSAGE.format(noun="savings goal"),
+        redirect=RedirectTarget("savings.edit_goal", {"goal_id": goal_id}),
+    )
     if submitted_version is not None and submitted_version != goal.version_id:
-        logger.info(
-            "Stale-form conflict on update_goal id=%d "
-            "(submitted=%d, current=%d)",
-            goal_id, submitted_version, goal.version_id,
+        return handle_stale_form_conflict(
+            stale_ctx,
+            submitted=submitted_version,
+            current=goal.version_id,
         )
-        flash(
-            "This savings goal was changed by another action while you "
-            "were editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("savings.edit_goal", goal_id=goal_id))
 
     # Validate account ownership if account is being changed.
     if "account_id" in data:
@@ -235,19 +240,9 @@ def update_goal(goal_id):
         if field in _GOAL_UPDATE_FIELDS:
             setattr(goal, field, value)
 
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on update_goal id=%d", goal_id,
-        )
-        flash(
-            "This savings goal was changed by another action while you "
-            "were editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("savings.edit_goal", goal_id=goal_id))
+    conflict = commit_or_handle_stale(stale_ctx)
+    if conflict is not None:
+        return conflict
     logger.info("user_id=%d updated savings goal %d", current_user.id, goal_id)
     flash(f"Savings goal '{goal.name}' updated.", "success")
     return redirect(url_for("savings.dashboard"))
@@ -269,19 +264,18 @@ def delete_goal(goal_id):
         abort(404)
 
     goal.is_active = False
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on delete_goal id=%d", goal_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(StaleConflictContext(
+        logger=logger,
+        log_label="delete_goal",
+        log_id=goal_id,
+        flash_message=(
             "This savings goal was changed by another action.  "
-            "Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("savings.dashboard"))
+            "Please reload and try again."
+        ),
+        redirect=RedirectTarget("savings.dashboard"),
+    ))
+    if conflict is not None:
+        return conflict
     logger.info("user_id=%d deleted savings goal %d", current_user.id, goal_id)
 
     flash(f"Savings goal '{goal.name}' deactivated.", "info")

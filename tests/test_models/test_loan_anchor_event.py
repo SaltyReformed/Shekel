@@ -70,11 +70,13 @@ def _create_loan_account(seed_user, db_session, *,
     """
     loan_type = db_session.query(AccountType).filter_by(name="Mortgage").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=current_principal,
-        anchor_period_id=seed_user["bootstrap_period"].id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=current_principal,
+            anchor_period_id=seed_user["bootstrap_period"].id,
+        ),
     )
     db_session.flush()
     params = LoanParams(

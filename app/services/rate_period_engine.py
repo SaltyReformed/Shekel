@@ -92,10 +92,9 @@ class RatePeriod:
 class ScheduleReplay:
     """Result of replaying confirmed payments forward from an anchor.
 
-    Mirrors the role of :class:`amortization_engine.ReplayResult` but
-    derives each step's principal from the period's level P&I rather
-    than from a cash amount.  The fields are exactly what a forward
-    projection needs to pick up where the replay leaves off.
+    Derives each step's principal from the period's level P&I rather
+    than from a per-payment cash amount.  The fields are exactly what
+    a forward projection needs to pick up where the replay leaves off.
 
     Attributes:
         rows: One :class:`AmortizationRow` per confirmed payment

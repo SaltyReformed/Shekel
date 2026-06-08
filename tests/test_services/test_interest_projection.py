@@ -234,7 +234,11 @@ class TestMonthlyCompounding:
 
 
 class TestQuarterlyCompounding:
-    """Quarterly compounding: interest = balance * (apy/4) * (days/91)."""
+    """Quarterly compounding: interest = balance * (apy/4) * (days / actual_quarter_days).
+
+    Uses the ACTUAL quarter length (90-92 days) from ``_days_in_quarter``,
+    not a hardcoded 91-day approximation (L-05).
+    """
 
     def test_basic_14_day_period(self):
         """$10,000 at 4.5% APY, 14-day period in Q1 (90 actual days)."""
@@ -249,6 +253,27 @@ class TestQuarterlyCompounding:
         # Q1 2026: Jan(31) + Feb(28) + Mar(31) = 90 actual days
         # interest = 10000 * 0.01125 * (14/90) ≈ $17.50
         assert result == Decimal("17.50")
+
+    def test_q4_year_rollover_period(self):
+        """$10,000 at 4.5% APY, 14-day period in Q4 (92 actual days).
+
+        Locks the year-rollover branch in ``_days_in_quarter``
+        (``next_q_month > 12`` -> Jan 1 of the following year), isolated by
+        the Phase-3 extraction: Q4 2026 spans Oct(31) + Nov(30) + Dec(31) =
+        92 days, distinguishing the actual-length divisor from both the
+        90-day Q1 and the old hardcoded 91 (L-05).
+        """
+        result = calculate_interest(
+            balance=Decimal("10000.00"),
+            apy=Decimal("0.04500"),
+            compounding_frequency="quarterly",
+            period_start=date(2026, 10, 1),
+            period_end=date(2026, 10, 15),
+        )
+        # quarterly_rate = 0.045 / 4 = 0.01125
+        # Q4 2026: Oct(31) + Nov(30) + Dec(31) = 92 actual days
+        # interest = 10000 * 0.01125 * (14/92) = 17.1195... -> $17.12
+        assert result == Decimal("17.12")
 
 
 class TestEdgeCases:

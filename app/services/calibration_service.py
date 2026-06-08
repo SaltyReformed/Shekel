@@ -32,14 +32,34 @@ class DerivedRates:
     effective_medicare_rate: Decimal
 
 
-def derive_effective_rates(
-    actual_gross_pay,
-    actual_federal_tax,
-    actual_state_tax,
-    actual_social_security,
-    actual_medicare,
-    taxable_income,
-):
+@dataclass(frozen=True)
+class PayStubActuals:
+    """Actual withholding amounts transcribed from one real pay stub.
+
+    The immutable input bundle for ``derive_effective_rates``: the five
+    amounts a user copies from a single paycheck, plus the taxable-income
+    base computed from their profile's current pre-tax deductions.  All
+    fields are monetary Decimals.
+
+    Attributes:
+        actual_gross_pay:       Gross pay from the pay stub (> 0).
+        actual_federal_tax:     Federal tax withheld (>= 0).
+        actual_state_tax:       State tax withheld (>= 0).
+        actual_social_security: Social Security withheld (>= 0).
+        actual_medicare:        Medicare withheld (>= 0).
+        taxable_income:         Gross minus pre-tax deductions (> 0); the
+                                divisor for the federal/state effective
+                                rates (the FICA rates divide by gross).
+    """
+    actual_gross_pay: Decimal
+    actual_federal_tax: Decimal
+    actual_state_tax: Decimal
+    actual_social_security: Decimal
+    actual_medicare: Decimal
+    taxable_income: Decimal
+
+
+def derive_effective_rates(actuals: PayStubActuals) -> DerivedRates:
     """Derive effective tax rates from a real pay stub.
 
     Federal and state effective rates are computed against taxable income
@@ -50,13 +70,9 @@ def derive_effective_rates(
     FICA is assessed on gross wages per IRS rules.
 
     Args:
-        actual_gross_pay:       Gross pay from the pay stub (Decimal, > 0).
-        actual_federal_tax:     Federal tax withheld (Decimal, >= 0).
-        actual_state_tax:       State tax withheld (Decimal, >= 0).
-        actual_social_security: Social Security withheld (Decimal, >= 0).
-        actual_medicare:        Medicare withheld (Decimal, >= 0).
-        taxable_income:         Gross minus pre-tax deductions (Decimal).
-                                Used as the base for income tax rates.
+        actuals: The pay-stub snapshot to derive rates from -- the five
+            actual withholding amounts plus the taxable-income base.  See
+            ``PayStubActuals`` for the per-field contract.
 
     Returns:
         DerivedRates dataclass with four effective rates.
@@ -64,12 +80,12 @@ def derive_effective_rates(
     Raises:
         ValidationError: If gross_pay <= 0 or taxable_income <= 0.
     """
-    gross = Decimal(str(actual_gross_pay))
-    federal = Decimal(str(actual_federal_tax))
-    state = Decimal(str(actual_state_tax))
-    ss = Decimal(str(actual_social_security))
-    medicare = Decimal(str(actual_medicare))
-    taxable = Decimal(str(taxable_income))
+    gross = Decimal(str(actuals.actual_gross_pay))
+    federal = Decimal(str(actuals.actual_federal_tax))
+    state = Decimal(str(actuals.actual_state_tax))
+    ss = Decimal(str(actuals.actual_social_security))
+    medicare = Decimal(str(actuals.actual_medicare))
+    taxable = Decimal(str(actuals.taxable_income))
 
     if gross <= ZERO:
         raise ValidationError("Actual gross pay must be greater than zero.")

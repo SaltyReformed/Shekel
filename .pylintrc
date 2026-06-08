@@ -1,22 +1,71 @@
 [MAIN]
-# Load Flask/SQLAlchemy-aware plugins if installed.
-load-plugins=pylint.extensions.docparams
+# Make the repo-local checker plugin importable. Anchored to the working
+# directory, which is the repo root for every pylint invocation in this project:
+# CI, the Claude Code hooks, pre-commit, and the /standards command all run
+# pylint from the root. init-hook runs before load-plugins for exactly this.
+init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint"))'
+# Load the docparams extension (param/return description enforcement) plus the
+# project's own checkers in tools/pylint/shekel_checkers.py:
+# shekel-decimal-from-float and shekel-refname-compare. See docs/coding-standards.md
+# (Type Safety, Reference Tables) for the rules they enforce.
+load-plugins=pylint.extensions.docparams,shekel_checkers
 
 [FORMAT]
 # Max line length. 99 is a reasonable compromise.
 max-line-length=99
 
 [MESSAGES CONTROL]
-# Disable warnings that conflict with Flask/SQLAlchemy patterns.
+# Every disable below is a verified architecture-wide false positive, not a
+# silenced smell. Audited 2026-06-04 (see docs/audits/pylint-cleanup/plan.md,
+# Phase 0). missing-module-docstring and import-error were REMOVED from this
+# list: each had 0 current violations, so disabling them only hid future
+# regressions (a new undocumented module, a genuinely broken import).
 disable=
-    missing-module-docstring,
+    # too-few-public-methods (R0903): 52 hits, all legitimate low-method
+    # data/framework classes -- 43 SQLAlchemy models, 4 Flask config classes,
+    # 1 Marshmallow schema, 2 result dataclasses (pension_calculator), 2
+    # logging filter/formatter subclasses. None are anemic domain classes;
+    # 52 per-class inline disables would be pure noise.
     too-few-public-methods,
-    import-error
+    # missing-type-doc (W9015) + redundant-returns-doc (W9011): signature type
+    # hints are the single source of truth for types (coding-standards requires
+    # them on every signature), so repeating the type in the docstring is a DRY
+    # violation. Param/return DESCRIPTIONS are still enforced via
+    # missing-param-doc / missing-return-doc (docparams stays loaded).
+    missing-type-doc,
+    redundant-returns-doc
+
+# Enabled above pylint's defaults to protect the suppression hygiene the cleanup
+# established. useless-suppression flags a disable that no longer silences
+# anything (a stale or cargo-cult suppression -- a Phase 1 class). The policy is
+# that every disable is scoped, names its symbol, and carries a why-comment; a
+# disable that suppresses nothing violates that and must be removed.
+enable=
+    useless-suppression
 
 [DESIGN]
-# SQLAlchemy models often have many attributes.
-max-attributes=15
+# All design thresholds (max-args, max-locals, max-attributes, max-branches,
+# max-statements, max-returns, max-nested-blocks, ...) are intentionally left
+# at pylint defaults. Do NOT raise one to silence a too-many-* smell: refactor,
+# or add a scoped + rule-named + commented inline disable for the irreducible
+# case. max-attributes had been overridden to 15 ("SQLAlchemy models"), but the
+# classes it actually hid were 13 SERVICE classes (8-13 attrs each), not
+# models; reverted to the default 7 on 2026-06-04. Those 13 are tracked in the
+# Phase 3 register (docs/audits/pylint-cleanup/plan.md).
 
 [BASIC]
 # Allow short variable names common in Flask (db, bp, app, etc.)
-good-names=id,db,bp,app,fs,e,f,i,j,k,n,v
+# _initialized: module-private mutable cache-ready flag in ref_cache.py
+# (the cache maps beside it are lowercase too; pylint only flags the bool
+# because it reads as a constant assignment).
+good-names=id,db,bp,app,fs,e,f,i,j,k,n,v,_initialized
+
+[VARIABLES]
+# Marshmallow schema hooks (@validates_schema, @post_load, @pre_load,
+# @validates) receive framework-passed keyword arguments (many, partial,
+# data_key, ...) through a mandatory **kwargs that the hook body legitimately
+# ignores.  The parameter is required by Marshmallow's dispatch contract, so it
+# is not dead code.  Extend pylint's default ignored-argument-names
+# (_.*|^ignored_|^unused_) with kwargs so these framework-mandated parameters
+# do not raise unused-argument.
+ignored-argument-names=_.*|^ignored_|^unused_|^kwargs$

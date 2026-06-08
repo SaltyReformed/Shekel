@@ -16,9 +16,8 @@ service would not collapse a duplication root.
 import logging
 from decimal import Decimal
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
+from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
@@ -26,18 +25,19 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.transfer_template import TransferTemplate
+from app.routes._redirect_target import RedirectTarget
+from app.routes._transfer_creation_helpers import (
+    build_recurring_transfer_template,
+    flush_template_or_namedup_redirect,
+    generate_transfers_for_all_periods,
+    validate_and_resolve_source_account,
+)
 from app.schemas.validation import (
     InvestmentContributionTransferSchema,
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
 )
-from app.services import (
-    investment_dashboard_service,
-    pay_period_service,
-    transfer_recurrence,
-)
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services import investment_dashboard_service
 from app.utils.auth_helpers import get_or_404, require_owner
 
 logger = logging.getLogger(__name__)
@@ -138,37 +138,34 @@ def create_contribution_transfer(account_id):
     The amount defaults to a suggested per-period contribution based on
     the annual limit and remaining periods.  The user may override it.
     """
+    # Pylint: ``duplicate-code`` -- this route is the parallel near-fork of
+    # ``loan.create_payment_transfer``: both run the same
+    # validate-source -> compute-amount -> build-rule -> build-template ->
+    # flush -> generate -> commit -> notify sequence, diverging only in the
+    # amount derivation, the recurrence pattern, and the user-facing copy.
+    # The substantive shared logic is already extracted into
+    # ``app/routes/_transfer_creation_helpers.py``; what remains duplicated
+    # is only the ORDER in which this route calls those helpers, which is
+    # not worth coupling two distinct account domains (investment
+    # contribution caps vs loan P&I/escrow derivation) behind a multi-field
+    # parameter object to dedupe (coding-standards rule 13).  One-sided
+    # ``duplicate-code`` disable (see plan.md Phase 2 notes); the partner
+    # ``loan.create_payment_transfer`` stays un-disabled.
+    # pylint: disable=duplicate-code
     account = get_or_404(Account, account_id)
     if account is None:
         abort(404)
 
-    errors = _transfer_schema.validate(request.form)
-    if errors:
-        flash("Please correct the errors and try again.", "danger")
-        return redirect(
-            url_for("investment.dashboard", account_id=account_id),
-        )
-
-    data = _transfer_schema.load(request.form)
-    source_account_id = data["source_account_id"]
-
-    # Verify source account ownership (404 for both "not found" and
-    # "not yours" per the security response rule).
-    source_account = get_or_404(Account, source_account_id)
-    if source_account is None:
-        abort(404)
-
-    if not source_account.is_active:
-        flash("Source account is inactive.", "danger")
-        return redirect(
-            url_for("investment.dashboard", account_id=account_id),
-        )
-
-    if source_account_id == account_id:
-        flash("Source and destination accounts must be different.", "danger")
-        return redirect(
-            url_for("investment.dashboard", account_id=account_id),
-        )
+    # Validate the form and resolve + ownership-check the source account
+    # (shared with loan.create_payment_transfer).
+    result = validate_and_resolve_source_account(
+        _transfer_schema,
+        dest_account_id=account_id,
+        redirect=RedirectTarget("investment.dashboard", {"account_id": account_id}),
+    )
+    if isinstance(result, Response):
+        return result
+    source_account, data = result
 
     # Determine transfer amount: user override or suggested default.
     if "amount" in data and data["amount"] is not None:
@@ -215,37 +212,25 @@ def create_contribution_transfer(account_id):
     db.session.add(rule)
     db.session.flush()
 
-    # Create transfer template.
+    # Create transfer template via the shared builder (contributions do
+    # not set derive_from_loan; loan-payment transfers do).
     template_name = f"{source_account.name} -> {account.name} Contribution"
-    template = TransferTemplate(
-        user_id=current_user.id,
-        from_account_id=source_account.id,
-        to_account_id=account.id,
-        recurrence_rule_id=rule.id,
+    template = build_recurring_transfer_template(
+        source_account=source_account,
+        dest_account=account,
+        rule=rule,
         name=template_name,
         default_amount=transfer_amount,
     )
-    db.session.add(template)
 
-    try:
-        db.session.flush()
-    except IntegrityError:
-        db.session.rollback()
-        flash(
-            "A recurring transfer with that name already exists.",
-            "warning",
-        )
-        return redirect(
-            url_for("investment.dashboard", account_id=account_id),
-        )
+    namedup_redirect = flush_template_or_namedup_redirect(
+        redirect=RedirectTarget("investment.dashboard", {"account_id": account_id}),
+    )
+    if namedup_redirect is not None:
+        return namedup_redirect
 
     # Generate transfers for existing pay periods.
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario:
-        periods = pay_period_service.get_all_periods(current_user.id)
-        transfer_recurrence.generate_for_template(
-            template, periods, scenario.id,
-        )
+    generate_transfers_for_all_periods(template)
 
     db.session.commit()
 
@@ -259,6 +244,7 @@ def create_contribution_transfer(account_id):
         f"from {source_account.name} to {account.name}.",
         "success",
     )
+    # pylint: enable=duplicate-code
     return redirect(
         url_for("investment.dashboard", account_id=account_id),
     )

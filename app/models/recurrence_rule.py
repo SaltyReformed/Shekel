@@ -6,10 +6,10 @@ future pay periods (every_period, monthly, annual, etc.).
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin
+from app.models.mixins import CreatedAtMixin, UserScopedMixin
 
 
-class RecurrenceRule(CreatedAtMixin, db.Model):
+class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     """A recurrence pattern attached to a transaction template."""
 
     __tablename__ = "recurrence_rules"
@@ -20,10 +20,6 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     pattern_id = db.Column(
         db.Integer, db.ForeignKey("ref.recurrence_patterns.id", ondelete="RESTRICT"),
         nullable=False,

@@ -21,26 +21,26 @@ from app.services.paycheck_calculator import (
     _inflation_years,
     _get_cumulative_wages,
     _calculate_deductions,
+    _DeductionContext,
     calculate_paycheck,
     project_salary,
     DeductionLine,
+    DeductionBreakdown,
+    Earnings,
     PaycheckBreakdown,
+    PeriodInfo,
+    TaxLines,
     ZERO,
     TWO_PLACES,
 )
 from app import ref_cache
-from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.enums import DeductionTimingEnum
 
 
 def _timing_id(name):
     """Resolve a deduction timing name (e.g. 'pre_tax') to its integer ID."""
     _map = {e.value: e for e in DeductionTimingEnum}
     return ref_cache.deduction_timing_id(_map[name])
-
-
-def _pct_id():
-    """Return the integer ID for the 'percentage' calc method."""
-    return ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
 
 
 # ── Fake Objects ─────────────────────────────────────────────────
@@ -373,49 +373,63 @@ class TestPaycheckBreakdownProperties:
 
     def test_total_pre_tax_sums_deductions(self):
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("60000"),
-            gross_biweekly=Decimal("2307.69"),
-            pre_tax_deductions=[
-                DeductionLine("401k", Decimal("200.00")),
-                DeductionLine("HSA", Decimal("50.00")),
-            ],
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("60000"),
+                gross_biweekly=Decimal("2307.69"),
+            ),
+            deductions=DeductionBreakdown(
+                pre_tax=[
+                    DeductionLine("401k", Decimal("200.00")),
+                    DeductionLine("HSA", Decimal("50.00")),
+                ],
+            ),
         )
-        assert breakdown.total_pre_tax == Decimal("250.00")
+        assert breakdown.deductions.total_pre_tax == Decimal("250.00")
 
     def test_total_post_tax_sums_deductions(self):
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("60000"),
-            gross_biweekly=Decimal("2307.69"),
-            post_tax_deductions=[
-                DeductionLine("Roth IRA", Decimal("100.00")),
-                DeductionLine("Life Ins", Decimal("25.00")),
-            ],
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("60000"),
+                gross_biweekly=Decimal("2307.69"),
+            ),
+            deductions=DeductionBreakdown(
+                post_tax=[
+                    DeductionLine("Roth IRA", Decimal("100.00")),
+                    DeductionLine("Life Ins", Decimal("25.00")),
+                ],
+            ),
         )
-        assert breakdown.total_post_tax == Decimal("125.00")
+        assert breakdown.deductions.total_post_tax == Decimal("125.00")
 
     def test_total_taxes_sums_all_tax_fields(self):
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("60000"),
-            gross_biweekly=Decimal("2307.69"),
-            federal_tax=Decimal("200.00"),
-            state_tax=Decimal("80.00"),
-            social_security=Decimal("143.08"),
-            medicare=Decimal("33.46"),
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("60000"),
+                gross_biweekly=Decimal("2307.69"),
+            ),
+            taxes=TaxLines(
+                federal=Decimal("200.00"),
+                state=Decimal("80.00"),
+                social_security=Decimal("143.08"),
+                medicare=Decimal("33.46"),
+            ),
         )
-        assert breakdown.total_taxes == Decimal("456.54")
+        assert breakdown.taxes.total == Decimal("456.54")
 
     def test_empty_deductions_return_zero(self):
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("60000"),
-            gross_biweekly=Decimal("2307.69"),
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("60000"),
+                gross_biweekly=Decimal("2307.69"),
+            ),
         )
-        assert breakdown.total_pre_tax == Decimal("0")
-        assert breakdown.total_post_tax == Decimal("0")
-        assert breakdown.total_taxes == Decimal("0")
+        assert breakdown.deductions.total_pre_tax == Decimal("0")
+        assert breakdown.deductions.total_post_tax == Decimal("0")
+        assert breakdown.taxes.total == Decimal("0")
 
 
 class TestCalculatePaycheckPipeline:
@@ -447,41 +461,41 @@ class TestCalculatePaycheckPipeline:
             simple_tax_configs
         )
 
-        assert result.annual_salary == Decimal("60000.00"), (
+        assert result.earnings.annual_salary == Decimal("60000.00"), (
             f"annual_salary: expected 60000.00, "
-            f"got {result.annual_salary}"
+            f"got {result.earnings.annual_salary}"
         )
         # 60000 / 26 = 2307.692307... -> 2307.69
-        assert result.gross_biweekly == Decimal("2307.69"), (
+        assert result.earnings.gross_biweekly == Decimal("2307.69"), (
             f"gross_biweekly: expected 2307.69, "
-            f"got {result.gross_biweekly}"
+            f"got {result.earnings.gross_biweekly}"
         )
         # Pub 15-T: annual=59999.94, taxable=44999.94
         # 44999.94*0.10=4499.994->4499.99, /26=173.08
-        assert result.federal_tax == Decimal("173.08"), (
+        assert result.taxes.federal == Decimal("173.08"), (
             f"federal_tax: expected 173.08, "
-            f"got {result.federal_tax}"
+            f"got {result.taxes.federal}"
         )
         # state: 59999.94*0.045=2699.9973->2700.00
         # 2700.00/26=103.846...->103.85
-        assert result.state_tax == Decimal("103.85"), (
+        assert result.taxes.state == Decimal("103.85"), (
             f"state_tax: expected 103.85, "
-            f"got {result.state_tax}"
+            f"got {result.taxes.state}"
         )
         # SS: 2307.69*0.062=143.07678->143.08
-        assert result.social_security == Decimal("143.08"), (
+        assert result.taxes.social_security == Decimal("143.08"), (
             f"social_security: expected 143.08, "
-            f"got {result.social_security}"
+            f"got {result.taxes.social_security}"
         )
         # Medicare: 2307.69*0.0145=33.461505->33.46
-        assert result.medicare == Decimal("33.46"), (
+        assert result.taxes.medicare == Decimal("33.46"), (
             f"medicare: expected 33.46, "
-            f"got {result.medicare}"
+            f"got {result.taxes.medicare}"
         )
         # net = 2307.69 - 173.08 - 103.85 - 143.08 - 33.46
-        assert result.net_pay == Decimal("1854.22"), (
+        assert result.earnings.net_pay == Decimal("1854.22"), (
             f"net_pay: expected 1854.22, "
-            f"got {result.net_pay}"
+            f"got {result.earnings.net_pay}"
         )
 
     def test_net_pay_formula(self, base_profile, simple_tax_configs):
@@ -496,22 +510,22 @@ class TestCalculatePaycheckPipeline:
         # same setup as test_basic_paycheck_no_deductions.
         # gross=2307.69 - fed=173.08 - state=103.85
         #   - SS=143.08 - med=33.46 = 1854.22
-        assert r.net_pay == Decimal("1854.22"), (
-            f"net_pay: expected 1854.22, got {r.net_pay}"
+        assert r.earnings.net_pay == Decimal("1854.22"), (
+            f"net_pay: expected 1854.22, got {r.earnings.net_pay}"
         )
 
         # Secondary: internal consistency check (formula holds).
         expected_net = (
-            r.gross_biweekly
-            - r.total_pre_tax
-            - r.federal_tax
-            - r.state_tax
-            - r.social_security
-            - r.medicare
-            - r.total_post_tax
+            r.earnings.gross_biweekly
+            - r.deductions.total_pre_tax
+            - r.taxes.federal
+            - r.taxes.state
+            - r.taxes.social_security
+            - r.taxes.medicare
+            - r.deductions.total_post_tax
         ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-        assert r.net_pay == expected_net, (
-            f"Consistency check: net_pay={r.net_pay}, "
+        assert r.earnings.net_pay == expected_net, (
+            f"Consistency check: net_pay={r.earnings.net_pay}, "
             f"formula result={expected_net}"
         )
 
@@ -525,7 +539,7 @@ class TestCalculatePaycheckPipeline:
         expected_gross = (Decimal("75000") / 26).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
         )
-        assert result.gross_biweekly == expected_gross
+        assert result.earnings.gross_biweekly == expected_gross
 
     def test_taxable_income_floors_at_zero(self, simple_tax_configs):
         """When pre_tax deductions > gross, taxable income should be 0."""
@@ -541,7 +555,7 @@ class TestCalculatePaycheckPipeline:
 
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
-        assert result.taxable_income == ZERO
+        assert result.earnings.taxable_income == ZERO
 
     def test_no_bracket_set_zero_federal(self, nc_state_config, standard_fica):
         """bracket_set=None → federal=0."""
@@ -555,7 +569,7 @@ class TestCalculatePaycheckPipeline:
 
         result = calculate_paycheck(profile, period, [period], configs)
 
-        assert result.federal_tax == ZERO
+        assert result.taxes.federal == ZERO
 
     def test_no_state_config_zero_state(self, simple_bracket_set, standard_fica):
         """state_config=None → state=0."""
@@ -569,7 +583,7 @@ class TestCalculatePaycheckPipeline:
 
         result = calculate_paycheck(profile, period, [period], configs)
 
-        assert result.state_tax == ZERO
+        assert result.taxes.state == ZERO
 
     def test_no_fica_config_zero_fica(self, simple_bracket_set, nc_state_config):
         """fica_config=None → ss=0, medicare=0."""
@@ -583,8 +597,8 @@ class TestCalculatePaycheckPipeline:
 
         result = calculate_paycheck(profile, period, [period], configs)
 
-        assert result.social_security == ZERO
-        assert result.medicare == ZERO
+        assert result.taxes.social_security == ZERO
+        assert result.taxes.medicare == ZERO
 
     def test_all_tax_configs_none(self):
         """All None → only gross minus deductions."""
@@ -598,11 +612,11 @@ class TestCalculatePaycheckPipeline:
 
         result = calculate_paycheck(profile, period, [period], configs)
 
-        assert result.federal_tax == ZERO
-        assert result.state_tax == ZERO
-        assert result.social_security == ZERO
-        assert result.medicare == ZERO
-        assert result.net_pay == result.gross_biweekly
+        assert result.taxes.federal == ZERO
+        assert result.taxes.state == ZERO
+        assert result.taxes.social_security == ZERO
+        assert result.taxes.medicare == ZERO
+        assert result.earnings.net_pay == result.earnings.gross_biweekly
 
     def test_w4_fields_passed_to_federal(self, simple_tax_configs):
         """W-4 fields increase federal withholding exactly.
@@ -638,14 +652,14 @@ class TestCalculatePaycheckPipeline:
         )
 
         # Base: 4499.99/26=173.076923->173.08
-        assert base_result.federal_tax == Decimal("173.08"), (
+        assert base_result.taxes.federal == Decimal("173.08"), (
             f"base federal_tax: expected 173.08, "
-            f"got {base_result.federal_tax}"
+            f"got {base_result.taxes.federal}"
         )
         # W-4: (6099.99/26)+50=234.615+50=284.615->284.62
-        assert w4_result.federal_tax == Decimal("284.62"), (
+        assert w4_result.taxes.federal == Decimal("284.62"), (
             f"w4 federal_tax: expected 284.62, "
-            f"got {w4_result.federal_tax}"
+            f"got {w4_result.taxes.federal}"
         )
 
 
@@ -662,9 +676,9 @@ class TestDeductionCalculation:
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
 
-        assert len(result.pre_tax_deductions) == 1
-        assert result.pre_tax_deductions[0].name == "401k"
-        assert result.pre_tax_deductions[0].amount == Decimal("200.00")
+        assert len(result.deductions.pre_tax) == 1
+        assert result.deductions.pre_tax[0].name == "401k"
+        assert result.deductions.pre_tax[0].amount == Decimal("200.00")
 
     def test_flat_post_tax_deduction(self, base_profile, simple_tax_configs):
         """Flat amount subtracted after taxes."""
@@ -676,8 +690,8 @@ class TestDeductionCalculation:
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
 
-        assert len(result.post_tax_deductions) == 1
-        assert result.post_tax_deductions[0].amount == Decimal("150.00")
+        assert len(result.deductions.post_tax) == 1
+        assert result.deductions.post_tax[0].amount == Decimal("150.00")
 
     def test_percentage_deduction(self, base_profile, simple_tax_configs):
         """Percentage of gross_biweekly."""
@@ -693,7 +707,7 @@ class TestDeductionCalculation:
         gross = Decimal("60000") / 26
         expected = (gross * Decimal("0.06")).quantize(TWO_PLACES,
                                                      rounding=ROUND_HALF_UP)
-        assert result.pre_tax_deductions[0].amount == expected
+        assert result.deductions.pre_tax[0].amount == expected
 
     def test_inactive_deduction_skipped(self, base_profile, simple_tax_configs):
         """is_active=False excluded."""
@@ -705,7 +719,7 @@ class TestDeductionCalculation:
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
 
-        assert len(result.pre_tax_deductions) == 0
+        assert len(result.deductions.pre_tax) == 0
 
     def test_timing_filter(self, base_profile, simple_tax_configs):
         """Pre-tax deduction not in post-tax list and vice versa."""
@@ -718,8 +732,8 @@ class TestDeductionCalculation:
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
 
-        pre_names = [d.name for d in result.pre_tax_deductions]
-        post_names = [d.name for d in result.post_tax_deductions]
+        pre_names = [d.name for d in result.deductions.pre_tax]
+        post_names = [d.name for d in result.deductions.post_tax]
         assert "401k" in pre_names
         assert "401k" not in post_names
         assert "Roth" in post_names
@@ -742,8 +756,10 @@ class TestDeductionCalculation:
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(profile, p3, all_periods, gross,
-                                       _timing_id("pre_tax"), _pct_id(), True)
+        result = _calculate_deductions(
+            _DeductionContext(profile, p3, all_periods, gross, True),
+            _timing_id("pre_tax"),
+        )
         assert len(result) == 0
 
     def test_12_per_year_only_first_of_month(self):
@@ -761,8 +777,10 @@ class TestDeductionCalculation:
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(profile, p1, all_periods, gross,
-                                       _timing_id("pre_tax"), _pct_id(), False)
+        result = _calculate_deductions(
+            _DeductionContext(profile, p1, all_periods, gross, False),
+            _timing_id("pre_tax"),
+        )
         assert len(result) == 1
         assert result[0].amount == Decimal("50")
 
@@ -781,8 +799,10 @@ class TestDeductionCalculation:
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(profile, p2, all_periods, gross,
-                                       _timing_id("pre_tax"), _pct_id(), False)
+        result = _calculate_deductions(
+            _DeductionContext(profile, p2, all_periods, gross, False),
+            _timing_id("pre_tax"),
+        )
         assert len(result) == 0
 
     # ── Commit 32 / MED-07 / PA-22: pct-of-zero-gross boundary ────
@@ -810,8 +830,8 @@ class TestDeductionCalculation:
         period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
 
         result = _calculate_deductions(
-            profile, period, [period], Decimal("0.00"),
-            _timing_id("pre_tax"), _pct_id(), False,
+            _DeductionContext(profile, period, [period], Decimal("0.00"), False),
+            _timing_id("pre_tax"),
         )
         assert len(result) == 1
         assert result[0].name == "401k"
@@ -838,8 +858,8 @@ class TestDeductionCalculation:
         period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
 
         result = _calculate_deductions(
-            profile, period, [period], Decimal("0.00"),
-            _timing_id("post_tax"), _pct_id(), False,
+            _DeductionContext(profile, period, [period], Decimal("0.00"), False),
+            _timing_id("post_tax"),
         )
         assert len(result) == 1
         assert result[0].name == "Roth"
@@ -917,8 +937,10 @@ class TestInflationAdjustment:
         # Verify in deduction calculation
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(profile, period, [period], gross,
-                                       _timing_id("pre_tax"), _pct_id(), False)
+        result = _calculate_deductions(
+            _DeductionContext(profile, period, [period], gross, False),
+            _timing_id("pre_tax"),
+        )
         expected = (Decimal("100") * Decimal("1.03")).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
         )
@@ -941,8 +963,10 @@ class TestInflationAdjustment:
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(profile, period, [period], gross,
-                                       _timing_id("pre_tax"), _pct_id(), False)
+        result = _calculate_deductions(
+            _DeductionContext(profile, period, [period], gross, False),
+            _timing_id("pre_tax"),
+        )
         expected = (Decimal("100") * Decimal("1.03") ** 2).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
         )
@@ -1044,9 +1068,9 @@ class TestProjectSalary:
 
         result = project_salary(profile, periods, simple_tax_configs)
 
-        assert result[0].raise_event == ""
-        assert "MERIT" in result[1].raise_event
-        assert result[2].raise_event == ""
+        assert result[0].period.raise_event == ""
+        assert "MERIT" in result[1].period.raise_event
+        assert result[2].period.raise_event == ""
 
     def test_empty_periods_empty_result(self, base_profile, simple_tax_configs):
         """[] → []."""
@@ -1104,38 +1128,38 @@ class TestFICAWageCapBoundary:
 
         # Periods 1-21: full SS (under cap)
         for i in range(21):
-            assert results[i].social_security == full_ss, (
+            assert results[i].taxes.social_security == full_ss, (
                 f"period {i+1}: SS expected {full_ss}, "
-                f"got {results[i].social_security}"
+                f"got {results[i].taxes.social_security}"
             )
 
         # Period 22: partial SS (crosses cap this period)
         # cumulative = 21*7692.31 = 161538.51
         # cumul + gross = 169230.82 > 168600
-        assert results[21].social_security == partial_ss, (
+        assert results[21].taxes.social_security == partial_ss, (
             f"period 22 (transition): SS expected "
-            f"{partial_ss}, got {results[21].social_security}"
+            f"{partial_ss}, got {results[21].taxes.social_security}"
         )
 
         # Periods 23-26: zero SS (already over cap)
         for i in range(22, 26):
-            assert results[i].social_security == Decimal("0.00"), (
+            assert results[i].taxes.social_security == Decimal("0.00"), (
                 f"period {i+1}: SS expected 0.00, "
-                f"got {results[i].social_security}"
+                f"got {results[i].taxes.social_security}"
             )
 
         # Medicare: constant across all 26 periods (no cap)
         for i in range(26):
-            assert results[i].medicare == expected_medicare, (
+            assert results[i].taxes.medicare == expected_medicare, (
                 f"period {i+1}: medicare expected "
                 f"{expected_medicare}, "
-                f"got {results[i].medicare}"
+                f"got {results[i].taxes.medicare}"
             )
 
         # Cumulative SS verification
         # 21*476.92 + 437.81 + 4*0.00 = 10453.13
         total_ss = sum(
-            r.social_security for r in results
+            r.taxes.social_security for r in results
         )
         assert total_ss == Decimal("10453.13"), (
             f"total SS: expected 10453.13, got {total_ss}"
@@ -1285,27 +1309,27 @@ class TestMedicareSurtax:
 
         # Periods 1-17: base Medicare only (under threshold)
         for i in range(17):
-            assert results[i].medicare == base_med, (
+            assert results[i].taxes.medicare == base_med, (
                 f"period {i+1}: medicare expected "
-                f"{base_med}, got {results[i].medicare}"
+                f"{base_med}, got {results[i].taxes.medicare}"
             )
 
         # Period 18: partial surtax (crosses threshold)
         # cumul = 17*11538.46 = 196153.82
         # surtax_income = 207692.28 - 200000 = 7692.28
         # surtax = 7692.28*0.009 = 69.23052->69.23
-        assert results[17].medicare == trans_med, (
+        assert results[17].taxes.medicare == trans_med, (
             f"period 18 (transition): medicare expected "
-            f"{trans_med}, got {results[17].medicare}"
+            f"{trans_med}, got {results[17].taxes.medicare}"
         )
 
         # Periods 19-26: full surtax (cumul >= threshold)
         # surtax = 11538.46*0.009 = 103.84614->103.85
         for i in range(18, 26):
-            assert results[i].medicare == full_surtax_med, (
+            assert results[i].taxes.medicare == full_surtax_med, (
                 f"period {i+1}: medicare expected "
                 f"{full_surtax_med}, "
-                f"got {results[i].medicare}"
+                f"got {results[i].taxes.medicare}"
             )
 
 
@@ -1350,7 +1374,7 @@ class TestAnnualProjection:
 
         # MED-05 / PA-07: total_gross is the exact annual salary, not
         # the prior 26 * $2307.69 = $59,999.94 understatement.
-        total_gross = sum(r.gross_biweekly for r in results)
+        total_gross = sum(r.earnings.gross_biweekly for r in results)
         assert total_gross == Decimal("60000.00"), (
             f"total gross: expected 60000.00 (exact annual; "
             f"MED-05/PA-07 reconciliation), got {total_gross}"
@@ -1360,39 +1384,39 @@ class TestAnnualProjection:
         # receive floor = $2307.69.  6 * 2307.70 + 20 * 2307.69
         #   = 13846.20 + 46153.80 = 60000.00.
         for i in range(6):
-            assert results[i].gross_biweekly == Decimal("2307.70"), (
+            assert results[i].earnings.gross_biweekly == Decimal("2307.70"), (
                 f"period {i+1}: expected 2307.70 (residue +cent), "
-                f"got {results[i].gross_biweekly}"
+                f"got {results[i].earnings.gross_biweekly}"
             )
         for i in range(6, 26):
-            assert results[i].gross_biweekly == Decimal("2307.69"), (
+            assert results[i].earnings.gross_biweekly == Decimal("2307.69"), (
                 f"period {i+1}: expected 2307.69 (floor), "
-                f"got {results[i].gross_biweekly}"
+                f"got {results[i].earnings.gross_biweekly}"
             )
 
         # 173.08 * 26 = 4500.08 (per-period federal byte-identical;
         # both 2307.69 and 2307.70 annualise to the same 10%-bracket
         # withholding after the standard deduction).
-        total_federal = sum(r.federal_tax for r in results)
+        total_federal = sum(r.taxes.federal for r in results)
         assert total_federal == Decimal("173.08") * 26, (
             f"total federal: expected 4500.08, got {total_federal}"
         )
 
         # 103.85 * 26 = 2700.10
-        total_state = sum(r.state_tax for r in results)
+        total_state = sum(r.taxes.state for r in results)
         assert total_state == Decimal("103.85") * 26, (
             f"total state: expected 2700.10, got {total_state}"
         )
 
         # 143.08 * 26 = 3720.08 (FICA per-period unchanged: both
         # 2307.69*0.062 and 2307.70*0.062 round to 143.08).
-        total_ss = sum(r.social_security for r in results)
+        total_ss = sum(r.taxes.social_security for r in results)
         assert total_ss == Decimal("143.08") * 26, (
             f"total SS: expected 3720.08, got {total_ss}"
         )
 
         # 33.46 * 26 = 869.96 (both grosses round to the same medicare).
-        total_medicare = sum(r.medicare for r in results)
+        total_medicare = sum(r.taxes.medicare for r in results)
         assert total_medicare == Decimal("33.46") * 26, (
             f"total medicare: expected 869.96, got {total_medicare}"
         )
@@ -1400,7 +1424,7 @@ class TestAnnualProjection:
         # Re-pinned: net first 6 = $1854.23, last 20 = $1854.22.
         # 6 * 1854.23 + 20 * 1854.22 = 11125.38 + 37084.40 = 48209.78.
         # (Pre-fix value was 26 * $1854.22 = $48209.72.)
-        total_net = sum(r.net_pay for r in results)
+        total_net = sum(r.earnings.net_pay for r in results)
         assert total_net == Decimal("48209.78"), (
             f"total net: expected 48209.78 (MED-05/PA-07 reconciled), "
             f"got {total_net}"
@@ -1444,34 +1468,34 @@ class TestAnnualProjection:
         # First 6 periods: gross = floor + $0.01 = $2307.70;
         # net = $2307.70 - $173.08 - $103.85 - $143.08 - $33.46
         #     = $1854.23.
-        first_group_gross = results[0].gross_biweekly
-        first_group_net = results[0].net_pay
+        first_group_gross = results[0].earnings.gross_biweekly
+        first_group_net = results[0].earnings.net_pay
         assert first_group_gross == Decimal("2307.70")
         assert first_group_net == Decimal("1854.23")
         for i in range(1, 6):
             r = results[i]
-            assert r.gross_biweekly == first_group_gross, (
-                f"period {i+1}: gross {r.gross_biweekly} != "
+            assert r.earnings.gross_biweekly == first_group_gross, (
+                f"period {i+1}: gross {r.earnings.gross_biweekly} != "
                 f"first-group gross {first_group_gross}"
             )
-            assert r.net_pay == first_group_net, (
-                f"period {i+1}: net {r.net_pay} != "
+            assert r.earnings.net_pay == first_group_net, (
+                f"period {i+1}: net {r.earnings.net_pay} != "
                 f"first-group net {first_group_net}"
             )
 
         # Last 20 periods: gross = floor = $2307.69; net = $1854.22.
-        last_group_gross = results[6].gross_biweekly
-        last_group_net = results[6].net_pay
+        last_group_gross = results[6].earnings.gross_biweekly
+        last_group_net = results[6].earnings.net_pay
         assert last_group_gross == Decimal("2307.69")
         assert last_group_net == Decimal("1854.22")
         for i in range(7, 26):
             r = results[i]
-            assert r.gross_biweekly == last_group_gross, (
-                f"period {i+1}: gross {r.gross_biweekly} != "
+            assert r.earnings.gross_biweekly == last_group_gross, (
+                f"period {i+1}: gross {r.earnings.gross_biweekly} != "
                 f"last-group gross {last_group_gross}"
             )
-            assert r.net_pay == last_group_net, (
-                f"period {i+1}: net {r.net_pay} != "
+            assert r.earnings.net_pay == last_group_net, (
+                f"period {i+1}: net {r.earnings.net_pay} != "
                 f"last-group net {last_group_net}"
             )
 
@@ -1483,21 +1507,21 @@ class TestAnnualProjection:
         first = results[0]
         for i in range(1, 26):
             r = results[i]
-            assert r.federal_tax == first.federal_tax, (
-                f"period {i+1}: federal {r.federal_tax} != "
-                f"period 1 federal {first.federal_tax}"
+            assert r.taxes.federal == first.taxes.federal, (
+                f"period {i+1}: federal {r.taxes.federal} != "
+                f"period 1 federal {first.taxes.federal}"
             )
-            assert r.state_tax == first.state_tax, (
-                f"period {i+1}: state {r.state_tax} != "
-                f"period 1 state {first.state_tax}"
+            assert r.taxes.state == first.taxes.state, (
+                f"period {i+1}: state {r.taxes.state} != "
+                f"period 1 state {first.taxes.state}"
             )
-            assert r.social_security == first.social_security, (
-                f"period {i+1}: SS {r.social_security} != "
-                f"period 1 SS {first.social_security}"
+            assert r.taxes.social_security == first.taxes.social_security, (
+                f"period {i+1}: SS {r.taxes.social_security} != "
+                f"period 1 SS {first.taxes.social_security}"
             )
-            assert r.medicare == first.medicare, (
-                f"period {i+1}: medicare {r.medicare} != "
-                f"period 1 medicare {first.medicare}"
+            assert r.taxes.medicare == first.taxes.medicare, (
+                f"period {i+1}: medicare {r.taxes.medicare} != "
+                f"period 1 medicare {first.taxes.medicare}"
             )
 
 
@@ -1529,29 +1553,29 @@ class TestEdgeCases:
             profile, period, [period], simple_tax_configs
         )
 
-        assert result.gross_biweekly == Decimal("0.00"), (
+        assert result.earnings.gross_biweekly == Decimal("0.00"), (
             f"gross: expected 0.00, "
-            f"got {result.gross_biweekly}"
+            f"got {result.earnings.gross_biweekly}"
         )
-        assert result.federal_tax == Decimal("0.00"), (
+        assert result.taxes.federal == Decimal("0.00"), (
             f"federal: expected 0.00, "
-            f"got {result.federal_tax}"
+            f"got {result.taxes.federal}"
         )
-        assert result.state_tax == Decimal("0.00"), (
+        assert result.taxes.state == Decimal("0.00"), (
             f"state: expected 0.00, "
-            f"got {result.state_tax}"
+            f"got {result.taxes.state}"
         )
-        assert result.social_security == Decimal("0.00"), (
+        assert result.taxes.social_security == Decimal("0.00"), (
             f"SS: expected 0.00, "
-            f"got {result.social_security}"
+            f"got {result.taxes.social_security}"
         )
-        assert result.medicare == Decimal("0.00"), (
+        assert result.taxes.medicare == Decimal("0.00"), (
             f"medicare: expected 0.00, "
-            f"got {result.medicare}"
+            f"got {result.taxes.medicare}"
         )
-        assert result.net_pay == Decimal("0.00"), (
+        assert result.earnings.net_pay == Decimal("0.00"), (
             f"net: expected 0.00, "
-            f"got {result.net_pay}"
+            f"got {result.earnings.net_pay}"
         )
 
     def test_negative_salary_behavior(self, simple_tax_configs):
@@ -1620,16 +1644,16 @@ class TestNegativeAndBoundaryPaths:
         )
 
         # Both produce identical results since 0 defaults to 26.
-        assert result_zero.gross_biweekly == result_26.gross_biweekly
-        assert result_zero.federal_tax == result_26.federal_tax
-        assert result_zero.state_tax == result_26.state_tax
-        assert result_zero.social_security == result_26.social_security
-        assert result_zero.medicare == result_26.medicare
-        assert result_zero.net_pay == result_26.net_pay
+        assert result_zero.earnings.gross_biweekly == result_26.earnings.gross_biweekly
+        assert result_zero.taxes.federal == result_26.taxes.federal
+        assert result_zero.taxes.state == result_26.taxes.state
+        assert result_zero.taxes.social_security == result_26.taxes.social_security
+        assert result_zero.taxes.medicare == result_26.taxes.medicare
+        assert result_zero.earnings.net_pay == result_26.earnings.net_pay
 
         # Verify actual values match known $60k/26-periods result.
-        assert result_zero.gross_biweekly == Decimal("2307.69")
-        assert result_zero.net_pay == Decimal("1854.22")
+        assert result_zero.earnings.gross_biweekly == Decimal("2307.69")
+        assert result_zero.earnings.net_pay == Decimal("1854.22")
 
     def test_pay_periods_per_year_one_annual(
         self, simple_bracket_set, nc_state_config, standard_fica
@@ -1663,28 +1687,28 @@ class TestNegativeAndBoundaryPaths:
         result = calculate_paycheck(profile, period, [period], tax_configs)
 
         # gross = 78000 / 1 = 78000.00 (exact, no rounding)
-        assert result.gross_biweekly == Decimal("78000.00"), (
-            f"gross: expected 78000.00, got {result.gross_biweekly}"
+        assert result.earnings.gross_biweekly == Decimal("78000.00"), (
+            f"gross: expected 78000.00, got {result.earnings.gross_biweekly}"
         )
         # Federal: 50000*0.10 + 13000*0.22 = 7860.00 / 1 = 7860.00
-        assert result.federal_tax == Decimal("7860.00"), (
-            f"federal: expected 7860.00, got {result.federal_tax}"
+        assert result.taxes.federal == Decimal("7860.00"), (
+            f"federal: expected 7860.00, got {result.taxes.federal}"
         )
         # State: 78000*0.045 = 3510.00 / 1 = 3510.00
-        assert result.state_tax == Decimal("3510.00"), (
-            f"state: expected 3510.00, got {result.state_tax}"
+        assert result.taxes.state == Decimal("3510.00"), (
+            f"state: expected 3510.00, got {result.taxes.state}"
         )
         # SS: 78000*0.062 = 4836.00
-        assert result.social_security == Decimal("4836.00"), (
-            f"SS: expected 4836.00, got {result.social_security}"
+        assert result.taxes.social_security == Decimal("4836.00"), (
+            f"SS: expected 4836.00, got {result.taxes.social_security}"
         )
         # Medicare: 78000*0.0145 = 1131.00
-        assert result.medicare == Decimal("1131.00"), (
-            f"medicare: expected 1131.00, got {result.medicare}"
+        assert result.taxes.medicare == Decimal("1131.00"), (
+            f"medicare: expected 1131.00, got {result.taxes.medicare}"
         )
         # net = 78000 - 7860 - 3510 - 4836 - 1131 = 60663.00
-        assert result.net_pay == Decimal("60663.00"), (
-            f"net: expected 60663.00, got {result.net_pay}"
+        assert result.earnings.net_pay == Decimal("60663.00"), (
+            f"net: expected 60663.00, got {result.earnings.net_pay}"
         )
 
     def test_net_pay_negative_from_excessive_post_tax(self, simple_tax_configs):
@@ -1719,16 +1743,16 @@ class TestNegativeAndBoundaryPaths:
 
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
-        assert result.gross_biweekly == Decimal("1153.85")
-        assert result.federal_tax == Decimal("57.69")
-        assert result.state_tax == Decimal("51.92")
-        assert result.social_security == Decimal("71.54")
-        assert result.medicare == Decimal("16.73")
+        assert result.earnings.gross_biweekly == Decimal("1153.85")
+        assert result.taxes.federal == Decimal("57.69")
+        assert result.taxes.state == Decimal("51.92")
+        assert result.taxes.social_security == Decimal("71.54")
+        assert result.taxes.medicare == Decimal("16.73")
 
         # The calculator returns negative net pay when post-tax deductions exceed
         # take-home. The route layer should warn the user.
-        assert result.net_pay == Decimal("-1044.03"), (
-            f"net_pay: expected -1044.03, got {result.net_pay}"
+        assert result.earnings.net_pay == Decimal("-1044.03"), (
+            f"net_pay: expected -1044.03, got {result.earnings.net_pay}"
         )
 
     def test_zero_annual_salary(self, simple_tax_configs):
@@ -1748,14 +1772,14 @@ class TestNegativeAndBoundaryPaths:
 
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
-        assert result.annual_salary == Decimal("0.00")
-        assert result.gross_biweekly == Decimal("0.00")
-        assert result.taxable_income == Decimal("0.00")
-        assert result.federal_tax == Decimal("0.00")
-        assert result.state_tax == Decimal("0.00")
-        assert result.social_security == Decimal("0.00")
-        assert result.medicare == Decimal("0.00")
-        assert result.net_pay == Decimal("0.00")
+        assert result.earnings.annual_salary == Decimal("0.00")
+        assert result.earnings.gross_biweekly == Decimal("0.00")
+        assert result.earnings.taxable_income == Decimal("0.00")
+        assert result.taxes.federal == Decimal("0.00")
+        assert result.taxes.state == Decimal("0.00")
+        assert result.taxes.social_security == Decimal("0.00")
+        assert result.taxes.medicare == Decimal("0.00")
+        assert result.earnings.net_pay == Decimal("0.00")
 
     def test_massive_deductions_exceed_gross(self, simple_tax_configs):
         """Pre-tax deductions exceeding gross clamp taxable to zero.
@@ -1789,23 +1813,23 @@ class TestNegativeAndBoundaryPaths:
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
         # gross = 52000/26 = 2000.00
-        assert result.gross_biweekly == Decimal("2000.00")
+        assert result.earnings.gross_biweekly == Decimal("2000.00")
         # taxable_biweekly = max(2000 - 2500, 0) = 0.00 (clamped by source code)
-        assert result.taxable_income == Decimal("0.00"), (
-            f"taxable_income should be clamped to 0, got {result.taxable_income}"
+        assert result.earnings.taxable_income == Decimal("0.00"), (
+            f"taxable_income should be clamped to 0, got {result.earnings.taxable_income}"
         )
         # Federal/state: 0 taxable → 0 tax
-        assert result.federal_tax == Decimal("0.00")
-        assert result.state_tax == Decimal("0.00")
+        assert result.taxes.federal == Decimal("0.00")
+        assert result.taxes.state == Decimal("0.00")
         # FICA is computed on gross, not taxable income.
         # SS: 2000*0.062 = 124.00
-        assert result.social_security == Decimal("124.00")
+        assert result.taxes.social_security == Decimal("124.00")
         # Medicare: 2000*0.0145 = 29.00
-        assert result.medicare == Decimal("29.00")
+        assert result.taxes.medicare == Decimal("29.00")
         # net = 2000 - 2500 - 0 - 0 - 124 - 29 = -653.00
         # The calculator allows negative net when deductions exceed gross.
-        assert result.net_pay == Decimal("-653.00"), (
-            f"net_pay: expected -653.00, got {result.net_pay}"
+        assert result.earnings.net_pay == Decimal("-653.00"), (
+            f"net_pay: expected -653.00, got {result.earnings.net_pay}"
         )
 
 
@@ -1891,39 +1915,39 @@ class TestPreTaxDeductionTaxImpact:
         baseline_state = Decimal("103.85")
 
         # Federal tax must be LOWER with pre-tax deduction.
-        assert with_ded.federal_tax == Decimal("153.08"), (
-            f"federal_tax: expected 153.08, got {with_ded.federal_tax}"
+        assert with_ded.taxes.federal == Decimal("153.08"), (
+            f"federal_tax: expected 153.08, got {with_ded.taxes.federal}"
         )
-        assert with_ded.federal_tax < baseline_federal, (
+        assert with_ded.taxes.federal < baseline_federal, (
             "Pre-tax deduction must reduce federal tax"
         )
 
         # State tax must be LOWER with pre-tax deduction.
-        assert with_ded.state_tax == Decimal("94.85"), (
-            f"state_tax: expected 94.85, got {with_ded.state_tax}"
+        assert with_ded.taxes.state == Decimal("94.85"), (
+            f"state_tax: expected 94.85, got {with_ded.taxes.state}"
         )
-        assert with_ded.state_tax < baseline_state, (
+        assert with_ded.taxes.state < baseline_state, (
             "Pre-tax deduction must reduce state tax"
         )
 
         # Taxable income field must equal gross minus pre-tax.
-        assert with_ded.taxable_income == Decimal("2107.69"), (
+        assert with_ded.earnings.taxable_income == Decimal("2107.69"), (
             f"taxable_income: expected 2107.69, "
-            f"got {with_ded.taxable_income}"
+            f"got {with_ded.earnings.taxable_income}"
         )
 
         # Verify the magnitude of tax reduction matches marginal rates.
         # $200 * 10% marginal bracket = $20.00/period federal reduction.
-        assert baseline_federal - with_ded.federal_tax == Decimal("20.00"), (
+        assert baseline_federal - with_ded.taxes.federal == Decimal("20.00"), (
             f"Federal reduction should be $20.00 "
             f"(= $200 * 10% bracket rate), "
-            f"got {baseline_federal - with_ded.federal_tax}"
+            f"got {baseline_federal - with_ded.taxes.federal}"
         )
         # $200 * 4.5% NC flat rate = $9.00/period state reduction.
-        assert baseline_state - with_ded.state_tax == Decimal("9.00"), (
+        assert baseline_state - with_ded.taxes.state == Decimal("9.00"), (
             f"State reduction should be $9.00 "
             f"(= $200 * 4.5% flat rate), "
-            f"got {baseline_state - with_ded.state_tax}"
+            f"got {baseline_state - with_ded.taxes.state}"
         )
 
     def test_pretax_deduction_does_not_reduce_fica(
@@ -1966,27 +1990,27 @@ class TestPreTaxDeductionTaxImpact:
         )
 
         # SS must be identical -- computed on gross, not taxable.
-        assert with_ded.social_security == no_ded.social_security, (
+        assert with_ded.taxes.social_security == no_ded.taxes.social_security, (
             f"SS changed with pre-tax deduction: "
-            f"{no_ded.social_security} -> {with_ded.social_security}. "
+            f"{no_ded.taxes.social_security} -> {with_ded.taxes.social_security}. "
             f"FICA must be computed on gross, not taxable income."
         )
-        assert with_ded.social_security == Decimal("143.08"), (
-            f"SS: expected 143.08, got {with_ded.social_security}"
+        assert with_ded.taxes.social_security == Decimal("143.08"), (
+            f"SS: expected 143.08, got {with_ded.taxes.social_security}"
         )
 
         # Medicare must be identical -- computed on gross, not taxable.
-        assert with_ded.medicare == no_ded.medicare, (
+        assert with_ded.taxes.medicare == no_ded.taxes.medicare, (
             f"Medicare changed with pre-tax deduction: "
-            f"{no_ded.medicare} -> {with_ded.medicare}. "
+            f"{no_ded.taxes.medicare} -> {with_ded.taxes.medicare}. "
             f"FICA must be computed on gross, not taxable income."
         )
-        assert with_ded.medicare == Decimal("33.46"), (
-            f"Medicare: expected 33.46, got {with_ded.medicare}"
+        assert with_ded.taxes.medicare == Decimal("33.46"), (
+            f"Medicare: expected 33.46, got {with_ded.taxes.medicare}"
         )
 
         # Gross must also be identical (deductions don't change gross).
-        assert with_ded.gross_biweekly == no_ded.gross_biweekly
+        assert with_ded.earnings.gross_biweekly == no_ded.earnings.gross_biweekly
 
     def test_percentage_pretax_deduction_reduces_taxes(
         self, simple_tax_configs
@@ -2034,35 +2058,35 @@ class TestPreTaxDeductionTaxImpact:
         )
 
         # Deduction amount computed from gross.
-        assert result.pre_tax_deductions[0].amount == Decimal("138.46"), (
+        assert result.deductions.pre_tax[0].amount == Decimal("138.46"), (
             f"6% of 2307.69: expected 138.46, "
-            f"got {result.pre_tax_deductions[0].amount}"
+            f"got {result.deductions.pre_tax[0].amount}"
         )
 
-        assert result.taxable_income == Decimal("2169.23"), (
+        assert result.earnings.taxable_income == Decimal("2169.23"), (
             f"taxable_income: expected 2169.23, "
-            f"got {result.taxable_income}"
+            f"got {result.earnings.taxable_income}"
         )
 
-        assert result.federal_tax == Decimal("159.23"), (
-            f"federal_tax: expected 159.23, got {result.federal_tax}"
+        assert result.taxes.federal == Decimal("159.23"), (
+            f"federal_tax: expected 159.23, got {result.taxes.federal}"
         )
-        assert result.state_tax == Decimal("97.62"), (
-            f"state_tax: expected 97.62, got {result.state_tax}"
+        assert result.taxes.state == Decimal("97.62"), (
+            f"state_tax: expected 97.62, got {result.taxes.state}"
         )
 
         # FICA on gross -- unaffected by percentage deduction.
-        assert result.social_security == Decimal("143.08"), (
-            f"SS: expected 143.08, got {result.social_security}"
+        assert result.taxes.social_security == Decimal("143.08"), (
+            f"SS: expected 143.08, got {result.taxes.social_security}"
         )
-        assert result.medicare == Decimal("33.46"), (
-            f"Medicare: expected 33.46, got {result.medicare}"
+        assert result.taxes.medicare == Decimal("33.46"), (
+            f"Medicare: expected 33.46, got {result.taxes.medicare}"
         )
 
         # Net pay end-to-end.
         # 2307.69 - 138.46 - 159.23 - 97.62 - 143.08 - 33.46 = 1735.84
-        assert result.net_pay == Decimal("1735.84"), (
-            f"net_pay: expected 1735.84, got {result.net_pay}"
+        assert result.earnings.net_pay == Decimal("1735.84"), (
+            f"net_pay: expected 1735.84, got {result.earnings.net_pay}"
         )
 
     def test_third_paycheck_skipped_deduction_increases_taxes(
@@ -2119,55 +2143,55 @@ class TestPreTaxDeductionTaxImpact:
         )
 
         # On normal paycheck, deduction applies.
-        assert len(normal.pre_tax_deductions) == 1, (
+        assert len(normal.deductions.pre_tax) == 1, (
             "Normal paycheck should have 1 pre-tax deduction"
         )
-        assert normal.pre_tax_deductions[0].amount == Decimal("100.00")
-        assert normal.federal_tax == Decimal("163.08"), (
-            f"Normal federal: expected 163.08, got {normal.federal_tax}"
+        assert normal.deductions.pre_tax[0].amount == Decimal("100.00")
+        assert normal.taxes.federal == Decimal("163.08"), (
+            f"Normal federal: expected 163.08, got {normal.taxes.federal}"
         )
-        assert normal.state_tax == Decimal("99.35"), (
-            f"Normal state: expected 99.35, got {normal.state_tax}"
+        assert normal.taxes.state == Decimal("99.35"), (
+            f"Normal state: expected 99.35, got {normal.taxes.state}"
         )
 
         # On 3rd paycheck, deduction is skipped.
-        assert len(third.pre_tax_deductions) == 0, (
+        assert len(third.deductions.pre_tax) == 0, (
             "3rd paycheck should have 0 pre-tax deductions "
             "(24/yr deduction skipped)"
         )
-        assert third.is_third_paycheck is True
+        assert third.period.is_third_paycheck is True
 
         # 3rd paycheck taxes are HIGHER because deduction was skipped.
-        assert third.federal_tax == Decimal("173.08"), (
+        assert third.taxes.federal == Decimal("173.08"), (
             f"3rd paycheck federal: expected 173.08, "
-            f"got {third.federal_tax}"
+            f"got {third.taxes.federal}"
         )
-        assert third.state_tax == Decimal("103.85"), (
+        assert third.taxes.state == Decimal("103.85"), (
             f"3rd paycheck state: expected 103.85, "
-            f"got {third.state_tax}"
+            f"got {third.taxes.state}"
         )
-        assert third.federal_tax > normal.federal_tax, (
+        assert third.taxes.federal > normal.taxes.federal, (
             "3rd paycheck federal should be higher (deduction skipped)"
         )
-        assert third.state_tax > normal.state_tax, (
+        assert third.taxes.state > normal.taxes.state, (
             "3rd paycheck state should be higher (deduction skipped)"
         )
 
         # Tax increase exactly matches deduction * marginal rate.
-        assert third.federal_tax - normal.federal_tax == Decimal("10.00"), (
+        assert third.taxes.federal - normal.taxes.federal == Decimal("10.00"), (
             f"Federal increase: expected $10 "
             f"(= $100 * 10% bracket), "
-            f"got {third.federal_tax - normal.federal_tax}"
+            f"got {third.taxes.federal - normal.taxes.federal}"
         )
-        assert third.state_tax - normal.state_tax == Decimal("4.50"), (
+        assert third.taxes.state - normal.taxes.state == Decimal("4.50"), (
             f"State increase: expected $4.50 "
             f"(= $100 * 4.5% flat), "
-            f"got {third.state_tax - normal.state_tax}"
+            f"got {third.taxes.state - normal.taxes.state}"
         )
 
         # FICA identical on both (gross is the same).
-        assert third.social_security == normal.social_security
-        assert third.medicare == normal.medicare
+        assert third.taxes.social_security == normal.taxes.social_security
+        assert third.taxes.medicare == normal.taxes.medicare
 
     def test_multiple_pretax_deductions_stack(
         self, simple_tax_configs
@@ -2216,35 +2240,35 @@ class TestPreTaxDeductionTaxImpact:
             profile, period, [period], simple_tax_configs
         )
 
-        assert result.total_pre_tax == Decimal("300.00"), (
-            f"total_pre_tax: expected 300, got {result.total_pre_tax}"
+        assert result.deductions.total_pre_tax == Decimal("300.00"), (
+            f"total_pre_tax: expected 300, got {result.deductions.total_pre_tax}"
         )
-        assert result.taxable_income == Decimal("2007.69"), (
+        assert result.earnings.taxable_income == Decimal("2007.69"), (
             f"taxable_income: expected 2007.69, "
-            f"got {result.taxable_income}"
+            f"got {result.earnings.taxable_income}"
         )
-        assert result.federal_tax == Decimal("143.08"), (
-            f"federal_tax: expected 143.08, got {result.federal_tax}"
+        assert result.taxes.federal == Decimal("143.08"), (
+            f"federal_tax: expected 143.08, got {result.taxes.federal}"
         )
-        assert result.state_tax == Decimal("90.35"), (
-            f"state_tax: expected 90.35, got {result.state_tax}"
+        assert result.taxes.state == Decimal("90.35"), (
+            f"state_tax: expected 90.35, got {result.taxes.state}"
         )
 
         # Reduction from baseline matches total deduction * marginal rate.
-        assert Decimal("173.08") - result.federal_tax == Decimal("30.00"), (
+        assert Decimal("173.08") - result.taxes.federal == Decimal("30.00"), (
             "Federal reduction should be $30 = $300 * 10%"
         )
-        assert Decimal("103.85") - result.state_tax == Decimal("13.50"), (
+        assert Decimal("103.85") - result.taxes.state == Decimal("13.50"), (
             "State reduction should be $13.50 = $300 * 4.5%"
         )
 
         # FICA still on gross.
-        assert result.social_security == Decimal("143.08")
-        assert result.medicare == Decimal("33.46")
+        assert result.taxes.social_security == Decimal("143.08")
+        assert result.taxes.medicare == Decimal("33.46")
 
         # End-to-end net pay.
-        assert result.net_pay == Decimal("1597.72"), (
-            f"net_pay: expected 1597.72, got {result.net_pay}"
+        assert result.earnings.net_pay == Decimal("1597.72"), (
+            f"net_pay: expected 1597.72, got {result.earnings.net_pay}"
         )
 
     def test_post_tax_deduction_does_not_affect_any_tax(
@@ -2286,33 +2310,33 @@ class TestPreTaxDeductionTaxImpact:
         )
 
         # Every tax field must be identical.
-        assert post_ded.federal_tax == no_ded.federal_tax == Decimal("173.08"), (
+        assert post_ded.taxes.federal == no_ded.taxes.federal == Decimal("173.08"), (
             f"Post-tax deduction changed federal: "
-            f"{no_ded.federal_tax} -> {post_ded.federal_tax}"
+            f"{no_ded.taxes.federal} -> {post_ded.taxes.federal}"
         )
-        assert post_ded.state_tax == no_ded.state_tax == Decimal("103.85"), (
+        assert post_ded.taxes.state == no_ded.taxes.state == Decimal("103.85"), (
             f"Post-tax deduction changed state: "
-            f"{no_ded.state_tax} -> {post_ded.state_tax}"
+            f"{no_ded.taxes.state} -> {post_ded.taxes.state}"
         )
-        assert post_ded.social_security == no_ded.social_security == Decimal("143.08"), (
+        assert post_ded.taxes.social_security == no_ded.taxes.social_security == Decimal("143.08"), (
             f"Post-tax deduction changed SS: "
-            f"{no_ded.social_security} -> {post_ded.social_security}"
+            f"{no_ded.taxes.social_security} -> {post_ded.taxes.social_security}"
         )
-        assert post_ded.medicare == no_ded.medicare == Decimal("33.46"), (
+        assert post_ded.taxes.medicare == no_ded.taxes.medicare == Decimal("33.46"), (
             f"Post-tax deduction changed Medicare: "
-            f"{no_ded.medicare} -> {post_ded.medicare}"
+            f"{no_ded.taxes.medicare} -> {post_ded.taxes.medicare}"
         )
 
         # Taxable income must also be unchanged.
-        assert post_ded.taxable_income == no_ded.taxable_income, (
+        assert post_ded.earnings.taxable_income == no_ded.earnings.taxable_income, (
             "Post-tax deduction should not affect taxable_income"
         )
 
         # Only net pay changes (reduced by $200 post-tax).
-        assert post_ded.net_pay == Decimal("1654.22"), (
-            f"net_pay: expected 1654.22, got {post_ded.net_pay}"
+        assert post_ded.earnings.net_pay == Decimal("1654.22"), (
+            f"net_pay: expected 1654.22, got {post_ded.earnings.net_pay}"
         )
-        assert post_ded.net_pay == no_ded.net_pay - Decimal("200.00"), (
+        assert post_ded.earnings.net_pay == no_ded.earnings.net_pay - Decimal("200.00"), (
             "Net pay should decrease by exactly the post-tax amount"
         )
 
@@ -2351,26 +2375,26 @@ class TestPreTaxDeductionTaxImpact:
         )
 
         # Taxes match the $200 pre-tax scenario (post-tax has no effect).
-        assert result.federal_tax == Decimal("153.08"), (
-            f"federal: expected 153.08, got {result.federal_tax}"
+        assert result.taxes.federal == Decimal("153.08"), (
+            f"federal: expected 153.08, got {result.taxes.federal}"
         )
-        assert result.state_tax == Decimal("94.85"), (
-            f"state: expected 94.85, got {result.state_tax}"
+        assert result.taxes.state == Decimal("94.85"), (
+            f"state: expected 94.85, got {result.taxes.state}"
         )
-        assert result.social_security == Decimal("143.08"), (
-            f"SS: expected 143.08, got {result.social_security}"
+        assert result.taxes.social_security == Decimal("143.08"), (
+            f"SS: expected 143.08, got {result.taxes.social_security}"
         )
-        assert result.medicare == Decimal("33.46"), (
-            f"Medicare: expected 33.46, got {result.medicare}"
+        assert result.taxes.medicare == Decimal("33.46"), (
+            f"Medicare: expected 33.46, got {result.taxes.medicare}"
         )
 
         # Both deduction types present in their respective lists.
-        assert result.total_pre_tax == Decimal("200.00")
-        assert result.total_post_tax == Decimal("150.00")
+        assert result.deductions.total_pre_tax == Decimal("200.00")
+        assert result.deductions.total_post_tax == Decimal("150.00")
 
         # Net pay accounts for both deduction types.
-        assert result.net_pay == Decimal("1533.22"), (
-            f"net_pay: expected 1533.22, got {result.net_pay}"
+        assert result.earnings.net_pay == Decimal("1533.22"), (
+            f"net_pay: expected 1533.22, got {result.earnings.net_pay}"
         )
 
     def test_state_tax_with_standard_deduction_and_pretax(
@@ -2429,22 +2453,22 @@ class TestPreTaxDeductionTaxImpact:
         )
 
         # Without deduction: state std ded reduces the base.
-        assert no_ded.state_tax == Decimal("81.78"), (
+        assert no_ded.taxes.state == Decimal("81.78"), (
             f"No-deduction state: expected 81.78, "
-            f"got {no_ded.state_tax}"
+            f"got {no_ded.taxes.state}"
         )
 
         # With deduction: both reductions apply.
-        assert with_ded.state_tax == Decimal("72.78"), (
+        assert with_ded.taxes.state == Decimal("72.78"), (
             f"With-deduction state: expected 72.78, "
-            f"got {with_ded.state_tax}"
+            f"got {with_ded.taxes.state}"
         )
 
         # Reduction matches deduction * flat rate.
-        assert no_ded.state_tax - with_ded.state_tax == Decimal("9.00"), (
+        assert no_ded.taxes.state - with_ded.taxes.state == Decimal("9.00"), (
             f"State reduction: expected $9.00 "
             f"(= $200 * 4.5%), "
-            f"got {no_ded.state_tax - with_ded.state_tax}"
+            f"got {no_ded.taxes.state - with_ded.taxes.state}"
         )
 
     def test_net_pay_end_to_end_with_pretax(
@@ -2477,31 +2501,31 @@ class TestPreTaxDeductionTaxImpact:
         )
 
         # Verify every component individually.
-        assert r.gross_biweekly == Decimal("2307.69")
-        assert r.total_pre_tax == Decimal("200.00")
-        assert r.taxable_income == Decimal("2107.69")
-        assert r.federal_tax == Decimal("153.08")
-        assert r.state_tax == Decimal("94.85")
-        assert r.social_security == Decimal("143.08")
-        assert r.medicare == Decimal("33.46")
-        assert r.total_post_tax == Decimal("0")
+        assert r.earnings.gross_biweekly == Decimal("2307.69")
+        assert r.deductions.total_pre_tax == Decimal("200.00")
+        assert r.earnings.taxable_income == Decimal("2107.69")
+        assert r.taxes.federal == Decimal("153.08")
+        assert r.taxes.state == Decimal("94.85")
+        assert r.taxes.social_security == Decimal("143.08")
+        assert r.taxes.medicare == Decimal("33.46")
+        assert r.deductions.total_post_tax == Decimal("0")
 
         # Verify net pay matches the formula.
         expected_net = (
-            r.gross_biweekly
-            - r.total_pre_tax
-            - r.federal_tax
-            - r.state_tax
-            - r.social_security
-            - r.medicare
-            - r.total_post_tax
+            r.earnings.gross_biweekly
+            - r.deductions.total_pre_tax
+            - r.taxes.federal
+            - r.taxes.state
+            - r.taxes.social_security
+            - r.taxes.medicare
+            - r.deductions.total_post_tax
         ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
-        assert r.net_pay == expected_net, (
-            f"net_pay {r.net_pay} != formula result {expected_net}"
+        assert r.earnings.net_pay == expected_net, (
+            f"net_pay {r.earnings.net_pay} != formula result {expected_net}"
         )
-        assert r.net_pay == Decimal("1683.22"), (
-            f"net_pay: expected 1683.22, got {r.net_pay}"
+        assert r.earnings.net_pay == Decimal("1683.22"), (
+            f"net_pay: expected 1683.22, got {r.earnings.net_pay}"
         )
 
     def test_pretax_deduction_in_higher_bracket_larger_reduction(
@@ -2556,25 +2580,25 @@ class TestPreTaxDeductionTaxImpact:
             with_ded_profile, period, [period], simple_tax_configs
         )
 
-        assert no_ded.federal_tax == Decimal("657.69"), (
+        assert no_ded.taxes.federal == Decimal("657.69"), (
             f"No-deduction federal: expected 657.69, "
-            f"got {no_ded.federal_tax}"
+            f"got {no_ded.taxes.federal}"
         )
-        assert with_ded.federal_tax == Decimal("547.69"), (
+        assert with_ded.taxes.federal == Decimal("547.69"), (
             f"With-deduction federal: expected 547.69, "
-            f"got {with_ded.federal_tax}"
+            f"got {with_ded.taxes.federal}"
         )
 
         # Reduction = $500 * 22% marginal bracket = $110.00
-        reduction = no_ded.federal_tax - with_ded.federal_tax
+        reduction = no_ded.taxes.federal - with_ded.taxes.federal
         assert reduction == Decimal("110.00"), (
             f"Federal reduction: expected $110.00 "
             f"(= $500 * 22% marginal bracket), got {reduction}"
         )
 
         # FICA unchanged at higher income.
-        assert with_ded.social_security == no_ded.social_security
-        assert with_ded.medicare == no_ded.medicare
+        assert with_ded.taxes.social_security == no_ded.taxes.social_security
+        assert with_ded.taxes.medicare == no_ded.taxes.medicare
 
 
 # ── Calibration Override Tests ───────────────────────────────────
@@ -2625,10 +2649,10 @@ class TestCalibrationIntegration:
             calibration=cal,
         )
 
-        assert result.federal_tax == Decimal("230.77")
-        assert result.state_tax == Decimal("115.38")
-        assert result.social_security == Decimal("143.08")
-        assert result.medicare == Decimal("33.46")
+        assert result.taxes.federal == Decimal("230.77")
+        assert result.taxes.state == Decimal("115.38")
+        assert result.taxes.social_security == Decimal("143.08")
+        assert result.taxes.medicare == Decimal("33.46")
 
         expected_net = (
             Decimal("2307.69")
@@ -2637,7 +2661,7 @@ class TestCalibrationIntegration:
             - Decimal("143.08")
             - Decimal("33.46")
         )
-        assert result.net_pay == expected_net
+        assert result.earnings.net_pay == expected_net
 
     def test_calibration_reproduces_cafeteria_reduced_paycheck(
         self, simple_tax_configs
@@ -2670,18 +2694,21 @@ class TestCalibrationIntegration:
         path end to end.
         """
         from app.services.calibration_service import (  # pylint: disable=import-outside-toplevel
+            PayStubActuals,
             derive_effective_rates,
         )
 
         # Derived against the ACTUAL stub gross 3526.00 and taxable
         # 3526.00 - 706.95 = 2819.05 (the basis calibrate_confirm uses).
         rates = derive_effective_rates(
-            actual_gross_pay=Decimal("3526.00"),
-            actual_federal_tax=Decimal("0.00"),
-            actual_state_tax=Decimal("84.00"),
-            actual_social_security=Decimal("194.36"),
-            actual_medicare=Decimal("45.45"),
-            taxable_income=Decimal("2819.05"),
+            PayStubActuals(
+                actual_gross_pay=Decimal("3526.00"),
+                actual_federal_tax=Decimal("0.00"),
+                actual_state_tax=Decimal("84.00"),
+                actual_social_security=Decimal("194.36"),
+                actual_medicare=Decimal("45.45"),
+                taxable_income=Decimal("2819.05"),
+            )
         )
         cal = FakeCalibration(
             federal_rate=rates.effective_federal_rate,
@@ -2723,21 +2750,21 @@ class TestCalibrationIntegration:
         )
 
         # Computed gross 91675/26 = 3525.96 (single-period half-up fallback).
-        assert result.gross_biweekly == Decimal("3525.96")
-        assert result.total_pre_tax == Decimal("706.95")
-        assert result.total_post_tax == Decimal("21.82")
-        assert result.federal_tax == Decimal("0.00")
-        assert result.state_tax == Decimal("84.00")
-        assert result.medicare == Decimal("45.45")
+        assert result.earnings.gross_biweekly == Decimal("3525.96")
+        assert result.deductions.total_pre_tax == Decimal("706.95")
+        assert result.deductions.total_post_tax == Decimal("21.82")
+        assert result.taxes.federal == Decimal("0.00")
+        assert result.taxes.state == Decimal("84.00")
+        assert result.taxes.medicare == Decimal("45.45")
         # SS uses effective_ss_rate (cafeteria-reduced), NOT statutory 6.2%.
-        assert result.social_security == Decimal("194.36"), (
-            f"SS must reproduce the stub's $194.36, got {result.social_security}"
+        assert result.taxes.social_security == Decimal("194.36"), (
+            f"SS must reproduce the stub's $194.36, got {result.taxes.social_security}"
         )
         # Regression guard: statutory 6.2% would be 3525.96 * 0.062 = 218.61,
         # the wrong value the pre-fix calibration path produced.
-        assert result.social_security != Decimal("218.61")
-        assert result.net_pay == Decimal("2473.38"), (
-            f"Net must reproduce 2473.38, got {result.net_pay}"
+        assert result.taxes.social_security != Decimal("218.61")
+        assert result.earnings.net_pay == Decimal("2473.38"), (
+            f"Net must reproduce 2473.38, got {result.earnings.net_pay}"
         )
 
     def test_calibrated_paycheck_differs_from_bracket_based(
@@ -2767,10 +2794,10 @@ class TestCalibrationIntegration:
             calibration=cal,
         )
 
-        assert cal_result.federal_tax != bracket_result.federal_tax, (
+        assert cal_result.taxes.federal != bracket_result.taxes.federal, (
             "Calibrated federal tax should differ from bracket-based"
         )
-        assert cal_result.state_tax != bracket_result.state_tax, (
+        assert cal_result.taxes.state != bracket_result.taxes.state, (
             "Calibrated state tax should differ from bracket-based"
         )
 
@@ -2799,11 +2826,11 @@ class TestCalibrationIntegration:
             calibration=cal,
         )
 
-        assert result.federal_tax == bracket_result.federal_tax
-        assert result.state_tax == bracket_result.state_tax
-        assert result.social_security == bracket_result.social_security
-        assert result.medicare == bracket_result.medicare
-        assert result.net_pay == bracket_result.net_pay
+        assert result.taxes.federal == bracket_result.taxes.federal
+        assert result.taxes.state == bracket_result.taxes.state
+        assert result.taxes.social_security == bracket_result.taxes.social_security
+        assert result.taxes.medicare == bracket_result.taxes.medicare
+        assert result.earnings.net_pay == bracket_result.earnings.net_pay
 
     def test_none_calibration_uses_brackets(
         self, simple_tax_configs
@@ -2820,8 +2847,8 @@ class TestCalibrationIntegration:
             calibration=None,
         )
 
-        assert result_omitted.net_pay == result_none.net_pay
-        assert result_omitted.federal_tax == result_none.federal_tax
+        assert result_omitted.earnings.net_pay == result_none.earnings.net_pay
+        assert result_omitted.taxes.federal == result_none.taxes.federal
 
     def test_calibration_with_pretax_deductions(
         self, simple_tax_configs
@@ -2858,9 +2885,9 @@ class TestCalibrationIntegration:
         )
 
         # Federal uses taxable (2107.69), not gross (2307.69).
-        assert result.federal_tax == Decimal("210.77")
+        assert result.taxes.federal == Decimal("210.77")
         # SS uses gross.
-        assert result.social_security == Decimal("143.08")
+        assert result.taxes.social_security == Decimal("143.08")
 
     def test_calibration_with_post_tax_deductions(
         self, simple_tax_configs
@@ -2895,9 +2922,9 @@ class TestCalibrationIntegration:
         )
 
         # Post-tax deduction of $150 must appear.
-        assert result.total_post_tax == Decimal("150.00"), (
+        assert result.deductions.total_post_tax == Decimal("150.00"), (
             f"Post-tax deduction missing: expected 150.00, "
-            f"got {result.total_post_tax}"
+            f"got {result.deductions.total_post_tax}"
         )
         # Net = gross - pre_tax(0) - federal - state - ss - medicare - post_tax
         gross = Decimal("2307.69")
@@ -2909,8 +2936,8 @@ class TestCalibrationIntegration:
             - Decimal("33.46")    # medicare: 2307.69 * 0.0145
             - Decimal("150.00")   # post-tax Roth
         )
-        assert result.net_pay == expected, (
-            f"Net pay with post-tax: expected {expected}, got {result.net_pay}"
+        assert result.earnings.net_pay == expected, (
+            f"Net pay with post-tax: expected {expected}, got {result.earnings.net_pay}"
         )
 
     def test_calibration_with_mixed_deductions(
@@ -2946,13 +2973,13 @@ class TestCalibrationIntegration:
             calibration=cal,
         )
 
-        assert result.taxable_income == Decimal("2107.69")
-        assert result.federal_tax == Decimal("210.77")
-        assert result.state_tax == Decimal("105.38")   # 2107.69 * 0.05
-        assert result.social_security == Decimal("143.08")
-        assert result.medicare == Decimal("33.46")
-        assert result.total_pre_tax == Decimal("200.00")
-        assert result.total_post_tax == Decimal("150.00")
+        assert result.earnings.taxable_income == Decimal("2107.69")
+        assert result.taxes.federal == Decimal("210.77")
+        assert result.taxes.state == Decimal("105.38")   # 2107.69 * 0.05
+        assert result.taxes.social_security == Decimal("143.08")
+        assert result.taxes.medicare == Decimal("33.46")
+        assert result.deductions.total_pre_tax == Decimal("200.00")
+        assert result.deductions.total_post_tax == Decimal("150.00")
 
         expected_net = (
             Decimal("2307.69")
@@ -2963,7 +2990,7 @@ class TestCalibrationIntegration:
             - Decimal("33.46")
             - Decimal("150.00")
         )
-        assert result.net_pay == expected_net
+        assert result.earnings.net_pay == expected_net
 
     def test_calibration_on_third_paycheck(self, simple_tax_configs):
         """On a 3rd paycheck, 24-per-year deductions are skipped.
@@ -3001,23 +3028,23 @@ class TestCalibrationIntegration:
             profile, p1, all_periods, simple_tax_configs,
             calibration=cal,
         )
-        assert normal.total_pre_tax == Decimal("200.00")
-        assert normal.federal_tax == Decimal("210.77")  # 2107.69 * 0.10
+        assert normal.deductions.total_pre_tax == Decimal("200.00")
+        assert normal.taxes.federal == Decimal("210.77")  # 2107.69 * 0.10
 
         # 3rd paycheck: 24-per-year deduction is SKIPPED, taxable = 2307.69
         third = calculate_paycheck(
             profile, p3, all_periods, simple_tax_configs,
             calibration=cal,
         )
-        assert third.is_third_paycheck is True
-        assert third.total_pre_tax == Decimal("0.00"), (
+        assert third.period.is_third_paycheck is True
+        assert third.deductions.total_pre_tax == Decimal("0.00"), (
             "24-per-year deduction should be skipped on 3rd paycheck"
         )
-        assert third.federal_tax == Decimal("230.77"), (
+        assert third.taxes.federal == Decimal("230.77"), (
             "3rd paycheck federal should be 2307.69 * 0.10 (full gross as taxable)"
         )
         # Higher taxable -> higher federal/state than normal paycheck.
-        assert third.federal_tax > normal.federal_tax
+        assert third.taxes.federal > normal.taxes.federal
 
     def test_calibration_does_not_bypass_gross_computation(
         self, simple_tax_configs
@@ -3056,16 +3083,16 @@ class TestCalibrationIntegration:
         )
 
         # Gross, raises, and deductions must be identical.
-        assert cal_result.gross_biweekly == bracket_result.gross_biweekly, (
+        assert cal_result.earnings.gross_biweekly == bracket_result.earnings.gross_biweekly, (
             "Calibration must not affect gross computation"
         )
-        assert cal_result.annual_salary == bracket_result.annual_salary, (
+        assert cal_result.earnings.annual_salary == bracket_result.earnings.annual_salary, (
             "Calibration must not affect raise application"
         )
-        assert cal_result.total_pre_tax == bracket_result.total_pre_tax, (
+        assert cal_result.deductions.total_pre_tax == bracket_result.deductions.total_pre_tax, (
             "Calibration must not affect pre-tax deductions"
         )
-        assert cal_result.taxable_income == bracket_result.taxable_income, (
+        assert cal_result.earnings.taxable_income == bracket_result.earnings.taxable_income, (
             "Calibration must not affect taxable income"
         )
 
@@ -3096,10 +3123,10 @@ class TestCalibrationIntegration:
 
         assert len(cal_breakdowns) == 3
         for i, (cb, bb) in enumerate(zip(cal_breakdowns, bracket_breakdowns)):
-            assert cb.federal_tax != bb.federal_tax, (
+            assert cb.taxes.federal != bb.taxes.federal, (
                 f"Period {i}: calibrated federal should differ from brackets"
             )
-            assert cb.federal_tax == Decimal("230.77"), (
+            assert cb.taxes.federal == Decimal("230.77"), (
                 f"Period {i}: expected 230.77 (2307.69 * 0.10)"
             )
 
@@ -3167,21 +3194,21 @@ class TestBiweeklyResidueReconciliation:
         )
         assert len(results) == 26
 
-        total_gross = sum(r.gross_biweekly for r in results)
+        total_gross = sum(r.earnings.gross_biweekly for r in results)
         assert total_gross == annual_salary.quantize(Decimal("0.01")), (
             f"sum of grosses {total_gross} != annual {annual_salary}"
         )
 
         plus_cent = expected_floor + Decimal("0.01")
         for i in range(expected_residue_cents):
-            assert results[i].gross_biweekly == plus_cent, (
+            assert results[i].earnings.gross_biweekly == plus_cent, (
                 f"period {i+1}: expected {plus_cent} (residue +cent), "
-                f"got {results[i].gross_biweekly}"
+                f"got {results[i].earnings.gross_biweekly}"
             )
         for i in range(expected_residue_cents, 26):
-            assert results[i].gross_biweekly == expected_floor, (
+            assert results[i].earnings.gross_biweekly == expected_floor, (
                 f"period {i+1}: expected {expected_floor} (floor), "
-                f"got {results[i].gross_biweekly}"
+                f"got {results[i].earnings.gross_biweekly}"
             )
 
     def test_residue_distribution_deterministic_across_runs(
@@ -3202,8 +3229,8 @@ class TestBiweeklyResidueReconciliation:
             base_profile, biweekly_periods, simple_tax_configs
         )
 
-        first_grosses = [r.gross_biweekly for r in first_run]
-        second_grosses = [r.gross_biweekly for r in second_run]
+        first_grosses = [r.earnings.gross_biweekly for r in first_run]
+        second_grosses = [r.earnings.gross_biweekly for r in second_run]
 
         assert first_grosses == second_grosses, (
             "residue distribution diverged between runs: "
@@ -3228,7 +3255,7 @@ class TestBiweeklyResidueReconciliation:
             base_profile, period, [period], simple_tax_configs,
         )
         # Half-up: 2307.6923... -> 2307.69 (same as the legacy contract).
-        assert result.gross_biweekly == Decimal("2307.69")
+        assert result.earnings.gross_biweekly == Decimal("2307.69")
 
     def test_mid_year_raise_reconciles_each_salary_segment(
         self, biweekly_periods, simple_tax_configs,
@@ -3275,39 +3302,39 @@ class TestBiweeklyResidueReconciliation:
         # period 14 = index 13), indices 0..12 are pre-raise and
         # indices 13..25 are post-raise.
         for i in range(13):
-            assert results[i].annual_salary == Decimal("60000.00")
+            assert results[i].earnings.annual_salary == Decimal("60000.00")
         for i in range(13, 26):
-            assert results[i].annual_salary == Decimal("66000.00")
+            assert results[i].earnings.annual_salary == Decimal("66000.00")
 
         # Pre-raise segment: 13 periods, residue 3 cents.
         # First 3 (indices 0..2) get $2307.70; rest (3..12) get $2307.69.
         for i in range(3):
-            assert results[i].gross_biweekly == Decimal("2307.70"), (
+            assert results[i].earnings.gross_biweekly == Decimal("2307.70"), (
                 f"pre-raise period {i+1}: expected 2307.70, "
-                f"got {results[i].gross_biweekly}"
+                f"got {results[i].earnings.gross_biweekly}"
             )
         for i in range(3, 13):
-            assert results[i].gross_biweekly == Decimal("2307.69"), (
+            assert results[i].earnings.gross_biweekly == Decimal("2307.69"), (
                 f"pre-raise period {i+1}: expected 2307.69, "
-                f"got {results[i].gross_biweekly}"
+                f"got {results[i].earnings.gross_biweekly}"
             )
 
         # Post-raise segment: 13 periods, residue 2 cents.
         # First 2 (indices 13..14) get $2538.47; rest (15..25) get $2538.46.
         for i in range(13, 15):
-            assert results[i].gross_biweekly == Decimal("2538.47"), (
+            assert results[i].earnings.gross_biweekly == Decimal("2538.47"), (
                 f"post-raise period {i+1}: expected 2538.47, "
-                f"got {results[i].gross_biweekly}"
+                f"got {results[i].earnings.gross_biweekly}"
             )
         for i in range(15, 26):
-            assert results[i].gross_biweekly == Decimal("2538.46"), (
+            assert results[i].earnings.gross_biweekly == Decimal("2538.46"), (
                 f"post-raise period {i+1}: expected 2538.46, "
-                f"got {results[i].gross_biweekly}"
+                f"got {results[i].earnings.gross_biweekly}"
             )
 
         # Each segment sums to its share of its annual salary exactly.
-        pre_total = sum(r.gross_biweekly for r in results[:13])
-        post_total = sum(r.gross_biweekly for r in results[13:])
+        pre_total = sum(r.earnings.gross_biweekly for r in results[:13])
+        post_total = sum(r.earnings.gross_biweekly for r in results[13:])
         # 60000 * 13/26 = 30000.00; 66000 * 13/26 = 33000.00.
         assert pre_total == Decimal("30000.00"), (
             f"pre-raise total: expected 30000.00, got {pre_total}"
@@ -3449,8 +3476,8 @@ class TestCalibrationSSCapIntegration:
             profile, periods, tax_configs, calibration=cal,
         )
 
-        bracket_year_ss = sum(r.social_security for r in bracket)
-        cal_year_ss = sum(r.social_security for r in calibrated)
+        bracket_year_ss = sum(r.taxes.social_security for r in bracket)
+        cal_year_ss = sum(r.taxes.social_security for r in calibrated)
 
         # Bracket path year SS: 15 * (12000*0.062) + 279.00 + 10 * 0.00
         # = 15*744.00 + 279.00 = 11160.00 + 279.00 = 11439.00
@@ -3494,21 +3521,21 @@ class TestCalibrationSSCapIntegration:
 
         # Periods 1-15 (indexes 0-14): full SS.  12000.00 * 0.062 = 744.00.
         for i in range(15):
-            assert results[i].social_security == Decimal("744.00"), (
+            assert results[i].taxes.social_security == Decimal("744.00"), (
                 f"Period {i+1}: SS expected 744.00, got "
-                f"{results[i].social_security}"
+                f"{results[i].taxes.social_security}"
             )
 
         # Period 16 (index 15): partial.  cumul=180000, ss_taxable=4500.
         # 4500 * 0.062 = 279.00.
-        assert results[15].social_security == Decimal("279.00"), (
+        assert results[15].taxes.social_security == Decimal("279.00"), (
             f"Period 16 (partial crossing): SS expected 279.00, got "
-            f"{results[15].social_security}"
+            f"{results[15].taxes.social_security}"
         )
 
         # Periods 17-26 (indexes 16-25): cumul >= cap, SS = 0.00.
         for i in range(16, 26):
-            assert results[i].social_security == Decimal("0.00"), (
+            assert results[i].taxes.social_security == Decimal("0.00"), (
                 f"Period {i+1}: SS expected 0.00 (over cap), got "
-                f"{results[i].social_security}"
+                f"{results[i].taxes.social_security}"
             )

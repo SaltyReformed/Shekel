@@ -20,15 +20,18 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
+from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_resolver, pay_period_service
+from app.services import balance_resolver, pay_period_service, paycheck_calculator
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.tax_config_service import load_tax_configs
 from app.utils.balance_predicates import is_projected_clause
+from app.utils.money import percent_complete
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +86,7 @@ def compute_dashboard_data(user_id: int) -> dict:
             account, settings, balance_results, current_period, all_periods,
         ),
         "balance_info": _get_balance_info(
-            account, current_period, balance_results,
+            account, scenario.id, current_period, balance_results,
         ),
         "payday_info": _get_payday_info(user_id, all_periods),
         "savings_goals": _get_savings_goals(user_id),
@@ -302,7 +305,7 @@ def _entry_progress_fields(txn: Transaction) -> dict:
 # ── Section 2: Alerts ──────────────────────────────────────────────
 
 
-def _compute_alerts(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _compute_alerts(
     account: Account,
     settings: UserSettings | None,
     balance_results: dict[int, Decimal] | None,
@@ -386,14 +389,16 @@ def _compute_alerts(  # pylint: disable=too-many-arguments,too-many-positional-a
 
 def _get_balance_info(
     account: Account,
+    scenario_id: int,
     current_period: PayPeriod | None,
     balance_results: dict[int, Decimal] | None,
 ) -> dict:
     """Get current balance and compute cash runway.
 
     Cash runway uses paid expenses from the last 30 calendar days
-    (by due_date, consistent with calendar service attribution).
-    Runway = current_balance / daily_average_spending.
+    (by due_date, consistent with calendar service attribution),
+    scoped to ``scenario_id``.  Runway = current_balance /
+    daily_average_spending.
 
     Returns None for runway when there is zero spending (avoids
     infinity) and clamps negative balance to 0 runway days.
@@ -413,7 +418,7 @@ def _get_balance_info(
     else:
         anchor_is_stale = (date.today() - last_anchor_dt.date()).days > staleness_days
 
-    runway = _compute_cash_runway(account.id, current_balance)
+    runway = _compute_cash_runway(account.id, scenario_id, current_balance)
 
     return {
         "current_balance": current_balance,
@@ -427,12 +432,16 @@ def _get_balance_info(
 
 def _compute_cash_runway(
     account_id: int,
+    scenario_id: int,
     current_balance: Decimal,
 ) -> int | None:
     """Compute cash runway in days from recent spending rate.
 
     Queries paid expenses from the last 30 days by due_date,
-    consistent with calendar service date attribution.
+    consistent with calendar service date attribution, and scoped to
+    ``scenario_id`` so what-if scenarios never spill into the baseline
+    spending average -- matching the sibling dashboard expense queries
+    (_get_upcoming_bills, _sum_settled_expenses).
 
     Returns None if no spending (avoids infinity), 0 if balance
     is negative.
@@ -452,6 +461,7 @@ def _compute_cash_runway(
         db.session.query(Transaction)
         .filter(
             Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
             Transaction.is_deleted.is_(False),
             Transaction.status_id.in_(settled_ids),
             Transaction.transaction_type_id == expense_type_id,
@@ -511,7 +521,6 @@ def _get_net_pay_for_period(
 
     Returns None if no active salary profile exists.
     """
-    from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
 
     profile = (
         db.session.query(SalaryProfile)
@@ -521,14 +530,11 @@ def _get_net_pay_for_period(
     if profile is None:
         return None
 
-    from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
-    from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
-
     tax_configs = load_tax_configs(user_id, profile)
     breakdown = paycheck_calculator.calculate_paycheck(
         profile, period, all_periods, tax_configs,
     )
-    return breakdown.net_pay
+    return breakdown.earnings.net_pay
 
 
 # ── Section 5: Savings Goals ──────────────────────────────────────
@@ -551,7 +557,7 @@ def _get_savings_goals(user_id: int) -> list[dict]:
     for goal in goals:
         current = goal.account.current_anchor_balance or _ZERO
         target = goal.target_amount or _ZERO
-        pct = _safe_pct_complete(current, target)
+        pct = percent_complete(current, target)
 
         result.append({
             "name": goal.name,
@@ -565,21 +571,6 @@ def _get_savings_goals(user_id: int) -> list[dict]:
     return result
 
 
-def _safe_pct_complete(current: Decimal, target: Decimal) -> Decimal:
-    """Compute percentage complete, clamped to 0-100.
-
-    Guards against division by zero when target is 0.
-    """
-    if target <= _ZERO:
-        return _ZERO
-    pct = (current / target * _HUNDRED).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
-    if pct > _HUNDRED:
-        return Decimal("100.00")
-    if pct < _ZERO:
-        return _ZERO
-    return pct
-
-
 # ── Section 6: Debt Summary ───────────────────────────────────────
 
 
@@ -589,6 +580,9 @@ def _get_debt_summary(user_id: int) -> dict | None:
     Reuses existing logic from savings_dashboard_service to avoid
     duplicating debt computation.  Returns None if no debt accounts.
     """
+    # Pylint: ``import-outside-toplevel`` -- Deferred: savings_dashboard_service
+    # pulls the heaviest service import chain (+27 modules, measured); loaded only
+    # when the debt-summary path runs, not on every dashboard_service import.
     from app.services import savings_dashboard_service  # pylint: disable=import-outside-toplevel
 
     try:

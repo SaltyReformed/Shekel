@@ -26,10 +26,10 @@ from decimal import Decimal
 
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
@@ -39,6 +39,15 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
+from app.routes._commit_helpers import (
+    StaleConflictContext,
+    commit_or_handle_stale,
+    regenerate_and_commit_or_stale,
+)
+from app.routes._redirect_target import RedirectTarget
 from app.routes.accounts._bp import accounts_bp
 from app.services import (
     account_service,
@@ -56,6 +65,10 @@ from app.utils.account_validation import (
 from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
 
 logger = logging.getLogger(__name__)
+
+# Field allowlist for the account update route: which submitted form
+# fields may be written back to the Account via setattr.
+_ACCOUNT_UPDATE_FIELDS = {"name", "account_type_id", "sort_order", "is_active"}
 
 
 # ── Account CRUD ───────────────────────────────────────────────────
@@ -85,14 +98,8 @@ def list_accounts():
 
     account_types = _visible_account_types(current_user.id)
 
-    # Build a set of account type IDs that are in use (for delete guard).
-    types_in_use = set(
-        row[0] for row in
-        db.session.query(Account.account_type_id)
-        .filter_by(user_id=current_user.id)
-        .distinct()
-        .all()
-    )
+    # Account type IDs in use (for the delete guard).
+    types_in_use = account_service.get_account_type_ids_in_use(current_user.id)
 
     return render_template(
         "accounts/list.html",
@@ -162,15 +169,25 @@ def create_account():
     # raises ``ValidationError``; this route converts that into a
     # redirect to ``/pay-periods/generate`` so the user can fix the
     # missing-periods state and retry.
-    from app.exceptions import ValidationError as _ValidationError  # pylint: disable=import-outside-toplevel
+    # ``account_type_id`` and ``name`` are required ``AccountCreateSchema``
+    # fields, so they are always present in ``data``; lift them out into
+    # the ``AccountSpec`` and forward any remaining validated columns
+    # through ``**data`` (the same passthrough the prior ``**data`` splat
+    # provided).
+    account_type_id = data.pop("account_type_id")
+    name = data.pop("name")
     try:
         account = account_service.create_account(
-            user_id=current_user.id,
-            anchor_balance=anchor_balance,
-            notes="origination",
+            account_service.AccountSpec(
+                user_id=current_user.id,
+                account_type_id=account_type_id,
+                name=name,
+                anchor_balance=anchor_balance,
+                notes="origination",
+            ),
             **data,
         )
-    except _ValidationError:
+    except ValidationError:
         flash(
             "Generate pay periods before creating an account so the "
             "account balance has a period to anchor against.",
@@ -323,7 +340,6 @@ def update_account(account_id):
                 )
                 db.session.add(history)
 
-    _ACCOUNT_UPDATE_FIELDS = {"name", "account_type_id", "sort_order", "is_active"}
     for field, value in data.items():
         if field in _ACCOUNT_UPDATE_FIELDS:
             setattr(account, field, value)
@@ -336,21 +352,32 @@ def update_account(account_id):
     # ``StaleDataError`` would otherwise escape outside the catch.
     # See the matching comment in :func:`true_up`.
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    try:
+
+    def _clear_anchor_entries_if_changed():
+        """Clear checking entries on an anchor true-up (in-transaction step)."""
         if anchor_changed and account.account_type_id == checking_type_id:
             entry_service.clear_entries_for_anchor_true_up(current_user.id)
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on update_account id=%d", account_id,
-        )
-        flash(
-            "This account was changed by another action while you were "
-            "editing.  Please reload and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.edit_account", account_id=account_id))
+
+    # The clear-entries step must run inside the same stale-race guard as
+    # the commit (it flushes and can itself raise StaleDataError).
+    conflict = regenerate_and_commit_or_stale(
+        _clear_anchor_entries_if_changed,
+        ctx=StaleConflictContext(
+            logger=logger,
+            log_label="update_account",
+            log_id=account_id,
+            flash_message=(
+                "This account was changed by another action while you were "
+                "editing.  Please reload and try again."
+            ),
+            redirect=RedirectTarget(
+                "accounts.edit_account",
+                {"account_id": account_id},
+            ),
+        ),
+    )
+    if conflict is not None:
+        return conflict
 
     logger.info("Updated account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' updated.", "success")
@@ -374,7 +401,6 @@ def archive_account(account_id):
         abort(404)
 
     # Guard: prevent archiving if active transfer templates reference this account.
-    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
     active_transfers = (
         db.session.query(TransferTemplate)
@@ -397,19 +423,18 @@ def archive_account(account_id):
         return redirect(url_for("accounts.list_accounts"))
 
     account.is_active = False
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on archive_account id=%d", account_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(StaleConflictContext(
+        logger=logger,
+        log_label="archive_account",
+        log_id=account_id,
+        flash_message=(
             "This account was changed by another action.  Please reload "
-            "the page and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.list_accounts"))
+            "the page and try again."
+        ),
+        redirect=RedirectTarget("accounts.list_accounts"),
+    ))
+    if conflict is not None:
+        return conflict
     logger.info("Archived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' archived.", "info")
     return redirect(url_for("accounts.list_accounts"))
@@ -428,19 +453,18 @@ def unarchive_account(account_id):
         abort(404)
 
     account.is_active = True
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on unarchive_account id=%d", account_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(StaleConflictContext(
+        logger=logger,
+        log_label="unarchive_account",
+        log_id=account_id,
+        flash_message=(
             "This account was changed by another action.  Please reload "
-            "the page and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.list_accounts"))
+            "the page and try again."
+        ),
+        redirect=RedirectTarget("accounts.list_accounts"),
+    ))
+    if conflict is not None:
+        return conflict
     logger.info("Unarchived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' unarchived.", "success")
     return redirect(url_for("accounts.list_accounts"))
@@ -481,7 +505,6 @@ def hard_delete_account(account_id):
         abort(404)
 
     # Guard 2: transfer templates with RESTRICT FK.
-    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
     blocking_xfer_template = (
         db.session.query(TransferTemplate)
         .filter(
@@ -502,7 +525,6 @@ def hard_delete_account(account_id):
         return redirect(url_for("accounts.list_accounts"))
 
     # Guard 3: transaction templates with RESTRICT FK.
-    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
     blocking_txn_template = (
         db.session.query(TransactionTemplate)
         .filter_by(account_id=account_id, user_id=current_user.id)
@@ -525,25 +547,23 @@ def hard_delete_account(account_id):
         )
         if account.is_active:
             account.is_active = False
-            try:
-                db.session.commit()
-            except StaleDataError:
-                db.session.rollback()
-                logger.info(
-                    "Stale-data conflict during archive-fallback in "
-                    "hard_delete_account id=%d", account_id,
-                )
-                flash(
+            conflict = commit_or_handle_stale(StaleConflictContext(
+                logger=logger,
+                log_label="hard_delete_account archive-fallback",
+                log_id=account_id,
+                flash_message=(
                     "This account was changed by another action.  "
-                    "Please reload the page and try again.",
-                    "warning",
-                )
+                    "Please reload the page and try again."
+                ),
+                redirect=RedirectTarget("accounts.list_accounts"),
+            ))
+            if conflict is not None:
+                return conflict
         return redirect(url_for("accounts.list_accounts"))
 
     # All guards passed -- permanently delete.
     # Step 1: delete remaining Transfer rows (soft-deleted or ghost
     # ad-hoc) through the transfer service to maintain shadow invariants.
-    from app.models.transfer import Transfer  # pylint: disable=import-outside-toplevel
     remaining_transfers = (
         db.session.query(Transfer)
         .filter(db.or_(
@@ -580,19 +600,18 @@ def hard_delete_account(account_id):
     # handler converts into a flash + redirect rather than a 500.
     account_name = account.name
     db.session.delete(account)
-    try:
-        db.session.commit()
-    except StaleDataError:
-        db.session.rollback()
-        logger.info(
-            "Stale-data conflict on hard_delete_account id=%d", account_id,
-        )
-        flash(
+    conflict = commit_or_handle_stale(StaleConflictContext(
+        logger=logger,
+        log_label="hard_delete_account",
+        log_id=account_id,
+        flash_message=(
             "This account was changed by another action.  Please reload "
-            "the page and try again.",
-            "warning",
-        )
-        return redirect(url_for("accounts.list_accounts"))
+            "the page and try again."
+        ),
+        redirect=RedirectTarget("accounts.list_accounts"),
+    ))
+    if conflict is not None:
+        return conflict
 
     flash(f"Account '{account_name}' permanently deleted.", "info")
     return redirect(url_for("accounts.list_accounts"))

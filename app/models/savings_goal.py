@@ -11,10 +11,19 @@ Supports two goal modes:
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import (
+    AccountScopedMixin,
+    IsActiveMixin,
+    OptimisticLockMixin,
+    TimestampMixin,
+    UserScopedMixin,
+)
 
 
-class SavingsGoal(TimestampMixin, db.Model):
+class SavingsGoal(
+    UserScopedMixin, AccountScopedMixin, IsActiveMixin, OptimisticLockMixin,
+    TimestampMixin, db.Model,
+):
     """A savings goal with target amount, target date, and contribution plan.
 
     Goal modes:
@@ -62,23 +71,11 @@ class SavingsGoal(TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    account_id = db.Column(
-        db.Integer,
-        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     name = db.Column(db.String(100), nullable=False)
     target_amount = db.Column(db.Numeric(12, 2), nullable=True)
     target_date = db.Column(db.Date)
     contribution_per_period = db.Column(db.Numeric(12, 2))
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
+    # is_active: from IsActiveMixin.
 
     # Income-relative goal columns (5.4-2).
     # goal_mode_id defaults to Fixed (ID 1) so existing goals are unaffected.
@@ -116,14 +113,7 @@ class SavingsGoal(TimestampMixin, db.Model):
         db.Numeric(8, 2),
         nullable=True,
     )
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     account = db.relationship("Account", lazy="joined")

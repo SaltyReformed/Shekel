@@ -2066,6 +2066,13 @@ def calculate_payoff_by_date(
     # ... binary search with the same monthly_override ...
 ```
 
+**Note (2026-06-05):** the pseudocode above shows the pre-param-object
+positional signature.  As of the Phase 3 pylint-cleanup refactor
+(`PayoffRequest` parameter object; see F-28), `calculate_payoff_by_date`
+takes a single `PayoffRequest`, so the eventual fix adds the
+projected-payments override as a field on `PayoffRequest` (or a sibling
+argument), not a new positional parameter.
+
 Route caller in `payoff_calculate`'s `mode == "target_date"`
 branch builds the override dict from `ctx["payments"]` filtered
 to projected entries past `as_of` (mirroring the composer's
@@ -2110,6 +2117,58 @@ solo developer:
 - Composer (already honours projections via
   `monthly_override`).
 - ARM rate-change handling (no change from current behaviour).
+
+---
+
+## F-28. C15-3 lock allow-lists `amortization_engine.py` for the `PayoffRequest` param object
+
+- **Surfaced during:** Phase 3 of the pylint-cleanup plan
+  (`docs/audits/pylint-cleanup/plan.md`) -- the
+  `calculate_payoff_by_date` decomposition that bundles its ten
+  arguments into a `PayoffRequest` parameter object (Shape A,
+  developer-chosen 2026-06-05).
+- **Status:** resolved in place; no future work required.  Recorded
+  here per the C15-3 lock's own protocol
+  (`tests/test_models/test_loan_params_demoted.py`
+  `test_no_display_read_of_current_principal`): "if they are new engine
+  internals, document them ... and extend the allow-list."
+
+### What changed
+
+The refactor converts the bare `current_principal` parameter into a
+`PayoffRequest.current_principal` field, so the function body now reads
+`request.current_principal` in four places.  The C15-3 display-read
+sweep greps `app/` for the `.current_principal` attribute-access syntax
+and flagged all four.
+
+### Why this is not a demoted-column read
+
+`app/services/amortization_engine.py` is a pure-function engine: its
+module docstring states "No database access -- operates only on values
+passed in," and it imports no model (`calendar`, `logging`,
+`dataclasses`, `datetime`, `decimal`, `app.utils.money` only).  It
+therefore *cannot* read `LoanParams.current_principal` (the demoted
+column the lock protects).  `PayoffRequest.current_principal` is a
+parameter-object field; at the one production call site
+(`routes/loan.py` `payoff_calculate`, `mode == "target_date"`) it is
+fed `state.current_balance` -- the resolver-derived SSOT balance,
+exactly the value E-18 / Commit 15 wants callers to use.  The lock
+firing here is a false positive on syntax, not a contract violation.
+
+### Resolution
+
+`services/amortization_engine.py:` added to the `_ALLOWED` tuple with a
+why-comment.  The file's structural inability to touch `LoanParams`
+means the entry does not weaken the lock's real protection.
+
+### Possible future improvement (low value, not scheduled)
+
+The C15-3 sweep is a coarse grep that cannot distinguish
+`PayoffRequest.current_principal` from `LoanParams.current_principal`.
+An AST-based check keyed on the receiver's inferred type would remove
+the need for file-granular allow-listing, but the grep is intentionally
+simple and the allow-list is its designed extension point; type-aware
+analysis is not worth the complexity today.
 
 ---
 

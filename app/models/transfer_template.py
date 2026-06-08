@@ -8,10 +8,19 @@ rows into future pay periods.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import (
+    IsActiveMixin,
+    OptimisticLockMixin,
+    SortOrderMixin,
+    TimestampMixin,
+    UserScopedMixin,
+)
 
 
-class TransferTemplate(TimestampMixin, db.Model):
+class TransferTemplate(
+    UserScopedMixin, IsActiveMixin, SortOrderMixin, OptimisticLockMixin,
+    TimestampMixin, db.Model,
+):
     """Blueprint for a recurring transfer between two accounts.
 
     Optimistic locking: see :class:`Transaction` for the
@@ -40,11 +49,14 @@ class TransferTemplate(TimestampMixin, db.Model):
         {"schema": "budget"},
     )
 
+    # Pylint: ``duplicate-code`` -- Incidental id-PK + from/to-account FK
+    # preamble, shared by structure (not by domain) with the transfer table.
+    # A transfer is a generated instance and a transfer_template is its
+    # blueprint; they are deliberately separate tables (the transfer carries
+    # the shadow-transaction invariants), so extracting a base would couple
+    # them wrongly (coding-standards rule 13).  One-sided disable.
+    # pylint: disable=duplicate-code
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(
-        db.Integer, db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     from_account_id = db.Column(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,
@@ -58,13 +70,7 @@ class TransferTemplate(TimestampMixin, db.Model):
     )
     name = db.Column(db.String(200), nullable=False)
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
-    sort_order = db.Column(
-        db.Integer, nullable=False, default=0, server_default=db.text("0"),
-    )
+    # is_active + sort_order: from IsActiveMixin / SortOrderMixin.
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
@@ -73,21 +79,14 @@ class TransferTemplate(TimestampMixin, db.Model):
     # the destination loan account on every balance render, so it tracks
     # the loan's monthly payment after an escrow or rate change rather
     # than staying frozen at ``default_amount`` (E-18 loan model).  Set by
-    # ``app.routes.loan.create_payment_transfer`` for new loan-payment
-    # transfers; FALSE for every other template and for all pre-existing
+    # ``app.routes.loan.payment_transfer.create_payment_transfer`` for new
+    # loan-payment transfers; FALSE for every other template and pre-existing
     # rows, so the live-derive override is dormant unless enabled.
     derive_from_loan = db.Column(
         db.Boolean, nullable=False, default=False,
         server_default=db.text("false"),
     )
-    # Optimistic-locking version counter.  See class docstring and
-    # commit C-18.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: see class docstring.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     from_account = db.relationship(

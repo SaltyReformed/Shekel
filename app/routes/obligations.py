@@ -11,9 +11,12 @@ obligation is never two different numbers on two pages.
 """
 
 import calendar
+import functools
 import logging
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
+from typing import TypeVar
 
 from flask import Blueprint, render_template
 from flask_login import current_user, login_required
@@ -37,25 +40,20 @@ logger = logging.getLogger(__name__)
 
 obligations_bp = Blueprint("obligations", __name__)
 
-# Human-readable labels for recurrence patterns, keyed by pattern ID.
-# Built lazily on first use since ref_cache is not available at import time.
-_FREQUENCY_LABELS = None
-
-
+@functools.cache
 def _get_frequency_labels():
     """Build the pattern-ID-to-label mapping from ref_cache.
 
-    Lazily initialized because ref_cache is populated at app startup,
-    not at module import time.
+    Memoized for the process lifetime on the first call.  ref_cache is
+    populated at app startup (not at module import time), so the mapping
+    cannot be built at import; the pattern IDs are stable thereafter, so
+    caching once is safe.  ``functools.cache`` replaces a hand-rolled
+    module-global lazy-init (and its ``global`` statement).
 
     Returns:
         Dict mapping int pattern_id to str label.
     """
-    global _FREQUENCY_LABELS  # pylint: disable=global-statement
-    if _FREQUENCY_LABELS is not None:
-        return _FREQUENCY_LABELS
-
-    _FREQUENCY_LABELS = {
+    return {
         ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_PERIOD):
             "Biweekly",
         ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS):
@@ -73,7 +71,6 @@ def _get_frequency_labels():
         ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
             "One-Time",
     }
-    return _FREQUENCY_LABELS
 
 
 def _frequency_label(rule):
@@ -118,6 +115,16 @@ def _next_occurrence(rule):
     if rule.end_date is not None and rule.end_date < today:
         return None
 
+    # Pylint: ``duplicate-code`` -- the recurrence-pattern-id resolution
+    # block below is paralleled by the cadence classifier in
+    # ``savings_goal_service``; both resolve the same seven pattern ids.
+    # The substantive logic that consumes them diverges entirely (this
+    # route computes the next occurrence date; the service converts a
+    # per-occurrence amount to a monthly equivalent), so a shared "bag of
+    # ids" helper would relocate the lookups without dissolving the real
+    # per-domain logic (coding-standards rule 13).  One-sided
+    # ``duplicate-code`` disable (see plan.md Phase 2 notes).
+    # pylint: disable=duplicate-code
     every_period_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.EVERY_PERIOD
     )
@@ -139,9 +146,15 @@ def _next_occurrence(rule):
     annual_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.ANNUAL
     )
+    # pylint: enable=duplicate-code
 
     pid = rule.pattern_id
+    day = rule.day_of_month or 1
+    month = rule.month_of_year or 1
 
+    # Single-return dispatch (one date-or-None per pattern); collapses what
+    # would otherwise be one return per branch.  An unknown pattern falls
+    # through to None.
     if pid in (every_period_id, every_n_id):
         # Next pay period on or after today.
         period = (
@@ -153,27 +166,19 @@ def _next_occurrence(rule):
             .order_by(PayPeriod.start_date)
             .first()
         )
-        return period.start_date if period else None
+        next_date = period.start_date if period else None
+    elif pid in (monthly_id, monthly_first_id):
+        next_date = _next_monthly(today, day)
+    elif pid == quarterly_id:
+        next_date = _next_periodic_month(today, month, day, 3)
+    elif pid == semi_annual_id:
+        next_date = _next_periodic_month(today, month, day, 6)
+    elif pid == annual_id:
+        next_date = _next_annual(today, month, day)
+    else:
+        next_date = None
 
-    if pid in (monthly_id, monthly_first_id):
-        return _next_monthly(today, rule.day_of_month or 1)
-
-    if pid == quarterly_id:
-        start_month = rule.month_of_year or 1
-        day = rule.day_of_month or 1
-        return _next_periodic_month(today, start_month, day, 3)
-
-    if pid == semi_annual_id:
-        start_month = rule.month_of_year or 1
-        day = rule.day_of_month or 1
-        return _next_periodic_month(today, start_month, day, 6)
-
-    if pid == annual_id:
-        month = rule.month_of_year or 1
-        day = rule.day_of_month or 1
-        return _next_annual(today, month, day)
-
-    return None
+    return next_date
 
 
 def _next_monthly(today, day_of_month):
@@ -314,27 +319,36 @@ def _render_transfer_item(tmpl: TransferTemplate, monthly: Decimal) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Route
-# ---------------------------------------------------------------------------
+_TemplateT = TypeVar("_TemplateT", TransactionTemplate, TransferTemplate)
 
-@obligations_bp.route("/obligations")
-@login_required
-@require_owner
-def summary():
-    """Render the recurring obligations summary page.
 
-    Loads all active recurring transaction and transfer templates,
-    computes monthly equivalents and approximate next occurrence dates,
-    and displays grouped totals for expenses, transfers, and income.
+def _build_items(
+    templates: list[_TemplateT],
+    renderer: Callable[[_TemplateT, Decimal], dict],
+    as_of: date,
+) -> list[dict]:
+    """Build the per-row display dicts for one obligation section.
+
+    ``template_monthly_or_none`` returns None for the rows the aggregator
+    excludes (ONCE, expired, and missing/zero amount), so a row appears
+    here iff it also contributes to the section subtotal (E-24 / HIGH-05).
+    Each surviving (template, monthly) pair is shaped into its
+    section-specific display dict by ``renderer``.
     """
-    user_id = current_user.id
+    items = []
+    for tmpl in templates:
+        monthly = template_monthly_or_none(tmpl, as_of)
+        if monthly is not None:
+            items.append(renderer(tmpl, monthly))
+    return items
 
+
+def _load_recurring_expenses(user_id: int) -> list[TransactionTemplate]:
+    """Load the user's active recurring expense templates, ordered for
+    display (recurrence rule + account + category eager-loaded).
+    """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-
-    # --- Load recurring expense templates ---
-    expense_templates = (
+    return (
         db.session.query(TransactionTemplate)
         .options(
             joinedload(TransactionTemplate.recurrence_rule),
@@ -351,8 +365,13 @@ def summary():
         .all()
     )
 
-    # --- Load recurring income templates ---
-    income_templates = (
+
+def _load_recurring_income(user_id: int) -> list[TransactionTemplate]:
+    """Load the user's active recurring income templates, ordered for
+    display (recurrence rule + account eager-loaded).
+    """
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    return (
         db.session.query(TransactionTemplate)
         .options(
             joinedload(TransactionTemplate.recurrence_rule),
@@ -368,8 +387,12 @@ def summary():
         .all()
     )
 
-    # --- Load recurring transfer templates ---
-    transfer_templates = (
+
+def _load_recurring_transfers(user_id: int) -> list[TransferTemplate]:
+    """Load the user's active recurring transfer templates, ordered for
+    display (recurrence rule + both accounts eager-loaded).
+    """
+    return (
         db.session.query(TransferTemplate)
         .options(
             joinedload(TransferTemplate.recurrence_rule),
@@ -385,35 +408,36 @@ def summary():
         .all()
     )
 
-    # --- Build obligation items with monthly equivalents ---
-    # The per-item filter (skip ONCE, skip expired, skip missing/zero
-    # amount, skip no-rule) lives in obligations_aggregator alongside
-    # the section totals, so the per-row inclusion decision and the
-    # section subtotal cannot drift apart (E-24 / HIGH-05).
+
+# ---------------------------------------------------------------------------
+# Route
+# ---------------------------------------------------------------------------
+
+@obligations_bp.route("/obligations")
+@login_required
+@require_owner
+def summary():
+    """Render the recurring obligations summary page.
+
+    Loads all active recurring transaction and transfer templates,
+    computes monthly equivalents and approximate next occurrence dates,
+    and displays grouped totals for expenses, transfers, and income.
+    """
+    user_id = current_user.id
     as_of = date.today()
 
-    expense_items: list[dict] = []
-    for tmpl in expense_templates:
-        monthly = template_monthly_or_none(tmpl, as_of)
-        if monthly is not None:
-            expense_items.append(_render_expense_item(tmpl, monthly))
+    expense_templates = _load_recurring_expenses(user_id)
+    income_templates = _load_recurring_income(user_id)
+    transfer_templates = _load_recurring_transfers(user_id)
 
-    income_items: list[dict] = []
-    for tmpl in income_templates:
-        monthly = template_monthly_or_none(tmpl, as_of)
-        if monthly is not None:
-            income_items.append(_render_income_item(tmpl, monthly))
+    # Per-row inclusion (_build_items) and the section subtotals
+    # (committed_monthly) both route through obligations_aggregator, so a
+    # row is shown iff it contributes to its subtotal and the two cannot
+    # drift apart (E-24 / HIGH-05).
+    expense_items = _build_items(expense_templates, _render_expense_item, as_of)
+    income_items = _build_items(income_templates, _render_income_item, as_of)
+    transfer_items = _build_items(transfer_templates, _render_transfer_item, as_of)
 
-    transfer_items: list[dict] = []
-    for tmpl in transfer_templates:
-        monthly = template_monthly_or_none(tmpl, as_of)
-        if monthly is not None:
-            transfer_items.append(_render_transfer_item(tmpl, monthly))
-
-    # --- Compute summary metrics ---
-    # Section subtotals route through the same aggregator -- the per-
-    # row monthly values above and the section totals below are
-    # derived from exactly one filter+sum implementation.
     total_expense_monthly = committed_monthly(expense_templates, as_of)
     total_income_monthly = committed_monthly(income_templates, as_of)
     total_transfer_monthly = committed_monthly(transfer_templates, as_of)

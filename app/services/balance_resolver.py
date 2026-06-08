@@ -390,6 +390,10 @@ def live_amount_overrides(account, scenario_id, transactions):
     a candidate -- the common case -- so the override threading stays a
     structural no-op for those surfaces.
     """
+    # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
+    # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
+    # stacks off ``balance_resolver``'s module-load path and out of any import
+    # cycle; the helpers are only needed at call time.
     # pylint: disable=import-outside-toplevel
     from app.services import income_service, loan_payment_service
     income_overrides = income_service.live_projected_net(
@@ -562,11 +566,11 @@ def period_subtotal(
         amount_overrides = live_amount_overrides(
             account, scenario_id, transactions,
         )
-    # pylint: disable=protected-access
-    # ``_sum_all`` is an internal helper of ``balance_calculator``;
-    # the resolver is its sibling canonical producer (see module
-    # docstring) and the audit's E-25 mandate explicitly reuses the
+    # Pylint: ``protected-access`` -- ``_sum_all`` is an internal helper of
+    # ``balance_calculator``; the resolver is its sibling canonical producer
+    # (see module docstring) and the audit's E-25 mandate explicitly reuses the
     # engine's math rather than rewriting it (CLAUDE.md rule 10).
+    # pylint: disable=protected-access
     income, expense = balance_calculator._sum_all(transactions, amount_overrides)
     rounded_income = round_money(income)
     rounded_expense = round_money(expense)
@@ -580,13 +584,15 @@ def period_subtotal(
 def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
     """Date-cut variant of the balance-calculator entry-aware reduction (E-27).
 
-    Mirrors :func:`~app.services.balance_calculator._entry_aware_amount`
-    bucket-by-bucket but considers only entries whose ``entry_date`` is
-    on or before ``as_of``.  A purchase that has not happened yet
-    (entry dated after ``as_of``) cannot have cleared the bank as of
-    that date and therefore must not contribute to either bucket --
-    inclusion would reduce the reservation prematurely and ship a
-    wrong balance for the calendar month-end (HIGH-02 / W-277).
+    Reuses the engine's shared three-bucket reservation core
+    (:func:`~app.services.balance_calculator._entry_checking_impact`,
+    the same math :func:`~app.services.balance_calculator._entry_aware_amount`
+    runs) but over only the entries whose ``entry_date`` is on or before
+    ``as_of``.  A purchase that has not happened yet (entry dated after
+    ``as_of``) cannot have cleared the bank as of that date and therefore
+    must not contribute to either bucket -- inclusion would reduce the
+    reservation prematurely and ship a wrong balance for the calendar
+    month-end (HIGH-02 / W-277).
 
     The formula is otherwise identical to the engine helper:
 
@@ -627,22 +633,11 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
     if not is_projected(txn):
         return txn.effective_amount
 
-    cleared_debit = Decimal("0")
-    uncleared_debit = Decimal("0")
-    sum_credit = Decimal("0")
-    any_in_window = False
-    for entry in entries:
-        if entry.entry_date > as_of:
-            continue
-        any_in_window = True
-        if entry.is_credit:
-            sum_credit += entry.amount
-        elif entry.is_cleared:
-            cleared_debit += entry.amount
-        else:
-            uncleared_debit += entry.amount
-
-    if not any_in_window:
+    # Window the entries to those that have occurred on or before
+    # ``as_of``: a purchase dated later cannot have cleared the bank yet,
+    # so it must not contribute to either bucket (HIGH-02 / W-277).
+    windowed = [entry for entry in entries if entry.entry_date <= as_of]
+    if not windowed:
         # No purchase has occurred yet as of ``as_of``; the full
         # estimated reservation is still pending.  ``effective_amount``
         # collapses to estimated for an unfilled Projected expense
@@ -650,9 +645,16 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
         # this matches the engine helper's empty-entries branch.
         return txn.effective_amount
 
-    return max(
-        txn.estimated_amount - cleared_debit - sum_credit,
-        uncleared_debit,
+    # Pylint: ``protected-access`` -- the credit / cleared-debit /
+    # uncleared-debit bucketing + reservation formula is the engine's
+    # internal ``_entry_checking_impact``.  The resolver is
+    # ``balance_calculator``'s sibling canonical producer (E-25/E-27) and
+    # reuses the engine's math over the windowed entries rather than
+    # keeping a second copy that could drift (CLAUDE.md rule 10); the
+    # as-of window stays here, the bucketing lives once in the engine.
+    # pylint: disable=protected-access
+    return balance_calculator._entry_checking_impact(
+        windowed, txn.estimated_amount,
     )
 
 
@@ -701,7 +703,8 @@ def _sum_period_as_of(
         if not is_projected(txn):
             continue
         if txn.is_income:
-            # Workstream B live projected-net seam; reuse the engine
+            # Pylint: ``protected-access`` -- Workstream B live projected-net
+            # seam; reuse ``balance_calculator``'s internal ``_income_amount``
             # helper so the date-cut path and ``_sum_all`` cannot drift.
             # pylint: disable=protected-access
             income += balance_calculator._income_amount(txn, amount_overrides)

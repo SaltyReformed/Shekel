@@ -156,11 +156,13 @@ def _create_user_with_data(db_session):
         db_session.query(AccountType).filter_by(name="Checking").one()
     )
     account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=checking_type.id,
-        name="Checking",
-        anchor_balance=Decimal("5000.00"),
-        anchor_period_id=past_period.id,
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=checking_type.id,
+            name="Checking",
+            anchor_balance=Decimal("5000.00"),
+            anchor_period_id=past_period.id,
+        ),
     )
 
     scenario = Scenario(

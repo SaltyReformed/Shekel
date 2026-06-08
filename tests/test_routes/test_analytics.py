@@ -709,11 +709,13 @@ class TestYearEndTab:
                 name="Mortgage",
             ).one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=mortgage_type.id,
-                name="Mortgage",
-                anchor_balance=Decimal("240000.00"),
-                anchor_period_id=seed_periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="Mortgage",
+                    anchor_balance=Decimal("240000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -780,11 +782,13 @@ class TestYearEndTab:
                 name="Savings",
             ).one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Emergency Fund",
-                anchor_balance=Decimal("0"),
-                anchor_period_id=seed_periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Emergency Fund",
+                    anchor_balance=Decimal("0"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -820,11 +824,13 @@ class TestYearEndTab:
                 name="Mortgage",
             ).one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=mortgage_type.id,
-                name="My Mortgage",
-                anchor_balance=Decimal("200000.00"),
-                anchor_period_id=seed_periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="My Mortgage",
+                    anchor_balance=Decimal("200000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.flush()

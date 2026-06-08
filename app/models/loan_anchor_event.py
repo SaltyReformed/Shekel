@@ -42,10 +42,10 @@ their initial typo and re-saved).
 from sqlalchemy import event
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin
+from app.models.mixins import AccountScopedMixin, CreatedAtMixin
 
 
-class LoanAnchorEvent(CreatedAtMixin, db.Model):
+class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
     """Append-only dated balance assertion for a loan account.
 
     Read by the loan resolver (Commit 13) which selects the most
@@ -105,11 +105,6 @@ class LoanAnchorEvent(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    account_id = db.Column(
-        db.Integer,
-        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     anchor_date = db.Column(db.Date, nullable=False)
     anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
     source_id = db.Column(
@@ -165,7 +160,7 @@ class LoanAnchorEventImmutableError(RuntimeError):
 
 
 @event.listens_for(LoanAnchorEvent, "before_update")
-def _block_update(mapper, connection, target):  # pylint: disable=unused-argument
+def _block_update(_mapper, _connection, target):
     """Refuse every ORM-mediated UPDATE on a LoanAnchorEvent.
 
     Fires before SQLAlchemy emits the UPDATE so the offending session
@@ -180,7 +175,7 @@ def _block_update(mapper, connection, target):  # pylint: disable=unused-argumen
 
 
 @event.listens_for(LoanAnchorEvent, "before_delete")
-def _block_delete(mapper, connection, target):  # pylint: disable=unused-argument
+def _block_delete(_mapper, _connection, target):
     """Refuse every ORM-mediated DELETE on a LoanAnchorEvent.
 
     Same rationale as :func:`_block_update`: the table is

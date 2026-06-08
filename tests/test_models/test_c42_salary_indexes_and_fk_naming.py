@@ -298,7 +298,7 @@ class TestPostUpgradeDbShape:
         """The composite rate_history index encodes DESC on effective_date.
 
         The DESC ordering is the load-bearing detail for the
-        ``app/routes/loan.py`` query that filters
+        ``app/routes/loan/escrow_rates.py`` query that filters
         ``WHERE account_id = ? ORDER BY effective_date DESC``.  An
         ascending recreation would still serve correctness (B-tree
         scans backward) but would obscure the canonical query shape.

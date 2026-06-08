@@ -28,10 +28,12 @@ def _create_savings_account(seed_user, db_session, name="My Savings"):
     """Helper to create a savings account."""
     savings_type = db_session.query(AccountType).filter_by(name="Savings").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name=name,
-        anchor_balance=Decimal("5000.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name=name,
+            anchor_balance=Decimal("5000.00"),
+        ),
     )
     db_session.add(account)
     db_session.commit()
@@ -42,10 +44,12 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA"):
     """Helper to create a HYSA account with params."""
     hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=hysa_type.id,
-        name=name,
-        anchor_balance=Decimal("10000.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=hysa_type.id,
+            name=name,
+            anchor_balance=Decimal("10000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -116,10 +120,12 @@ class TestDashboardGrouping:
         """Mortgage card shows interest rate."""
         mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=mortgage_type.id,
-            name="Home Loan",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="Home Loan",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(acct)
         db.session.flush()
@@ -148,10 +154,12 @@ class TestDashboardGrouping:
         """Auto loan card shows monthly payment."""
         auto_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=auto_type.id,
-            name="Car Payment",
-            anchor_balance=Decimal("20000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=auto_type.id,
+                name="Car Payment",
+                anchor_balance=Decimal("20000.00"),
+            ),
         )
         db.session.add(acct)
         db.session.flush()
@@ -180,10 +188,12 @@ class TestDashboardGrouping:
         """Liabilities grouped under Liability header."""
         mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=mortgage_type.id,
-            name="My Mortgage",
-            anchor_balance=Decimal("150000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="My Mortgage",
+                anchor_balance=Decimal("150000.00"),
+            ),
         )
         db.session.add(acct)
         db.session.flush()
@@ -242,22 +252,26 @@ class TestDashboardGrouping:
             name="Money Market",
         ).one()
         mm_acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=mm_type.id,
-            name="My Money Market",
-            anchor_balance=Decimal("2000.00"),
-            anchor_period_id=seed_periods_today[0].id,
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=mm_type.id,
+                name="My Money Market",
+                anchor_balance=Decimal("2000.00"),
+                anchor_period_id=seed_periods_today[0].id,
+            ),
         )
         db.session.add(mm_acct)
 
         # Add a CD account (is_liquid=False).
         cd_type = db.session.query(AccountType).filter_by(name="CD").one()
         cd_acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=cd_type.id,
-            name="My CD",
-            anchor_balance=Decimal("5000.00"),
-            anchor_period_id=seed_periods_today[0].id,
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=cd_type.id,
+                name="My CD",
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods_today[0].id,
+            ),
         )
         db.session.add(cd_acct)
         db.session.commit()
@@ -284,11 +298,13 @@ class TestDashboardGrouping:
             db.session.flush()
 
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=custom_type.id,
-                name="Custom Liquid",
-                anchor_balance=Decimal("3000.00"),
-                anchor_period_id=seed_periods_today[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="Custom Liquid",
+                    anchor_balance=Decimal("3000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
             )
             db.session.add(acct)
             db.session.commit()
@@ -364,10 +380,12 @@ class TestAccountHardDelete:
         with app.app_context():
             mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=mortgage_type.id,
-                name="Test Mortgage",
-                anchor_balance=Decimal("200000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="Test Mortgage",
+                    anchor_balance=Decimal("200000.00"),
+                ),
             )
             db.session.add(acct)
             db.session.flush()
@@ -406,10 +424,12 @@ class TestAccountHardDelete:
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Transfer Target",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Transfer Target",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -493,11 +513,13 @@ class TestAccountHardDelete:
 
             checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
             other_acct = account_service.create_account(
-                user_id=other_user.id,
-                account_type_id=checking_type.id,
-                name="Other Checking",
-                anchor_balance=Decimal("500.00"),
-                anchor_period_id=_bootstrap.id,
+                account_service.AccountSpec(
+                    user_id=other_user.id,
+                    account_type_id=checking_type.id,
+                    name="Other Checking",
+                    anchor_balance=Decimal("500.00"),
+                    anchor_period_id=_bootstrap.id,
+                ),
             )
             db.session.commit()
             other_id = other_acct.id
@@ -608,10 +630,12 @@ class TestAccountHardDelete:
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Archived Template Target",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Archived Template Target",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(savings)
             db.session.flush()

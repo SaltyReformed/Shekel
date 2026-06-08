@@ -8,10 +8,10 @@ Stores type-specific parameters for investment and retirement accounts
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import AccountScopedUniqueMixin, TimestampMixin
 
 
-class InvestmentParams(TimestampMixin, db.Model):
+class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     """Parameters for an investment or retirement account.
 
     ``annual_contribution_limit`` semantics (E-12 / HIGH-06 / Commit
@@ -92,12 +92,6 @@ class InvestmentParams(TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    account_id = db.Column(
-        db.Integer,
-        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-    )
     # E-11 / HIGH-06 (Commit 24): Python-side ``default`` is a
     # ``Decimal`` constructed from a string per coding-standards
     # rule "Construct Decimals from strings; ``Decimal(0.1)``

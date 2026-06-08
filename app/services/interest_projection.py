@@ -78,6 +78,24 @@ def _days_in_year_for_window(period_start, period_end):
     return DAYS_IN_YEAR_NON_LEAP
 
 
+def _days_in_quarter(period_start):
+    """Return the day-count of the calendar quarter containing ``period_start``.
+
+    Uses the actual quarter length (90-92 days) derived from the quarter's
+    start/end boundary dates rather than a hardcoded 91-day approximation
+    (L-05).  Parallels :func:`_days_in_year_for_window` -- both compute the
+    actual-period divisor for their compounding frequency.
+    """
+    q_start_month = ((period_start.month - 1) // 3) * 3 + 1
+    q_start = date_cls(period_start.year, q_start_month, 1)
+    next_q_month = q_start_month + 3
+    if next_q_month > 12:
+        q_end = date_cls(period_start.year + 1, next_q_month - 12, 1)
+    else:
+        q_end = date_cls(period_start.year, next_q_month, 1)
+    return Decimal(str((q_end - q_start).days))
+
+
 def calculate_interest(
     balance,
     apy,
@@ -128,16 +146,7 @@ def calculate_interest(
         interest = balance * monthly_rate * (period_days / days_in_month)
     elif compounding_frequency == "quarterly":
         quarterly_rate = apy / QUARTERS_IN_YEAR
-        # Calculate actual quarter length from the period's start date
-        # instead of using a hardcoded 91-day approximation (L-05).
-        q_start_month = ((period_start.month - 1) // 3) * 3 + 1
-        q_start = date_cls(period_start.year, q_start_month, 1)
-        next_q_month = q_start_month + 3
-        if next_q_month > 12:
-            q_end = date_cls(period_start.year + 1, next_q_month - 12, 1)
-        else:
-            q_end = date_cls(period_start.year, next_q_month, 1)
-        days_in_quarter = Decimal(str((q_end - q_start).days))
+        days_in_quarter = _days_in_quarter(period_start)
         interest = balance * quarterly_rate * (period_days / days_in_quarter)
     else:
         return ZERO

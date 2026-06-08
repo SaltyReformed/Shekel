@@ -21,11 +21,11 @@ ARM rate adjustments during the payoff period are not incorporated into
 the strategy projection.  The current rate from LoanParams is used as-is.
 """
 
-import calendar
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.utils.dates import add_months
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
 # Constants for Decimal arithmetic -- avoids constructing these per call.
@@ -176,6 +176,40 @@ class StrategyResult:
     total_months: int
     strategy_name: str
     horizon_reached: bool
+
+
+@dataclass(frozen=True)
+class StrategyRequest:
+    """Input parameters for a single debt payoff strategy calculation.
+
+    Bundles the inputs to :func:`calculate_strategy` into one cohesive
+    object.  Field order matches the natural call order: the required
+    debt data and algorithm selection first, then the optional
+    configuration (custom order and the simulation envelope).
+
+    Attributes:
+        debts: List of DebtAccount instances.  Debts with
+            current_principal <= 0 are filtered out automatically.
+        extra_monthly: Additional monthly payment toward debt reduction.
+            Must be >= 0.  Zero means minimum payments only (freed
+            minimums still cascade as debts are paid off).
+        strategy: One of 'avalanche', 'snowball', 'custom'.
+        custom_order: For custom strategy, account_ids in priority
+            order.  Must contain exactly the same IDs as the active
+            debts.  Ignored for avalanche and snowball.
+        start_date: The date from which payoff dates are calculated.
+            Resolved to date.today() by calculate_strategy when None.
+            Pass a fixed date in tests for determinism.
+        max_horizon_months: Maximum months to simulate before stopping.
+            Default 600 (50 years).  Configurable for testing.
+    """
+
+    debts: list[DebtAccount]
+    extra_monthly: Decimal
+    strategy: str
+    custom_order: list[int] | None = None
+    start_date: date | None = None
+    max_horizon_months: int = DEFAULT_MAX_HORIZON_MONTHS
 
 
 def _validate_inputs(
@@ -345,30 +379,6 @@ def _sort_debts(
     return sorted(debts, key=lambda d: position[d.account_id])
 
 
-def _add_months(start: date, months: int) -> date:
-    """Add N months to a date, clamping day to the month's max days.
-
-    Returns date.max if the result would exceed year 9999 (Python's
-    maximum representable year).
-
-    Args:
-        start: The starting date.
-        months: Number of months to add (non-negative).
-
-    Returns:
-        A new date N months in the future, or date.max on overflow.
-    """
-    total_months = start.month - 1 + months
-    year = start.year + total_months // 12
-    month = total_months % 12 + 1
-
-    if year > 9999:
-        return date.max
-
-    day = min(start.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
-
-
 def _snap_to_zero(balance: Decimal) -> Decimal:
     """Round a balance to cents and clamp negatives to zero.
 
@@ -394,39 +404,91 @@ def _snap_to_zero(balance: Decimal) -> Decimal:
     return result
 
 
-def _accrue_interest(
-    balances: list[Decimal],
-    sorted_debts: list[DebtAccount],
-    interest_totals: list[Decimal],
-) -> None:
+@dataclass(frozen=True)
+class _SimulationState:
+    """Mutable per-debt working arrays for the month-by-month simulation.
+
+    All lists are parallel, indexed by position in ``sorted_debts``, so
+    the simulation loop and its step helpers share one cohesive state
+    object instead of five parallel locals threaded by hand.
+
+    The dataclass is frozen to fix the array identities: the simulation
+    evolves the list *contents* in place (balances shrink, totals
+    accumulate, timelines grow), never the bindings themselves.
+
+    Attributes:
+        sorted_debts: Active debts in strategy priority order (read-only).
+        balances: Current working balance per debt.
+        interest_totals: Accumulated interest paid per debt.
+        paid_totals: Accumulated total paid (principal + interest) per
+            debt.
+        payoff_months: Month each debt reached zero, or 0 while still
+            unpaid (the not-yet-paid-off sentinel the step helpers test).
+        timelines: Per-debt month-end balance history; index 0 is the
+            starting balance, with one entry appended per simulated month.
+    """
+
+    sorted_debts: list[DebtAccount]
+    balances: list[Decimal]
+    interest_totals: list[Decimal]
+    paid_totals: list[Decimal]
+    payoff_months: list[int]
+    timelines: list[list[Decimal]]
+
+    @classmethod
+    def initialize(
+        cls,
+        sorted_debts: list[DebtAccount],
+    ) -> "_SimulationState":
+        """Build zero-initialized working arrays for ``sorted_debts``.
+
+        Each array is parallel to ``sorted_debts``: balances and
+        timelines start at the current principal, the accumulators start
+        at zero, and payoff_months start at 0 (the unpaid sentinel).
+
+        Args:
+            sorted_debts: Active debts already ordered by strategy
+                priority.
+
+        Returns:
+            A fresh _SimulationState ready for the simulation loop.
+        """
+        num_debts = len(sorted_debts)
+        return cls(
+            sorted_debts=sorted_debts,
+            balances=[d.current_principal for d in sorted_debts],
+            interest_totals=[ZERO] * num_debts,
+            paid_totals=[ZERO] * num_debts,
+            payoff_months=[0] * num_debts,
+            timelines=[[d.current_principal] for d in sorted_debts],
+        )
+
+
+def _accrue_interest(state: _SimulationState) -> None:
     """Accrue one month of interest on all active debts.
 
-    Modifies balances and interest_totals in place.
+    Modifies state.balances and state.interest_totals in place.
 
     Monthly interest = balance * (annual_rate / 12), quantized to 2
     decimal places with ROUND_HALF_UP.  Matches the amortization
     engine's interest calculation convention.
 
     Args:
-        balances: Current working balances (modified in place).
-        sorted_debts: Debts in strategy priority order.
-        interest_totals: Per-debt interest accumulators (modified).
+        state: The simulation working state; balances and interest_totals
+            are updated in place.
     """
-    for i, debt in enumerate(sorted_debts):
-        if balances[i] <= ZERO:
+    for i, debt in enumerate(state.sorted_debts):
+        if state.balances[i] <= ZERO:
             continue
         interest = round_money(
-            balances[i] * debt.interest_rate / MONTHS_PER_YEAR,
+            state.balances[i] * debt.interest_rate / MONTHS_PER_YEAR,
         )
-        balances[i] += interest
-        interest_totals[i] += interest
+        state.balances[i] += interest
+        state.interest_totals[i] += interest
 
 
 def _apply_minimum_payments(
-    balances: list[Decimal],
-    sorted_debts: list[DebtAccount],
-    paid_totals: list[Decimal],
-    payoff_months: list[int],
+    state: _SimulationState,
     month: int,
 ) -> tuple[Decimal, Decimal]:
     """Apply minimum payments to all active debts.
@@ -436,13 +498,12 @@ def _apply_minimum_payments(
     is available for same-month redistribution.  The full minimum is
     freed for future months when the debt is paid off.
 
-    Modifies balances, paid_totals, and payoff_months in place.
+    Modifies state.balances, state.paid_totals, and state.payoff_months
+    in place.
 
     Args:
-        balances: Current working balances (modified in place).
-        sorted_debts: Debts in strategy priority order.
-        paid_totals: Per-debt payment accumulators (modified).
-        payoff_months: Per-debt payoff month tracker (modified).
+        state: The simulation working state; balances, paid_totals, and
+            payoff_months are updated in place.
         month: Current month number (1-indexed).
 
     Returns:
@@ -455,16 +516,16 @@ def _apply_minimum_payments(
     minimum_surplus = ZERO
     newly_freed = ZERO
 
-    for i, debt in enumerate(sorted_debts):
-        if balances[i] <= ZERO:
+    for i, debt in enumerate(state.sorted_debts):
+        if state.balances[i] <= ZERO:
             continue
 
-        min_pay = min(debt.minimum_payment, balances[i])
-        balances[i] = _snap_to_zero(balances[i] - min_pay)
-        paid_totals[i] += min_pay
+        min_pay = min(debt.minimum_payment, state.balances[i])
+        state.balances[i] = _snap_to_zero(state.balances[i] - min_pay)
+        state.paid_totals[i] += min_pay
 
-        if balances[i] <= ZERO and payoff_months[i] == 0:
-            payoff_months[i] = month
+        if state.balances[i] <= ZERO and state.payoff_months[i] == 0:
+            state.payoff_months[i] = month
             # Unused portion of capped minimum -- available THIS month.
             minimum_surplus += debt.minimum_payment - min_pay
             # Full minimum freed for FUTURE months.
@@ -474,10 +535,7 @@ def _apply_minimum_payments(
 
 
 def _cascade_extra_payments(
-    balances: list[Decimal],
-    sorted_debts: list[DebtAccount],
-    paid_totals: list[Decimal],
-    payoff_months: list[int],
+    state: _SimulationState,
     month: int,
     available_extra: Decimal,
 ) -> Decimal:
@@ -489,13 +547,12 @@ def _cascade_extra_payments(
     what makes snowball/avalanche effective -- money does not sit idle
     for a month after a payoff.
 
-    Modifies balances, paid_totals, and payoff_months in place.
+    Modifies state.balances, state.paid_totals, and state.payoff_months
+    in place.
 
     Args:
-        balances: Current working balances (modified in place).
-        sorted_debts: Debts in strategy priority order.
-        paid_totals: Per-debt payment accumulators (modified).
-        payoff_months: Per-debt payoff month tracker (modified).
+        state: The simulation working state; balances, paid_totals, and
+            payoff_months are updated in place.
         month: Current month number (1-indexed).
         available_extra: Total extra available this month (extra_pool
             plus any minimum surplus from capped payments).
@@ -507,32 +564,71 @@ def _cascade_extra_payments(
     newly_freed = ZERO
     remaining = available_extra
 
-    for i, debt in enumerate(sorted_debts):
+    for i, debt in enumerate(state.sorted_debts):
         if remaining <= ZERO:
             break
-        if balances[i] <= ZERO:
+        if state.balances[i] <= ZERO:
             continue
 
-        extra_pay = min(remaining, balances[i])
-        balances[i] = _snap_to_zero(balances[i] - extra_pay)
-        paid_totals[i] += extra_pay
+        extra_pay = min(remaining, state.balances[i])
+        state.balances[i] = _snap_to_zero(state.balances[i] - extra_pay)
+        state.paid_totals[i] += extra_pay
         remaining -= extra_pay
 
-        if balances[i] <= ZERO and payoff_months[i] == 0:
-            payoff_months[i] = month
+        if state.balances[i] <= ZERO and state.payoff_months[i] == 0:
+            state.payoff_months[i] = month
             newly_freed += debt.minimum_payment
 
     return newly_freed
 
 
-def calculate_strategy(
-    debts: list[DebtAccount],
-    extra_monthly: Decimal,
-    strategy: str,
-    custom_order: list[int] | None = None,
-    start_date: date | None = None,
-    max_horizon_months: int = DEFAULT_MAX_HORIZON_MONTHS,
-) -> StrategyResult:
+def _simulate_month(
+    state: _SimulationState,
+    month: int,
+    extra_pool: Decimal,
+) -> Decimal:
+    """Run one month of the simulation against ``state``.
+
+    Performs the three payment steps in order -- accrue interest, apply
+    minimum payments, cascade the extra pool -- then records each debt's
+    month-end balance on its timeline.  All mutations land on ``state``
+    in place.
+
+    Args:
+        state: The simulation working state, updated in place.
+        month: Current month number (1-indexed).
+        extra_pool: The standing extra pool carried into this month (the
+            user's extra_monthly plus minimums freed by prior payoffs).
+            Capped-minimum surplus from this month is added on top before
+            the cascade.
+
+    Returns:
+        Total minimum payments freed by debts paid off this month (from
+        both the minimum-payment and extra-cascade steps), to be added to
+        the caller's extra_pool for subsequent months.
+    """
+    # Step 1: Accrue one month of interest on all active debts.
+    _accrue_interest(state)
+
+    # Step 2: Apply minimum payments.  Track surplus from capped
+    # minimums (available this month) and freed minimums (available
+    # starting next month).
+    minimum_surplus, freed_from_min = _apply_minimum_payments(state, month)
+
+    # Step 3: Cascade extra through target debts in priority order.
+    # Available extra = standing pool + surplus from capped minimums.
+    available_extra = extra_pool + minimum_surplus
+    freed_from_extra = _cascade_extra_payments(state, month, available_extra)
+
+    # Step 4: Record month-end balances for all debts (including those
+    # already paid off, which append $0).
+    for i, balance in enumerate(state.balances):
+        state.timelines[i].append(balance)
+
+    return freed_from_min + freed_from_extra
+
+
+def calculate_strategy(request: StrategyRequest) -> StrategyResult:
     """Calculate a debt payoff strategy across multiple accounts.
 
     Simulates month-by-month debt reduction under the selected strategy.
@@ -547,127 +643,82 @@ def calculate_strategy(
     rate adjustments during the payoff period are not modeled.
 
     Args:
-        debts: List of DebtAccount instances.  Debts with
-            current_principal <= 0 are filtered out automatically.
-        extra_monthly: Additional monthly payment toward debt reduction.
-            Must be >= 0.  Zero means minimum payments only (freed
-            minimums still cascade as debts are paid off).
-        strategy: One of 'avalanche', 'snowball', 'custom'.
-        custom_order: For custom strategy, account_ids in priority
-            order.  Must contain exactly the same IDs as the active
-            debts.  Ignored for avalanche and snowball.
-        start_date: The date from which payoff dates are calculated.
-            Defaults to date.today() if None.  Pass a fixed date in
-            tests for determinism.
-        max_horizon_months: Maximum months to simulate before stopping.
-            Default 600 (50 years).  Configurable for testing.
+        request: The strategy inputs -- debts, extra_monthly, strategy,
+            and the optional custom_order / start_date /
+            max_horizon_months.  See :class:`StrategyRequest` for the
+            per-field semantics and defaults.
 
     Returns:
         StrategyResult with per-account payoff timelines and aggregate
         metrics.
 
     Raises:
-        TypeError: If extra_monthly is not a Decimal.
+        TypeError: If request.extra_monthly is not a Decimal.
         ValueError: If inputs fail validation (empty debts, negative
             extra, invalid strategy, mismatched custom_order, zero
             minimum payment on active debt).
     """
     # Filter out zero/negative principal debts before validation.
-    active_debts = [d for d in debts if d.current_principal > ZERO]
+    active_debts = [d for d in request.debts if d.current_principal > ZERO]
 
-    _validate_inputs(active_debts, extra_monthly, strategy, custom_order)
-    sorted_debts = _sort_debts(active_debts, strategy, custom_order)
+    _validate_inputs(
+        active_debts, request.extra_monthly, request.strategy,
+        request.custom_order,
+    )
+    sorted_debts = _sort_debts(
+        active_debts, request.strategy, request.custom_order,
+    )
 
-    if start_date is None:
-        start_date = date.today()
-
-    num_debts = len(sorted_debts)
-
-    # Working state arrays, indexed by position in sorted_debts.
-    balances = [d.current_principal for d in sorted_debts]
-    interest_totals = [ZERO] * num_debts
-    paid_totals = [ZERO] * num_debts
-    timelines = [[d.current_principal] for d in sorted_debts]
-    payoff_months = [0] * num_debts
+    start_date = (
+        request.start_date if request.start_date is not None
+        else date.today()
+    )
+    max_horizon = request.max_horizon_months
+    state = _SimulationState.initialize(sorted_debts)
 
     # Extra pool starts at the user's extra_monthly contribution.
     # It grows as debts are paid off and their minimums are freed.
-    extra_pool = extra_monthly
+    extra_pool = request.extra_monthly
 
-    final_month = max_horizon_months
+    final_month = max_horizon
     horizon_reached = False
 
-    for month in range(1, max_horizon_months + 1):
-        # Check if all debts were paid off in the previous month.
-        if all(b <= ZERO for b in balances):
+    for month in range(1, max_horizon + 1):
+        # Stop once all debts were paid off in the previous month.
+        if all(b <= ZERO for b in state.balances):
             final_month = month - 1
             break
-
-        # Step 1: Accrue one month of interest on all active debts.
-        _accrue_interest(balances, sorted_debts, interest_totals)
-
-        # Step 2: Apply minimum payments.  Track surplus from capped
-        # minimums (available this month) and freed minimums (available
-        # starting next month).
-        minimum_surplus, freed_from_min = _apply_minimum_payments(
-            balances, sorted_debts, paid_totals, payoff_months, month,
-        )
-
-        # Step 3: Cascade extra through target debts in priority order.
-        # Available extra = standing pool + surplus from capped minimums.
-        available_extra = extra_pool + minimum_surplus
-        freed_from_extra = _cascade_extra_payments(
-            balances, sorted_debts, paid_totals, payoff_months,
-            month, available_extra,
-        )
-
-        # Step 4: Update extra pool for next month with all freed
-        # minimums (from both step 2 and step 3 payoffs).
-        extra_pool += freed_from_min + freed_from_extra
-
-        # Step 5: Record month-end balances for all debts (including
-        # those already paid off, which append $0).
-        for i in range(num_debts):
-            timelines[i].append(balances[i])
-
+        extra_pool += _simulate_month(state, month, extra_pool)
     else:
         # for-loop exhausted without break -- horizon reached if any
         # debts still have a positive balance.
-        horizon_reached = any(b > ZERO for b in balances)
+        horizon_reached = any(b > ZERO for b in state.balances)
 
-    # Handle debts not paid off within the horizon.
-    for i in range(num_debts):
-        if payoff_months[i] == 0:
-            payoff_months[i] = max_horizon_months
+    # Debts not paid off within the horizon report the horizon month.
+    for i, paid_month in enumerate(state.payoff_months):
+        if paid_month == 0:
+            state.payoff_months[i] = max_horizon
 
     return _build_result(
-        sorted_debts, payoff_months, interest_totals, paid_totals,
-        timelines, start_date, final_month, strategy, horizon_reached,
+        state, start_date, final_month, request.strategy, horizon_reached,
     )
 
 
 def _build_result(
-    sorted_debts: list[DebtAccount],
-    payoff_months: list[int],
-    interest_totals: list[Decimal],
-    paid_totals: list[Decimal],
-    timelines: list[list[Decimal]],
+    state: _SimulationState,
     start_date: date,
     final_month: int,
     strategy: str,
     horizon_reached: bool,
 ) -> StrategyResult:
-    """Assemble the final StrategyResult from working state.
+    """Assemble the final StrategyResult from the simulation state.
 
     Quantizes monetary totals to 2 decimal places and computes
     payoff dates from start_date and payoff month numbers.
 
     Args:
-        sorted_debts: Debts in strategy priority order.
-        payoff_months: Per-debt payoff month (1-indexed).
-        interest_totals: Per-debt accumulated interest.
-        paid_totals: Per-debt accumulated payments.
-        timelines: Per-debt monthly balance lists.
+        state: The completed simulation working state (the per-debt
+            payoff_months, interest_totals, paid_totals, and timelines).
         start_date: Strategy start date for date arithmetic.
         final_month: Month when the last debt is paid off.
         strategy: Strategy name string.
@@ -677,15 +728,15 @@ def _build_result(
         A fully populated StrategyResult.
     """
     per_account = []
-    for i, debt in enumerate(sorted_debts):
+    for i, debt in enumerate(state.sorted_debts):
         per_account.append(AccountPayoff(
             account_id=debt.account_id,
             name=debt.name,
-            payoff_month=payoff_months[i],
-            payoff_date=_add_months(start_date, payoff_months[i]),
-            total_interest=round_money(interest_totals[i]),
-            total_paid=round_money(paid_totals[i]),
-            balance_timeline=timelines[i],
+            payoff_month=state.payoff_months[i],
+            payoff_date=add_months(start_date, state.payoff_months[i]),
+            total_interest=round_money(state.interest_totals[i]),
+            total_paid=round_money(state.paid_totals[i]),
+            balance_timeline=state.timelines[i],
         ))
 
     result_interest = sum(
@@ -699,7 +750,7 @@ def _build_result(
         per_account=per_account,
         total_interest=result_interest,
         total_paid=result_paid,
-        debt_free_date=_add_months(start_date, final_month),
+        debt_free_date=add_months(start_date, final_month),
         total_months=final_month,
         strategy_name=strategy,
         horizon_reached=horizon_reached,

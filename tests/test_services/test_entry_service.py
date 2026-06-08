@@ -64,9 +64,11 @@ class TestCreateEntry:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("50.00"),
-                description="Kroger",
-                entry_date=date(2026, 1, 5),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("50.00"),
+                    description="Kroger",
+                    entry_date=date(2026, 1, 5),
+                ),
             )
 
             assert entry.id is not None
@@ -86,10 +88,12 @@ class TestCreateEntry:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("75.00"),
-                description="Amazon order",
-                entry_date=date(2026, 1, 6),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("75.00"),
+                    description="Amazon order",
+                    entry_date=date(2026, 1, 6),
+                    is_credit=True,
+                ),
             )
 
             assert entry.is_credit is True
@@ -104,9 +108,11 @@ class TestCreateEntry:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("10.00"),
-                description="Test",
-                entry_date=date(2026, 1, 5),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("10.00"),
+                    description="Test",
+                    entry_date=date(2026, 1, 5),
+                ),
             )
             assert isinstance(entry.id, int)
             assert entry.id > 0
@@ -153,9 +159,11 @@ class TestCreateEntry:
                 entry_service.create_entry(
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
-                    amount=Decimal("50.00"),
-                    description="Test",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Test",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_create_entry_rejects_no_template(
@@ -187,9 +195,11 @@ class TestCreateEntry:
                 entry_service.create_entry(
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
-                    amount=Decimal("50.00"),
-                    description="Test",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Test",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_create_entry_rejects_transfer(
@@ -215,10 +225,12 @@ class TestCreateEntry:
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
             second_account = account_service.create_account(
-                user_id=user_id,
-                account_type_id=checking_type.id,
-                name="Savings",
-                anchor_balance=Decimal("500.00"),
+                account_service.AccountSpec(
+                    user_id=user_id,
+                    account_type_id=checking_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("500.00"),
+                ),
             )
             db.session.add(second_account)
             db.session.flush()
@@ -246,9 +258,11 @@ class TestCreateEntry:
                 entry_service.create_entry(
                     transaction_id=txn_id,
                     user_id=user_id,
-                    amount=Decimal("50.00"),
-                    description="Test",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Test",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_create_entry_rejects_income(
@@ -292,9 +306,11 @@ class TestCreateEntry:
                 entry_service.create_entry(
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
-                    amount=Decimal("50.00"),
-                    description="Test",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Test",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_create_entry_rejects_other_user(
@@ -310,9 +326,11 @@ class TestCreateEntry:
                 entry_service.create_entry(
                     transaction_id=txn.id,
                     user_id=other_user.id,
-                    amount=Decimal("50.00"),
-                    description="Test",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Test",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_create_entry_rejects_nonexistent_transaction(
@@ -324,9 +342,11 @@ class TestCreateEntry:
                 entry_service.create_entry(
                     transaction_id=999999,
                     user_id=seed_user["user"].id,
-                    amount=Decimal("50.00"),
-                    description="Test",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Test",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_create_entry_rejects_cancelled_transaction(
@@ -349,9 +369,11 @@ class TestCreateEntry:
                 entry_service.create_entry(
                     transaction_id=txn_id,
                     user_id=user_id,
-                    amount=Decimal("50.00"),
-                    description="Test",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Test",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_create_entry_rejects_credit_status_transaction(
@@ -376,9 +398,11 @@ class TestCreateEntry:
                 entry_service.create_entry(
                     transaction_id=txn_id,
                     user_id=user_id,
-                    amount=Decimal("50.00"),
-                    description="Test",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Test",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_create_entry_on_done_transaction(
@@ -403,9 +427,11 @@ class TestCreateEntry:
             entry = entry_service.create_entry(
                 transaction_id=txn_id,
                 user_id=user_id,
-                amount=Decimal("42.50"),
-                description="Late posting purchase",
-                entry_date=date(2026, 1, 10),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("42.50"),
+                    description="Late posting purchase",
+                    entry_date=date(2026, 1, 10),
+                ),
             )
 
             assert entry.id is not None
@@ -419,9 +445,11 @@ class TestCreateEntry:
             entry = entry_service.create_entry(
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("0.01"),
-                description="Penny item",
-                entry_date=date(2026, 1, 5),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("0.01"),
+                    description="Penny item",
+                    entry_date=date(2026, 1, 5),
+                ),
             )
             assert entry.amount == Decimal("0.01")
 
@@ -433,9 +461,11 @@ class TestCreateEntry:
             entry = entry_service.create_entry(
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("9999999999.99"),
-                description="Expensive item",
-                entry_date=date(2026, 1, 5),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("9999999999.99"),
+                    description="Expensive item",
+                    entry_date=date(2026, 1, 5),
+                ),
             )
             assert entry.amount == Decimal("9999999999.99")
 
@@ -448,9 +478,11 @@ class TestCreateEntry:
             entry = entry_service.create_entry(
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("10.00"),
-                description=desc,
-                entry_date=date(2026, 1, 5),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("10.00"),
+                    description=desc,
+                    entry_date=date(2026, 1, 5),
+                ),
             )
             assert len(entry.description) == 200
 
@@ -472,9 +504,11 @@ class TestCompanionAccess:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=companion.id,
-                amount=Decimal("35.00"),
-                description="Companion purchase",
-                entry_date=date(2026, 1, 5),
+                details=entry_service.EntryDetails(
+                    amount=Decimal("35.00"),
+                    description="Companion purchase",
+                    entry_date=date(2026, 1, 5),
+                ),
             )
 
             assert entry.id is not None
@@ -537,9 +571,11 @@ class TestCompanionAccess:
                 entry_service.create_entry(
                     transaction_id=txn.id,
                     user_id=companion.id,
-                    amount=Decimal("50.00"),
-                    description="Unauthorized",
-                    entry_date=date(2026, 1, 5),
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Unauthorized",
+                        entry_date=date(2026, 1, 5),
+                    ),
                 )
 
     def test_resolve_owner_id_for_owner(self, app, db, seed_user):

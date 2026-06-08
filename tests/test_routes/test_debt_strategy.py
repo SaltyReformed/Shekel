@@ -42,10 +42,12 @@ def _create_debt_account(user, db_session, type_name, name, principal,
     """
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=principal,
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=principal,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -168,11 +170,12 @@ class TestDebtStrategyDashboard:
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         # Create account without LoanParams.
         account = account_service.create_account(
-            user_id=user.id,
-            account_type_id=loan_type.id,
-            name="No Params Loan",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -301,6 +304,57 @@ class TestDebtStrategyCalculate:
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "No active debt accounts" in html
+
+    def test_duplicate_custom_order_renders_error_banner(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A duplicated (owned) account ID in custom_order surfaces the
+        service ValueError in the error banner at HTTP 200.
+
+        The route's IDOR check passes (the ID is owned) and the route
+        does not itself dedupe custom_order, so the duplicate reaches
+        ``calculate_strategy``, which rejects it with
+        ``"custom_order contains duplicate account_ids: [...]"``.  The
+        route catches the ``ValueError`` and renders it inline -- the
+        reachable path through the compute-error funnel (HTTP 200, no
+        500).
+        """
+        auto = _create_auto_loan(seed_user["user"], db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "custom",
+            "custom_order": f"{auto.id},{auto.id}",
+        })
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "custom_order contains duplicate account_ids" in html
+
+    def test_incomplete_custom_order_renders_error_banner(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A custom_order missing one of the user's active debts surfaces
+        the service ValueError in the error banner at HTTP 200.
+
+        With two debts but only one named in custom_order, every named
+        ID is owned (IDOR check passes), so the partial order reaches
+        ``calculate_strategy``, which requires the full active-debt set
+        and rejects it with ``"custom_order is missing account_ids..."``.
+        Confirms the compute-error funnel renders the message inline
+        rather than 500-ing.
+        """
+        user = seed_user["user"]
+        auto = _create_auto_loan(user, db.session)
+        _create_mortgage(user, db.session)
+
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "custom",
+            "custom_order": str(auto.id),
+        })
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "custom_order is missing account_ids" in html
 
 
 # ── Validation Tests ─────────────────────────────────────────────────
@@ -560,10 +614,12 @@ class TestDebtStrategyMetrics:
         user = seed_user["user"]
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         arm_acct = account_service.create_account(
-            user_id=user.id,
-            account_type_id=loan_type.id,
-            name="ARM Mortgage",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=loan_type.id,
+                name="ARM Mortgage",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(arm_acct)
         db.session.flush()
@@ -807,3 +863,41 @@ class TestDebtStrategyChart:
             assert last_balance == 0.0 or abs(last_balance) < 0.01, (
                 f"Dataset {ds['label']!r} ends at {last_balance}, expected ~0"
             )
+
+    def test_custom_selection_drives_chart_order(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The selected strategy's priority order drives the chart, so a
+        custom order overrides avalanche's rate-based order.
+
+        auto (5.5%) and mortgage (6.5%): avalanche targets the higher
+        rate first, so its first dataset is the mortgage.  A custom
+        order of [auto, mortgage] must instead put auto first -- which
+        only holds if the route selected the *custom* result (not
+        avalanche) for the timeline + chart.  Datasets are built in the
+        selected result's per-account priority order, so the first
+        label is the discriminator.
+        """
+        user = seed_user["user"]
+        auto = _create_auto_loan(user, db.session)
+        mortgage = _create_mortgage(user, db.session)
+
+        # Avalanche: higher-rate mortgage leads.
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "avalanche",
+        })
+        avalanche_chart = _extract_chart_data(resp.data.decode())
+        assert avalanche_chart is not None
+        assert avalanche_chart["datasets"][0]["label"] == mortgage.name
+
+        # Custom [auto, mortgage]: auto leads, the opposite of avalanche,
+        # proving _select_result returned the custom run.
+        resp = auth_client.post("/debt-strategy/calculate", data={
+            "extra_monthly": "200",
+            "strategy": "custom",
+            "custom_order": f"{auto.id},{mortgage.id}",
+        })
+        custom_chart = _extract_chart_data(resp.data.decode())
+        assert custom_chart is not None
+        assert custom_chart["datasets"][0]["label"] == auto.name

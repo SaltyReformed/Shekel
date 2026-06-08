@@ -963,10 +963,12 @@ class TestEntryServiceHooks:
             entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="Credit purchase",
-                entry_date=date(2026, 1, 5),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Credit purchase",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=True,
+                ),
             )
 
             payback = (
@@ -988,10 +990,12 @@ class TestEntryServiceHooks:
             entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="Debit purchase",
-                entry_date=date(2026, 1, 5),
-                is_credit=False,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Debit purchase",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=False,
+                ),
             )
 
             payback = (
@@ -1012,10 +1016,12 @@ class TestEntryServiceHooks:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="Toggle test",
-                entry_date=date(2026, 1, 5),
-                is_credit=False,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Toggle test",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=False,
+                ),
             )
 
             entry_service.update_entry(entry.id, user.id, is_credit=True)
@@ -1039,10 +1045,12 @@ class TestEntryServiceHooks:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="Toggle test",
-                entry_date=date(2026, 1, 5),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Toggle test",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=True,
+                ),
             )
 
             payback = (
@@ -1076,18 +1084,22 @@ class TestEntryServiceHooks:
             e1 = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="First",
-                entry_date=date(2026, 1, 5),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="First",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=True,
+                ),
             )
             entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("50.00"),
-                description="Second",
-                entry_date=date(2026, 1, 6),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("50.00"),
+                    description="Second",
+                    entry_date=date(2026, 1, 6),
+                    is_credit=True,
+                ),
             )
 
             # Payback should be $150 (100 + 50).
@@ -1114,10 +1126,12 @@ class TestEntryServiceHooks:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="Only",
-                entry_date=date(2026, 1, 5),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Only",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=True,
+                ),
             )
 
             entry_service.delete_entry(entry.id, user.id)
@@ -1144,10 +1158,12 @@ class TestEntryServiceHooks:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="Amount change",
-                entry_date=date(2026, 1, 5),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Amount change",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=True,
+                ),
             )
 
             payback = (
@@ -1178,10 +1194,12 @@ class TestEntryServiceHooks:
             entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=companion.id,
-                amount=Decimal("100.00"),
-                description="Companion purchase",
-                entry_date=date(2026, 1, 5),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Companion purchase",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=True,
+                ),
             )
 
             payback = (
@@ -1216,10 +1234,12 @@ class TestSessionState:
             entry = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="Session test",
-                entry_date=date(2026, 1, 5),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="Session test",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=True,
+                ),
             )
 
             payback = (
@@ -1249,18 +1269,22 @@ class TestSessionState:
             e1 = entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("100.00"),
-                description="First",
-                entry_date=date(2026, 1, 5),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"),
+                    description="First",
+                    entry_date=date(2026, 1, 5),
+                    is_credit=True,
+                ),
             )
             entry_service.create_entry(
                 transaction_id=txn.id,
                 user_id=user.id,
-                amount=Decimal("50.00"),
-                description="Second",
-                entry_date=date(2026, 1, 6),
-                is_credit=True,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("50.00"),
+                    description="Second",
+                    entry_date=date(2026, 1, 6),
+                    is_credit=True,
+                ),
             )
 
             payback = (

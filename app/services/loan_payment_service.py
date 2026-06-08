@@ -19,7 +19,7 @@ It NEVER queries budget.transfers.  The balance calculator and all
 related services must never depend on the transfers table directly.
 
 Shared by:
-  - app/routes/loan.py (dashboard and payoff calculator)
+  - app/routes/loan/ (dashboard and payoff calculator)
   - app/services/savings_dashboard_service.py (savings projections)
   - app/services/year_end_summary_service.py (annual aggregation)
   - app/routes/debt_strategy.py (debt payoff strategies)
@@ -30,6 +30,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import joinedload
 
@@ -41,6 +42,7 @@ from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services import amortization_engine, escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.rate_period_engine import monthly_due_date
@@ -48,6 +50,13 @@ from app.utils.balance_predicates import (
     balance_excluded_status_ids,
     is_projected,
 )
+
+if TYPE_CHECKING:
+    # Type-only import: ``loan_resolver`` imports from this module
+    # (``load_loan_context``), so a runtime top-level import would be
+    # circular.  ``resolve_account_loan`` returns its ``LoanState``; the
+    # value is produced via the function-local import below.
+    from app.services.loan_resolver import LoanState
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +202,53 @@ def load_loan_context(
     )
 
 
+def query_shadow_income(account_id: int, scenario_id: int):
+    """Return the base query for shadow-income transactions on an account.
+
+    Shadow income is the income-leg shadow of a transfer INTO the account:
+    a payment received by a loan, or a contribution into an investment
+    account.  It is identified by ``transfer_id IS NOT NULL`` plus the
+    Income transaction type, excluding soft-deleted rows and the
+    balance-excluded statuses (Credit, Cancelled, via the centralized
+    ``balance_excluded_status_ids`` accessor).  Centralizing that predicate
+    keeps the loan-payment history and the year-end contribution feeds from
+    drifting on what counts as shadow income (MED-02): a one-sided change
+    to the rule would otherwise desynchronize the two surfaces.
+
+    ``status`` and ``pay_period`` are eager-loaded because both current
+    consumers read ``txn.status`` / ``txn.pay_period`` downstream without an
+    N+1.  Period scoping and ordering stay with the caller because they
+    differ: the payment history covers every period and orders by period
+    start; the year-end feeds filter to a specific set of period IDs.
+
+    Args:
+        account_id: The account receiving the transfers.
+        scenario_id: The active budget scenario.
+
+    Returns:
+        A SQLAlchemy ``Query`` over ``Transaction`` filtered to the
+        account's shadow income (status + pay_period eager-loaded), NOT yet
+        executed -- callers chain ``.filter`` / ``.join`` / ``.order_by`` /
+        ``.all`` as their surface requires.
+    """
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    return (
+        db.session.query(Transaction)
+        .options(
+            joinedload(Transaction.status),
+            joinedload(Transaction.pay_period),
+        )
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.transfer_id.isnot(None),
+            Transaction.transaction_type_id == income_type_id,
+            Transaction.is_deleted.is_(False),
+            ~Transaction.status_id.in_(balance_excluded_status_ids()),
+        )
+    )
+
+
 def get_payment_history(
     account_id: int, scenario_id: int,
 ) -> list[PaymentRecord]:
@@ -227,37 +283,15 @@ def get_payment_history(
         List of PaymentRecord instances sorted by payment date
         (ascending).  Empty list if no qualifying transactions exist.
     """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-
-    # Query shadow income transactions with eager-loaded status and
-    # pay_period to avoid N+1 queries when iterating results.
-    # Status filter routes through the centralized
-    # ``balance_excluded_status_ids`` accessor (D6-09 / MED-02): the
-    # exclusion-set definition lives in one place.  The
-    # ``join(Transaction.pay_period)`` is retained because the
-    # subsequent ``order_by(PayPeriod.start_date)`` requires the
-    # PayPeriod alias to be in scope; ``join(Transaction.status)``
-    # is dropped because the ``Transaction.status_id`` filter no
-    # longer needs it.  ``joinedload(Transaction.status)`` still
-    # eager-loads the status row for the downstream ``is_settled``
-    # consumer.
+    # Shadow-income transactions for this account across every period,
+    # ordered by period start for the chronological payment timeline.
+    # ``query_shadow_income`` owns the shared "what counts as shadow income"
+    # predicate; the explicit ``join(Transaction.pay_period)`` brings the
+    # PayPeriod alias into scope for the ``order_by`` (the builder's
+    # ``joinedload`` is the separate N+1-avoiding eager-load).
     txns = (
-        db.session.query(Transaction)
+        query_shadow_income(account_id, scenario_id)
         .join(Transaction.pay_period)
-        .options(
-            joinedload(Transaction.status),
-            joinedload(Transaction.pay_period),
-        )
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-            # Exclude statuses that do not represent real payments
-            # (Cancelled, Credit).  These have excludes_from_balance=True.
-            ~Transaction.status_id.in_(balance_excluded_status_ids()),
-        )
         .order_by(PayPeriod.start_date)
         .all()
     )
@@ -340,9 +374,10 @@ def compute_contractual_pi(
     if params.original_principal is None or params.interest_rate is None:
         return Decimal("0")
     if anchor_events:
-        # Local import: avoids a top-level circular import (loan_resolver
-        # imports nothing from this module today, but the policy
-        # boundary is one-way and the local import documents that).
+        # Pylint: ``import-outside-toplevel`` -- local import avoids a
+        # top-level circular import (loan_resolver imports nothing from
+        # this module today, but the policy boundary is one-way and the
+        # local import documents that).
         from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
         return loan_resolver.compute_monthly_payment_baseline(
             params,
@@ -356,6 +391,53 @@ def compute_contractual_pi(
         Decimal(str(params.interest_rate)),
         params.term_months,
     )
+
+
+def _redistribute_to_distinct_months(
+    payments: list[PaymentRecord], payment_day: int
+) -> list[PaymentRecord]:
+    """Shift payments sharing a monthly DUE month to consecutive months.
+
+    Biweekly pay periods sometimes place two mortgage payments in the same
+    calendar month; the monthly engine would sum them, double-counting one
+    month and leaving the next empty.  At most one extra payment per month
+    (~2x/year) is expected, so cascading collisions are not, but the
+    while-loop handles them defensively.  The collision key is the true
+    monthly DUE month (``monthly_due_date`` of the pay-period start), NOT
+    the pay-period-start month: two pay periods that both fall before the
+    same ``payment_day`` (e.g. Apr 10 and Apr 24, both due May 1) collide on
+    the May schedule row, and the schedule/override key everything by due
+    month -- a pay-period-start-month key would leave that collision
+    unresolved and sum both into a single double payment.
+    """
+    result: list[PaymentRecord] = []
+    allocated_months: set[tuple[int, int]] = set()
+    for p in payments:
+        due = monthly_due_date(p.payment_date, payment_day)
+        ym = (due.year, due.month)
+        if ym not in allocated_months:
+            result.append(p)
+            allocated_months.add(ym)
+        else:
+            y, m = ym
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+            while (y, m) in allocated_months:
+                m += 1
+                if m > 12:
+                    m = 1
+                    y += 1
+            max_day = calendar.monthrange(y, m)[1]
+            new_date = date(y, m, min(payment_day, max_day))
+            result.append(PaymentRecord(
+                payment_date=new_date,
+                amount=p.amount,
+                is_confirmed=p.is_confirmed,
+            ))
+            allocated_months.add((y, m))
+    return result
 
 
 def prepare_payments_for_engine(
@@ -417,46 +499,95 @@ def prepare_payments_for_engine(
         sorted_payments = adjusted
 
     # Step 2: Redistribute payments that share a monthly DUE month to
-    # consecutive months.  Biweekly pay periods produce at most one extra
-    # payment per month (~2 times per year), so cascading collisions are
-    # not expected, but the while-loop handles them defensively.  The
-    # collision key is the true monthly due month (``monthly_due_date`` of
-    # the pay-period start), NOT the pay-period-start month: two pay
-    # periods that both fall before the same payment_day (e.g. Apr 10 and
-    # Apr 24, both due May 1) collide on the May schedule row, and the
-    # schedule/override key everything by due month -- so a pay-period-
-    # start-month key would leave that collision unresolved and the
-    # override would sum both into a single double payment.
-    result = []
-    allocated_months: set[tuple[int, int]] = set()
+    # consecutive months so the monthly engine sees one per due month.
+    return _redistribute_to_distinct_months(sorted_payments, payment_day)
 
-    for p in sorted_payments:
-        due = monthly_due_date(p.payment_date, payment_day)
-        ym = (due.year, due.month)
-        if ym not in allocated_months:
-            result.append(p)
-            allocated_months.add(ym)
-        else:
-            y, m = ym
-            m += 1
-            if m > 12:
-                m = 1
-                y += 1
-            while (y, m) in allocated_months:
-                m += 1
-                if m > 12:
-                    m = 1
-                    y += 1
-            max_day = calendar.monthrange(y, m)[1]
-            new_date = date(y, m, min(payment_day, max_day))
-            result.append(PaymentRecord(
-                payment_date=new_date,
-                amount=p.amount,
-                is_confirmed=p.is_confirmed,
-            ))
-            allocated_months.add((y, m))
 
-    return result
+def resolve_account_loan(
+    account_id: int, scenario_id: int, today: date
+) -> "tuple[LoanParams, LoanState] | None":
+    """Load a debt account's ``LoanParams`` and run the resolver as of ``today``.
+
+    The per-account "load LoanParams (skip if unconfigured), load anchor
+    events + context, run the resolver" preamble shared by the debt-strategy
+    route and the year-end schedule generation.  Centralizing it keeps the
+    two consumers from drifting on HOW a loan account is resolved (which
+    inputs feed :func:`loan_resolver.resolve_loan`, in what order).
+
+    Returns ``None`` when the account has no ``LoanParams`` row (it is not a
+    configured loan); the caller skips it.  Unlike
+    :func:`_resolve_loan_piti`, an account WITH params but no anchor events
+    is still resolved here -- both callers screen those out downstream
+    (debt-strategy via its zero-balance/zero-payment guard, the year-end
+    feed via the resulting empty schedule), so the no-anchor short-circuit
+    that PITI needs is intentionally absent.
+
+    Args:
+        account_id: The debt account to resolve.
+        scenario_id: The active budget scenario (for payment history).
+        today: The as-of date passed through to the resolver.
+
+    Returns:
+        ``(params, state)`` -- the loaded :class:`LoanParams` and the
+        resolved :class:`~app.services.loan_resolver.LoanState` -- or
+        ``None`` if the account has no ``LoanParams``.
+    """
+    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports from this
+    # module (``load_loan_context``), so resolving it here rather than at
+    # module top keeps the dependency one-directional.
+    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
+    params = db.session.query(LoanParams).filter_by(account_id=account_id).first()
+    if params is None:
+        return None
+    anchor_events = db.session.query(LoanAnchorEvent).filter_by(
+        account_id=account_id,
+    ).all()
+    ctx = load_loan_context(account_id, scenario_id, params)
+    state = loan_resolver.resolve_loan(
+        loan_resolver.LoanInputs(
+            params, anchor_events, ctx.payments, ctx.rate_changes,
+        ),
+        today,
+    )
+    return params, state
+
+
+def _resolve_loan_piti(
+    loan_account_id: int, scenario_id: int, as_of: date
+) -> Decimal | None:
+    """Resolve a loan's full live monthly payment (P&I + escrow), or None.
+
+    Returns None when the loan has no ``LoanParams`` row or no anchor
+    events (it cannot be resolved, so its shadows keep their stored amount).
+    ``resolve_loan(...).monthly_payment`` is the rate-period P&I;
+    ``context.monthly_escrow`` adds the escrow component to reach PITI.
+    """
+    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports nothing
+    # from this module, so resolving it here rather than at module top
+    # keeps the dependency one-directional.
+    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
+    params = (
+        db.session.query(LoanParams)
+        .filter_by(account_id=loan_account_id)
+        .first()
+    )
+    if params is None:
+        return None
+    context = load_loan_context(loan_account_id, scenario_id, params)
+    anchor_events = (
+        db.session.query(LoanAnchorEvent)
+        .filter_by(account_id=loan_account_id)
+        .all()
+    )
+    if not anchor_events:
+        return None
+    state = loan_resolver.resolve_loan(
+        loan_resolver.LoanInputs(
+            params, anchor_events, context.payments, context.rate_changes,
+        ),
+        as_of,
+    )
+    return state.monthly_payment + context.monthly_escrow
 
 
 def live_loan_transfer_amounts(
@@ -500,11 +631,6 @@ def live_loan_transfer_amounts(
         ``dict`` mapping transaction id to the live PITI Decimal; empty
         when no derive-from-loan transfer is present.
     """
-    # pylint: disable=import-outside-toplevel  -- one-way policy boundary;
-    # the local import documents that loan_resolver imports nothing here.
-    from app.models.transfer import Transfer
-    from app.services import loan_resolver
-
     candidates = [
         txn for txn in transactions
         if txn.transfer_id is not None
@@ -534,28 +660,9 @@ def live_loan_transfer_amounts(
     today = date.today()
     piti_by_loan: dict[int, Decimal] = {}
     for loan_account_id in set(loan_by_transfer.values()):
-        params = (
-            db.session.query(LoanParams)
-            .filter_by(account_id=loan_account_id)
-            .first()
-        )
-        if params is None:
-            continue
-        context = load_loan_context(loan_account_id, scenario_id, params)
-        anchor_events = (
-            db.session.query(LoanAnchorEvent)
-            .filter_by(account_id=loan_account_id)
-            .all()
-        )
-        if not anchor_events:
-            continue
-        state = loan_resolver.resolve_loan(
-            params, anchor_events, context.payments,
-            context.rate_changes, today,
-        )
-        piti_by_loan[loan_account_id] = (
-            state.monthly_payment + context.monthly_escrow
-        )
+        piti = _resolve_loan_piti(loan_account_id, scenario_id, today)
+        if piti is not None:
+            piti_by_loan[loan_account_id] = piti
 
     overrides: dict[int, Decimal] = {}
     for txn in candidates:

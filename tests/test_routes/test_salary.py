@@ -133,11 +133,13 @@ def _create_other_user_profile():
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = account_service.create_account(
-        user_id=other_user.id,
-        account_type_id=checking_type.id,
-        name="Other Checking",
-        anchor_balance=Decimal("500.00"),
-        anchor_period_id=_bootstrap.id,
+        account_service.AccountSpec(
+            user_id=other_user.id,
+            account_type_id=checking_type.id,
+            name="Other Checking",
+            anchor_balance=Decimal("500.00"),
+            anchor_period_id=_bootstrap.id,
+        ),
     )
 
     scenario = Scenario(
@@ -3026,15 +3028,15 @@ class TestCalibrationServerDerivedSnapshot:
             )
 
             # Federal/state/medicare flow through the snapshot rates.
-            assert breakdown.federal_tax == Decimal("200.00")
-            assert breakdown.state_tax == Decimal("100.00")
-            assert breakdown.medicare == Decimal("41.83")
+            assert breakdown.taxes.federal == Decimal("200.00")
+            assert breakdown.taxes.state == Decimal("100.00")
+            assert breakdown.taxes.medicare == Decimal("41.83")
 
             # SS uses the statutory rate via capped_social_security,
             # NOT the stored effective_ss_rate.  At this cumulative=0
             # and ss_wage_base=176100, gross fits fully under the cap
             # so SS = gross * statutory 0.062.
-            assert breakdown.social_security == Decimal("178.85")
+            assert breakdown.taxes.social_security == Decimal("178.85")
 
 
 # ── Button Placement ──────────────────────────────────────────────

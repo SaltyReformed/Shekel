@@ -239,10 +239,12 @@ class TestRoundTrip:
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
             new_account = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=checking_type.id,
-                name="Round Trip Account",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Round Trip Account",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(new_account)
             db.session.flush()

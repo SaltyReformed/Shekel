@@ -662,6 +662,38 @@ class TestFreshLoginRequiredRedirects:
             assert resp.status_code == 302
             assert "/reauth" in resp.headers.get("Location", "")
 
+    def test_companion_reactivate_stale_session_redirects_to_reauth(
+        self, app, auth_client, seed_companion,
+    ):
+        """A stale session POSTing to companion reactivate bounces to /reauth.
+
+        Reactivation re-grants login access to a previously disabled
+        companion (is_active flipped back to True) -- the credential-
+        lifecycle inverse of deactivate, which is itself step-up
+        gated.  This pins the @fresh_login_required() guard so the
+        symmetric pair (deactivate / reactivate) cannot drift back
+        apart: a hijacked-but-stale owner session must not silently
+        restore a companion the real owner deliberately disabled.
+        """
+        with app.app_context():
+            comp_id = seed_companion["user"].id
+            stale = (
+                datetime.now(timezone.utc) - timedelta(minutes=6)
+            ).isoformat()
+            with auth_client.session_transaction() as sess:
+                sess[FRESH_LOGIN_AT_KEY] = stale
+
+            _reset_login_cache()
+            resp = auth_client.post(
+                f"/settings/companions/{comp_id}/reactivate",
+            )
+            # No HX-Request header -> the decorator returns a 302 to
+            # /reauth carrying the original action URL as ``next``.
+            assert resp.status_code == 302
+            location = resp.headers.get("Location", "")
+            assert "/reauth" in location
+            assert "next=" in location
+
     def test_htmx_request_returns_hx_redirect(
         self, app, auth_client, seed_user,
     ):
@@ -1175,10 +1207,12 @@ class TestHardDeleteTransferTemplateIsStepUpGated:
             db.session.query(AccountType).filter_by(name="Savings").one()
         )
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Step-Up Test Savings",
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Step-Up Test Savings",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()

@@ -107,10 +107,12 @@ class TestGroupAccountsByCategory:
                 .filter_by(name="Savings").one()
             )
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Emergency Fund",
-                anchor_balance=Decimal("10000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Emergency Fund",
+                    anchor_balance=Decimal("10000.00"),
+                ),
             )
             db.session.add(savings)
             db.session.commit()
@@ -138,11 +140,13 @@ class TestGoalProgress:
                 .filter_by(name="Savings").one()
             )
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Goal Account",
-                anchor_balance=Decimal("5000.00"),
-                anchor_period_id=seed_periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Goal Account",
+                    anchor_balance=Decimal("5000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -434,11 +438,13 @@ class TestGoalTrajectoryDashboard:
                 .filter_by(name="Savings").one()
             )
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Trajectory Account",
-                anchor_balance=Decimal("3000.00"),
-                anchor_period_id=seed_periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Trajectory Account",
+                    anchor_balance=Decimal("3000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -476,11 +482,13 @@ class TestGoalTrajectoryDashboard:
                 .filter_by(name="Savings").one()
             )
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="No Transfer Account",
-                anchor_balance=Decimal("2000.00"),
-                anchor_period_id=seed_periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="No Transfer Account",
+                    anchor_balance=Decimal("2000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -518,11 +526,13 @@ class TestGoalTrajectoryDashboard:
                 .filter_by(name="Savings").one()
             )
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="With Transfer Account",
-                anchor_balance=Decimal("3000.00"),
-                anchor_period_id=seed_periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="With Transfer Account",
+                    anchor_balance=Decimal("3000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
             )
             db.session.add(savings)
             db.session.flush()
@@ -583,11 +593,13 @@ class TestEmergencyFundMetrics:
                 .filter_by(name="Savings").one()
             )
             savings = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("8000.00"),
-                anchor_period_id=seed_periods[0].id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("8000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
             )
             db.session.add(savings)
             db.session.commit()
@@ -614,10 +626,12 @@ def _create_small_loan(seed_user, db_session, name="Test Loan",
     """
     loan_type = db_session.query(AccountType).filter_by(name="Auto Loan").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=principal,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=principal,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -662,19 +676,21 @@ class TestPaidOffFlag:
         """
         from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -721,19 +737,21 @@ class TestPaidOffFlag:
         """
         from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("500.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("500.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -758,19 +776,21 @@ class TestPaidOffFlag:
         """
         from app import ref_cache as rc  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import create_transfer  # pylint: disable=import-outside-toplevel
+        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.PROJECTED),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.PROJECTED),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -808,11 +828,12 @@ class TestPaidOffFlag:
                 .filter_by(name="Auto Loan").one()
             )
             acct = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=loan_type.id,
-                name="No Params Loan",
-            
-                anchor_balance=Decimal("0"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=loan_type.id,
+                    name="No Params Loan",
+                    anchor_balance=Decimal("0"),
+                ),
             )
             db.session.add(acct)
             db.session.commit()
@@ -844,10 +865,12 @@ class TestArchivedAccounts:
                 .filter_by(name="Savings").one()
             )
             archived = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Old Savings",
-                anchor_balance=Decimal("2000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Old Savings",
+                    anchor_balance=Decimal("2000.00"),
+                ),
                 is_active=False,
             )
             db.session.add(archived)
@@ -870,10 +893,12 @@ class TestArchivedAccounts:
                 .filter_by(name="Savings").one()
             )
             archived = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Hidden Savings",
-                anchor_balance=Decimal("500.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Hidden Savings",
+                    anchor_balance=Decimal("500.00"),
+                ),
                 is_active=False,
             )
             db.session.add(archived)
@@ -907,10 +932,12 @@ class TestArchivedAccounts:
                 .filter_by(name="Savings").one()
             )
             archived = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Archived Savings",
-                anchor_balance=Decimal("3000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Archived Savings",
+                    anchor_balance=Decimal("3000.00"),
+                ),
                 is_active=False,
             )
             db.session.add(archived)
@@ -984,10 +1011,12 @@ class TestDebtSummary:
                 .filter_by(name="Mortgage").one()
             )
             mortgage = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=mortgage_type.id,
-                name="Mortgage",
-                anchor_balance=Decimal("200000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="Mortgage",
+                    anchor_balance=Decimal("200000.00"),
+                ),
             )
             db.session.add(mortgage)
             db.session.flush()
@@ -1012,10 +1041,12 @@ class TestDebtSummary:
                 .filter_by(name="Auto Loan").one()
             )
             auto = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=auto_type.id,
-                name="Auto",
-                anchor_balance=Decimal("25000.00"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=auto_type.id,
+                    name="Auto",
+                    anchor_balance=Decimal("25000.00"),
+                ),
             )
             db.session.add(auto)
             db.session.flush()
@@ -1053,7 +1084,7 @@ class TestDebtSummary:
         """
         from app import ref_cache as rc
         from app.enums import StatusEnum
-        from app.services.transfer_service import create_transfer
+        from app.services.transfer_service import TransferSpec, create_transfer
 
         with app.app_context():
             active = _create_small_loan(
@@ -1065,14 +1096,16 @@ class TestDebtSummary:
             )
             # Pay off the second loan with a confirmed transfer.
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=paid_off.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=paid_off.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -1100,19 +1133,21 @@ class TestDebtSummary:
         """
         from app import ref_cache as rc
         from app.enums import StatusEnum
-        from app.services.transfer_service import create_transfer
+        from app.services.transfer_service import TransferSpec, create_transfer
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -1151,11 +1186,12 @@ class TestDebtSummary:
                 .filter_by(name="Auto Loan").one()
             )
             no_params = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=loan_type.id,
-                name="No Params",
-            
-                anchor_balance=Decimal("0"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=loan_type.id,
+                    name="No Params",
+                    anchor_balance=Decimal("0"),
+                ),
             )
             db.session.add(no_params)
             db.session.commit()
@@ -1190,11 +1226,12 @@ class TestDebtSummary:
                 .filter_by(name="Mortgage").one()
             )
             mortgage = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=mortgage_type.id,
-                name="Long Mortgage",
-            
-                anchor_balance=Decimal("0"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="Long Mortgage",
+                    anchor_balance=Decimal("0"),
+                ),
             )
             db.session.add(mortgage)
             db.session.flush()
@@ -1242,11 +1279,12 @@ class TestDebtSummary:
                 .filter_by(name="Mortgage").one()
             )
             mortgage = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=mortgage_type.id,
-                name="Escrow Mortgage",
-            
-                anchor_balance=Decimal("0"),
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="Escrow Mortgage",
+                    anchor_balance=Decimal("0"),
+                ),
             )
             db.session.add(mortgage)
             db.session.flush()
@@ -1351,7 +1389,7 @@ class TestDTI:
         """C-5.12-13: Salary exists, all loans paid off -> DTI = 0.0%."""
         from app import ref_cache as rc
         from app.enums import StatusEnum
-        from app.services.transfer_service import create_transfer
+        from app.services.transfer_service import TransferSpec, create_transfer
 
         with app.app_context():
             filing = db.session.query(FilingStatus).first()
@@ -1366,14 +1404,16 @@ class TestDTI:
             db.session.add(profile)
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=acct.id,
-                pay_period_id=seed_periods[7].id,
-                scenario_id=seed_user["scenario"].id,
-                amount=Decimal("1100.00"),
-                status_id=rc.status_id(StatusEnum.DONE),
-                category_id=seed_user["categories"]["Rent"].id,
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
             )
             db.session.commit()
 
@@ -1397,7 +1437,7 @@ class TestDTI:
         43.0% -> moderate (not > 43)
         43.1% -> high (> 43)
         """
-        from app.services.savings_dashboard_service import _get_dti_label
+        from app.services.savings_dashboard_service._metrics import _get_dti_label
         assert _get_dti_label(Decimal("35.9")) == "healthy"
         assert _get_dti_label(Decimal("36.0")) == "moderate"
         assert _get_dti_label(Decimal("43.0")) == "moderate"
@@ -1405,7 +1445,7 @@ class TestDTI:
 
     def test_dti_over_100(self, app):
         """C-5.12-16: DTI > 100% is valid and labeled 'high'."""
-        from app.services.savings_dashboard_service import _get_dti_label
+        from app.services.savings_dashboard_service._metrics import _get_dti_label
         assert _get_dti_label(Decimal("124.5")) == "high"
 
     def test_gross_monthly_uses_26_not_24(self, app):
@@ -1588,7 +1628,7 @@ class TestDTIRaiseAware:
         ``app/services/savings_dashboard_service.py``:
 
         1. ``compute_dashboard_data`` reads
-           ``current_breakdown.gross_biweekly`` (the engine-derived
+           ``current_breakdown.earnings.gross_biweekly`` (the engine-derived
            value introduced by Commit 26) and does NOT subscript
            ``params`` with the ``"salary_gross_biweekly"`` key (the
            off-engine value still used by the investment-projection
@@ -1607,19 +1647,33 @@ class TestDTIRaiseAware:
         """
         import ast  # pylint: disable=import-outside-toplevel
         import inspect  # pylint: disable=import-outside-toplevel
+        import pathlib  # pylint: disable=import-outside-toplevel
         from app.services import savings_dashboard_service as svc  # pylint: disable=import-outside-toplevel
+        # ``compute_dashboard_data`` lives in the package's
+        # ``_orchestrator`` sub-module after the Phase 2 split; ``svc``
+        # re-exports it, but the source-inspection guards must target the
+        # sub-module (the package ``__init__`` holds only the re-export,
+        # not the function body).
+        from app.services.savings_dashboard_service import (  # pylint: disable=import-outside-toplevel
+            _orchestrator,
+        )
 
         # Guard 1a: positive lock -- the engine breakdown attribute is
         # read in compute_dashboard_data.
         source = inspect.getsource(svc.compute_dashboard_data)
-        assert "current_breakdown.gross_biweekly" in source, (
+        assert "current_breakdown.earnings.gross_biweekly" in source, (
             "DTI block must read gross_biweekly from the paycheck "
             "engine breakdown (MED-06 / F-032)."
         )
 
-        # Guard 1b: negative lock -- no Subscript node in
-        # compute_dashboard_data reads ``params["salary_gross_biweekly"]``.
-        tree = ast.parse(inspect.getsource(svc))
+        # Guard 1b: negative lock -- compute_dashboard_data must not read
+        # the off-engine ``salary_gross_biweekly`` for DTI, by either the
+        # legacy dict subscript ``params["salary_gross_biweekly"]`` or the
+        # current dataclass attribute ``params.salary_gross_biweekly``
+        # (``params`` became the frozen ``_AccountParams`` in the
+        # type-precision quality pass; the attribute form is the access a
+        # regression would now use).
+        tree = ast.parse(inspect.getsource(_orchestrator))
         target_fn = None
         for node in ast.walk(tree):
             if (isinstance(node, ast.FunctionDef)
@@ -1630,21 +1684,32 @@ class TestDTIRaiseAware:
             "compute_dashboard_data not found in module source"
         )
         for node in ast.walk(target_fn):
-            if (
+            reads_off_engine = (
                 isinstance(node, ast.Subscript)
                 and isinstance(node.value, ast.Name)
                 and node.value.id == "params"
                 and isinstance(node.slice, ast.Constant)
                 and node.slice.value == "salary_gross_biweekly"
-            ):
+            ) or (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "params"
+                and node.attr == "salary_gross_biweekly"
+            )
+            if reads_off_engine:
                 raise AssertionError(
-                    "compute_dashboard_data must not read the "
-                    "off-engine params['salary_gross_biweekly'] "
-                    "value for DTI (MED-06 / F-032)."
+                    "compute_dashboard_data must not read the off-engine "
+                    "salary_gross_biweekly value for DTI (MED-06 / F-032)."
                 )
 
-        # Guard 2: module-wide -- no bare 26/12 literal remains.
-        file_source = inspect.getsource(svc)
+        # Guard 2: package-wide -- no bare 26/12 literal in any
+        # sub-module.  Reads every .py file in the package directory so
+        # the check stays module-wide after the Phase 2 split.
+        pkg_dir = pathlib.Path(inspect.getfile(_orchestrator)).parent
+        file_source = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in sorted(pkg_dir.glob("*.py"))
+        )
         assert 'Decimal("26") / Decimal("12")' not in file_source, (
             "biweekly-to-monthly factor must use named constants "
             "PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR (E-24 / HIGH-05)."
@@ -1992,11 +2057,13 @@ class TestCanonicalProducerRouting:
             assert current_period is not None
 
             hysa = account_service.create_account(
-                user_id=seed_user["user"].id,
-                account_type_id=hysa_type.id,
-                name="HYSA Entry Test",
-                anchor_balance=Decimal("614.29"),
-                anchor_period_id=current_period.id,
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="HYSA Entry Test",
+                    anchor_balance=Decimal("614.29"),
+                    anchor_period_id=current_period.id,
+                ),
             )
             db.session.add(hysa)
             db.session.flush()
@@ -2344,7 +2411,10 @@ class TestLoanProjectedBalanceDispatcher:
             )
             today = date.today()
             state = loan_resolver.resolve_loan(
-                lp, events, ctx.payments, ctx.rate_changes, today,
+                loan_resolver.LoanInputs(
+                    lp, events, ctx.payments, ctx.rate_changes,
+                ),
+                today,
             )
             all_periods = pay_period_service.get_all_periods(
                 seed_user["user"].id,
@@ -2432,7 +2502,10 @@ class TestLoanProjectedBalanceDispatcher:
             )
             today = date.today()
             state = loan_resolver.resolve_loan(
-                lp, events, ctx.payments, ctx.rate_changes, today,
+                loan_resolver.LoanInputs(
+                    lp, events, ctx.payments, ctx.rate_changes,
+                ),
+                today,
             )
             all_periods = pay_period_service.get_all_periods(
                 seed_user["user"].id,

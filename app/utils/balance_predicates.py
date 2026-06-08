@@ -70,7 +70,9 @@ integer IDs from ``ref_cache``. The status display string is never
 consulted; the C2-8 test asserts this property mechanically against the
 module source.
 """
-from sqlalchemy import and_
+from datetime import date
+
+from sqlalchemy import and_, or_
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -356,4 +358,40 @@ def balance_contributing_clause():
     return and_(
         Transaction.is_deleted.is_(False),
         Transaction.status_id.notin_(balance_excluded_status_ids()),
+    )
+
+
+def monthly_attribution_clause(first_day: date, last_day: date, period_ids: list[int]):
+    """Return a SQLAlchemy clause attributing a transaction to a date range.
+
+    The canonical monthly-attribution business rule, shared by the
+    calendar day-cell loader (``calendar_service._query_transactions_for_range``)
+    and the budget-variance date-range query
+    (``budget_variance_service._query_by_date_range``): a transaction
+    belongs to ``[first_day, last_day]`` if its ``due_date`` falls in that
+    range, OR it has no ``due_date`` and its pay period overlaps the range
+    (the fallback attribution assigns an undated row by its period). The
+    two surfaces -- and any future date-range consumer -- read this one
+    definition so they cannot drift on which transactions land in a given
+    month (MED-02: a one-sided change to the overlap rule would otherwise
+    silently desynchronize the calendar and the variance report).
+
+    Args:
+        first_day: Inclusive start of the date range.
+        last_day: Inclusive end of the date range.
+        period_ids: IDs of the pay periods overlapping the range (from
+            :func:`~app.services.pay_period_service.get_overlapping_periods`).
+            An empty list degrades to the no-match sentinel ``[-1]`` so a
+            range with no overlapping periods still matches dated rows but
+            no undated ones.
+
+    Returns:
+        A SQLAlchemy boolean expression suitable for ``query.filter(...)``
+        on a select rooted at ``Transaction``.
+    """
+    return or_(
+        Transaction.due_date.between(first_day, last_day),
+        Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(
+            period_ids if period_ids else [-1],
+        ),
     )

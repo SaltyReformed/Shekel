@@ -98,11 +98,13 @@ def _create_fixed_loan(seed_user, period_id):
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Single-Source Mortgage",
-        anchor_balance=FIXED_PRINCIPAL,
-        anchor_period_id=period_id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Single-Source Mortgage",
+            anchor_balance=FIXED_PRINCIPAL,
+            anchor_period_id=period_id,
+        ),
     )
     db.session.flush()
 
@@ -142,11 +144,13 @@ def _create_arm_loan(seed_user, period_id):
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Single-Source ARM",
-        anchor_balance=ARM_PRINCIPAL,
-        anchor_period_id=period_id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Single-Source ARM",
+            anchor_balance=ARM_PRINCIPAL,
+            anchor_period_id=period_id,
+        ),
     )
     db.session.flush()
 
@@ -192,15 +196,17 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
     xfer = transfer_service.create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=checking.id,
-        to_account_id=loan_account.id,
-        pay_period_id=period.id,
-        scenario_id=scenario.id,
-        amount=FIXED_PI,
-        status_id=projected_id,
-        category_id=category.id,
-        notes="C15 PITI settle",
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=checking.id,
+            to_account_id=loan_account.id,
+            pay_period_id=period.id,
+            scenario_id=scenario.id,
+            amount=FIXED_PI,
+            status_id=projected_id,
+            category_id=category.id,
+            notes="C15 PITI settle",
+        ),
     )
     db.session.commit()
 
@@ -321,13 +327,15 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
         )
 
         resolver_state = loan_resolver.resolve_loan(
-            loan_params,
-            db.session.query(LoanAnchorEvent)
-                .filter_by(account_id=account.id).all(),
-            loan_payment_service.load_loan_context(
-                account.id, seed_user["scenario"].id, loan_params,
-            ).payments,
-            None,
+            loan_resolver.LoanInputs(
+                loan_params,
+                db.session.query(LoanAnchorEvent)
+                    .filter_by(account_id=account.id).all(),
+                loan_payment_service.load_loan_context(
+                    account.id, seed_user["scenario"].id, loan_params,
+                ).payments,
+                None,
+            ),
             date.today(),
         )
         assert resolver_state.current_balance == FIXED_PRINCIPAL, (
@@ -393,11 +401,13 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
             account.id, scenario_id, loan_params,
         )
         resolver_state = loan_resolver.resolve_loan(
-            loan_params,
-            db.session.query(LoanAnchorEvent)
-                .filter_by(account_id=account.id).all(),
-            ctx.payments,
-            ctx.rate_changes,
+            loan_resolver.LoanInputs(
+                loan_params,
+                db.session.query(LoanAnchorEvent)
+                    .filter_by(account_id=account.id).all(),
+                ctx.payments,
+                ctx.rate_changes,
+            ),
             date.today(),
         )
         assert resolver_state.current_balance == BALANCE_AFTER_ONE_SETTLE
@@ -458,11 +468,13 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
             account.id, seed_user["scenario"].id, loan_params,
         )
         resolver_state = loan_resolver.resolve_loan(
-            loan_params,
-            db.session.query(LoanAnchorEvent)
-                .filter_by(account_id=account.id).all(),
-            ctx.payments,
-            ctx.rate_changes,
+            loan_resolver.LoanInputs(
+                loan_params,
+                db.session.query(LoanAnchorEvent)
+                    .filter_by(account_id=account.id).all(),
+                ctx.payments,
+                ctx.rate_changes,
+            ),
             date.today(),
         )
         # Resolver-side stability lock: the same value Commit 13's

@@ -7,10 +7,15 @@ Both FK to account_id, not to any params table.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin, TimestampMixin
+from app.models.mixins import (
+    AccountScopedMixin,
+    CreatedAtMixin,
+    IsActiveMixin,
+    TimestampMixin,
+)
 
 
-class RateHistory(CreatedAtMixin, db.Model):
+class RateHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     """Historical record of rate changes for a variable-rate loan account.
 
     Duplicate prevention (F-104 / C-22): the composite unique
@@ -60,7 +65,7 @@ class RateHistory(CreatedAtMixin, db.Model):
         ),
         # F-139 / C-42: composite index on
         # ``(account_id, effective_date DESC)`` matches the
-        # predominant query in ``app/routes/loan.py``:
+        # predominant query in ``app/routes/loan/escrow_rates.py``:
         # ``RateHistory.query.filter_by(account_id=X)
         #     .order_by(RateHistory.effective_date.desc())``.
         # DESC ordering on the second column lets PostgreSQL satisfy
@@ -79,11 +84,6 @@ class RateHistory(CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    account_id = db.Column(
-        db.Integer,
-        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     effective_date = db.Column(db.Date, nullable=False)
     interest_rate = db.Column(db.Numeric(7, 5), nullable=False)
     # Recast P&I (principal + interest, no escrow) that took effect on
@@ -113,7 +113,7 @@ class RateHistory(CreatedAtMixin, db.Model):
         )
 
 
-class EscrowComponent(TimestampMixin, db.Model):
+class EscrowComponent(AccountScopedMixin, IsActiveMixin, TimestampMixin, db.Model):
     """An escrow line item (property tax, insurance, etc.) for a loan account."""
 
     __tablename__ = "escrow_components"
@@ -144,18 +144,10 @@ class EscrowComponent(TimestampMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    account_id = db.Column(
-        db.Integer,
-        db.ForeignKey("budget.accounts.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     name = db.Column(db.String(100), nullable=False)
     annual_amount = db.Column(db.Numeric(12, 2), nullable=False)
     inflation_rate = db.Column(db.Numeric(5, 4), nullable=True)
-    is_active = db.Column(
-        db.Boolean, nullable=False, default=True,
-        server_default=db.text("true"),
-    )
+    # is_active: from IsActiveMixin.
 
     # Relationships
     account = db.relationship(

@@ -5,11 +5,13 @@ Pure functions for savings goal calculations. No database writes, no
 Flask imports -- called by the savings route to compute metrics.
 """
 
-import calendar
 import logging
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
+from app import ref_cache
+from app.enums import GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum
+from app.utils.dates import add_months
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
 
 logger = logging.getLogger(__name__)
@@ -64,8 +66,6 @@ def resolve_goal_target(
         ValueError: If the goal is income-relative but income_unit_id
             or income_multiplier is None.
     """
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import GoalModeEnum, IncomeUnitEnum  # pylint: disable=import-outside-toplevel
 
     fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
 
@@ -232,8 +232,6 @@ def amount_to_monthly(
     Returns:
         Decimal monthly equivalent, or None for non-recurring patterns.
     """
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
 
     every_period_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.EVERY_PERIOD
@@ -261,29 +259,28 @@ def amount_to_monthly(
     )
 
     if pattern_id == once_id:
+        # One-time patterns are not a recurring monthly commitment.
         return None
 
+    # Single-return dispatch (one Decimal-or-None per pattern); the per-pattern
+    # conversion factors are documented in the module docstring above.
     if pattern_id == every_period_id:
-        return amount * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-
-    if pattern_id == every_n_id:
+        monthly = amount * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+    elif pattern_id == every_n_id:
         n = Decimal(str(interval_n or 1))
-        return amount * PAY_PERIODS_PER_YEAR / n / MONTHS_PER_YEAR
-
-    if pattern_id in (monthly_id, monthly_first_id):
-        return amount
-
-    if pattern_id == quarterly_id:
-        return amount / Decimal("3")
-
-    if pattern_id == semi_annual_id:
-        return amount / Decimal("6")
-
-    if pattern_id == annual_id:
-        return amount / MONTHS_PER_YEAR
-
-    # Unknown pattern.
-    return None
+        monthly = amount * PAY_PERIODS_PER_YEAR / n / MONTHS_PER_YEAR
+    elif pattern_id in (monthly_id, monthly_first_id):
+        monthly = amount
+    elif pattern_id == quarterly_id:
+        monthly = amount / Decimal("3")
+    elif pattern_id == semi_annual_id:
+        monthly = amount / Decimal("6")
+    elif pattern_id == annual_id:
+        monthly = amount / MONTHS_PER_YEAR
+    else:
+        # Unrecognized pattern id.
+        monthly = None
+    return monthly
 
 
 def calculate_trajectory(
@@ -352,7 +349,7 @@ def calculate_trajectory(
         )
     )
 
-    projected = _add_months(today, months)
+    projected = add_months(today, months)
     pace = _compute_pace(projected, target_date) if actionable_target else None
 
     return {
@@ -420,27 +417,3 @@ def _compute_required_monthly(
     return (remaining / Decimal(str(months_available))).quantize(
         _TWO_PLACES, rounding=ROUND_CEILING
     )
-
-
-def _add_months(start: date, months: int) -> date:
-    """Add N months to a date, clamping day to the month's last day.
-
-    Returns date.max if the result would exceed year 9999 (Python's
-    maximum representable year).
-
-    Args:
-        start: The starting date.
-        months: Number of months to add (non-negative).
-
-    Returns:
-        A new date N months in the future, or date.max on overflow.
-    """
-    total_months = start.month - 1 + months
-    year = start.year + total_months // 12
-    month = total_months % 12 + 1
-
-    if year > 9999:
-        return date.max
-
-    day = min(start.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)

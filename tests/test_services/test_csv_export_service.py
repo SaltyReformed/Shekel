@@ -50,7 +50,6 @@ class FakeMonthSummary:
     net: Decimal = Decimal("1000.00")
     projected_end_balance: Decimal = Decimal("5000.00")
     is_third_paycheck_month: bool = False
-    large_transactions: list = field(default_factory=list)
     day_entries: dict = field(default_factory=dict)
     paycheck_days: list = field(default_factory=list)
 
@@ -66,14 +65,30 @@ class FakeYearOverview:
 
 
 @dataclass(frozen=True)
-class FakeTransactionVariance:
-    """Minimal TransactionVariance for CSV tests."""
-    transaction_id: int = 1
-    name: str = "Rent Payment"
+class FakeVarianceFigures:
+    """Minimal VarianceFigures stand-in for CSV tests."""
     estimated: Decimal = Decimal("1200.00")
     actual: Decimal = Decimal("1200.00")
     variance: Decimal = Decimal("0.00")
     variance_pct: Decimal | None = Decimal("0.00")
+
+
+def _zero_figures() -> FakeVarianceFigures:
+    """Zero figures with a null percentage -- the empty-report default."""
+    return FakeVarianceFigures(
+        estimated=Decimal("0.00"),
+        actual=Decimal("0.00"),
+        variance=Decimal("0.00"),
+        variance_pct=None,
+    )
+
+
+@dataclass(frozen=True)
+class FakeTransactionVariance:
+    """Minimal TransactionVariance for CSV tests."""
+    transaction_id: int = 1
+    name: str = "Rent Payment"
+    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
     is_paid: bool = True
     due_date: date | None = None
 
@@ -84,10 +99,7 @@ class FakeCategoryItemVariance:
     category_id: int = 1
     group_name: str = "Home"
     item_name: str = "Rent"
-    estimated_total: Decimal = Decimal("1200.00")
-    actual_total: Decimal = Decimal("1200.00")
-    variance: Decimal = Decimal("0.00")
-    variance_pct: Decimal | None = Decimal("0.00")
+    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
     transaction_count: int = 1
     transactions: list = field(default_factory=list)
 
@@ -96,10 +108,7 @@ class FakeCategoryItemVariance:
 class FakeCategoryGroupVariance:
     """Minimal CategoryGroupVariance for CSV tests."""
     group_name: str = "Home"
-    estimated_total: Decimal = Decimal("1200.00")
-    actual_total: Decimal = Decimal("1200.00")
-    variance: Decimal = Decimal("0.00")
-    variance_pct: Decimal | None = Decimal("0.00")
+    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
     items: list = field(default_factory=list)
 
 
@@ -109,10 +118,7 @@ class FakeVarianceReport:
     window_type: str = "pay_period"
     window_label: str = "Jan 02 - Jan 15, 2026"
     groups: list = field(default_factory=list)
-    total_estimated: Decimal = Decimal("0.00")
-    total_actual: Decimal = Decimal("0.00")
-    total_variance: Decimal = Decimal("0.00")
-    total_variance_pct: Decimal | None = None
+    figures: FakeVarianceFigures = field(default_factory=_zero_figures)
     transaction_count: int = 0
 
 
@@ -252,17 +258,11 @@ class TestVarianceExport:
 
     def test_export_variance_pct_none(self, app):
         """C17-extra8: None variance_pct exported as empty string."""
-        txn = FakeTransactionVariance(variance_pct=None)
-        item = FakeCategoryItemVariance(
-            transactions=[txn], variance_pct=None,
-        )
-        group = FakeCategoryGroupVariance(
-            items=[item], variance_pct=None,
-        )
-        report = FakeVarianceReport(
-            groups=[group],
-            total_variance_pct=None,
-        )
+        none_pct = FakeVarianceFigures(variance_pct=None)
+        txn = FakeTransactionVariance(figures=none_pct)
+        item = FakeCategoryItemVariance(transactions=[txn], figures=none_pct)
+        group = FakeCategoryGroupVariance(items=[item], figures=none_pct)
+        report = FakeVarianceReport(groups=[group], figures=none_pct)
         result = export_variance_csv(report)
         assert "None" not in result
 
@@ -371,6 +371,117 @@ class TestCsvFormatting:
             )
 
 
+# ── Formula-Injection (CWE-1236) Tests ───────────────────────────
+
+
+class TestFormulaInjection:
+    """User-controlled name cells are neutralized against spreadsheet
+    formula injection: a value whose first character is a formula
+    trigger (= + - @ TAB CR) is prefixed with a single quote so Excel /
+    Google Sheets render it as literal text, while system-formatted
+    numerics stay numeric so spreadsheets can still aggregate them.
+    """
+
+    def test_calendar_transaction_name_neutralized(self, app):
+        """A transaction name leading with '=' is quote-prefixed."""
+        data = FakeMonthSummary(day_entries={
+            1: [FakeDayEntry(name='=HYPERLINK("http://evil","x")')],
+        })
+        rows = _parse_csv(export_calendar_csv(data, "month"))
+        assert rows[1][1] == '\'=HYPERLINK("http://evil","x")'
+
+    def test_calendar_category_names_neutralized(self, app):
+        """Category group ('+') and item ('@') names are quote-prefixed."""
+        data = FakeMonthSummary(day_entries={
+            1: [FakeDayEntry(category_group="+Home", category_item="@Rent")],
+        })
+        rows = _parse_csv(export_calendar_csv(data, "month"))
+        assert rows[1][2] == "'+Home"
+        assert rows[1][3] == "'@Rent"
+
+    def test_year_end_names_neutralized(self, app):
+        """Deduction, spending-category, and every account-name column in
+        the year-end export are neutralized."""
+        data = _build_year_end_data()
+        data["income_tax"]["pretax_deductions"] = [
+            {"name": "=evil()", "annual_total": Decimal("100.00")},
+        ]
+        data["spending_by_category"] = [{
+            "group_name": "-Home",
+            "group_total": Decimal("100.00"),
+            "items": [{"item_name": "@Rent", "item_total": Decimal("100.00")}],
+        }]
+        data["transfers_summary"] = [{
+            "destination_account": "=SUM(A1)",
+            "destination_account_id": 2,
+            "total_amount": Decimal("50.00"),
+        }]
+        data["debt_progress"][0]["account_name"] = "+Mortgage"
+        data["savings_progress"][0]["account_name"] = "@Savings"
+        cells = {c for row in _parse_csv(export_year_end_csv(data)) for c in row}
+        assert "'=evil()" in cells
+        assert "'-Home" in cells
+        assert "'@Rent" in cells
+        assert "'=SUM(A1)" in cells
+        assert "'+Mortgage" in cells
+        assert "'@Savings" in cells
+
+    def test_variance_names_neutralized(self, app):
+        """Group, item, and transaction names are neutralized at every
+        level of the variance export."""
+        figures = FakeVarianceFigures(
+            estimated=Decimal("100.00"), actual=Decimal("100.00"),
+            variance=Decimal("0.00"), variance_pct=Decimal("0.00"),
+        )
+        txn = FakeTransactionVariance(name="=evil()", figures=figures)
+        item = FakeCategoryItemVariance(
+            group_name="+Home", item_name="@Rent",
+            figures=figures, transactions=[txn],
+        )
+        group = FakeCategoryGroupVariance(
+            group_name="+Home", figures=figures, items=[item],
+        )
+        report = FakeVarianceReport(
+            groups=[group], figures=figures, transaction_count=1,
+        )
+        cells = {c for row in _parse_csv(export_variance_csv(report)) for c in row}
+        assert "'+Home" in cells
+        assert "'@Rent" in cells
+        assert "'=evil()" in cells
+
+    def test_trends_names_neutralized(self, app):
+        """Category group/item names in the trends export are neutralized."""
+        item = FakeItemTrend(group_name="=evil()", item_name="-Rent")
+        report = FakeTrendReport(all_items=[item])
+        cells = {c for row in _parse_csv(export_trends_csv(report)) for c in row}
+        assert "'=evil()" in cells
+        assert "'-Rent" in cells
+
+    def test_ordinary_name_not_prefixed(self, app):
+        """A name that does not lead with a formula char is unchanged --
+        no spurious quote is added (avoids corrupting every benign name)."""
+        data = FakeMonthSummary(day_entries={
+            1: [FakeDayEntry(
+                name="Rent", category_group="Home", category_item="Utilities",
+            )],
+        })
+        rows = _parse_csv(export_calendar_csv(data, "month"))
+        assert rows[1][1] == "Rent"
+        assert rows[1][2] == "Home"
+        assert rows[1][3] == "Utilities"
+
+    def test_negative_numeric_amount_not_neutralized(self, app):
+        """System-formatted negatives stay numeric (not quote-prefixed) so
+        spreadsheets can aggregate them: neutralization is scoped to
+        user text via _safe, never to _dec-formatted numbers."""
+        data = FakeMonthSummary(day_entries={
+            1: [FakeDayEntry(name="Refund", amount=Decimal("-50.00"))],
+        })
+        rows = _parse_csv(export_calendar_csv(data, "month"))
+        # Column 4 is "Amount ($)" in the month export.
+        assert rows[1][4] == "-50.00"
+
+
 # ── Helpers ───────────────────────────────────────────────────────
 
 
@@ -451,33 +562,22 @@ def _build_year_end_data(with_timeliness=False):
 
 
 def _build_variance_report():
-    """Build a VarianceReport with one group, one item, one txn."""
-    txn = FakeTransactionVariance(
-        name="Jan Rent",
+    """Build a VarianceReport with one group, one item, one txn.
+
+    The same figures (est 1200, act 1250, variance 50.00, pct 4.17) apply
+    at every level, matching how a single-transaction report rolls up.
+    """
+    figures = FakeVarianceFigures(
         estimated=Decimal("1200.00"),
         actual=Decimal("1250.00"),
         variance=Decimal("50.00"),
         variance_pct=Decimal("4.17"),
     )
-    item = FakeCategoryItemVariance(
-        estimated_total=Decimal("1200.00"),
-        actual_total=Decimal("1250.00"),
-        variance=Decimal("50.00"),
-        variance_pct=Decimal("4.17"),
-        transactions=[txn],
-    )
-    group = FakeCategoryGroupVariance(
-        estimated_total=Decimal("1200.00"),
-        actual_total=Decimal("1250.00"),
-        variance=Decimal("50.00"),
-        variance_pct=Decimal("4.17"),
-        items=[item],
-    )
+    txn = FakeTransactionVariance(name="Jan Rent", figures=figures)
+    item = FakeCategoryItemVariance(figures=figures, transactions=[txn])
+    group = FakeCategoryGroupVariance(figures=figures, items=[item])
     return FakeVarianceReport(
         groups=[group],
-        total_estimated=Decimal("1200.00"),
-        total_actual=Decimal("1250.00"),
-        total_variance=Decimal("50.00"),
-        total_variance_pct=Decimal("4.17"),
+        figures=figures,
         transaction_count=1,
     )

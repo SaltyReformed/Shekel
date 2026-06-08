@@ -30,6 +30,30 @@ from app.utils.balance_predicates import is_projected
 logger = logging.getLogger(__name__)
 
 
+def _detect_stale_anchor(periods, anchor_period_id, txn_by_period):
+    """Return True if a settled (done/received) transaction exists in any
+    post-anchor period -- a signal the anchor balance may be stale.
+
+    Settled post-anchor transactions are excluded from the balance
+    calculation (the anchor already reflects them IF it was true-up'd); but
+    if the anchor was NOT updated, the projection will be wrong, so this is
+    surfaced as an informational warning.  Operates on the already-grouped
+    in-memory ``txn_by_period`` -- it issues NO query (Transfer Invariant 5
+    binds the caller that builds ``transactions``, not this scan).
+    """
+    past_anchor = False
+    for period in periods:
+        if period.id == anchor_period_id:
+            past_anchor = True
+            continue  # Skip the anchor period itself.
+        if not past_anchor:
+            continue
+        for txn in txn_by_period.get(period.id, []):
+            if txn.status and txn.status.is_settled:
+                return True
+    return False
+
+
 def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
                        amount_overrides=None):
     """Compute projected end balances from the anchor forward.
@@ -90,41 +114,20 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
 
         balances[period.id] = running_balance
 
-    # Detect stale anchor: check for done/received transactions in
-    # post-anchor periods.  These are excluded from balance calculations
-    # (correctly -- the anchor already reflects them IF it was updated),
-    # but if the anchor was NOT updated, projections will be wrong.
-    stale_anchor_warning = False
-    past_anchor = False
-    for period in periods:
-        if period.id == anchor_period_id:
-            past_anchor = True
-            continue  # Skip the anchor period itself.
-        if not past_anchor:
-            continue
-        for txn in txn_by_period.get(period.id, []):
-            # Settled transactions in post-anchor periods suggest the
-            # anchor balance may be stale (not yet true-up'd).
-            if txn.status and txn.status.is_settled:
-                stale_anchor_warning = True
-                break
-        if stale_anchor_warning:
-            break
+    # Detect stale anchor: a settled transaction in a post-anchor period
+    # suggests the anchor balance may not reflect recent activity.  Purely
+    # informational -- it does not change the calculated balances.
+    stale_anchor_warning = _detect_stale_anchor(
+        periods, anchor_period_id, txn_by_period,
+    )
 
     return balances, stale_anchor_warning
 
 
-def calculate_balances_with_interest(
+def calculate_balances_with_interest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     anchor_balance, anchor_period_id, periods, transactions,
     interest_params=None, amount_overrides=None,
 ):
-    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    # The six inputs are cohesive balance-projection parameters (anchor
-    # balance, anchor period id, period list, transactions, interest config,
-    # and the Workstream B income-override seam forwarded verbatim to
-    # calculate_balances).  A params object would be gratuitous churn across
-    # every caller of a pure function; the arg/local counts are inherent to
-    # a balance projection, not a decomposition smell.
     """Same as calculate_balances but also returns interest earned per period.
 
     When interest_params is provided (an object with .apy and
@@ -146,6 +149,15 @@ def calculate_balances_with_interest(
         (balances, interest_by_period) where:
             balances: OrderedDict mapping period_id -> Decimal end balance
             interest_by_period: dict mapping period_id -> Decimal interest earned
+
+    Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
+    (6/5) -- these six are independent balance-projection inputs, not a
+    cohesive entity: this is the sibling :func:`calculate_balances`'s five-arg
+    signature plus ``interest_params``, forwarding five of them verbatim, so a
+    param object would force the same bundle onto the clean sibling (and its
+    many callers) or split two near-identical signatures.  Bundling would be
+    stamp coupling, mirroring the ``projection_inputs`` / ``growth_engine``
+    documented disables.
     """
     # First compute base balances without interest.
     base_balances, _ = calculate_balances(
@@ -153,16 +165,37 @@ def calculate_balances_with_interest(
         amount_overrides=amount_overrides,
     )
 
-    interest_by_period = {}
-
     if not interest_params or not hasattr(interest_params, "apy"):
-        return base_balances, interest_by_period
+        return base_balances, {}
 
+    return _layer_interest(base_balances, periods, interest_params)
+
+
+def _layer_interest(base_balances, periods, interest_params):
+    """Layer per-period interest on top of pre-computed base balances.
+
+    Re-walks the periods in order, compounding interest forward: each
+    period's interest is computed on its base balance plus the interest
+    accrued in prior periods, then folded into the running balance.
+
+    Args:
+        base_balances: OrderedDict period_id -> Decimal end balance, the
+            no-interest balances from :func:`calculate_balances`.
+        periods: List of PayPeriod objects, ordered by period_index.
+        interest_params: Object with .apy (Decimal) and
+            .compounding_frequency (str).
+
+    Returns:
+        (balances, interest_by_period) where balances is an OrderedDict
+        period_id -> Decimal end balance with interest layered in, and
+        interest_by_period maps period_id -> Decimal interest earned.
+    """
     apy = interest_params.apy  # Already Decimal from Numeric(7,5) column.
     compounding = interest_params.compounding_frequency
 
     # Re-walk periods, layering interest on top of the base balances.
     balances = OrderedDict()
+    interest_by_period = {}
     running_balance = None
     interest_cumulative = Decimal("0.00")
 
@@ -188,6 +221,67 @@ def calculate_balances_with_interest(
         balances[period.id] = running_balance
 
     return balances, interest_by_period
+
+
+def _entry_checking_impact(entries, estimated_amount):
+    """Three-bucket checking reservation for a sequence of debit/credit entries.
+
+    The shared core of the entry-aware reduction, used by both the
+    undated engine helper :func:`_entry_aware_amount` and the date-cut
+    resolver variant
+    :func:`~app.services.balance_resolver._entry_aware_amount_dated`
+    (E-27).  Partitions the supplied entries into three buckets and
+    returns the portion of the budget still held back against checking:
+
+        cleared_debit   = sum(amount where not is_credit and     is_cleared)
+        uncleared_debit = sum(amount where not is_credit and not is_cleared)
+        sum_credit      = sum(amount where is_credit)
+
+        impact = max(estimated_amount - cleared_debit - sum_credit,
+                     uncleared_debit)
+
+    Cleared debits are already reflected in the checking anchor balance,
+    so they are subtracted from the reservation.  Uncleared debits act
+    as a floor -- the reservation can never be smaller than uncleared
+    checking hits, which also handles overspend.  A credit entry never
+    hits checking directly (it flows through a CC Payback sibling
+    transaction), so it only reduces the reservation.
+
+    The two callers differ ONLY in which entries they pass: the undated
+    helper passes every loaded entry; the dated variant passes only
+    entries whose ``entry_date`` is on or before its ``as_of`` cutoff.
+    The bucketing rule and the reservation formula -- the part that must
+    never drift between the two paths -- live here, once.  Date windowing
+    and the empty-entries short-circuit stay with each caller because
+    they differ between the paths.
+
+    Args:
+        entries: An iterable of entry rows, each exposing ``amount``
+            (Decimal), ``is_credit`` (bool), and ``is_cleared`` (bool).
+            The caller is responsible for any date/window filtering and
+            for short-circuiting an empty sequence before calling.
+        estimated_amount: Decimal -- the transaction's budgeted amount,
+            the reservation ceiling before debits and credits reduce it.
+
+    Returns:
+        Decimal -- the amount this transaction's entries hold back from
+        the checking balance.
+    """
+    cleared_debit = Decimal("0")
+    uncleared_debit = Decimal("0")
+    sum_credit = Decimal("0")
+    for entry in entries:
+        if entry.is_credit:
+            sum_credit += entry.amount
+        elif entry.is_cleared:
+            cleared_debit += entry.amount
+        else:
+            uncleared_debit += entry.amount
+
+    return max(
+        estimated_amount - cleared_debit - sum_credit,
+        uncleared_debit,
+    )
 
 
 def _entry_aware_amount(txn):
@@ -293,25 +387,11 @@ def _entry_aware_amount(txn):
     if not is_projected(txn):
         return txn.effective_amount
 
-    # Three-bucket partition: cleared debit, uncleared debit, credit.
-    cleared_debit = Decimal("0")
-    uncleared_debit = Decimal("0")
-    sum_credit = Decimal("0")
-    for entry in entries:
-        if entry.is_credit:
-            sum_credit += entry.amount
-        elif entry.is_cleared:
-            cleared_debit += entry.amount
-        else:
-            uncleared_debit += entry.amount
-
-    # Cleared debits are already in the anchor -- subtract them from the
-    # reservation.  Uncleared debits act as a floor (the reservation can
-    # never be smaller than uncleared checking hits).
-    return max(
-        txn.estimated_amount - cleared_debit - sum_credit,
-        uncleared_debit,
-    )
+    # Partition the entries and hold back the unreconciled budget.  The
+    # bucketing rule and the reservation formula are shared with the
+    # resolver's date-cut variant via ``_entry_checking_impact`` so the
+    # core balance math has a single home (E-27).
+    return _entry_checking_impact(entries, txn.estimated_amount)
 
 
 def _income_amount(txn, amount_overrides):

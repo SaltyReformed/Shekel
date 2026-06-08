@@ -18,7 +18,14 @@ from app.models.pay_period import PayPeriod
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services.paycheck_calculator import DeductionLine, PaycheckBreakdown
+from app.services.paycheck_calculator import (
+    DeductionBreakdown,
+    DeductionLine,
+    Earnings,
+    PaycheckBreakdown,
+    PeriodInfo,
+    TaxLines,
+)
 from app.services import account_service
 
 
@@ -197,10 +204,12 @@ class TestTransferEffectiveAmount:
 
         savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
         savings = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="Savings",
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(savings)
         db.session.flush()
@@ -328,92 +337,117 @@ class TestPayPeriodLabel:
 
 
 class TestPaycheckBreakdownTotals:
-    """Tests for PaycheckBreakdown.total_pre_tax, total_post_tax, total_taxes."""
+    """Tests for the section totals on PaycheckBreakdown.
+
+    ``deductions.total_pre_tax`` / ``deductions.total_post_tax`` and
+    ``taxes.total`` (formerly the flat ``total_pre_tax`` / ``total_post_tax``
+    / ``total_taxes`` properties on the breakdown itself).
+    """
 
     def test_total_pre_tax(self):
         """total_pre_tax sums pre-tax deduction amounts."""
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("75000"),
-            gross_biweekly=Decimal("2884.62"),
-            pre_tax_deductions=[
-                DeductionLine(name="401k", amount=Decimal("250.00")),
-                DeductionLine(name="HSA", amount=Decimal("100.00")),
-            ],
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("75000"),
+                gross_biweekly=Decimal("2884.62"),
+            ),
+            deductions=DeductionBreakdown(
+                pre_tax=[
+                    DeductionLine(name="401k", amount=Decimal("250.00")),
+                    DeductionLine(name="HSA", amount=Decimal("100.00")),
+                ],
+            ),
         )
-        assert breakdown.total_pre_tax == Decimal("350.00")
+        assert breakdown.deductions.total_pre_tax == Decimal("350.00")
 
     def test_total_post_tax(self):
         """total_post_tax sums post-tax deduction amounts."""
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("75000"),
-            gross_biweekly=Decimal("2884.62"),
-            post_tax_deductions=[
-                DeductionLine(name="Roth IRA", amount=Decimal("200.00")),
-                DeductionLine(name="Life Insurance", amount=Decimal("25.00")),
-            ],
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("75000"),
+                gross_biweekly=Decimal("2884.62"),
+            ),
+            deductions=DeductionBreakdown(
+                post_tax=[
+                    DeductionLine(name="Roth IRA", amount=Decimal("200.00")),
+                    DeductionLine(name="Life Insurance", amount=Decimal("25.00")),
+                ],
+            ),
         )
-        assert breakdown.total_post_tax == Decimal("225.00")
+        assert breakdown.deductions.total_post_tax == Decimal("225.00")
 
     def test_total_taxes(self):
-        """total_taxes sums federal + state + ss + medicare."""
+        """total sums federal + state + ss + medicare."""
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("75000"),
-            gross_biweekly=Decimal("2884.62"),
-            federal_tax=Decimal("300.00"),
-            state_tax=Decimal("130.00"),
-            social_security=Decimal("178.85"),
-            medicare=Decimal("41.83"),
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("75000"),
+                gross_biweekly=Decimal("2884.62"),
+            ),
+            taxes=TaxLines(
+                federal=Decimal("300.00"),
+                state=Decimal("130.00"),
+                social_security=Decimal("178.85"),
+                medicare=Decimal("41.83"),
+            ),
         )
-        assert breakdown.total_taxes == Decimal("650.68")
+        assert breakdown.taxes.total == Decimal("650.68")
 
     def test_empty_deductions_return_zero(self):
         """Empty deduction lists produce Decimal('0') totals."""
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("75000"),
-            gross_biweekly=Decimal("2884.62"),
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("75000"),
+                gross_biweekly=Decimal("2884.62"),
+            ),
         )
-        assert breakdown.total_pre_tax == Decimal("0")
-        assert breakdown.total_post_tax == Decimal("0")
+        assert breakdown.deductions.total_pre_tax == Decimal("0")
+        assert breakdown.deductions.total_post_tax == Decimal("0")
 
     def test_net_pay_stored_value(self):
         """net_pay is a stored field, not a computed property.
 
-        The PaycheckBreakdown dataclass stores net_pay as set by
-        calculate_paycheck. Verify that when constructed with an explicit
-        net_pay value, it equals gross - pre_tax - taxes - post_tax.
+        The Earnings section stores net_pay as set by calculate_paycheck.
+        Verify that when constructed with an explicit net_pay value, it
+        equals gross - pre_tax - taxes - post_tax.
         Expected: net_pay == Decimal('1607.69').
         """
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("75000"),
-            gross_biweekly=Decimal("2307.69"),
-            pre_tax_deductions=[
-                DeductionLine(name="401k", amount=Decimal("200.00")),
-            ],
-            federal_tax=Decimal("250.00"),
-            state_tax=Decimal("100.00"),
-            social_security=Decimal("75.00"),
-            medicare=Decimal("25.00"),
-            post_tax_deductions=[
-                DeductionLine(name="Roth", amount=Decimal("50.00")),
-            ],
-            net_pay=Decimal("1607.69"),
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("75000"),
+                gross_biweekly=Decimal("2307.69"),
+                net_pay=Decimal("1607.69"),
+            ),
+            taxes=TaxLines(
+                federal=Decimal("250.00"),
+                state=Decimal("100.00"),
+                social_security=Decimal("75.00"),
+                medicare=Decimal("25.00"),
+            ),
+            deductions=DeductionBreakdown(
+                pre_tax=[
+                    DeductionLine(name="401k", amount=Decimal("200.00")),
+                ],
+                post_tax=[
+                    DeductionLine(name="Roth", amount=Decimal("50.00")),
+                ],
+            ),
         )
         # Verify net_pay stores the exact value we set.
-        assert breakdown.net_pay == Decimal("1607.69")
+        assert breakdown.earnings.net_pay == Decimal("1607.69")
         # Cross-check: gross - all deductions/taxes should equal net_pay.
         expected = (
-            breakdown.gross_biweekly
-            - breakdown.total_pre_tax
-            - breakdown.total_taxes
-            - breakdown.total_post_tax
+            breakdown.earnings.gross_biweekly
+            - breakdown.deductions.total_pre_tax
+            - breakdown.taxes.total
+            - breakdown.deductions.total_post_tax
         )
         assert expected == Decimal("1607.69")
-        assert breakdown.net_pay == expected
+        assert breakdown.earnings.net_pay == expected
 
     def test_net_pay_all_zeros(self):
         """net_pay with zero deductions and taxes equals gross.
@@ -423,44 +457,52 @@ class TestPaycheckBreakdownTotals:
         Expected: net_pay == Decimal('2000.00').
         """
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("52000"),
-            gross_biweekly=Decimal("2000.00"),
-            net_pay=Decimal("2000.00"),
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("52000"),
+                gross_biweekly=Decimal("2000.00"),
+                net_pay=Decimal("2000.00"),
+            ),
         )
-        assert breakdown.net_pay == Decimal("2000.00")
-        assert breakdown.total_pre_tax == Decimal("0")
-        assert breakdown.total_taxes == Decimal("0")
-        assert breakdown.total_post_tax == Decimal("0")
+        assert breakdown.earnings.net_pay == Decimal("2000.00")
+        assert breakdown.deductions.total_pre_tax == Decimal("0")
+        assert breakdown.taxes.total == Decimal("0")
+        assert breakdown.deductions.total_post_tax == Decimal("0")
 
     def test_net_pay_negative_when_deductions_exceed_gross(self):
         """net_pay can be negative when deductions exceed gross.
 
-        The PaycheckBreakdown dataclass does not clamp net_pay to zero.
-        If calculate_paycheck produces a negative net_pay (which is a
-        data configuration error), the model stores it as-is.
+        The Earnings section does not clamp net_pay to zero.  If
+        calculate_paycheck produces a negative net_pay (which is a data
+        configuration error), the section stores it as-is.
         Expected: net_pay == Decimal('-200.00').
         """
         breakdown = PaycheckBreakdown(
-            period_id=1,
-            annual_salary=Decimal("52000"),
-            gross_biweekly=Decimal("2000.00"),
-            pre_tax_deductions=[
-                DeductionLine(name="401k", amount=Decimal("1500.00")),
-            ],
-            federal_tax=Decimal("500.00"),
-            state_tax=Decimal("200.00"),
-            social_security=Decimal("0"),
-            medicare=Decimal("0"),
-            net_pay=Decimal("-200.00"),
+            period=PeriodInfo(period_id=1),
+            earnings=Earnings(
+                annual_salary=Decimal("52000"),
+                gross_biweekly=Decimal("2000.00"),
+                net_pay=Decimal("-200.00"),
+            ),
+            taxes=TaxLines(
+                federal=Decimal("500.00"),
+                state=Decimal("200.00"),
+                social_security=Decimal("0"),
+                medicare=Decimal("0"),
+            ),
+            deductions=DeductionBreakdown(
+                pre_tax=[
+                    DeductionLine(name="401k", amount=Decimal("1500.00")),
+                ],
+            ),
         )
-        assert breakdown.net_pay == Decimal("-200.00")
+        assert breakdown.earnings.net_pay == Decimal("-200.00")
         # Verify the math: 2000 - 1500 - 700 = -200
         expected = (
-            breakdown.gross_biweekly
-            - breakdown.total_pre_tax
-            - breakdown.total_taxes
-            - breakdown.total_post_tax
+            breakdown.earnings.gross_biweekly
+            - breakdown.deductions.total_pre_tax
+            - breakdown.taxes.total
+            - breakdown.deductions.total_post_tax
         )
         assert expected == Decimal("-200.00")
 

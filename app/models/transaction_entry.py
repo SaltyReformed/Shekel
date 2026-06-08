@@ -8,10 +8,10 @@ budget and the checking balance impact.
 """
 
 from app.extensions import db
-from app.models.mixins import TimestampMixin
+from app.models.mixins import OptimisticLockMixin, TimestampMixin, UserScopedMixin
 
 
-class TransactionEntry(TimestampMixin, db.Model):
+class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
     """An individual purchase recorded against a parent transaction.
 
     Entries accumulate against the parent transaction's estimated amount.
@@ -65,11 +65,6 @@ class TransactionEntry(TimestampMixin, db.Model):
         db.ForeignKey("budget.transactions.id", ondelete="CASCADE"),
         nullable=False,
     )
-    user_id = db.Column(
-        db.Integer,
-        db.ForeignKey("auth.users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(200), nullable=False)
     entry_date = db.Column(
@@ -85,22 +80,7 @@ class TransactionEntry(TimestampMixin, db.Model):
         db.Integer,
         db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
     )
-    # Optimistic-locking version counter.  See commit C-18 of the
-    # 2026-04-15 security remediation plan.  NOT NULL with
-    # server_default="1" so existing production rows are filled at
-    # ALTER TABLE time and new rows always start at version 1.
-    # Concurrent entry edits race for the bump; the loser raises
-    # :class:`sqlalchemy.orm.exc.StaleDataError` and the entries
-    # route surfaces a 409 conflict partial.
-    version_id = db.Column(
-        db.Integer, nullable=False, server_default="1",
-    )
-
-    # Optimistic locking: SQLAlchemy narrows ORM UPDATE/DELETE with
-    # ``WHERE id = ? AND version_id = ?`` and atomically increments
-    # version_id.  Routes that mutate TransactionEntry MUST catch
-    # StaleDataError and surface a 409 conflict partial.
-    __mapper_args__ = {"version_id_col": version_id}
+    # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
     transaction = db.relationship(

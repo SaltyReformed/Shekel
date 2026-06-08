@@ -41,16 +41,16 @@
       </div>
     </div>
 
-    {% if breakdown.is_third_paycheck %}
+    {% if breakdown.period.is_third_paycheck %}
     <div class="alert alert-info py-2">
       <i class="bi bi-info-circle"></i> <strong>3rd Paycheck Month</strong> --
       Some deductions (24/yr) are skipped this period.
     </div>
     {% endif %}
 
-    {% if breakdown.raise_event %}
+    {% if breakdown.period.raise_event %}
     <div class="alert alert-success py-2">
-      <i class="bi bi-arrow-up-circle"></i> <strong>Raise Event:</strong> {{ breakdown.raise_event }}
+      <i class="bi bi-arrow-up-circle"></i> <strong>Raise Event:</strong> {{ breakdown.period.raise_event }}
     </div>
     {% endif %}
 
@@ -61,21 +61,21 @@
             {# Annual Salary #}
             <tr>
               <td class="ps-3">Annual Salary</td>
-              <td class="text-end pe-3">${{ "%.2f"|format(breakdown.annual_salary) }}</td>
+              <td class="text-end pe-3">${{ "%.2f"|format(breakdown.earnings.annual_salary) }}</td>
             </tr>
 
             {# Gross Biweekly #}
             <tr class="table-light">
               <td class="ps-3 fw-bold">Gross Biweekly Pay</td>
-              <td class="text-end pe-3 fw-bold">${{ "%.2f"|format(breakdown.gross_biweekly) }}</td>
+              <td class="text-end pe-3 fw-bold">${{ "%.2f"|format(breakdown.earnings.gross_biweekly) }}</td>
             </tr>
 
             {# Pre-Tax Deductions #}
-            {% if breakdown.pre_tax_deductions %}
+            {% if breakdown.deductions.pre_tax %}
             <tr>
               <td colspan="2" class="ps-3 text-muted small pt-3 pb-1">PRE-TAX DEDUCTIONS</td>
             </tr>
-            {% for d in breakdown.pre_tax_deductions %}
+            {% for d in breakdown.deductions.pre_tax %}
             <tr>
               <td class="ps-4">{{ d.name }}</td>
               <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(d.amount) }}</td>
@@ -86,7 +86,7 @@
             {# Taxable Income #}
             <tr class="table-light">
               <td class="ps-3 fw-bold">= Taxable Income</td>
-              <td class="text-end pe-3 fw-bold">${{ "%.2f"|format(breakdown.taxable_income) }}</td>
+              <td class="text-end pe-3 fw-bold">${{ "%.2f"|format(breakdown.earnings.taxable_income) }}</td>
             </tr>
 
             {# Taxes #}
@@ -95,27 +95,27 @@
             </tr>
             <tr>
               <td class="ps-4">Federal Income Tax</td>
-              <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(breakdown.federal_tax) }}</td>
+              <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(breakdown.taxes.federal) }}</td>
             </tr>
             <tr>
               <td class="ps-4">State Income Tax</td>
-              <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(breakdown.state_tax) }}</td>
+              <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(breakdown.taxes.state) }}</td>
             </tr>
             <tr>
               <td class="ps-4">Social Security</td>
-              <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(breakdown.social_security) }}</td>
+              <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(breakdown.taxes.social_security) }}</td>
             </tr>
             <tr>
               <td class="ps-4">Medicare</td>
-              <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(breakdown.medicare) }}</td>
+              <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(breakdown.taxes.medicare) }}</td>
             </tr>
 
             {# Post-Tax Deductions #}
-            {% if breakdown.post_tax_deductions %}
+            {% if breakdown.deductions.post_tax %}
             <tr>
               <td colspan="2" class="ps-3 text-muted small pt-3 pb-1">POST-TAX DEDUCTIONS</td>
             </tr>
-            {% for d in breakdown.post_tax_deductions %}
+            {% for d in breakdown.deductions.post_tax %}
             <tr>
               <td class="ps-4">{{ d.name }}</td>
               <td class="text-end pe-3 text-danger">-${{ "%.2f"|format(d.amount) }}</td>
@@ -126,7 +126,7 @@
             {# Net Pay #}
             <tr class="table-success">
               <td class="ps-3 fw-bold fs-5">= Net Biweekly Paycheck</td>
-              <td class="text-end pe-3 fw-bold fs-5">${{ "%.2f"|format(breakdown.net_pay) }}</td>
+              <td class="text-end pe-3 fw-bold fs-5">${{ "%.2f"|format(breakdown.earnings.net_pay) }}</td>
             </tr>
           </tbody>
         </table>
@@ -139,20 +139,20 @@
         <div class="row text-center">
           <div class="col">
             <small class="text-muted d-block">Total Deductions</small>
-            <span class="text-danger">${{ "%.2f"|format(breakdown.total_pre_tax) }}</span>
+            <span class="text-danger">${{ "%.2f"|format(breakdown.deductions.total_pre_tax) }}</span>
           </div>
           <div class="col">
             <small class="text-muted d-block">Total Taxes</small>
-            <span class="text-danger">${{ "%.2f"|format(breakdown.total_taxes) }}</span>
+            <span class="text-danger">${{ "%.2f"|format(breakdown.taxes.total) }}</span>
           </div>
           <div class="col">
             <small class="text-muted d-block">Post-Tax</small>
-            <span class="text-danger">${{ "%.2f"|format(breakdown.total_post_tax) }}</span>
+            <span class="text-danger">${{ "%.2f"|format(breakdown.deductions.total_post_tax) }}</span>
           </div>
           <div class="col">
             <small class="text-muted d-block">Take-Home Rate</small>
-            {% if breakdown.take_home_rate_pct is not none %}
-            <span class="text-success">{{ "%.1f"|format(breakdown.take_home_rate_pct) }}%</span>
+            {% if breakdown.earnings.take_home_rate_pct is not none %}
+            <span class="text-success">{{ "%.1f"|format(breakdown.earnings.take_home_rate_pct) }}%</span>
             {% else %}
             <span>--</span>
             {% endif %}

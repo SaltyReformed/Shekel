@@ -21,8 +21,20 @@ TWO_PLACES = Decimal("0.01")
 
 
 @dataclass
-class ProjectedBalance:
-    """A single period's projected investment balance."""
+class ProjectedBalance:  # pylint: disable=too-many-instance-attributes
+    """A single period's projected investment balance.
+
+    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed
+    because this is a cohesive value record -- one period's full
+    projection row -- mirroring ``amortization_engine.AmortizationRow``.
+    ``is_confirmed`` distinguishes confirmed contributions from projected
+    ones (``docs/implementation_plan_section5.md``), the savings analogue
+    of the loan schedule's confirmed/projected badge;
+    ``contribution_limit_remaining`` and ``ytd_contributions`` are the
+    row's running limit/YTD columns.  Every field is an irreducible
+    column of the row; splitting it would fragment one domain concept and
+    break every consumer for no design gain.
+    """
     period_id: int
     start_balance: Decimal
     growth: Decimal
@@ -68,6 +80,15 @@ class ContributionRecord:
                 a Decimal, or is_confirmed is not a bool.
             ValueError: If amount is negative.
         """
+        # Pylint: ``duplicate-code`` -- this field-validation body mirrors
+        # ``amortization_engine.PaymentRecord.__post_init__`` -- both
+        # reject a non-date date field, a non-Decimal/negative amount, and
+        # a non-bool ``is_confirmed``.  The two are independent engine
+        # dataclasses (savings contribution vs loan payment); a shared
+        # validator parameterised on the date-field name would add
+        # indirection without removing logic (coding-standards rule 13).
+        # One-sided ``duplicate-code`` disable (see plan.md Phase 2 notes).
+        # pylint: disable=duplicate-code
         if not isinstance(self.contribution_date, date):
             raise TypeError(
                 f"contribution_date must be a date, "
@@ -86,6 +107,7 @@ class ContributionRecord:
                 f"is_confirmed must be a bool, "
                 f"got {type(self.is_confirmed).__name__}"
             )
+        # pylint: enable=duplicate-code
 
 
 def cap_contribution_at_limit(
@@ -203,7 +225,179 @@ def _build_contribution_lookup(contributions):
     return lookup
 
 
-def project_balance(
+def _period_return_rate(assumed_annual_return: Decimal, period) -> Decimal:
+    """Compound return rate for a single pay period from the annual rate.
+
+    Scales the annual return to the period's actual day count
+    (``end_date - start_date``), falling back to a 14-day biweekly
+    cadence for degenerate (zero- or negative-length) periods.  Shared by
+    both the forward (:func:`project_balance`) and reverse
+    (:func:`reverse_project_balance`) projections so the two cannot
+    diverge on the growth formula.
+
+    Args:
+        assumed_annual_return: Decimal annual return rate (e.g. 0.07 for 7%).
+        period: A period object with ``.start_date`` and ``.end_date``.
+
+    Returns:
+        Decimal per-period compound rate ``(1 + annual) ** (days / 365) - 1``.
+    """
+    period_days = (period.end_date - period.start_date).days
+    if period_days <= 0:
+        period_days = 14  # fallback for degenerate periods
+    return (
+        (1 + assumed_annual_return)
+        ** (Decimal(str(period_days)) / Decimal("365"))
+        - 1
+    )
+
+
+@dataclass(frozen=True)
+class _PeriodInputs:
+    """Per-projection constants shared by every period of :func:`project_balance`.
+
+    Bundles the inputs that stay fixed for the whole forward walk so the
+    per-period helper takes one cohesive object rather than a fistful of
+    parallel constants.  Mirrors ``amortization_engine.ProjectionInputs``
+    (a projection's fixed forward-only terms); the values that evolve
+    period to period live in :class:`_ProjectionState`.
+
+    Attributes:
+        assumed_annual_return: Decimal annual return rate, normalized once.
+        periodic_contribution: Decimal employee contribution used as the
+            fallback when a period has no matching ``ContributionRecord``.
+        employer_params: Optional employer-match configuration dict (see
+            :func:`calculate_employer_contribution`).
+        annual_contribution_limit: Decimal annual cap, normalized once, or
+            ``None`` for accounts with no IRS limit.
+    """
+
+    assumed_annual_return: Decimal
+    periodic_contribution: Decimal
+    employer_params: dict | None
+    annual_contribution_limit: Decimal | None
+
+
+@dataclass
+class _ProjectionState:
+    """Mutable carry-forward state threaded across the per-period loop.
+
+    Bundles the values that evolve together as :func:`project_balance`
+    walks period by period, so the loop and its helper share one cohesive
+    state object instead of parallel locals.  Mirrors
+    ``amortization_engine._ProjectionState``.
+
+    Attributes:
+        current_balance: Running balance after the latest applied period.
+        ytd_contributions: Employee contributions so far in the current
+            year (resets to zero at each year boundary).
+        remaining_limit: Remaining room under the annual contribution
+            limit, or ``None`` when the account has no limit.
+        prev_year: Calendar year of the previously projected period, used
+            to detect a year boundary; ``None`` before the first period.
+    """
+
+    current_balance: Decimal
+    ytd_contributions: Decimal
+    remaining_limit: Decimal | None
+    prev_year: int | None = None
+
+
+def _project_one_period(
+    state: _ProjectionState,
+    period,
+    inputs: _PeriodInputs,
+    contribution_lookup: dict[date, tuple[Decimal, bool]] | None,
+) -> ProjectedBalance:
+    """Project one pay period forward, mutating ``state`` in place.
+
+    Runs the five-step per-period walk -- year-boundary limit reset,
+    growth on the opening balance (applied BEFORE the contribution),
+    contribution resolution (the dated lookup or the periodic fallback),
+    annual-limit capping, and the employer match -- then advances
+    ``state`` and returns the period's row.
+
+    Args:
+        state: The mutable carry-forward state; advanced in place.
+        period: A period object with ``.id``, ``.start_date``, ``.end_date``.
+        inputs: The per-projection constants.
+        contribution_lookup: Optional ``start_date -> (amount, is_confirmed)``
+            map from :func:`_build_contribution_lookup`; ``None`` uses the
+            periodic fallback for every period.
+
+    Returns:
+        The :class:`ProjectedBalance` row for this period.
+    """
+    period_year = period.start_date.year
+
+    # Year boundary reset: YTD and the remaining annual limit restart.
+    if state.prev_year is not None and period_year != state.prev_year:
+        state.ytd_contributions = ZERO
+        if inputs.annual_contribution_limit is not None:
+            state.remaining_limit = inputs.annual_contribution_limit
+    state.prev_year = period_year
+
+    start_balance = state.current_balance
+
+    # Step 1: Growth on the existing balance, before this period's contribution.
+    growth = (
+        start_balance * _period_return_rate(inputs.assumed_annual_return, period)
+    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+    # Determine this period's contribution and confirmed status.  A dated
+    # entry (even $0) wins; a missing entry falls back to the periodic
+    # contribution and is treated as projected (not confirmed).
+    if (contribution_lookup is not None
+            and period.start_date in contribution_lookup):
+        period_contrib_amount, period_is_confirmed = (
+            contribution_lookup[period.start_date]
+        )
+    else:
+        period_contrib_amount = inputs.periodic_contribution
+        period_is_confirmed = False
+
+    # Step 2: Cap the contribution at the remaining annual limit via the
+    # shared helper.  HIGH-07 / F-043 / F-055: the same cap the investment
+    # dashboard's per-period employer card applies, so the card, this
+    # chart's employer line, and the year-end summary agree on one number.
+    contribution = cap_contribution_at_limit(
+        period_contrib_amount,
+        inputs.annual_contribution_limit,
+        state.ytd_contributions,
+    )
+
+    # Step 3: Employer contribution on the capped employee amount.
+    employer_contribution = calculate_employer_contribution(
+        inputs.employer_params, contribution
+    )
+
+    # Step 4: Update balance.  Clamp to zero -- standard investment
+    # accounts cannot go negative (M-06).
+    state.current_balance = max(
+        start_balance + growth + contribution + employer_contribution,
+        ZERO,
+    )
+
+    # Step 5: Track limits.
+    state.ytd_contributions += contribution
+    if state.remaining_limit is not None:
+        state.remaining_limit -= contribution
+        state.remaining_limit = max(state.remaining_limit, ZERO)
+
+    return ProjectedBalance(
+        period_id=period.id,
+        start_balance=start_balance,
+        growth=growth,
+        contribution=contribution,
+        employer_contribution=employer_contribution,
+        end_balance=state.current_balance,
+        ytd_contributions=state.ytd_contributions,
+        contribution_limit_remaining=state.remaining_limit,
+        is_confirmed=period_is_confirmed,
+    )
+
+
+def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     current_balance,
     assumed_annual_return,
     periods,
@@ -239,104 +433,49 @@ def project_balance(
 
     Returns:
         List of ProjectedBalance, one per period.
+
+    Pylint: ``too-many-arguments`` (8/5) / ``too-many-positional-arguments``
+    (8/5) -- suppressed because ``growth_engine`` is a pure stdlib leaf
+    whose design is "all data passed in as arguments."  These eight are
+    genuinely distinct projection inputs that callers vary independently
+    -- the what-if overlay overrides ``periodic_contribution`` and nulls
+    ``contributions``; the year-end full-year path forces
+    ``ytd_contributions_start`` to zero -- so bundling them into one
+    object would be stamp coupling, not a cohesive concept.  Every call
+    site passes these by keyword, so the positional count is moot in
+    practice.
     """
-    current_balance = Decimal(str(current_balance))
-    assumed_annual_return = Decimal(str(assumed_annual_return))
-    periodic_contribution = Decimal(str(periodic_contribution))
-    ytd_contributions = Decimal(str(ytd_contributions_start))
+    inputs = _PeriodInputs(
+        assumed_annual_return=Decimal(str(assumed_annual_return)),
+        periodic_contribution=Decimal(str(periodic_contribution)),
+        employer_params=employer_params,
+        annual_contribution_limit=(
+            Decimal(str(annual_contribution_limit))
+            if annual_contribution_limit is not None
+            else None
+        ),
+    )
+    ytd_start = Decimal(str(ytd_contributions_start))
+    state = _ProjectionState(
+        current_balance=Decimal(str(current_balance)),
+        ytd_contributions=ytd_start,
+        remaining_limit=(
+            max(inputs.annual_contribution_limit - ytd_start, ZERO)
+            if inputs.annual_contribution_limit is not None
+            else None
+        ),
+    )
 
-    if annual_contribution_limit is not None:
-        annual_contribution_limit = Decimal(str(annual_contribution_limit))
-        remaining_limit = annual_contribution_limit - ytd_contributions
-        remaining_limit = max(remaining_limit, ZERO)
-    else:
-        remaining_limit = None
-
-    # Build contribution lookup from contribution records.  When provided,
-    # each period looks up its amount from the dict; periods without an
-    # entry fall back to periodic_contribution.  A $0 entry is an explicit
-    # "no contribution" -- distinct from a missing entry.
+    # Build the contribution lookup once: each period looks up its amount
+    # by start_date, falling back to periodic_contribution.  A $0 entry is
+    # an explicit "no contribution" -- distinct from a missing entry.
     contribution_lookup = _build_contribution_lookup(contributions)
 
     results = []
-    prev_year = None
-
     for period in periods:
-        period_year = period.start_date.year
-
-        # Year boundary reset.
-        if prev_year is not None and period_year != prev_year:
-            ytd_contributions = ZERO
-            if annual_contribution_limit is not None:
-                remaining_limit = annual_contribution_limit
-
-        prev_year = period_year
-
-        start_balance = current_balance
-
-        # Step 1: Growth on existing balance.
-        period_days = (period.end_date - period.start_date).days
-        if period_days <= 0:
-            period_days = 14  # fallback for degenerate periods
-
-        period_return_rate = (
-            (1 + assumed_annual_return) ** (Decimal(str(period_days)) / Decimal("365")) - 1
+        results.append(
+            _project_one_period(state, period, inputs, contribution_lookup)
         )
-        growth = (current_balance * period_return_rate).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
-
-        # Determine this period's contribution and confirmed status.
-        if (contribution_lookup is not None
-                and period.start_date in contribution_lookup):
-            period_contrib_amount, period_is_confirmed = (
-                contribution_lookup[period.start_date]
-            )
-        else:
-            period_contrib_amount = periodic_contribution
-            period_is_confirmed = False
-
-        # Step 2: Cap contribution at remaining annual limit via the
-        # shared helper.  HIGH-07 / F-043 / F-055: the same helper is
-        # called from the investment dashboard's per-period employer
-        # card so the card, this chart's employer line, and
-        # year_summary_employer_total agree on one capped contribution.
-        contribution = cap_contribution_at_limit(
-            period_contrib_amount,
-            annual_contribution_limit,
-            ytd_contributions,
-        )
-
-        # Step 3: Employer contribution.
-        employer_contribution = calculate_employer_contribution(
-            employer_params, contribution
-        )
-
-        # Step 4: Update balance.  Clamp to zero -- standard investment
-        # accounts cannot go negative (M-06).
-        current_balance = max(
-            start_balance + growth + contribution + employer_contribution,
-            ZERO,
-        )
-
-        # Step 5: Track limits.
-        ytd_contributions += contribution
-        if remaining_limit is not None:
-            remaining_limit -= contribution
-            remaining_limit = max(remaining_limit, ZERO)
-
-        results.append(ProjectedBalance(
-            period_id=period.id,
-            start_balance=start_balance,
-            growth=growth,
-            contribution=contribution,
-            employer_contribution=employer_contribution,
-            end_balance=current_balance,
-            ytd_contributions=ytd_contributions,
-            contribution_limit_remaining=remaining_limit,
-            is_confirmed=period_is_confirmed,
-        ))
-
     return results
 
 
@@ -392,15 +531,7 @@ def reverse_project_balance(
     end_balance = anchor_balance
 
     for period in reversed(periods):
-        period_days = (period.end_date - period.start_date).days
-        if period_days <= 0:
-            period_days = 14
-
-        period_return_rate = (
-            (1 + assumed_annual_return)
-            ** (Decimal(str(period_days)) / Decimal("365"))
-            - 1
-        )
+        period_return_rate = _period_return_rate(assumed_annual_return, period)
 
         # Inverse of: end = start * (1 + rate) + contribution + employer
         divisor = 1 + period_return_rate

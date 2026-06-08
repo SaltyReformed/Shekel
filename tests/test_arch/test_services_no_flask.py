@@ -307,8 +307,8 @@ class TestScannerSkipsNonImports:
 
         Pins the audit's false-positive class: ``budget_variance_service``
         and ``spending_trend_service`` both bind ``g`` as a loop variable
-        in sum/lambda expressions (``sum(g.estimated_total for g in
-        groups)``, ``lambda g: abs(g.variance)``). The AST scanner sees
+        in sum/lambda expressions (``sum(g.figures.estimated for g in
+        groups)``, ``lambda g: abs(g.figures.variance)``). The AST scanner sees
         only ``Import``/``ImportFrom`` nodes, never ``Name`` nodes, so
         such bindings can never trigger a flag -- this test pins the
         property directly with a scratch file containing the same shape.

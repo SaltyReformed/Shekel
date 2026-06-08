@@ -72,10 +72,12 @@ def _make_savings_account(seed_user):
     """Create a second (savings) account for transfer tests."""
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=savings_type.id,
-        name="Savings",
-        anchor_balance=Decimal("500.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="Savings",
+            anchor_balance=Decimal("500.00"),
+        ),
     )
     db.session.add(acct)
     db.session.flush()
@@ -1205,10 +1207,12 @@ class TestCrossResourceIDOR:
                 name="Savings",
             ).one()
             savings_acct2 = account_service.create_account(
-                user_id=second_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Other Savings",
-                anchor_balance=Decimal("0.00"),
+                account_service.AccountSpec(
+                    user_id=second_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Other Savings",
+                    anchor_balance=Decimal("0.00"),
+                ),
             )
             db.session.add(savings_acct2)
             db.session.flush()

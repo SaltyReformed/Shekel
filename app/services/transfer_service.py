@@ -25,11 +25,14 @@ Architecture:
 """
 
 import logging
+from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.ref import Status
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -114,7 +117,6 @@ def _get_owned_period(pay_period_id, user_id):
         NotFoundError: If the period does not exist or belongs to
             another user.
     """
-    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
     period = db.session.get(PayPeriod, pay_period_id)
     if period is None or period.user_id != user_id:
         raise NotFoundError(f"Pay period {pay_period_id} not found.")
@@ -277,23 +279,106 @@ def _get_shadow_transactions(transfer_id):
     return expense_shadow, income_shadow
 
 
+def _build_shadow(
+    xfer: Transfer, account_id: int, name: str, transaction_type_id: int
+) -> Transaction:
+    """Construct one shadow ``Transaction`` mirroring the parent transfer.
+
+    Both shadows are transfer-generated (``template_id=None``,
+    ``credit_payback_for_id=None``, no independent ``notes``) and inherit
+    period / scenario / status / category / amount / due_date from the
+    just-created ``xfer`` so the three rows stay equal (Transfer
+    Invariants 1 and 3).  Only the per-side fields vary.
+
+    Args:
+        xfer: The parent :class:`Transfer`, already flushed so
+            ``xfer.id`` is set (the shadow's ``transfer_id`` FK).
+        account_id: The account this shadow lives in (``from_account``
+            for the expense side, ``to_account`` for the income side).
+        name: The shadow's display name.
+        transaction_type_id: ``ref.transaction_types.id`` for the side
+            (expense or income).
+
+    Returns:
+        An unsaved :class:`Transaction`; the caller adds it to the
+        session.
+    """
+    return Transaction(
+        account_id=account_id,
+        template_id=None,       # Shadows are transfer-generated, not template-generated.
+        transfer_id=xfer.id,
+        pay_period_id=xfer.pay_period_id,
+        scenario_id=xfer.scenario_id,
+        status_id=xfer.status_id,
+        name=name,
+        category_id=xfer.category_id,
+        transaction_type_id=transaction_type_id,
+        estimated_amount=xfer.amount,
+        actual_amount=None,
+        is_override=False,
+        is_deleted=False,
+        credit_payback_for_id=None,
+        notes=None,
+        due_date=xfer.due_date,
+    )
+
+
 # ── Public API ─────────────────────────────────────────────────────
 
 
-def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    user_id,
-    from_account_id,
-    to_account_id,
-    pay_period_id,
-    scenario_id,
-    amount,
-    status_id,
-    category_id,
-    notes=None,
-    transfer_template_id=None,
-    name=None,
-    due_date=None,
-):
+@dataclass(frozen=True)
+class TransferSpec:  # pylint: disable=too-many-instance-attributes
+    """The canonical inputs for creating a transfer.
+
+    Bundles the twelve fields :func:`create_transfer` needs into one
+    cohesive value object so the sole transfer-creation path takes a
+    single argument rather than a twelve-field signature.  Every field
+    is read by ``create_transfer`` and supplied together by every caller
+    (the new-transfer route, the recurrence engine, the materialize path)
+    -- this is one "transfer to create" request, mirroring the columns
+    of the ``Transfer`` row it produces.
+
+    Pylint: ``too-many-instance-attributes`` (12/7) -- these are the
+    irreducible inputs of one creation request, read as a flat unit by
+    the single consumer; there is NO cohesive sub-group to nest, so
+    splitting would fragment one concept for no gain.  Mirrors the
+    ``AmortizationRow`` / ``PayoffScenarios`` precedent.  Frozen so a
+    constructed spec is an immutable record of one request.
+
+    Attributes:
+        user_id: Owner of the transfer.
+        from_account_id: Account money leaves (expense side).
+        to_account_id: Account money enters (income side).
+        pay_period_id: Pay period for the transfer.
+        scenario_id: Budget scenario.
+        amount: Transfer amount (positive Decimal).
+        status_id: Initial status (typically 'projected').
+        category_id: Optional spending category mirrored to both
+            shadows.  May be None.
+        notes: Optional notes on the transfer (not mirrored to shadows).
+        transfer_template_id: Optional link to the generating transfer
+            template (for recurrence).
+        name: Optional display name.  If None, generated from the
+            account names.
+        due_date: Optional due date stored on the transfer and mirrored
+            to both shadow transactions.
+    """
+
+    user_id: int
+    from_account_id: int
+    to_account_id: int
+    pay_period_id: int
+    scenario_id: int
+    amount: Decimal
+    status_id: int
+    category_id: int | None
+    notes: str | None = None
+    transfer_template_id: int | None = None
+    name: str | None = None
+    due_date: date | None = None
+
+
+def create_transfer(spec: TransferSpec) -> Transfer:
     """Create a transfer and its two shadow transactions atomically.
 
     This is the ONLY code path that should create rows in
@@ -301,24 +386,10 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
     section 4.5.
 
     Args:
-        user_id:              Owner of the transfer.
-        from_account_id:      Account money leaves (expense side).
-        to_account_id:        Account money enters (income side).
-        pay_period_id:        Pay period for the transfer.
-        scenario_id:          Budget scenario.
-        amount:               Transfer amount (positive Decimal).
-        status_id:            Initial status (typically 'projected').
-        category_id:          Optional spending category for the
-                              expense-side shadow.  If None, falls
-                              back to "Transfers: Outgoing".
-        notes:                Optional notes on the transfer.
-        transfer_template_id: Optional link to the generating
-                              transfer template (for recurrence).
-        name:                 Optional name.  If omitted, generated
-                              from account names.
-        due_date:             Optional due date stored on the transfer
-                              and mirrored to both shadow transactions
-                              (Date or None).
+        spec: The :class:`TransferSpec` carrying the owner, endpoints,
+            placement (period/scenario), amount, status, category, and
+            optional metadata (notes/name/template link/due date) for
+            the transfer to create.
 
     Returns:
         The created Transfer object (shadows accessible via
@@ -331,47 +402,47 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
             does not belong to user_id.
     """
     # ── Validate inputs ────────────────────────────────────────────
-    amount = _validate_positive_amount(amount)
+    amount = _validate_positive_amount(spec.amount)
 
-    if from_account_id == to_account_id:
+    if spec.from_account_id == spec.to_account_id:
         raise ValidationError(
             "Source and destination accounts must be different."
         )
 
     from_account = _get_owned_account(
-        from_account_id, user_id, label="Source account"
+        spec.from_account_id, spec.user_id, label="Source account"
     )
     to_account = _get_owned_account(
-        to_account_id, user_id, label="Destination account"
+        spec.to_account_id, spec.user_id, label="Destination account"
     )
-    _get_owned_period(pay_period_id, user_id)
-    _get_owned_scenario(scenario_id, user_id)
-    _get_owned_category(category_id, user_id)
-    _get_owned_transfer_template(transfer_template_id, user_id)
+    _get_owned_period(spec.pay_period_id, spec.user_id)
+    _get_owned_scenario(spec.scenario_id, spec.user_id)
+    _get_owned_category(spec.category_id, spec.user_id)
+    _get_owned_transfer_template(spec.transfer_template_id, spec.user_id)
 
     # ── Ref data lookups ───────────────────────────────────────────
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
     # ── Determine names ────────────────────────────────────────────
-    transfer_name = name or f"{from_account.name} to {to_account.name}"
+    transfer_name = spec.name or f"{from_account.name} to {to_account.name}"
     expense_shadow_name = f"Transfer to {to_account.name}"
     income_shadow_name = f"Transfer from {from_account.name}"
 
     # ── Create transfer record ─────────────────────────────────────
     xfer = Transfer(
-        user_id=user_id,
-        from_account_id=from_account_id,
-        to_account_id=to_account_id,
-        pay_period_id=pay_period_id,
-        scenario_id=scenario_id,
-        status_id=status_id,
-        transfer_template_id=transfer_template_id,
+        user_id=spec.user_id,
+        from_account_id=spec.from_account_id,
+        to_account_id=spec.to_account_id,
+        pay_period_id=spec.pay_period_id,
+        scenario_id=spec.scenario_id,
+        status_id=spec.status_id,
+        transfer_template_id=spec.transfer_template_id,
         name=transfer_name,
         amount=amount,
-        category_id=category_id,
-        notes=notes,
-        due_date=due_date,
+        category_id=spec.category_id,
+        notes=spec.notes,
+        due_date=spec.due_date,
         is_override=False,
         is_deleted=False,
     )
@@ -380,45 +451,13 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
     # that reference it via transfer_id FK.
     db.session.flush()
 
-    # ── Create expense shadow (from_account) ───────────────────────
-    expense_shadow = Transaction(
-        account_id=from_account_id,
-        template_id=None,       # Shadows are transfer-generated, not template-generated.
-        transfer_id=xfer.id,
-        pay_period_id=pay_period_id,
-        scenario_id=scenario_id,
-        status_id=status_id,
-        name=expense_shadow_name,
-        category_id=category_id,
-        transaction_type_id=expense_type_id,
-        estimated_amount=amount,
-        actual_amount=None,
-        is_override=False,
-        is_deleted=False,
-        credit_payback_for_id=None,
-        notes=None,
-        due_date=due_date,
+    # ── Create the two shadows (expense from_account, income to_account) ──
+    expense_shadow = _build_shadow(
+        xfer, spec.from_account_id, expense_shadow_name, expense_type_id
     )
     db.session.add(expense_shadow)
-
-    # ── Create income shadow (to_account) ──────────────────────────
-    income_shadow = Transaction(
-        account_id=to_account_id,
-        template_id=None,       # Shadows are transfer-generated, not template-generated.
-        transfer_id=xfer.id,
-        pay_period_id=pay_period_id,
-        scenario_id=scenario_id,
-        status_id=status_id,
-        name=income_shadow_name,
-        category_id=category_id,
-        transaction_type_id=income_type_id,
-        estimated_amount=amount,
-        actual_amount=None,
-        is_override=False,
-        is_deleted=False,
-        credit_payback_for_id=None,
-        notes=None,
-        due_date=due_date,
+    income_shadow = _build_shadow(
+        xfer, spec.to_account_id, income_shadow_name, income_type_id
     )
     db.session.add(income_shadow)
     db.session.flush()
@@ -426,23 +465,113 @@ def create_transfer(  # pylint: disable=too-many-arguments,too-many-positional-a
     log_event(
         logger, logging.INFO, EVT_TRANSFER_CREATED, BUSINESS,
         "Transfer created with shadow transactions",
-        user_id=user_id,
+        user_id=spec.user_id,
         transfer_id=xfer.id,
-        from_account_id=from_account_id,
-        to_account_id=to_account_id,
-        pay_period_id=pay_period_id,
-        scenario_id=scenario_id,
+        from_account_id=spec.from_account_id,
+        to_account_id=spec.to_account_id,
+        pay_period_id=spec.pay_period_id,
+        scenario_id=spec.scenario_id,
         amount=str(amount),
-        status_id=status_id,
-        category_id=category_id,
-        transfer_template_id=transfer_template_id,
+        status_id=spec.status_id,
+        category_id=spec.category_id,
+        transfer_template_id=spec.transfer_template_id,
         expense_shadow_id=expense_shadow.id,
         income_shadow_id=income_shadow.id,
     )
     return xfer
 
 
-def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many-branches,too-many-statements
+def _apply_status_change(
+    xfer: Transfer,
+    expense_shadow: Transaction,
+    income_shadow: Transaction,
+    updates: dict[str, object],
+) -> None:
+    """Apply a ``status_id`` update to the transfer and both shadows.
+
+    Verify the transition BEFORE any propagation so an illegal request
+    (for example settled -> projected) leaves both the parent transfer
+    and the two shadow transactions untouched.  The state machine raises
+    ``ValidationError`` -- the route layer surfaces it as a 400.  Audit
+    reference: F-047 / commit C-21 of the 2026-04-15 security
+    remediation plan.
+
+    Defense-in-depth ``paid_at`` synchronization (F-048 / C-22): the
+    route layer (``transfers.mark_done``, ``transactions.mark_done``
+    shadow path) is expected to pass an explicit ``paid_at`` whenever it
+    sets a settled status, but a future caller that forgets is still
+    forced into a coherent state here.  Two cases:
+
+    * Transitioning to a settled status (``is_settled = TRUE``) without
+      an explicit ``paid_at`` -> default to ``now()`` so
+      ``Transaction.days_paid_before_due`` and the dashboard's "paid on
+      time" indicator work.
+    * Transitioning to a non-settled status without an explicit
+      ``paid_at`` -> clear the existing timestamp so a Paid transfer
+      reverted to Projected does not retain a stale payment time.
+
+    Both branches no-op when the caller passed ``paid_at`` explicitly
+    (including ``paid_at=None``); the explicit downstream assignment in
+    :func:`update_transfer` then takes effect.
+
+    Args:
+        xfer: The parent :class:`Transfer` being updated.
+        expense_shadow: The expense-side shadow :class:`Transaction`.
+        income_shadow: The income-side shadow :class:`Transaction`.
+        updates: The :func:`update_transfer` kwargs; read for
+            ``status_id`` and probed for an explicit ``paid_at``.
+    """
+    new_status_id = updates["status_id"]
+    verify_transition(xfer.status_id, new_status_id, context="transfer")
+    xfer.status_id = new_status_id
+    expense_shadow.status_id = new_status_id
+    income_shadow.status_id = new_status_id
+
+    if "paid_at" not in updates:
+        new_status = db.session.get(Status, new_status_id)
+        if new_status is not None:
+            if new_status.is_settled:
+                settled_ts = db.func.now()
+                expense_shadow.paid_at = settled_ts
+                income_shadow.paid_at = settled_ts
+            else:
+                expense_shadow.paid_at = None
+                income_shadow.paid_at = None
+
+
+def _apply_actual_amount(
+    expense_shadow: Transaction, income_shadow: Transaction, raw: object
+) -> None:
+    """Mirror an ``actual_amount`` update onto both shadow transactions.
+
+    The ``Transfer`` model has no ``actual_amount`` column, so this kwarg
+    updates the two shadows directly.  ``None`` clears the settled
+    amount; any other value is coerced to ``Decimal`` (a parse failure
+    is a caller bug -> ``ValidationError``).
+
+    Args:
+        expense_shadow: The expense-side shadow :class:`Transaction`.
+        income_shadow: The income-side shadow :class:`Transaction`.
+        raw: The submitted actual amount (``None`` or Decimal-coercible).
+
+    Raises:
+        ValidationError: If *raw* is not None and cannot be parsed as a
+            Decimal.
+    """
+    if raw is not None:
+        try:
+            actual = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"Invalid actual_amount: {raw!r}."
+            ) from exc
+    else:
+        actual = None
+    expense_shadow.actual_amount = actual
+    income_shadow.actual_amount = actual
+
+
+def update_transfer(transfer_id, user_id, **kwargs):
     """Update a transfer and propagate changes to shadow transactions.
 
     Enforces invariants 3-5: shadow amounts, statuses, and periods
@@ -470,6 +599,8 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
     Args:
         transfer_id: The primary key of the transfer to update.
         user_id:     The expected owner (defense-in-depth).
+        **kwargs:    The fields to update; see "Accepted kwargs" above.
+                     Any key not listed there is silently ignored.
 
     Returns:
         The updated Transfer object.
@@ -491,48 +622,11 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         income_shadow.estimated_amount = new_amount
 
     # ── status_id ──────────────────────────────────────────────────
-    # Verify the transition BEFORE any propagation so an illegal
-    # request (for example settled -> projected) leaves both the
-    # parent transfer and the two shadow transactions untouched.
-    # The state machine raises ``ValidationError`` -- the route
-    # layer surfaces it as a 400.  Audit reference: F-047 / commit
-    # C-21 of the 2026-04-15 security remediation plan.
+    # Transition verified before any propagation, with the F-048
+    # defense-in-depth ``paid_at`` synchronization; see
+    # :func:`_apply_status_change` for the full audit rationale.
     if "status_id" in kwargs:
-        new_status_id = kwargs["status_id"]
-        verify_transition(xfer.status_id, new_status_id, context="transfer")
-        xfer.status_id = new_status_id
-        expense_shadow.status_id = new_status_id
-        income_shadow.status_id = new_status_id
-
-        # Defense-in-depth ``paid_at`` synchronization (F-048 / C-22):
-        # the route layer (``transfers.mark_done``,
-        # ``transactions.mark_done`` shadow path) is expected to pass
-        # an explicit ``paid_at`` whenever it sets a settled status,
-        # but a future caller that forgets is still forced into a
-        # coherent state here.  Two cases:
-        #
-        # * Transitioning to a settled status (``is_settled = TRUE``)
-        #   without an explicit ``paid_at`` -> default to ``now()`` so
-        #   ``Transaction.days_paid_before_due`` and the dashboard's
-        #   "paid on time" indicator work.
-        # * Transitioning to a non-settled status without an explicit
-        #   ``paid_at`` -> clear the existing timestamp so a Paid
-        #   transfer reverted to Projected does not retain a stale
-        #   payment time.
-        #
-        # Both branches no-op when the caller passed ``paid_at``
-        # explicitly (including ``paid_at=None``); the explicit
-        # downstream assignment in this function then takes effect.
-        if "paid_at" not in kwargs:
-            new_status = db.session.get(Status, new_status_id)
-            if new_status is not None:
-                if new_status.is_settled:
-                    settled_ts = db.func.now()
-                    expense_shadow.paid_at = settled_ts
-                    income_shadow.paid_at = settled_ts
-                else:
-                    expense_shadow.paid_at = None
-                    income_shadow.paid_at = None
+        _apply_status_change(xfer, expense_shadow, income_shadow, kwargs)
 
     # ── pay_period_id ──────────────────────────────────────────────
     if "pay_period_id" in kwargs:
@@ -566,21 +660,10 @@ def update_transfer(transfer_id, user_id, **kwargs):  # pylint: disable=too-many
         xfer.notes = kwargs["notes"]
 
     # ── actual_amount ──────────────────────────────────────────────
-    # The Transfer model has no actual_amount column.  This kwarg
-    # updates both shadow transactions directly.
     if "actual_amount" in kwargs:
-        raw = kwargs["actual_amount"]
-        if raw is not None:
-            try:
-                actual = Decimal(str(raw))
-            except (InvalidOperation, TypeError, ValueError) as exc:
-                raise ValidationError(
-                    f"Invalid actual_amount: {raw!r}."
-                ) from exc
-        else:
-            actual = None
-        expense_shadow.actual_amount = actual
-        income_shadow.actual_amount = actual
+        _apply_actual_amount(
+            expense_shadow, income_shadow, kwargs["actual_amount"]
+        )
 
     # ── due_date ──────────────────────────────────────────────────
     # The parent transfer is canonical; mirror to both shadows so the
@@ -690,7 +773,7 @@ def delete_transfer(transfer_id, user_id, soft=False):
     return None
 
 
-def restore_transfer(transfer_id, user_id):  # pylint: disable=too-many-branches
+def restore_transfer(transfer_id, user_id):
     """Restore a soft-deleted transfer and its shadow transactions.
 
     This is the inverse of ``delete_transfer(soft=True)``.  Sets

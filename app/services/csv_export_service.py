@@ -21,6 +21,18 @@ from decimal import Decimal, ROUND_HALF_UP
 TWO_PLACES = Decimal("0.01")
 HUNDRED = Decimal("100")
 
+# Spreadsheet formula-injection (CWE-1236) lead characters.  A CSV cell
+# whose first character is one of these is evaluated as a formula by
+# Excel / Google Sheets when the downloaded export is opened, so a
+# user-typed name like ``=HYPERLINK(...)`` would execute against whoever
+# opens the file.  ``_safe`` prefixes a single quote to force the cell
+# to render as literal text.  TAB (0x09) and CR (0x0D) are included per
+# the OWASP CSV-injection guidance.  Note this neutralizes only
+# user-controlled free text routed through ``_safe``; system-formatted
+# numerics from ``_dec`` (which may legitimately lead with ``-``) are
+# intentionally left numeric so spreadsheets can still aggregate them.
+_FORMULA_LEAD_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
 
 # ── Formatting helpers ────────────────────────────────────────────
 
@@ -70,17 +82,29 @@ def _date(value) -> str:
 
 
 def _safe(value) -> str:
-    """Convert any value to a string, treating None as empty.
+    """Convert a user-controlled value to a formula-safe CSV cell string.
+
+    Treats None as empty, then neutralizes spreadsheet formula
+    injection (CWE-1236): a cell whose first character is a formula
+    trigger (``= + - @``, TAB, or CR) is prefixed with a single quote
+    so Excel / Google Sheets render it as literal text instead of
+    executing it on open.  Every free-text column sourced from user
+    input -- transaction, category, account, and deduction names --
+    must route through this helper rather than being written raw.
 
     Args:
-        value: Any value.
+        value: Any value; the case that matters for neutralization is
+            user-controlled free text.
 
     Returns:
-        String representation, '' for None.
+        String representation, '' for None, formula-neutralized.
     """
     if value is None:
         return ""
-    return str(value)
+    text = str(value)
+    if text.startswith(_FORMULA_LEAD_CHARS):
+        return "'" + text
+    return text
 
 
 def _bool_yn(value: bool) -> str:
@@ -234,11 +258,11 @@ def _add_income_section(rows: list, inc: dict) -> None:
     rows.append(["State Income Tax", _dec(inc["state_tax"]), "Box 17"])
 
     for ded in inc["pretax_deductions"]:
-        rows.append([ded["name"], _dec(ded["annual_total"]), ""])
+        rows.append([_safe(ded["name"]), _dec(ded["annual_total"]), ""])
     rows.append(["Total Pre-Tax Deductions", _dec(inc["total_pretax"]), ""])
 
     for ded in inc["posttax_deductions"]:
-        rows.append([ded["name"], _dec(ded["annual_total"]), ""])
+        rows.append([_safe(ded["name"]), _dec(ded["annual_total"]), ""])
     rows.append(["Total Post-Tax Deductions", _dec(inc["total_posttax"]), ""])
 
     rows.append(["Net Pay", _dec(inc["net_pay_total"]), ""])
@@ -256,9 +280,12 @@ def _add_spending_section(rows: list, spending: list) -> None:
     rows.append(["[Spending by Category]"])
     rows.append(["Category Group", "Category Item", "Amount ($)"])
     for group in spending:
-        rows.append([group["group_name"], "", _dec(group["group_total"])])
+        rows.append([_safe(group["group_name"]), "", _dec(group["group_total"])])
         for item in group["items"]:
-            rows.append([group["group_name"], item["item_name"], _dec(item["item_total"])])
+            rows.append([
+                _safe(group["group_name"]), _safe(item["item_name"]),
+                _dec(item["item_total"]),
+            ])
 
 
 def _add_transfers_section(rows: list, transfers: list) -> None:
@@ -267,7 +294,7 @@ def _add_transfers_section(rows: list, transfers: list) -> None:
     rows.append(["[Transfers]"])
     rows.append(["Destination Account", "Amount ($)"])
     for t in transfers:
-        rows.append([t["destination_account"], _dec(t["total_amount"])])
+        rows.append([_safe(t["destination_account"]), _dec(t["total_amount"])])
 
 
 def _add_net_worth_section(rows: list, nw: dict) -> None:
@@ -289,7 +316,7 @@ def _add_debt_section(rows: list, debt: list) -> None:
     rows.append(["Account", "Jan 1 Balance ($)", "Dec 31 Balance ($)", "Principal Paid ($)"])
     for d in debt:
         rows.append([
-            d["account_name"], _dec(d["jan1_balance"]),
+            _safe(d["account_name"]), _dec(d["jan1_balance"]),
             _dec(d["dec31_balance"]), _dec(d["principal_paid"]),
         ])
 
@@ -304,7 +331,7 @@ def _add_savings_section(rows: list, savings: list) -> None:
     ])
     for s in savings:
         rows.append([
-            s["account_name"], _dec(s["jan1_balance"]),
+            _safe(s["account_name"]), _dec(s["jan1_balance"]),
             _dec(s["dec31_balance"]), _dec(s["total_contributions"]),
             _dec(s.get("employer_contributions", 0)),
             _dec(s.get("investment_growth", 0)),
@@ -348,30 +375,30 @@ def export_variance_csv(report) -> str:
 
     for group in report.groups:
         rows.append([
-            "Group", group.group_name, "", "",
-            _dec(group.estimated_total), _dec(group.actual_total),
-            _dec(group.variance), _pct(group.variance_pct), "",
+            "Group", _safe(group.group_name), "", "",
+            _dec(group.figures.estimated), _dec(group.figures.actual),
+            _dec(group.figures.variance), _pct(group.figures.variance_pct), "",
         ])
         for item in group.items:
             rows.append([
-                "Item", item.group_name, item.item_name, "",
-                _dec(item.estimated_total), _dec(item.actual_total),
-                _dec(item.variance), _pct(item.variance_pct), "",
+                "Item", _safe(item.group_name), _safe(item.item_name), "",
+                _dec(item.figures.estimated), _dec(item.figures.actual),
+                _dec(item.figures.variance), _pct(item.figures.variance_pct), "",
             ])
             for txn in item.transactions:
                 rows.append([
-                    "Transaction", item.group_name, item.item_name,
+                    "Transaction", _safe(item.group_name), _safe(item.item_name),
                     _safe(txn.name),
-                    _dec(txn.estimated), _dec(txn.actual),
-                    _dec(txn.variance), _pct(txn.variance_pct),
+                    _dec(txn.figures.estimated), _dec(txn.figures.actual),
+                    _dec(txn.figures.variance), _pct(txn.figures.variance_pct),
                     _bool_yn(txn.is_paid),
                 ])
 
     # Totals row.
     rows.append([
         "Total", "", "", "",
-        _dec(report.total_estimated), _dec(report.total_actual),
-        _dec(report.total_variance), _pct(report.total_variance_pct), "",
+        _dec(report.figures.estimated), _dec(report.figures.actual),
+        _dec(report.figures.variance), _pct(report.figures.variance_pct), "",
     ])
 
     return _write_csv(rows)
@@ -408,8 +435,8 @@ def export_trends_csv(report) -> str:
 
     for item in report.all_items:
         rows.append([
-            item.group_name,
-            item.item_name,
+            _safe(item.group_name),
+            _safe(item.item_name),
             _dec(item.period_average),
             item.trend_direction,
             _pct(item.pct_change),

@@ -36,10 +36,12 @@ def _create_savings_account(user, db_session, name="Test Savings"):
     """Create a savings account for the given user."""
     savings_type = db_session.query(AccountType).filter_by(name="Savings").one()
     account = account_service.create_account(
-        user_id=user.id,
-        account_type_id=savings_type.id,
-        name=name,
-        anchor_balance=Decimal("5000.00"),
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=savings_type.id,
+            name=name,
+            anchor_balance=Decimal("5000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()

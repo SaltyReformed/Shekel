@@ -22,7 +22,7 @@ import bcrypt
 import requests
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
+from app.enums import AcctTypeEnum, TaxTypeEnum
 from app.extensions import db
 from app.models.user import User, UserSettings
 # Account / AccountAnchorHistory are not imported at module level;
@@ -30,10 +30,11 @@ from app.models.user import User, UserSettings
 # both and is the only acceptable creation path post-E-19.
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.ref import FilingStatus, TaxType
+from app.models.ref import FilingStatus
 from app.models.scenario import Scenario
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
 from app.exceptions import AuthError, ConflictError, ValidationError
+from app.services import account_service
 from app.utils.log_events import (
     AUTH,
     EVT_ACCOUNT_LOCKED,
@@ -235,16 +236,28 @@ def _check_pwned_password(plain_password):
         return
 
     for line in response.text.splitlines():
-        # Each line is "<35-char SHA-1 suffix>:<count>".  An invalid
-        # line (no colon, malformed suffix, non-integer count) is a
-        # protocol violation by HIBP rather than a security risk; skip
-        # it and continue scanning.  A malicious response that omits
-        # the colon would be safer to ignore than to crash the form.
+        # Each line is "<35-char SHA-1 suffix>:<count>".  A line with no
+        # colon is a protocol violation by HIBP rather than a security
+        # risk; skip it and continue scanning.  A malicious response
+        # that omits the colon would be safer to ignore than to crash
+        # the form.
         parts = line.split(":", 1)
         if len(parts) != 2:
             continue
         record_suffix = parts[0].strip().upper()
-        if record_suffix == suffix:
+        if record_suffix != suffix:
+            continue
+        # The suffix matches; the count decides whether it is a real
+        # breach record.  Honour the Add-Padding protocol requested
+        # above: padded lines carry a count of 0 and are bogus noise, so
+        # only a positive count is a genuine breach.  A non-integer
+        # count is a malformed line -- skip it rather than treat a
+        # matching suffix as a confirmed breach.
+        try:
+            count = int(parts[1].strip())
+        except ValueError:
+            continue
+        if count > 0:
             log_event(
                 logger, logging.INFO, EVT_HIBP_CHECK_REJECTED, AUTH,
                 "HIBP rejected breached password at hash time",
@@ -467,9 +480,6 @@ def _seed_tax_data_for_user(user_id):
 
     for tax_year, data in DEFAULT_FICA.items():
         db.session.add(FicaConfig(user_id=user_id, tax_year=tax_year, **data))
-
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
 
     flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
     if flat_type_id:
@@ -804,15 +814,16 @@ def register_user(email, password, display_name):
     # enforced in exactly one place across every Account-creating
     # path (this service, the /accounts route, scripts, fixtures).
     # Decimal("0.00") is a real value per E-12, not "missing".
-    from app.services import account_service  # pylint: disable=import-outside-toplevel
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     account_service.create_account(
-        user_id=user.id,
-        account_type_id=checking_type_id,
-        name="Checking",
-        anchor_balance=Decimal("0.00"),
-        anchor_period_id=bootstrap_period.id,
-        notes="origination (sign-up)",
+        account_service.AccountSpec(
+            user_id=user.id,
+            account_type_id=checking_type_id,
+            name="Checking",
+            anchor_balance=Decimal("0.00"),
+            anchor_period_id=bootstrap_period.id,
+            notes="origination (sign-up)",
+        ),
     )
 
     # Create baseline scenario.

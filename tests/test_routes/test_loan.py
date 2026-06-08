@@ -20,7 +20,7 @@ from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.ref import AccountType
-from app.services.transfer_service import create_transfer
+from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service
 
 from tests._test_helpers import (
@@ -86,10 +86,12 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
 
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=principal,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=principal,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -151,10 +153,12 @@ def _create_other_loan(second_user, db_session, type_name="Auto Loan"):
     """Create a loan account owned by the second user."""
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=second_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Other Loan",
-        anchor_balance=Decimal("15000.00"),
+        account_service.AccountSpec(
+            user_id=second_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Other Loan",
+            anchor_balance=Decimal("15000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -193,11 +197,12 @@ class TestLoanDashboard:
         """Dashboard renders setup page when params don't exist yet."""
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Loan",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -272,11 +277,12 @@ class TestLoanSetup:
         """POST valid params creates LoanParams record."""
         loan_type = db.session.query(AccountType).filter_by(name=type_name).one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=f"Setup {type_name}",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name=f"Setup {type_name}",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -321,11 +327,12 @@ class TestLoanSetup:
         """Auto loan rejects term > 120 (type-specific max_term_months)."""
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Term Test Auto",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Term Test Auto",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -351,11 +358,12 @@ class TestLoanSetup:
         """Mortgage accepts term=360 (max_term_months=600)."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Long Term Mortgage",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Long Term Mortgage",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -1212,47 +1220,55 @@ class TestPayoffChartShape:
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        loan_py = Path(__file__).resolve().parents[2] / "app" / "routes" / "loan.py"
-        text = loan_py.read_text(encoding="utf-8")
+        # loan.py is now the app/routes/loan/ package (Phase 3 pylint
+        # cleanup split); grep every sub-module so coverage is preserved.
+        loan_pkg = Path(__file__).resolve().parents[2] / "app" / "routes" / "loan"
+        text = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in sorted(loan_pkg.glob("*.py"))
+        )
         assert "amortization_engine.calculate_summary" not in text, (
-            "app/routes/loan.py still references "
+            "app/routes/loan/ still references "
             "amortization_engine.calculate_summary -- the Commit 4 "
             "migration should have removed the only production "
             "caller of this function."
         )
 
     def test_no_direct_generate_schedule_call_in_extra_payment_branch(self):
-        """C4-8: extra_payment branch no longer calls ``generate_schedule``.
+        """C4-8: the extra-payment payoff path makes no direct engine call.
 
-        The dashboard (Commit 5) and refinance + target_date
-        (Commit 7) still call ``generate_schedule`` directly;
-        only the extra_payment branch of ``payoff_calculate`` has
-        been migrated in this commit.  Slice the function source
-        between the ``mode == "extra_payment"`` guard and the
-        ``elif mode == "target_date"`` guard and assert the slice
-        contains no direct engine call.
+        The extra-payment branch's computation now lives in the
+        ``_payoff_extra_payment_result`` helper (Phase 3 pylint cleanup
+        decomposed ``payoff_calculate``; the route just dispatches to
+        it).  Slice that helper out of
+        ``app/routes/loan/calculators.py`` and assert it routes through
+        ``compute_payoff_scenarios``, never a direct
+        ``generate_schedule`` / ``calculate_summary`` call.
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        loan_py = Path(__file__).resolve().parents[2] / "app" / "routes" / "loan.py"
-        text = loan_py.read_text(encoding="utf-8")
-        start_marker = 'if mode == "extra_payment":'
-        end_marker = 'elif mode == "target_date":'
+        calculators = (
+            Path(__file__).resolve().parents[2]
+            / "app" / "routes" / "loan" / "calculators.py"
+        )
+        text = calculators.read_text(encoding="utf-8")
+        start_marker = "def _payoff_extra_payment_result("
+        end_marker = "\ndef _payoff_target_date_result("
         start = text.find(start_marker)
         end = text.find(end_marker, start)
         assert start != -1 and end != -1 and end > start, (
-            "Could not slice the extra_payment branch out of "
-            "payoff_calculate -- marker strings have drifted."
+            "Could not slice _payoff_extra_payment_result out of "
+            "calculators.py -- marker strings have drifted."
         )
         branch_source = text[start:end]
         assert "amortization_engine.generate_schedule" not in branch_source, (
-            "extra_payment branch still contains a direct "
+            "extra_payment computation still contains a direct "
             "amortization_engine.generate_schedule call -- the "
             "Commit 4 migration should have collapsed every direct "
             "engine call onto compute_payoff_scenarios."
         )
         assert "amortization_engine.calculate_summary" not in branch_source, (
-            "extra_payment branch still contains a direct "
+            "extra_payment computation still contains a direct "
             "amortization_engine.calculate_summary call."
         )
 
@@ -1544,14 +1560,16 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
     code path.  Does NOT directly insert shadow transactions.
     """
     return create_transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=loan_account.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        amount=amount,
-        status_id=ref_cache.status_id(status_enum),
-        category_id=seed_user["categories"]["Rent"].id,
+        TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=loan_account.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=ref_cache.status_id(status_enum),
+            category_id=seed_user["categories"]["Rent"].id,
+        ),
     )
 
 
@@ -1829,6 +1847,12 @@ class TestTransferPrompt:
         assert tpl.from_account_id == checking.id
         assert tpl.recurrence_rule_id is not None
         assert tpl.default_amount > 0
+        # No "amount" override was posted, so the route defaults to the
+        # full monthly payment and opts into live derivation: the loan-only
+        # derive_from_loan flag must be set on the template.  The shared
+        # builder leaves it at the model default (False); the loan route
+        # sets it explicitly on the returned row.
+        assert tpl.derive_from_loan is True
 
         rule = db.session.get(RecurrenceRule, tpl.recurrence_rule_id)
         assert rule is not None
@@ -2357,10 +2381,12 @@ class TestPaymentBreakdown:
             name="Mortgage",
         ).one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Mortgage",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Mortgage",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -2545,10 +2571,12 @@ def _create_loan_account_exact(seed_user, db_session, type_name, name,
     """Like _create_loan_account but with explicit original_principal."""
     loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=current_principal,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=current_principal,
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -2810,10 +2838,12 @@ class TestAmortizationSchedule:
         """
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Loan",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(account)
         db.session.commit()
@@ -2942,6 +2972,7 @@ class TestAmortizationSchedule:
         # projection over the full term replicates the legacy
         # surface's output exactly.
         from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
+            ProjectionInputs,
             advance_to_next_payment_date,
             calculate_monthly_payment,
             project_forward,
@@ -2966,12 +2997,14 @@ class TestAmortizationSchedule:
         contractual = calculate_monthly_payment(principal, rate, term)
 
         schedule = project_forward(
-            starting_balance=principal,
-            starting_date=starting_date,
-            annual_rate=rate,
-            remaining_months=term,
-            payment_day=1,
-            contractual_payment=contractual,
+            ProjectionInputs(
+                starting_balance=principal,
+                starting_date=starting_date,
+                annual_rate=rate,
+                remaining_months=term,
+                payment_day=1,
+                contractual_payment=contractual,
+            ),
         )
         expected_interest = sum(
             (row.interest for row in schedule), Decimal("0.00"),
@@ -3535,28 +3568,23 @@ class TestDashboardChartComposer:
         )
 
     def test_no_direct_generate_schedule_in_dashboard(self):
-        """C5-5: Dashboard body must not call generate_schedule directly.
+        """C5-5: the dashboard surface must not call generate_schedule directly.
 
-        Static grep against ``app/routes/loan.py`` confirming the
-        dashboard route was migrated to the composer.  The function
-        ``generate_schedule`` is still referenced by:
-          * the ``refinance_calculate`` route (Commit 7 migrates it),
-          * ``calculate_payoff_by_date`` internals (Commit 7),
-          * comments / docstrings,
-        but NOT the dashboard function body.
+        Static grep against ``app/routes/loan/dashboard.py`` -- the
+        dashboard route plus its context-building helpers
+        (``_build_dashboard_scenarios`` etc.) after the Phase 3
+        pylint-cleanup split + decomposition -- confirming the dashboard
+        was migrated to the ``compute_payoff_scenarios`` composer.  The
+        bare word ``generate_schedule`` may still appear in a comment /
+        docstring, but never as a direct ``amortization_engine.``
+        engine call from the dashboard surface.
         """
         import pathlib  # pylint: disable=import-outside-toplevel
-        source = pathlib.Path("app/routes/loan.py").read_text()
-        # Find the dashboard function body.
-        dash_start = source.find("def dashboard(account_id):")
-        assert dash_start > 0, "dashboard function not found"
-        # The next top-level def or @ decorator ends the function.
-        next_route = source.find("\n@loan_bp.route", dash_start + 1)
-        assert next_route > dash_start, "next route boundary not found"
-        dashboard_body = source[dash_start:next_route]
-        assert "amortization_engine.generate_schedule" not in dashboard_body, (
-            "Dashboard body still calls amortization_engine.generate_schedule "
-            "directly -- Commit 5 migration incomplete"
+        source = pathlib.Path("app/routes/loan/dashboard.py").read_text()
+        assert "amortization_engine.generate_schedule" not in source, (
+            "Dashboard surface still calls "
+            "amortization_engine.generate_schedule directly -- Commit 5 "
+            "migration incomplete"
         )
 
     def test_floor_above_committed_with_projections(
@@ -4048,11 +4076,12 @@ class TestRecurrenceEndDateUpdate:
 
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         account = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Loan",
-        
-            anchor_balance=Decimal("0"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Loan",
+                anchor_balance=Decimal("0"),
+            ),
         )
         db.session.add(account)
         db.session.flush()
@@ -4147,10 +4176,12 @@ def _create_exact_mortgage(seed_user, db_session):
     """
     loan_type = db_session.query(AccountType).filter_by(name="Mortgage").one()
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name="Exact Test Mortgage",
-        anchor_balance=Decimal("200000.00"),
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Exact Test Mortgage",
+            anchor_balance=Decimal("200000.00"),
+        ),
     )
     db_session.add(account)
     db_session.flush()
@@ -4451,10 +4482,12 @@ class TestRefinanceCalculator:
         """C-5.10-13: Loan with no LoanParams returns 404."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Mortgage",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Mortgage",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(acct)
         db.session.commit()
@@ -4510,10 +4543,12 @@ class TestRefinanceCalculator:
         """C-5.10-16: Loan without params shows setup page, no Refinance tab."""
         loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="No Params Mortgage",
-            anchor_balance=Decimal("200000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No Params Mortgage",
+                anchor_balance=Decimal("200000.00"),
+            ),
         )
         db.session.add(acct)
         db.session.commit()
@@ -4647,35 +4682,35 @@ class TestRefinanceAndPayoffByDateProjectForwardMigration:
         assert "$68,572.58" in html, "interest savings drifted"
 
     def test_no_generate_schedule_in_refinance(self):
-        """C7-7: ``refinance_calculate`` no longer calls generate_schedule.
+        """C7-7: the refinance schedule projection makes no generate_schedule call.
 
         Structural guarantee mirroring C7-6 at the route layer.  The
-        function-body slice between its ``def`` and the next top-level
-        ``def`` must not reference ``amortization_engine.generate_schedule``.
+        refinance schedule is built by ``_project_refinance`` (Phase 3
+        pylint cleanup decomposed ``refinance_calculate``; the route
+        delegates through ``_build_refinance_comparison``).  The
+        builder's function-body slice -- between its ``def`` and the
+        next top-level ``def`` in ``app/routes/loan/calculators.py`` --
+        must project via ``project_forward``, never reference or call
+        ``generate_schedule``.
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        route_path = (
+        calculators = (
             Path(__file__).resolve().parent.parent.parent
-            / "app" / "routes" / "loan.py"
+            / "app" / "routes" / "loan" / "calculators.py"
         )
-        source = route_path.read_text(encoding="utf-8")
-        marker = "def refinance_calculate("
+        source = calculators.read_text(encoding="utf-8")
+        marker = "def _project_refinance("
         start = source.index(marker)
         next_def = source.find("\ndef ", start + len(marker))
-        next_async = source.find("\nasync def ", start + len(marker))
-        next_class = source.find("\nclass ", start + len(marker))
-        candidates = [
-            c for c in (next_def, next_async, next_class) if c != -1
-        ]
-        end = min(candidates) if candidates else len(source)
+        end = next_def if next_def != -1 else len(source)
         body = source[start:end]
         assert "amortization_engine.generate_schedule" not in body, (
-            "refinance_calculate must not reference "
+            "_project_refinance must not reference "
             "amortization_engine.generate_schedule after Commit 7."
         )
         assert "generate_schedule(" not in body, (
-            "refinance_calculate body must not call generate_schedule."
+            "_project_refinance must not call generate_schedule."
         )
 
     def test_target_date_route_branch_unchanged(
@@ -5228,10 +5263,12 @@ class TestLoanParamsInterestRateUpperBoundCheck:
             name="Auto Loan",
         ).one()
         acct = account_service.create_account(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="F-18 Raw-SQL Test Loan",
-            anchor_balance=Decimal("10000.00"),
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="F-18 Raw-SQL Test Loan",
+                anchor_balance=Decimal("10000.00"),
+            ),
         )
         db_session.add(acct)
         db_session.commit()

@@ -10,8 +10,8 @@ schedule, payoff date and life-of-loan interest"; Commit 15 routed
 every display surface through it; Commit 17 closes the remaining
 divergences by collapsing residual computations onto the resolver
 output and replacing the bare ``.quantize(Decimal("0.01"))`` site at
-``app/routes/loan.py``'s ``committed_interest_saved`` with
-``round_money`` (the E-26 / HIGH-04 boundary).
+``committed_interest_saved`` (now ``app/routes/loan/calculators.py``)
+with ``round_money`` (the E-26 / HIGH-04 boundary).
 
 Test IDs C17-1..C17-6 trace to ``remediation_plan.md`` Section 9
 "Commit 17" subsection E.  Hand-computed expectations follow the
@@ -23,11 +23,13 @@ contract.
 
 # pylint: disable=protected-access
 # Cross-surface single-source-of-truth tests deliberately reach into
-# ``year_end_summary_service``'s private ``_generate_debt_schedules`` /
-# ``_compute_mortgage_interest`` helpers because the public
-# ``compute_year_end_summary`` aggregate exposes derived dec31
-# balances, not the schedule rows themselves -- and the schedule-row
-# equality is exactly what HIGH-08 / F-017..F-023 demand we lock.
+# the year_end_summary_service package's private
+# ``_balances._generate_debt_schedules`` /
+# ``_income_tax._compute_mortgage_interest`` helpers (Phase 2 split)
+# because the public ``compute_year_end_summary`` aggregate exposes
+# derived dec31 balances, not the schedule rows themselves -- and the
+# schedule-row equality is exactly what HIGH-08 / F-017..F-023 demand
+# we lock.
 
 import re
 import subprocess
@@ -92,11 +94,13 @@ def _create_fixed_loan(seed_user, period_id, *, name="C17 Mortgage"):
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=FIXED_PRINCIPAL,
-        anchor_period_id=period_id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=FIXED_PRINCIPAL,
+            anchor_period_id=period_id,
+        ),
     )
     db.session.flush()
 
@@ -131,11 +135,13 @@ def _create_arm_loan(seed_user, period_id, *, name="C17 ARM"):
         db.session.query(AccountType).filter_by(name="Mortgage").one()
     )
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=ARM_PRINCIPAL,
-        anchor_period_id=period_id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=ARM_PRINCIPAL,
+            anchor_period_id=period_id,
+        ),
     )
     db.session.flush()
 
@@ -183,7 +189,9 @@ def _resolver_state(account, loan_params, as_of):
         .all()
     )
     return loan_resolver.resolve_loan(
-        loan_params, anchor_events, ctx.payments, ctx.rate_changes,
+        loan_resolver.LoanInputs(
+            loan_params, anchor_events, ctx.payments, ctx.rate_changes,
+        ),
         as_of,
     )
 
@@ -215,7 +223,7 @@ def test_per_period_principal_interest_single_source(
 
         state = _resolver_state(account, loan_params, date.today())
 
-        debt_schedules = year_end_summary_service._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
         year_end_schedule = debt_schedules[account.id]
@@ -291,11 +299,11 @@ def test_total_interest_one_definition(
         # first eleven payments (payment_day=1, origination
         # 2026-01-01 ⇒ first payment 2026-02-01, last in-year payment
         # 2026-12-01).
-        debt_schedules = year_end_summary_service._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
         calendar_year_interest = (
-            year_end_summary_service._compute_mortgage_interest(
+            year_end_summary_service._income_tax._compute_mortgage_interest(
                 2026, debt_schedules,
             )
         )
@@ -443,7 +451,10 @@ def test_months_saved_single_quantity(
     sync with its own forward slices).
     """
     # pylint: disable=import-outside-toplevel
-    from app.services.loan_resolver import compute_payoff_scenarios
+    from app.services.loan_resolver import (
+        LoanInputs,
+        compute_payoff_scenarios,
+    )
 
     with app.app_context():
         account, loan_params = _create_fixed_loan(
@@ -461,10 +472,12 @@ def test_months_saved_single_quantity(
 
         extra = Decimal("200.00")
         scenarios = compute_payoff_scenarios(
-            loan_params=loan_params,
-            anchor_events=anchor_events,
-            payments=ctx.payments,
-            rate_changes=ctx.rate_changes,
+            loan_inputs=LoanInputs(
+                loan_params=loan_params,
+                anchor_events=anchor_events,
+                payments=ctx.payments,
+                rate_changes=ctx.rate_changes,
+            ),
             extra_monthly=extra,
             as_of=date.today(),
         )
@@ -542,7 +555,7 @@ def test_arm_payoff_date_consistent_across_surfaces(
 
         # Year-end-summary path: the same schedule the resolver
         # produced flows through ``_generate_debt_schedules``.
-        debt_schedules = year_end_summary_service._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
         ye_schedule = debt_schedules[account.id]
@@ -597,8 +610,11 @@ _APP_DIR = Path(__file__).resolve().parents[2] / "app"
 
 _LOAN_SINGLE_SOURCE_FILES = (
     "services/debt_strategy_service.py",
-    "routes/loan.py",
-    "services/year_end_summary_service.py",
+    # Phase 3 pylint-cleanup split: routes/loan.py is now the routes/loan/
+    # package, and year_end_summary_service is a package; the grep below
+    # runs with -r --include=*.py so every sub-module is scanned.
+    "routes/loan",
+    "services/year_end_summary_service",
     "services/loan_payment_service.py",
 )
 
@@ -623,7 +639,7 @@ def test_no_bare_quantize_in_loan_paths():
     """
     grep_out = subprocess.run(
         [
-            "grep", "-Hn",
+            "grep", "-rHn", "--include=*.py",
             r'\.quantize(Decimal("0\.01"))',
         ] + [
             str(_APP_DIR / rel) for rel in _LOAN_SINGLE_SOURCE_FILES

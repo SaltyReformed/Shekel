@@ -57,7 +57,7 @@ from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.services import account_service
-from app.services.transfer_service import create_transfer
+from app.services.transfer_service import TransferSpec, create_transfer
 
 
 # ---------------------------------------------------------------------------
@@ -120,11 +120,13 @@ def _create_loan_account(seed_user, db_session, *,
         db_session.query(AccountType).filter_by(name=type_name).one()
     )
     account = account_service.create_account(
-        user_id=seed_user["user"].id,
-        account_type_id=loan_type.id,
-        name=name,
-        anchor_balance=current_principal,
-        anchor_period_id=seed_user["bootstrap_period"].id,
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=current_principal,
+            anchor_period_id=seed_user["bootstrap_period"].id,
+        ),
     )
     db_session.flush()
     params = LoanParams(
