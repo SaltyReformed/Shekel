@@ -13,6 +13,13 @@ Adversarial multi-agent sweep of `app/` (2026-06-07) for issues the pylint-10 cl
 - [x] **SECURITY/HIGH** `create_transaction` `category_id` IDOR -- `app/routes/transactions/create.py` -- `8e3bb82`.
 - [x] **CORRECTNESS/HIGH x2** Spending-trend sign-flip + unbounded window -- `app/services/spending_trend_service.py` -- `6555a4a` (analytics, not money-math).
 
+**FIXED -- Batch B DRY/SOLID, non-financial (shipped on `dev` 2026-06-07; each verified equivalent against the code, full suite 5778, `pylint app/` 9.96 held, zero R0801):**
+- [x] **DRY/#76** `entry_service.build_entry_sums_dict` reuses `compute_remaining` instead of the inline `estimated - total` E-21 copy -- `ce9d773`.
+- [x] **DRY/#71** `account_resolver` extracts `_first_active_checking_account`; both resolvers call it -- `0d2d47f`.
+- [x] **DRY/#35** `savings_dashboard_service/_projections._investment_horizons` delegates to `period_projections.project_balance_horizons` (deleted the duplicate offset table + re-keying loop) -- `79181a4`.
+- [x] **DRY/#32** `savings.update_goal` routes the pre-flush stale-form branch through the shared `handle_stale_form_conflict`; one `StaleConflictContext` drives both halves -- `c5643a6`.
+- [x] **DRY/LAZY/#70 + #48 + #49** `retirement.update_settings` 422 re-render drops the 10 dead template kwargs and removes the orphaned `# pylint: enable=duplicate-code` -- `1e7fc97`.
+
 **CLOSED -- WON'T FIX:**
 - [~] **CORRECTNESS/HIGH** ARM recast `monthly_pi` divergence (`amortization_engine.project_forward`). Reconciled against the `docs/audits/financial_calculations` remediation: that work locks card==schedule==debt-strategy==savings-PITI for real (paid/replayed) loans (Symptom #2/#4; tests C13-1/C13-2, C15-2, C17-5). The hunt's divergence requires a synthetic state (a recorded recast sitting in the forward-projection path with no confirming replay) the locks don't cover and production does not reach. Developer decision 2026-06-07: do not touch hard-won, working, remediated ARM code.
 
