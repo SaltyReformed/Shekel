@@ -259,7 +259,8 @@ class TestAccountAccessControl:
                 f"/accounts/{target_id}/interest/params",
                 data={
                     "apy": "5.00",
-                    "compounding_frequency": "daily",
+                    # #38: compounding frequency omitted -- this IDOR
+                    # test asserts a 404 before any field is processed.
                 },
             )
             _assert_not_found(

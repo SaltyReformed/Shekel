@@ -272,10 +272,10 @@
         </div>
         <div class="col-md-3">
           <label class="form-label">Employer Type</label>
-          <select name="employer_contribution_type" class="form-select form-select-sm">
-            <option value="none" {{ 'selected' if not params or params.employer_contribution_type == 'none' }}>None</option>
-            <option value="flat_percentage" {{ 'selected' if params and params.employer_contribution_type == 'flat_percentage' }}>Flat Percentage</option>
-            <option value="match" {{ 'selected' if params and params.employer_contribution_type == 'match' }}>Match</option>
+          <select name="employer_contribution_type_id" class="form-select form-select-sm">
+            {% for ect in employer_contribution_types %}
+            <option value="{{ ect.id }}" data-name="{{ ect.name }}" {{ 'selected' if (params and params.employer_contribution_type_id == ect.id) or (not params and ect.id == default_employer_contribution_type_id) }}>{{ ect.name | replace('_', ' ') | title }}</option>
+            {% endfor %}
           </select>
         </div>
       </div>

@@ -666,7 +666,9 @@ class TestInvestmentInvalidOperationCatch:
                     "assumed_annual_return": "abc",
                     "annual_contribution_limit": "23000",
                     "contribution_limit_year": "2026",
-                    "employer_contribution_type": "none",
+                    # #38: employer type omitted -- the create schema
+                    # defaults it to NONE; this test exercises the
+                    # ``assumed_annual_return="abc"`` validation reject.
                 },
                 follow_redirects=False,
             )

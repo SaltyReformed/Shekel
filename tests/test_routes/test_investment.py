@@ -8,7 +8,11 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.enums import (
+    CalcMethodEnum,
+    DeductionTimingEnum,
+    EmployerContributionTypeEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
@@ -42,7 +46,7 @@ def _create_investment_params(db_session, account_id, **overrides):
         "assumed_annual_return": Decimal("0.07000"),
         "annual_contribution_limit": Decimal("23500.00"),
         "contribution_limit_year": 2026,
-        "employer_contribution_type": "none",
+        "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
     }
     defaults.update(overrides)
     params = InvestmentParams(**defaults)
@@ -231,7 +235,7 @@ class TestInvestmentParams:
                 "assumed_annual_return": "7",
                 "annual_contribution_limit": "23500",
                 "contribution_limit_year": "2026",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -251,7 +255,7 @@ class TestInvestmentParams:
                 "assumed_annual_return": "8",
                 "annual_contribution_limit": "23500",
                 "contribution_limit_year": "2026",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -277,7 +281,7 @@ class TestInvestmentParams:
                 "assumed_annual_return": "7.5",
                 "annual_contribution_limit": "23500",
                 "contribution_limit_year": "2026",
-                "employer_contribution_type": "match",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
                 "employer_match_percentage": "100",
                 "employer_match_cap_percentage": "6",
             },
@@ -302,7 +306,7 @@ class TestInvestmentParams:
                 "assumed_annual_return": "7",
                 "annual_contribution_limit": "23500",
                 "contribution_limit_year": "2026",
-                "employer_contribution_type": "match",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
                 "employer_match_percentage": "100",
                 "employer_match_cap_percentage": "6",
             },
@@ -312,7 +316,11 @@ class TestInvestmentParams:
             account_id=acct.id
         ).first()
         assert params is not None
-        assert params.employer_contribution_type == "match"
+        assert params.employer_contribution_type_id == (
+            ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.MATCH,
+            )
+        )
         assert params.employer_match_percentage == Decimal("1.0000")
         assert params.employer_match_cap_percentage == Decimal("0.0600")
 
@@ -329,7 +337,7 @@ class TestInvestmentParams:
             f"/accounts/{other_acct.id}/investment/params",
             data={
                 "assumed_annual_return": "7",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
 
@@ -351,7 +359,7 @@ class TestInvestmentParams:
             f"/accounts/{acct.id}/investment/params",
             data={
                 "assumed_annual_return": "not_a_number",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -383,7 +391,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{acct.id}/investment/params",
             data={
                 "assumed_annual_return": "7",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -398,7 +406,7 @@ class TestInvestmentNegativePaths:
         params = InvestmentParams(
             account_id=other_acct.id,
             assumed_annual_return=Decimal("0.07000"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
         )
         db.session.add(params)
         db.session.commit()
@@ -407,7 +415,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{other_acct.id}/investment/params",
             data={
                 "assumed_annual_return": "99",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 404
@@ -433,7 +441,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{acct.id}/investment/params",
             data={
                 "assumed_annual_return": "not_a_number",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -450,7 +458,7 @@ class TestInvestmentNegativePaths:
             "/accounts/999999/investment/params",
             data={
                 "assumed_annual_return": "7",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 404
@@ -464,7 +472,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{checking_acct.id}/investment/params",
             data={
                 "assumed_annual_return": "7",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         # The route checks account is None or user_id mismatch -- checking account
@@ -484,7 +492,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{acct.id}/investment/params",
             data={
                 "assumed_annual_return": "-5",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -1275,7 +1283,7 @@ class TestWhatIfContributionCalculator:
             assumed_annual_return=Decimal("0.00000"),
             annual_contribution_limit=None,
             contribution_limit_year=None,
-            employer_contribution_type="match",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
             employer_match_percentage=Decimal("1.0000"),
             employer_match_cap_percentage=Decimal("0.0600"),
         )
@@ -1827,7 +1835,7 @@ class TestEmployerMatchCapped:
             assumed_annual_return=Decimal("0.00000"),
             annual_contribution_limit=Decimal("23500.00"),
             contribution_limit_year=2026,
-            employer_contribution_type="match",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
             employer_match_percentage=Decimal("0.5000"),
             employer_match_cap_percentage=Decimal("0.0600"),
         )
@@ -1902,7 +1910,7 @@ class TestEmployerMatchCapped:
             assumed_annual_return=Decimal("0.00000"),
             annual_contribution_limit=Decimal("23500.00"),
             contribution_limit_year=2026,
-            employer_contribution_type="match",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
             employer_match_percentage=Decimal("0.5000"),
             employer_match_cap_percentage=Decimal("0.0600"),
         )

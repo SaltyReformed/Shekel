@@ -5,14 +5,32 @@ from decimal import Decimal
 
 from marshmallow import (
     fields,
+    post_load,
     pre_load,
     validate,
+    validates_schema,
+    ValidationError,
 )
 
+from app import ref_cache
+from app.enums import EmployerContributionTypeEnum
 from app.schemas.validation._helpers import (
     BaseSchema,
     _normalize_percent_fields,
 )
+
+
+def _valid_employer_contribution_type_ids() -> set[int]:
+    """Return the set of valid ``ref.employer_contribution_types`` IDs.
+
+    Resolved from the cache at call time (request context) so the
+    schema validates the posted FK id against the live ref table
+    rather than a hardcoded id set -- the IDs-for-logic invariant (#38).
+    """
+    return {
+        ref_cache.employer_contribution_type_id(member)
+        for member in EmployerContributionTypeEnum
+    }
 
 
 class InvestmentContributionTransferSchema(BaseSchema):
@@ -78,9 +96,12 @@ class InvestmentParamsCreateSchema(BaseSchema):
     contribution_limit_year = fields.Integer(
         allow_none=True, validate=validate.Range(min=2000, max=2100),
     )
-    employer_contribution_type = fields.String(
-        load_default="none",
-        validate=validate.OneOf(["none", "flat_percentage", "match"]),
+    # #38: the employer-contribution type is now a ref-table FK id, not
+    # a free string.  Omitted (no row yet, or a JSON caller that leaves
+    # it off) defaults to NONE in ``default_employer_contribution_type``
+    # below -- the faithful successor to the prior ``load_default="none"``.
+    employer_contribution_type_id = fields.Integer(
+        load_default=None, allow_none=True,
     )
     employer_flat_percentage = fields.Decimal(
         places=4, as_string=True, allow_none=True,
@@ -94,6 +115,34 @@ class InvestmentParamsCreateSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
     )
+
+    @validates_schema
+    def validate_employer_contribution_type(self, data, **kwargs):
+        """Reject an employer-contribution-type id outside the ref table."""
+        type_id = data.get("employer_contribution_type_id")
+        if type_id is not None and (
+            type_id not in _valid_employer_contribution_type_ids()
+        ):
+            raise ValidationError(
+                "Invalid employer contribution type.",
+                field_name="employer_contribution_type_id",
+            )
+
+    @post_load
+    def default_employer_contribution_type(self, data, **kwargs):
+        """Default a missing employer-contribution type to NONE.
+
+        Preserves the prior schema's ``load_default="none"`` semantics
+        now that the column is an FK id: a create that omits the field
+        lands on the seeded NONE row rather than a NULL FK.
+        """
+        if data.get("employer_contribution_type_id") is None:
+            data["employer_contribution_type_id"] = (
+                ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                )
+            )
+        return data
 
 
 class InvestmentParamsUpdateSchema(BaseSchema):
@@ -130,9 +179,10 @@ class InvestmentParamsUpdateSchema(BaseSchema):
     contribution_limit_year = fields.Integer(
         allow_none=True, validate=validate.Range(min=2000, max=2100),
     )
-    employer_contribution_type = fields.String(
-        validate=validate.OneOf(["none", "flat_percentage", "match"]),
-    )
+    # #38: ref-table FK id (see :class:`InvestmentParamsCreateSchema`).
+    # No default on update -- a partial payload that omits it leaves the
+    # stored type unchanged.
+    employer_contribution_type_id = fields.Integer()
     employer_flat_percentage = fields.Decimal(
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
@@ -145,3 +195,19 @@ class InvestmentParamsUpdateSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
     )
+
+    @validates_schema
+    def validate_employer_contribution_type(self, data, **kwargs):
+        """Reject an employer-contribution-type id outside the ref table.
+
+        Only fires when the field is present -- a partial update that
+        omits it skips the check and leaves the stored type unchanged.
+        """
+        type_id = data.get("employer_contribution_type_id")
+        if type_id is not None and (
+            type_id not in _valid_employer_contribution_type_ids()
+        ):
+            raise ValidationError(
+                "Invalid employer contribution type.",
+                field_name="employer_contribution_type_id",
+            )

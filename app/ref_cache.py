@@ -35,7 +35,9 @@ from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
     CalcMethodEnum,
+    CompoundingFrequencyEnum,
     DeductionTimingEnum,
+    EmployerContributionTypeEnum,
     GoalModeEnum,
     IncomeUnitEnum,
     LoanAnchorSourceEnum,
@@ -188,6 +190,10 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(IncomeUnitEnum, ref_models.IncomeUnit),
         _RefSpec(RoleEnum, ref_models.UserRole),
         _RefSpec(LoanAnchorSourceEnum, ref_models.LoanAnchorSource),
+        _RefSpec(
+            EmployerContributionTypeEnum, ref_models.EmployerContributionType
+        ),
+        _RefSpec(CompoundingFrequencyEnum, ref_models.CompoundingFrequency),
     ]
 
 
@@ -525,3 +531,50 @@ def loan_anchor_source_id(member):
     """
     _require_init()
     return _cache.enum_ids[LoanAnchorSourceEnum][member]
+
+
+def employer_contribution_type_id(member):
+    """Return the integer primary key for an EmployerContributionTypeEnum member.
+
+    Used by the growth engine and the investment-projection
+    employer-params builder (#38) to branch on the employer
+    contribution formula via ``budget.investment_params
+    .employer_contribution_type_id`` without ever reading the string
+    ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: An ``EmployerContributionTypeEnum`` member
+                (e.g. ``EmployerContributionTypeEnum.MATCH``).
+
+    Returns:
+        int -- the ``ref.employer_contribution_types.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid EmployerContributionTypeEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[EmployerContributionTypeEnum][member]
+
+
+def compounding_frequency_id(member):
+    """Return the integer primary key for a CompoundingFrequencyEnum member.
+
+    Used by the interest projection engine (#38) to branch on the
+    compounding formula via ``budget.interest_params
+    .compounding_frequency_id`` without ever reading the string
+    ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: A ``CompoundingFrequencyEnum`` member
+                (e.g. ``CompoundingFrequencyEnum.DAILY``).
+
+    Returns:
+        int -- the ``ref.compounding_frequencies.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid CompoundingFrequencyEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[CompoundingFrequencyEnum][member]

@@ -134,7 +134,7 @@ def calculate_balances_with_interest(  # pylint: disable=too-many-arguments,too-
     """Same as calculate_balances but also returns interest earned per period.
 
     When interest_params is provided (an object with .apy and
-    .compounding_frequency), interest is projected for each period and
+    .compounding_frequency_id), interest is projected for each period and
     added to the running balance.
 
     Args:
@@ -142,7 +142,7 @@ def calculate_balances_with_interest(  # pylint: disable=too-many-arguments,too-
         anchor_period_id:  int -- the pay_period.id of the anchor.
         periods:           List of PayPeriod objects, ordered by period_index.
         transactions:      List of Transaction objects (including shadow transactions).
-        interest_params:   Object with .apy (Decimal) and .compounding_frequency (str).
+        interest_params:   Object with .apy (Decimal) and .compounding_frequency_id (int).
         amount_overrides:  Optional ``{transaction_id: Decimal}`` map (the live
                            projected-net seam, Workstream B), forwarded verbatim
                            to :func:`calculate_balances`.  Default None
@@ -186,7 +186,7 @@ def _layer_interest(base_balances, periods, interest_params):
             no-interest balances from :func:`calculate_balances`.
         periods: List of PayPeriod objects, ordered by period_index.
         interest_params: Object with .apy (Decimal) and
-            .compounding_frequency (str).
+            .compounding_frequency_id (int).
 
     Returns:
         (balances, interest_by_period) where balances is an OrderedDict
@@ -194,7 +194,7 @@ def _layer_interest(base_balances, periods, interest_params):
         interest_by_period maps period_id -> Decimal interest earned.
     """
     apy = interest_params.apy  # Already Decimal from Numeric(7,5) column.
-    compounding = interest_params.compounding_frequency
+    compounding_id = interest_params.compounding_frequency_id
 
     # Re-walk periods, layering interest on top of the base balances.
     balances = OrderedDict()
@@ -214,7 +214,7 @@ def _layer_interest(base_balances, periods, interest_params):
         interest = calculate_interest(
             balance=running_balance,
             apy=apy,
-            compounding_frequency=compounding,
+            compounding_frequency_id=compounding_id,
             period_start=period.start_date,
             period_end=period.end_date,
         )

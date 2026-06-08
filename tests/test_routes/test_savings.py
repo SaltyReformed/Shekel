@@ -16,6 +16,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
+    CompoundingFrequencyEnum, EmployerContributionTypeEnum,
     GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum,
     StatusEnum, TxnTypeEnum,
 )
@@ -201,7 +202,7 @@ def _create_investment_account_with_params(seed_user, seed_periods):
         assumed_annual_return=Decimal("0.07000"),
         annual_contribution_limit=Decimal("23500.00"),
         contribution_limit_year=2026,
-        employer_contribution_type="none",
+        employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
     )
     db.session.add(params)
     db.session.commit()
@@ -232,7 +233,7 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
         assumed_annual_return=Decimal("0.07000"),
         annual_contribution_limit=Decimal("23500.00"),
         contribution_limit_year=2026,
-        employer_contribution_type="flat_percentage",
+        employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
         employer_flat_percentage=Decimal("0.0500"),
     )
     db.session.add(params)
@@ -525,7 +526,7 @@ class TestDashboard:
                 assumed_annual_return=Decimal("0.07000"),
                 annual_contribution_limit=Decimal("23500.00"),
                 contribution_limit_year=2026,
-                employer_contribution_type="flat_percentage",
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
                 employer_flat_percentage=Decimal("0.0500"),
             )
             db.session.add(params)
@@ -1077,7 +1078,7 @@ class TestSavingsDashboardShadowTransactions:
             ip = IP(
                 account_id=hysa.id,
                 apy=Decimal("0.04500"),  # 4.5% stored as decimal
-                compounding_frequency="daily",
+                compounding_frequency_id=ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY),
             )
             db.session.add(ip)
 
@@ -1655,6 +1656,9 @@ class TestSetupRequiredBadge:
             # server_default; supply an explicit value.
             db.session.add(InterestParams(
                 account_id=acct.id, apy=Decimal("0.04500"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
             ))
             db.session.commit()
 
@@ -1705,7 +1709,12 @@ class TestSetupRequiredBadge:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.add(InvestmentParams(
+                account_id=acct.id,
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get("/savings")

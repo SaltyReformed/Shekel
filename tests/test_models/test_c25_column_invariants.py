@@ -75,7 +75,11 @@ F_134_RESTORED_COLUMNS = [
     ("budget", "transfers", "is_override", "false"),
     ("budget", "transfers", "is_deleted", "false"),
     ("budget", "investment_params", "assumed_annual_return", "0.07000"),
-    ("budget", "investment_params", "employer_contribution_type", "'none'"),
+    # #38: ``employer_contribution_type`` (the free-string column with a
+    # ``'none'`` server_default) was promoted to the ref FK
+    # ``employer_contribution_type_id`` -- a ref FK carries no
+    # server_default (an id is not a static literal), so it is no longer
+    # an F-134 restored-default column.
     ("salary", "fica_configs", "ss_rate", "0.0620"),
     ("salary", "fica_configs", "ss_wage_base", "176100"),
     ("salary", "fica_configs", "medicare_rate", "0.0145"),

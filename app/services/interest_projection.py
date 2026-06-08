@@ -2,7 +2,9 @@
 Shekel Budget App -- Interest Projection Service
 
 Pure function that calculates projected interest earned on a HYSA
-account during a pay period.  No database access, no side effects.
+account during a pay period.  No database access (the compounding
+frequency is resolved against the in-memory ``ref_cache``), no side
+effects.
 
 Day-count convention -- actual/actual for leap-day-crossing windows
 -------------------------------------------------------------------
@@ -37,6 +39,8 @@ import calendar
 from datetime import date as date_cls
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import CompoundingFrequencyEnum
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
 ZERO = Decimal("0.00")
@@ -99,7 +103,7 @@ def _days_in_quarter(period_start):
 def calculate_interest(
     balance,
     apy,
-    compounding_frequency,
+    compounding_frequency_id,
     period_start,
     period_end,
 ):
@@ -115,7 +119,9 @@ def calculate_interest(
     Args:
         balance: Account balance after all transactions/transfers for the period.
         apy: Annual percentage yield (e.g., Decimal("0.04500") for 4.5%).
-        compounding_frequency: One of 'daily', 'monthly', 'quarterly'.
+        compounding_frequency_id: ``ref.compounding_frequencies.id`` of
+            the account's compounding frequency (resolved against
+            ``ref_cache``; #38).
         period_start: Start date of the pay period.
         period_end: End date of the pay period.
 
@@ -124,7 +130,7 @@ def calculate_interest(
         :func:`app.utils.money.round_money` (``ROUND_HALF_UP``).
         Returns :data:`ZERO` for non-positive balances, non-positive
         APY, inverted ``period_start`` / ``period_end`` ordering, or an
-        unrecognised ``compounding_frequency``.
+        unrecognised ``compounding_frequency_id``.
     """
     balance = Decimal(str(balance))
     apy = Decimal(str(apy))
@@ -134,17 +140,23 @@ def calculate_interest(
 
     period_days = Decimal(str((period_end - period_start).days))
 
-    if compounding_frequency == "daily":
+    if compounding_frequency_id == ref_cache.compounding_frequency_id(
+        CompoundingFrequencyEnum.DAILY
+    ):
         days_in_year = _days_in_year_for_window(period_start, period_end)
         daily_rate = apy / days_in_year
         interest = balance * ((1 + daily_rate) ** period_days - 1)
-    elif compounding_frequency == "monthly":
+    elif compounding_frequency_id == ref_cache.compounding_frequency_id(
+        CompoundingFrequencyEnum.MONTHLY
+    ):
         monthly_rate = apy / MONTHS_PER_YEAR
         days_in_month = Decimal(
             str(calendar.monthrange(period_start.year, period_start.month)[1])
         )
         interest = balance * monthly_rate * (period_days / days_in_month)
-    elif compounding_frequency == "quarterly":
+    elif compounding_frequency_id == ref_cache.compounding_frequency_id(
+        CompoundingFrequencyEnum.QUARTERLY
+    ):
         quarterly_rate = apy / QUARTERS_IN_YEAR
         days_in_quarter = _days_in_quarter(period_start)
         interest = balance * quarterly_rate * (period_days / days_in_quarter)

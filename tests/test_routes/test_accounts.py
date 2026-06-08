@@ -14,7 +14,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum
+from app.enums import (
+    AcctCategoryEnum,
+    CompoundingFrequencyEnum,
+    EmployerContributionTypeEnum,
+)
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
@@ -1937,7 +1941,11 @@ class TestAccountCreationRedirects:
             ).one()
 
             assert params.assumed_annual_return == Decimal("0.07000")
-            assert params.employer_contribution_type == "none"
+            assert params.employer_contribution_type_id == (
+                ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                )
+            )
             assert params.assumed_annual_return >= 0
 
 
@@ -2021,7 +2029,12 @@ class TestInterestDispatch:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),  # HIGH-06: apy NOT NULL, no server_default
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest")
@@ -2209,7 +2222,12 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),  # HIGH-06: apy NOT NULL, no server_default
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest?setup=1")
@@ -2236,7 +2254,12 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),  # HIGH-06: apy NOT NULL, no server_default
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest")
@@ -2262,7 +2285,12 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.add(InvestmentParams(
+                account_id=acct.id,
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(
@@ -2291,7 +2319,12 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.add(InvestmentParams(
+                account_id=acct.id,
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/investment")

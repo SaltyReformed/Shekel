@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Optional
 
 from app import ref_cache
-from app.enums import CalcMethodEnum
+from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
 from app.utils.balance_predicates import status_contributes_to_balance
 
@@ -178,21 +178,26 @@ def _employer_params(investment_params, gross_biweekly):
     """Build the employer-contribution params dict, or None.
 
     Args:
-        investment_params: Object with ``employer_contribution_type`` and
-                           the ``employer_*_percentage`` fields.
+        investment_params: Object with ``employer_contribution_type_id``
+                           and the ``employer_*_percentage`` fields.
         gross_biweekly:    Engine gross per pay period (Decimal), embedded
                            so the growth engine can size a
                            percentage-of-gross employer match.
 
     Returns:
         A dict describing the employer contribution, or None when the
-        account has no employer contribution configured.
+        account has no employer contribution configured.  The dict
+        carries the employer-type ref id under ``type_id`` (#38) so the
+        growth engine branches on the id, not a string.
     """
-    emp_type = getattr(investment_params, "employer_contribution_type", "none")
-    if not emp_type or emp_type == "none":
+    emp_type_id = getattr(investment_params, "employer_contribution_type_id", None)
+    none_id = ref_cache.employer_contribution_type_id(
+        EmployerContributionTypeEnum.NONE
+    )
+    if emp_type_id is None or emp_type_id == none_id:
         return None
     return {
-        "type": emp_type,
+        "type_id": emp_type_id,
         "flat_percentage": getattr(
             investment_params, "employer_flat_percentage", None) or ZERO,
         "match_percentage": getattr(

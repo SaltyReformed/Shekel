@@ -10,7 +10,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import GoalModeEnum, IncomeUnitEnum
+from app.enums import CompoundingFrequencyEnum, GoalModeEnum, IncomeUnitEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType, FilingStatus
@@ -2166,6 +2166,9 @@ class TestCanonicalProducerRouting:
             # HIGH-06 / Commit 24: ``apy`` NOT NULL, no server_default.
             db.session.add(InterestParams(
                 account_id=hysa.id, apy=Decimal("0.04500"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
             ))
             db.session.commit()
 

@@ -86,6 +86,12 @@ ACCT_TYPE_SEEDS = [
 # wholesale from the previous three call sites' dict literals is the
 # canonical form -- changing any column here must be matched by a
 # database migration.
+# fmt: off
+# Pylint: ``line-too-long`` -- the ``Status`` rows are columnar-aligned
+# dict literals (one row per status, columns aligned to the boolean
+# flags) for the same scannability reason as ``ACCT_TYPE_SEEDS`` above;
+# wrapping individual rows harms readability.
+# pylint: disable=line-too-long
 _REF_TABLE_SEEDS = (
     # (model_attr_name, list of entries)
     ("TransactionType", ["Income", "Expense"]),
@@ -119,7 +125,16 @@ _REF_TABLE_SEEDS = (
     # balance-edit flow (Commit 16).  Same idempotent upsert semantics
     # as the other reference tables.
     ("LoanAnchorSource", ["origination", "user_trueup"]),
+    # ``EmployerContributionType`` / ``CompoundingFrequency`` (#38) --
+    # the two logic-bearing enums promoted off free-string columns to
+    # ref tables so the growth/interest engines branch on IDs.  Names
+    # match the enum values and the prior column literals exactly, so
+    # the promotion migration backfills name->id 1:1.
+    ("EmployerContributionType", ["none", "flat_percentage", "match"]),
+    ("CompoundingFrequency", ["daily", "monthly", "quarterly"]),
 )
+# pylint: enable=line-too-long
+# fmt: on
 
 
 _ACCT_TYPE_CATEGORY_SEEDS = ("Asset", "Liability", "Retirement", "Investment")

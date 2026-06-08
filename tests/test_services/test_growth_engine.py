@@ -10,6 +10,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 import pytest
 
+from app import ref_cache
+from app.enums import EmployerContributionTypeEnum
 from app.services.growth_engine import (
     ContributionRecord,
     ProjectedBalance,
@@ -21,6 +23,17 @@ from app.services.growth_engine import (
     ZERO,
     TWO_PLACES,
 )
+
+
+def _emp_type_id(member):
+    """Resolve an EmployerContributionTypeEnum member to its ref-table id.
+
+    The employer-params dict carries the type as a ref id under
+    ``type_id`` (#38); ref_cache is initialized for every test by the
+    autouse conftest fixtures, so these unit tests build the dict the
+    same way ``investment_projection._employer_params`` does.
+    """
+    return ref_cache.employer_contribution_type_id(member)
 
 
 # ── Fake Objects ─────────────────────────────────────────────────
@@ -65,12 +78,12 @@ def cross_year_periods():
 
 class TestEmployerContribution:
     def test_none_type_returns_zero(self):
-        params = {"type": "none", "gross_biweekly": Decimal("2500")}
+        params = {"type_id": _emp_type_id(EmployerContributionTypeEnum.NONE), "gross_biweekly": Decimal("2500")}
         assert calculate_employer_contribution(params, Decimal("200")) == ZERO
 
     def test_flat_percentage(self):
         params = {
-            "type": "flat_percentage",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
             "flat_percentage": Decimal("0.05"),
             "gross_biweekly": Decimal("2500"),
         }
@@ -80,7 +93,7 @@ class TestEmployerContribution:
     def test_match_full(self):
         """Employee contributes >= matchable amount."""
         params = {
-            "type": "match",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
             "match_cap_percentage": Decimal("0.06"),
             "gross_biweekly": Decimal("2500"),
@@ -92,7 +105,7 @@ class TestEmployerContribution:
     def test_match_partial(self):
         """Employee contributes less than matchable amount."""
         params = {
-            "type": "match",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
             "match_cap_percentage": Decimal("0.06"),
             "gross_biweekly": Decimal("2500"),
@@ -104,7 +117,7 @@ class TestEmployerContribution:
     def test_match_zero_employee(self):
         """No employee contribution → no match."""
         params = {
-            "type": "match",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
             "match_cap_percentage": Decimal("0.06"),
             "gross_biweekly": Decimal("2500"),
@@ -215,7 +228,7 @@ class TestCapContributionAtLimit:
         surfaces read 100.
         """
         employer_params = {
-            "type": "match",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("0.5"),
             "match_cap_percentage": Decimal("0.06"),
             "gross_biweekly": Decimal("8000"),
@@ -275,7 +288,7 @@ class TestCapContributionAtLimit:
           matched = min(200, 150) = 150; employer = 150 * 1.0 = 150.
         """
         employer_params = {
-            "type": "match",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
             "match_cap_percentage": Decimal("0.06"),
             "gross_biweekly": Decimal("2500"),
@@ -430,7 +443,7 @@ class TestProjectBalance:
     def test_employer_flat_percentage(self, biweekly_periods):
         """Employer flat percentage added each period."""
         employer_params = {
-            "type": "flat_percentage",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
             "flat_percentage": Decimal("0.05"),
             "gross_biweekly": Decimal("2500"),
         }
@@ -446,7 +459,7 @@ class TestProjectBalance:
     def test_employer_match(self, biweekly_periods):
         """Employer match calculated correctly."""
         employer_params = {
-            "type": "match",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
             "match_cap_percentage": Decimal("0.06"),
             "gross_biweekly": Decimal("2500"),
@@ -529,7 +542,7 @@ class TestProjectBalance:
     def test_employer_does_not_count_against_limit(self, biweekly_periods):
         """Employer contributions don't reduce employee contribution limit."""
         employer_params = {
-            "type": "flat_percentage",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
             "flat_percentage": Decimal("0.05"),
             "gross_biweekly": Decimal("2500"),
         }
@@ -916,7 +929,7 @@ class TestContributionAwareProjection:
         """
         periods = biweekly_periods[:1]
         employer_params = {
-            "type": "match",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
             "match_cap_percentage": Decimal("0.06"),
             "gross_biweekly": Decimal("2500"),
@@ -946,7 +959,7 @@ class TestContributionAwareProjection:
         """
         periods = biweekly_periods[:3]
         employer_params = {
-            "type": "match",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
             "match_cap_percentage": Decimal("0.06"),
             "gross_biweekly": Decimal("2500"),
@@ -1232,7 +1245,7 @@ class TestReverseProjectBalance:
         annual_return = Decimal("0.105")
         contribution = Decimal("300.00")
         employer = {
-            "type": "flat_percentage",
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
             "flat_percentage": Decimal("0.05"),
             "gross_biweekly": Decimal("3000.00"),
         }

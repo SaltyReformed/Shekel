@@ -10,7 +10,12 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    AcctTypeEnum,
+    EmployerContributionTypeEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.extensions import db
 from app.models.investment_params import InvestmentParams
 from app.models.pension_profile import PensionProfile
@@ -488,7 +493,7 @@ class TestRetirementProjectionEntryAware:
             db.session.add(InvestmentParams(
                 account_id=acct.id,
                 assumed_annual_return=Decimal("0.07000"),
-                employer_contribution_type="none",
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             ))
 
             _add_envelope_expense_with_cleared_entries_ret(
@@ -750,12 +755,12 @@ class TestWeightedReturnZeroIsAValue:
             db.session.add(InvestmentParams(
                 account_id=acct_zero.id,
                 assumed_annual_return=Decimal("0.00000"),
-                employer_contribution_type="none",
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             ))
             db.session.add(InvestmentParams(
                 account_id=acct_seven.id,
                 assumed_annual_return=Decimal("0.07000"),
-                employer_contribution_type="none",
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             ))
             db.session.commit()
 
@@ -821,12 +826,12 @@ class TestWeightedReturnZeroIsAValue:
             db.session.add(InvestmentParams(
                 account_id=acct_zero.id,
                 assumed_annual_return=Decimal("0.07000"),
-                employer_contribution_type="none",
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             ))
             db.session.add(InvestmentParams(
                 account_id=acct_funded.id,
                 assumed_annual_return=Decimal("0.05000"),
-                employer_contribution_type="none",
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             ))
             db.session.commit()
 
@@ -867,7 +872,7 @@ class TestWeightedReturnZeroIsAValue:
             db.session.add(InvestmentParams(
                 account_id=acct_zero.id,
                 assumed_annual_return=Decimal("0.07000"),
-                employer_contribution_type="none",
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             ))
             db.session.commit()
 
@@ -920,7 +925,7 @@ class TestWeightedReturnZeroIsAValue:
             db.session.add(InvestmentParams(
                 account_id=acct_b.id,
                 assumed_annual_return=Decimal("0.00000"),
-                employer_contribution_type="none",
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             ))
             db.session.commit()
 

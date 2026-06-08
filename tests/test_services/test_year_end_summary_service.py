@@ -16,7 +16,9 @@ from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
     CalcMethodEnum,
+    CompoundingFrequencyEnum,
     DeductionTimingEnum,
+    EmployerContributionTypeEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -313,7 +315,9 @@ def _create_investment_account(
     inv_params = InvestmentParams(
         account_id=inv_acct.id,
         assumed_annual_return=Decimal("0.07000"),
-        employer_contribution_type=employer_type,
+        employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+            EmployerContributionTypeEnum(employer_type),
+        ),
         employer_match_percentage=match_pct,
         employer_match_cap_percentage=match_cap_pct,
         employer_flat_percentage=flat_pct,
@@ -351,7 +355,9 @@ def _create_hysa_account(user, periods):
     interest_params = InterestParams(
         account_id=hysa_acct.id,
         apy=Decimal("0.05000"),
-        compounding_frequency="daily",
+        compounding_frequency_id=ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.DAILY,
+        ),
     )
     db.session.add(interest_params)
     db.session.flush()
@@ -2113,6 +2119,9 @@ class TestSavingsProgressPreAnchor:
         ira_params = InvestmentParams(
             account_id=ira_acct.id,
             assumed_annual_return=Decimal("0.10500"),
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.NONE,
+            ),
         )
         db.session.add(ira_params)
         db.session.commit()

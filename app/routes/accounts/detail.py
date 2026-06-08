@@ -30,10 +30,11 @@ from flask_login import current_user, login_required
 from sqlalchemy.orm import selectinload
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
+from app.enums import AcctTypeEnum, CompoundingFrequencyEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
+from app.models.ref import CompoundingFrequency
 from app.models.transaction import Transaction
 from app.routes.accounts._bp import accounts_bp
 from app.services import balance_calculator, balance_resolver, pay_period_service
@@ -155,7 +156,14 @@ def interest_detail(account_id):
         # of relying on a column ``server_default`` that would
         # otherwise silently project 4.5% interest the user never
         # configured.
-        params = InterestParams(account_id=account.id, apy=Decimal("0"))
+        # #38: compounding frequency is a ref FK now (no server_default),
+        # so the auto-create supplies the DAILY id explicitly.
+        params = InterestParams(
+            account_id=account.id, apy=Decimal("0"),
+            compounding_frequency_id=ref_cache.compounding_frequency_id(
+                CompoundingFrequencyEnum.DAILY,
+            ),
+        )
         db.session.add(params)
         db.session.commit()
 
@@ -209,6 +217,14 @@ def interest_detail(account_id):
         current_balance=current_bal,
         projected=projected,
         period_data=period_data,
+        # #38: the compounding-frequency <select> renders one option per
+        # ref row (value = id) so the template never string-compares the
+        # frequency name.
+        compounding_frequencies=(
+            CompoundingFrequency.query
+            .order_by(CompoundingFrequency.id)
+            .all()
+        ),
     )
 
 
@@ -260,7 +276,14 @@ def update_interest_params(account_id):
             return redirect(
                 url_for("accounts.interest_detail", account_id=account_id),
             )
-        params = InterestParams(account_id=account.id)
+        # #38: recreate with the DAILY ref id so the NOT NULL FK is
+        # satisfied even when the update payload omits the frequency.
+        params = InterestParams(
+            account_id=account.id,
+            compounding_frequency_id=ref_cache.compounding_frequency_id(
+                CompoundingFrequencyEnum.DAILY,
+            ),
+        )
         db.session.add(params)
 
     if "apy" in data:
@@ -270,8 +293,8 @@ def update_interest_params(account_id):
         # DB CHECK ``apy >= 0 AND apy <= 1`` enforces.  The route
         # stores it verbatim; no second divide.
         params.apy = data["apy"]
-    if "compounding_frequency" in data:
-        params.compounding_frequency = data["compounding_frequency"]
+    if "compounding_frequency_id" in data:
+        params.compounding_frequency_id = data["compounding_frequency_id"]
 
     db.session.commit()
     logger.info("Updated interest params for account %d", account.id)

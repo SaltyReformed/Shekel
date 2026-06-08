@@ -20,11 +20,12 @@ from flask import Blueprint, Response, abort, flash, redirect, render_template, 
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import EmployerContributionTypeEnum, RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.recurrence_rule import RecurrenceRule
+from app.models.ref import EmployerContributionType
 from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
     build_recurring_transfer_template,
@@ -68,6 +69,21 @@ def dashboard(account_id):
     ctx["salary_profile_url"] = _resolve_salary_profile_url(
         ctx.pop("_salary_profile_action", None),
         ctx.pop("_active_profile_id", None),
+    )
+    # #38: the employer-contribution-type <select> renders one option
+    # per ref row (value = id), so the template never compares the
+    # type name as a string.  ``default_*`` is the id pre-selected when
+    # the account has no params row yet (the create case), so the
+    # template defaults to NONE by id rather than a name literal.
+    ctx["employer_contribution_types"] = (
+        EmployerContributionType.query
+        .order_by(EmployerContributionType.id)
+        .all()
+    )
+    ctx["default_employer_contribution_type_id"] = (
+        ref_cache.employer_contribution_type_id(
+            EmployerContributionTypeEnum.NONE,
+        )
     )
     return render_template("investment/dashboard.html", **ctx)
 
@@ -276,7 +292,7 @@ def update_params(account_id):
         data = _update_schema.load(request.form)
         param_fields = {
             "assumed_annual_return", "annual_contribution_limit",
-            "contribution_limit_year", "employer_contribution_type",
+            "contribution_limit_year", "employer_contribution_type_id",
             "employer_flat_percentage", "employer_match_percentage",
             "employer_match_cap_percentage",
         }

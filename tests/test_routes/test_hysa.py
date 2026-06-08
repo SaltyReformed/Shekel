@@ -4,6 +4,8 @@ Tests for HYSA routes (detail view and params update).
 
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import CompoundingFrequencyEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
@@ -45,6 +47,9 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA", anchor_period_id
     # mirror the production convention.
     params = InterestParams(
         account_id=account.id, apy=Decimal("0.04500"),
+        compounding_frequency_id=ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.DAILY,
+        ),
     )
     db_session.add(params)
     db_session.commit()
@@ -76,6 +81,9 @@ def _create_other_hysa(second_user, db_session):
     # mirror the production convention.
     params = InterestParams(
         account_id=account.id, apy=Decimal("0.04500"),
+        compounding_frequency_id=ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.DAILY,
+        ),
     )
     db_session.add(params)
     db_session.commit()
@@ -146,14 +154,16 @@ class TestInterestParamsUpdate:
             f"/accounts/{account.id}/interest/params",
             data={
                 "apy": "5.000",
-                "compounding_frequency": "monthly",
+                "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.MONTHLY),
             },
         )
         assert resp.status_code == 302
 
         params = db.session.query(InterestParams).filter_by(account_id=account.id).one()
         assert params.apy == Decimal("0.05000")
-        assert params.compounding_frequency == "monthly"
+        assert params.compounding_frequency_id == ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.MONTHLY,
+        )
 
     def test_hysa_params_update_validation(self, auth_client, seed_user, db):
         """Invalid params → validation error."""
@@ -163,7 +173,7 @@ class TestInterestParamsUpdate:
             f"/accounts/{account.id}/interest/params",
             data={
                 "apy": "200",  # > 100 is invalid
-                "compounding_frequency": "daily",
+                "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY),
             },
         )
         assert resp.status_code == 302
@@ -181,12 +191,12 @@ class TestInterestParamsUpdate:
             account_id=other_acct.id
         ).one()
         orig_apy = original.apy
-        orig_freq = original.compounding_frequency
+        orig_freq = original.compounding_frequency_id
 
         # Phase B: Attack.
         resp = auth_client.post(
             f"/accounts/{other_acct.id}/interest/params",
-            data={"apy": "0.09000", "compounding_frequency": "monthly"},
+            data={"apy": "0.09000", "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.MONTHLY)},
         )
 
         # Phase C: Verify no state change.
@@ -199,7 +209,7 @@ class TestInterestParamsUpdate:
         assert after.apy == orig_apy, (
             "IDOR attack modified apy!"
         )
-        assert after.compounding_frequency == orig_freq, (
+        assert after.compounding_frequency_id == orig_freq, (
             "IDOR attack modified compounding_frequency!"
         )
 
@@ -214,7 +224,7 @@ class TestHysaNegativePaths:
 
         resp = auth_client.post(
             f"/accounts/{account.id}/interest/params",
-            data={"apy": "abc", "compounding_frequency": "daily"},
+            data={"apy": "abc", "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY)},
         )
         assert resp.status_code == 302
 
@@ -229,7 +239,7 @@ class TestHysaNegativePaths:
 
         resp = auth_client.post(
             f"/accounts/{account.id}/interest/params",
-            data={"apy": "-0.5", "compounding_frequency": "daily"},
+            data={"apy": "-0.5", "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY)},
         )
         assert resp.status_code == 302
 
@@ -242,23 +252,23 @@ class TestHysaNegativePaths:
     ):
         """Invalid compounding frequency is rejected by OneOf validator."""
         account, params = _create_hysa_account(seed_user, db.session)
-        orig_freq = params.compounding_frequency
+        orig_freq = params.compounding_frequency_id
 
         resp = auth_client.post(
             f"/accounts/{account.id}/interest/params",
-            data={"apy": "0.04500", "compounding_frequency": "bogus_value"},
+            data={"apy": "0.04500", "compounding_frequency_id": 999999},
         )
         assert resp.status_code == 302
 
         db.session.expire_all()
         after = db.session.query(InterestParams).filter_by(account_id=account.id).one()
-        assert after.compounding_frequency == orig_freq
+        assert after.compounding_frequency_id == orig_freq
 
     def test_params_update_nonexistent_account(self, auth_client, seed_user, db):
         """POST to nonexistent account returns 404 (security: 404 for not-found and not-yours)."""
         resp = auth_client.post(
             "/accounts/999999/interest/params",
-            data={"apy": "0.04500", "compounding_frequency": "daily"},
+            data={"apy": "0.04500", "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY)},
         )
         assert resp.status_code == 404
 
@@ -267,7 +277,7 @@ class TestHysaNegativePaths:
         checking_acct = seed_user["account"]
         resp = auth_client.post(
             f"/accounts/{checking_acct.id}/interest/params",
-            data={"apy": "0.04500", "compounding_frequency": "daily"},
+            data={"apy": "0.04500", "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY)},
         )
         assert resp.status_code == 302
         assert "/accounts" in resp.headers.get("Location", "")
@@ -281,7 +291,7 @@ class TestHysaNegativePaths:
 
         resp = auth_client.post(
             f"/accounts/{account.id}/interest/params",
-            data={"apy": "500", "compounding_frequency": "daily"},
+            data={"apy": "500", "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY)},
         )
         assert resp.status_code == 302
 
@@ -307,10 +317,11 @@ class TestCreateHysaAccount:
         ``apy=Decimal("0")`` and ``calculate_interest`` short-
         circuits on ``apy <= 0`` so the account projects zero
         interest until the user enters a real rate via the
-        interest-detail form.  ``compounding_frequency`` is still
-        provided by the column ``server_default="daily"`` (the
-        choice of cadence is not a financial hazard if the rate is
-        zero, so the default is retained).
+        interest-detail form.  ``compounding_frequency_id`` is the
+        ref-table FK (#38): the route auto-create supplies the DAILY
+        id explicitly (the prior ``server_default="daily"`` is gone --
+        an FK id is not a static literal; the cadence choice is not a
+        financial hazard while the rate is zero).
         """
         hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
 
@@ -330,7 +341,9 @@ class TestCreateHysaAccount:
         assert params.account_id == account.id
         # HIGH-06 / Commit 24 re-pin: explicit zero sentinel.
         assert params.apy == Decimal("0.00000")
-        assert params.compounding_frequency == "daily"
+        assert params.compounding_frequency_id == ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.DAILY,
+        )
 
 
 class TestHysaDetailShadowTransactions:

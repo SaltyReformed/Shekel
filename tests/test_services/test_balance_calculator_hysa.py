@@ -11,18 +11,29 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import CompoundingFrequencyEnum, StatusEnum
 from app.services.balance_calculator import (
     calculate_balances,
     calculate_balances_with_interest,
 )
+
+
+def _freq_id(member):
+    """Resolve a CompoundingFrequencyEnum member to its ref-table id.
+
+    The balance calculator reads ``interest_params.compounding_frequency_id``
+    (#38); ref_cache is initialized for every test by the autouse
+    conftest fixtures.
+    """
+    return ref_cache.compounding_frequency_id(member)
+
 
 # Lightweight stubs to avoid needing full SQLAlchemy models.
 Period = namedtuple(
     "Period", ["id", "period_index", "start_date", "end_date"]
 )
 InterestParams = namedtuple(
-    "InterestParams", ["apy", "compounding_frequency"]
+    "InterestParams", ["apy", "compounding_frequency_id"]
 )
 
 # Shadow transaction stub -- represents a transfer's effect as an
@@ -103,7 +114,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         balances, interest = calculate_balances_with_interest(
@@ -160,7 +171,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         balances, interest = calculate_balances_with_interest(
@@ -211,7 +222,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(2)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         # Shadow income representing a transfer deposit into HYSA.
@@ -258,7 +269,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.00000"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         base_balances, _ = calculate_balances(
@@ -316,7 +327,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         balances, interest = calculate_balances_with_interest(
@@ -382,7 +393,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(26)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         # --- Independent oracle (no production code) ---
@@ -471,7 +482,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="monthly",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.MONTHLY),
         )
 
         # --- Independent oracle (no production code) ---
@@ -559,7 +570,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="quarterly",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.QUARTERLY),
         )
 
         # --- Independent oracle (no production code) ---
@@ -640,16 +651,16 @@ class TestHysaBalanceWithInterest:
         """Unknown compounding frequency produces zero interest.
 
         Parameters: $10,000 anchor, 4.5% APY,
-        compounding_frequency="invalid_string", 3 periods.
+        compounding_frequency_id=-1 (no such ref row), 3 periods.
 
         Proves that calculate_interest returns Decimal("0.00")
-        for an unknown frequency (else: return ZERO branch),
+        for an unrecognised frequency id (else: return ZERO branch),
         so balances equal base balances exactly.
         """
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="invalid_string",
+            compounding_frequency_id=-1,
         )
 
         balances, interest = calculate_balances_with_interest(
@@ -684,7 +695,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.10000"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         # --- Independent oracle (no production code) ---
@@ -765,7 +776,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(3)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         txns = [
@@ -862,7 +873,7 @@ class TestHysaBalanceWithInterest:
         periods = _make_periods(6)
         params = InterestParams(
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
         txns = [

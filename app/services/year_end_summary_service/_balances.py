@@ -643,7 +643,7 @@ def _compute_pre_anchor_interest(
         interest = calculate_interest(
             balance=balance,
             apy=interest_params.apy,
-            compounding_frequency=interest_params.compounding_frequency,
+            compounding_frequency_id=interest_params.compounding_frequency_id,
             period_start=period.start_date,
             period_end=period.end_date,
         )

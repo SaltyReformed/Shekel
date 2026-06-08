@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CalcMethodEnum
+from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
 from app.services.investment_projection import (
     build_contribution_timeline,
@@ -22,6 +22,11 @@ def _flat_id():
 
 def _pct_id():
     return ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+
+
+def _emp_type_id(member):
+    """Resolve an EmployerContributionTypeEnum member to its ref-table id (#38)."""
+    return ref_cache.employer_contribution_type_id(member)
 
 
 @dataclass
@@ -58,7 +63,7 @@ class FakePeriod:
 class FakeInvestmentParams:
     assumed_annual_return: Decimal
     annual_contribution_limit: Decimal
-    employer_contribution_type: str
+    employer_contribution_type_id: int
     employer_flat_percentage: Decimal = Decimal("0")
     employer_match_percentage: Decimal = Decimal("0")
     employer_match_cap_percentage: Decimal = Decimal("0")
@@ -71,7 +76,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
@@ -88,7 +93,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
@@ -104,7 +109,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         deductions = [FakeDeduction(amount=Decimal("0.07"), calc_method_id=_pct_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
@@ -122,7 +127,7 @@ class TestCalculateInvestmentInputs:
         """Transfer contributions averaged across distinct periods with transfers."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=None,
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         contributions = [
             FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
@@ -140,7 +145,10 @@ class TestCalculateInvestmentInputs:
         """Employer flat_percentage populates employer_params with correct values."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="flat_percentage", employer_flat_percentage=Decimal("0.05"),
+            employer_contribution_type_id=_emp_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+            ),
+            employer_flat_percentage=Decimal("0.05"),
         )
         deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
@@ -150,7 +158,9 @@ class TestCalculateInvestmentInputs:
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is not None
-        assert result.employer_params["type"] == "flat_percentage"
+        assert result.employer_params["type_id"] == _emp_type_id(
+            EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+        )
         assert result.employer_params["flat_percentage"] == Decimal("0.05")
         # $100,000 / 26 = $3846.153... -> $3846.15 (hand-computed literal).
         assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
@@ -159,7 +169,10 @@ class TestCalculateInvestmentInputs:
         """Employer match type populates match_percentage and cap fields."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="match", employer_match_percentage=Decimal("1.0"),
+            employer_contribution_type_id=_emp_type_id(
+                EmployerContributionTypeEnum.MATCH,
+            ),
+            employer_match_percentage=Decimal("1.0"),
             employer_match_cap_percentage=Decimal("0.06"),
         )
         deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
@@ -170,7 +183,9 @@ class TestCalculateInvestmentInputs:
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.employer_params is not None
-        assert result.employer_params["type"] == "match"
+        assert result.employer_params["type_id"] == _emp_type_id(
+            EmployerContributionTypeEnum.MATCH,
+        )
         assert result.employer_params["match_percentage"] == Decimal("1.0")
         assert result.employer_params["match_cap_percentage"] == Decimal("0.06")
 
@@ -178,7 +193,7 @@ class TestCalculateInvestmentInputs:
         """YTD contributions sum only current-year contributions up to current period."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         periods = [
             FakePeriod(id=1, start_date=date(2025, 12, 19), period_index=0),
@@ -204,7 +219,7 @@ class TestCalculateInvestmentInputs:
         """Deductions and contributions both add to periodic_contribution."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
@@ -225,7 +240,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="flat_percentage",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
             employer_flat_percentage=Decimal("0.05"),
         )
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
@@ -248,7 +263,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="flat_percentage",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
             employer_flat_percentage=Decimal("0.05"),
         )
         deductions = [
@@ -277,7 +292,7 @@ class TestCalculateInvestmentInputs:
         """Employer type 'none' produces employer_params=None."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
         result = calculate_investment_inputs(
@@ -296,7 +311,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         result = calculate_investment_inputs(
             investment_params=params, deductions=[],
@@ -316,7 +331,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="match",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.MATCH),
             employer_match_percentage=Decimal("1.0"),
             employer_match_cap_percentage=Decimal("0.06"),
         )
@@ -349,7 +364,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         deductions = [FakeDeduction(
             amount=Decimal("-500.00"),
@@ -375,7 +390,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         contributions = [
             FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
@@ -403,7 +418,7 @@ class TestCalculateInvestmentInputs:
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         contributions = [
             FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
