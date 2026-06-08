@@ -47,6 +47,7 @@ from app.services.projection_inputs import (
 )
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
+from app.utils.money import round_money
 
 
 # Default safe-withdrawal-rate percentage when the user has no
@@ -630,12 +631,10 @@ def _compute_gap_net_biweekly(
         return pay.net_biweekly
 
     final_salary = salary_by_year[-1][1]
-    final_gross_biweekly = (
+    final_gross_biweekly = round_money(
         final_salary / (profile.pay_periods_per_year or 26)
-    ).quantize(Decimal("0.01"))
-    return (
-        final_gross_biweekly * effective_take_home_rate
-    ).quantize(Decimal("0.01"))
+    )
+    return round_money(final_gross_biweekly * effective_take_home_rate)
 
 
 def _resolve_estimated_tax_rate(
@@ -685,9 +684,7 @@ def _build_chart_data(
         ``chart_remaining``.
     """
     investment_income_decimal = (
-        (gap_result.projected_total_savings * swr / 12).quantize(
-            Decimal("0.01")
-        )
+        round_money(gap_result.projected_total_savings * swr / 12)
         if gap_result.projected_total_savings > 0
         else Decimal("0.00")
     )

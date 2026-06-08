@@ -152,6 +152,39 @@ class TestCalculateInvestmentInputs:
         # expression) so the assertion is an independent oracle.
         assert result.periodic_contribution == Decimal("269.23")
 
+    def test_percentage_deduction_half_cent_rounds_half_up(self):
+        """Per-period contribution rounds ROUND_HALF_UP at an exact half-cent.
+
+        Pins the money-rounding MODE (deep-quality-hunt #18/#19/#63 /
+        financial-audit HIGH-04 / E-26): the per-period contribution is
+        rounded through ``app.utils.money.round_money`` (ROUND_HALF_UP),
+        not a bare ``.quantize()`` (Python's default ROUND_HALF_EVEN).
+
+        ``$26,013 / 26 = $1,000.50`` exactly, so 5% of that gross is
+        ``$50.0250`` -- a value sitting EXACTLY on a half-cent boundary,
+        the only place the two modes diverge.  ROUND_HALF_UP gives
+        ``$50.03``; banker's rounding would give ``$50.02`` (round to the
+        even cent).  This assertion therefore fails if the site regresses
+        to a bare quantize -- the tautological re-quantize the other
+        contribution tests use could not catch that.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
+        )
+        deductions = [FakeDeduction(amount=Decimal("0.05"), calc_method_id=_pct_id(),
+                                     annual_salary=Decimal("26013"), pay_periods_per_year=26)]
+        current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
+        result = calculate_investment_inputs(
+            investment_params=params, deductions=deductions,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
+        )
+        # gross = round_money(26013 / 26) = round_money(1000.50) = 1000.50;
+        # 5% -> round_money(1000.50 * 0.05) = round_money(50.0250) = 50.03
+        # (HALF_UP).  Banker's rounding would yield 50.02.
+        assert result.periodic_contribution == Decimal("50.03")
+
     def test_transfer_contributions_averaged(self):
         """Transfer contributions averaged across distinct periods with transfers."""
         params = FakeInvestmentParams(

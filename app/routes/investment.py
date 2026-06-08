@@ -40,6 +40,7 @@ from app.schemas.validation import (
 )
 from app.services import investment_dashboard_service
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.money import PAY_PERIODS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +50,7 @@ _create_schema = InvestmentParamsCreateSchema()
 _update_schema = InvestmentParamsUpdateSchema()
 _transfer_schema = InvestmentContributionTransferSchema()
 
-TWO_PLACES = Decimal("0.01")
 _DEFAULT_SUGGESTED_AMOUNT = Decimal("500.00")
-_PAY_PERIODS_PER_YEAR = 26
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment")
@@ -213,7 +212,7 @@ def create_contribution_transfer(account_id):
                 return redirect(
                     url_for("investment.dashboard", account_id=account_id),
                 )
-            transfer_amount = (limit / _PAY_PERIODS_PER_YEAR).quantize(TWO_PLACES)
+            transfer_amount = round_money(limit / PAY_PERIODS_PER_YEAR)
         else:
             transfer_amount = _DEFAULT_SUGGESTED_AMOUNT
 

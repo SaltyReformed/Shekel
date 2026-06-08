@@ -25,7 +25,6 @@ from app.services import (
 from app.services.tax_config_service import load_tax_configs
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
-_TWO_PLACES = Decimal("0.01")
 _RATE_PLACES = Decimal("0.00001")
 _DTI_HEALTHY_THRESHOLD = Decimal("36")
 _DTI_HIGH_THRESHOLD = Decimal("43")
@@ -265,9 +264,7 @@ def _accumulate_loan_debt(
         # Include escrow (property tax, insurance) for PITI total.
         components = escrow_map.get(ad["account"].id, [])
         monthly_escrow = escrow_calculator.calculate_monthly_escrow(components)
-        monthly_total = (monthly_pi + monthly_escrow).quantize(
-            _TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        monthly_total = round_money(monthly_pi + monthly_escrow)
 
         total_debt += principal
         total_monthly += monthly_total
@@ -321,8 +318,8 @@ def _compute_debt_summary(
     debt_free_date = max(payoff_dates) if payoff_dates else None
 
     return {
-        "total_debt": total_debt.quantize(_TWO_PLACES),
-        "total_monthly_payments": total_monthly.quantize(_TWO_PLACES),
+        "total_debt": round_money(total_debt),
+        "total_monthly_payments": round_money(total_monthly),
         "weighted_avg_rate": weighted_avg_rate,
         "projected_debt_free_date": debt_free_date,
     }

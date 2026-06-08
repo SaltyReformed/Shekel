@@ -23,10 +23,7 @@ from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
 from app.utils.balance_predicates import status_contributes_to_balance
 from app.utils.deduction_cap import cap_period_amount
-
-
-ZERO = Decimal("0")
-TWO_PLACES = Decimal("0.01")
+from app.utils.money import ZERO, round_money
 
 
 @dataclass
@@ -114,10 +111,10 @@ def _compute_deduction_per_period(deduction, pct_id):
     """
     salary = Decimal(str(deduction.annual_salary))
     pay_per_year = deduction.pay_periods_per_year or 26
-    gross = (salary / pay_per_year).quantize(TWO_PLACES)
+    gross = round_money(salary / pay_per_year)
     amt = Decimal(str(deduction.amount))
     if deduction.calc_method_id == pct_id:
-        amt = (gross * amt).quantize(TWO_PLACES)
+        amt = round_money(gross * amt)
     return amt, gross
 
 
@@ -149,7 +146,7 @@ def _annual_cap_averaged(per_period_amount, deduction):
         return per_period_amount
     pay_per_year = deduction.pay_periods_per_year or 26
     annual_capped = min(per_period_amount * pay_per_year, Decimal(str(annual_cap)))
-    return (annual_capped / pay_per_year).quantize(TWO_PLACES)
+    return round_money(annual_capped / pay_per_year)
 
 
 def _periodic_from_deductions(deductions, salary_gross_biweekly):
@@ -226,7 +223,7 @@ def _average_transfer_contribution(all_contributions):
         set(t.pay_period_id for t in active_contributions)
     )
     if num_periods_with_contrib > 0:
-        return (total_contrib / num_periods_with_contrib).quantize(TWO_PLACES)
+        return round_money(total_contrib / num_periods_with_contrib)
     return ZERO
 
 

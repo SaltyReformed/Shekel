@@ -63,10 +63,10 @@ from app.services.projection_inputs import (
     load_shadow_income_contributions_for_account,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
-TWO_PLACES = Decimal("0.01")
 _FALLBACK_HORIZON_YEARS = 10
 
 # A period-like row in a projection: a real ``PayPeriod`` (the dashboard's
@@ -323,10 +323,10 @@ def _build_chart_series(
         period = period_map.get(pb.period_id)
         if period:
             labels.append(period.start_date.strftime("%b %Y"))
-        balances.append(str(pb.end_balance.quantize(TWO_PLACES)))
+        balances.append(str(round_money(pb.end_balance)))
         cumulative_contrib += pb.contribution + pb.employer_contribution
         contributions.append(
-            str((seed_balance + cumulative_contrib).quantize(TWO_PLACES))
+            str(round_money(seed_balance + cumulative_contrib))
         )
     return labels, balances, contributions
 
@@ -417,9 +417,7 @@ def _compute_suggested_contribution(
         - (ytd_contributions or Decimal("0")),
         Decimal("0"),
     )
-    return (
-        remaining_limit / max(remaining_periods, 1)
-    ).quantize(TWO_PLACES)
+    return round_money(remaining_limit / max(remaining_periods, 1))
 
 
 def _compute_employer_per_period(inputs: InvestmentInputs) -> Decimal:
@@ -801,15 +799,15 @@ def _compute_what_if_overlay(
     )
 
     what_if_balances = [
-        str(pb.end_balance.quantize(TWO_PLACES))
+        str(round_money(pb.end_balance))
         for pb in what_if_projection
     ]
 
     comparison = None
     if projection and what_if_projection:
-        committed_end = projection[-1].end_balance.quantize(TWO_PLACES)
-        whatif_end = what_if_projection[-1].end_balance.quantize(TWO_PLACES)
-        difference = (whatif_end - committed_end).quantize(TWO_PLACES)
+        committed_end = round_money(projection[-1].end_balance)
+        whatif_end = round_money(what_if_projection[-1].end_balance)
+        difference = round_money(whatif_end - committed_end)
         comparison = {
             "committed_end": committed_end,
             "whatif_end": whatif_end,
