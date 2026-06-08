@@ -416,11 +416,11 @@ def build_entry_sums_dict(
 
     The dict carries ``remaining`` and ``over_budget`` so the grid
     cell template renders without inline Jinja arithmetic
-    (E-16 / MED-04).  ``remaining`` is the E-21 declared base
-    (``estimated_amount``) minus the sum of all entries, matching
-    :func:`compute_remaining`; the cell's over-budget styling is
-    therefore driven by the same value that the dashboard bill row
-    sees via ``bill.entry_remaining``.
+    (E-16 / MED-04).  ``remaining`` is computed via
+    :func:`compute_remaining` (the E-21 declared base
+    ``estimated_amount`` minus the sum of all entries), so the cell's
+    over-budget styling is driven by the same single rule that the
+    dashboard bill row sees via ``bill.entry_remaining``.
 
     Pure function -- no database access beyond what was already loaded
     on the Transaction objects (expects entries to be accessible, either
@@ -444,7 +444,7 @@ def build_entry_sums_dict(
             debit, credit = compute_entry_sums(txn.entries)
             total = debit + credit
             estimated = Decimal(str(txn.estimated_amount))
-            remaining = estimated - total
+            remaining = compute_remaining(estimated, txn.entries)
             result[txn.id] = {
                 "debit": debit,
                 "credit": credit,
