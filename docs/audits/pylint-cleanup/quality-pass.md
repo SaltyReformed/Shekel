@@ -584,10 +584,15 @@ re-exports).
 | 19 added docstrings | residue commit | **ACCEPT** | Substantive ones explain business WHY (mutual exclusivity, self-transfer net-zero, FICA tolerance); the formulaic strip one-liner still states the non-obvious why (HTML forms submit empty inputs as `""`) (F2). |
 | `__init__.py` re-export + `__all__` (61) | `validation/__init__.py` | **ACCEPT** | Sorted, set-equal to imports, every entry resolves to a class; adding a schema = one import + one `__all__` line (F3). |
 
-**Pre-existing, out-of-scope follow-ups the reviewer reported (rule 4 -- report, don't fix in a move):**
-1. Dead `_COMPANION_EMAIL_REGEX` / `_COMPANION_PASSWORD_*` / `_normalize_companion_form` aliases in
-   `validation/auth.py` (0 consumers in `app/` or `tests/`; the "keep for compat" comment itself says
-   retire in a dedicated cleanup). A safe deletion for a separate commit.
-2. The create/update `validate_different_accounts` (transfers) and `validate_goal_mode_fields`
-   (savings) duplication -- genuine logic blocks, but the create/update pairs diverge in their guard
-   preamble; a future scoped dedup, not a split finding.
+**Pre-existing, out-of-scope follow-ups the reviewer reported (rule 4 -- report, don't fix in a move).
+BOTH now CLEANED UP in dedicated commits (2026-06-07):**
+1. ~~Dead `_COMPANION_EMAIL_REGEX` / `_COMPANION_PASSWORD_*` / `_normalize_companion_form` aliases in
+   `validation/auth.py`~~ **DONE (`721cd4c`)** -- removed; re-verified 0 consumers across
+   `app/`/`tests/`/`scripts/`/`migrations/` (only references were their own definitions), underscore-
+   private so no supported import API. auth.py stays 10.00/10.
+2. ~~The create/update `validate_different_accounts` (transfers) and `validate_goal_mode_fields`
+   (savings) duplication~~ **DONE (`de42a6f`)** -- collapsed to one shared helper each
+   (`_reject_same_account_transfer`, `_validate_goal_mode_consistency`), mirroring the
+   `_reject_envelope_on_income` precedent. Each schema keeps its own divergent preamble (create
+   defaults the mode to FIXED; update early-returns on absent mode); the helper takes the resolved
+   mode. Pure extraction, net -27 lines, full suite 5778 passed.

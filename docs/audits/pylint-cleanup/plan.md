@@ -23,9 +23,12 @@ percent-helper/envelope rule) + 16 domain modules mirroring the consuming route 
 re-exporting all 61 schemas via `__all__`; import surface preserved verbatim (28 consumers, 0 edits).
 Pure move (84/84 symbols byte-identical AST); 0 R0801 surfaced (the split TRAP empirically pre-tested
 and confirmed); independent quality-pass all-ACCEPT (`a1f8eb56`). Then `8cda673` cleared the file's
-Phase-4 residue (18 fn docstrings + 1 class docstring + 11 line reflows), package -> 10.00/10. Two
-out-of-scope follow-ups the reviewer flagged: dead `_COMPANION_*` aliases in `validation/auth.py`
-(0 consumers) and the create/update `validate_*` duplication.
+Phase-4 residue (18 fn docstrings + 1 class docstring + 11 line reflows), package -> 10.00/10. The two
+out-of-scope follow-ups the reviewer flagged are now ALSO cleaned up: dead `_COMPANION_*` aliases in
+`validation/auth.py` removed (`721cd4c`, 0 consumers re-verified repo-wide), and the create/update
+`validate_*` duplication collapsed to one shared helper each (`de42a6f`, `_reject_same_account_transfer`
++ `_validate_goal_mode_consistency`, mirroring the `_reject_envelope_on_income` precedent; net -27 lines).
+Full suite 5778 throughout.
 
 **This session (the disable-comment-standard + undisposed-disable workstream -- COMPLETE):**
 1. **Disable why-comment standard codified + enforced.** `docs/coding-standards.md` +
