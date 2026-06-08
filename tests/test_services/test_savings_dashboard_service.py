@@ -169,6 +169,102 @@ class TestGoalProgress:
             assert gd["progress_pct"] == 50
             assert gd["current_balance"] == Decimal("5000.00")
 
+    def test_progress_pct_truncates_fractional_percent(
+        self, app, db, seed_user, seed_periods
+    ):
+        """progress_pct truncates a fractional percent via int(), not rounds.
+
+        $4,980 / $5,000 = 99.6%.  The inline rule in
+        ``savings_dashboard_service/_goals.py`` is
+        ``min(100, int(balance / target * 100))`` -- ``int()`` truncates
+        99.6 to 99.  This pins that behavior and distinguishes it from the
+        canonical ``money.percent_complete`` (ROUND_HALF_UP), which would
+        not truncate.  Whether to unify the two rules is the PAUSED
+        deep-quality-hunt #20/#78; this test documents the CURRENT rule so
+        that decision (or any regression) must change it deliberately.
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Truncation Account",
+                    anchor_balance=Decimal("4980.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=savings.id,
+                name="Almost There",
+                target_amount=Decimal("5000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert gd["current_balance"] == Decimal("4980.00")
+            # int(99.6) == 99 (truncated down), NOT 100.
+            assert gd["progress_pct"] == 99
+
+    def test_progress_pct_clamps_over_funded_to_100(
+        self, app, db, seed_user, seed_periods
+    ):
+        """progress_pct clamps an over-funded goal to 100 (upper bound).
+
+        $6,000 / $5,000 = 120%, capped by the inline ``min(100, ...)``;
+        no existing test pinned the over-100 clamp.  (The MISSING lower
+        clamp on a negative balance -- where the inline rule diverges from
+        ``percent_complete``'s 0-floor -- is part of the PAUSED #20/#78
+        rule decision, so it is intentionally not asserted here; this test
+        covers only the unambiguous, reachable upper clamp.)
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Over-funded Account",
+                    anchor_balance=Decimal("6000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=savings.id,
+                name="Exceeded",
+                target_amount=Decimal("5000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert gd["current_balance"] == Decimal("6000.00")
+            # int(120) == 120, clamped to 100 by min(100, ...).
+            assert gd["progress_pct"] == 100
+
     def test_no_goals_returns_empty_list(
         self, app, db, seed_user, seed_periods
     ):
