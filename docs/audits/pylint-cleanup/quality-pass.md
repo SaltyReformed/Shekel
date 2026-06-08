@@ -562,3 +562,32 @@ the four the re-audit listed -- `spending_trend_service` and `dashboard_service`
 **All four deferred extractions (#1-#4) are now landed (2026-06-07).** The `growth_engine.project_balance`
 HOLDS item is the only remaining cluster the re-audit flagged, and it stays a justified disable (the
 circular-import that would result from bundling -- see above). The re-audit's disposition is fully executed.
+
+## schemas/validation package split (2026-06-07, run `a1f8eb56`)
+
+Quality-pass on the `schemas/validation.py` -> `app/schemas/validation/` package split (`c3d05de`)
+plus its Phase-4 residue cleanup (`8cda673`). Fresh independent reviewer handed the rubric (A-G),
+both commit diffs, and the package; required to argue BOTH "simpler?" and "right abstraction for the
+next feature?". The reviewer re-verified behavior-equivalence itself (re-ran the docstring-stripped
+AST comparison: 84/84 symbols byte-identical; package R0801 = 0; `__all__` set-equal to the 61
+re-exports).
+
+**Verdict: behavior_equivalent=yes; ALL findings ACCEPT; 0 REFINE; 0 REVERT-OVERREACH.**
+
+| Finding | file:line | Verdict | Rationale |
+|---|---|---|---|
+| Module grouping mirrors the consuming route packages | `validation/*.py` | **ACCEPT** | The cut matches decision #5 + the consumer topology; the next feature lands in one obvious module (A1/F1). |
+| `_helpers.py` boundary (BaseSchema + range validators + `_normalize_percent_fields` + `_reject_envelope_on_income`) | `validation/_helpers.py` | **ACCEPT** | Each primitive has >=2 cross-module consumers; genuine cross-cutting logic, correctly homed (A4/B1). |
+| Auth-only constants/helpers kept in `auth.py`, NOT promoted to `_helpers.py` | `validation/auth.py:42-142` | **ACCEPT** | 0 external consumers; promoting would make `_helpers` a junk drawer (C1/F3). |
+| `strip_empty_strings` 1-line hook duplicated ~26x, NOT base-classed | all modules | **ACCEPT (examined)** | Correct conservative call for a pure move: a base class would fight `AccountTypeUpdateSchema`'s legitimately-divergent MultiDict variant; duplication-neutral vs the monolith; R0801-invisible by construction. A base-class consolidation is a defensible SEPARATE refactor, not a move-commit smuggle. |
+| `normalize_inputs` percent wrapper duplicated ~14x; core already shared | loans/investments/retirement/... | **ACCEPT** | The non-trivial logic (`_normalize_percent_fields`) is already in `_helpers`; only the 2-line wrapper repeats, and `settings.py` legitimately diverges -- a forced base class would fight real variation (B1/B2). |
+| 19 added docstrings | residue commit | **ACCEPT** | Substantive ones explain business WHY (mutual exclusivity, self-transfer net-zero, FICA tolerance); the formulaic strip one-liner still states the non-obvious why (HTML forms submit empty inputs as `""`) (F2). |
+| `__init__.py` re-export + `__all__` (61) | `validation/__init__.py` | **ACCEPT** | Sorted, set-equal to imports, every entry resolves to a class; adding a schema = one import + one `__all__` line (F3). |
+
+**Pre-existing, out-of-scope follow-ups the reviewer reported (rule 4 -- report, don't fix in a move):**
+1. Dead `_COMPANION_EMAIL_REGEX` / `_COMPANION_PASSWORD_*` / `_normalize_companion_form` aliases in
+   `validation/auth.py` (0 consumers in `app/` or `tests/`; the "keep for compat" comment itself says
+   retire in a dedicated cleanup). A safe deletion for a separate commit.
+2. The create/update `validate_different_accounts` (transfers) and `validate_goal_mode_fields`
+   (savings) duplication -- genuine logic blocks, but the create/update pairs diverge in their guard
+   preamble; a future scoped dedup, not a split finding.
