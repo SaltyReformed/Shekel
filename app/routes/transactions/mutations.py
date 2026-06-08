@@ -101,6 +101,13 @@ def _apply_shadow_update(txn, txn_id, data):
         )
         return _stale_transaction_response(txn_id)
     except (NotFoundError, ValidationError) as exc:
+        # transfer_service.update_transfer mutates xfer.amount and both
+        # shadows' estimated_amount in-memory BEFORE running the status
+        # transition through the state machine, so a rejected
+        # amount+illegal-status PATCH leaves dirty mutations staged on
+        # the session.  Roll back so they cannot reach the DB, matching
+        # the sibling shadow handlers (_mark_done_shadow, _cancel_shadow).
+        db.session.rollback()
         return str(exc), 400
 
     db.session.refresh(txn)

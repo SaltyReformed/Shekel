@@ -421,6 +421,70 @@ class TestTransferShadowMarkDoneStateMachine:
             resp = auth_client.post(f"/transactions/{shadow.id}/cancel")
             assert resp.status_code == 400
 
+    def test_rejected_shadow_update_rolls_back_staged_mutations(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """deep-quality-hunt #42: a rejected amount+illegal-status shadow
+        PATCH leaves NO dirty mutations staged on the session.
+
+        transfer_service.update_transfer mutates xfer.amount and both
+        shadows' estimated_amount in-memory BEFORE the state-machine
+        transition check raises ValidationError, so without the
+        except-branch rollback in _apply_shadow_update those dirty
+        mutations sit on the session and any later commit in the same
+        request would flush the half-applied change (transfer invariant
+        3).  Drive the path directly (a route-level test cannot observe
+        this -- per-request teardown discards the session either way) and
+        assert the session is clean after the 400.
+        """
+        from flask_login import login_user  # pylint: disable=import-outside-toplevel
+        from app.routes.transactions.mutations import (  # pylint: disable=import-outside-toplevel
+            _apply_shadow_update,
+        )
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+        with app.test_request_context():
+            login_user(seed_user["user"])
+            xfer = self._create_transfer_with_shadows(
+                app, db.session, seed_user, seed_periods_today,
+            )
+            # Walk parent + shadows to Settled (a terminal, non-mutable
+            # state) so a status change back to Projected is illegal.
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.SETTLED),
+            )
+            db.session.commit()
+            assert not db.session.dirty  # clean baseline before the PATCH
+
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .first()
+            )
+            # PATCH carries an amount change AND an illegal transition
+            # (Settled -> Projected): update_transfer stages the amount
+            # mutation, then verify_transition raises ValidationError.
+            result = _apply_shadow_update(
+                shadow, shadow.id,
+                {
+                    "estimated_amount": Decimal("999.00"),
+                    "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
+                },
+            )
+            assert result[1] == 400
+            # The except branch must have rolled back the staged xfer +
+            # shadow mutations; without it db.session.dirty holds them.
+            assert not db.session.dirty, (
+                f"rejected shadow update left mutations staged: "
+                f"{db.session.dirty}"
+            )
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Service-level unmark_credit guard tests
