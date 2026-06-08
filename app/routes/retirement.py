@@ -391,24 +391,16 @@ def update_settings():
         )
         if not settings:
             settings = UserSettings(user_id=current_user.id)
+        # The dashboard skeleton includes only the active section's
+        # partial; ``_retirement.html`` reads only settings/form_data/
+        # errors, so the 422 re-render supplies exactly those.
         return render_template(
             "settings/dashboard.html",
             active_section="retirement",
             settings=settings,
             form_data=raw_form_data,
             errors=errors,
-            accounts=[],
-            grouped={},
-            filing_statuses=[],
-            tax_types=[],
-            bracket_sets=[],
-            fica_configs=[],
-            state_configs=[],
-            account_types=[],
-            types_in_use=set(),
-            mfa_enabled=False,
         ), 422
-        # pylint: enable=duplicate-code
 
     data = _settings_schema.load(request.form)
 
