@@ -279,20 +279,8 @@ def _investment_horizons(projection, all_periods, current_period):
         Dict mapping a horizon label to the projected end balance,
         omitting horizons that fall outside the projection.
     """
-    proj_by_idx = {
-        p.period_index: pb.end_balance
-        for pb in projection
-        for p in all_periods
-        if p.id == pb.period_id
-    }
-    projected = {}
-    for offset_label, offset_count in [
-        ("3 months", 6), ("6 months", 13), ("1 year", 26),
-    ]:
-        target_idx = current_period.period_index + offset_count
-        if target_idx in proj_by_idx:
-            projected[offset_label] = proj_by_idx[target_idx]
-    return projected
+    balance_map = {pb.period_id: pb.end_balance for pb in projection}
+    return project_balance_horizons(current_period, all_periods, balance_map)
 
 
 def _project_investment(acct, investment_params, current_bal, ctx):
