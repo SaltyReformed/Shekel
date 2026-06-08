@@ -131,17 +131,6 @@ def _verify_password_bytes(password, *, field_name="password"):
         )
 
 
-# Backwards-compatible aliases so any external reference to the older
-# companion-prefixed names (no callers in-tree, but the module-public
-# constants were importable) keeps working.  Removing these would be
-# an API break; aliasing is the right call until a deliberate cleanup
-# commit retires them.
-_COMPANION_EMAIL_REGEX = _AUTH_EMAIL_REGEX
-_COMPANION_PASSWORD_MIN_LENGTH = _AUTH_PASSWORD_MIN_LENGTH
-_COMPANION_PASSWORD_MAX_BYTES = _AUTH_PASSWORD_MAX_BYTES
-_normalize_companion_form = _normalize_auth_form
-
-
 # --- Auth blueprint schemas (commit C-26) --------------------------------
 #
 # Every POST handler in app/routes/auth.py validates its form payload
