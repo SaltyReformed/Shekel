@@ -139,13 +139,15 @@ def create_transfer_template():
     2026-04-15 security remediation plan): every user-scoped FK
     accepted from the form -- ``from_account_id``, ``to_account_id``,
     ``category_id`` -- is verified against ``current_user.id`` before
-    the row is persisted.  ``start_period_id`` is checked deeper in
-    the function only when the recurrence pattern is
-    ``EVERY_N_PERIODS`` (used to compute ``offset_periods``); the
-    follow-up one-time-transfer branch (``is_one_time and
-    start_period_id``) re-fetches the period and verifies ownership
-    a second time, so a malicious ``start_period_id`` cannot leak
-    into the transfer service.  The flash + redirect UX matches the
+    the row is persisted.  ``start_period_id`` is verified by the F-24
+    builder (:func:`build_recurrence_rule_from_form`), which owner-checks
+    any submitted start period for EVERY recurrence pattern -- not just
+    ``EVERY_N_PERIODS`` -- before it is persisted on the rule and before
+    ``recurrence_engine`` dereferences its ``start_date`` as the
+    generation boundary; the follow-up one-time-transfer branch
+    (``is_one_time and start_period_id``) re-fetches the period and
+    verifies ownership a second time, so a malicious ``start_period_id``
+    cannot leak into the transfer service.  The flash + redirect UX matches the
     existing template-form pattern; the security response rule
     (404 for both not-found and not-yours) is preserved indirectly
     by re-rendering the same form page rather than confirming

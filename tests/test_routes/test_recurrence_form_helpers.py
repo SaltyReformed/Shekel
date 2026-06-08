@@ -221,6 +221,102 @@ class TestBuildRecurrenceRuleFromForm:
             assert "/templates/42" in result.headers["Location"]
             db.session.rollback()
 
+    def test_non_every_n_cross_user_start_period_rejected(
+        self, app, seed_user, seed_second_user, seed_second_periods,  # pylint: disable=unused-argument
+    ):
+        """C2-7: a cross-user start_period is rejected for a recurring
+        (non-EVERY_N) pattern, not only EVERY_N_PERIODS.
+
+        deep-quality-hunt #21: the start_period ownership probe used to
+        run ONLY inside the EVERY_N_PERIODS branch, so a MONTHLY (or any
+        other recurring) pattern persisted a foreign ``start_period_id``
+        unchecked, and ``recurrence_engine`` then read that victim
+        period's ``start_date`` as the generation boundary.  The probe
+        now runs for every pattern: a start_period owned by another user
+        yields a redirect Response + flash, exactly like the EVERY_N
+        case (C2-4), and nothing is persisted.
+        """
+        with app.test_request_context():
+            monthly_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.MONTHLY,
+            )
+            foreign_period = seed_second_periods[0]
+            data = {
+                "recurrence_pattern": str(monthly_id),
+                "interval_n": 1,
+                "offset_periods": 0,
+                "day_of_month": 15,
+                "month_of_year": None,
+                "due_day_of_month": None,
+                "end_date": None,
+            }
+            result = build_recurrence_rule_from_form(
+                data,
+                user_id=seed_user["user"].id,
+                start_period_id=foreign_period.id,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget("templates.new_template"),
+                    include_due_day_of_month=True,
+                ),
+            )
+            assert isinstance(result, Response)
+            assert result.status_code == 302
+            assert "/templates/new" in result.headers["Location"]
+            # No rule was persisted referencing the foreign period.
+            assert (
+                db.session.query(RecurrenceRule)
+                .filter_by(start_period_id=foreign_period.id)
+                .first()
+            ) is None
+            db.session.rollback()
+
+    def test_non_every_n_own_start_period_persisted(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """C2-8: a MONTHLY pattern with the owner's own start_period is
+        accepted and persists it, without auto-deriving offset_periods.
+
+        Confirms the hoisted probe (C2-7) does not over-reject the
+        legitimate same-user case, and that ``offset_periods`` stays 0 --
+        the ``period_index`` auto-offset is EVERY_N_PERIODS-only even
+        when the chosen period has a non-zero index.
+        """
+        with app.test_request_context():
+            monthly_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.MONTHLY,
+            )
+            own_period = next(
+                (p for p in seed_periods_today if p.period_index == 1),
+                None,
+            )
+            assert own_period is not None, "fixture missing period_index=1"
+            data = {
+                "recurrence_pattern": str(monthly_id),
+                "interval_n": 1,
+                "offset_periods": 0,
+                "day_of_month": 15,
+                "month_of_year": None,
+                "due_day_of_month": None,
+                "end_date": None,
+            }
+            result = build_recurrence_rule_from_form(
+                data,
+                user_id=seed_user["user"].id,
+                start_period_id=own_period.id,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget("templates.new_template"),
+                    include_due_day_of_month=True,
+                ),
+            )
+            assert isinstance(result, RecurrenceRule)
+            assert result.start_period_id == own_period.id
+            # offset is NOT auto-derived for non-EVERY_N patterns.
+            assert result.offset_periods == 0
+            assert result.pattern_id == monthly_id
+            db.session.rollback()
+
     def test_include_due_day_of_month_true_consumes_key(
         self, app, auth_client, seed_user, seed_periods_today,  # pylint: disable=unused-argument
     ):

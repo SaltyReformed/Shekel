@@ -225,6 +225,24 @@ def build_recurrence_rule_from_form(
     # constructor never receives ``end_date`` as a stray kwarg.
     data.pop("end_date", None)
 
+    # Verify ownership of any submitted start period BEFORE it is
+    # persisted onto the rule -- for every pattern, not just
+    # EVERY_N_PERIODS.  ``start_period_id`` is written onto the rule
+    # unconditionally below (``rule_kwargs["start_period_id"]``), and
+    # ``recurrence_engine`` later dereferences ``rule.start_period.start_date``
+    # as the generation boundary, so a cross-user period would both be
+    # stored as a foreign FK and shift this owner's generation timing.
+    # This matches the read-only preview path
+    # (``templates.preview_recurrence``), which already owner-gates the
+    # start period for all patterns; without this probe the persist path
+    # was an IDOR the preview path was not (deep-quality-hunt #21).
+    start_period = None
+    if start_period_id is not None:
+        start_period = db.session.get(PayPeriod, start_period_id)
+        if start_period is None or start_period.user_id != user_id:
+            flash("Invalid start period.", "danger")
+            return ctx.redirect.to_response()
+
     # Auto-derive offset from the start period for EVERY_N_PERIODS so
     # the rule generates against the user's chosen rhythm rather than
     # the default zero-offset cadence.
@@ -232,12 +250,7 @@ def build_recurrence_rule_from_form(
         RecurrencePatternEnum.EVERY_N_PERIODS,
     )
     if (int(pattern_id_str) == every_n_id
-            and start_period_id and interval_n):
-        start_period = db.session.get(PayPeriod, start_period_id)
-        if (start_period is None
-                or start_period.user_id != user_id):
-            flash("Invalid start period.", "danger")
-            return ctx.redirect.to_response()
+            and start_period is not None and interval_n):
         offset_periods = start_period.period_index % interval_n
 
     rule_kwargs: dict[str, Any] = {

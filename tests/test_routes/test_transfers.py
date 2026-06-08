@@ -1797,7 +1797,17 @@ class TestOneTimeTransfer:
         self, app, auth_client, seed_user, seed_periods_today,
         seed_second_user, seed_second_periods,
     ):
-        """POST /transfers with another user's period is rejected."""
+        """POST /transfers with another user's period is rejected.
+
+        The cross-user start_period is now caught by the F-24 builder's
+        universal ownership probe (deep-quality-hunt #21), which runs
+        for EVERY pattern -- so it rejects the ONCE case here ("Invalid
+        start period.") before the template is created and before the
+        one-time-transfer re-check in ``_materialize_initial_transfers``
+        ("Invalid pay period for one-time transfer.") would fire.  That
+        re-check is now a redundant second guard; either way the IDOR is
+        blocked and no transfer is persisted.
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             once = db.session.query(RecurrencePattern).filter_by(
@@ -1816,7 +1826,7 @@ class TestOneTimeTransfer:
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"Invalid pay period" in response.data
+            assert b"Invalid start period" in response.data
 
             # No transfer was created.
             xfer_count = (
