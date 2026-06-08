@@ -119,7 +119,10 @@ def add_raise(profile_id):
         # etc.) land here.  Non-SQLAlchemy exceptions propagate
         # to the 500 handler.
         db.session.rollback()
-        logger.exception("user_id=%d failed to add raise to profile %d", current_user.id, profile_id)
+        logger.exception(
+            "user_id=%d failed to add raise to profile %d",
+            current_user.id, profile_id,
+        )
         flash("Failed to add raise. Please try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
@@ -178,11 +181,17 @@ def delete_raise(raise_id):
         # blocks delete, regenerate flush failure, etc.) land here.
         # Non-SQLAlchemy exceptions propagate to the 500 handler.
         db.session.rollback()
-        logger.exception("user_id=%d failed to delete raise %d from profile %d", current_user.id, raise_id, profile.id)
+        logger.exception(
+            "user_id=%d failed to delete raise %d from profile %d",
+            current_user.id, raise_id, profile.id,
+        )
         flash("Failed to remove raise. Please try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
-    logger.info("user_id=%d deleted raise %d from profile %d", current_user.id, raise_id, profile.id)
+    logger.info(
+        "user_id=%d deleted raise %d from profile %d",
+        current_user.id, raise_id, profile.id,
+    )
     flash("Raise removed.", "info")
 
     return _respond_after_raise_change(profile)
@@ -341,7 +350,7 @@ def add_deduction(profile_id):
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = Decimal(str(data["amount"])) / Decimal("100")
-    if data.get("inflation_rate"):
+    if data.get("inflation_rate") is not None:
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     deduction = PaycheckDeduction(salary_profile_id=profile.id, **data)
@@ -390,7 +399,10 @@ def add_deduction(profile_id):
         # etc.) land here.  Non-SQLAlchemy exceptions propagate
         # to the 500 handler.
         db.session.rollback()
-        logger.exception("user_id=%d failed to add deduction to profile %d", current_user.id, profile_id)
+        logger.exception(
+            "user_id=%d failed to add deduction to profile %d",
+            current_user.id, profile_id,
+        )
         flash("Failed to add deduction. Please try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
@@ -449,11 +461,17 @@ def delete_deduction(ded_id):
         # blocks delete, regenerate flush failure, etc.) land here.
         # Non-SQLAlchemy exceptions propagate to the 500 handler.
         db.session.rollback()
-        logger.exception("user_id=%d failed to delete deduction %d from profile %d", current_user.id, ded_id, profile.id)
+        logger.exception(
+            "user_id=%d failed to delete deduction %d from profile %d",
+            current_user.id, ded_id, profile.id,
+        )
         flash("Failed to remove deduction. Please try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
-    logger.info("user_id=%d deleted deduction %d from profile %d", current_user.id, ded_id, profile.id)
+    logger.info(
+        "user_id=%d deleted deduction %d from profile %d",
+        current_user.id, ded_id, profile.id,
+    )
     flash("Deduction removed.", "info")
 
     return _respond_after_deduction_change(profile)
@@ -514,7 +532,7 @@ def update_deduction(ded_id):
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = Decimal(str(data["amount"])) / Decimal("100")
-    if data.get("inflation_rate"):
+    if data.get("inflation_rate") is not None:
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     for field_name, value in data.items():
@@ -584,7 +602,10 @@ def update_deduction(ded_id):
         flash("Failed to update deduction. Please try again.", "danger")
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
-    logger.info("user_id=%d updated deduction %d on profile %d", current_user.id, ded_id, profile.id)
+    logger.info(
+        "user_id=%d updated deduction %d on profile %d",
+        current_user.id, ded_id, profile.id,
+    )
     flash(f"Deduction '{deduction.name}' updated.", "success")
 
     return _respond_after_deduction_change(profile)

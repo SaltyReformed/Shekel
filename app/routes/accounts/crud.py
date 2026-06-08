@@ -159,7 +159,15 @@ def create_account():
         flash("An account with that name already exists.", "warning")
         return redirect(url_for("accounts.new_account"))
 
-    anchor_balance = Decimal(str(data.pop("anchor_balance", "0") or "0"))
+    # ``anchor_balance`` is an optional Decimal field; the schema's
+    # ``@pre_load`` strips empty submissions, so a missing key -- not a
+    # falsy zero -- means "no opening balance".  Branch on presence
+    # (``is None``), never on Decimal truthiness: a legitimately-entered
+    # zero opening balance is a value, not a missing balance.
+    raw_anchor = data.pop("anchor_balance", None)
+    anchor_balance = (
+        Decimal(str(raw_anchor)) if raw_anchor is not None else Decimal("0")
+    )
 
     # E-19 (Commit 3): the canonical factory in
     # ``app.services.account_service.create_account`` materializes

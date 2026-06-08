@@ -130,6 +130,43 @@ class TestAccountCreate:
             )
             assert acct.current_anchor_balance == Decimal("500.00")
 
+    def test_create_account_zero_anchor_balance(self, app, auth_client, seed_user):
+        """POST /accounts with anchor_balance "0" stores an exact zero.
+
+        A submitted zero opening balance is a value, not a missing one:
+        the route must persist ``Decimal("0")`` rather than treating the
+        falsy zero as absent.  Omitting the field entirely also defaults
+        to zero.
+        """
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
+
+            response = auth_client.post("/accounts", data={
+                "name": "Zero Savings",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "0",
+            }, follow_redirects=True)
+            assert response.status_code == 200
+            acct = (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, name="Zero Savings")
+                .one()
+            )
+            assert acct.current_anchor_balance == Decimal("0")
+
+            # Omitting anchor_balance entirely also defaults to zero.
+            response = auth_client.post("/accounts", data={
+                "name": "No Balance Savings",
+                "account_type_id": savings_type.id,
+            }, follow_redirects=True)
+            assert response.status_code == 200
+            acct2 = (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, name="No Balance Savings")
+                .one()
+            )
+            assert acct2.current_anchor_balance == Decimal("0")
+
     def test_create_account_validation_error(self, app, auth_client, seed_user):
         """POST /accounts with missing name shows a validation error."""
         with app.app_context():

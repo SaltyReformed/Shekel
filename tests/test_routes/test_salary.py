@@ -1030,6 +1030,41 @@ class TestDeductions:
             )
             assert ded.amount == Decimal("0.06")
 
+    def test_add_deduction_zero_inflation_rate_stored(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """A submitted 0% inflation rate stores as exact zero, not dropped.
+
+        Zero is a value, not a missing field: the route's percent-to-
+        fraction conversion must run for ``0`` (``0 / 100 == 0``) and
+        persist ``Decimal("0")`` rather than skipping it on falsiness.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            auth_client.post(
+                f"/salary/{profile.id}/deductions",
+                data={
+                    "name": "HSA",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "100.00",
+                    "deductions_per_year": "26",
+                    "inflation_enabled": "on",
+                    "inflation_rate": "0",
+                },
+                follow_redirects=True,
+            )
+
+            ded = (
+                db.session.query(PaycheckDeduction)
+                .filter_by(salary_profile_id=profile.id, name="HSA")
+                .one()
+            )
+            assert ded.inflation_rate == Decimal("0")
+
 
 # ── Deduction Frequency Display ──────────────────────────────────
 
