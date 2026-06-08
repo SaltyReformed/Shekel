@@ -48,6 +48,8 @@ F_068_LOCKED_COLUMNS = [
     ("budget", "categories", "is_active", "true"),
     ("budget", "categories", "sort_order", "0"),
     ("budget", "escrow_components", "is_active", "true"),
+    ("budget", "recurrence_rules", "interval_n", "1"),
+    ("budget", "recurrence_rules", "offset_periods", "0"),
     ("budget", "savings_goals", "is_active", "true"),
     ("budget", "scenarios", "is_baseline", "false"),
     ("budget", "transaction_templates", "is_active", "true"),
@@ -247,6 +249,39 @@ def test_server_default_fills_omitted_sort_order_integer(db, seed_user):
     ), {"user_id": user_id}).one()
     assert row.sort_order == 0
     assert row.is_active is True
+
+
+def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
+    """A raw INSERT omitting interval_n / offset_periods gets 1 / 0.
+
+    These two recurrence integers are logic-bearing divisors
+    (``interval_n`` is the modulus in ``recurrence_engine.match_periods``;
+    ``offset_periods`` shifts the cycle), and their CHECK constraints
+    (``interval_n > 0`` / ``offset_periods >= 0``) treat a NULL operand
+    as satisfied, so before this migration a raw INSERT could land a
+    meaningless NULL.  The server_default must now fill the documented
+    logical defaults on a storage-tier-only INSERT.
+    """
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import (  # pylint: disable=import-outside-toplevel
+        RecurrencePatternEnum,
+    )
+
+    user_id = seed_user["user"].id
+    pattern_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.EVERY_PERIOD,
+    )
+    db.session.execute(db.text(
+        "INSERT INTO budget.recurrence_rules (user_id, pattern_id) "
+        "VALUES (:user_id, :pattern_id)"
+    ), {"user_id": user_id, "pattern_id": pattern_id})
+    db.session.commit()
+    row = db.session.execute(db.text(
+        "SELECT interval_n, offset_periods FROM budget.recurrence_rules "
+        "WHERE user_id = :user_id AND pattern_id = :pattern_id"
+    ), {"user_id": user_id, "pattern_id": pattern_id}).one()
+    assert row.interval_n == 1
+    assert row.offset_periods == 0
 
 
 def test_transactions_is_override_and_is_deleted_default_to_false(

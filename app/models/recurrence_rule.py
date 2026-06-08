@@ -25,9 +25,13 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
         nullable=False,
     )
     # Used by 'every_n_periods': repeat every N periods.
-    interval_n = db.Column(db.Integer, default=1)
+    interval_n = db.Column(
+        db.Integer, nullable=False, default=1, server_default=db.text("1"),
+    )
     # Offset within the interval cycle (0 or 1).
-    offset_periods = db.Column(db.Integer, default=0)
+    offset_periods = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0"),
+    )
     # Used by 'monthly' and 'annual' patterns.
     day_of_month = db.Column(
         db.Integer,
