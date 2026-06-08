@@ -95,10 +95,16 @@ def create_category():
 
     if request.headers.get("HX-Request"):
         # Fresh group list for the edit-form dropdown in the HTMX partial.
+        # Filter to is_active=True so the HTMX-appended row's group
+        # dropdown offers the same active-only set as the full settings
+        # GET render (settings._load_categories_context derives its
+        # group_names from active categories); otherwise a group that
+        # exists only on archived categories would appear here but not on
+        # a settings reload (deep-quality-hunt #41).
         group_names = sorted(
             row[0] for row in
             db.session.query(Category.group_name)
-            .filter_by(user_id=current_user.id)
+            .filter_by(user_id=current_user.id, is_active=True)
             .distinct()
         )
         return render_template(
