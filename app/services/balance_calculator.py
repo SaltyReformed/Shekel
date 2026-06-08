@@ -8,7 +8,8 @@ it returns balances.  Called on every grid load.
 Calculation rules:
   - Anchor period: end_balance = anchor_balance + remaining_income - remaining_expenses
     where "remaining" means projected items not yet reflected in the anchor.
-  - Subsequent periods: end_balance[n] = end_balance[n-1] + remaining_income[n] - remaining_expenses[n]
+  - Subsequent periods:
+    end_balance[n] = end_balance[n-1] + remaining_income[n] - remaining_expenses[n]
   - All periods use only projected (unsettled) items:
       done / received -> excluded (already settled)
       projected       -> effective_amount (actual if populated, else estimated)
@@ -99,13 +100,15 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
         period_txns = txn_by_period.get(period.id, [])
 
         if period.id == anchor_period_id:
-            # Anchor period: start from the real balance, add only remaining items.
-            income, expenses = _sum_remaining(period_txns, amount_overrides)
+            # Anchor period: start from the real balance, add the projected
+            # remainder (settled items are already in the anchor balance).
+            income, expenses = _sum_projected(period_txns, amount_overrides)
             running_balance = anchor_balance + income - expenses
 
         elif running_balance is not None:
-            # Post-anchor: roll forward from previous end balance.
-            income, expenses = _sum_all(period_txns, amount_overrides)
+            # Post-anchor: roll forward from the previous end balance, adding
+            # this period's projected income and expenses.
+            income, expenses = _sum_projected(period_txns, amount_overrides)
             running_balance = running_balance + income - expenses
 
         else:
@@ -454,64 +457,45 @@ def _expense_amount(txn, amount_overrides):
     return _entry_aware_amount(txn)
 
 
-def _sum_remaining(transactions, amount_overrides=None):
-    """Sum only REMAINING (projected) transactions for the anchor period.
+def _sum_projected(transactions, amount_overrides=None):
+    """Sum projected (unsettled) income and expenses for one pay period.
 
-    Items marked done/received are already reflected in the anchor balance
-    the user entered, so we exclude them.  Credit items are always excluded.
+    Only Projected items contribute to the projected balance: settled
+    (done / received), credit, and cancelled transactions are excluded
+    via the centralized ``is_projected`` predicate (D6-09 / MED-02), so
+    this filter shares one definition with ``_entry_aware_amount`` and
+    the balance resolver's date-cut path.
 
-    Income uses effective_amount (actual if set, else estimated).
-    Expenses use _entry_aware_amount, which applies the entry-checking
-    formula for projected expenses with loaded entries, falling back
-    to effective_amount otherwise.
+    The same Projected-only sum applies to every period the balance walk
+    visits, anchor and post-anchor alike (D6-06): in the anchor period
+    the excluded settled items are the ones already reflected in the
+    anchor balance the user entered; in post-anchor periods nothing is
+    settled yet.  Either way only the projected remainder is summed.  The
+    anchor-vs-roll-forward distinction -- which starting balance this sum
+    is added to -- lives solely in :func:`calculate_balances`, not here,
+    which is why a single helper serves both branches (collapsed from the
+    historically-separate ``_sum_remaining`` / ``_sum_all`` once both
+    became Projected-only).
+
+    Income uses :func:`_income_amount` (effective_amount, or a live
+    override when present).  Expenses use :func:`_expense_amount`, which
+    applies the entry-checking formula for projected expenses with loaded
+    entries and honors a live override, falling back to effective_amount
+    otherwise.
+
+    Args:
+        transactions: Transaction objects for a single pay period.
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net map (Workstream B); None preserves the
+            stored-amount behavior byte-identical.
 
     Returns:
-        (total_income, total_expenses) as Decimal tuple.
+        (total_income, total_expenses) as a Decimal tuple.
     """
     income = Decimal("0.00")
     expenses = Decimal("0.00")
 
     for txn in transactions:
-        # Only projected items remain to be settled -- everything else
-        # is either already in the anchor or excluded from balance.
-        # Routed through the centralized ``is_projected`` predicate
-        # (D6-09 / MED-02) so the anchor-period Projected filter
-        # shares one definition with ``_sum_all`` and
-        # ``_entry_aware_amount`` below.
-        if not is_projected(txn):
-            continue
-
-        if txn.is_income:
-            income += _income_amount(txn, amount_overrides)
-        elif txn.is_expense:
-            expenses += _expense_amount(txn, amount_overrides)
-
-    return income, expenses
-
-
-def _sum_all(transactions, amount_overrides=None):
-    """Sum remaining (projected) transactions for a non-anchor period.
-
-    Only projected items contribute to the projected balance.  Settled,
-    credit, and cancelled transactions are excluded.
-
-    Income uses effective_amount (actual if set, else estimated).
-    Expenses use _entry_aware_amount, which applies the entry-checking
-    formula for projected expenses with loaded entries, falling back
-    to effective_amount otherwise.
-
-    Returns:
-        (total_income, total_expenses) as Decimal tuple.
-    """
-    income = Decimal("0.00")
-    expenses = Decimal("0.00")
-
-    for txn in transactions:
-        # Only projected items affect the projected balance.
-        # Routed through the centralized ``is_projected`` predicate
-        # (D6-09 / MED-02) so the post-anchor Projected filter
-        # shares one definition with ``_sum_remaining`` above and
-        # ``_entry_aware_amount``.
         if not is_projected(txn):
             continue
 

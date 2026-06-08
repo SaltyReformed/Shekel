@@ -443,8 +443,7 @@ def balances_for(
          scenario across the period span, with entries eager-loaded.
       3. Delegate to ``calculate_balances`` for anchor + post-anchor
          period-by-period roll-forward (the engine's
-         ``_sum_remaining`` / ``_sum_all`` apply the entry-aware
-         reduction).
+         ``_sum_projected`` applies the entry-aware reduction).
       4. Quantize each balance to cents with
          :func:`~app.utils.money.round_money`.
 
@@ -530,13 +529,12 @@ def period_subtotal(
 
     Algorithm: re-uses :func:`_load_balance_transactions` (one query,
     entries eager-loaded, shared status clause) then delegates to
-    :func:`~app.services.balance_calculator._sum_all`, whose math is
-    identical to ``_sum_remaining`` post-Commit-5 (both gate on
-    Projected, both apply the entry-aware reduction for expenses,
-    both use ``effective_amount`` for income).  Calling ``_sum_all``
-    directly avoids the carry-forward bookkeeping in
-    ``calculate_balances`` that is irrelevant when only one period
-    is needed.
+    :func:`~app.services.balance_calculator._sum_projected`, the engine's
+    single Projected-only period sum (it gates on Projected and applies
+    the entry-aware reduction for expenses, using ``effective_amount``
+    for income).  Calling it directly avoids the carry-forward
+    bookkeeping in ``calculate_balances`` that is irrelevant when only
+    one period is needed.
 
     Args:
         account: The :class:`~app.models.account.Account`.  Must be
@@ -566,12 +564,12 @@ def period_subtotal(
         amount_overrides = live_amount_overrides(
             account, scenario_id, transactions,
         )
-    # Pylint: ``protected-access`` -- ``_sum_all`` is an internal helper of
-    # ``balance_calculator``; the resolver is its sibling canonical producer
+    # Pylint: ``protected-access`` -- ``_sum_projected`` is an internal helper
+    # of ``balance_calculator``; the resolver is its sibling canonical producer
     # (see module docstring) and the audit's E-25 mandate explicitly reuses the
     # engine's math rather than rewriting it (CLAUDE.md rule 10).
     # pylint: disable=protected-access
-    income, expense = balance_calculator._sum_all(transactions, amount_overrides)
+    income, expense = balance_calculator._sum_projected(transactions, amount_overrides)
     rounded_income = round_money(income)
     rounded_expense = round_money(expense)
     return PeriodSubtotal(
@@ -665,7 +663,7 @@ def _sum_period_as_of(
 ) -> tuple[Decimal, Decimal]:
     """Sum Projected income / expense for the as-of period (E-27).
 
-    Mirrors :func:`~app.services.balance_calculator._sum_all` but
+    Mirrors :func:`~app.services.balance_calculator._sum_projected` but
     routes expense impact through :func:`_entry_aware_amount_dated`
     so the entry-date cut applies inside the period containing
     ``as_of``.  Income uses the live projected-net override when present
@@ -698,14 +696,14 @@ def _sum_period_as_of(
     expense = Decimal("0.00")
     for txn in transactions:
         # Centralized ``is_projected`` predicate (D6-09 / MED-02);
-        # mirrors ``balance_calculator._sum_all`` exactly so the
+        # mirrors ``balance_calculator._sum_projected`` exactly so the
         # date-cut path classifies non-Projected rows identically.
         if not is_projected(txn):
             continue
         if txn.is_income:
             # Pylint: ``protected-access`` -- Workstream B live projected-net
             # seam; reuse ``balance_calculator``'s internal ``_income_amount``
-            # helper so the date-cut path and ``_sum_all`` cannot drift.
+            # helper so the date-cut path and ``_sum_projected`` cannot drift.
             # pylint: disable=protected-access
             income += balance_calculator._income_amount(txn, amount_overrides)
         elif txn.is_expense:

@@ -464,7 +464,7 @@ class TestPaydayWorkflowRegression:
         Hand-calculated balances after all steps:
 
           Current period (anchor = $5,000):
-            _sum_remaining counts only projected items:
+            _sum_projected counts only projected items:
               received income ($2,000) -- excluded (settled)
               done expense ($500) -- excluded (settled)
               credit expense ($300) -- excluded (credit)
@@ -472,7 +472,7 @@ class TestPaydayWorkflowRegression:
             balance = $5,000 + $0 - $150 = $4,850
 
           Future period:
-            _sum_all counts only projected items:
+            _sum_projected counts only projected items:
               CC payback ($300) -- counted
             balance = $4,850 + $0 - $300 = $4,550
         """

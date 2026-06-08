@@ -1941,7 +1941,7 @@ class TestCanonicalProducerRouting:
 
           - Real checking anchor 614.29 on the current pay period.
           - One Projected envelope expense ``estimated_amount = 500.00``
-            on the same period (so ``_sum_remaining`` applies).
+            on the same period (so ``_sum_projected`` applies).
           - Three CLEARED debit entries 20.00 + 15.71 + 10.00 = 45.71.
             No credit entries, no uncleared debits.
 

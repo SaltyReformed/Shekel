@@ -1227,7 +1227,7 @@ class TestNegativePaths:
         """
         periods = [FakePeriod(1)]
         txns = [
-            # projected income -- INCLUDED (only projected items count in _sum_remaining)
+            # projected income -- INCLUDED (only projected items count in _sum_projected)
             FakeTxn(1, "Projected", "Income", "1500.00"),
             # done expense -- EXCLUDED (status_id != projected_id: already in anchor)
             FakeTxn(1, "Paid", "Expense", "999.00"),
@@ -1448,9 +1448,11 @@ class TestBalanceCalculatorRegressionBaseline:
         """Settled (Paid) transaction in anchor period is excluded from
         the remaining-items calculation.
 
-        Both _sum_remaining and _sum_all filter by status_id ==
-        projected_id, so any non-Projected transaction contributes zero
-        regardless of its estimated or actual amounts.  This test locks
+        ``_sum_projected`` gates on the Projected status (via the
+        centralized ``is_projected`` predicate), so any non-Projected
+        transaction contributes zero regardless of its estimated or
+        actual amounts -- in the anchor period and post-anchor periods
+        alike.  This test locks
         down that behavior with a Paid expense that has both amounts
         populated, ensuring the exclusion persists after 5A.1 changes
         the amount source.
@@ -2455,7 +2457,7 @@ class TestIncomeOverridesSeam:
     ``amount_overrides=None`` is exercised pervasively by every other
     test in this module (byte-identical pre-seam behavior); these pin the
     override-applied path threaded through ``calculate_balances`` /
-    ``_sum_remaining`` / ``_sum_all``.
+    ``_sum_projected``.
     """
 
     @staticmethod
@@ -2512,7 +2514,7 @@ class TestIncomeOverridesSeam:
         assert balances[1] == Decimal("2100.00")
 
     def test_override_applies_in_post_anchor_period(self):
-        """The seam also applies in post-anchor periods (_sum_all path).
+        """The seam also applies in post-anchor periods (the post-anchor _sum_projected call).
 
         Period 1 is the anchor (empty), period 2 post-anchor with the
         overridden income: anchor $0 -> p1 $0 -> p2 $0 + override

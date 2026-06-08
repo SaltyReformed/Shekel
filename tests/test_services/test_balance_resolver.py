@@ -202,7 +202,7 @@ class TestBalancesForEntriesAware:
           - anchor 614.29 on seed_periods[0] (overrides seed_user's
             default 1000.00 anchor).
           - one Projected envelope expense est=500.00 on
-            seed_periods[0] (the anchor period, so ``_sum_remaining``
+            seed_periods[0] (the anchor period, so ``_sum_projected``
             applies).
           - three cleared debit entries 20.00 + 15.71 + 10.00 = 45.71.
           - no uncleared debits, no credits.

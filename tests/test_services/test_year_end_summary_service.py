@@ -2552,9 +2552,8 @@ class TestNetWorthEntryAware:
           - Real checking anchor 614.29 on a period inside YEAR (2026).
           - One Projected envelope expense
             ``estimated_amount = 500.00`` in the same period (so
-            ``_sum_remaining`` applies for the anchor period and
-            ``_sum_all`` for any post-anchor periods, both via
-            ``_entry_aware_amount``).
+            ``_sum_projected`` applies for the anchor period and any
+            post-anchor periods alike, via ``_entry_aware_amount``).
           - Three CLEARED debit entries 20.00 + 15.71 + 10.00 = 45.71.
             No credit entries, no uncleared debits.
 
