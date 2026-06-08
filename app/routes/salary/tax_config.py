@@ -70,18 +70,28 @@ def update_tax_config():
         state_config.standard_deduction = standard_deduction
         flash(f"State tax config for {state_code} {tax_year} updated.", "success")
     else:
-        flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
-        if flat_rate is not None:
-            new_config = StateTaxConfig(
-                user_id=current_user.id,
-                tax_type_id=flat_type_id,
-                state_code=state_code,
-                tax_year=tax_year,
-                flat_rate=flat_rate,
-                standard_deduction=standard_deduction,
+        if flat_rate is None:
+            # Fail loud: creating a new state tax config requires a rate.
+            # The schema leaves flat_rate optional (a stored NULL rate is a
+            # legal no-tax state on an EXISTING row), but on first save
+            # there is nothing to persist -- so reject instead of reporting
+            # a silent success with no row, no commit, and no regeneration.
+            flash(
+                "A flat rate is required to create a state tax configuration.",
+                "danger",
             )
-            db.session.add(new_config)
-            flash(f"State tax config for {state_code} {tax_year} created.", "success")
+            return redirect(url_for("settings.show", section="tax"))
+        flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
+        new_config = StateTaxConfig(
+            user_id=current_user.id,
+            tax_type_id=flat_type_id,
+            state_code=state_code,
+            tax_year=tax_year,
+            flat_rate=flat_rate,
+            standard_deduction=standard_deduction,
+        )
+        db.session.add(new_config)
+        flash(f"State tax config for {state_code} {tax_year} created.", "success")
 
     db.session.commit()
 
