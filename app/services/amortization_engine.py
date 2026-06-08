@@ -401,10 +401,10 @@ def _apply_override_payment(
     if principal_portion >= balance:
         principal_portion = balance
         return principal_portion, principal_portion + interest, Decimal("0.00")
+    # principal_portion < balance here (the >= case returned above), so
+    # balance - principal_portion is strictly positive and round_money
+    # (ROUND_HALF_UP) cannot yield a negative -- no clamp is needed.
     new_balance = round_money(balance - principal_portion)
-    # Guard against sub-penny negative balance from rounding.
-    if new_balance < 0:
-        new_balance = Decimal("0.00")
     return principal_portion, principal_portion + interest, new_balance
 
 
@@ -420,9 +420,9 @@ def _apply_contractual_payment(
     The remaining balance is absorbed exactly (and no extra applies)
     when the contractual principal already covers it OR this is the
     loop's last scheduled month.  Otherwise ``extra_monthly`` is clamped
-    so acceleration alone cannot drive the balance below zero, and any
-    sub-penny rounding residue is folded back into ``extra`` so payment,
-    principal, and extra reconcile.
+    to ``[0, balance - principal_portion]`` so acceleration alone cannot
+    drive the balance below zero -- which also guarantees the quantized
+    new balance is non-negative without a clamp.
 
     Args:
         balance: Outstanding balance before this month's payment.
@@ -452,11 +452,10 @@ def _apply_contractual_payment(
     # acceleration alone.
     extra = min(extra_monthly, balance - principal_portion)
     extra = max(extra, Decimal("0.00"))
+    # extra is clamped to [0, balance - principal_portion] above, so
+    # balance - principal_portion - extra is non-negative and round_money
+    # (ROUND_HALF_UP) cannot yield a negative -- no clamp/fold is needed.
     new_balance = round_money(balance - principal_portion - extra)
-    # Guard against sub-penny negative balance from rounding.
-    if new_balance < 0:
-        extra += new_balance
-        new_balance = Decimal("0.00")
     return principal_portion, monthly_payment, extra, new_balance
 
 
