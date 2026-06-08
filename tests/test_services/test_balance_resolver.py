@@ -879,6 +879,87 @@ class TestBalanceAsOfDate:
             # Period 2: 4000 + 2000 - 500 = 5500  <-- Jan 31 falls here
             assert result == Decimal("5500.00")
 
+    # ── #74 build-once -------------------------------------------------
+
+    def test_live_overrides_built_once_across_prefix_and_target(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """#74: the live override map is built once per call, not per span.
+
+        ``balance_as_of_date`` rolls a prior balance forward over the
+        prefix span ``[anchor .. target-1]`` and then sums the target
+        period.  Before the build-once refactor it called
+        ``live_amount_overrides`` -- which re-runs the live paycheck / loan
+        recompute -- separately for each span, twice per call.  This pins
+        that it now runs exactly once (over the union of both spans), so a
+        future edit cannot silently reintroduce the redundant second
+        recompute.
+
+        Reuses the C9-1 layout: Jan 31 falls in period 2, so the prefix
+        span ``[period 0, period 1]`` is non-empty and the target is
+        period 2 -- the exact shape that triggered the second build (when
+        ``target == anchor`` the prefix is empty and the old code built
+        only once, so that case would not distinguish the fix).  Proven to
+        fail (call count 2) against the pre-refactor double-build.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            p0, p1, p2 = seed_periods[0], seed_periods[1], seed_periods[2]
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+            income_type = (
+                db.session.query(TransactionType).filter_by(name="Income").one()
+            )
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            for period in (p0, p1, p2):
+                db.session.add(Transaction(
+                    pay_period_id=period.id,
+                    scenario_id=scenario_id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Paycheck",
+                    transaction_type_id=income_type.id,
+                    estimated_amount=Decimal("2000.00"),
+                ))
+                db.session.add(Transaction(
+                    pay_period_id=period.id,
+                    scenario_id=scenario_id,
+                    account_id=account.id,
+                    status_id=projected.id,
+                    name="Rent",
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("500.00"),
+                ))
+            db.session.commit()
+
+            # Count live_amount_overrides invocations while delegating to
+            # the real implementation so the projected value is unchanged.
+            real_builder = balance_resolver.live_amount_overrides
+            call_count = {"n": 0}
+
+            def _counting_builder(*args, **kwargs):
+                call_count["n"] += 1
+                return real_builder(*args, **kwargs)
+
+            monkeypatch.setattr(
+                balance_resolver, "live_amount_overrides", _counting_builder,
+            )
+
+            result = balance_as_of_date(
+                account, scenario_id, _date(2026, 1, 31),
+            )
+
+            # Same projection as C9-1 (the wrapper only counts, it does
+            # not alter the result): 1000 -> 2500 -> 4000 -> 5500.
+            assert result == Decimal("5500.00")
+            # The whole point of #74: one build over the prefix+target
+            # union, not one per span.
+            assert call_count["n"] == 1
+
     # ── C9-2 -----------------------------------------------------------
 
     def test_calendar_entry_aware(
