@@ -104,6 +104,8 @@ class BaseSchema(Schema):
     """Base schema that strips CSRF tokens from form submissions."""
 
     class Meta:
+        """Marshmallow options: silently drop unknown fields (e.g. the CSRF token)."""
+
         unknown = EXCLUDE
 
 

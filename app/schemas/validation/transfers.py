@@ -17,11 +17,13 @@ class TransferTemplateCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     default_amount = fields.Decimal(
-        required=True, places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
     )
     from_account_id = fields.Integer(required=True)
     to_account_id = fields.Integer(required=True)
@@ -41,6 +43,14 @@ class TransferTemplateCreateSchema(BaseSchema):
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):
+        """Reject a transfer whose source and destination are the same account.
+
+        A self-transfer moves no money and would produce two shadow legs
+        that net to zero; the route surfaces the message to the user.
+
+        Raises:
+            ValidationError: If ``from_account_id`` equals ``to_account_id``.
+        """
         if data.get("from_account_id") and data.get("to_account_id"):
             if data["from_account_id"] == data["to_account_id"]:
                 raise ValidationError("From and To accounts must be different.")
@@ -74,12 +84,14 @@ class TransferCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     from_account_id = fields.Integer(required=True)
     to_account_id = fields.Integer(required=True)
     amount = fields.Decimal(
-        required=True, places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
     )
     pay_period_id = fields.Integer(required=True)
     scenario_id = fields.Integer(required=True)
@@ -90,6 +102,14 @@ class TransferCreateSchema(BaseSchema):
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):
+        """Reject a transfer whose source and destination are the same account.
+
+        A self-transfer moves no money and would produce two shadow legs
+        that net to zero; the route surfaces the message to the user.
+
+        Raises:
+            ValidationError: If ``from_account_id`` equals ``to_account_id``.
+        """
         if data.get("from_account_id") and data.get("to_account_id"):
             if data["from_account_id"] == data["to_account_id"]:
                 raise ValidationError("From and To accounts must be different.")
@@ -104,6 +124,7 @@ class TransferUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     amount = fields.Decimal(

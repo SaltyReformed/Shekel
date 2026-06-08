@@ -49,7 +49,10 @@ class LoanParamsCreateSchema(BaseSchema):
         required=True, places=2, as_string=True,
         validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
-    current_principal = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    current_principal = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
     interest_rate = fields.Decimal(
         required=True, places=5, as_string=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
@@ -210,7 +213,10 @@ class EscrowComponentSchema(BaseSchema):
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
-    annual_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    annual_amount = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
     inflation_rate = fields.Decimal(
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
@@ -223,6 +229,7 @@ class PayoffCalculatorSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     mode = fields.String(required=True, validate=validate.OneOf(["extra_payment", "target_date"]))
@@ -276,4 +283,7 @@ class LoanPaymentTransferSchema(BaseSchema):
     """
 
     source_account_id = fields.Integer(required=True, validate=validate.Range(min=1))
-    amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False))
+    amount = fields.Decimal(
+        places=2, as_string=True,
+        validate=validate.Range(min=0, min_inclusive=False),
+    )

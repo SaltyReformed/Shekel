@@ -25,6 +25,7 @@ class SalaryProfileCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
@@ -78,6 +79,7 @@ class SalaryProfileUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(validate=validate.Length(min=1, max=200))
@@ -122,6 +124,7 @@ class RaiseCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     raise_type_id = fields.Integer(required=True)
@@ -167,6 +170,15 @@ class RaiseCreateSchema(BaseSchema):
 
     @validates_schema
     def validate_one_method(self, data, **kwargs):
+        """Require exactly one of ``percentage`` or ``flat_amount``.
+
+        A raise is either a percentage bump or a flat per-period dollar
+        amount, never both and never neither; the two columns are
+        mutually exclusive in ``salary.salary_raises``.
+
+        Raises:
+            ValidationError: If both fields are set, or neither is.
+        """
         has_pct = data.get("percentage") is not None
         has_flat = data.get("flat_amount") is not None
         if has_pct == has_flat:
@@ -211,6 +223,7 @@ class DeductionCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
@@ -328,6 +341,7 @@ class TaxBracketSetSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     filing_status_id = fields.Integer(required=True)
@@ -370,6 +384,7 @@ class FicaConfigSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     tax_year = fields.Integer(
@@ -402,6 +417,7 @@ class StateTaxConfigSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     state_code = fields.String(
@@ -427,6 +443,7 @@ class CalibrationSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     actual_gross_pay = fields.Decimal(
@@ -478,6 +495,7 @@ class CalibrationConfirmSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
+        """Drop empty-string values so optional fields don't fail validation."""
         return {k: v for k, v in data.items() if v != ""}
 
     actual_gross_pay = fields.Decimal(

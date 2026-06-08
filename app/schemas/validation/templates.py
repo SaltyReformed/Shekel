@@ -38,7 +38,10 @@ class TemplateCreateSchema(BaseSchema):
         return {k: v for k, v in data.items() if v != ""}
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
-    default_amount = fields.Decimal(required=True, places=2, as_string=True, validate=validate.Range(min=0))
+    default_amount = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
     category_id = fields.Integer(required=True)
     transaction_type_id = fields.Integer(required=True)
     account_id = fields.Integer(required=True)
