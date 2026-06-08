@@ -113,9 +113,10 @@ class TestCalculateInvestmentInputs:
             investment_params=params, deductions=deductions,
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
-        gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
-        expected = (gross * Decimal("0.07")).quantize(Decimal("0.01"))
-        assert result.periodic_contribution == expected
+        # 7% of ($100,000 / 26) = 7% of $3846.15 = $269.2305 -> $269.23.
+        # Hand-computed literal (not a re-quantize of the code's own
+        # expression) so the assertion is an independent oracle.
+        assert result.periodic_contribution == Decimal("269.23")
 
     def test_transfer_contributions_averaged(self):
         """Transfer contributions averaged across distinct periods with transfers."""
@@ -151,8 +152,8 @@ class TestCalculateInvestmentInputs:
         assert result.employer_params is not None
         assert result.employer_params["type"] == "flat_percentage"
         assert result.employer_params["flat_percentage"] == Decimal("0.05")
-        gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
-        assert result.employer_params["gross_biweekly"] == gross
+        # $100,000 / 26 = $3846.153... -> $3846.15 (hand-computed literal).
+        assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
 
     def test_employer_match(self):
         """Employer match type populates match_percentage and cap fields."""
@@ -269,8 +270,8 @@ class TestCalculateInvestmentInputs:
             salary_gross_biweekly=Decimal("3846.15"),
         )
 
-        expected_gross = (Decimal("120000") / 26).quantize(Decimal("0.01"))
-        assert result.employer_params["gross_biweekly"] == expected_gross
+        # $120,000 / 26 = $4615.384... -> $4615.38 (hand-computed literal).
+        assert result.employer_params["gross_biweekly"] == Decimal("4615.38")
 
     def test_no_employer_when_type_none(self):
         """Employer type 'none' produces employer_params=None."""
@@ -334,8 +335,8 @@ class TestCalculateInvestmentInputs:
         assert result.periodic_contribution == Decimal("0")
         # Employer params are still populated (the match params exist even if contribution is 0)
         assert result.employer_params is not None
-        expected_gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
-        assert result.gross_biweekly == expected_gross
+        # $100,000 / 26 = $3846.153... -> $3846.15 (hand-computed literal).
+        assert result.gross_biweekly == Decimal("3846.15")
 
     def test_negative_deduction_amount(self):
         """Negative flat deduction amount is accepted without validation.
@@ -539,9 +540,9 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[], periods=periods,
         )
-        gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
-        expected = (gross * Decimal("0.07")).quantize(Decimal("0.01"))
-        assert result[0].amount == expected
+        # 7% of ($100,000 / 26) = 7% of $3846.15 = $269.2305 -> $269.23
+        # (per the docstring); hand-computed literal, not a code mirror.
+        assert result[0].amount == Decimal("269.23")
 
     def test_is_confirmed_deduction_past(self):
         """Deduction for a past period: is_confirmed=True."""
@@ -668,9 +669,9 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[], periods=periods,
         )
-        gross = (Decimal("100000") / 26).quantize(Decimal("0.01"))
-        expected = Decimal("500.00") + (gross * Decimal("0.05")).quantize(Decimal("0.01"))
-        assert result[0].amount == expected
+        # $500 flat + 5% of $3846.15 = $500.00 + $192.3075 -> $500.00 +
+        # $192.31 = $692.31 (per the docstring); hand-computed literal.
+        assert result[0].amount == Decimal("692.31")
 
     def test_excluded_transaction_skipped(self):
         """Cancelled/credit transactions (excludes_from_balance) are skipped."""
