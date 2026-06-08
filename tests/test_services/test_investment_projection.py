@@ -12,6 +12,7 @@ from app.services.growth_engine import ContributionRecord
 from app.services.investment_projection import (
     build_contribution_timeline,
     calculate_investment_inputs,
+    current_period_transfer_contribution,
     InvestmentInputs,
 )
 
@@ -242,6 +243,58 @@ class TestCalculateInvestmentInputs:
             all_contributions=contributions, all_periods=periods, current_period=periods[3],
         )
         assert result.ytd_contributions == Decimal("1500")
+
+    def test_ytd_contributions_seed_excludes_current_period(self):
+        """deep-hunt #10: the engine seed YTD is STRICTLY BEFORE the current period.
+
+        Same setup as ``test_ytd_contributions_from_transfers``: five $500
+        contributions, current = periods[3] (id=4, start 2026-01-30).
+        Period 1 is in 2025 (different calendar year); periods 2-4 are in
+        2026 up to and including the current period.
+
+        * ``ytd_contributions`` (the displayed limit-card value, ``<=``)
+          sums periods 2, 3, 4 = $1,500 (unchanged).
+        * ``ytd_contributions_seed`` (the engine seed, ``<``) sums periods
+          2 and 3 only = $1,000 -- the current period's $500 is excluded
+          because the growth engine's own walk applies and counts it.
+          Seeding $1,500 instead would charge the current period against
+          the annual limit twice.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
+        )
+        periods = [
+            FakePeriod(id=1, start_date=date(2025, 12, 19), period_index=0),
+            FakePeriod(id=2, start_date=date(2026, 1, 2), period_index=1),
+            FakePeriod(id=3, start_date=date(2026, 1, 16), period_index=2),
+            FakePeriod(id=4, start_date=date(2026, 1, 30), period_index=3),
+            FakePeriod(id=5, start_date=date(2026, 2, 13), period_index=4),
+        ]
+        contributions = [
+            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=pid)
+            for pid in (1, 2, 3, 4, 5)
+        ]
+        result = calculate_investment_inputs(
+            investment_params=params, deductions=[],
+            all_contributions=contributions, all_periods=periods, current_period=periods[3],
+        )
+        assert result.ytd_contributions == Decimal("1500")          # <= current (display)
+        assert result.ytd_contributions_seed == Decimal("1000")     # < current (engine seed)
+
+    def test_ytd_contributions_seed_none_current_period(self):
+        """deep-hunt #10: a None current period yields a ZERO engine seed."""
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
+        )
+        contributions = [FakeContribution(estimated_amount=Decimal("500"), pay_period_id=1)]
+        periods = [FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)]
+        result = calculate_investment_inputs(
+            investment_params=params, deductions=[],
+            all_contributions=contributions, all_periods=periods, current_period=None,
+        )
+        assert result.ytd_contributions_seed == Decimal("0")
 
     def test_combined_deductions_and_transfers(self):
         """Deductions and contributions both add to periodic_contribution."""
@@ -839,3 +892,63 @@ class TestBuildContributionTimelineAnnualCap:
         assert [r.amount for r in result] == [
             Decimal("700.00"), Decimal("500.00"), Decimal("100.00"),
         ]
+
+
+class TestCurrentPeriodTransferContribution:
+    """deep-hunt #9: the current period's transfer contribution the seed must
+    remove before projecting.
+
+    This is the amount the entries-aware end-of-current balance already
+    contains AND the growth engine re-applies for the current period, so
+    subtracting exactly it (and nothing else) leaves the contribution
+    applied once without dropping any other current-period movement.
+    """
+
+    def test_sums_only_current_period_active_transfers(self):
+        """Sums effective_amount of active shadow contributions in the current period."""
+        current = FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1)
+        settled = FakeStatus(is_settled=True)
+        projected = FakeStatus(is_settled=False)
+        txns = [
+            FakeContribTransaction(Decimal("300.00"), 2, settled),    # current period
+            FakeContribTransaction(Decimal("200.00"), 2, projected),  # current period
+            FakeContribTransaction(Decimal("500.00"), 1, settled),    # other period -> excluded
+            FakeContribTransaction(Decimal("999.00"), 3, projected),  # other period -> excluded
+        ]
+        # 300 + 200 fall in period 2; periods 1 and 3 are excluded.
+        assert current_period_transfer_contribution(txns, current) == Decimal("500.00")
+
+    def test_excludes_cancelled_or_credit(self):
+        """Cancelled / credit transactions (excludes_from_balance) are not summed.
+
+        This matches both what ``balance_calculator`` counts into the
+        balance and what ``build_contribution_timeline`` re-applies, so the
+        subtraction cancels exactly.
+        """
+        current = FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1)
+        cancelled = FakeStatus(is_settled=False, excludes_from_balance=True)
+        projected = FakeStatus(is_settled=False)
+        txns = [
+            FakeContribTransaction(Decimal("400.00"), 2, projected),  # counted
+            FakeContribTransaction(Decimal("999.00"), 2, cancelled),  # excluded
+        ]
+        assert current_period_transfer_contribution(txns, current) == Decimal("400.00")
+
+    def test_none_current_period_returns_zero(self):
+        """A None current period yields ZERO (no subtraction)."""
+        settled = FakeStatus(is_settled=True)
+        txns = [FakeContribTransaction(Decimal("400.00"), 2, settled)]
+        assert current_period_transfer_contribution(txns, None) == Decimal("0")
+
+    def test_no_current_period_transfer_returns_zero(self):
+        """No transfer in the current period -> ZERO.
+
+        Deduction-funded or expense-only accounts have nothing to subtract,
+        so the seed stays at the full end-of-current balance and the engine
+        applies the deduction (not a transaction) once for the current
+        period.
+        """
+        current = FakePeriod(id=5, start_date=date(2026, 2, 13), period_index=4)
+        settled = FakeStatus(is_settled=True)
+        txns = [FakeContribTransaction(Decimal("400.00"), 1, settled)]  # different period
+        assert current_period_transfer_contribution(txns, current) == Decimal("0")

@@ -31,11 +31,27 @@ TWO_PLACES = Decimal("0.01")
 
 @dataclass
 class InvestmentInputs:
-    """All inputs needed for growth_engine.project_balance()."""
+    """All inputs needed for growth_engine.project_balance().
+
+    ``ytd_contributions`` and ``ytd_contributions_seed`` are two YTD views
+    of the same contribution stream that differ only on the current period
+    (deep-quality-hunt #10):
+
+    * ``ytd_contributions`` -- contributions this calendar year *through*
+      the current period (``<=``).  This is the displayed limit-card value.
+    * ``ytd_contributions_seed`` -- contributions this calendar year
+      *strictly before* the current period (``<``).  This is the
+      ``ytd_contributions_start`` handed to the growth engine, whose own
+      per-period walk then applies and counts the current period's
+      contribution against the limit.  Seeding the through-current value
+      instead would charge the current period against the annual limit
+      twice.  The two views converge at the engine's current-period row.
+    """
     periodic_contribution: Decimal
     employer_params: Optional[dict]
     annual_contribution_limit: Optional[Decimal]
     ytd_contributions: Decimal
+    ytd_contributions_seed: Decimal
     gross_biweekly: Decimal
 
 
@@ -248,13 +264,62 @@ def _employer_params(investment_params, gross_biweekly):
     }
 
 
-def _ytd_contributions(all_contributions, all_periods, current_period):
-    """Sum year-to-date contributions from shadow income transactions.
+def _current_year_period_ids(all_periods, current_period, *, inclusive):
+    """Current-calendar-year period ids up to the current period.
 
-    Sums ``estimated_amount`` for active contributions whose pay period
-    falls in the current calendar year up to and including
-    ``current_period``.  Uses the same status filter as
-    ``_average_transfer_contribution``.
+    ``inclusive`` controls the current period itself: ``True`` keeps it
+    (``<=``, the through-current YTD shown on the limit card); ``False``
+    drops it (``<``, the strictly-before seed handed to the growth
+    engine).  Sharing one builder keeps the two YTD windows from drifting
+    (deep-quality-hunt #10).
+
+    Args:
+        all_periods:    Period objects with .id and .start_date.
+        current_period: The current period object (caller guards None).
+        inclusive:      Keyword-only; include the current period or not.
+
+    Returns:
+        The set of matching ``period_id`` values.
+    """
+    year = current_period.start_date.year
+    boundary = current_period.start_date
+    return {
+        p.id for p in all_periods
+        if p.start_date.year == year
+        and (p.start_date <= boundary if inclusive else p.start_date < boundary)
+    }
+
+
+def _sum_year_contributions(all_contributions, period_ids):
+    """Sum ``estimated_amount`` of active contributions in ``period_ids``.
+
+    Active = passes the centralized ``status_contributes_to_balance``
+    filter (the same rule ``_average_transfer_contribution`` uses).  The
+    ``estimated_amount`` accessor matches the rest of this inputs builder
+    (the estimated-vs-effective alignment, deep-quality-hunt #11, is a
+    separate decision that cross-references audit finding F-027 S18).
+
+    Args:
+        all_contributions: Shadow income transactions for one account
+                           (.estimated_amount, .pay_period_id, .status).
+        period_ids:        The period_id set to sum over.
+
+    Returns:
+        The contribution total (Decimal).
+    """
+    total = ZERO
+    for t in all_contributions:
+        if t.pay_period_id in period_ids and status_contributes_to_balance(t):
+            total += Decimal(str(t.estimated_amount))
+    return total
+
+
+def _ytd_contributions(all_contributions, all_periods, current_period):
+    """Sum year-to-date contributions THROUGH the current period (``<=``).
+
+    The displayed limit-card YTD value.  Sums ``estimated_amount`` for
+    active contributions whose pay period falls in the current calendar
+    year up to and including ``current_period``.
 
     Args:
         all_contributions: Shadow income transactions for one account
@@ -268,19 +333,37 @@ def _ytd_contributions(all_contributions, all_periods, current_period):
     """
     if current_period is None:
         return ZERO
+    period_ids = _current_year_period_ids(
+        all_periods, current_period, inclusive=True,
+    )
+    return _sum_year_contributions(all_contributions, period_ids)
 
-    current_year = current_period.start_date.year
-    ytd_period_ids = {
-        p.id for p in all_periods
-        if p.start_date.year == current_year
-        and p.start_date <= current_period.start_date
-    }
-    ytd_contributions = ZERO
-    for t in all_contributions:
-        if (t.pay_period_id in ytd_period_ids
-                and status_contributes_to_balance(t)):
-            ytd_contributions += Decimal(str(t.estimated_amount))
-    return ytd_contributions
+
+def _ytd_contributions_seed(all_contributions, all_periods, current_period):
+    """Sum year-to-date contributions STRICTLY BEFORE the current period (``<``).
+
+    The ``ytd_contributions_start`` seed handed to the growth engine.
+    The engine's per-period walk then applies and counts the current
+    period's own contribution against the annual limit, so seeding the
+    through-current value (:func:`_ytd_contributions`) instead would
+    charge the current period twice (deep-quality-hunt #10).
+
+    Args:
+        all_contributions: Shadow income transactions for one account
+                           (.estimated_amount, .pay_period_id, .status).
+        all_periods:       Period objects with .id and .start_date.
+        current_period:    The current period object, or None.
+
+    Returns:
+        The strictly-before-current YTD total (Decimal); ZERO when
+        current_period is None.
+    """
+    if current_period is None:
+        return ZERO
+    period_ids = _current_year_period_ids(
+        all_periods, current_period, inclusive=False,
+    )
+    return _sum_year_contributions(all_contributions, period_ids)
 
 
 def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -332,6 +415,8 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
         annual_contribution_limit=getattr(
             investment_params, "annual_contribution_limit", None),
         ytd_contributions=_ytd_contributions(
+            all_contributions, all_periods, current_period),
+        ytd_contributions_seed=_ytd_contributions_seed(
             all_contributions, all_periods, current_period),
         gross_biweekly=gross_biweekly,
     )
@@ -394,6 +479,50 @@ def _deduction_contribution_records(deductions, periods, pct_id, today):
             is_confirmed=period.start_date < today,
         ))
     return records
+
+
+def current_period_transfer_contribution(contribution_transactions, current_period):
+    """Sum the effective contribution the current period's transfers add.
+
+    These shadow income transactions are BOTH counted in the entries-aware
+    end-of-current-period balance (``balance_calculator._income_amount``
+    uses ``effective_amount``) AND re-applied by the growth engine when the
+    projection window includes the current period
+    (:func:`build_contribution_timeline` Path 2, the same
+    ``effective_amount``).  Subtracting this sum from the end-of-current
+    seed cancels exactly that double-count (deep-quality-hunt #9 / #14)
+    while preserving every OTHER current-period balance movement -- a
+    withdrawal, a fee, an entries-aware envelope expense -- which the
+    engine never re-creates, so a blunter "re-anchor to the prior period"
+    seed would silently drop them.
+
+    Deductions are intentionally NOT summed here: they are not budget
+    transactions, so they are absent from the balance and must be applied
+    fresh by the engine for the current period (the engine's own walk does
+    that via the timeline's Path 1).
+
+    Args:
+        contribution_transactions: Shadow income Transaction objects for
+            one account (.effective_amount, .pay_period_id, .status).
+        current_period: The current period object, or None.
+
+    Returns:
+        The effective-amount sum of active
+        (``status_contributes_to_balance``) shadow contributions whose
+        ``pay_period_id`` is the current period; ZERO when current_period
+        is None.
+    """
+    if current_period is None:
+        return ZERO
+    total = ZERO
+    for txn in contribution_transactions:
+        if (txn.pay_period_id == current_period.id
+                and status_contributes_to_balance(txn)):
+            amount = txn.effective_amount
+            if not isinstance(amount, Decimal):
+                amount = Decimal(str(amount))
+            total += amount
+    return total
 
 
 def build_contribution_timeline(

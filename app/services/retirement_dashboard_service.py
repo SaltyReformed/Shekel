@@ -36,7 +36,10 @@ from app.services import (
     pension_calculator,
     retirement_gap_calculator,
 )
-from app.services.investment_projection import adapt_deductions
+from app.services.investment_projection import (
+    adapt_deductions,
+    current_period_transfer_contribution,
+)
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_accounts,
@@ -187,8 +190,11 @@ class _ProjectionBatch:
             as the employer-match cap basis.
         synthetic_periods: Projection periods from today to the planned
             retirement date (empty when no horizon is set).
-        balance_map: Canonical entries-aware current balance keyed by
-            account ID.
+        balance_map: Canonical entries-aware END-of-current-period balance
+            keyed by account ID (the displayed current balance).  The
+            forward-projection seed is derived per account in
+            :func:`_project_one_account` by removing the current period's
+            own transfer contribution (deep-quality-hunt #14).
     """
 
     deductions_by_account: dict[int, list[PaycheckDeduction]]
@@ -792,9 +798,12 @@ def _resolve_current_balances(
     Uses :func:`balance_resolver.balances_for` (E-25 / CRIT-01 / F-009 /
     R-1: Commit 8) so each account's "current balance" input to the gap
     calculation matches the figure rendered on the grid and the
-    /investment dashboard for the same inputs.  Falls back to the stored
-    anchor balance when no baseline scenario exists, there are no
-    periods, or the account's anchor period is unset.
+    /investment dashboard for the same inputs.  This is the
+    END-of-current-period balance; the forward-projection seed is derived
+    from it per account in :func:`_project_one_account` by removing the
+    current period's own transfer contribution (deep-quality-hunt #14).
+    Falls back to the stored anchor balance when no baseline scenario
+    exists, there are no periods, or the account's anchor period is unset.
 
     Args:
         ctx: The read-only projection context.
@@ -871,6 +880,16 @@ def _project_one_account(
             t for t in batch.contributions
             if t.account_id == acct.id
         ]
+        # Seed the forward projection from the end-of-current balance with
+        # the current period's own transfer contribution removed: the
+        # projection window includes the current period and the engine
+        # re-applies that contribution, so subtracting it first leaves it
+        # applied once.  Other current-period balance movements stay in the
+        # seed because the engine never re-creates them (deep-quality-hunt
+        # #14).
+        seed = balance - current_period_transfer_contribution(
+            acct_contributions, ctx.current_period,
+        )
         inputs = build_investment_projection_inputs(
             params, adapted_deductions, acct_contributions,
             ctx.all_periods, ctx.current_period, batch.salary_gross_biweekly,
@@ -882,13 +901,13 @@ def _project_one_account(
         )
         effective_return = annual_return
         proj = growth_engine.project_balance(
-            current_balance=balance,
+            current_balance=seed,
             assumed_annual_return=annual_return,
             periods=projection_periods,
             periodic_contribution=inputs.periodic_contribution,
             employer_params=inputs.employer_params,
             annual_contribution_limit=inputs.annual_contribution_limit,
-            ytd_contributions_start=inputs.ytd_contributions,
+            ytd_contributions_start=inputs.ytd_contributions_seed,
         )
         if proj:
             projected_balance = proj[-1].end_balance
