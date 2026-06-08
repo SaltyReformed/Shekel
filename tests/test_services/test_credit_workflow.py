@@ -700,6 +700,71 @@ class TestNegativePaths:
             )
             assert payback_count == 1
 
+    def test_mark_as_credit_idempotency_ignores_soft_deleted_payback(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A soft-deleted payback is not returned by the idempotency gate (#58).
+
+        ``uq_transactions_credit_payback_unique`` is partial on
+        ``is_deleted = FALSE``, so a soft-deleted payback may legally
+        coexist with a fresh one.  The idempotency lookup in
+        ``mark_as_credit`` must therefore exclude soft-deleted rows: a
+        source still in Credit whose only payback has been soft-deleted
+        has no live payback, so re-marking must NOT return the dead row.
+        With the ``is_deleted`` filter the lookup returns ``None`` and
+        the already-not-Projected guard rejects the re-mark loudly
+        instead of resurrecting an invisible payback.
+        """
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+
+            # Soft-delete the only payback while the source stays Credit --
+            # the latent state the partial unique index anticipates.
+            payback.is_deleted = True
+            db.session.flush()
+
+            # Without the filter this returned the soft-deleted payback as
+            # idempotent "success"; with it, the source is Credit with no
+            # live payback, so the "only projected" guard fires.
+            with pytest.raises(ValidationError, match="Cannot mark a 'Credit'"):
+                credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+
+    def test_unmark_credit_ignores_soft_deleted_payback(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """unmark_credit does not hard-delete a soft-deleted payback (#58).
+
+        The payback lookup in ``unmark_credit`` must exclude soft-deleted
+        rows to match the partial unique index.  When a source is Credit
+        but its only payback has already been soft-deleted, unmark must
+        revert the source to Projected and leave the soft-deleted payback
+        untouched (preserved for the audit trail) rather than
+        hard-deleting it as if it were the live payback.
+        """
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+            payback_id = payback.id
+
+            payback.is_deleted = True
+            db.session.flush()
+
+            credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+
+            # Source reverted to Projected.
+            assert txn.status.name == "Projected"
+
+            # The soft-deleted payback is preserved (NOT hard-deleted):
+            # with the filter the lookup returns None so nothing is
+            # deleted; without it the dead row would be hard-deleted.
+            survived = db.session.get(Transaction, payback_id)
+            assert survived is not None
+            assert survived.is_deleted is True
+
     def test_carry_forward_same_period_behavior(self, app, db, seed_user, seed_periods):
         """carry_forward with source == target returns 0 without modifying transactions.
 

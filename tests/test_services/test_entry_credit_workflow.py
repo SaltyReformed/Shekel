@@ -303,6 +303,43 @@ class TestSyncEntryPayback:
             # Only credit entries count: 100 + 50 = 150.
             assert payback.estimated_amount == Decimal("150.00")
 
+    def test_sync_ignores_soft_deleted_payback_and_creates_fresh(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """sync excludes a soft-deleted payback and takes the CREATE branch (#58).
+
+        The existing-payback lookup must filter ``is_deleted == False`` to
+        match the partial unique index.  When the prior payback was
+        soft-deleted but credit entries still exist, sync must take the
+        CREATE branch and build a fresh live payback rather than
+        resurrecting and mutating the soft-deleted one.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            self._create_credit_entry(txn, user, "100.00")
+            first = sync_entry_payback(txn.id, user.id)
+            first_id = first.id
+
+            # Soft-delete the payback but keep the credit entry live.
+            first.is_deleted = True
+            db.session.flush()
+
+            second = sync_entry_payback(txn.id, user.id)
+
+            # A NEW live payback was created (CREATE branch), not the dead
+            # one resurrected: without the filter the lookup returned the
+            # soft-deleted row and the UPDATE branch reused its id.
+            assert second is not None
+            assert second.id != first_id
+            assert second.is_deleted is False
+            assert second.estimated_amount == Decimal("100.00")
+
+            # The soft-deleted payback is left untouched for the audit trail.
+            old = db.session.get(Transaction, first_id)
+            assert old.is_deleted is True
+
     # ---- Defense-in-depth: ownership and not-found guards ----
 
     def test_sync_nonexistent_transaction_raises(self, app, db, seed_user):

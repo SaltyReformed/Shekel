@@ -112,6 +112,33 @@ def lock_source_transaction_for_payback(
     return txn
 
 
+def get_active_payback(source_txn_id: int) -> Transaction | None:
+    """Return the live (non-soft-deleted) CC payback for a source txn.
+
+    The single definition of "the payback for this transaction," shared
+    by the mark / unmark / entry-sync paths so they cannot disagree on
+    which row counts.  The ``is_deleted == False`` filter mirrors the
+    partial unique index ``uq_transactions_credit_payback_unique``
+    (partial on ``credit_payback_for_id IS NOT NULL AND is_deleted =
+    FALSE``) and the binding soft-delete query rule: a soft-deleted
+    payback is kept for the audit trail but must never be treated as the
+    live payback, so a re-mark after a soft-delete legally creates a
+    fresh active row instead of resurrecting the dead one.
+
+    Args:
+        source_txn_id: The ``id`` of the credit source transaction.
+
+    Returns:
+        The active payback :class:`Transaction`, or ``None`` when no
+        live payback exists for the source.
+    """
+    return (
+        db.session.query(Transaction)
+        .filter_by(credit_payback_for_id=source_txn_id, is_deleted=False)
+        .first()
+    )
+
+
 def mark_as_credit(transaction_id, user_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense.
 
@@ -185,11 +212,7 @@ def mark_as_credit(transaction_id, user_id):
     # (D6-09 / MED-02) so the idempotency gate shares one definition
     # with ``unmark_credit`` and ``entry_service.create_entry``.
     if is_credit(txn):
-        existing_payback = (
-            db.session.query(Transaction)
-            .filter_by(credit_payback_for_id=txn.id)
-            .first()
-        )
+        existing_payback = get_active_payback(txn.id)
         if existing_payback:
             return existing_payback
 
@@ -317,12 +340,9 @@ def unmark_credit(transaction_id, user_id):
     # Revert the original transaction's status.
     txn.status_id = projected_id
 
-    # Delete the auto-generated payback transaction.
-    payback = (
-        db.session.query(Transaction)
-        .filter_by(credit_payback_for_id=txn.id)
-        .first()
-    )
+    # Delete the auto-generated payback transaction (the live one only --
+    # a soft-deleted prior payback stays in place for the audit trail).
+    payback = get_active_payback(txn.id)
     deleted_payback_id = None
     if payback:
         deleted_payback_id = payback.id
