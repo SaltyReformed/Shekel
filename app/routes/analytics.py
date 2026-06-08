@@ -420,11 +420,11 @@ def _build_calendar_weeks(year, month, data, today):
                     and month == today.month
                     and day_num == today.day
                 )
-                income_total = sum(
-                    e.amount for e in entries if e.is_income
-                )
-                expense_total = sum(
-                    abs(e.amount) for e in entries if not e.is_income
+                # calendar_service folds the per-day income/expense totals
+                # (one rule, shared with the month headline); the route
+                # only renders them.
+                income_total, expense_total = data.day_totals.get(
+                    day_num, (Decimal("0"), Decimal("0")),
                 )
                 row.append({
                     "number": day_num,

@@ -100,7 +100,7 @@ class DayEntry:  # pylint: disable=too-many-instance-attributes
 class MonthSummary:  # pylint: disable=too-many-instance-attributes
     """Aggregated data for one calendar month.
 
-    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
     because this is a cohesive single-return aggregate -- one calendar
     month's summary -- whose fields are flat columns read together by the
     calendar surface: the month and year templates render the money fields
@@ -108,7 +108,10 @@ class MonthSummary:  # pylint: disable=too-many-instance-attributes
     row per month.  The three money fields are the month's headline
     numbers read individually, not a sub-object read as a unit, so there is
     no section to extract; nesting would fragment one contract across the
-    templates and the exporter for no design gain.
+    templates and the exporter for no design gain.  ``day_totals`` is the
+    per-day income/expense map (parallel to ``day_entries``) the analytics
+    calendar route renders directly, so the route does no money math of
+    its own.
     """
 
     year: int
@@ -119,6 +122,7 @@ class MonthSummary:  # pylint: disable=too-many-instance-attributes
     projected_end_balance: Decimal
     is_third_paycheck_month: bool
     day_entries: dict[int, list[DayEntry]]
+    day_totals: dict[int, tuple[Decimal, Decimal]]
     paycheck_days: list[int]
 
 
@@ -354,16 +358,45 @@ def _build_day_entry(
     )
 
 
+def _fold_income_expense(
+    entries: list[DayEntry],
+) -> tuple[Decimal, Decimal]:
+    """Fold a collection of day entries into an (income, expense) pair.
+
+    The single income/expense sign-fold for the calendar surface: income
+    is the signed sum of the ``is_income`` entries; expense is the sum of
+    ``abs(amount)`` over the non-income entries.  Both legs seed at
+    ``Decimal("0")`` so an empty or all-one-sign collection yields a
+    ``Decimal``, never an int ``0`` -- money is always Decimal.  Applied
+    per day to build :attr:`MonthSummary.day_totals`, from which the
+    month headline totals are then summed, so the per-day cells the
+    analytics calendar renders and the month total derive from one rule
+    and cannot drift.
+
+    Args:
+        entries: The :class:`DayEntry` records for one day (or any
+            collection to fold); each carries ``amount`` and ``is_income``.
+
+    Returns:
+        ``(income, expense)`` as a pair of ``Decimal`` values.
+    """
+    income = sum((e.amount for e in entries if e.is_income), Decimal("0"))
+    expense = sum(
+        (abs(e.amount) for e in entries if not e.is_income), Decimal("0"),
+    )
+    return income, expense
+
+
 def _assign_transactions_to_days(
     transactions: list[Transaction],
     year: int,
     month: int,
     large_threshold: int,
-) -> tuple[dict[int, list[DayEntry]], Decimal, Decimal]:
-    """Assign transactions to calendar days and compute totals.
+) -> tuple[dict[int, list[DayEntry]], dict[int, tuple[Decimal, Decimal]]]:
+    """Assign transactions to calendar days and fold per-day totals.
 
-    Returns the day_map, total_income, and total_expenses for the
-    target month.  Deduplicates by transaction ID to prevent
+    Returns the day_map and a per-day ``{day: (income, expense)}`` totals
+    map for the target month.  Deduplicates by transaction ID to prevent
     double-counting when periods overlap month boundaries.
 
     Per F-3 / W-065, every transaction is re-checked against
@@ -383,8 +416,6 @@ def _assign_transactions_to_days(
 
     seen_ids: set[int] = set()
     day_map: dict[int, list[DayEntry]] = defaultdict(list)
-    total_income = Decimal("0")
-    total_expenses = Decimal("0")
 
     for txn in transactions:
         if txn.id in seen_ids:
@@ -399,16 +430,16 @@ def _assign_transactions_to_days(
         entry = _build_day_entry(txn, income_type_id, threshold)
         day_map[display_day].append(entry)
 
-        if entry.is_income:
-            total_income += entry.amount
-        else:
-            total_expenses += abs(entry.amount)
-
     # Sort each day's entries by abs(amount) descending.
     for day in day_map:
         day_map[day].sort(key=lambda e: abs(e.amount), reverse=True)
 
-    return dict(day_map), total_income, total_expenses
+    day_totals = {
+        day: _fold_income_expense(entries)
+        for day, entries in day_map.items()
+    }
+
+    return dict(day_map), day_totals
 
 
 @dataclass(frozen=True)
@@ -446,8 +477,17 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
     Returns:
         A MonthSummary for the target month.
     """
-    day_entries, total_income, total_expenses = _assign_transactions_to_days(
+    day_entries, day_totals = _assign_transactions_to_days(
         ctx.transactions, ctx.year, month, ctx.large_threshold,
+    )
+    # Month headline totals are the sum of the per-day folds, so the
+    # month and per-day numbers derive from the one _fold_income_expense
+    # rule and cannot disagree.
+    total_income = sum(
+        (income for income, _expense in day_totals.values()), Decimal("0"),
+    )
+    total_expenses = sum(
+        (expense for _income, expense in day_totals.values()), Decimal("0"),
     )
 
     end_balance = _compute_month_end_balance(ctx.account, ctx.year, month, ctx.scenario)
@@ -468,6 +508,7 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
         projected_end_balance=end_balance,
         is_third_paycheck_month=month in third_paycheck_months,
         day_entries=day_entries,
+        day_totals=day_totals,
         paycheck_days=paycheck_days,
     )
 
