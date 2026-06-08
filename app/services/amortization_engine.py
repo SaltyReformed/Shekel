@@ -22,7 +22,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.utils.dates import months_between
-from app.utils.money import round_money
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,7 @@ def calculate_monthly_payment(
     if annual_rate <= 0:
         return (principal / remaining_months).quantize(TWO_PLACES, ROUND_HALF_UP)
 
-    monthly_rate = annual_rate / 12
+    monthly_rate = annual_rate / MONTHS_PER_YEAR
     factor = (1 + monthly_rate) ** remaining_months
     payment = principal * (monthly_rate * factor) / (factor - 1)
     return payment.quantize(TWO_PLACES, ROUND_HALF_UP)
@@ -509,7 +509,7 @@ def _recast_for_rate_change(
     if period_rate != state.annual_rate:
         state.annual_rate = period_rate
         state.monthly_rate = (
-            period_rate / 12 if period_rate > 0 else Decimal("0")
+            period_rate / MONTHS_PER_YEAR if period_rate > 0 else Decimal("0")
         )
         state.monthly_payment = calculate_monthly_payment(
             state.balance, period_rate, months_left,
@@ -621,7 +621,7 @@ def project_forward(
         monthly_payment=inputs.contractual_payment,
         annual_rate=inputs.annual_rate,
         monthly_rate=(
-            inputs.annual_rate / 12 if inputs.annual_rate > 0 else Decimal("0")
+            inputs.annual_rate / MONTHS_PER_YEAR if inputs.annual_rate > 0 else Decimal("0")
         ),
     )
 
