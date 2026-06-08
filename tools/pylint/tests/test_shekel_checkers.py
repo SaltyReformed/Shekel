@@ -18,7 +18,13 @@ from shekel_checkers import (
 
 
 class TestShekelMoneyChecker(CheckerTestCase):
-    """``shekel-decimal-from-float``: Decimal must be built from strings, not floats."""
+    """The ``shekel-money`` checker: two monetary call rules.
+
+    ``shekel-decimal-from-float`` -- Decimal must be built from strings, not
+    floats; ``shekel-bare-money-quantize`` -- money must be rounded through
+    ``round_money`` (explicit ROUND_HALF_UP), never a bare ``.quantize()`` that
+    falls back to banker's rounding.
+    """
 
     CHECKER_CLASS = ShekelMoneyChecker
 
@@ -79,6 +85,67 @@ class TestShekelMoneyChecker(CheckerTestCase):
     def test_ignores_non_decimal_call(self) -> None:
         """A float literal passed to some other callable is not this checker's concern."""
         node = astroid.extract_node("SomeWidget(0.1)")
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    # ── shekel-bare-money-quantize (W9904) ──────────────────────────
+
+    def test_flags_bare_quantize_decimal_literal(self) -> None:
+        """amount.quantize(Decimal(\"0.01\")) rounds money with banker's default; flagged."""
+        node = astroid.extract_node('amount.quantize(Decimal("0.01"))')
+        with self.assertAddsMessages(
+            MessageTest("shekel-bare-money-quantize", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_bare_quantize_two_places_constant(self) -> None:
+        """amount.quantize(TWO_PLACES) -- the named cents constant -- is flagged."""
+        node = astroid.extract_node("amount.quantize(TWO_PLACES)")
+        with self.assertAddsMessages(
+            MessageTest("shekel-bare-money-quantize", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_bare_quantize_underscore_cents_constant(self) -> None:
+        """amount.quantize(_TWO_PLACES) -- the private redeclaration form -- is flagged."""
+        node = astroid.extract_node("total.quantize(_TWO_PLACES)")
+        with self.assertAddsMessages(
+            MessageTest("shekel-bare-money-quantize", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_quantize_with_rounding_keyword(self) -> None:
+        """quantize(CENTS, rounding=ROUND_HALF_UP) selects the mode explicitly; not flagged."""
+        node = astroid.extract_node(
+            "amount.quantize(CENTS, rounding=ROUND_HALF_UP)",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_quantize_with_positional_rounding(self) -> None:
+        """quantize(TWO_PLACES, ROUND_HALF_UP) -- positional mode -- is not flagged."""
+        node = astroid.extract_node("amount.quantize(TWO_PLACES, ROUND_HALF_UP)")
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_bare_quantize_non_cents_quantum(self) -> None:
+        """A bare quantize of a one-decimal percentage is not money; not flagged."""
+        node = astroid.extract_node('pct.quantize(Decimal("0.1"))')
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_bare_quantize_named_percentage_quantum(self) -> None:
+        """A bare quantize of a non-cents named quantum (_PCT_QUANTUM) is not flagged."""
+        node = astroid.extract_node("rate.quantize(_PCT_QUANTUM)")
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_round_money_helper_call(self) -> None:
+        """round_money(x) is the sanctioned boundary helper, not a bare quantize; not flagged."""
+        node = astroid.extract_node("round_money(amount)")
         with self.assertNoMessages():
             self.checker.visit_call(node)
 
