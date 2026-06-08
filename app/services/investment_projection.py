@@ -22,6 +22,7 @@ from app import ref_cache
 from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
 from app.utils.balance_predicates import status_contributes_to_balance
+from app.utils.deduction_cap import cap_period_amount
 
 
 ZERO = Decimal("0")
@@ -40,7 +41,8 @@ class InvestmentInputs:
 
 AdaptedDeduction = namedtuple(
     "AdaptedDeduction",
-    ["amount", "calc_method_id", "annual_salary", "pay_periods_per_year"],
+    ["amount", "calc_method_id", "annual_salary", "pay_periods_per_year",
+     "annual_cap"],
 )
 
 
@@ -71,6 +73,7 @@ def adapt_deductions(raw_deductions: list) -> list[AdaptedDeduction]:
             calc_method_id=ded.calc_method_id,
             annual_salary=profile.annual_salary,
             pay_periods_per_year=profile.pay_periods_per_year or 26,
+            annual_cap=ded.annual_cap,
         ))
     return result
 
@@ -102,13 +105,50 @@ def _compute_deduction_per_period(deduction, pct_id):
     return amt, gross
 
 
+def _annual_cap_averaged(per_period_amount, deduction):
+    """Per-period amount evenly throttled to the deduction's annual cap.
+
+    The periodic contribution is the growth engine's fallback for periods with
+    no dated ``ContributionRecord`` -- in practice the synthetic long-horizon
+    chart, whose generated dates never match a real period.  A capped deduction
+    must not contribute more than ``annual_cap`` per calendar year there either,
+    so the per-period amount is the cap spread evenly across the year:
+    ``min(amount * ppy, annual_cap) / ppy``.  This even-spread is the
+    long-horizon analogue of the front-loaded per-period timeline
+    (:func:`_deduction_contribution_records`): both hold the annual total at the
+    cap and differ only in WITHIN-year timing, which a multi-year projection
+    does not surface.  ``annual_cap`` is read via ``getattr`` so a minimal
+    deduction-like fake (no cap field) is treated as uncapped.
+
+    Args:
+        per_period_amount: Decimal uncapped per-period contribution.
+        deduction:         The deduction-like object (.pay_periods_per_year,
+                           optionally .annual_cap).
+
+    Returns:
+        The capped per-period amount (Decimal); unchanged when uncapped.
+    """
+    annual_cap = getattr(deduction, "annual_cap", None)
+    if annual_cap is None:
+        return per_period_amount
+    pay_per_year = deduction.pay_periods_per_year or 26
+    annual_capped = min(per_period_amount * pay_per_year, Decimal(str(annual_cap)))
+    return (annual_capped / pay_per_year).quantize(TWO_PLACES)
+
+
 def _periodic_from_deductions(deductions, salary_gross_biweekly):
     """Sum the per-period contribution from paycheck deductions.
+
+    Each deduction's per-period amount is throttled to its calendar-year
+    ``annual_cap`` via :func:`_annual_cap_averaged` (deep-hunt #2) before
+    summing, so this fallback average respects the same cap the per-period
+    timeline enforces.
 
     Args:
         deductions:            List of deduction-like objects with
                                .amount, .calc_method_id, .annual_salary,
-                               .pay_periods_per_year.
+                               .pay_periods_per_year, and optionally
+                               .annual_cap.
         salary_gross_biweekly: Engine gross per pay period (Decimal or
                                None), used as the fallback gross when no
                                deduction supplied one.
@@ -125,7 +165,7 @@ def _periodic_from_deductions(deductions, salary_gross_biweekly):
     for ded in deductions:
         amt, gross = _compute_deduction_per_period(ded, pct_id)
         gross_biweekly = gross
-        periodic_contribution += amt
+        periodic_contribution += _annual_cap_averaged(amt, ded)
 
     # Use salary profile gross as fallback when no deductions provided one.
     if gross_biweekly == ZERO and salary_gross_biweekly is not None:
@@ -297,6 +337,65 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
     )
 
 
+def _deduction_contribution_records(deductions, periods, pct_id, today):
+    """Per-period deduction ContributionRecords, each clamped to its annual cap.
+
+    Deductions contribute the same raw amount every period; each is clamped to
+    its own calendar-year ``annual_cap`` (deep-hunt #2) through the shared
+    ``cap_period_amount`` so this timeline agrees with the net-pay path.  Cap
+    state is tracked per deduction and resets at each year boundary, mirroring
+    the growth engine's own year reset.
+
+    A record is emitted for every covered period -- even a fully-capped $0 --
+    so the growth engine applies the capped amount rather than the
+    periodic-average fallback a missing record would trigger.  ``annual_cap`` is
+    read via ``getattr`` so a minimal deduction-like fake (no cap field) is
+    treated as uncapped.
+
+    Args:
+        deductions: Deduction-like objects (see build_contribution_timeline).
+        periods:    Period objects with .start_date.
+        pct_id:     The ref ID for the PERCENTAGE calculation method.
+        today:      The date splitting confirmed (past) from projected periods.
+
+    Returns:
+        list[ContributionRecord] in period-start-date order; empty when no
+        deduction contributes a positive amount.
+    """
+    deduction_raws = [
+        (_compute_deduction_per_period(d, pct_id)[0],
+         getattr(d, "annual_cap", None))
+        for d in deductions
+    ]
+    if not any(raw > ZERO for raw, _ in deduction_raws):
+        return []
+
+    # (year, raw_cumulative) per deduction; None until its first period.
+    cap_state = [None] * len(deduction_raws)
+    records = []
+    for period in sorted(periods, key=lambda p: p.start_date):
+        period_year = period.start_date.year
+        period_total = ZERO
+        for i, (raw, annual_cap) in enumerate(deduction_raws):
+            if raw <= ZERO:
+                continue
+            prior = cap_state[i]
+            cumulative_before = (
+                prior[1] if prior is not None and prior[0] == period_year
+                else ZERO
+            )
+            period_total += cap_period_amount(raw, cumulative_before, annual_cap)
+            cap_state[i] = (period_year, cumulative_before + raw)
+        records.append(ContributionRecord(
+            contribution_date=period.start_date,
+            amount=period_total,
+            # Past periods are confirmed (the deduction was taken from the
+            # paycheck); future periods are projected.
+            is_confirmed=period.start_date < today,
+        ))
+    return records
+
+
 def build_contribution_timeline(
     deductions,
     contribution_transactions,
@@ -307,9 +406,11 @@ def build_contribution_timeline(
     Combines two contribution paths into a unified per-period timeline
     for the growth engine:
 
-    Path 1 -- Paycheck deductions: The same dollar amount every period.
-    Confirmation is date-based (past period = confirmed) because there
-    is no per-period transaction record for deductions.
+    Path 1 -- Paycheck deductions: The same raw amount every period, each
+    clamped to its own calendar-year ``annual_cap`` (deep-hunt #2) so this
+    timeline agrees with the net-pay path.  Confirmation is date-based (past
+    period = confirmed) because there is no per-period transaction record for
+    deductions.
 
     Path 2 -- Transfer-based contributions: Per-transaction amounts from
     shadow income transactions.  Confirmation is status-based
@@ -321,7 +422,9 @@ def build_contribution_timeline(
     Args:
         deductions:                 List of deduction-like objects with
                                     .amount, .calc_method_id,
-                                    .annual_salary, .pay_periods_per_year.
+                                    .annual_salary, .pay_periods_per_year,
+                                    and optionally .annual_cap (the
+                                    calendar-year ceiling; absent = uncapped).
         contribution_transactions:  List of shadow income Transaction
                                     objects (transfer_id IS NOT NULL)
                                     with .effective_amount, .pay_period_id,
@@ -342,22 +445,11 @@ def build_contribution_timeline(
     today = date.today()
     pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
 
-    # Path 1: Paycheck deductions -- same amount every period.
-    total_deduction_per_period = sum(
-        (_compute_deduction_per_period(d, pct_id)[0] for d in deductions),
-        ZERO,
+    # Path 1: Paycheck deductions -- same raw amount every period, each
+    # clamped to its own calendar-year cap.
+    records.extend(
+        _deduction_contribution_records(deductions, periods, pct_id, today)
     )
-
-    if total_deduction_per_period > ZERO:
-        for period in periods:
-            records.append(ContributionRecord(
-                contribution_date=period.start_date,
-                amount=total_deduction_per_period,
-                # Deduction-based: past periods are confirmed (the
-                # deduction was taken from the paycheck); future
-                # periods are projected.
-                is_confirmed=period.start_date < today,
-            ))
 
     # Path 2: Transfer-based contributions -- per-transaction amounts.
     period_by_id = {p.id: p for p in periods}

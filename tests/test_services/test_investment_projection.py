@@ -35,6 +35,8 @@ class FakeDeduction:
     calc_method_id: int
     annual_salary: Decimal
     pay_periods_per_year: int
+    # Calendar-year ceiling (PaycheckDeduction.annual_cap); None = uncapped.
+    annual_cap: Decimal | None = None
 
 
 @dataclass
@@ -103,6 +105,32 @@ class TestCalculateInvestmentInputs:
             all_contributions=[], all_periods=[current_period], current_period=current_period,
         )
         assert result.periodic_contribution == Decimal("500.00")
+
+    def test_capped_deduction_periodic_is_even_spread_annual_cap(self):
+        """A capped deduction's periodic average is the cap spread over the year.
+
+        The periodic contribution feeds the synthetic long-horizon chart's
+        fallback; a $600/period deduction ($15,600/yr) under a $1,000 cap
+        contributes the even-spread average $1,000 / 26 = $38.46 per period
+        (deep-hunt #2), not the uncapped $600.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
+        )
+        deductions = [FakeDeduction(
+            amount=Decimal("600.00"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            annual_cap=Decimal("1000.00"),
+        )]
+        current_period = FakePeriod(id=1, start_date=date(2026, 3, 5), period_index=4)
+        result = calculate_investment_inputs(
+            investment_params=params, deductions=deductions,
+            all_contributions=[], all_periods=[current_period], current_period=current_period,
+        )
+        # min(600 * 26, 1000) / 26 = 1000 / 26 = 38.4615... -> 38.46.
+        assert result.periodic_contribution == Decimal("38.46")
 
     def test_percentage_deduction(self):
         """Percentage deduction computed as gross_biweekly * rate."""
@@ -715,3 +743,99 @@ class TestBuildContributionTimeline:
             deductions=[], contribution_transactions=txns, periods=periods,
         )
         assert result == []
+
+
+class TestBuildContributionTimelineAnnualCap:
+    """The deduction-funded timeline honors each deduction's ``annual_cap``
+    (deep-hunt #2), matching the net-pay path: once a deduction's calendar-year
+    total reaches the cap it contributes $0 for the rest of the year, then
+    resumes the next January.  A fully-capped period still emits a $0 record so
+    the growth engine uses 0, not the uncapped periodic-average fallback.
+    """
+
+    def test_capped_deduction_clamps_then_emits_zero(self):
+        """$600/period under a $1000 cap: 600, 400, 0, 0 (a record per period)."""
+        deductions = [FakeDeduction(
+            amount=Decimal("600.00"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            annual_cap=Decimal("1000.00"),
+        )]
+        periods = [
+            FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
+            FakePeriod(id=3, start_date=date(2026, 1, 30), period_index=2),
+            FakePeriod(id=4, start_date=date(2026, 2, 13), period_index=3),
+        ]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        # A record for every period (the $0 ones override the periodic fallback).
+        assert [r.amount for r in result] == [
+            Decimal("600.00"), Decimal("400.00"), Decimal("0"), Decimal("0"),
+        ]
+        assert sum(r.amount for r in result) == Decimal("1000.00")
+
+    def test_cap_resets_next_calendar_year(self):
+        """The cap is calendar-year scoped: the new-year period starts fresh."""
+        deductions = [FakeDeduction(
+            amount=Decimal("600.00"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            annual_cap=Decimal("1000.00"),
+        )]
+        periods = [
+            FakePeriod(id=1, start_date=date(2026, 12, 4), period_index=0),
+            FakePeriod(id=2, start_date=date(2026, 12, 18), period_index=1),
+            FakePeriod(id=3, start_date=date(2027, 1, 1), period_index=2),
+        ]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        # 2026 caps at 600+400; 2027 resets -> full 600 again.
+        assert [r.amount for r in result] == [
+            Decimal("600.00"), Decimal("400.00"), Decimal("600.00"),
+        ]
+
+    def test_uncapped_deduction_unchanged(self):
+        """A None cap is a passthrough: full amount every period, no $0 record."""
+        deductions = [FakeDeduction(
+            amount=Decimal("600.00"), calc_method_id=_flat_id(),
+            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            annual_cap=None,
+        )]
+        periods = [
+            FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
+        ]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        assert [r.amount for r in result] == [
+            Decimal("600.00"), Decimal("600.00"),
+        ]
+
+    def test_one_capped_one_uncapped_summed_per_period(self):
+        """Per-period total sums each deduction's own capped amount."""
+        deductions = [
+            FakeDeduction(
+                amount=Decimal("600.00"), calc_method_id=_flat_id(),
+                annual_salary=Decimal("100000"), pay_periods_per_year=26,
+                annual_cap=Decimal("1000.00"),
+            ),
+            FakeDeduction(
+                amount=Decimal("100.00"), calc_method_id=_flat_id(),
+                annual_salary=Decimal("100000"), pay_periods_per_year=26,
+                annual_cap=None,
+            ),
+        ]
+        periods = [
+            FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
+            FakePeriod(id=3, start_date=date(2026, 1, 30), period_index=2),
+        ]
+        result = build_contribution_timeline(
+            deductions=deductions, contribution_transactions=[], periods=periods,
+        )
+        # Capped leg: 600, 400, 0.  Uncapped leg: 100 each.  Sum: 700, 500, 100.
+        assert [r.amount for r in result] == [
+            Decimal("700.00"), Decimal("500.00"), Decimal("100.00"),
+        ]
