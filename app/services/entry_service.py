@@ -634,7 +634,7 @@ def check_entry_date_in_period(
     return period.start_date <= entry_date <= period.end_date
 
 
-def clear_entries_for_anchor_true_up(owner_id: int) -> int:
+def clear_entries_for_anchor_true_up(owner_id: int, account_id: int) -> int:
     """Mark past-dated entries on projected parents as reconciled.
 
     Called from the checking-account anchor true-up routes.  The
@@ -647,7 +647,14 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
 
     Scope:
       - Entries whose parent transaction belongs to this owner
-        (via pay_period.user_id).
+        (via pay_period.user_id) AND sits on the trued-up account
+        (via transaction.account_id == account_id).  A true-up
+        declares the real balance of ONE specific checking account,
+        so it must not clear entries on the owner's other checking
+        accounts (accounts carry no per-type uniqueness -- a user may
+        hold more than one checking account).  Clearing them there
+        would drop those accounts' reservation without ever raising
+        their anchor, silently inflating their projected balance.
       - Parent transaction is not soft-deleted.
       - Parent transaction is in Projected status (settled parents
         are already excluded from the entry formula, so their entries
@@ -655,6 +662,12 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
       - Entry date is on or before today (future-dated entries cannot
         have posted to checking yet, so leave them uncleared).
       - Entry is_cleared is currently FALSE (no-op otherwise).
+
+    Not scoped by scenario_id: transactions are scenario-scoped, but
+    Phase 1 is baseline-only (every transaction lives in the single
+    baseline scenario), so account_id fully isolates the clear today.
+    When what-if scenarios land (Phase 3), the true-up routes must
+    thread an operating-scenario context in here too.
 
     Credit entries are included in the flip for consistency, but the
     balance calculator ignores is_cleared on credit entries, so this
@@ -666,6 +679,9 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
 
     Args:
         owner_id: The user_id whose entries should be reconciled.
+        account_id: The id of the checking account being trued up.
+            Only entries on transactions belonging to this account are
+            flipped.
 
     Returns:
         int -- number of entry rows updated.
@@ -688,6 +704,7 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
                 .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
                 .filter(
                     PayPeriod.user_id == owner_id,
+                    Transaction.account_id == account_id,
                     Transaction.is_deleted.is_(False),
                     is_projected_clause(Transaction),
                 )
@@ -705,6 +722,7 @@ def clear_entries_for_anchor_true_up(owner_id: int) -> int:
             EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP, BUSINESS,
             "Transaction entries cleared on anchor true-up",
             user_id=owner_id,
+            account_id=account_id,
             cleared_count=updated,
         )
 

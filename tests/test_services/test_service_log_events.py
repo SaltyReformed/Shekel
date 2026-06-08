@@ -559,7 +559,7 @@ class TestEntryServiceLogging:
             db.session.commit()
             with _LogCapture("app.services.entry_service") as cap:
                 count = entry_service.clear_entries_for_anchor_true_up(
-                    seed_user["user"].id,
+                    seed_user["user"].id, seed_user["account"].id,
                 )
 
         assert count == 1

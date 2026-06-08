@@ -110,7 +110,9 @@ def inline_anchor_update(account_id):
         checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
         try:
             if account.account_type_id == checking_type_id:
-                entry_service.clear_entries_for_anchor_true_up(current_user.id)
+                entry_service.clear_entries_for_anchor_true_up(
+                    current_user.id, account.id,
+                )
             db.session.commit()
             outcome = AnchorTrueUpOutcome.COMMITTED
         except StaleDataError:

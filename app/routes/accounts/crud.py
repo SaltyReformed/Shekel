@@ -364,7 +364,9 @@ def update_account(account_id):
     def _clear_anchor_entries_if_changed():
         """Clear checking entries on an anchor true-up (in-transaction step)."""
         if anchor_changed and account.account_type_id == checking_type_id:
-            entry_service.clear_entries_for_anchor_true_up(current_user.id)
+            entry_service.clear_entries_for_anchor_true_up(
+                current_user.id, account.id,
+            )
 
     # The clear-entries step must run inside the same stale-race guard as
     # the commit (it flushes and can itself raise StaleDataError).
