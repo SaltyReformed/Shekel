@@ -890,6 +890,53 @@ class TestPreviewRecurrence:
             # The foreign period was ignored -- same output as baseline.
             assert resp.data == baseline_resp.data
 
+    def test_create_recurring_template_rejects_other_users_start_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+        seed_second_user, seed_second_periods,
+    ):
+        """POST /templates rejects a foreign start_period on a recurring pattern.
+
+        deep-quality-hunt #21/#24: the create-path counterpart to the
+        preview IDOR test above.  The read-only preview route owner-gated
+        the start period for every pattern, but the PERSIST path's probe
+        used to run only for EVERY_N_PERIODS -- so a recurring template
+        (here "Every Period") wrote a foreign ``start_period_id`` onto its
+        RecurrenceRule unchecked, and ``recurrence_engine`` then read that
+        victim period's ``start_date`` as the generation boundary.  The
+        shared F-24 builder probe now rejects before any row is written;
+        this pins the persist path closed end-to-end (the sibling preview
+        test only proves the read path ignores the foreign period).
+        """
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            category = seed_user["categories"]["Rent"]
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
+
+            resp = auth_client.post("/templates", data={
+                "name": "Recurring IDOR Template",
+                "default_amount": "1500.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                "recurrence_pattern": str(every_period.id),
+                # Second user's period on a recurring (non-EVERY_N) pattern.
+                "start_period_id": str(seed_second_periods[0].id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid start period" in resp.data
+
+            # No template was persisted.
+            assert (
+                db.session.query(TransactionTemplate)
+                .filter_by(name="Recurring IDOR Template")
+                .first()
+            ) is None
+
     def test_preview_with_own_start_period(
         self, app, auth_client, seed_user, seed_periods_today,
     ):

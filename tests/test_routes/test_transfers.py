@@ -1836,6 +1836,57 @@ class TestOneTimeTransfer:
             )
             assert xfer_count == 0
 
+    def test_recurring_transfer_idor_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+        seed_second_user, seed_second_periods,
+    ):
+        """POST /transfers rejects a foreign start_period on a RECURRING pattern.
+
+        deep-quality-hunt #21/#24: before the universal probe, the
+        start_period ownership check ran ONLY for EVERY_N_PERIODS, so a
+        recurring pattern (here "Every Period") persisted a foreign
+        ``start_period_id`` unchecked -- and ``recurrence_engine`` then
+        read that victim period's ``start_date`` as the generation
+        boundary.  The sibling IDOR route test covers only the ONCE
+        pattern (which had a separate re-check), so this pins the persist
+        path closed end-to-end for a recurring pattern: the F-24 builder
+        probe rejects before any row is written.  A regression that
+        re-narrowed the probe to EVERY_N_PERIODS would reopen the IDOR on
+        this recurring persist path -- which the prior ONCE-only route
+        coverage (guarded by a separate re-check) did not exercise.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
+
+            response = auth_client.post("/transfers", data={
+                "name": "Recurring IDOR Attempt",
+                "default_amount": "100.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "recurrence_pattern": str(every_period.id),
+                # Second user's period on a recurring (non-EVERY_N) pattern.
+                "start_period_id": str(seed_second_periods[0].id),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid start period" in response.data
+
+            # Neither a template nor a transfer was persisted.
+            assert (
+                db.session.query(TransferTemplate)
+                .filter_by(user_id=seed_user["user"].id)
+                .count()
+            ) == 0
+            assert (
+                db.session.query(Transfer)
+                .filter_by(user_id=seed_user["user"].id)
+                .count()
+            ) == 0
+
 
 # ── Hard Delete Tests (5A.5-3) ─────────────────────────────────────
 
