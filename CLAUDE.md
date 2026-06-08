@@ -101,7 +101,7 @@ flask run
 python scripts/build_test_template.py         # first-time setup; rebuild after migrations
 
 # Lint (custom checkers load via .pylintrc; same gate CI enforces)
-pylint app/ --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare
+pylint app/ --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize
 
 # Database migrations
 flask db migrate -m "description"
@@ -141,7 +141,7 @@ A task is NOT complete until ALL of these are true:
 1. Code is implemented in full -- no TODOs, no placeholders.
 2. Docstrings and comments per coding standards.
 3. `pylint app/` is clean: no new messages, and
-   `--fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare` passes (the per-edit and Stop
+   `--fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize` passes (the per-edit and Stop
    hooks enforce this in-loop).
 4. Targeted tests pass for changed files.
 5. Full suite passes.
