@@ -9,7 +9,6 @@ does NOT duplicate their logic.
 Pure aggregation service -- no Flask imports, no database writes.
 """
 
-import logging
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -32,8 +31,6 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 from app.utils.money import percent_complete
-
-logger = logging.getLogger(__name__)
 
 _TWO_PLACES = Decimal("0.01")
 _HUNDRED = Decimal("100")
@@ -572,22 +569,30 @@ def _get_savings_goals(user_id: int) -> list[dict]:
 def _get_debt_summary(user_id: int) -> dict | None:
     """Get debt summary by calling the savings dashboard service.
 
-    Reuses existing logic from savings_dashboard_service to avoid
-    duplicating debt computation.  Returns None if no debt accounts.
+    Reuses existing logic from ``savings_dashboard_service`` to avoid
+    duplicating debt computation.  Returns ``None`` when the user has no
+    loan accounts: ``compute_dashboard_data`` surfaces that as a
+    ``debt_summary`` of ``None`` (``_compute_debt_summary`` returns
+    ``None`` with no loan accounts), which the ``.get`` below yields
+    directly.
+
+    No exception is caught here.  ``compute_dashboard_data`` is the same
+    producer the savings route (``app/routes/savings.py``) calls without
+    a guard, and every sibling dashboard section here
+    (``_get_savings_goals``, ``_get_spending_comparison``,
+    ``_compute_cash_runway``) is likewise unguarded.  A ``ValueError`` /
+    ``KeyError`` / ``AttributeError`` from that computation is a
+    programming bug, not the no-debt signal; swallowing it would silently
+    blank the debt panel and hide real debt (CLAUDE.md rule 4).  Letting
+    it propagate fails loud and identically on the dashboard and savings
+    pages.
     """
     # Pylint: ``import-outside-toplevel`` -- Deferred: savings_dashboard_service
     # pulls the heaviest service import chain (+27 modules, measured); loaded only
     # when the debt-summary path runs, not on every dashboard_service import.
     from app.services import savings_dashboard_service  # pylint: disable=import-outside-toplevel
 
-    try:
-        dashboard_data = savings_dashboard_service.compute_dashboard_data(user_id)
-        return dashboard_data.get("debt_summary")
-    except (ValueError, KeyError, AttributeError):
-        logger.warning(
-            "Failed to compute debt summary for user %d", user_id,
-        )
-        return None
+    return savings_dashboard_service.compute_dashboard_data(user_id).get("debt_summary")
 
 
 # ── Section 7: Spending Comparison ─────────────────────────────────

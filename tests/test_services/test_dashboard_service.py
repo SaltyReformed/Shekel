@@ -10,6 +10,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
+import pytest
+
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db as _db
@@ -894,6 +896,47 @@ class TestSavingsGoals:
 # ── Debt Summary Tests ──────────────────────────────────────────────
 
 
+def _create_loan_account(
+    seed_user, db_session,
+    principal=Decimal("1000.00"), rate=Decimal("0.05000"), term=24,
+):
+    """Seed a loan account with LoanParams + origination event.
+
+    Mirrors test_savings_dashboard_service._create_small_loan so the
+    debt-summary wrapper can be exercised against a real loan: a $1,000
+    Auto Loan at 5% for 24 months originated Jan 2026 (remaining months
+    comfortably positive from the seeded periods).
+    """
+    loan_type = db_session.query(AccountType).filter_by(name="Auto Loan").one()
+    account = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name="Dashboard Test Loan",
+            anchor_balance=principal,
+        ),
+    )
+    db_session.add(account)
+    db_session.flush()
+
+    from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
+    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    params = LoanParams(
+        account_id=account.id,
+        original_principal=principal,
+        current_principal=principal,
+        interest_rate=rate,
+        term_months=term,
+        origination_date=date(2026, 1, 1),
+        payment_day=1,
+    )
+    db_session.add(params)
+    db_session.flush()
+    insert_origination_event(params)
+    db_session.commit()
+    return account
+
+
 class TestDebtSummary:
     """Tests for the debt summary section."""
 
@@ -902,6 +945,51 @@ class TestDebtSummary:
         with app.app_context():
             result = dashboard_service._get_debt_summary(seed_user["user"].id)
             assert result is None
+
+    def test_debt_summary_with_debt(self, app, db, seed_user, seed_periods):
+        """A loan account -> the wrapper returns the populated debt summary.
+
+        Covers the success path of _get_debt_summary (not just the no-debt
+        None path, deep-hunt #86): a $1,000 auto loan at 5% for 24 months
+        yields total_debt == 1000.00, the single loan's rate as the
+        weighted average, a positive monthly payment, and a projected
+        payoff date.  _apply_dti_metrics always writes the three DTI keys
+        (to None when there is no salary), so their presence proves the
+        DTI block ran through the wrapper.  Mirrors
+        test_savings_dashboard_service.test_debt_summary_single_loan but
+        asserts via the dashboard wrapper rather than the orchestrator.
+        """
+        with app.app_context():
+            _create_loan_account(seed_user, db.session)
+            result = dashboard_service._get_debt_summary(seed_user["user"].id)
+            assert result is not None
+            assert result["total_debt"] == Decimal("1000.00")
+            assert result["weighted_avg_rate"] == Decimal("0.05000")
+            assert result["total_monthly_payments"] > Decimal("0.00")
+            assert result["projected_debt_free_date"] is not None
+            assert "dti_ratio" in result
+            assert "dti_label" in result
+            assert "gross_monthly_income" in result
+
+    def test_debt_summary_propagates_errors(self, app, seed_user):
+        """A computation error propagates -- it is NOT masked as None (#82).
+
+        Guards the rule-4 fix: the old wrapper caught
+        (ValueError, KeyError, AttributeError) and returned None, which
+        silently blanked the debt panel and was indistinguishable from the
+        legitimate no-debt None.  With the broad except removed, a genuine
+        programming bug inside compute_dashboard_data must surface, not
+        vanish.  Patching the producer to raise KeyError proves the masking
+        is gone: under the old code this returned None and the test would
+        fail; now it raises.
+        """
+        with app.app_context():
+            with patch(
+                "app.services.savings_dashboard_service.compute_dashboard_data",
+                side_effect=KeyError("simulated computation bug"),
+            ):
+                with pytest.raises(KeyError):
+                    dashboard_service._get_debt_summary(seed_user["user"].id)
 
 
 # ── Spending Comparison Tests ───────────────────────────────────────
