@@ -12,6 +12,25 @@ from marshmallow import (
 from app.schemas.validation._helpers import BaseSchema
 
 
+def _reject_same_account_transfer(data):
+    """Reject a transfer whose source and destination are the same account.
+
+    Shared cross-field rule for the transfer-template and ad-hoc transfer
+    create schemas (DRY -- one implementation of the check).  A
+    self-transfer moves no money and would produce two shadow legs that
+    net to zero; the route surfaces the message to the user.
+
+    Runs only when both ``from_account_id`` and ``to_account_id`` are
+    present in the deserialized payload.
+
+    Raises:
+        ValidationError: If ``from_account_id`` equals ``to_account_id``.
+    """
+    if data.get("from_account_id") and data.get("to_account_id"):
+        if data["from_account_id"] == data["to_account_id"]:
+            raise ValidationError("From and To accounts must be different.")
+
+
 class TransferTemplateCreateSchema(BaseSchema):
     """Validates POST data for creating a transfer template."""
 
@@ -43,17 +62,8 @@ class TransferTemplateCreateSchema(BaseSchema):
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):
-        """Reject a transfer whose source and destination are the same account.
-
-        A self-transfer moves no money and would produce two shadow legs
-        that net to zero; the route surfaces the message to the user.
-
-        Raises:
-            ValidationError: If ``from_account_id`` equals ``to_account_id``.
-        """
-        if data.get("from_account_id") and data.get("to_account_id"):
-            if data["from_account_id"] == data["to_account_id"]:
-                raise ValidationError("From and To accounts must be different.")
+        """Reject a transfer whose source and destination are the same account."""
+        _reject_same_account_transfer(data)
 
 
 class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
@@ -102,17 +112,8 @@ class TransferCreateSchema(BaseSchema):
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):
-        """Reject a transfer whose source and destination are the same account.
-
-        A self-transfer moves no money and would produce two shadow legs
-        that net to zero; the route surfaces the message to the user.
-
-        Raises:
-            ValidationError: If ``from_account_id`` equals ``to_account_id``.
-        """
-        if data.get("from_account_id") and data.get("to_account_id"):
-            if data["from_account_id"] == data["to_account_id"]:
-                raise ValidationError("From and To accounts must be different.")
+        """Reject a transfer whose source and destination are the same account."""
+        _reject_same_account_transfer(data)
 
 
 class TransferUpdateSchema(BaseSchema):

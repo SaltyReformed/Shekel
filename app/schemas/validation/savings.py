@@ -19,6 +19,76 @@ from app.enums import (
 from app.schemas.validation._helpers import BaseSchema
 
 
+def _validate_goal_mode_consistency(data, goal_mode_id):
+    """Enforce goal-mode / income-field consistency for savings goals.
+
+    Shared cross-field rule for the savings-goal create and update
+    schemas (DRY -- one implementation).  The caller resolves
+    ``goal_mode_id`` first -- create defaults a missing mode to FIXED;
+    update returns early when the mode is absent from a partial payload --
+    then delegates the mode/field-consistency checks here.  Fixed mode
+    requires ``target_amount`` and forbids the income fields;
+    income-relative mode requires a known ``income_unit_id`` and an
+    ``income_multiplier``.
+
+    Raises:
+        ValidationError: If ``goal_mode_id`` is not a known mode, or the
+            income / target fields are inconsistent with that mode.
+    """
+    income_unit_id = data.get("income_unit_id")
+    income_multiplier = data.get("income_multiplier")
+    target_amount = data.get("target_amount")
+
+    fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
+    income_relative_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+
+    # Validate goal_mode_id is a known mode.
+    if goal_mode_id not in (fixed_id, income_relative_id):
+        raise ValidationError(
+            "Invalid goal mode.", field_name="goal_mode_id",
+        )
+
+    if goal_mode_id == fixed_id:
+        # Fixed mode: income fields must be absent.
+        if income_unit_id is not None:
+            raise ValidationError(
+                "Income unit must be empty for fixed-amount goals.",
+                field_name="income_unit_id",
+            )
+        if income_multiplier is not None:
+            raise ValidationError(
+                "Income multiplier must be empty for fixed-amount goals.",
+                field_name="income_multiplier",
+            )
+        if target_amount is None:
+            raise ValidationError(
+                "Target amount is required for fixed-amount goals.",
+                field_name="target_amount",
+            )
+
+    elif goal_mode_id == income_relative_id:
+        # Income-relative mode: income fields are required.
+        if income_unit_id is None:
+            raise ValidationError(
+                "Income unit is required for income-relative goals.",
+                field_name="income_unit_id",
+            )
+        if income_multiplier is None:
+            raise ValidationError(
+                "Income multiplier is required for income-relative goals.",
+                field_name="income_multiplier",
+            )
+        # Validate income_unit_id is a known unit.
+        known_units = (
+            ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS),
+            ref_cache.income_unit_id(IncomeUnitEnum.MONTHS),
+        )
+        if income_unit_id not in known_units:
+            raise ValidationError(
+                "Invalid income unit.", field_name="income_unit_id",
+            )
+
+
 class SavingsGoalCreateSchema(BaseSchema):
     """Validates POST data for creating a savings goal.
 
@@ -69,61 +139,12 @@ class SavingsGoalCreateSchema(BaseSchema):
 
     @validates_schema
     def validate_goal_mode_fields(self, data, **kwargs):
-        """Enforce cross-field constraints between goal mode and income fields."""
+        """Enforce cross-field constraints between goal mode and income fields.
 
-        goal_mode_id = data.get("goal_mode_id", 1)
-        income_unit_id = data.get("income_unit_id")
-        income_multiplier = data.get("income_multiplier")
-        target_amount = data.get("target_amount")
-
-        fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
-        income_relative_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
-
-        # Validate goal_mode_id is a known mode.
-        if goal_mode_id not in (fixed_id, income_relative_id):
-            raise ValidationError(
-                "Invalid goal mode.", field_name="goal_mode_id",
-            )
-
-        if goal_mode_id == fixed_id:
-            # Fixed mode: income fields must be absent.
-            if income_unit_id is not None:
-                raise ValidationError(
-                    "Income unit must be empty for fixed-amount goals.",
-                    field_name="income_unit_id",
-                )
-            if income_multiplier is not None:
-                raise ValidationError(
-                    "Income multiplier must be empty for fixed-amount goals.",
-                    field_name="income_multiplier",
-                )
-            if target_amount is None:
-                raise ValidationError(
-                    "Target amount is required for fixed-amount goals.",
-                    field_name="target_amount",
-                )
-
-        elif goal_mode_id == income_relative_id:
-            # Income-relative mode: income fields are required.
-            if income_unit_id is None:
-                raise ValidationError(
-                    "Income unit is required for income-relative goals.",
-                    field_name="income_unit_id",
-                )
-            if income_multiplier is None:
-                raise ValidationError(
-                    "Income multiplier is required for income-relative goals.",
-                    field_name="income_multiplier",
-                )
-            # Validate income_unit_id is a known unit.
-            known_units = (
-                ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS),
-                ref_cache.income_unit_id(IncomeUnitEnum.MONTHS),
-            )
-            if income_unit_id not in known_units:
-                raise ValidationError(
-                    "Invalid income unit.", field_name="income_unit_id",
-                )
+        A create with no ``goal_mode_id`` defaults to FIXED (mirrors the
+        field's ``load_default=1``).
+        """
+        _validate_goal_mode_consistency(data, data.get("goal_mode_id", 1))
 
 
 class SavingsGoalUpdateSchema(BaseSchema):
@@ -175,56 +196,7 @@ class SavingsGoalUpdateSchema(BaseSchema):
         Only validates when goal_mode_id is present in the update payload.
         Partial updates that omit goal_mode_id skip cross-field checks.
         """
-
         goal_mode_id = data.get("goal_mode_id")
         if goal_mode_id is None:
             return
-
-        income_unit_id = data.get("income_unit_id")
-        income_multiplier = data.get("income_multiplier")
-        target_amount = data.get("target_amount")
-
-        fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
-        income_relative_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
-
-        if goal_mode_id not in (fixed_id, income_relative_id):
-            raise ValidationError(
-                "Invalid goal mode.", field_name="goal_mode_id",
-            )
-
-        if goal_mode_id == fixed_id:
-            if income_unit_id is not None:
-                raise ValidationError(
-                    "Income unit must be empty for fixed-amount goals.",
-                    field_name="income_unit_id",
-                )
-            if income_multiplier is not None:
-                raise ValidationError(
-                    "Income multiplier must be empty for fixed-amount goals.",
-                    field_name="income_multiplier",
-                )
-            if target_amount is None:
-                raise ValidationError(
-                    "Target amount is required for fixed-amount goals.",
-                    field_name="target_amount",
-                )
-
-        elif goal_mode_id == income_relative_id:
-            if income_unit_id is None:
-                raise ValidationError(
-                    "Income unit is required for income-relative goals.",
-                    field_name="income_unit_id",
-                )
-            if income_multiplier is None:
-                raise ValidationError(
-                    "Income multiplier is required for income-relative goals.",
-                    field_name="income_multiplier",
-                )
-            known_units = (
-                ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS),
-                ref_cache.income_unit_id(IncomeUnitEnum.MONTHS),
-            )
-            if income_unit_id not in known_units:
-                raise ValidationError(
-                    "Invalid income unit.", field_name="income_unit_id",
-                )
+        _validate_goal_mode_consistency(data, goal_mode_id)
