@@ -371,6 +371,117 @@ class TestCsvFormatting:
             )
 
 
+# ── Formula-Injection (CWE-1236) Tests ───────────────────────────
+
+
+class TestFormulaInjection:
+    """User-controlled name cells are neutralized against spreadsheet
+    formula injection: a value whose first character is a formula
+    trigger (= + - @ TAB CR) is prefixed with a single quote so Excel /
+    Google Sheets render it as literal text, while system-formatted
+    numerics stay numeric so spreadsheets can still aggregate them.
+    """
+
+    def test_calendar_transaction_name_neutralized(self, app):
+        """A transaction name leading with '=' is quote-prefixed."""
+        data = FakeMonthSummary(day_entries={
+            1: [FakeDayEntry(name='=HYPERLINK("http://evil","x")')],
+        })
+        rows = _parse_csv(export_calendar_csv(data, "month"))
+        assert rows[1][1] == '\'=HYPERLINK("http://evil","x")'
+
+    def test_calendar_category_names_neutralized(self, app):
+        """Category group ('+') and item ('@') names are quote-prefixed."""
+        data = FakeMonthSummary(day_entries={
+            1: [FakeDayEntry(category_group="+Home", category_item="@Rent")],
+        })
+        rows = _parse_csv(export_calendar_csv(data, "month"))
+        assert rows[1][2] == "'+Home"
+        assert rows[1][3] == "'@Rent"
+
+    def test_year_end_names_neutralized(self, app):
+        """Deduction, spending-category, and every account-name column in
+        the year-end export are neutralized."""
+        data = _build_year_end_data()
+        data["income_tax"]["pretax_deductions"] = [
+            {"name": "=evil()", "annual_total": Decimal("100.00")},
+        ]
+        data["spending_by_category"] = [{
+            "group_name": "-Home",
+            "group_total": Decimal("100.00"),
+            "items": [{"item_name": "@Rent", "item_total": Decimal("100.00")}],
+        }]
+        data["transfers_summary"] = [{
+            "destination_account": "=SUM(A1)",
+            "destination_account_id": 2,
+            "total_amount": Decimal("50.00"),
+        }]
+        data["debt_progress"][0]["account_name"] = "+Mortgage"
+        data["savings_progress"][0]["account_name"] = "@Savings"
+        cells = {c for row in _parse_csv(export_year_end_csv(data)) for c in row}
+        assert "'=evil()" in cells
+        assert "'-Home" in cells
+        assert "'@Rent" in cells
+        assert "'=SUM(A1)" in cells
+        assert "'+Mortgage" in cells
+        assert "'@Savings" in cells
+
+    def test_variance_names_neutralized(self, app):
+        """Group, item, and transaction names are neutralized at every
+        level of the variance export."""
+        figures = FakeVarianceFigures(
+            estimated=Decimal("100.00"), actual=Decimal("100.00"),
+            variance=Decimal("0.00"), variance_pct=Decimal("0.00"),
+        )
+        txn = FakeTransactionVariance(name="=evil()", figures=figures)
+        item = FakeCategoryItemVariance(
+            group_name="+Home", item_name="@Rent",
+            figures=figures, transactions=[txn],
+        )
+        group = FakeCategoryGroupVariance(
+            group_name="+Home", figures=figures, items=[item],
+        )
+        report = FakeVarianceReport(
+            groups=[group], figures=figures, transaction_count=1,
+        )
+        cells = {c for row in _parse_csv(export_variance_csv(report)) for c in row}
+        assert "'+Home" in cells
+        assert "'@Rent" in cells
+        assert "'=evil()" in cells
+
+    def test_trends_names_neutralized(self, app):
+        """Category group/item names in the trends export are neutralized."""
+        item = FakeItemTrend(group_name="=evil()", item_name="-Rent")
+        report = FakeTrendReport(all_items=[item])
+        cells = {c for row in _parse_csv(export_trends_csv(report)) for c in row}
+        assert "'=evil()" in cells
+        assert "'-Rent" in cells
+
+    def test_ordinary_name_not_prefixed(self, app):
+        """A name that does not lead with a formula char is unchanged --
+        no spurious quote is added (avoids corrupting every benign name)."""
+        data = FakeMonthSummary(day_entries={
+            1: [FakeDayEntry(
+                name="Rent", category_group="Home", category_item="Utilities",
+            )],
+        })
+        rows = _parse_csv(export_calendar_csv(data, "month"))
+        assert rows[1][1] == "Rent"
+        assert rows[1][2] == "Home"
+        assert rows[1][3] == "Utilities"
+
+    def test_negative_numeric_amount_not_neutralized(self, app):
+        """System-formatted negatives stay numeric (not quote-prefixed) so
+        spreadsheets can aggregate them: neutralization is scoped to
+        user text via _safe, never to _dec-formatted numbers."""
+        data = FakeMonthSummary(day_entries={
+            1: [FakeDayEntry(name="Refund", amount=Decimal("-50.00"))],
+        })
+        rows = _parse_csv(export_calendar_csv(data, "month"))
+        # Column 4 is "Amount ($)" in the month export.
+        assert rows[1][4] == "-50.00"
+
+
 # ── Helpers ───────────────────────────────────────────────────────
 
 
