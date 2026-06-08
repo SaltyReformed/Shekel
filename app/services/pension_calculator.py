@@ -78,8 +78,10 @@ def calculate_benefit(benefit_multiplier, consecutive_high_years,
 def project_salaries_by_year(annual_salary, raises, start_year, end_year):
     """Project annual salary for each year in a range using raise rules.
 
-    This is a simplified projection that applies raises in order.
-    For full raise logic, use paycheck_calculator._apply_raises().
+    Delegates each year's salary to the shared
+    :func:`app.services.paycheck_calculator.apply_raises` so pension
+    projections and the paycheck pipeline apply the identical raise rule
+    (sort order, recurring compounding, one-time gating).
 
     Args:
         annual_salary:  Decimal base salary.
@@ -96,22 +98,14 @@ def project_salaries_by_year(annual_salary, raises, start_year, end_year):
     # tax/calibration chain loads only when raise projection is actually
     # requested.
     # pylint: disable=import-outside-toplevel
-    from app.services.paycheck_calculator import _apply_raises
+    from app.services.paycheck_calculator import apply_raises
 
-    class _FakePeriod:
-        def __init__(self, year):
-            self.start_date = date(year, 12, 1)  # end of year salary
-
-    class _FakeProfile:
-        def __init__(self, salary, raise_list):
-            self.annual_salary = salary
-            self.raises = raise_list
-
-    profile = _FakeProfile(annual_salary, raises or [])
+    owned_raises = raises or []
     result = []
     for year in range(start_year, end_year + 1):
-        period = _FakePeriod(year)
-        salary = _apply_raises(profile, period)
+        # Evaluate each year's salary as of December 1 so every raise
+        # effective during that year (recurring or one-time) is applied.
+        salary = apply_raises(annual_salary, owned_raises, date(year, 12, 1))
         result.append((year, salary))
     return result
 

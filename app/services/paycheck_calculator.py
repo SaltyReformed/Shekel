@@ -213,7 +213,7 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
         PaycheckBreakdown dataclass.
     """
     # Step 1: Determine annual salary after raises.
-    annual_salary = _apply_raises(profile, period)
+    annual_salary = apply_raises(profile.annual_salary, profile.raises, period.start_date)
 
     # Step 2: Gross biweekly.  Residue from the per-cycle quantisation
     # is reconciled back into the annual aggregate (MED-05 / PA-07);
@@ -467,14 +467,14 @@ def _gross_biweekly_for_period(
 
     Args:
         annual_salary: The post-raise annual salary for ``period``,
-            as returned by :func:`_apply_raises`.  Constructed from a
+            as returned by :func:`apply_raises`.  Constructed from a
             Decimal upstream; the helper does not re-coerce.
         period: The :class:`PayPeriod` whose gross is being computed.
         all_periods: Every :class:`PayPeriod` known to the calling
             ``calculate_paycheck`` invocation.  Periods outside
             ``period.start_date.year`` are ignored.
         profile: The :class:`SalaryProfile`; consulted only for
-            ``_apply_raises`` so the group boundary respects mid-year
+            ``apply_raises`` so the group boundary respects mid-year
             raise events.
         pay_periods_per_year: The full-year denominator (typically 26).
 
@@ -499,7 +499,8 @@ def _gross_biweekly_for_period(
     group = sorted(
         (
             p for p in same_year
-            if _apply_raises(profile, p) == annual_salary
+            if apply_raises(profile.annual_salary, profile.raises, p.start_date)
+            == annual_salary
         ),
         key=lambda p: p.start_date,
     )
@@ -569,8 +570,16 @@ def _residue_cents(annual_salary, group_size, pay_periods_dec, floor_value):
     return int((residue / ONE_CENT).to_integral_value(rounding=ROUND_HALF_UP))
 
 
-def _apply_raises(profile, period):
-    """Return the effective annual salary for the given period, after raises.
+def apply_raises(base_salary, raises, as_of):
+    """Return the effective annual salary as of a date, after applying raises.
+
+    The shared raise-application rule used by both the paycheck pipeline
+    (:func:`calculate_paycheck` / :func:`project_salary`) and the pension
+    salary projection
+    (:func:`app.services.pension_calculator.project_salaries_by_year`).
+    Promoted from the former private ``_apply_raises(profile, period)`` to
+    plain inputs so the pension projector no longer reaches into a private
+    symbol with fabricated duck-typed objects (deep-hunt #83).
 
     Raises are sorted by (effective_year, effective_month) before
     application so that flat raises apply before percentage raises
@@ -578,19 +587,34 @@ def _apply_raises(profile, period):
     results regardless of database query order (M-01).
 
     A raise applies if:
-    - Its effective_year matches the period's year (or is None for recurring)
-    - Its effective_month is on or before the period's month (for that year)
-    """
-    salary = Decimal(str(profile.annual_salary))
+    - Its effective_year matches ``as_of``'s year (or is None for recurring)
+    - Its effective_month is on or before ``as_of``'s month (for that year)
 
-    if not profile.raises:
+    Args:
+        base_salary: The pre-raise annual salary -- a Decimal, or any
+            value ``Decimal(str(...))`` accepts.
+        raises: An iterable of raise objects, each exposing
+            ``effective_year``, ``effective_month``, ``is_recurring``,
+            ``percentage``, and ``flat_amount``.  A falsy/empty value
+            returns ``base_salary`` unchanged (unquantized, matching the
+            prior behavior).
+        as_of: The :class:`datetime.date` the salary is evaluated at;
+            only its ``year`` and ``month`` are consulted (day ignored).
+
+    Returns:
+        Decimal -- the post-raise annual salary, quantized to cents
+        (ROUND_HALF_UP) when any raise applied.
+    """
+    salary = Decimal(str(base_salary))
+
+    if not raises:
         return salary
 
-    period_year = period.start_date.year
-    period_month = period.start_date.month
+    period_year = as_of.year
+    period_month = as_of.month
 
     sorted_raises = sorted(
-        profile.raises,
+        raises,
         key=lambda r: (r.effective_year or 0, r.effective_month or 0),
     )
 
@@ -793,7 +817,7 @@ def _get_cumulative_wages(profile, period, all_periods):
         if p.start_date >= period.start_date:
             break
 
-        salary = _apply_raises(profile, p)
+        salary = apply_raises(profile.annual_salary, profile.raises, p.start_date)
         # Reuse the same reconciliation contract as ``calculate_paycheck``
         # so prior-period grosses summed here match the per-period
         # ``gross_biweekly`` exactly.  Without this, the FICA cap path

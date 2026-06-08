@@ -2,7 +2,7 @@
 Shekel Budget App -- Unit Tests for Paycheck Calculator
 
 Tests the recurring raise compounding logic in
-paycheck_calculator._apply_raises() and the full calculate_paycheck()
+paycheck_calculator.apply_raises() and the full calculate_paycheck()
 pipeline including deductions, taxes, 3rd-paycheck detection, inflation,
 cumulative wages, and project_salary().
 """
@@ -15,7 +15,7 @@ import pytest
 from app.services.exceptions import InvalidGrossPayError
 from app.services.tax_calculator import calculate_fica
 from app.services.paycheck_calculator import (
-    _apply_raises,
+    apply_raises,
     _is_third_paycheck,
     _is_first_paycheck_of_month,
     _inflation_years,
@@ -242,7 +242,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2026, 2, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("100000.00")
 
     def test_recurring_raise_first_year_at_effective_month(self):
@@ -253,7 +253,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2026, 3, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03 = 103000
         assert result == Decimal("103000.00")
 
@@ -265,7 +265,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2026, 6, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("103000.00")
 
     def test_recurring_raise_second_year_before_month(self):
@@ -276,7 +276,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2027, 1, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # Only 1 full year passed (2027 - 2026 = 1), but month not reached
         assert result == Decimal("103000.00")
 
@@ -288,7 +288,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2027, 4, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03 * 1.03 = 106090
         assert result == Decimal("106090.00")
 
@@ -300,7 +300,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2028, 6, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03^3 = 109272.70
         expected = (Decimal("100000") * Decimal("1.03") ** 3).quantize(Decimal("0.01"))
         assert result == expected
@@ -314,7 +314,7 @@ class TestRecurringRaiseCompounding:
         )
         # Check in 2027 -- still just one application.
         period = FakePeriod(start_date=date(2027, 6, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("105000.00")
 
     def test_recurring_flat_raise(self):
@@ -325,7 +325,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2028, 6, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 3 applications: 100000 + 5000 + 5000 + 5000 = 115000
         assert result == Decimal("115000.00")
 
@@ -344,7 +344,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2027, 3, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03^2 = 106090
         assert result == Decimal("106090.00")
 
@@ -361,7 +361,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=None, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2027, 4, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("103000.00")
 
 

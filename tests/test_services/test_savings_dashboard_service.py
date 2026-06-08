@@ -1474,7 +1474,7 @@ class TestDTIRaiseAware:
     Pre-Commit-26 the savings dashboard read
     ``params["salary_gross_biweekly"]`` (computed in
     ``_load_account_params`` as raw ``annual_salary / pay_periods``,
-    with no ``_apply_raises`` invocation) and converted to monthly via
+    with no ``apply_raises`` invocation) and converted to monthly via
     the 26/12 factor.  For any user with an applicable
     :class:`SalaryRaise` the displayed DTI denominator drifted from the
     paycheck engine: the audit's worked example carried a $104,000
@@ -1493,7 +1493,7 @@ class TestDTIRaiseAware:
         post-raise engine gross.
 
         Salary $104,000.00 + a one-time 3% raise effective month 1 of
-        the current period's year.  ``_apply_raises`` applies the raise
+        the current period's year.  ``apply_raises`` applies the raise
         once for the current period, so the engine's per-period gross
         reflects the post-raise salary; the period-to-monthly factor
         (26/12) is the structural biweekly-pay-schedule normalization

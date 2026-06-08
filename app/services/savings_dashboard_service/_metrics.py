@@ -59,7 +59,7 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     Pre-Commit-26 the DTI denominator read the off-engine
     ``annual_salary / pay_periods`` recompute, which dropped applicable
     ``SalaryRaise`` rows; the engine applies raises period-by-period
-    via ``_apply_raises`` and is therefore the only correct source for
+    via ``apply_raises`` and is therefore the only correct source for
     a raise-aware monthly gross.
 
     Args:
