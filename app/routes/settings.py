@@ -541,6 +541,7 @@ def companion_deactivate(companion_id):
 )
 @login_required
 @require_owner
+@fresh_login_required()
 def companion_reactivate(companion_id):
     """Restore access for a previously deactivated companion.
 
