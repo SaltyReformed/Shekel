@@ -778,8 +778,13 @@ def restore_transfer(transfer_id, user_id):
 
     This is the inverse of ``delete_transfer(soft=True)``.  Sets
     ``is_deleted=False`` on the transfer and both shadows, then
-    verifies and corrects shadow invariants (amount, status, period)
-    that may have drifted while the transfer was soft-deleted.
+    re-syncs every field the service mirrors from the canonical parent
+    onto both shadows (amount, status, period, category, due_date,
+    is_override) in case any drifted via direct ORM mutation while the
+    transfer was soft-deleted.  ``actual_amount`` and ``paid_at`` are
+    deliberately excluded: the ``Transfer`` parent has no canonical
+    column for them (they live on the shadow ``Transaction`` only), so
+    there is no parent value to re-sync against.
 
     Idempotent: calling on an already-active transfer is a no-op.
 
@@ -924,6 +929,49 @@ def restore_transfer(transfer_id, user_id):
                 transfer_id,
             )
             shadow.pay_period_id = xfer.pay_period_id
+
+        # Mirrored field: shadow category must match transfer category.
+        # create_transfer/_build_shadow and update_transfer mirror the
+        # parent category to both shadows so each account grid attributes
+        # the entry to the same user-selected category; a drifted shadow
+        # would surface under the wrong category in one grid.
+        if shadow.category_id != xfer.category_id:
+            logger.warning(
+                "Correcting shadow %d category_id drift: %s -> %s "
+                "(transfer %d category).",
+                shadow.id, shadow.category_id, xfer.category_id,
+                transfer_id,
+            )
+            shadow.category_id = xfer.category_id
+
+        # Mirrored field: shadow due_date must match transfer due_date.
+        # The parent is canonical (see ``models/transfer.py`` due_date
+        # docstring, "Transfer Invariant 3"); the calendar, dashboard,
+        # year-end and spending-trend consumers read the SHADOW due_date,
+        # so a drifted shadow would mis-compute days-until-due / paid-on-
+        # time while the parent still shows the correct date.
+        if shadow.due_date != xfer.due_date:
+            logger.warning(
+                "Correcting shadow %d due_date drift: %s -> %s "
+                "(transfer %d due_date).",
+                shadow.id, shadow.due_date, xfer.due_date,
+                transfer_id,
+            )
+            shadow.due_date = xfer.due_date
+
+        # Mirrored field: shadow is_override must match transfer
+        # is_override.  update_transfer mirrors the override flag to both
+        # shadows so the carry-forward/dedupe state stays coherent across
+        # the three rows; a drifted shadow would diverge from the parent's
+        # override status.
+        if shadow.is_override != xfer.is_override:
+            logger.warning(
+                "Correcting shadow %d is_override drift: %s -> %s "
+                "(transfer %d is_override).",
+                shadow.id, shadow.is_override, xfer.is_override,
+                transfer_id,
+            )
+            shadow.is_override = xfer.is_override
 
     db.session.flush()
     log_event(
