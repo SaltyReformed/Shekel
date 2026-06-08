@@ -17,6 +17,7 @@ from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
+from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import dashboard_service
 from app.services import account_service
@@ -29,9 +30,12 @@ def _add_txn(
     db_session, seed_user, period, name, amount,
     status_enum=StatusEnum.PROJECTED, is_income=False,
     due_date=None, category_key=None, is_deleted=False,
-    actual_amount=None,
+    actual_amount=None, scenario_id=None,
 ):
     """Create a transaction for testing.
+
+    ``scenario_id`` defaults to the user's baseline scenario; pass an
+    explicit id to place the transaction in another scenario.
 
     Returns the created Transaction.
     """
@@ -47,7 +51,10 @@ def _add_txn(
     txn = Transaction(
         account_id=seed_user["account"].id,
         pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
+        scenario_id=(
+            scenario_id if scenario_id is not None
+            else seed_user["scenario"].id
+        ),
         status_id=ref_cache.status_id(status_enum),
         name=name,
         category_id=cat_id,
@@ -680,7 +687,8 @@ class TestBalanceInfo:
         with app.app_context():
             balance = {seed_periods[0].id: Decimal("3000.00")}
             result = dashboard_service._get_balance_info(
-                seed_user["account"], seed_periods[0], balance,
+                seed_user["account"], seed_user["scenario"].id,
+                seed_periods[0], balance,
             )
             assert result["cash_runway_days"] is None
 
@@ -689,9 +697,49 @@ class TestBalanceInfo:
         with app.app_context():
             balance = {seed_periods[0].id: Decimal("-500.00")}
             result = dashboard_service._get_balance_info(
-                seed_user["account"], seed_periods[0], balance,
+                seed_user["account"], seed_user["scenario"].id,
+                seed_periods[0], balance,
             )
             assert result["cash_runway_days"] == 0
+
+    def test_cash_runway_excludes_other_scenario_expenses(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """deep-quality-hunt #44: cash runway counts only baseline-scenario
+        settled expenses; a settled expense in another scenario on the
+        same account is excluded.
+
+        No shipping code creates a non-baseline scenario yet (multi-
+        scenario is Phase 3), but the cash-runway query must scope by
+        scenario like its two sibling dashboard queries so a Phase-3
+        what-if scenario cannot inflate the baseline daily-spend average.
+        Put a recent settled expense ONLY in a second (non-baseline)
+        scenario and assert the baseline runway stays None (zero baseline
+        spending).  Without the scenario filter the $900 would be counted
+        and runway would be a finite number instead.
+        """
+        with app.app_context():
+            other_scenario = Scenario(
+                user_id=seed_user["user"].id,
+                name="What-if",
+                is_baseline=False,
+            )
+            db.session.add(other_scenario)
+            db.session.flush()
+
+            _add_txn(
+                db.session, seed_user, seed_periods[0],
+                "Other-scenario spend", "900.00",
+                status_enum=StatusEnum.DONE, due_date=date.today(),
+                scenario_id=other_scenario.id,
+            )
+
+            balance = {seed_periods[0].id: Decimal("3000.00")}
+            result = dashboard_service._get_balance_info(
+                seed_user["account"], seed_user["scenario"].id,
+                seed_periods[0], balance,
+            )
+            assert result["cash_runway_days"] is None
 
     def test_balance_from_calculator(self, app, seed_user, seed_periods, db):
         """Current balance comes from balance calculator results."""
@@ -699,7 +747,8 @@ class TestBalanceInfo:
             expected = Decimal("2500.00")
             balance = {seed_periods[0].id: expected}
             result = dashboard_service._get_balance_info(
-                seed_user["account"], seed_periods[0], balance,
+                seed_user["account"], seed_user["scenario"].id,
+                seed_periods[0], balance,
             )
             assert result["current_balance"] == expected
 

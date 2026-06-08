@@ -86,7 +86,7 @@ def compute_dashboard_data(user_id: int) -> dict:
             account, settings, balance_results, current_period, all_periods,
         ),
         "balance_info": _get_balance_info(
-            account, current_period, balance_results,
+            account, scenario.id, current_period, balance_results,
         ),
         "payday_info": _get_payday_info(user_id, all_periods),
         "savings_goals": _get_savings_goals(user_id),
@@ -389,14 +389,16 @@ def _compute_alerts(
 
 def _get_balance_info(
     account: Account,
+    scenario_id: int,
     current_period: PayPeriod | None,
     balance_results: dict[int, Decimal] | None,
 ) -> dict:
     """Get current balance and compute cash runway.
 
     Cash runway uses paid expenses from the last 30 calendar days
-    (by due_date, consistent with calendar service attribution).
-    Runway = current_balance / daily_average_spending.
+    (by due_date, consistent with calendar service attribution),
+    scoped to ``scenario_id``.  Runway = current_balance /
+    daily_average_spending.
 
     Returns None for runway when there is zero spending (avoids
     infinity) and clamps negative balance to 0 runway days.
@@ -416,7 +418,7 @@ def _get_balance_info(
     else:
         anchor_is_stale = (date.today() - last_anchor_dt.date()).days > staleness_days
 
-    runway = _compute_cash_runway(account.id, current_balance)
+    runway = _compute_cash_runway(account.id, scenario_id, current_balance)
 
     return {
         "current_balance": current_balance,
@@ -430,12 +432,16 @@ def _get_balance_info(
 
 def _compute_cash_runway(
     account_id: int,
+    scenario_id: int,
     current_balance: Decimal,
 ) -> int | None:
     """Compute cash runway in days from recent spending rate.
 
     Queries paid expenses from the last 30 days by due_date,
-    consistent with calendar service date attribution.
+    consistent with calendar service date attribution, and scoped to
+    ``scenario_id`` so what-if scenarios never spill into the baseline
+    spending average -- matching the sibling dashboard expense queries
+    (_get_upcoming_bills, _sum_settled_expenses).
 
     Returns None if no spending (avoids infinity), 0 if balance
     is negative.
@@ -455,6 +461,7 @@ def _compute_cash_runway(
         db.session.query(Transaction)
         .filter(
             Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
             Transaction.is_deleted.is_(False),
             Transaction.status_id.in_(settled_ids),
             Transaction.transaction_type_id == expense_type_id,
