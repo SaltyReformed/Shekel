@@ -89,7 +89,8 @@ class FakeDeduction:
     def __init__(self, name="401k", amount="200", deductions_per_year=26,
                  calc_method="flat", deduction_timing="pre_tax",
                  inflation_enabled=False, inflation_rate=None,
-                 inflation_effective_month=None, is_active=True):
+                 inflation_effective_month=None, is_active=True,
+                 annual_cap=None):
         self.name = name
         self.amount = Decimal(str(amount))
         self.deductions_per_year = deductions_per_year
@@ -99,6 +100,9 @@ class FakeDeduction:
         self.inflation_rate = Decimal(str(inflation_rate)) if inflation_rate else None
         self.inflation_effective_month = inflation_effective_month
         self.is_active = is_active
+        # Calendar-year dollar ceiling (PaycheckDeduction.annual_cap); None =
+        # uncapped.  Mirrors the real model column the calculator clamps on.
+        self.annual_cap = Decimal(str(annual_cap)) if annual_cap is not None else None
         # Resolve integer IDs from the ref_cache for ID-based comparisons.
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import CalcMethodEnum, DeductionTimingEnum  # pylint: disable=import-outside-toplevel
@@ -866,6 +870,132 @@ class TestDeductionCalculation:
         assert result[0].amount == Decimal("0.00"), (
             f"Expected 0.00, got {result[0].amount}"
         )
+
+
+class TestDeductionAnnualCap:
+    """``PaycheckDeduction.annual_cap`` throttles a deduction once its
+    calendar-year total reaches the cap, then resumes the next January
+    (deep-hunt #2 -- the cap was stored/validated/rendered but never
+    enforced).  Each test would fail with the cap unenforced (the old
+    behavior subtracted the full amount every period).
+    """
+
+    @staticmethod
+    def _gross(annual="60000"):
+        return (Decimal(annual) / 26).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+    def _amounts_over(self, profile, periods, *, timing="pre_tax", is_third=False):
+        """Per-period deduction amount for the single deduction on ``profile``."""
+        gross = self._gross(str(profile.annual_salary))
+        amounts = []
+        for p in periods:
+            lines = _calculate_deductions(
+                _DeductionContext(profile, p, periods, gross, is_third),
+                _timing_id(timing),
+            )
+            amounts.append(lines[0].amount)
+        return amounts
+
+    def test_flat_deduction_clamps_to_cap_then_stops(self):
+        """$600/period under a $1000 cap applies 600, 400, 0, 0."""
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="HSA", amount="600",
+                                      annual_cap="1000")],
+        )
+        # Four 2026 periods; deductions_per_year defaults to 26 (no cadence
+        # skip), so only the cap zeroes the later periods.
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+            FakePeriod(start_date=date(2026, 2, 13), period_id=4),
+        ]
+        # P1: YTD 0 -> full 600.  P2: YTD 600, room 400 -> 400 (lands on cap).
+        # P3, P4: YTD 1200 >= cap -> 0.  Sum of applied == 1000 exactly.
+        assert self._amounts_over(profile, periods) == [
+            Decimal("600"), Decimal("400"), Decimal("0"), Decimal("0"),
+        ]
+
+    def test_cap_with_room_does_not_throttle(self):
+        """A cap above the annual total leaves every period at full amount."""
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="401k", amount="200",
+                                      annual_cap="100000")],
+        )
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+        ]
+        # 200/period never approaches a $100k cap -> unchanged.
+        assert self._amounts_over(profile, periods) == [
+            Decimal("200"), Decimal("200"),
+        ]
+
+    def test_cap_is_calendar_year_scoped_and_resets(self):
+        """The cap resets each January: a new-year period starts fresh."""
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="HSA", amount="600",
+                                      annual_cap="1000")],
+        )
+        periods = [
+            FakePeriod(start_date=date(2026, 12, 4), period_id=1),
+            FakePeriod(start_date=date(2026, 12, 18), period_id=2),
+            FakePeriod(start_date=date(2027, 1, 1), period_id=3),
+        ]
+        # 2026 exhausts the cap (600 then 400); the 2027 period counts only
+        # same-year prior periods (none), so the cap is fresh -> full 600.
+        assert self._amounts_over(profile, periods) == [
+            Decimal("600"), Decimal("400"), Decimal("600"),
+        ]
+
+    def test_percentage_deduction_capped_on_dollar_total(self):
+        """A percentage deduction is clamped on its cumulative dollar amount."""
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="401k", amount="0.10",
+                                      calc_method="percentage",
+                                      annual_cap="400")],
+        )
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+        ]
+        # gross 60000/26 = 2307.69; 10% = 230.77/period.  P1: 230.77.
+        # P2: room 400-230.77 = 169.23 -> 169.23.  P3: cap exhausted -> 0.
+        assert self._amounts_over(profile, periods) == [
+            Decimal("230.77"), Decimal("169.23"), Decimal("0"),
+        ]
+
+    def test_capped_deduction_raises_net_pay_once_exhausted(self):
+        """End-to-end: a capped-out period nets more than a pre-cap period.
+
+        Proves the clamp flows through ``calculate_paycheck`` to net pay --
+        the headline harm in deep-hunt #2 was understated net pay.
+        """
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="HSA", amount="600",
+                                      deduction_timing="post_tax",
+                                      annual_cap="1000")],
+        )
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+        ]
+        configs = {"bracket_set": None, "state_config": None, "fica_config": None}
+        nets = [
+            calculate_paycheck(profile, p, periods, configs).earnings.net_pay
+            for p in periods
+        ]
+        # Post-tax deduction reduces net directly.  P1 takes 600, P2 takes the
+        # capped 400, P3 takes 0 -> net rises as the deduction shrinks.
+        assert nets[1] - nets[0] == Decimal("200.00")  # 600 - 400 deducted
+        assert nets[2] - nets[1] == Decimal("400.00")  # 400 - 0 deducted
 
 
 class TestThirdPaycheckDetection:
