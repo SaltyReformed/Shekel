@@ -504,72 +504,68 @@ class TestMatchPeriodsFull:
 
 
 class TestMatchPeriodsEdgeCaseSafety:
-    """Safety guard tests for invalid inputs to match_periods.
+    """Behavior of match_periods on values the DB CHECK constraints forbid.
 
-    These tests verify the engine's behavior when given values that
-    are prevented at the DB level by CHECK constraints but could
-    reach the service via FakeRule objects, direct function calls,
-    or a bypassed validation layer.
+    These values are prevented at the storage tier but could reach the
+    service via FakeRule objects, direct calls, or an unflushed in-memory
+    rule.  The engine's contract differs by field:
+
+      * ``interval_n`` / ``offset_periods`` are NOT NULL with CHECK
+        ``> 0`` / ``>= 0`` (deep-hunt #65), so an invalid 0 / None is a
+        programming error -- match_periods reads them directly as the
+        modulus divisor / offset and FAILS LOUD (ZeroDivisionError /
+        TypeError) rather than silently coercing to 1, which would
+        mis-generate on every period instead of every N.
+      * ``day_of_month`` is genuinely nullable (NULL for non-monthly
+        patterns), so its ``or 1`` coercion is a legitimate guard and is
+        retained (see the day_of_month tests below).
     """
 
     # -- interval_n edge cases (every_n_periods) --
 
-    def test_every_n_periods_interval_zero_defaults_to_one(
+    def test_every_n_periods_interval_zero_raises(
         self, biweekly_periods
     ):
-        """interval_n=0 is falsy: 'rule.interval_n or 1' = 1.
+        """interval_n=0 raises ZeroDivisionError (fail-loud, no coercion).
 
-        Expected: matches every period (same as interval_n=1).
-        DB constraint ck_recurrence_rules_positive_interval
-        prevents interval_n <= 0 from being stored.
-        This test verifies the service-level fallback behavior.
+        Post-#65 ``ck_recurrence_rules_positive_interval`` + NOT NULL make
+        a persisted interval_n=0 impossible, so reaching match_periods
+        with 0 means an invalid in-memory rule (a programming error).  The
+        modulus ``% 0`` now surfaces that bug loudly instead of the old
+        ``or 1`` silently treating it as every-period -- which, in a
+        budget app, would over-generate real projected transactions.
         """
-        # NOTE: If this test hangs, interval_n=0 may cause
-        # ZeroDivisionError or infinite loop. The 'or 1' fallback
-        # should prevent this.
         rule = FakeRule(
             pattern_name="Every N Periods",
             interval_n=0,
             offset_periods=0,
         )
-        matched = match_periods(
-            rule, rule.pattern_id, biweekly_periods,
-            biweekly_periods[0].start_date,
-        )
-        # 0 or 1 = 1 in Python (0 is falsy), so n=1 and every
-        # period matches.
-        # Prevented in production by
-        # ck_recurrence_rules_positive_interval.
-        assert len(matched) == len(biweekly_periods), (
-            f"Expected {len(biweekly_periods)} periods, "
-            f"got {len(matched)}. interval_n=0 should default "
-            f"to 1 via 'or 1' fallback."
-        )
+        with pytest.raises(ZeroDivisionError):
+            match_periods(
+                rule, rule.pattern_id, biweekly_periods,
+                biweekly_periods[0].start_date,
+            )
 
-    def test_every_n_periods_interval_none_defaults_to_one(
+    def test_every_n_periods_interval_none_raises(
         self, biweekly_periods
     ):
-        """interval_n=None (DB NULL): 'None or 1' = 1.
+        """interval_n=None raises TypeError (fail-loud, no coercion).
 
-        Expected: matches every period (same as interval_n=1).
-        Different failure mode than interval_n=0 -- None means
-        the DB column default (1) was not applied.
+        Distinct failure mode from 0: None means the column default was
+        not applied (an unflushed / invalid in-memory rule).  ``% None``
+        raises TypeError rather than the old ``or 1`` silently treating
+        the rule as every-period.
         """
         rule = FakeRule(
             pattern_name="Every N Periods",
             interval_n=None,
             offset_periods=0,
         )
-        matched = match_periods(
-            rule, rule.pattern_id, biweekly_periods,
-            biweekly_periods[0].start_date,
-        )
-        # None or 1 = 1 in Python, so every period matches.
-        assert len(matched) == len(biweekly_periods), (
-            f"Expected {len(biweekly_periods)} periods, "
-            f"got {len(matched)}. interval_n=None should "
-            f"default to 1 via 'or 1' fallback."
-        )
+        with pytest.raises(TypeError):
+            match_periods(
+                rule, rule.pattern_id, biweekly_periods,
+                biweekly_periods[0].start_date,
+            )
 
     # -- day_of_month edge cases (monthly) --
 

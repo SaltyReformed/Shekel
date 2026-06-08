@@ -476,8 +476,8 @@ def match_periods(rule, pattern_id, periods, effective_from):
     if pattern_id == _rp_id(RecurrencePatternEnum.EVERY_PERIOD):
         matches = candidates
     elif pattern_id == _rp_id(RecurrencePatternEnum.EVERY_N_PERIODS):
-        n = rule.interval_n or 1
-        offset = rule.offset_periods or 0
+        n = rule.interval_n
+        offset = rule.offset_periods
         matches = [p for p in candidates if (p.period_index - offset) % n == 0]
     elif pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY):
         matches = _match_monthly(candidates, rule.day_of_month or 1)

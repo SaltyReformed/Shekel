@@ -267,7 +267,7 @@ def amount_to_monthly(
     if pattern_id == every_period_id:
         monthly = amount * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
     elif pattern_id == every_n_id:
-        n = Decimal(str(interval_n or 1))
+        n = Decimal(str(interval_n))
         monthly = amount * PAY_PERIODS_PER_YEAR / n / MONTHS_PER_YEAR
     elif pattern_id in (monthly_id, monthly_first_id):
         monthly = amount
