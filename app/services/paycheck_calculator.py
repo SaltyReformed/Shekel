@@ -582,10 +582,15 @@ def apply_raises(base_salary, raises, as_of):
     plain inputs so the pension projector no longer reaches into a private
     symbol with fabricated duck-typed objects (deep-hunt #83).
 
-    Raises are sorted by (effective_year, effective_month) before
-    application so that flat raises apply before percentage raises
-    within the same effective date.  This ensures deterministic
-    results regardless of database query order (M-01).
+    Raises are sorted by (effective_year, effective_month, method)
+    before application -- the method key sorts flat raises ahead of
+    percentage raises -- so that within the same effective date a flat
+    raise applies before a percentage raise.  Raise application is
+    non-commutative (``(salary + flat) * pct`` != ``salary * pct +
+    flat``), so this makes the result deterministic regardless of
+    database query order (M-01; deep-hunt #12 added the method
+    tie-break the original M-01 fix specified but omitted, leaving
+    same-date ties resolved by DB row order).
 
     A raise applies if:
     - Its effective_year matches ``as_of``'s year (or is None for recurring)
@@ -616,7 +621,17 @@ def apply_raises(base_salary, raises, as_of):
 
     sorted_raises = sorted(
         raises,
-        key=lambda r: (r.effective_year or 0, r.effective_month or 0),
+        key=lambda r: (
+            r.effective_year or 0,
+            r.effective_month or 0,
+            # Flat raises sort ahead of percentage within one effective
+            # date so the documented flat-before-percentage order holds
+            # regardless of DB row order (M-01 / deep-hunt #12).  A raise
+            # is exactly one method (ck_salary_raises_one_method) with a
+            # positive amount, so a truthy flat_amount uniquely marks the
+            # flat leg.
+            0 if r.flat_amount else 1,
+        ),
     )
 
     for raise_obj in sorted_raises:
@@ -673,7 +688,14 @@ def _get_raise_event(profile, period):
         eff_year = raise_obj.effective_year
 
         is_match = False
-        if raise_obj.is_recurring and period_month == eff_month:
+        if raise_obj.is_recurring and period_month == eff_month and (
+            not eff_year or period_year >= eff_year
+        ):
+            # A recurring raise recurs at eff_month every year from
+            # eff_year onward (or every year when eff_year is NULL),
+            # matching apply_raises' application gate -- so it must not
+            # badge an event in a calendar year before it takes effect
+            # (deep-hunt #13).
             is_match = True
         elif eff_year == period_year and eff_month == period_month:
             is_match = True

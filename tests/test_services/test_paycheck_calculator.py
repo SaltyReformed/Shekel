@@ -369,6 +369,31 @@ class TestRecurringRaiseCompounding:
         assert result == Decimal("103000.00")
 
 
+class TestRaiseOrdering:
+    """Same-date raises apply flat-before-percentage, deterministically (M-01 / deep-hunt #12)."""
+
+    def test_same_date_flat_applies_before_percentage(self):
+        """A flat + percentage raise on one date apply flat-first, whatever the input order.
+
+        Raise application is non-commutative, so the documented
+        flat-before-percentage contract must hold regardless of the
+        order the DB returns the rows in:
+          flat-first:        (100000 + 5000) * 1.03 = 108150.00
+          percentage-first:   100000 * 1.03 + 5000  = 108000.00
+        The engine must always produce the flat-first value.
+        """
+        flat = FakeRaise(flat_amount="5000", effective_month=1, effective_year=2026)
+        pct = FakeRaise(percentage="0.03", effective_month=1, effective_year=2026)
+        as_of = date(2026, 6, 1)
+        expected = Decimal("108150.00")  # (100000 + 5000) * 1.03
+
+        # Both input orders must yield the flat-first result.  The
+        # [pct, flat] order is the revert-proof case: without the method
+        # tie-break the stable sort keeps percentage first -> 108000.00.
+        assert apply_raises(Decimal("100000"), [flat, pct], as_of) == expected
+        assert apply_raises(Decimal("100000"), [pct, flat], as_of) == expected
+
+
 # ── New Tests ────────────────────────────────────────────────────
 
 
@@ -1201,6 +1226,43 @@ class TestProjectSalary:
         assert result[0].period.raise_event == ""
         assert "MERIT" in result[1].period.raise_event
         assert result[2].period.raise_event == ""
+
+    def test_recurring_raise_event_not_shown_before_effective_year(self, simple_tax_configs):
+        """A recurring raise badges no event in years before its effective_year (deep-hunt #13).
+
+        A recurring raise effective March 2027 must not show a raise
+        event on the March 2026 paycheck (whose gross is unchanged), and
+        must show one once it actually recurs in March 2027.  The pre-fix
+        recurring branch matched on month alone, badging "MERIT" in 2026
+        while apply_raises applied nothing.
+        """
+        profile = FakeProfile(
+            annual_salary=60000,
+            raises=[FakeRaise(percentage="0.03", effective_month=3,
+                              effective_year=2027, is_recurring=True)],
+            created_at=date(2026, 1, 1),
+        )
+        # Before the effective year: no event anywhere in 2026, salary flat.
+        periods_2026 = [
+            FakePeriod(start_date=date(2026, 2, 13), period_id=1),
+            FakePeriod(start_date=date(2026, 3, 13), period_id=2),
+            FakePeriod(start_date=date(2026, 4, 10), period_id=3),
+        ]
+        result_2026 = project_salary(profile, periods_2026, simple_tax_configs)
+        assert all(r.period.raise_event == "" for r in result_2026)
+        assert result_2026[1].earnings.annual_salary == Decimal("60000.00")
+
+        # In the effective year the raise recurs at its month: the event
+        # shows at March 2027 and is absent the month before, so the fix
+        # gates on the year without over-suppressing the legitimate event.
+        periods_2027 = [
+            FakePeriod(start_date=date(2027, 2, 12), period_id=27),
+            FakePeriod(start_date=date(2027, 3, 12), period_id=28),
+        ]
+        result_2027 = project_salary(profile, periods_2027, simple_tax_configs)
+        assert result_2027[0].period.raise_event == ""
+        assert "MERIT" in result_2027[1].period.raise_event
+        assert result_2027[1].earnings.annual_salary == Decimal("61800.00")  # 60000 * 1.03
 
     def test_empty_periods_empty_result(self, base_profile, simple_tax_configs):
         """[] → []."""
