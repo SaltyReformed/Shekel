@@ -326,6 +326,37 @@ class TestTemplateUpdate:
             assert template.name == "Updated Rent"
             assert template.default_amount == Decimal("1300.00")
 
+    def test_update_template_cannot_flip_is_active_or_sort_order(
+        self, app, auth_client, seed_user,
+    ):
+        """POST /templates/<id> never writes is_active / sort_order.
+
+        Those columns are owned by the archive / unarchive routes (which
+        pair the flag flip with the projected-transaction soft-delete this
+        route does not perform).  They are absent from both
+        ``TemplateUpdateSchema`` and ``_TEMPLATE_UPDATE_FIELDS``, so even a
+        crafted form that submits them must leave the stored values
+        untouched while a legitimate field still updates.
+        """
+        with app.app_context():
+            template = _create_template(seed_user)
+            assert template.is_active is True
+            assert template.sort_order == 0
+
+            resp = auth_client.post(f"/templates/{template.id}", data={
+                "name": "Renamed",
+                "is_active": "false",
+                "sort_order": "99",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            db.session.refresh(template)
+            # Legitimate field updated -- the request was processed.
+            assert template.name == "Renamed"
+            # Crafted is_active / sort_order keys were ignored.
+            assert template.is_active is True
+            assert template.sort_order == 0
+
     def test_update_template_validation_error(self, app, auth_client, seed_user):
         """POST /templates/<id> with invalid data shows error."""
         with app.app_context():
