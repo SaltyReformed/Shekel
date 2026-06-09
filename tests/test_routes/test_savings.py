@@ -1335,6 +1335,79 @@ class TestEmergencyFundCommittedBaseline:
                 "small historical average"
             )
 
+    def test_emergency_fund_historical_excludes_non_checking_expenses(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The historical operand counts only checking-account expenses.
+
+        DH-#29: ``_recent_settled_expenses_monthly`` is scoped to the
+        same checking accounts as the committed floor, so a settled
+        expense on a NON-checking account (here a Savings account) no
+        longer inflates the emergency-fund denominator.  With no
+        templates the floor is $0, so the displayed average is driven
+        entirely by the historical operand -- which must reflect only
+        the $120/period checking expenses, not the $300/period Savings
+        ones.  Today is frozen to 2026-03-20 (autouse fixture), so the
+        current period is seed_periods[5] and the recent-6 window is
+        seed_periods[0:6]; seeding every window period the same amount
+        makes the monthly average independent of the exact window.
+        """
+        with app.app_context():
+            # Savings account so the emergency fund section renders and
+            # supplies a non-checking account to spend from.
+            savings = _create_savings_account(
+                seed_user, name="EF Savings",
+                anchor_balance=Decimal("10000.00"),
+            )
+
+            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+            category_id = seed_user["categories"]["Rent"].id
+
+            # $120 on CHECKING and $300 on the non-checking SAVINGS
+            # account in each of the 6 recent (window) periods; no
+            # templates, so the floor is $0 and the historical operand
+            # alone drives the displayed average.
+            for period in seed_periods[0:6]:
+                db.session.add(Transaction(
+                    account_id=seed_user["account"].id,
+                    pay_period_id=period.id,
+                    scenario_id=seed_user["scenario"].id,
+                    status_id=settled_id,
+                    name="Checking Expense",
+                    category_id=category_id,
+                    transaction_type_id=expense_type_id,
+                    estimated_amount=Decimal("120.00"),
+                ))
+                db.session.add(Transaction(
+                    account_id=savings.id,
+                    pay_period_id=period.id,
+                    scenario_id=seed_user["scenario"].id,
+                    status_id=settled_id,
+                    name="Savings Expense",
+                    category_id=category_id,
+                    transaction_type_id=expense_type_id,
+                    estimated_amount=Decimal("300.00"),
+                ))
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+
+            html = resp.data.decode()
+            # Checking-only: $120/period * 26/12 = $260/mo.
+            assert "$260/mo avg expenses" in html, (
+                "Expected the checking-only historical average "
+                "($260/mo); non-checking (Savings) expenses must be "
+                "excluded from the emergency-fund denominator"
+            )
+            # Pre-fix (all accounts): ($120 + $300)/period * 26/12 =
+            # $910/mo -- must NOT appear now that Savings is excluded.
+            assert "$910/mo" not in html, (
+                "Non-checking Savings expenses must not inflate the "
+                "emergency-fund average (would read $910/mo if counted)"
+            )
+
     def test_emergency_fund_with_no_history_uses_committed(
         self, app, auth_client, seed_user, seed_periods,
     ):
