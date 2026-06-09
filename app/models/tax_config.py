@@ -5,6 +5,8 @@ Models for federal tax brackets, state tax config, and FICA rates
 used by the paycheck calculator to compute tax withholdings.
 """
 
+from decimal import Decimal
+
 from app.extensions import db
 from app.models.mixins import CreatedAtMixin, SortOrderMixin, UserScopedMixin
 
@@ -212,24 +214,34 @@ class FicaConfig(UserScopedMixin, CreatedAtMixin, db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     tax_year = db.Column(db.Integer, nullable=False)
+    # E-11 / E-28: every Python-side ``default`` on these
+    # ``Numeric`` money/rate columns is a ``Decimal`` constructed
+    # from a string, matching the C24-5 fix on
+    # ``InvestmentParams.assumed_annual_return`` and the
+    # ``DEFAULT_FICA`` seed (auth_service.py).  Pre-fix these were
+    # ``float``/``int`` literals (``0.0620`` etc.); PostgreSQL
+    # re-quantises on store so the persisted value was unaffected,
+    # but ORM code paths that read ``Column.default.arg`` saw a
+    # float and propagated the imprecision.  The ``server_default``
+    # is the storage-tier counterpart (a SQL string).
     ss_rate = db.Column(
-        db.Numeric(5, 4), nullable=False, default=0.0620,
+        db.Numeric(5, 4), nullable=False, default=Decimal("0.0620"),
         server_default=db.text("0.0620"),
     )
     ss_wage_base = db.Column(
-        db.Numeric(12, 2), nullable=False, default=176100,
+        db.Numeric(12, 2), nullable=False, default=Decimal("176100"),
         server_default=db.text("176100"),
     )
     medicare_rate = db.Column(
-        db.Numeric(5, 4), nullable=False, default=0.0145,
+        db.Numeric(5, 4), nullable=False, default=Decimal("0.0145"),
         server_default=db.text("0.0145"),
     )
     medicare_surtax_rate = db.Column(
-        db.Numeric(5, 4), nullable=False, default=0.0090,
+        db.Numeric(5, 4), nullable=False, default=Decimal("0.0090"),
         server_default=db.text("0.0090"),
     )
     medicare_surtax_threshold = db.Column(
-        db.Numeric(12, 2), nullable=False, default=200000,
+        db.Numeric(12, 2), nullable=False, default=Decimal("200000"),
         server_default=db.text("200000"),
     )
 
