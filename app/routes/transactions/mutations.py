@@ -516,7 +516,9 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
     except IntegrityError:
         db.session.rollback()
         return "Invalid reference. Check that all referenced records exist.", 400
-    logger.info("user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id)
+    logger.info(
+        "user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id
+    )
 
     return _mark_done_success_response(txn, target)
 

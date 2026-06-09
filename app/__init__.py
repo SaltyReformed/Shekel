@@ -511,7 +511,7 @@ def _register_error_handlers(app):
     """Register custom error pages for common HTTP errors."""
 
     @app.errorhandler(400)
-    def bad_request(e):
+    def bad_request(_e):
         """Handle 400 Bad Request errors.
 
         Common triggers: CSRF token validation failure (Flask-WTF
@@ -521,7 +521,7 @@ def _register_error_handlers(app):
         return render_template("errors/400.html"), 400
 
     @app.errorhandler(403)
-    def forbidden(e):
+    def forbidden(_e):
         """Handle 403 Forbidden errors.
 
         Common triggers: permission denied, accessing a resource
@@ -530,7 +530,7 @@ def _register_error_handlers(app):
         return render_template("errors/403.html"), 403
 
     @app.errorhandler(404)
-    def page_not_found(e):
+    def page_not_found(_e):
         """Handle 404 Not Found errors.
 
         Triggers when the requested URL does not match any route.
@@ -538,7 +538,7 @@ def _register_error_handlers(app):
         return render_template("errors/404.html"), 404
 
     @app.errorhandler(429)
-    def rate_limit_exceeded(e):
+    def rate_limit_exceeded(_e):
         """Return the 429 error page with a Retry-After header.
 
         Also emits a structured ``rate_limit_exceeded`` log event
@@ -580,7 +580,7 @@ def _register_error_handlers(app):
         return response
 
     @app.errorhandler(500)
-    def internal_server_error(e):
+    def internal_server_error(_e):
         """Handle 500 Internal Server Error.
 
         Triggers on unhandled exceptions in route handlers or

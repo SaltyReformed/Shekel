@@ -47,7 +47,10 @@ class PaycheckDeduction(
     __tablename__ = "paycheck_deductions"
     __table_args__ = (
         db.CheckConstraint("amount > 0", name="ck_paycheck_deductions_positive_amount"),
-        db.CheckConstraint("deductions_per_year > 0", name="ck_paycheck_deductions_positive_per_year"),
+        db.CheckConstraint(
+            "deductions_per_year > 0",
+            name="ck_paycheck_deductions_positive_per_year",
+        ),
         db.CheckConstraint(
             "annual_cap IS NULL OR annual_cap > 0",
             name="ck_paycheck_deductions_positive_cap",
