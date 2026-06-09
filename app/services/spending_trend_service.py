@@ -18,12 +18,13 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.account_resolver import resolve_analytics_account
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.balance_predicates import settled_status_ids
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,6 @@ _ZERO = Decimal("0")
 
 # Percentage change below this absolute value is considered flat.
 _FLAT_THRESHOLD = Decimal("1")  # 1%
-
-# Settled status IDs -- only paid transactions count for trends.
-_SETTLED_STATUSES = frozenset({
-    StatusEnum.DONE,
-    StatusEnum.RECEIVED,
-    StatusEnum.SETTLED,
-})
 
 # Maximum items in the top-increasing / top-decreasing lists.
 _TOP_N = 5
@@ -192,7 +186,6 @@ def _count_distinct_paid_months(
     attribution, consistent with the calendar and variance services.
     """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    settled_ids = _get_settled_status_ids()
 
     rows = (
         db.session.query(Transaction)
@@ -202,7 +195,7 @@ def _count_distinct_paid_months(
             Transaction.scenario_id == scenario_id,
             Transaction.is_deleted.is_(False),
             Transaction.transaction_type_id == expense_type_id,
-            Transaction.status_id.in_(settled_ids),
+            Transaction.status_id.in_(settled_status_ids()),
             PayPeriod.user_id == user_id,
         )
         .all()
@@ -277,7 +270,6 @@ def _query_paid_expenses(
     Eager-loads category and pay_period to prevent N+1 queries.
     """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    settled_ids = _get_settled_status_ids()
 
     # Pylint: ``duplicate-code`` -- settled-expense query for the
     # spending-trend report.  The account / scenario / period /
@@ -299,7 +291,7 @@ def _query_paid_expenses(
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),
             Transaction.transaction_type_id == expense_type_id,
-            Transaction.status_id.in_(settled_ids),
+            Transaction.status_id.in_(settled_status_ids()),
         )
         .all()
     )
@@ -613,11 +605,6 @@ def _compute_avg_days_before_due(txns: list[Transaction]) -> Decimal | None:
     return (
         Decimal(str(total)) / Decimal(str(len(days_values)))
     ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
-
-
-def _get_settled_status_ids() -> list[int]:
-    """Return status IDs for settled statuses (Done, Received, Settled)."""
-    return [ref_cache.status_id(s) for s in _SETTLED_STATUSES]
 
 
 def _empty_report(

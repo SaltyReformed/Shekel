@@ -28,7 +28,11 @@ from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
+from app.enums import (
+    AcctTypeEnum,
+    CompoundingFrequencyEnum,
+    EmployerContributionTypeEnum,
+)
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
@@ -159,7 +163,15 @@ def create_account():
         flash("An account with that name already exists.", "warning")
         return redirect(url_for("accounts.new_account"))
 
-    anchor_balance = Decimal(str(data.pop("anchor_balance", "0") or "0"))
+    # ``anchor_balance`` is an optional Decimal field; the schema's
+    # ``@pre_load`` strips empty submissions, so a missing key -- not a
+    # falsy zero -- means "no opening balance".  Branch on presence
+    # (``is None``), never on Decimal truthiness: a legitimately-entered
+    # zero opening balance is a value, not a missing balance.
+    raw_anchor = data.pop("anchor_balance", None)
+    anchor_balance = (
+        Decimal(str(raw_anchor)) if raw_anchor is not None else Decimal("0")
+    )
 
     # E-19 (Commit 3): the canonical factory in
     # ``app.services.account_service.create_account`` materializes
@@ -209,8 +221,15 @@ def create_account():
     # ghost interest is projected.
     if account_type and account_type.has_interest:
         if not db.session.query(InterestParams).filter_by(account_id=account.id).first():
+            # #38: compounding frequency is a ref FK now, so the
+            # auto-create supplies the DAILY id explicitly (the prior
+            # ``server_default="daily"`` is gone -- an FK id is not a
+            # static literal).
             db.session.add(InterestParams(
                 account_id=account.id, apy=Decimal("0"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
             ))
 
     # Investment/retirement: auto-create InvestmentParams with sensible defaults.
@@ -221,7 +240,17 @@ def create_account():
             and not account_type.has_interest
             and not account_type.has_amortization):
         if not db.session.query(InvestmentParams).filter_by(account_id=account.id).first():
-            db.session.add(InvestmentParams(account_id=account.id))
+            # #38: employer-contribution type is a ref FK now, so the
+            # auto-create supplies the NONE id explicitly (the prior
+            # ``server_default="'none'"`` is gone).
+            db.session.add(InvestmentParams(
+                account_id=account.id,
+                employer_contribution_type_id=(
+                    ref_cache.employer_contribution_type_id(
+                        EmployerContributionTypeEnum.NONE,
+                    )
+                ),
+            ))
 
     db.session.commit()
 
@@ -356,7 +385,9 @@ def update_account(account_id):
     def _clear_anchor_entries_if_changed():
         """Clear checking entries on an anchor true-up (in-transaction step)."""
         if anchor_changed and account.account_type_id == checking_type_id:
-            entry_service.clear_entries_for_anchor_true_up(current_user.id)
+            entry_service.clear_entries_for_anchor_true_up(
+                current_user.id, account.id,
+            )
 
     # The clear-entries step must run inside the same stale-race guard as
     # the commit (it flushes and can itself raise StaleDataError).

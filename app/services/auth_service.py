@@ -603,14 +603,35 @@ def verify_password(plain_password, password_hash):
         return False
 
 
+# Timing-equalization dummy hash (deep-hunt #27).  ``authenticate`` runs a
+# throwaway bcrypt verification against this hash on the no-user branch so
+# an unknown email costs the same wall-clock time as a known email with a
+# wrong password.  Without it the no-user branch returns before any bcrypt
+# work while the wrong-password branch pays a full ``bcrypt.checkpw``,
+# letting an attacker enumerate registered addresses by timing ``/login``
+# despite the constant response message.  Generated once at import with the
+# same default cost factor as real password hashes (``bcrypt.gensalt()`` in
+# :func:`hash_password`), so if bcrypt's default rounds change the
+# equalization cost tracks it automatically.  The plaintext is irrelevant --
+# only the ``bcrypt.checkpw`` cost matters and the verification result is
+# always discarded.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(
+    b"shekel-timing-equalization-placeholder", bcrypt.gensalt()
+).decode("utf-8")
+
+
 def authenticate(email, password):
     """Authenticate a user by email and password, enforcing account lockout.
 
     Lockout flow (audit finding F-033 / commit C-11):
 
-      * If no user matches ``email`` -- raise ``AuthError`` with the
-        same generic message used for wrong-password to avoid email
-        enumeration via response content.
+      * If no user matches ``email`` -- run one throwaway bcrypt
+        verification against ``_DUMMY_PASSWORD_HASH`` (timing
+        equalization, deep-hunt #27) so this branch costs the same as a
+        wrong-password attempt, then raise ``AuthError`` with the same
+        generic message used for wrong-password.  This closes the
+        response-content AND the response-timing email-enumeration
+        oracle.
       * If the user row's ``locked_until`` is set and still in the
         future -- raise ``AuthError`` WITHOUT calling
         :func:`verify_password`.  Skipping the bcrypt step means an
@@ -657,6 +678,14 @@ def authenticate(email, password):
     """
     user = db.session.query(User).filter_by(email=email).first()
     if user is None:
+        # Timing equalization (deep-hunt #27): pay the same bcrypt cost as
+        # the wrong-password branch below so the no-user response is not
+        # measurably faster, which would let an attacker enumerate
+        # registered emails by timing /login.  verify_password mirrors the
+        # real branch's input-validation short-circuits exactly (empty /
+        # non-string passwords stay fast on both paths), so timing matches
+        # for every input shape.  The result is intentionally discarded.
+        verify_password(password, _DUMMY_PASSWORD_HASH)
         raise AuthError("Invalid email or password.")
 
     now = datetime.now(timezone.utc)

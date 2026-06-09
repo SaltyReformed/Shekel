@@ -379,3 +379,47 @@ class UserRole(db.Model):
 
     def __repr__(self):
         return f"<UserRole {self.name}>"
+
+
+class EmployerContributionType(db.Model):
+    """Employer-contribution type reference: 'none', 'flat_percentage', 'match'.
+
+    Selects the employer retirement-contribution formula the growth
+    engine applies to an investment/retirement account.  Application
+    code resolves these via ``ref_cache.employer_contribution_type_id``
+    and branches on the integer ID -- never the string name --
+    matching the project-wide ``ref-table: IDs for logic, strings for
+    display only`` invariant (#38; replaced the prior free-string
+    ``investment_params.employer_contribution_type`` column).
+    """
+
+    __tablename__ = "employer_contribution_types"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<EmployerContributionType {self.name}>"
+
+
+class CompoundingFrequency(db.Model):
+    """Interest compounding frequency reference: 'daily', 'monthly', 'quarterly'.
+
+    Selects the per-period compounding formula the interest projection
+    engine applies to an interest-bearing account.  Application code
+    resolves these via ``ref_cache.compounding_frequency_id`` and
+    branches on the integer ID -- never the string name -- matching
+    the project-wide ``ref-table: IDs for logic, strings for display
+    only`` invariant (#38; replaced the prior free-string
+    ``interest_params.compounding_frequency`` column).
+    """
+
+    __tablename__ = "compounding_frequencies"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(12), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<CompoundingFrequency {self.name}>"

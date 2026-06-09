@@ -6,6 +6,8 @@ and account hard-delete (5A.5-4).
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import CompoundingFrequencyEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.category import Category
@@ -57,6 +59,9 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA"):
     # HIGH-06 / Commit 24: ``apy`` NOT NULL with no server_default.
     params = InterestParams(
         account_id=account.id, apy=Decimal("0.04500"),
+        compounding_frequency_id=ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.DAILY,
+        ),
     )
     db_session.add(params)
     db_session.commit()

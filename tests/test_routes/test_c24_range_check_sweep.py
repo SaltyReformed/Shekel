@@ -43,6 +43,8 @@ from marshmallow import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from app import ref_cache
+from app.enums import CompoundingFrequencyEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.calibration_override import CalibrationOverride
@@ -599,9 +601,11 @@ class TestInterestParamsCheck:
                 db.session.execute(
                     text(
                         "INSERT INTO budget.interest_params "
-                        "(account_id, apy, compounding_frequency, "
+                        "(account_id, apy, compounding_frequency_id, "
                         " created_at, updated_at) "
-                        "VALUES (:aid, 1.5, 'daily', now(), now())"
+                        "VALUES (:aid, 1.5, "
+                        "(SELECT id FROM ref.compounding_frequencies "
+                        " WHERE name = 'daily'), now(), now())"
                     ),
                     {"aid": account.id},
                 )
@@ -616,7 +620,9 @@ class TestInterestParamsCheck:
             params = InterestParams(
                 account_id=account.id,
                 apy=Decimal("1.00000"),
-                compounding_frequency="daily",
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
             )
             db.session.add(params)
             db.session.commit()
@@ -629,9 +635,11 @@ class TestInterestParamsCheck:
                 db.session.execute(
                     text(
                         "INSERT INTO budget.interest_params "
-                        "(account_id, apy, compounding_frequency, "
+                        "(account_id, apy, compounding_frequency_id, "
                         " created_at, updated_at) "
-                        "VALUES (:aid, -0.01, 'daily', now(), now())"
+                        "VALUES (:aid, -0.01, "
+                        "(SELECT id FROM ref.compounding_frequencies "
+                        " WHERE name = 'daily'), now(), now())"
                     ),
                     {"aid": account.id},
                 )
@@ -655,10 +663,11 @@ class TestInvestmentParamsCheck:
                         "INSERT INTO budget.investment_params "
                         "(account_id, assumed_annual_return, "
                         " annual_contribution_limit, "
-                        " employer_contribution_type, "
+                        " employer_contribution_type_id, "
                         " created_at, updated_at) "
-                        "VALUES (:aid, 0.07, -1.00, 'none', "
-                        "        now(), now())"
+                        "VALUES (:aid, 0.07, -1.00, "
+                        "(SELECT id FROM ref.employer_contribution_types "
+                        " WHERE name = 'none'), now(), now())"
                     ),
                     {"aid": account.id},
                 )
@@ -674,10 +683,12 @@ class TestInvestmentParamsCheck:
                     text(
                         "INSERT INTO budget.investment_params "
                         "(account_id, assumed_annual_return, "
-                        " employer_contribution_type, "
+                        " employer_contribution_type_id, "
                         " employer_flat_percentage, "
                         " created_at, updated_at) "
-                        "VALUES (:aid, 0.07, 'flat_percentage', 1.5, "
+                        "VALUES (:aid, 0.07, "
+                        "(SELECT id FROM ref.employer_contribution_types "
+                        " WHERE name = 'flat_percentage'), 1.5, "
                         "        now(), now())"
                     ),
                     {"aid": account.id},
@@ -700,10 +711,12 @@ class TestInvestmentParamsCheck:
                     text(
                         "INSERT INTO budget.investment_params "
                         "(account_id, assumed_annual_return, "
-                        " employer_contribution_type, "
+                        " employer_contribution_type_id, "
                         " employer_match_percentage, "
                         " created_at, updated_at) "
-                        "VALUES (:aid, 0.07, 'match', 9.9999, "
+                        "VALUES (:aid, 0.07, "
+                        "(SELECT id FROM ref.employer_contribution_types "
+                        " WHERE name = 'match'), 9.9999, "
                         "        now(), now())"
                     ),
                     {"aid": account.id},
@@ -742,10 +755,12 @@ class TestInvestmentParamsCheck:
                     text(
                         "INSERT INTO budget.investment_params "
                         "(account_id, assumed_annual_return, "
-                        " employer_contribution_type, "
+                        " employer_contribution_type_id, "
                         " employer_match_cap_percentage, "
                         " created_at, updated_at) "
-                        "VALUES (:aid, 0.07, 'match', 1.5, "
+                        "VALUES (:aid, 0.07, "
+                        "(SELECT id FROM ref.employer_contribution_types "
+                        " WHERE name = 'match'), 1.5, "
                         "        now(), now())"
                     ),
                     {"aid": account.id},

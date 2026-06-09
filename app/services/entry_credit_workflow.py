@@ -23,6 +23,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import pay_period_service
 from app.services.credit_workflow import (
     create_cc_payback_transaction,
+    get_active_payback,
     get_or_create_cc_category,
     lock_source_transaction_for_payback,
 )
@@ -113,12 +114,10 @@ def sync_entry_payback(
         (e.amount for e in credit_entries), Decimal("0"),
     )
 
-    # Find existing payback (same query pattern as credit_workflow.py).
-    existing_payback = (
-        db.session.query(Transaction)
-        .filter_by(credit_payback_for_id=txn.id)
-        .first()
-    )
+    # Find the live payback (shared definition with credit_workflow;
+    # excludes soft-deleted rows so a prior soft-deleted payback is not
+    # resurrected and mutated -- a fresh one is created instead).
+    existing_payback = get_active_payback(txn.id)
 
     if total_credit > 0:
         if existing_payback is None:

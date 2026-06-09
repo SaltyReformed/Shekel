@@ -346,7 +346,7 @@ def capped_social_security(gross, cumulative_wages, fica_config, *, ss_rate=None
         Decimal: SS tax for the period, quantised HALF_UP to two places.
     """
     if fica_config is None:
-        return ZERO.quantize(TWO_PLACES)
+        return ZERO.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     gross = Decimal(str(gross))
     cumulative = Decimal(str(cumulative_wages))

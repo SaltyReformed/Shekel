@@ -2,7 +2,7 @@
 Shekel Budget App -- Unit Tests for Paycheck Calculator
 
 Tests the recurring raise compounding logic in
-paycheck_calculator._apply_raises() and the full calculate_paycheck()
+paycheck_calculator.apply_raises() and the full calculate_paycheck()
 pipeline including deductions, taxes, 3rd-paycheck detection, inflation,
 cumulative wages, and project_salary().
 """
@@ -15,7 +15,7 @@ import pytest
 from app.services.exceptions import InvalidGrossPayError
 from app.services.tax_calculator import calculate_fica
 from app.services.paycheck_calculator import (
-    _apply_raises,
+    apply_raises,
     _is_third_paycheck,
     _is_first_paycheck_of_month,
     _inflation_years,
@@ -89,7 +89,8 @@ class FakeDeduction:
     def __init__(self, name="401k", amount="200", deductions_per_year=26,
                  calc_method="flat", deduction_timing="pre_tax",
                  inflation_enabled=False, inflation_rate=None,
-                 inflation_effective_month=None, is_active=True):
+                 inflation_effective_month=None, is_active=True,
+                 annual_cap=None):
         self.name = name
         self.amount = Decimal(str(amount))
         self.deductions_per_year = deductions_per_year
@@ -99,6 +100,9 @@ class FakeDeduction:
         self.inflation_rate = Decimal(str(inflation_rate)) if inflation_rate else None
         self.inflation_effective_month = inflation_effective_month
         self.is_active = is_active
+        # Calendar-year dollar ceiling (PaycheckDeduction.annual_cap); None =
+        # uncapped.  Mirrors the real model column the calculator clamps on.
+        self.annual_cap = Decimal(str(annual_cap)) if annual_cap is not None else None
         # Resolve integer IDs from the ref_cache for ID-based comparisons.
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import CalcMethodEnum, DeductionTimingEnum  # pylint: disable=import-outside-toplevel
@@ -242,7 +246,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2026, 2, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("100000.00")
 
     def test_recurring_raise_first_year_at_effective_month(self):
@@ -253,7 +257,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2026, 3, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03 = 103000
         assert result == Decimal("103000.00")
 
@@ -265,7 +269,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2026, 6, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("103000.00")
 
     def test_recurring_raise_second_year_before_month(self):
@@ -276,7 +280,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2027, 1, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # Only 1 full year passed (2027 - 2026 = 1), but month not reached
         assert result == Decimal("103000.00")
 
@@ -288,7 +292,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2027, 4, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03 * 1.03 = 106090
         assert result == Decimal("106090.00")
 
@@ -300,7 +304,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2028, 6, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03^3 = 109272.70
         expected = (Decimal("100000") * Decimal("1.03") ** 3).quantize(Decimal("0.01"))
         assert result == expected
@@ -314,7 +318,7 @@ class TestRecurringRaiseCompounding:
         )
         # Check in 2027 -- still just one application.
         period = FakePeriod(start_date=date(2027, 6, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("105000.00")
 
     def test_recurring_flat_raise(self):
@@ -325,7 +329,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2028, 6, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 3 applications: 100000 + 5000 + 5000 + 5000 = 115000
         assert result == Decimal("115000.00")
 
@@ -344,7 +348,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2027, 3, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03^2 = 106090
         assert result == Decimal("106090.00")
 
@@ -361,8 +365,33 @@ class TestRecurringRaiseCompounding:
                               effective_year=None, is_recurring=True)],
         )
         period = FakePeriod(start_date=date(2027, 4, 1))
-        result = _apply_raises(profile, period)
+        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("103000.00")
+
+
+class TestRaiseOrdering:
+    """Same-date raises apply flat-before-percentage, deterministically (M-01 / deep-hunt #12)."""
+
+    def test_same_date_flat_applies_before_percentage(self):
+        """A flat + percentage raise on one date apply flat-first, whatever the input order.
+
+        Raise application is non-commutative, so the documented
+        flat-before-percentage contract must hold regardless of the
+        order the DB returns the rows in:
+          flat-first:        (100000 + 5000) * 1.03 = 108150.00
+          percentage-first:   100000 * 1.03 + 5000  = 108000.00
+        The engine must always produce the flat-first value.
+        """
+        flat = FakeRaise(flat_amount="5000", effective_month=1, effective_year=2026)
+        pct = FakeRaise(percentage="0.03", effective_month=1, effective_year=2026)
+        as_of = date(2026, 6, 1)
+        expected = Decimal("108150.00")  # (100000 + 5000) * 1.03
+
+        # Both input orders must yield the flat-first result.  The
+        # [pct, flat] order is the revert-proof case: without the method
+        # tie-break the stable sort keeps percentage first -> 108000.00.
+        assert apply_raises(Decimal("100000"), [flat, pct], as_of) == expected
+        assert apply_raises(Decimal("100000"), [pct, flat], as_of) == expected
 
 
 # ── New Tests ────────────────────────────────────────────────────
@@ -868,6 +897,132 @@ class TestDeductionCalculation:
         )
 
 
+class TestDeductionAnnualCap:
+    """``PaycheckDeduction.annual_cap`` throttles a deduction once its
+    calendar-year total reaches the cap, then resumes the next January
+    (deep-hunt #2 -- the cap was stored/validated/rendered but never
+    enforced).  Each test would fail with the cap unenforced (the old
+    behavior subtracted the full amount every period).
+    """
+
+    @staticmethod
+    def _gross(annual="60000"):
+        return (Decimal(annual) / 26).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+    def _amounts_over(self, profile, periods, *, timing="pre_tax", is_third=False):
+        """Per-period deduction amount for the single deduction on ``profile``."""
+        gross = self._gross(str(profile.annual_salary))
+        amounts = []
+        for p in periods:
+            lines = _calculate_deductions(
+                _DeductionContext(profile, p, periods, gross, is_third),
+                _timing_id(timing),
+            )
+            amounts.append(lines[0].amount)
+        return amounts
+
+    def test_flat_deduction_clamps_to_cap_then_stops(self):
+        """$600/period under a $1000 cap applies 600, 400, 0, 0."""
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="HSA", amount="600",
+                                      annual_cap="1000")],
+        )
+        # Four 2026 periods; deductions_per_year defaults to 26 (no cadence
+        # skip), so only the cap zeroes the later periods.
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+            FakePeriod(start_date=date(2026, 2, 13), period_id=4),
+        ]
+        # P1: YTD 0 -> full 600.  P2: YTD 600, room 400 -> 400 (lands on cap).
+        # P3, P4: YTD 1200 >= cap -> 0.  Sum of applied == 1000 exactly.
+        assert self._amounts_over(profile, periods) == [
+            Decimal("600"), Decimal("400"), Decimal("0"), Decimal("0"),
+        ]
+
+    def test_cap_with_room_does_not_throttle(self):
+        """A cap above the annual total leaves every period at full amount."""
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="401k", amount="200",
+                                      annual_cap="100000")],
+        )
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+        ]
+        # 200/period never approaches a $100k cap -> unchanged.
+        assert self._amounts_over(profile, periods) == [
+            Decimal("200"), Decimal("200"),
+        ]
+
+    def test_cap_is_calendar_year_scoped_and_resets(self):
+        """The cap resets each January: a new-year period starts fresh."""
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="HSA", amount="600",
+                                      annual_cap="1000")],
+        )
+        periods = [
+            FakePeriod(start_date=date(2026, 12, 4), period_id=1),
+            FakePeriod(start_date=date(2026, 12, 18), period_id=2),
+            FakePeriod(start_date=date(2027, 1, 1), period_id=3),
+        ]
+        # 2026 exhausts the cap (600 then 400); the 2027 period counts only
+        # same-year prior periods (none), so the cap is fresh -> full 600.
+        assert self._amounts_over(profile, periods) == [
+            Decimal("600"), Decimal("400"), Decimal("600"),
+        ]
+
+    def test_percentage_deduction_capped_on_dollar_total(self):
+        """A percentage deduction is clamped on its cumulative dollar amount."""
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="401k", amount="0.10",
+                                      calc_method="percentage",
+                                      annual_cap="400")],
+        )
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+        ]
+        # gross 60000/26 = 2307.69; 10% = 230.77/period.  P1: 230.77.
+        # P2: room 400-230.77 = 169.23 -> 169.23.  P3: cap exhausted -> 0.
+        assert self._amounts_over(profile, periods) == [
+            Decimal("230.77"), Decimal("169.23"), Decimal("0"),
+        ]
+
+    def test_capped_deduction_raises_net_pay_once_exhausted(self):
+        """End-to-end: a capped-out period nets more than a pre-cap period.
+
+        Proves the clamp flows through ``calculate_paycheck`` to net pay --
+        the headline harm in deep-hunt #2 was understated net pay.
+        """
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="HSA", amount="600",
+                                      deduction_timing="post_tax",
+                                      annual_cap="1000")],
+        )
+        periods = [
+            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
+            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+        ]
+        configs = {"bracket_set": None, "state_config": None, "fica_config": None}
+        nets = [
+            calculate_paycheck(profile, p, periods, configs).earnings.net_pay
+            for p in periods
+        ]
+        # Post-tax deduction reduces net directly.  P1 takes 600, P2 takes the
+        # capped 400, P3 takes 0 -> net rises as the deduction shrinks.
+        assert nets[1] - nets[0] == Decimal("200.00")  # 600 - 400 deducted
+        assert nets[2] - nets[1] == Decimal("400.00")  # 400 - 0 deducted
+
+
 class TestThirdPaycheckDetection:
     """Tests for _is_third_paycheck()."""
 
@@ -1071,6 +1226,43 @@ class TestProjectSalary:
         assert result[0].period.raise_event == ""
         assert "MERIT" in result[1].period.raise_event
         assert result[2].period.raise_event == ""
+
+    def test_recurring_raise_event_not_shown_before_effective_year(self, simple_tax_configs):
+        """A recurring raise badges no event in years before its effective_year (deep-hunt #13).
+
+        A recurring raise effective March 2027 must not show a raise
+        event on the March 2026 paycheck (whose gross is unchanged), and
+        must show one once it actually recurs in March 2027.  The pre-fix
+        recurring branch matched on month alone, badging "MERIT" in 2026
+        while apply_raises applied nothing.
+        """
+        profile = FakeProfile(
+            annual_salary=60000,
+            raises=[FakeRaise(percentage="0.03", effective_month=3,
+                              effective_year=2027, is_recurring=True)],
+            created_at=date(2026, 1, 1),
+        )
+        # Before the effective year: no event anywhere in 2026, salary flat.
+        periods_2026 = [
+            FakePeriod(start_date=date(2026, 2, 13), period_id=1),
+            FakePeriod(start_date=date(2026, 3, 13), period_id=2),
+            FakePeriod(start_date=date(2026, 4, 10), period_id=3),
+        ]
+        result_2026 = project_salary(profile, periods_2026, simple_tax_configs)
+        assert all(r.period.raise_event == "" for r in result_2026)
+        assert result_2026[1].earnings.annual_salary == Decimal("60000.00")
+
+        # In the effective year the raise recurs at its month: the event
+        # shows at March 2027 and is absent the month before, so the fix
+        # gates on the year without over-suppressing the legitimate event.
+        periods_2027 = [
+            FakePeriod(start_date=date(2027, 2, 12), period_id=27),
+            FakePeriod(start_date=date(2027, 3, 12), period_id=28),
+        ]
+        result_2027 = project_salary(profile, periods_2027, simple_tax_configs)
+        assert result_2027[0].period.raise_event == ""
+        assert "MERIT" in result_2027[1].period.raise_event
+        assert result_2027[1].earnings.annual_salary == Decimal("61800.00")  # 60000 * 1.03
 
     def test_empty_periods_empty_result(self, base_profile, simple_tax_configs):
         """[] → []."""

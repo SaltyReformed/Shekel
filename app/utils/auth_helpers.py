@@ -280,10 +280,14 @@ def get_accessible_transaction(txn_id):
     "not found" and "not accessible" so the caller returns 404 in either
     case.
 
-    Unlike :func:`get_or_404` / :func:`get_owned_via_parent`, this helper
-    does not emit a denial ``log_event``; it preserves verbatim the
-    pre-extraction inline behaviour of the two routes it unifies, which
-    were silent on the companion-visibility denial.
+    Mirrors :func:`get_or_404`'s F-144 logging contract (deep-hunt #85):
+    a missing PK emits ``resource_not_found`` at INFO; an ownership or
+    companion-visibility denial emits ``access_denied_cross_user`` at
+    WARNING.  The requesting user's id is read through
+    :func:`_safe_user_id` and the role / linked-owner reads use
+    ``getattr`` fallbacks, so an anonymous or misordered-decorator call
+    denies-and-logs (``user_id`` ``None`` => "anonymous probe") rather
+    than raising ``AttributeError`` -- exactly like the sibling helpers.
 
     Args:
         txn_id: Integer primary key of the transaction.
@@ -293,17 +297,48 @@ def get_accessible_transaction(txn_id):
     """
     txn = db.session.get(Transaction, txn_id)
     if txn is None:
+        log_event(
+            logger, logging.INFO,
+            EVT_RESOURCE_NOT_FOUND, ACCESS,
+            "Ownership check on a non-existent primary key",
+            user_id=_safe_user_id(),
+            model=Transaction.__name__,
+            pk=txn_id,
+            path=request.path,
+        )
         return None
+    requester_id = _safe_user_id()
+    owner_id = txn.pay_period.user_id
     companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
-    if current_user.role_id == companion_role_id:
+    if getattr(current_user, "role_id", None) == companion_role_id:
         # Companion path: linked owner's data + companion-visible
         # (resolved from the template, or the row's own flag for ad-hoc).
-        if (txn.pay_period.user_id != current_user.linked_owner_id
+        if (owner_id != getattr(current_user, "linked_owner_id", None)
                 or not txn.visible_to_companion):
+            log_event(
+                logger, logging.WARNING,
+                EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
+                "Companion transaction access blocked",
+                user_id=requester_id,
+                model=Transaction.__name__,
+                pk=txn_id,
+                owner_id=owner_id,
+                path=request.path,
+            )
             return None
     else:
         # Owner path: standard pay-period ownership check.
-        if txn.pay_period.user_id != current_user.id:
+        if owner_id != requester_id:
+            log_event(
+                logger, logging.WARNING,
+                EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
+                "Cross-user transaction access blocked",
+                user_id=requester_id,
+                model=Transaction.__name__,
+                pk=txn_id,
+                owner_id=owner_id,
+                path=request.path,
+            )
             return None
     return txn
 

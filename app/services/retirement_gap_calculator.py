@@ -142,7 +142,11 @@ def calculate_gap(
     # Step 3: Monthly income gap.
     # Use after-tax pension when available for apples-to-apples comparison
     # with net (post-tax) current income.
-    effective_pension = after_tax_monthly_pension if after_tax_monthly_pension is not None else monthly_pension_income
+    effective_pension = (
+        after_tax_monthly_pension
+        if after_tax_monthly_pension is not None
+        else monthly_pension_income
+    )
     monthly_income_gap = max(
         pre_retirement_net_monthly - effective_pension,
         ZERO,

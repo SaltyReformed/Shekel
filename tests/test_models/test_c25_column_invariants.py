@@ -48,6 +48,8 @@ F_068_LOCKED_COLUMNS = [
     ("budget", "categories", "is_active", "true"),
     ("budget", "categories", "sort_order", "0"),
     ("budget", "escrow_components", "is_active", "true"),
+    ("budget", "recurrence_rules", "interval_n", "1"),
+    ("budget", "recurrence_rules", "offset_periods", "0"),
     ("budget", "savings_goals", "is_active", "true"),
     ("budget", "scenarios", "is_baseline", "false"),
     ("budget", "transaction_templates", "is_active", "true"),
@@ -73,7 +75,11 @@ F_134_RESTORED_COLUMNS = [
     ("budget", "transfers", "is_override", "false"),
     ("budget", "transfers", "is_deleted", "false"),
     ("budget", "investment_params", "assumed_annual_return", "0.07000"),
-    ("budget", "investment_params", "employer_contribution_type", "'none'"),
+    # #38: ``employer_contribution_type`` (the free-string column with a
+    # ``'none'`` server_default) was promoted to the ref FK
+    # ``employer_contribution_type_id`` -- a ref FK carries no
+    # server_default (an id is not a static literal), so it is no longer
+    # an F-134 restored-default column.
     ("salary", "fica_configs", "ss_rate", "0.0620"),
     ("salary", "fica_configs", "ss_wage_base", "176100"),
     ("salary", "fica_configs", "medicare_rate", "0.0145"),
@@ -247,6 +253,39 @@ def test_server_default_fills_omitted_sort_order_integer(db, seed_user):
     ), {"user_id": user_id}).one()
     assert row.sort_order == 0
     assert row.is_active is True
+
+
+def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
+    """A raw INSERT omitting interval_n / offset_periods gets 1 / 0.
+
+    These two recurrence integers are logic-bearing divisors
+    (``interval_n`` is the modulus in ``recurrence_engine.match_periods``;
+    ``offset_periods`` shifts the cycle), and their CHECK constraints
+    (``interval_n > 0`` / ``offset_periods >= 0``) treat a NULL operand
+    as satisfied, so before this migration a raw INSERT could land a
+    meaningless NULL.  The server_default must now fill the documented
+    logical defaults on a storage-tier-only INSERT.
+    """
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+    from app.enums import (  # pylint: disable=import-outside-toplevel
+        RecurrencePatternEnum,
+    )
+
+    user_id = seed_user["user"].id
+    pattern_id = ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.EVERY_PERIOD,
+    )
+    db.session.execute(db.text(
+        "INSERT INTO budget.recurrence_rules (user_id, pattern_id) "
+        "VALUES (:user_id, :pattern_id)"
+    ), {"user_id": user_id, "pattern_id": pattern_id})
+    db.session.commit()
+    row = db.session.execute(db.text(
+        "SELECT interval_n, offset_periods FROM budget.recurrence_rules "
+        "WHERE user_id = :user_id AND pattern_id = :pattern_id"
+    ), {"user_id": user_id, "pattern_id": pattern_id}).one()
+    assert row.interval_n == 1
+    assert row.offset_periods == 0
 
 
 def test_transactions_is_override_and_is_deleted_default_to_false(

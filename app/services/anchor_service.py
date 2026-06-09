@@ -205,9 +205,10 @@ def apply_anchor_true_up(
         anchor_period: The :class:`PayPeriod` to anchor against.
             Resolved by the caller (typically
             ``pay_period_service.get_current_period``).
-        user_id: ``auth.users.id`` of the account owner.  Forwarded to
-            ``entry_service.clear_entries_for_anchor_true_up`` for
-            the per-owner entry-reconcile filter.
+        user_id: ``auth.users.id`` of the account owner.  Forwarded
+            (with ``account.id``) to
+            ``entry_service.clear_entries_for_anchor_true_up`` for the
+            per-owner, per-account entry-reconcile filter.
 
     Returns:
         AnchorTrueUpOutcome -- which response the route should render.
@@ -231,7 +232,7 @@ def apply_anchor_true_up(
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     try:
         if account.account_type_id == checking_type_id:
-            entry_service.clear_entries_for_anchor_true_up(user_id)
+            entry_service.clear_entries_for_anchor_true_up(user_id, account.id)
         db.session.commit()
     except StaleDataError:
         db.session.rollback()

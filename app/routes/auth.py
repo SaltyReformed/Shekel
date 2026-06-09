@@ -24,7 +24,17 @@ import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, session as flask_session, url_for
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    flash,
+    redirect,
+    render_template,
+    request,
+    session as flask_session,
+    url_for,
+)
 from flask_login import current_user, login_required, login_user, logout_user
 
 from cryptography.fernet import InvalidToken

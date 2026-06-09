@@ -169,3 +169,31 @@ class LoanAnchorSourceEnum(enum.Enum):
 
     ORIGINATION = "origination"
     USER_TRUEUP = "user_trueup"
+
+
+class EmployerContributionTypeEnum(enum.Enum):
+    """Employer retirement-contribution type values (#38).
+
+    Selects the employer-contribution formula the growth engine
+    applies to an investment/retirement account: no employer
+    contribution, a flat percentage of gross pay, or a match of the
+    employee's contribution up to a cap.  Values match
+    ``ref.employer_contribution_types.name``.
+    """
+
+    NONE = "none"
+    FLAT_PERCENTAGE = "flat_percentage"
+    MATCH = "match"
+
+
+class CompoundingFrequencyEnum(enum.Enum):
+    """Interest compounding frequency values (#38).
+
+    Selects the per-period compounding formula the interest
+    projection engine applies to an interest-bearing account.  Values
+    match ``ref.compounding_frequencies.name``.
+    """
+
+    DAILY = "daily"
+    MONTHLY = "monthly"
+    QUARTERLY = "quarterly"

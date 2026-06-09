@@ -326,6 +326,37 @@ class TestTemplateUpdate:
             assert template.name == "Updated Rent"
             assert template.default_amount == Decimal("1300.00")
 
+    def test_update_template_cannot_flip_is_active_or_sort_order(
+        self, app, auth_client, seed_user,
+    ):
+        """POST /templates/<id> never writes is_active / sort_order.
+
+        Those columns are owned by the archive / unarchive routes (which
+        pair the flag flip with the projected-transaction soft-delete this
+        route does not perform).  They are absent from both
+        ``TemplateUpdateSchema`` and ``_TEMPLATE_UPDATE_FIELDS``, so even a
+        crafted form that submits them must leave the stored values
+        untouched while a legitimate field still updates.
+        """
+        with app.app_context():
+            template = _create_template(seed_user)
+            assert template.is_active is True
+            assert template.sort_order == 0
+
+            resp = auth_client.post(f"/templates/{template.id}", data={
+                "name": "Renamed",
+                "is_active": "false",
+                "sort_order": "99",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            db.session.refresh(template)
+            # Legitimate field updated -- the request was processed.
+            assert template.name == "Renamed"
+            # Crafted is_active / sort_order keys were ignored.
+            assert template.is_active is True
+            assert template.sort_order == 0
+
     def test_update_template_validation_error(self, app, auth_client, seed_user):
         """POST /templates/<id> with invalid data shows error."""
         with app.app_context():
@@ -858,6 +889,53 @@ class TestPreviewRecurrence:
             assert b"occurrences" in resp.data
             # The foreign period was ignored -- same output as baseline.
             assert resp.data == baseline_resp.data
+
+    def test_create_recurring_template_rejects_other_users_start_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+        seed_second_user, seed_second_periods,
+    ):
+        """POST /templates rejects a foreign start_period on a recurring pattern.
+
+        deep-quality-hunt #21/#24: the create-path counterpart to the
+        preview IDOR test above.  The read-only preview route owner-gated
+        the start period for every pattern, but the PERSIST path's probe
+        used to run only for EVERY_N_PERIODS -- so a recurring template
+        (here "Every Period") wrote a foreign ``start_period_id`` onto its
+        RecurrenceRule unchecked, and ``recurrence_engine`` then read that
+        victim period's ``start_date`` as the generation boundary.  The
+        shared F-24 builder probe now rejects before any row is written;
+        this pins the persist path closed end-to-end (the sibling preview
+        test only proves the read path ignores the foreign period).
+        """
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            category = seed_user["categories"]["Rent"]
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
+
+            resp = auth_client.post("/templates", data={
+                "name": "Recurring IDOR Template",
+                "default_amount": "1500.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                "recurrence_pattern": str(every_period.id),
+                # Second user's period on a recurring (non-EVERY_N) pattern.
+                "start_period_id": str(seed_second_periods[0].id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Invalid start period" in resp.data
+
+            # No template was persisted.
+            assert (
+                db.session.query(TransactionTemplate)
+                .filter_by(name="Recurring IDOR Template")
+                .first()
+            ) is None
 
     def test_preview_with_own_start_period(
         self, app, auth_client, seed_user, seed_periods_today,

@@ -12,7 +12,7 @@ from decimal import Decimal
 from sqlalchemy.orm import joinedload, subqueryload
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, AcctTypeEnum, StatusEnum
+from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
@@ -248,15 +248,6 @@ def _load_salary_gross_biweekly(
     return income_service.get_current_gross_biweekly(
         user_id, scenario_id=scenario.id,
     )
-
-
-def _get_settled_status_ids() -> list[int]:
-    """Return status IDs that represent settled transactions."""
-    return [
-        ref_cache.status_id(StatusEnum.DONE),
-        ref_cache.status_id(StatusEnum.RECEIVED),
-        ref_cache.status_id(StatusEnum.SETTLED),
-    ]
 
 
 def _get_primary_checking_id(accounts: list) -> int | None:

@@ -35,10 +35,10 @@ class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
 
     __tablename__ = "investment_params"
     __table_args__ = (
-        db.CheckConstraint(
-            "employer_contribution_type IN ('none', 'flat_percentage', 'match')",
-            name="ck_investment_params_employer_type",
-        ),
+        # #38: ``employer_contribution_type`` was a free-string column
+        # with an ``IN (...)`` CHECK; it is now the ref-table FK
+        # ``employer_contribution_type_id`` (validity enforced by the
+        # FK + RESTRICT, not a CHECK).
         db.CheckConstraint(
             "assumed_annual_return >= -1 AND assumed_annual_return <= 1",
             name="ck_investment_params_valid_return",
@@ -107,9 +107,19 @@ class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     )
     annual_contribution_limit = db.Column(db.Numeric(12, 2), nullable=True)
     contribution_limit_year = db.Column(db.Integer, nullable=True)
-    employer_contribution_type = db.Column(
-        db.String(20), nullable=False, default="none",
-        server_default=db.text("'none'"),
+    # #38: ref-table FK (was a free-string ``employer_contribution_type``
+    # column).  RESTRICT mirrors the other ref FKs (e.g. calc_method_id);
+    # the seeded NONE row is the create default, resolved in the route /
+    # schema rather than a server_default (an FK id is not a static
+    # literal).
+    employer_contribution_type_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.employer_contribution_types.id",
+            name="fk_investment_params_employer_contribution_type",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     employer_flat_percentage = db.Column(db.Numeric(5, 4), nullable=True)
     employer_match_percentage = db.Column(db.Numeric(5, 4), nullable=True)
@@ -117,6 +127,12 @@ class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
 
     # Relationships
     account = db.relationship("Account", lazy="joined")
+    employer_contribution_type = db.relationship(
+        "EmployerContributionType", lazy="joined",
+    )
 
     def __repr__(self):
-        return f"<InvestmentParams account_id={self.account_id} return={self.assumed_annual_return}>"
+        return (
+            f"<InvestmentParams account_id={self.account_id} "
+            f"return={self.assumed_annual_return}>"
+        )

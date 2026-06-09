@@ -25,8 +25,11 @@ missing eight entries (``TIMING_PRE_TAX``, ``TIMING_POST_TAX``,
 ``GOAL_MODE_INCOME_RELATIVE``, ``INCOME_UNIT_PAYCHECKS``,
 ``INCOME_UNIT_MONTHS``).  Folding both call sites through one
 function makes future drift impossible: adding a new constant
-requires editing exactly one list.
+requires editing exactly one list -- ``_REF_ID_GLOBALS`` below.
 """
+
+from collections.abc import Callable
+from enum import Enum
 
 from flask import Flask
 
@@ -43,6 +46,81 @@ from app.enums import (
     TxnTypeEnum,
 )
 
+# Every ID-derived Jinja global, grouped by the ``ref_cache`` accessor
+# that resolves it.  Each group pairs one accessor with the
+# ``{global_name: enum_member}`` map it applies; ``register_ref_id_globals``
+# folds the whole table into ``app.jinja_env.globals``.  Adding a constant
+# is one row here -- the single source of truth the F-7 extraction
+# established (see the module docstring).
+_REF_ID_GLOBALS: tuple[tuple[Callable[[Enum], int], dict[str, Enum]], ...] = (
+    (ref_cache.status_id, {
+        "STATUS_PROJECTED": StatusEnum.PROJECTED,
+        "STATUS_DONE": StatusEnum.DONE,
+        "STATUS_RECEIVED": StatusEnum.RECEIVED,
+        "STATUS_CREDIT": StatusEnum.CREDIT,
+        "STATUS_CANCELLED": StatusEnum.CANCELLED,
+        "STATUS_SETTLED": StatusEnum.SETTLED,
+    }),
+    (ref_cache.txn_type_id, {
+        "TXN_TYPE_INCOME": TxnTypeEnum.INCOME,
+        "TXN_TYPE_EXPENSE": TxnTypeEnum.EXPENSE,
+    }),
+    # Account type IDs -- all types registered so templates can use
+    # integer comparisons instead of string-based name checks.
+    (ref_cache.acct_type_id, {
+        "ACCT_TYPE_CHECKING": AcctTypeEnum.CHECKING,
+        "ACCT_TYPE_SAVINGS": AcctTypeEnum.SAVINGS,
+        "ACCT_TYPE_HYSA": AcctTypeEnum.HYSA,
+        "ACCT_TYPE_MONEY_MARKET": AcctTypeEnum.MONEY_MARKET,
+        "ACCT_TYPE_CD": AcctTypeEnum.CD,
+        "ACCT_TYPE_HSA": AcctTypeEnum.HSA,
+        "ACCT_TYPE_CREDIT_CARD": AcctTypeEnum.CREDIT_CARD,
+        "ACCT_TYPE_MORTGAGE": AcctTypeEnum.MORTGAGE,
+        "ACCT_TYPE_AUTO_LOAN": AcctTypeEnum.AUTO_LOAN,
+        "ACCT_TYPE_STUDENT_LOAN": AcctTypeEnum.STUDENT_LOAN,
+        "ACCT_TYPE_PERSONAL_LOAN": AcctTypeEnum.PERSONAL_LOAN,
+        "ACCT_TYPE_HELOC": AcctTypeEnum.HELOC,
+        "ACCT_TYPE_401K": AcctTypeEnum.K401,
+        "ACCT_TYPE_ROTH_401K": AcctTypeEnum.ROTH_401K,
+        "ACCT_TYPE_TRADITIONAL_IRA": AcctTypeEnum.TRADITIONAL_IRA,
+        "ACCT_TYPE_ROTH_IRA": AcctTypeEnum.ROTH_IRA,
+        "ACCT_TYPE_BROKERAGE": AcctTypeEnum.BROKERAGE,
+        "ACCT_TYPE_529": AcctTypeEnum.PLAN_529,
+    }),
+    (ref_cache.recurrence_pattern_id, {
+        "REC_EVERY_PERIOD": RecurrencePatternEnum.EVERY_PERIOD,
+        "REC_EVERY_N_PERIODS": RecurrencePatternEnum.EVERY_N_PERIODS,
+        "REC_MONTHLY": RecurrencePatternEnum.MONTHLY,
+        "REC_MONTHLY_FIRST": RecurrencePatternEnum.MONTHLY_FIRST,
+        "REC_QUARTERLY": RecurrencePatternEnum.QUARTERLY,
+        "REC_SEMI_ANNUAL": RecurrencePatternEnum.SEMI_ANNUAL,
+        "REC_ANNUAL": RecurrencePatternEnum.ANNUAL,
+        "REC_ONCE": RecurrencePatternEnum.ONCE,
+    }),
+    (ref_cache.acct_category_id, {
+        "ACCT_CAT_ASSET": AcctCategoryEnum.ASSET,
+        "ACCT_CAT_LIABILITY": AcctCategoryEnum.LIABILITY,
+        "ACCT_CAT_RETIREMENT": AcctCategoryEnum.RETIREMENT,
+        "ACCT_CAT_INVESTMENT": AcctCategoryEnum.INVESTMENT,
+    }),
+    (ref_cache.deduction_timing_id, {
+        "TIMING_PRE_TAX": DeductionTimingEnum.PRE_TAX,
+        "TIMING_POST_TAX": DeductionTimingEnum.POST_TAX,
+    }),
+    (ref_cache.calc_method_id, {
+        "CALC_PERCENTAGE": CalcMethodEnum.PERCENTAGE,
+        "CALC_FLAT": CalcMethodEnum.FLAT,
+    }),
+    (ref_cache.goal_mode_id, {
+        "GOAL_MODE_FIXED": GoalModeEnum.FIXED,
+        "GOAL_MODE_INCOME_RELATIVE": GoalModeEnum.INCOME_RELATIVE,
+    }),
+    (ref_cache.income_unit_id, {
+        "INCOME_UNIT_PAYCHECKS": IncomeUnitEnum.PAYCHECKS,
+        "INCOME_UNIT_MONTHS": IncomeUnitEnum.MONTHS,
+    }),
+)
+
 
 def register_ref_id_globals(app: Flask) -> None:
     """Register every ID-derived Jinja global on the given Flask app.
@@ -56,74 +134,15 @@ def register_ref_id_globals(app: Flask) -> None:
     Pre-condition: ``ref_cache.init(...)`` has completed successfully
     against the current session.  If the caller observed any
     unavailable ref tables (the bootstrap-window branch in
-    ``create_app``), it MUST skip this call -- the accessors below
-    would raise ``KeyError`` for missing enum members.
+    ``create_app``), it MUST skip this call -- the accessors in
+    ``_REF_ID_GLOBALS`` would raise ``KeyError`` for missing enum
+    members.
 
     Args:
         app: The Flask application instance whose
             ``jinja_env.globals`` map will be populated.
     """
-    # Status IDs
-    app.jinja_env.globals["STATUS_PROJECTED"] = ref_cache.status_id(StatusEnum.PROJECTED)
-    app.jinja_env.globals["STATUS_DONE"] = ref_cache.status_id(StatusEnum.DONE)
-    app.jinja_env.globals["STATUS_RECEIVED"] = ref_cache.status_id(StatusEnum.RECEIVED)
-    app.jinja_env.globals["STATUS_CREDIT"] = ref_cache.status_id(StatusEnum.CREDIT)
-    app.jinja_env.globals["STATUS_CANCELLED"] = ref_cache.status_id(StatusEnum.CANCELLED)
-    app.jinja_env.globals["STATUS_SETTLED"] = ref_cache.status_id(StatusEnum.SETTLED)
-
-    # Transaction type IDs
-    app.jinja_env.globals["TXN_TYPE_INCOME"] = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    app.jinja_env.globals["TXN_TYPE_EXPENSE"] = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-
-    # Account type IDs -- all types registered so templates can use
-    # integer comparisons instead of string-based name checks.
-    app.jinja_env.globals["ACCT_TYPE_CHECKING"] = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    app.jinja_env.globals["ACCT_TYPE_SAVINGS"] = ref_cache.acct_type_id(AcctTypeEnum.SAVINGS)
-    app.jinja_env.globals["ACCT_TYPE_HYSA"] = ref_cache.acct_type_id(AcctTypeEnum.HYSA)
-    app.jinja_env.globals["ACCT_TYPE_MONEY_MARKET"] = ref_cache.acct_type_id(AcctTypeEnum.MONEY_MARKET)
-    app.jinja_env.globals["ACCT_TYPE_CD"] = ref_cache.acct_type_id(AcctTypeEnum.CD)
-    app.jinja_env.globals["ACCT_TYPE_HSA"] = ref_cache.acct_type_id(AcctTypeEnum.HSA)
-    app.jinja_env.globals["ACCT_TYPE_CREDIT_CARD"] = ref_cache.acct_type_id(AcctTypeEnum.CREDIT_CARD)
-    app.jinja_env.globals["ACCT_TYPE_MORTGAGE"] = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
-    app.jinja_env.globals["ACCT_TYPE_AUTO_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.AUTO_LOAN)
-    app.jinja_env.globals["ACCT_TYPE_STUDENT_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.STUDENT_LOAN)
-    app.jinja_env.globals["ACCT_TYPE_PERSONAL_LOAN"] = ref_cache.acct_type_id(AcctTypeEnum.PERSONAL_LOAN)
-    app.jinja_env.globals["ACCT_TYPE_HELOC"] = ref_cache.acct_type_id(AcctTypeEnum.HELOC)
-    app.jinja_env.globals["ACCT_TYPE_401K"] = ref_cache.acct_type_id(AcctTypeEnum.K401)
-    app.jinja_env.globals["ACCT_TYPE_ROTH_401K"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_401K)
-    app.jinja_env.globals["ACCT_TYPE_TRADITIONAL_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.TRADITIONAL_IRA)
-    app.jinja_env.globals["ACCT_TYPE_ROTH_IRA"] = ref_cache.acct_type_id(AcctTypeEnum.ROTH_IRA)
-    app.jinja_env.globals["ACCT_TYPE_BROKERAGE"] = ref_cache.acct_type_id(AcctTypeEnum.BROKERAGE)
-    app.jinja_env.globals["ACCT_TYPE_529"] = ref_cache.acct_type_id(AcctTypeEnum.PLAN_529)
-
-    # Recurrence pattern IDs
-    app.jinja_env.globals["REC_EVERY_PERIOD"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_PERIOD)
-    app.jinja_env.globals["REC_EVERY_N_PERIODS"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.EVERY_N_PERIODS)
-    app.jinja_env.globals["REC_MONTHLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
-    app.jinja_env.globals["REC_MONTHLY_FIRST"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY_FIRST)
-    app.jinja_env.globals["REC_QUARTERLY"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.QUARTERLY)
-    app.jinja_env.globals["REC_SEMI_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.SEMI_ANNUAL)
-    app.jinja_env.globals["REC_ANNUAL"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ANNUAL)
-    app.jinja_env.globals["REC_ONCE"] = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
-
-    # Account category IDs
-    app.jinja_env.globals["ACCT_CAT_ASSET"] = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
-    app.jinja_env.globals["ACCT_CAT_LIABILITY"] = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
-    app.jinja_env.globals["ACCT_CAT_RETIREMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
-    app.jinja_env.globals["ACCT_CAT_INVESTMENT"] = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
-
-    # Deduction timing IDs
-    app.jinja_env.globals["TIMING_PRE_TAX"] = ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
-    app.jinja_env.globals["TIMING_POST_TAX"] = ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
-
-    # Calc method IDs
-    app.jinja_env.globals["CALC_PERCENTAGE"] = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
-    app.jinja_env.globals["CALC_FLAT"] = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
-
-    # Goal mode IDs
-    app.jinja_env.globals["GOAL_MODE_FIXED"] = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
-    app.jinja_env.globals["GOAL_MODE_INCOME_RELATIVE"] = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
-
-    # Income unit IDs
-    app.jinja_env.globals["INCOME_UNIT_PAYCHECKS"] = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
-    app.jinja_env.globals["INCOME_UNIT_MONTHS"] = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
+    globals_map = app.jinja_env.globals
+    for accessor, members in _REF_ID_GLOBALS:
+        for name, member in members.items():
+            globals_map[name] = accessor(member)

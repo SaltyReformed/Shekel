@@ -14,7 +14,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum
+from app.enums import (
+    AcctCategoryEnum,
+    CompoundingFrequencyEnum,
+    EmployerContributionTypeEnum,
+)
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
@@ -129,6 +133,43 @@ class TestAccountCreate:
                 .one()
             )
             assert acct.current_anchor_balance == Decimal("500.00")
+
+    def test_create_account_zero_anchor_balance(self, app, auth_client, seed_user):
+        """POST /accounts with anchor_balance "0" stores an exact zero.
+
+        A submitted zero opening balance is a value, not a missing one:
+        the route must persist ``Decimal("0")`` rather than treating the
+        falsy zero as absent.  Omitting the field entirely also defaults
+        to zero.
+        """
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
+
+            response = auth_client.post("/accounts", data={
+                "name": "Zero Savings",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "0",
+            }, follow_redirects=True)
+            assert response.status_code == 200
+            acct = (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, name="Zero Savings")
+                .one()
+            )
+            assert acct.current_anchor_balance == Decimal("0")
+
+            # Omitting anchor_balance entirely also defaults to zero.
+            response = auth_client.post("/accounts", data={
+                "name": "No Balance Savings",
+                "account_type_id": savings_type.id,
+            }, follow_redirects=True)
+            assert response.status_code == 200
+            acct2 = (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, name="No Balance Savings")
+                .one()
+            )
+            assert acct2.current_anchor_balance == Decimal("0")
 
     def test_create_account_validation_error(self, app, auth_client, seed_user):
         """POST /accounts with missing name shows a validation error."""
@@ -656,7 +697,9 @@ class TestTrueUpClearsEntries:
     true-ups are left alone.
     """
 
-    def _make_grocery_txn_with_entries(self, seed_user, seed_periods_today, entries):
+    def _make_grocery_txn_with_entries(
+        self, seed_user, seed_periods_today, entries, account=None,
+    ):
         """Create a tracked grocery transaction with the given entries.
 
         Args:
@@ -664,6 +707,10 @@ class TestTrueUpClearsEntries:
             seed_periods_today: list of PayPeriods.
             entries: list of (amount, entry_date, is_credit, is_cleared)
                 tuples.
+            account: the Account the template and transaction belong
+                to.  Defaults to the seed_user's primary checking
+                account; pass a second account to exercise the
+                per-account scope of the true-up clear.
 
         Returns:
             The Transaction object.
@@ -671,6 +718,7 @@ class TestTrueUpClearsEntries:
         from app.models.transaction_entry import TransactionEntry
         from app.models.transaction_template import TransactionTemplate
 
+        account = account if account is not None else seed_user["account"]
         projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(
             name="Expense",
@@ -678,7 +726,7 @@ class TestTrueUpClearsEntries:
 
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
+            account_id=account.id,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
             name="Groceries",
@@ -692,7 +740,7 @@ class TestTrueUpClearsEntries:
             template_id=template.id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
+            account_id=account.id,
             status_id=projected.id,
             name="Groceries",
             category_id=seed_user["categories"]["Groceries"].id,
@@ -887,6 +935,76 @@ class TestTrueUpClearsEntries:
                 .one()
             )
             assert entry.is_cleared is True
+
+    def test_true_up_on_one_account_does_not_clear_other_checking_account(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A true-up reconciles ONLY the trued-up account's entries.
+
+        Accounts carry no per-type uniqueness, so a user may hold more
+        than one checking account.  Trueing up account A declares A's
+        real balance; it must not flip is_cleared on account B's
+        entries, because B's anchor was never raised -- clearing B's
+        debits there would drop B's reservation and silently inflate
+        B's projected balance (#8).  This is the regression guard for
+        the per-account scope of clear_entries_for_anchor_true_up: it
+        fails under the prior owner-only filter (which cleared B too)
+        and passes once the filter is scoped by account_id.
+        """
+        from app.models.transaction_entry import TransactionEntry
+
+        with app.app_context():
+            past = date.today() - __import__("datetime").timedelta(days=1)
+
+            # Second checking account on the SAME user.
+            checking_type = db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one()
+            account_b = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Checking 2",
+                    anchor_balance=Decimal("2000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
+            )
+            db.session.add(account_b)
+            db.session.commit()
+
+            # Past-dated uncleared debit entry on each account.
+            txn_a = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("60.00", past, False, False)],
+            )
+            txn_b = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("75.00", past, False, False)],
+                account=account_b,
+            )
+
+            # True up account A only.
+            response = auth_client.patch(
+                f"/accounts/{seed_user['account'].id}/true-up",
+                data={"anchor_balance": "5000.00"},
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            entry_a = (
+                db.session.query(TransactionEntry)
+                .filter_by(transaction_id=txn_a.id)
+                .one()
+            )
+            entry_b = (
+                db.session.query(TransactionEntry)
+                .filter_by(transaction_id=txn_b.id)
+                .one()
+            )
+            # A's entry is reconciled by its own true-up.
+            assert entry_a.is_cleared is True
+            # B's entry is untouched -- B was never trued up.
+            assert entry_b.is_cleared is False
 
 
 # ── Account Type CRUD ─────────────────────────────────────────────
@@ -1823,7 +1941,11 @@ class TestAccountCreationRedirects:
             ).one()
 
             assert params.assumed_annual_return == Decimal("0.07000")
-            assert params.employer_contribution_type == "none"
+            assert params.employer_contribution_type_id == (
+                ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                )
+            )
             assert params.assumed_annual_return >= 0
 
 
@@ -1907,7 +2029,12 @@ class TestInterestDispatch:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),  # HIGH-06: apy NOT NULL, no server_default
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest")
@@ -2095,7 +2222,12 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),  # HIGH-06: apy NOT NULL, no server_default
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest?setup=1")
@@ -2122,7 +2254,12 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InterestParams(account_id=acct.id, apy=Decimal("0.04500")))  # HIGH-06: apy NOT NULL, no server_default
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),  # HIGH-06: apy NOT NULL, no server_default
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/interest")
@@ -2148,7 +2285,12 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.add(InvestmentParams(
+                account_id=acct.id,
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(
@@ -2177,7 +2319,12 @@ class TestWizardBanner:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.add(InvestmentParams(
+                account_id=acct.id,
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                ),
+            ))
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/investment")
@@ -2630,7 +2777,7 @@ class TestCheckingDetailCanonicalProducer:
 
           - Real checking anchor 614.29 on the current pay period.
           - One Projected envelope expense ``estimated_amount = 500.00``
-            in the same period (so ``_sum_remaining`` applies).
+            in the same period (so ``_sum_projected`` applies).
           - Three CLEARED debit entries 20.00 + 15.71 + 10.00 = 45.71.
             No credit, no uncleared.
 

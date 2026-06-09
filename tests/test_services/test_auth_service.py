@@ -82,6 +82,57 @@ class TestAuthenticate:
             with pytest.raises(AuthError, match="Invalid email or password"):
                 auth_service.authenticate("test@shekel.local", "wrongpass")
 
+    def test_authenticate_unknown_email_runs_timing_equalization_bcrypt(
+        self, app, db, seed_user, monkeypatch
+    ):
+        """An unknown email pays the same bcrypt cost as a wrong password.
+
+        deep-quality-hunt #27: without timing equalization the no-user
+        branch returns before any bcrypt work while the wrong-password
+        branch runs a full bcrypt.checkpw, leaking account existence via
+        response timing despite the constant response message.
+        authenticate() now runs one throwaway verify_password against the
+        fixed dummy hash on the no-user branch.  This pins that the dummy
+        verification actually happens (by spying on verify_password)
+        rather than measuring wall-clock time, which would be flaky.
+        """
+        with app.app_context():
+            calls = []
+
+            def _spy(plain, password_hash):
+                calls.append((plain, password_hash))
+                return False
+
+            monkeypatch.setattr(auth_service, "verify_password", _spy)
+
+            with pytest.raises(
+                AuthError, match="Invalid email or password"
+            ):
+                auth_service.authenticate("nobody@shekel.local", "anypw")
+
+            # Exactly one dummy verification ran, using the fixed
+            # timing-equalization hash and the submitted password.
+            assert len(calls) == 1
+            assert calls[0] == ("anypw", auth_service._DUMMY_PASSWORD_HASH)
+
+    def test_dummy_password_hash_is_valid_bcrypt(self):
+        """The timing-equalization dummy hash is a real bcrypt digest.
+
+        deep-quality-hunt #27: the equalization only closes the timing
+        oracle if bcrypt.checkpw actually runs against the dummy hash.  A
+        malformed hash would hit verify_password's ValueError fast-path
+        and return immediately, leaving the no-user branch fast again.
+        Pin that the constant is a parseable 60-char bcrypt hash and that
+        verify_password runs it to completion (returns False, no raise).
+        """
+        dummy = auth_service._DUMMY_PASSWORD_HASH
+        assert isinstance(dummy, str)
+        assert dummy.startswith("$2")
+        assert len(dummy) == 60
+        # Real bcrypt work: a non-matching password verifies to False
+        # without raising, proving checkpw parsed the hash.
+        assert auth_service.verify_password("not-the-password", dummy) is False
+
     def test_authenticate_raises_auth_error_on_disabled_account(
         self, app, db, seed_user
     ):

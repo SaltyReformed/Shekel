@@ -55,6 +55,7 @@ from app.services.investment_projection import (
     InvestmentInputs,
     adapt_deductions,
     build_contribution_timeline,
+    current_period_transfer_contribution,
 )
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
@@ -62,10 +63,10 @@ from app.services.projection_inputs import (
     load_shadow_income_contributions_for_account,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
-TWO_PLACES = Decimal("0.01")
 _FALLBACK_HORIZON_YEARS = 10
 
 # A period-like row in a projection: a real ``PayPeriod`` (the dashboard's
@@ -82,7 +83,7 @@ class _ProjectionContext:
 
     Built once per request by :func:`_load_projection_context` and
     threaded through the projection primitives and card builders so the
-    two public entry points stay thin orchestration.  Bundling these six
+    two public entry points stay thin orchestration.  Bundling these seven
     values into one frozen struct removes the parallel-load duplication
     the dashboard and the chart fragment previously each carried inline
     (S6-01): the entries-aware current balance, the projection inputs,
@@ -104,8 +105,19 @@ class _ProjectionContext:
             valid dashboard state (the projection and chart degrade to
             empty containers); the growth-chart fragment guards it out
             earlier and never reaches a context with ``params is None``.
-        current_balance: The canonical entries-aware current balance
-            (E-25 / CRIT-01 / F-009 / R-1: Commit 8).
+        current_balance: The canonical entries-aware END-of-current-period
+            balance (E-25 / CRIT-01 / F-009 / R-1: Commit 8) -- the
+            displayed "current balance" tile.
+        projection_seed: ``current_balance`` with the current period's own
+            transfer contribution removed.  The growth projection seeds
+            from this, not ``current_balance``, while still including the
+            current period in its window: the engine re-applies that
+            contribution for the current period, so subtracting it from the
+            seed first leaves it applied exactly once (deep-quality-hunt
+            #9).  Only the transfer contribution is removed -- every other
+            current-period movement (expenses, deposits) stays, because the
+            engine never re-creates those.  It is also the base of the
+            chart's cumulative-contribution series.
         inputs: The :class:`InvestmentInputs` the growth engine needs
             (periodic contribution, employer params, annual contribution
             limit, YTD contributions).
@@ -119,6 +131,7 @@ class _ProjectionContext:
 
     params: InvestmentParams | None
     current_balance: Decimal
+    projection_seed: Decimal
     inputs: InvestmentInputs
     contributions: list[growth_engine.ContributionRecord]
     deductions: list[PaycheckDeduction]
@@ -157,7 +170,10 @@ def _resolve_current_balance(
     Routes through :func:`balance_resolver.balances_for` (E-25 /
     CRIT-01 / F-009 / R-1: Commit 8) so the dashboard's "current
     balance" tile cannot disagree with the grid for the same
-    account / scenario / period.  Falls back to
+    account / scenario / period.  This is the END-of-current-period
+    balance; the forward-projection seed is derived from it in
+    :func:`_load_projection_context` by removing the current period's
+    own transfer contribution (deep-quality-hunt #9).  Falls back to
     :attr:`Account.current_anchor_balance` when no scenario is
     configured or the anchor period is unset.
     """
@@ -203,7 +219,7 @@ def _load_projection_context(
         current_period: The current :class:`PayPeriod`, or ``None``.
 
     Returns:
-        A :class:`_ProjectionContext` carrying the six per-account
+        A :class:`_ProjectionContext` carrying the seven per-account
         values the projection primitives and card builders consume.
     """
     current_balance = _resolve_current_balance(
@@ -219,6 +235,15 @@ def _load_projection_context(
     acct_contributions = load_shadow_income_contributions_for_account(
         account.id, [p.id for p in all_periods],
     )
+    # Seed for the forward projection: the end-of-current balance with the
+    # current period's own transfer contribution removed, so the engine --
+    # which re-applies that contribution when its window includes the
+    # current period -- does not double-count it (deep-quality-hunt #9).
+    # Other current-period balance movements (expenses, deposits) stay in
+    # the seed because the engine never re-creates them.
+    projection_seed = current_balance - current_period_transfer_contribution(
+        acct_contributions, current_period,
+    )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
         all_periods, current_period, salary_gross_biweekly,
@@ -231,6 +256,7 @@ def _load_projection_context(
     return _ProjectionContext(
         params=params,
         current_balance=current_balance,
+        projection_seed=projection_seed,
         inputs=inputs,
         contributions=contributions,
         deductions=deductions,
@@ -251,15 +277,21 @@ def _run_growth_projection(
     arguments -- only the period list differs (the dashboard's future
     real periods vs. the chart's synthetic horizon periods).  Callers
     must guard ``ctx.params is not None`` before calling.
+
+    Seeds from ``ctx.projection_seed`` (the START-of-current-period
+    balance) and ``ctx.inputs.ytd_contributions_seed`` (YTD strictly
+    before the current period), not the end-of-current-period tile, so
+    the current period -- which the window includes -- has its growth and
+    contribution applied exactly once (deep-quality-hunt #9 / #10).
     """
     return growth_engine.project_balance(
-        current_balance=ctx.current_balance,
+        current_balance=ctx.projection_seed,
         assumed_annual_return=ctx.params.assumed_annual_return,
         periods=periods,
         periodic_contribution=ctx.inputs.periodic_contribution,
         employer_params=ctx.inputs.employer_params,
         annual_contribution_limit=ctx.params.annual_contribution_limit,
-        ytd_contributions_start=ctx.inputs.ytd_contributions,
+        ytd_contributions_start=ctx.inputs.ytd_contributions_seed,
         contributions=ctx.contributions,
     )
 
@@ -267,7 +299,7 @@ def _run_growth_projection(
 def _build_chart_series(
     projection: list[growth_engine.ProjectedBalance],
     periods: _PeriodList,
-    current_balance: Decimal,
+    seed_balance: Decimal,
 ) -> tuple[list[str], list[str], list[str]]:
     """Build the chart's ``(labels, balances, contributions)`` string lists.
 
@@ -277,8 +309,10 @@ def _build_chart_series(
     resolve against *periods*; because :func:`growth_engine.project_balance`
     emits exactly one row per input period, every ``pb.period_id`` is
     present in the map and the three lists stay equal length.  The
-    contribution series is the running ``current_balance + cumulative
-    employee + employer`` total per period.
+    contribution series is the running ``seed_balance + cumulative
+    employee + employer`` total per period, where ``seed_balance`` is the
+    projection's start-of-first-period seed (deep-quality-hunt #9) so the
+    invested-principal line and the with-growth line share one origin.
     """
     period_map = {p.id: p for p in periods}
     labels: list[str] = []
@@ -289,10 +323,10 @@ def _build_chart_series(
         period = period_map.get(pb.period_id)
         if period:
             labels.append(period.start_date.strftime("%b %Y"))
-        balances.append(str(pb.end_balance.quantize(TWO_PLACES)))
+        balances.append(str(round_money(pb.end_balance)))
         cumulative_contrib += pb.contribution + pb.employer_contribution
         contributions.append(
-            str((current_balance + cumulative_contrib).quantize(TWO_PLACES))
+            str(round_money(seed_balance + cumulative_contrib))
         )
     return labels, balances, contributions
 
@@ -383,9 +417,7 @@ def _compute_suggested_contribution(
         - (ytd_contributions or Decimal("0")),
         Decimal("0"),
     )
-    return (
-        remaining_limit / max(remaining_periods, 1)
-    ).quantize(TWO_PLACES)
+    return round_money(remaining_limit / max(remaining_periods, 1))
 
 
 def _compute_employer_per_period(inputs: InvestmentInputs) -> Decimal:
@@ -535,7 +567,7 @@ def _project_dashboard_balances(
         ]
         projection = _run_growth_projection(ctx, future_periods)
         chart_labels, chart_balances, chart_contributions = _build_chart_series(
-            projection, future_periods, ctx.current_balance,
+            projection, future_periods, ctx.projection_seed,
         )
 
     return {
@@ -696,7 +728,7 @@ def _growth_chart_context(
     load-project-render sequence.
     """
     chart_labels, chart_balances, chart_contributions = _build_chart_series(
-        projection, periods, ctx.current_balance,
+        projection, periods, ctx.projection_seed,
     )
 
     what_if_amount = _parse_what_if(what_if_raw)
@@ -756,26 +788,26 @@ def _compute_what_if_overlay(
     # recalculated automatically because the per-period loop passes
     # each period's contribution to ``calculate_employer_contribution``.
     what_if_projection = growth_engine.project_balance(
-        current_balance=ctx.current_balance,
+        current_balance=ctx.projection_seed,
         assumed_annual_return=ctx.params.assumed_annual_return,
         periods=periods,
         periodic_contribution=what_if_amount,
         employer_params=ctx.inputs.employer_params,
         annual_contribution_limit=ctx.params.annual_contribution_limit,
-        ytd_contributions_start=ctx.inputs.ytd_contributions,
+        ytd_contributions_start=ctx.inputs.ytd_contributions_seed,
         contributions=None,
     )
 
     what_if_balances = [
-        str(pb.end_balance.quantize(TWO_PLACES))
+        str(round_money(pb.end_balance))
         for pb in what_if_projection
     ]
 
     comparison = None
     if projection and what_if_projection:
-        committed_end = projection[-1].end_balance.quantize(TWO_PLACES)
-        whatif_end = what_if_projection[-1].end_balance.quantize(TWO_PLACES)
-        difference = (whatif_end - committed_end).quantize(TWO_PLACES)
+        committed_end = round_money(projection[-1].end_balance)
+        whatif_end = round_money(what_if_projection[-1].end_balance)
+        difference = round_money(whatif_end - committed_end)
         comparison = {
             "committed_end": committed_end,
             "whatif_end": whatif_end,

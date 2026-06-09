@@ -53,10 +53,18 @@ logger = logging.getLogger(__name__)
 
 # Field allowlist for the template update route: which submitted form
 # fields may be written back to the template via setattr.
+#
+# Scoped to exactly the keys ``TemplateUpdateSchema`` can deserialize.
+# ``is_active`` and ``sort_order`` are deliberately absent: neither is a
+# field on the Template schema chain, so ``_update_schema.load`` (with
+# ``unknown = EXCLUDE``) can never surface them here.  ``is_active`` is
+# owned by the dedicated archive / unarchive routes, which pair the flag
+# flip with the projected-transaction soft-delete this route does not
+# perform -- allowlisting it here would invite a future schema field to
+# silently archive a template without that cleanup.
 _TEMPLATE_UPDATE_FIELDS = {
     "name", "default_amount", "category_id", "transaction_type_id",
-    "account_id", "is_active", "sort_order",
-    "is_envelope", "companion_visible",
+    "account_id", "is_envelope", "companion_visible",
 }
 
 templates_bp = Blueprint("templates", __name__)
@@ -323,7 +331,11 @@ def create_template():
             )
 
     db.session.commit()
-    flash(f"Recurring transaction '{template.name}' created. View it on the Budget grid.", "success")
+    flash(
+        f"Recurring transaction '{template.name}' created. "
+        "View it on the Budget grid.",
+        "success",
+    )
     return redirect(url_for("templates.list_templates"))
 
 

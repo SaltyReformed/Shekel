@@ -1030,6 +1030,41 @@ class TestDeductions:
             )
             assert ded.amount == Decimal("0.06")
 
+    def test_add_deduction_zero_inflation_rate_stored(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """A submitted 0% inflation rate stores as exact zero, not dropped.
+
+        Zero is a value, not a missing field: the route's percent-to-
+        fraction conversion must run for ``0`` (``0 / 100 == 0``) and
+        persist ``Decimal("0")`` rather than skipping it on falsiness.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            auth_client.post(
+                f"/salary/{profile.id}/deductions",
+                data={
+                    "name": "HSA",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "100.00",
+                    "deductions_per_year": "26",
+                    "inflation_enabled": "on",
+                    "inflation_rate": "0",
+                },
+                follow_redirects=True,
+            )
+
+            ded = (
+                db.session.query(PaycheckDeduction)
+                .filter_by(salary_profile_id=profile.id, name="HSA")
+                .one()
+            )
+            assert ded.inflation_rate == Decimal("0")
+
 
 # ── Deduction Frequency Display ──────────────────────────────────
 
@@ -1410,6 +1445,36 @@ class TestTaxConfig:
                 .one()
             )
             assert state_config.flat_rate == Decimal("0.0450")
+
+    def test_create_state_tax_config_without_rate_is_rejected(
+        self, app, auth_client, seed_user,
+    ):
+        """Creating a NEW state tax config with no flat_rate fails loud (#50/#7).
+
+        The schema leaves flat_rate optional, so a scripted POST that omits
+        it validates.  Previously the handler created no row, flashed
+        nothing, yet still committed, regenerated salary transactions, and
+        redirected -- reporting a silent success for a skipped write.  It
+        must now reject with a danger flash and persist nothing.
+        """
+        with app.app_context():
+            response = auth_client.post("/salary/tax-config", data={
+                "tax_year": "2026",
+                "state_code": "NC",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"A flat rate is required" in response.data
+
+            # No config was persisted (the rejection returns before commit).
+            count = (
+                db.session.query(StateTaxConfig)
+                .filter_by(
+                    user_id=seed_user["user"].id, state_code="NC", tax_year=2026,
+                )
+                .count()
+            )
+            assert count == 0
 
     def test_update_fica_config(self, app, auth_client, seed_user):
         """POST /salary/fica-config creates/updates FICA configuration."""

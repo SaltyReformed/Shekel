@@ -36,9 +36,11 @@ from app.services import (
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.routes._commit_helpers import (
+    DbErrorContext,
     StaleConflictContext,
     commit_or_handle_stale,
-    regenerate_and_commit_or_stale,
+    handle_db_error,
+    regenerate_commit_or_report,
 )
 from app.routes._redirect_target import RedirectTarget
 from app.routes.salary._bp import salary_bp
@@ -155,6 +157,12 @@ def create_profile():
         ), "danger")
         return redirect(url_for("salary.list_profiles"))
 
+    # Capture the requester id before the DB work below: the failure path
+    # builds its DbErrorContext after a failed flush, where re-reading the
+    # then-expired current_user attribute would touch the rolled-back
+    # session (PendingRollbackError) rather than yield the id.
+    user_id = current_user.id
+
     try:
         # Create every_period recurrence rule
         rule = RecurrenceRule(
@@ -225,10 +233,13 @@ def create_profile():
         # (TypeError, AttributeError, decimal arithmetic) propagate
         # to the Flask 500 handler so they surface as bugs rather
         # than being silently swallowed.
-        db.session.rollback()
-        logger.exception("user_id=%d failed to create salary profile", current_user.id)
-        flash("Failed to create salary profile. Please try again.", "danger")
-        return redirect(url_for("salary.new_profile"))
+        return handle_db_error(DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to create salary profile",
+            log_args=(user_id,),
+            flash_message="Failed to create salary profile. Please try again.",
+            redirect=RedirectTarget("salary.new_profile"),
+        ))
 
     logger.info("user_id=%d created salary profile %d", current_user.id, profile.id)
     flash(f"Salary profile '{profile.name}' created.", "success")
@@ -302,48 +313,47 @@ def update_profile(profile_id):
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
-    try:
-        for field_name, value in data.items():
-            if field_name in _PROFILE_UPDATE_FIELDS:
-                setattr(profile, field_name, value)
+    for field_name, value in data.items():
+        if field_name in _PROFILE_UPDATE_FIELDS:
+            setattr(profile, field_name, value)
 
-        # Update linked template amount
-        if profile.template and "annual_salary" in data:
-            pay_periods = profile.pay_periods_per_year or 26
-            profile.template.default_amount = data["annual_salary"] / pay_periods
-            if "name" in data:
-                profile.template.name = data["name"]
+    # Update linked template amount.  ``profile.template`` is eager
+    # (lazy="joined"), so this touches no DB and stages safely before the
+    # guard below picks up the commit.
+    if profile.template and "annual_salary" in data:
+        pay_periods = profile.pay_periods_per_year or 26
+        profile.template.default_amount = data["annual_salary"] / pay_periods
+        if "name" in data:
+            profile.template.name = data["name"]
 
-        # Regenerate transactions and commit under the canonical
-        # optimistic-lock guard (C-18 / F-010): the regeneration flushes,
-        # so it must run inside the same stale-race guard as the commit.
-        conflict = regenerate_and_commit_or_stale(
-            lambda: _regenerate_salary_transactions(profile),
-            ctx=StaleConflictContext(
-                logger=logger,
-                log_label="update_profile",
-                log_id=profile_id,
-                flash_message=(
-                    "This salary profile was changed by another action while "
-                    "you were editing.  Please reload and try again."
-                ),
-                redirect=RedirectTarget(
-                    "salary.edit_profile",
-                    {"profile_id": profile_id},
-                ),
+    # Regenerate transactions and commit under the canonical optimistic-lock
+    # guard (C-18 / F-010): the regeneration flushes, so it must run inside
+    # the same stale-race guard as the commit.  ``StaleDataError`` and any
+    # other DB error are reported by regenerate_commit_or_report (no
+    # IntegrityError branch -- a profile edit has no expected unique
+    # collision).
+    response = regenerate_commit_or_report(
+        lambda: _regenerate_salary_transactions(profile),
+        stale_ctx=StaleConflictContext(
+            logger=logger,
+            log_label="update_profile",
+            log_id=profile_id,
+            flash_message=(
+                "This salary profile was changed by another action while "
+                "you were editing.  Please reload and try again."
             ),
-        )
-        if conflict is not None:
-            return conflict
-    except SQLAlchemyError:
-        # Narrow catch (C-46 / F-145): see ``create_profile`` for the
-        # rationale.  ``StaleDataError`` is caught first, inside
-        # ``regenerate_and_commit_or_stale`` above, so optimistic-locking
-        # conflicts never reach this broader branch.
-        db.session.rollback()
-        logger.exception("user_id=%d failed to update salary profile %d", current_user.id, profile_id)
-        flash("Failed to update salary profile. Please try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+        ),
+        error_ctx=DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to update salary profile %d",
+            log_args=(current_user.id, profile_id),
+            flash_message="Failed to update salary profile. Please try again.",
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+        ),
+    )
+    if response is not None:
+        return response
 
     logger.info("user_id=%d updated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' updated.", "success")

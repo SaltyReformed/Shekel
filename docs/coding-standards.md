@@ -13,6 +13,15 @@ or a real quality problem in this project.
 - **Use `Decimal`, never `float`**, for all monetary amounts.
 - **Construct Decimals from strings.** `Decimal("0.1")` is exact. `Decimal(0.1)` introduces
   float imprecision. This applies to hardcoded values, test assertions, seed data, defaults.
+  (Backed by the `shekel-decimal-from-float` checker.)
+- **Round money through `round_money`, never a bare `.quantize()`.** Keep intermediate
+  arithmetic at full `Decimal` precision and round once at the display/persistence boundary via
+  `app.utils.money.round_money` (`ROUND_HALF_UP`) -- or the explicitly-named
+  `round_money_ceiling` for the sanctioned savings-goal over-funding case. A bare
+  `value.quantize(Decimal("0.01"))` silently uses Python's default `ROUND_HALF_EVEN` (banker's
+  rounding), which disagrees with the project's `ROUND_HALF_UP` convention by a cent at every
+  half-cent boundary and the convention every hand-computed test assumes. (Backed by the
+  `shekel-bare-money-quantize` checker; the financial_calculations audit's E-26 / HIGH-04.)
 - **Type hints on all function signatures.** Annotate all parameters and return types. Use
   `Decimal` not `float` for monetary values. Use `X | None` for nullable parameters. Use
   specific collection types (`list[Transaction]`, `dict[str, Decimal]`), not bare `list`/`dict`.

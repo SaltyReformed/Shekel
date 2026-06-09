@@ -18,14 +18,14 @@ repos:
         files: ^app/.*\.py$
         pass_filenames: false
         # Whole-package run: duplicate-code (R0801) is cross-file and cannot be
-        # checked per-file. --fail-under=9.0 mirrors current CI; flip to 10 at the
-        # lock-in step (see docs/audits/pylint-cleanup/plan.md Phase 5). The
-        # shekel-* symbols are hard failures now -- zero current violations, so
-        # this gives immediate protection for the financial-correctness rules.
+        # checked per-file. --fail-under=10 mirrors CI's lock-in floor
+        # (docs/audits/pylint-cleanup/plan.md Phase 5; app/ is at a clean
+        # 10.00/10). The shekel-* symbols are hard failures -- zero violations,
+        # so this gives immediate protection for the financial-correctness rules.
         args:
           - app/
-          - --fail-under=9.0
-          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-disable-rationale
+          - --fail-under=10
+          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale
       - id: pylint-tests-decimals
         name: shekel-decimal-from-float on tests/
         entry: pylint

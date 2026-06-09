@@ -45,6 +45,8 @@ from decimal import Decimal
 import pytest
 from marshmallow import ValidationError
 
+from app import ref_cache
+from app.enums import CompoundingFrequencyEnum
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.schemas.validation import (
@@ -128,11 +130,10 @@ class TestC24_2RateFieldDomainMatchesCheck:
     @pytest.mark.parametrize(
         "schema_factory, field, extra",
         [
-            (
-                InterestParamsCreateSchema,
-                "apy",
-                {"compounding_frequency": "daily"},
-            ),
+            # InterestParamsCreateSchema is covered by its own test below
+            # (#38): its required ``compounding_frequency_id`` is a ref id
+            # that can only be resolved at runtime, not in this
+            # collection-time parametrize table.
             (InterestParamsUpdateSchema, "apy", {}),
             (
                 LoanParamsCreateSchema,
@@ -183,6 +184,32 @@ class TestC24_2RateFieldDomainMatchesCheck:
         with pytest.raises(ValidationError) as exc:
             schema.load({field: "101", **extra})
         assert field in exc.value.messages
+
+    def test_interest_create_apy_boundary(self):
+        """InterestParamsCreateSchema accepts apy 0% / 100%, rejects 101%.
+
+        Split out of the table above because the schema's required
+        ``compounding_frequency_id`` is a ref id resolved from ref_cache
+        at runtime (#38), which a collection-time parametrize cannot
+        provide.  Same 0/100/101 boundary contract as the other rate
+        fields.
+        """
+        schema = InterestParamsCreateSchema()
+        freq_id = ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.DAILY,
+        )
+
+        loaded = schema.load({"apy": "0", "compounding_frequency_id": freq_id})
+        assert loaded["apy"] == Decimal("0")
+
+        loaded = schema.load(
+            {"apy": "100", "compounding_frequency_id": freq_id}
+        )
+        assert loaded["apy"] == Decimal("1.0")
+
+        with pytest.raises(ValidationError) as exc:
+            schema.load({"apy": "101", "compounding_frequency_id": freq_id})
+        assert "apy" in exc.value.messages
 
     def test_loan_negative_rejected(self):
         """Below 0% rejected on loan create.

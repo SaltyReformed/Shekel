@@ -9,8 +9,10 @@ the model, schema, percentage conversion, unique constraint, user-facing
 messages, and HTMX partial, so a single generic CRUD helper would couple
 two distinct domains behind a many-parameter interface (a worse
 abstraction than the parallel code).  The shared cross-cutting concern --
-optimistic-lock conflict handling on commit -- IS factored out, through
-:func:`app.routes._commit_helpers.regenerate_and_commit_or_stale`.
+committing the regenerated transactions and reporting every recoverable
+failure (the stale-lock conflict, the expected unique-constraint
+collision, and other DB errors) -- IS factored out, through
+:func:`app.routes._commit_helpers.regenerate_commit_or_report`.
 """
 
 import logging
@@ -29,8 +31,11 @@ from app import ref_cache
 from app.enums import CalcMethodEnum
 from app.utils.db_errors import is_unique_violation
 from app.routes._commit_helpers import (
+    DbErrorContext,
     StaleConflictContext,
-    regenerate_and_commit_or_stale,
+    UniqueViolationContext,
+    handle_db_error,
+    regenerate_commit_or_report,
 )
 from app.routes._redirect_target import RedirectTarget
 from app.routes.salary._bp import salary_bp
@@ -79,6 +84,11 @@ def add_raise(profile_id):
     salary_raise = SalaryRaise(salary_profile_id=profile.id, **data)
     db.session.add(salary_raise)
 
+    # Capture the requester id on the clean session up front; the failure
+    # path builds its DbErrorContext after a failed flush, where reading the
+    # expired current_user attribute would hit the rolled-back session.
+    user_id = current_user.id
+
     try:
         _regenerate_salary_transactions(profile)
         db.session.commit()
@@ -118,10 +128,13 @@ def add_raise(profile_id):
         # numeric range, OperationalError on connection loss,
         # etc.) land here.  Non-SQLAlchemy exceptions propagate
         # to the 500 handler.
-        db.session.rollback()
-        logger.exception("user_id=%d failed to add raise to profile %d", current_user.id, profile_id)
-        flash("Failed to add raise. Please try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+        return handle_db_error(DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to add raise to profile %d",
+            log_args=(user_id, profile_id),
+            flash_message="Failed to add raise. Please try again.",
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+        ))
 
     logger.info("user_id=%d added raise to profile %d", current_user.id, profile_id)
     flash("Raise added.", "success")
@@ -138,7 +151,7 @@ def delete_raise(raise_id):
     Optimistic locking (commit C-18 / F-010): the DELETE statement is
     version-pinned by SQLAlchemy; a concurrent edit raises
     :class:`StaleDataError`, converted to a flash + redirect by the
-    canonical :func:`regenerate_and_commit_or_stale` guard.
+    canonical :func:`regenerate_commit_or_report` guard.
     """
     salary_raise = get_owned_via_parent(
         SalaryRaise, raise_id, "salary_profile",
@@ -153,36 +166,33 @@ def delete_raise(raise_id):
     # the delete's flush is caught there.
     db.session.delete(salary_raise)
 
-    try:
-        conflict = regenerate_and_commit_or_stale(
-            lambda: _regenerate_salary_transactions(profile),
-            ctx=StaleConflictContext(
-                logger=logger,
-                log_label="delete_raise",
-                log_id=raise_id,
-                flash_message=(
-                    "This raise was changed by another action.  "
-                    "Please reload and try again."
-                ),
-                redirect=RedirectTarget(
-                    "salary.edit_profile",
-                    {"profile_id": profile.id},
-                ),
+    response = regenerate_commit_or_report(
+        lambda: _regenerate_salary_transactions(profile),
+        stale_ctx=StaleConflictContext(
+            logger=logger,
+            log_label="delete_raise",
+            log_id=raise_id,
+            flash_message=(
+                "This raise was changed by another action.  "
+                "Please reload and try again."
             ),
-        )
-        if conflict is not None:
-            return conflict
-    except SQLAlchemyError:
-        # Narrow catch (C-46 / F-145): the StaleDataError race is handled
-        # inside the guard above.  Remaining DB-tier errors (FK constraint
-        # blocks delete, regenerate flush failure, etc.) land here.
-        # Non-SQLAlchemy exceptions propagate to the 500 handler.
-        db.session.rollback()
-        logger.exception("user_id=%d failed to delete raise %d from profile %d", current_user.id, raise_id, profile.id)
-        flash("Failed to remove raise. Please try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+        error_ctx=DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to delete raise %d from profile %d",
+            log_args=(current_user.id, raise_id, profile.id),
+            flash_message="Failed to remove raise. Please try again.",
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+    )
+    if response is not None:
+        return response
 
-    logger.info("user_id=%d deleted raise %d from profile %d", current_user.id, raise_id, profile.id)
+    logger.info(
+        "user_id=%d deleted raise %d from profile %d",
+        current_user.id, raise_id, profile.id,
+    )
     flash("Raise removed.", "info")
 
     return _respond_after_raise_change(profile)
@@ -200,14 +210,14 @@ def update_raise(raise_id):
     SQLAlchemy-tier check catches the truly-concurrent case at
     flush time and produces the same response.
 
-    The exits are all coding-standards-mandated guard clauses or
-    audit-documented error paths -- input validation, the C-18/F-010
-    stale-form pre-check, the flush-time StaleDataError returned by the
-    commit guard, the duplicate-key IntegrityError (F-051/C-23), and the
-    SQLAlchemyError (C-46/F-145) catch -- each surfacing a distinct
-    user-facing flash; the duplicate/unexpected IntegrityError pair share
-    a single redirect via a message accumulator so the count stays within
-    the guard-clause budget.
+    Recoverable failures during the regenerate + commit are delegated to
+    :func:`regenerate_commit_or_report`, which returns the flash +
+    redirect for each: the flush-time :class:`StaleDataError`
+    (C-18/F-010), the expected duplicate-key
+    :class:`~sqlalchemy.exc.IntegrityError` (F-051/C-23, surfaced as a
+    warning), and any other DB error (C-46/F-145, a danger flash).  The
+    route keeps only the input-validation and stale-form pre-check guard
+    clauses.
     """
     salary_raise = get_owned_via_parent(
         SalaryRaise, raise_id, "salary_profile",
@@ -248,69 +258,47 @@ def update_raise(raise_id):
         if field_name in _RAISE_UPDATE_FIELDS:
             setattr(salary_raise, field_name, value)
 
-    try:
-        conflict = regenerate_and_commit_or_stale(
-            lambda: _regenerate_salary_transactions(profile),
-            ctx=StaleConflictContext(
-                logger=logger,
-                log_label="update_raise",
-                log_id=raise_id,
-                flash_message=(
-                    "This raise was changed by another action while you were "
-                    "editing.  Please reload and try again."
-                ),
-                redirect=RedirectTarget(
-                    "salary.edit_profile",
-                    {"profile_id": profile.id},
-                ),
+    response = regenerate_commit_or_report(
+        lambda: _regenerate_salary_transactions(profile),
+        stale_ctx=StaleConflictContext(
+            logger=logger,
+            log_label="update_raise",
+            log_id=raise_id,
+            flash_message=(
+                "This raise was changed by another action while you were "
+                "editing.  Please reload and try again."
             ),
-        )
-        if conflict is not None:
-            return conflict
-    except IntegrityError as exc:
-        # Duplicate-key collision on update (F-051 / C-23): the user
-        # edited this raise's (type, year, month) tuple to one
-        # another active raise on the same salary profile already
-        # holds.  Roll back the stale session, surface the
-        # field-level error as a flash, and redirect to the edit
-        # page so the user can revise their input -- crashing the
-        # request with a 500 would expose the constraint name and
-        # leave the user without context to recover.
-        db.session.rollback()
-        if not is_unique_violation(exc, _SALARY_RAISES_UNIQUE_CONSTRAINT):
-            logger.exception(
-                "user_id=%d failed to update raise %d on profile %d "
-                "(unexpected IntegrityError)",
-                current_user.id, raise_id, profile.id,
-            )
-            message, category = "Failed to update raise. Please try again.", "danger"
-        else:
-            logger.info(
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+        error_ctx=DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to update raise %d on profile %d",
+            log_args=(current_user.id, raise_id, profile.id),
+            flash_message="Failed to update raise. Please try again.",
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+        # Duplicate-key collision on update (F-051 / C-23): the user edited
+        # this raise's (type, year, month) tuple onto one another active
+        # raise on the same profile already holds -- a recoverable warning,
+        # not a 500.  Any other IntegrityError falls through to error_ctx.
+        on_integrity=UniqueViolationContext(
+            logger=logger,
+            constraint=_SALARY_RAISES_UNIQUE_CONSTRAINT,
+            log_message=(
                 "Duplicate-key conflict on update_raise id=%d "
-                "(another raise already covers this profile/type/date)",
-                raise_id,
-            )
-            message, category = (
+                "(another raise already covers this profile/type/date)"
+            ),
+            log_args=(raise_id,),
+            flash_message=(
                 "Another raise on this profile already covers that "
                 "type and effective date.  Edit or remove it before "
-                "applying these changes.",
-                "warning",
-            )
-        flash(message, category)
-        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-    except SQLAlchemyError:
-        # Narrow catch (C-46 / F-145): the StaleDataError race is handled
-        # inside the guard above and the IntegrityError branch handles
-        # unique-constraint races.  Remaining DB-tier errors (DataError,
-        # regenerate flush failure, etc.) land here.  Non-SQLAlchemy
-        # exceptions propagate to the 500 handler.
-        db.session.rollback()
-        logger.exception(
-            "user_id=%d failed to update raise %d on profile %d",
-            current_user.id, raise_id, profile.id,
-        )
-        flash("Failed to update raise. Please try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+                "applying these changes."
+            ),
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+    )
+    if response is not None:
+        return response
 
     logger.info("user_id=%d updated raise %d on profile %d", current_user.id, raise_id, profile.id)
     flash("Raise updated.", "success")
@@ -341,11 +329,16 @@ def add_deduction(profile_id):
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = Decimal(str(data["amount"])) / Decimal("100")
-    if data.get("inflation_rate"):
+    if data.get("inflation_rate") is not None:
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     deduction = PaycheckDeduction(salary_profile_id=profile.id, **data)
     db.session.add(deduction)
+
+    # Capture the requester id on the clean session up front; the failure
+    # path builds its DbErrorContext after a failed flush, where reading the
+    # expired current_user attribute would hit the rolled-back session.
+    user_id = current_user.id
 
     try:
         _regenerate_salary_transactions(profile)
@@ -389,10 +382,13 @@ def add_deduction(profile_id):
         # numeric range, OperationalError on connection loss,
         # etc.) land here.  Non-SQLAlchemy exceptions propagate
         # to the 500 handler.
-        db.session.rollback()
-        logger.exception("user_id=%d failed to add deduction to profile %d", current_user.id, profile_id)
-        flash("Failed to add deduction. Please try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+        return handle_db_error(DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to add deduction to profile %d",
+            log_args=(user_id, profile_id),
+            flash_message="Failed to add deduction. Please try again.",
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+        ))
 
     logger.info("user_id=%d added deduction to profile %d", current_user.id, profile_id)
     flash(f"Deduction '{deduction.name}' added.", "success")
@@ -409,7 +405,7 @@ def delete_deduction(ded_id):
     Optimistic locking (commit C-18 / F-010): the DELETE statement is
     version-pinned by SQLAlchemy; a concurrent edit raises
     :class:`StaleDataError`, converted to a flash + redirect by the
-    canonical :func:`regenerate_and_commit_or_stale` guard.
+    canonical :func:`regenerate_commit_or_report` guard.
     """
     deduction = get_owned_via_parent(
         PaycheckDeduction, ded_id, "salary_profile",
@@ -424,36 +420,33 @@ def delete_deduction(ded_id):
     # the delete's flush is caught there.
     db.session.delete(deduction)
 
-    try:
-        conflict = regenerate_and_commit_or_stale(
-            lambda: _regenerate_salary_transactions(profile),
-            ctx=StaleConflictContext(
-                logger=logger,
-                log_label="delete_deduction",
-                log_id=ded_id,
-                flash_message=(
-                    "This deduction was changed by another action.  "
-                    "Please reload and try again."
-                ),
-                redirect=RedirectTarget(
-                    "salary.edit_profile",
-                    {"profile_id": profile.id},
-                ),
+    response = regenerate_commit_or_report(
+        lambda: _regenerate_salary_transactions(profile),
+        stale_ctx=StaleConflictContext(
+            logger=logger,
+            log_label="delete_deduction",
+            log_id=ded_id,
+            flash_message=(
+                "This deduction was changed by another action.  "
+                "Please reload and try again."
             ),
-        )
-        if conflict is not None:
-            return conflict
-    except SQLAlchemyError:
-        # Narrow catch (C-46 / F-145): the StaleDataError race is handled
-        # inside the guard above.  Remaining DB-tier errors (FK constraint
-        # blocks delete, regenerate flush failure, etc.) land here.
-        # Non-SQLAlchemy exceptions propagate to the 500 handler.
-        db.session.rollback()
-        logger.exception("user_id=%d failed to delete deduction %d from profile %d", current_user.id, ded_id, profile.id)
-        flash("Failed to remove deduction. Please try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+        error_ctx=DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to delete deduction %d from profile %d",
+            log_args=(current_user.id, ded_id, profile.id),
+            flash_message="Failed to remove deduction. Please try again.",
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+    )
+    if response is not None:
+        return response
 
-    logger.info("user_id=%d deleted deduction %d from profile %d", current_user.id, ded_id, profile.id)
+    logger.info(
+        "user_id=%d deleted deduction %d from profile %d",
+        current_user.id, ded_id, profile.id,
+    )
     flash("Deduction removed.", "info")
 
     return _respond_after_deduction_change(profile)
@@ -471,14 +464,14 @@ def update_deduction(ded_id):
     SQLAlchemy-tier check catches the truly-concurrent case at
     flush time and produces the same response.
 
-    The exits are all coding-standards-mandated guard clauses or
-    audit-documented error paths -- input validation, the C-18/F-010
-    stale-form pre-check, the flush-time StaleDataError returned by the
-    commit guard, the name-collision IntegrityError (F-052/C-23), and the
-    SQLAlchemyError (C-46/F-145) catch -- each surfacing a distinct
-    user-facing flash; the duplicate/unexpected IntegrityError pair share
-    a single redirect via a message accumulator so the count stays within
-    the guard-clause budget.
+    Recoverable failures during the regenerate + commit are delegated to
+    :func:`regenerate_commit_or_report`, which returns the flash +
+    redirect for each: the flush-time :class:`StaleDataError`
+    (C-18/F-010), the expected name-collision
+    :class:`~sqlalchemy.exc.IntegrityError` (F-052/C-23, surfaced as a
+    warning), and any other DB error (C-46/F-145, a danger flash).  The
+    route keeps only the input-validation and stale-form pre-check guard
+    clauses.
     """
     deduction = get_owned_via_parent(
         PaycheckDeduction, ded_id, "salary_profile",
@@ -514,77 +507,59 @@ def update_deduction(ded_id):
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = Decimal(str(data["amount"])) / Decimal("100")
-    if data.get("inflation_rate"):
+    if data.get("inflation_rate") is not None:
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     for field_name, value in data.items():
         if field_name in _DEDUCTION_UPDATE_FIELDS:
             setattr(deduction, field_name, value)
 
-    try:
-        conflict = regenerate_and_commit_or_stale(
-            lambda: _regenerate_salary_transactions(profile),
-            ctx=StaleConflictContext(
-                logger=logger,
-                log_label="update_deduction",
-                log_id=ded_id,
-                flash_message=(
-                    "This deduction was changed by another action while you "
-                    "were editing.  Please reload and try again."
-                ),
-                redirect=RedirectTarget(
-                    "salary.edit_profile",
-                    {"profile_id": profile.id},
-                ),
+    response = regenerate_commit_or_report(
+        lambda: _regenerate_salary_transactions(profile),
+        stale_ctx=StaleConflictContext(
+            logger=logger,
+            log_label="update_deduction",
+            log_id=ded_id,
+            flash_message=(
+                "This deduction was changed by another action while you "
+                "were editing.  Please reload and try again."
             ),
-        )
-        if conflict is not None:
-            return conflict
-    except IntegrityError as exc:
-        # Name-collision rename (F-052 / C-23): the user renamed
-        # this deduction to one another active or inactive
-        # deduction on the same profile already holds.  Roll back
-        # the stale session and surface the field-level error as a
-        # flash.  Crashing the request with a 500 would leak the
-        # constraint name and leave the user without context to
-        # recover.
-        db.session.rollback()
-        if not is_unique_violation(exc, _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT):
-            logger.exception(
-                "user_id=%d failed to update deduction %d on profile %d "
-                "(unexpected IntegrityError)",
-                current_user.id, ded_id, profile.id,
-            )
-            message, category = "Failed to update deduction. Please try again.", "danger"
-        else:
-            logger.info(
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+        error_ctx=DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to update deduction %d on profile %d",
+            log_args=(current_user.id, ded_id, profile.id),
+            flash_message="Failed to update deduction. Please try again.",
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+        # Name-collision rename (F-052 / C-23): the user renamed this
+        # deduction onto a name another active or inactive deduction on the
+        # same profile already holds -- a recoverable warning, not a 500.
+        # Any other IntegrityError falls through to error_ctx.
+        on_integrity=UniqueViolationContext(
+            logger=logger,
+            constraint=_PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT,
+            log_message=(
                 "Duplicate-name conflict on update_deduction id=%d "
-                "(another deduction with this name exists on the profile)",
-                ded_id,
-            )
-            message, category = (
+                "(another deduction with this name exists on the profile)"
+            ),
+            log_args=(ded_id,),
+            flash_message=(
                 "Another deduction on this profile already uses that "
                 "name.  Choose a different name or remove the existing "
-                "deduction first.",
-                "warning",
-            )
-        flash(message, category)
-        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-    except SQLAlchemyError:
-        # Narrow catch (C-46 / F-145): the StaleDataError race is handled
-        # inside the guard above and the IntegrityError branch handles
-        # unique-constraint races.  Remaining DB-tier errors (DataError,
-        # regenerate flush failure, etc.) land here.  Non-SQLAlchemy
-        # exceptions propagate to the 500 handler.
-        db.session.rollback()
-        logger.exception(
-            "user_id=%d failed to update deduction %d on profile %d",
-            current_user.id, ded_id, profile.id,
-        )
-        flash("Failed to update deduction. Please try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+                "deduction first."
+            ),
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+        ),
+    )
+    if response is not None:
+        return response
 
-    logger.info("user_id=%d updated deduction %d on profile %d", current_user.id, ded_id, profile.id)
+    logger.info(
+        "user_id=%d updated deduction %d on profile %d",
+        current_user.id, ded_id, profile.id,
+    )
     flash(f"Deduction '{deduction.name}' updated.", "success")
 
     return _respond_after_deduction_change(profile)

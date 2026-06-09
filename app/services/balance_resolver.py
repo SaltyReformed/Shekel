@@ -443,8 +443,7 @@ def balances_for(
          scenario across the period span, with entries eager-loaded.
       3. Delegate to ``calculate_balances`` for anchor + post-anchor
          period-by-period roll-forward (the engine's
-         ``_sum_remaining`` / ``_sum_all`` apply the entry-aware
-         reduction).
+         ``_sum_projected`` applies the entry-aware reduction).
       4. Quantize each balance to cents with
          :func:`~app.utils.money.round_money`.
 
@@ -530,13 +529,12 @@ def period_subtotal(
 
     Algorithm: re-uses :func:`_load_balance_transactions` (one query,
     entries eager-loaded, shared status clause) then delegates to
-    :func:`~app.services.balance_calculator._sum_all`, whose math is
-    identical to ``_sum_remaining`` post-Commit-5 (both gate on
-    Projected, both apply the entry-aware reduction for expenses,
-    both use ``effective_amount`` for income).  Calling ``_sum_all``
-    directly avoids the carry-forward bookkeeping in
-    ``calculate_balances`` that is irrelevant when only one period
-    is needed.
+    :func:`~app.services.balance_calculator._sum_projected`, the engine's
+    single Projected-only period sum (it gates on Projected and applies
+    the entry-aware reduction for expenses, using ``effective_amount``
+    for income).  Calling it directly avoids the carry-forward
+    bookkeeping in ``calculate_balances`` that is irrelevant when only
+    one period is needed.
 
     Args:
         account: The :class:`~app.models.account.Account`.  Must be
@@ -566,12 +564,12 @@ def period_subtotal(
         amount_overrides = live_amount_overrides(
             account, scenario_id, transactions,
         )
-    # Pylint: ``protected-access`` -- ``_sum_all`` is an internal helper of
-    # ``balance_calculator``; the resolver is its sibling canonical producer
+    # Pylint: ``protected-access`` -- ``_sum_projected`` is an internal helper
+    # of ``balance_calculator``; the resolver is its sibling canonical producer
     # (see module docstring) and the audit's E-25 mandate explicitly reuses the
     # engine's math rather than rewriting it (CLAUDE.md rule 10).
     # pylint: disable=protected-access
-    income, expense = balance_calculator._sum_all(transactions, amount_overrides)
+    income, expense = balance_calculator._sum_projected(transactions, amount_overrides)
     rounded_income = round_money(income)
     rounded_expense = round_money(expense)
     return PeriodSubtotal(
@@ -665,7 +663,7 @@ def _sum_period_as_of(
 ) -> tuple[Decimal, Decimal]:
     """Sum Projected income / expense for the as-of period (E-27).
 
-    Mirrors :func:`~app.services.balance_calculator._sum_all` but
+    Mirrors :func:`~app.services.balance_calculator._sum_projected` but
     routes expense impact through :func:`_entry_aware_amount_dated`
     so the entry-date cut applies inside the period containing
     ``as_of``.  Income uses the live projected-net override when present
@@ -698,14 +696,14 @@ def _sum_period_as_of(
     expense = Decimal("0.00")
     for txn in transactions:
         # Centralized ``is_projected`` predicate (D6-09 / MED-02);
-        # mirrors ``balance_calculator._sum_all`` exactly so the
+        # mirrors ``balance_calculator._sum_projected`` exactly so the
         # date-cut path classifies non-Projected rows identically.
         if not is_projected(txn):
             continue
         if txn.is_income:
             # Pylint: ``protected-access`` -- Workstream B live projected-net
             # seam; reuse ``balance_calculator``'s internal ``_income_amount``
-            # helper so the date-cut path and ``_sum_all`` cannot drift.
+            # helper so the date-cut path and ``_sum_projected`` cannot drift.
             # pylint: disable=protected-access
             income += balance_calculator._income_amount(txn, amount_overrides)
         elif txn.is_expense:
@@ -840,16 +838,31 @@ def balance_as_of_date(
         # applies.  Return the anchor balance (rounded to cents).
         return round_money(anchor.balance)
 
-    prior_balance = _project_to_period_before(
-        account, scenario_id, anchor, target_period, all_periods,
+    # Workstream B: the projected salary income and loan-payment debit are
+    # recomputed live (the stored estimated_amount is only a cache).  Build
+    # the override map ONCE over the union of the prefix span and the target
+    # period: it is keyed by transaction id and each value depends only on
+    # the transaction, not on which span it came from, so a union map is
+    # equivalent to two per-span maps.  Threading the one map into both the
+    # prior-balance roll-forward and the target sum makes the paycheck/loan
+    # recompute behind live_amount_overrides run once per call, not once per
+    # span (the grid's established build-once-and-thread pattern).
+    prefix_periods = [
+        p for p in all_periods
+        if anchor.period.period_index <= p.period_index < target_period.period_index
+    ]
+    prefix_txns = _load_balance_transactions(
+        account, scenario_id, [p.id for p in prefix_periods],
     )
-
     target_txns = _load_balance_transactions(
         account, scenario_id, [target_period.id],
     )
-    # Workstream B: live projected income for the target period.
     amount_overrides = live_amount_overrides(
-        account, scenario_id, target_txns,
+        account, scenario_id, prefix_txns + target_txns,
+    )
+
+    prior_balance = _project_to_period_before(
+        anchor, target_period, prefix_periods, prefix_txns, amount_overrides,
     )
     income, expense = _sum_period_as_of(target_txns, as_of, amount_overrides)
 
@@ -857,11 +870,11 @@ def balance_as_of_date(
 
 
 def _project_to_period_before(
-    account: Account,
-    scenario_id: int,
     anchor: AnchorPoint,
     target_period: PayPeriod,
-    all_periods: list[PayPeriod],
+    prefix_periods: list[PayPeriod],
+    prefix_txns: list[Transaction],
+    amount_overrides: dict[int, Decimal],
 ) -> Decimal:
     """Return the projected end balance of the period before ``target_period``.
 
@@ -869,31 +882,44 @@ def _project_to_period_before(
     balance is simply ``anchor.balance`` (the engine starts here).
     Otherwise walk
     :func:`~app.services.balance_calculator.calculate_balances` over
-    ``[anchor_period .. target_period - 1]`` with entries
-    eager-loaded by :func:`_load_balance_transactions`, and return
-    the engine's end balance for the period immediately before
-    ``target_period``.  Used by :func:`balance_as_of_date` to seed
-    the entry-date-cut sum of the target period.
+    ``prefix_periods`` (the span ``[anchor_period .. target_period - 1]``,
+    with ``prefix_txns`` entries eager-loaded) and return the engine's end
+    balance for the period immediately before ``target_period``.
+
+    The caller (:func:`balance_as_of_date`) loads ``prefix_periods`` /
+    ``prefix_txns`` and builds ``amount_overrides`` once over the union of
+    the prefix and target spans, then threads that single map here and into
+    :func:`_sum_period_as_of` -- so the live salary/loan recompute behind
+    :func:`live_amount_overrides` runs once per call, not once per span.
+
+    Args:
+        anchor: The resolved :class:`AnchorPoint`; ``anchor.balance``
+            seeds the roll-forward and ``anchor.period`` is the engine's
+            starting period.
+        target_period: The period whose immediately-preceding end balance
+            is wanted.  When it equals the anchor period there is no prior
+            period and ``anchor.balance`` is returned unchanged.
+        prefix_periods: The span ``[anchor_period .. target_period - 1]``
+            ordered by ``period_index``; empty only in the anchor-period
+            early-return case.
+        prefix_txns: The contributing transactions for ``prefix_periods``,
+            entries eager-loaded.
+        amount_overrides: The shared ``{transaction_id: Decimal}`` live
+            override map.  Keys outside ``prefix_txns`` are never looked up
+            by the engine, so passing the caller's union map is equivalent
+            to a prefix-only map.
+
+    Returns:
+        ``Decimal`` -- the projected end balance of the period before
+        ``target_period`` (or ``anchor.balance`` when ``target_period`` is
+        the anchor period).
     """
-    anchor_period = anchor.period
-    if target_period.id == anchor_period.id:
+    if target_period.id == anchor.period.id:
         return anchor.balance
 
-    prefix_periods = [
-        p for p in all_periods
-        if anchor_period.period_index <= p.period_index < target_period.period_index
-    ]
-    prefix_txns = _load_balance_transactions(
-        account, scenario_id, [p.id for p in prefix_periods],
-    )
-    # Workstream B: live projected income for the prefix span, so the
-    # calendar's prior_balance reflects the live paycheck.
-    amount_overrides = live_amount_overrides(
-        account, scenario_id, prefix_txns,
-    )
     raw_balances, _ = balance_calculator.calculate_balances(
         anchor_balance=anchor.balance,
-        anchor_period_id=anchor_period.id,
+        anchor_period_id=anchor.period.id,
         periods=prefix_periods,
         transactions=prefix_txns,
         amount_overrides=amount_overrides,

@@ -8,11 +8,11 @@
 #
 # Two-tier response:
 #   * Hard block (exit 2, fed back to Claude) on real errors (E/F) and the custom
-#     checkers: the financial-correctness pair (shekel-decimal-from-float,
-#     shekel-refname-compare) and shekel-disable-rationale (every disable must
-#     carry a standard Pylint: why-comment). These have zero violations in the
-#     current tree, so this never false-blocks correct code; it catches a
-#     regression the instant it is typed.
+#     checkers: the financial-correctness rules (shekel-decimal-from-float,
+#     shekel-refname-compare, shekel-bare-money-quantize) and
+#     shekel-disable-rationale (every disable must carry a standard Pylint:
+#     why-comment). These have zero violations in the current tree, so this never
+#     false-blocks correct code; it catches a regression the instant it is typed.
 #   * Advisory (exit 0) for the remaining smells/conventions while Phase 3/4 of
 #     the cleanup is still in flight. The Stop hook's full `pylint app/` ratchet
 #     is the hard gate that forbids a net regression and locks the tree at zero.
@@ -51,7 +51,7 @@ esac
 
 # Hard-block tier: errors and the custom financial-correctness rules.
 guard="$(pylint "$FILE" --score=no --disable=all \
-    --enable=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-disable-rationale 2>&1)"
+    --enable=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale 2>&1)"
 if [ -n "$guard" ]; then
     {
         echo "Blocking issue in $FILE (error or financial-correctness rule)."

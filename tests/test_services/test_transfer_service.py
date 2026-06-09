@@ -6,6 +6,7 @@ delete_transfer.  Covers all five core invariants, validation rules,
 edge cases, and cross-user isolation.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -1199,6 +1200,114 @@ class TestRestoreTransfer:
             ).all()
             for s in shadows:
                 assert s.status_id == td["projected_status"].id
+
+    def test_corrects_drifted_shadow_due_date(self, app, db, transfer_data):
+        """Verify that restore_transfer re-syncs a shadow due_date that
+        drifted from the transfer's canonical due_date during the
+        soft-deleted period.  The parent due_date is the source of truth
+        (see ``models/transfer.py``); calendar/dashboard/year-end/
+        spending-trend consumers read the shadow due_date, so a drifted
+        shadow would display a wrong due date after restore.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+
+            # Give the transfer a canonical due_date, mirrored to both
+            # shadows through the service.
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id, due_date=date(2026, 6, 15)
+            )
+            db.session.flush()
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Simulate drift: directly change one shadow's due_date.
+            shadow = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).first()
+            shadow.due_date = date(2026, 12, 25)
+            db.session.flush()
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            # Both shadows must match the transfer's canonical due_date,
+            # not the drifted 2026-12-25.
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).all()
+            for s in shadows:
+                assert s.due_date == date(2026, 6, 15)
+
+    def test_corrects_drifted_shadow_category(self, app, db, transfer_data):
+        """Verify that restore_transfer re-syncs a shadow category_id that
+        drifted from the transfer's canonical category during the
+        soft-deleted period.  Category is mirrored to both shadows so
+        each account grid attributes the entry to the same category.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            rent_cat_id = td["categories"]["Rent"].id
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Simulate drift: change one shadow's category to a different
+            # owned category (Transfers: Incoming).
+            shadow = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).first()
+            shadow.category_id = td["incoming_cat"].id
+            db.session.flush()
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            # Both shadows must match the transfer's canonical category.
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).all()
+            for s in shadows:
+                assert s.category_id == rent_cat_id
+
+    def test_corrects_drifted_shadow_is_override(
+        self, app, db, transfer_data
+    ):
+        """Verify that restore_transfer re-syncs a shadow is_override flag
+        that drifted from the transfer's canonical value during the
+        soft-deleted period.  The override flag is mirrored to both
+        shadows so the carry-forward/dedupe state stays coherent across
+        the parent transfer and its two shadows.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            # create_transfer always sets is_override=False on the parent.
+            assert xfer.is_override is False
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Simulate drift: flip one shadow's override flag.
+            shadow = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).first()
+            shadow.is_override = True
+            db.session.flush()
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            # Both shadows must match the transfer's canonical (False)
+            # override flag, not the drifted True.
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id
+            ).all()
+            for s in shadows:
+                assert s.is_override is False
 
     def test_raises_on_missing_shadows(self, app, db, transfer_data):
         """Verify that restore_transfer raises ValidationError when a

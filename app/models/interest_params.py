@@ -19,10 +19,10 @@ class InterestParams(TimestampMixin, db.Model):
 
     __tablename__ = "interest_params"
     __table_args__ = (
-        db.CheckConstraint(
-            "compounding_frequency IN ('daily', 'monthly', 'quarterly')",
-            name="ck_interest_params_frequency",
-        ),
+        # #38: ``compounding_frequency`` was a free-string column with
+        # an ``IN (...)`` CHECK; it is now the ref-table FK
+        # ``compounding_frequency_id`` (validity enforced by the FK +
+        # RESTRICT, not a CHECK).
         # F-077 / C-24: ``apy`` is persisted as a decimal fraction
         # (e.g. ``0.04500`` for 4.5%) by ``app/routes/accounts.py``
         # which divides the user-entered percent by 100 before
@@ -75,14 +75,28 @@ class InterestParams(TimestampMixin, db.Model):
     # safe "no interest configured" state until the user enters a
     # real APY via the interest-detail form.
     apy = db.Column(db.Numeric(7, 5), nullable=False)
-    compounding_frequency = db.Column(
-        db.String(10), nullable=False, server_default="daily"
+    # #38: ref-table FK (was a free-string ``compounding_frequency``
+    # column).  RESTRICT mirrors the other ref FKs; the seeded DAILY
+    # row is the auto-create default, set explicitly at each
+    # construction site rather than a server_default (an FK id is not
+    # a static literal).
+    compounding_frequency_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.compounding_frequencies.id",
+            name="fk_interest_params_compounding_frequency",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
 
     # Relationships
     account = db.relationship(
         "Account",
         backref=db.backref("interest_params", uselist=False, lazy="joined"),
+    )
+    compounding_frequency = db.relationship(
+        "CompoundingFrequency", lazy="joined",
     )
 
     def __repr__(self):

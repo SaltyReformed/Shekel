@@ -38,7 +38,9 @@ from app.routes.accounts._bp import accounts_bp
 from app.services import anchor_service, entry_service, pay_period_service
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
-from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.auth_helpers import (
+    fresh_login_required, get_or_404, require_owner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +66,8 @@ def inline_anchor_update(account_id):
     time, so a concurrent in-flight commit produces an identical
     UX to a long-stale form.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return "Not found", 404
 
     errors = _anchor_schema.validate(request.form)
@@ -108,7 +110,9 @@ def inline_anchor_update(account_id):
         checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
         try:
             if account.account_type_id == checking_type_id:
-                entry_service.clear_entries_for_anchor_true_up(current_user.id)
+                entry_service.clear_entries_for_anchor_true_up(
+                    current_user.id, account.id,
+                )
             db.session.commit()
             outcome = AnchorTrueUpOutcome.COMMITTED
         except StaleDataError:
@@ -173,8 +177,8 @@ def inline_anchor_update(account_id):
 @require_owner
 def inline_anchor_form(account_id):
     """HTMX partial: show inline anchor balance edit form on accounts list."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return "Not found", 404
 
     return render_template(
@@ -187,8 +191,8 @@ def inline_anchor_form(account_id):
 @require_owner
 def inline_anchor_display(account_id):
     """HTMX partial: show anchor balance display on accounts list."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return "Not found", 404
 
     return render_template(
@@ -237,8 +241,8 @@ def true_up(account_id):
     ``StaleDataError`` at flush time for the truly-concurrent
     interleaving the form-side check cannot see.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return "Account not found", 404
 
     errors = _anchor_schema.validate(request.form)
@@ -316,8 +320,8 @@ def true_up(account_id):
 @require_owner
 def anchor_form(account_id):
     """HTMX partial: return the inline edit form for the anchor balance."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return "Not found", 404
 
     return render_template(
@@ -332,8 +336,8 @@ def anchor_form(account_id):
 @require_owner
 def anchor_display(account_id):
     """HTMX partial: return the anchor balance display (non-editing)."""
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return "Not found", 404
 
     return render_template(

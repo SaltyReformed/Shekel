@@ -157,24 +157,6 @@ class TestLiveProjectedNet:
     salary-linked income rows.
     """
 
-    @staticmethod
-    def _expected_net(user_id, profile, period_id):
-        """Net the salary projection page would show for ``period_id``.
-
-        Mirrors the producer's own path (project_salary over the full
-        pay-period set, current-year tax configs, the profile's
-        calibration) so the assertion pins the producer to the exact
-        canonical value rather than re-deriving the engine arithmetic.
-        """
-        periods = pay_period_service.get_all_periods(user_id)
-        tax_configs = load_tax_configs(user_id, profile)
-        breakdowns = paycheck_calculator.project_salary(
-            profile, periods, tax_configs, calibration=profile.calibration,
-        )
-        return {
-            bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
-        }[period_id]
-
     def test_recomputes_live_ignoring_stored_amount(
         self, app, db, seed_user, seed_periods,
     ):
@@ -203,8 +185,12 @@ class TestLiveProjectedNet:
                 user_id, scenario_id, [txn],
             )
 
-            expected = self._expected_net(user_id, profile, period.id)
-            assert overrides == {txn.id: expected}
+            # $104,000 profile, no raise, no tax configs seeded -> net =
+            # gross = 104000 / 26 = $4,000.00 (hand-computed; the sibling
+            # balance-resolver test pins the same value for this setup).
+            # The producer must return this LIVE net, never the stale $1.00.
+            expected_net = Decimal("4000.00")
+            assert overrides == {txn.id: expected_net}
             assert overrides[txn.id] != Decimal("1.00")
 
     def test_filters_to_projected_nonoverride_salary_income(

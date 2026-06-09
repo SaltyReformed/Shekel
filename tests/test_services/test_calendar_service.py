@@ -425,6 +425,46 @@ class TestIncomeExpenseClassification:
             assert len(income_entries) == 1
             assert len(expense_entries) == 1
 
+    def test_day_totals_fold_per_day(self, app, seed_user, seed_periods, db):
+        """day_totals holds the per-day (income, expense) fold; month derives from it.
+
+        Day 2 carries a $3,000 income and a $400 expense; day 5 carries a
+        $1,200 expense only.  Per-day folds: day 2 = (3000.00, 400.00),
+        day 5 = (0, 1200.00).  The expense-only day's income leg must be a
+        Decimal, not an int 0 (money is always Decimal).  The month
+        headline totals are the sum of the per-day folds: income 3000.00,
+        expenses 400.00 + 1200.00 = 1600.00 -- so the per-day cells the
+        route renders and the month total cannot diverge.
+        """
+        with app.app_context():
+            _add_transaction(
+                db.session, seed_user, seed_periods[0], "Salary", "3000.00",
+                is_income=True, due_date=date(2026, 1, 2),
+            )
+            _add_transaction(
+                db.session, seed_user, seed_periods[0], "Groceries", "400.00",
+                due_date=date(2026, 1, 2),
+            )
+            _add_transaction(
+                db.session, seed_user, seed_periods[0], "Rent", "1200.00",
+                due_date=date(2026, 1, 5),
+            )
+            db.session.commit()
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id,
+                year=2026,
+                month=1,
+            )
+            assert result.day_totals[2] == (Decimal("3000.00"), Decimal("400.00"))
+            assert result.day_totals[5] == (Decimal("0"), Decimal("1200.00"))
+            # The expense-only day's income leg is a Decimal zero, not int 0.
+            income_leg, _expense_leg = result.day_totals[5]
+            assert isinstance(income_leg, Decimal)
+            # Month headline totals are the sum of the per-day folds.
+            assert result.total_income == Decimal("3000.00")
+            assert result.total_expenses == Decimal("1600.00")
+
 
 class TestDeletedTransactions:
     """Tests for soft-deleted transaction exclusion."""
@@ -1107,7 +1147,7 @@ class TestBalanceContributingPredicate:
         Same fixture as C10-2 (Projected $500 + Settled $200 +
         Cancelled $100 + Credit $50 on Jan 5).  The grid period
         subtotal is sourced from
-        ``balance_resolver.period_subtotal``, whose ``_sum_all``
+        ``balance_resolver.period_subtotal``, whose ``_sum_projected``
         helper gates on ``is_projected(txn)`` -- so only the
         Projected $500 expense contributes; Settled, Cancelled, and
         Credit are all excluded.  Hand arithmetic: 500.00.

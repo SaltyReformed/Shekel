@@ -46,6 +46,7 @@ from app.utils.balance_predicates import (
     is_done,
     is_projected,
     is_projected_clause,
+    settled_status_ids,
 )
 
 
@@ -273,6 +274,54 @@ class TestBalanceExcludedStatusIds:
         """
         with app.app_context():
             assert isinstance(balance_excluded_status_ids(), frozenset)
+
+
+class TestSettledStatusIds:
+    """Pins the cached settled-status ID set against the ``is_settled`` column."""
+
+    def test_settled_ids_are_paid_received_settled(self, app, db):
+        """The set is exactly the rows whose ``is_settled`` column is True.
+
+        Derives the expected IDs by querying the seeded ``Status`` rows
+        whose ``is_settled=True`` (independent of any hardcoded enum
+        list) and asserts both that they are the three expected statuses
+        and that ``settled_status_ids()`` returns the same set. The
+        ``is_settled`` column is the canonical "this transaction has
+        completed" definition consulted directly by the calendar,
+        variance, savings-metric, and balance-calculator sites; this
+        accessor is the ID-list form for ``status_id.in_(...)`` filters.
+        Pinning the accessor to the column here means a future seed-flag
+        change (a new settled status, or relaxing one) fails this test
+        unless the accessor is updated in lockstep -- closing the drift
+        the ID-list-vs-column split would otherwise hide.
+        """
+        with app.app_context():
+            seeded_settled_ids = {
+                row.id for row in (
+                    db.session.query(Status)
+                    .filter(Status.is_settled.is_(True))
+                    .all()
+                )
+            }
+            assert seeded_settled_ids == {
+                ref_cache.status_id(StatusEnum.DONE),
+                ref_cache.status_id(StatusEnum.RECEIVED),
+                ref_cache.status_id(StatusEnum.SETTLED),
+            }, (
+                "Seed matrix in app/ref_seeds.py has changed -- only "
+                "Paid, Received and Settled should carry is_settled=True"
+            )
+            assert settled_status_ids() == frozenset(seeded_settled_ids)
+
+    def test_settled_ids_is_frozenset(self, app, db):
+        """``settled_status_ids`` returns an immutable frozenset.
+
+        Mutation of the returned set could corrupt the cached lookup
+        for every subsequent caller. ``frozenset`` makes the contract
+        unforgivable: ``.add`` raises ``AttributeError``.
+        """
+        with app.app_context():
+            assert isinstance(settled_status_ids(), frozenset)
 
 
 class TestPredicateUsesIdsNotNames:

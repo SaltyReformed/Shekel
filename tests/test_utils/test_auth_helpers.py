@@ -26,6 +26,7 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.utils.auth_helpers import (
     fresh_login_required,
+    get_accessible_transaction,
     get_or_404,
     get_owned_via_parent,
     require_owner,
@@ -684,4 +685,147 @@ class TestAccessDeniedLogging:
         assert not access_records, (
             "Successful require_owner emitted ACCESS events; the "
             "decorator must stay silent on the happy path."
+        )
+
+    # ── get_accessible_transaction F-144 logging (deep-hunt #85) ──────
+
+    @staticmethod
+    def _make_owned_txn(db, owner, period):
+        """Create an ad-hoc, non-companion-visible expense owned by *owner*.
+
+        Template-less (``template_id`` defaults to None) so
+        ``visible_to_companion`` reads the row's own ``companion_visible``
+        column, which defaults to False -- a companion of the owner is
+        therefore denied.
+        """
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        txn = Transaction(
+            pay_period_id=period.id,
+            scenario_id=owner["scenario"].id,
+            account_id=owner["account"].id,
+            status_id=projected.id,
+            name="Access-log test expense",
+            category_id=next(iter(owner["categories"].values())).id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal("50.00"),
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    def test_get_accessible_transaction_emits_resource_not_found(
+        self, app, db, seed_user,
+    ):
+        """A missing-PK denial emits ``resource_not_found`` at INFO (deep-hunt #85)."""
+        with app.test_request_context("/some/path"):
+            login_user(seed_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_accessible_transaction(999_999)
+
+        assert result is None
+        record = cap.find(EVT_RESOURCE_NOT_FOUND)
+        assert record is not None, (
+            "Missing-PK branch did not emit ``resource_not_found``; "
+            f"records: {[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+        assert record.levelno == logging.INFO
+        assert record.category == ACCESS
+        assert record.user_id == seed_user["user"].id
+        assert record.model == "Transaction"
+        assert record.pk == 999_999
+        assert record.path == "/some/path"
+
+    def test_get_accessible_transaction_emits_cross_user_for_other_owner(
+        self, app, db, seed_user, second_user,
+    ):
+        """Owner A reaching owner B's transaction emits ``access_denied_cross_user``.
+
+        deep-hunt #85: the owner-path denial was silent before.  WARNING
+        level matches the sibling get_or_404 cross-user event.
+        """
+        from app.services import pay_period_service  # noqa: WPS433
+        with app.test_request_context("/some/path"):
+            login_user(seed_user["user"])
+            periods2 = pay_period_service.generate_pay_periods(
+                user_id=second_user["user"].id,
+                start_date=date(2026, 3, 1),
+                num_periods=2,
+                cadence_days=14,
+            )
+            db.session.flush()
+            txn = self._make_owned_txn(db, second_user, periods2[0])
+
+            with _AuthHelpersLogCapture() as cap:
+                result = get_accessible_transaction(txn.id)
+
+        assert result is None
+        record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
+        assert record is not None, (
+            "Owner cross-user branch did not emit ``access_denied_cross_user``; "
+            f"records: {[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+        assert record.levelno == logging.WARNING
+        assert record.category == ACCESS
+        assert record.user_id == seed_user["user"].id
+        assert record.model == "Transaction"
+        assert record.pk == txn.id
+        assert record.owner_id == second_user["user"].id
+        assert record.path == "/some/path"
+
+    def test_get_accessible_transaction_emits_cross_user_for_companion_denied(
+        self, app, db, seed_user, seed_periods, seed_companion,
+    ):
+        """A companion denied by visibility emits ``access_denied_cross_user``.
+
+        deep-hunt #85 headline: the companion-visibility denial was the
+        one ownership-failure branch in auth_helpers that stayed silent.
+        The companion is linked to seed_user (owner_id == linked_owner_id),
+        so this isolates the ``not visible_to_companion`` denial.
+        """
+        with app.test_request_context("/some/path"):
+            # Ad-hoc txn owned by seed_user -> companion_visible False.
+            txn = self._make_owned_txn(db, seed_user, seed_periods[0])
+            assert txn.visible_to_companion is False
+            login_user(seed_companion["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_accessible_transaction(txn.id)
+
+        assert result is None
+        record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
+        assert record is not None, (
+            "Companion-visibility branch did not emit "
+            "``access_denied_cross_user``; "
+            f"records: {[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+        assert record.levelno == logging.WARNING
+        assert record.category == ACCESS
+        assert record.user_id == seed_companion["user"].id
+        assert record.model == "Transaction"
+        assert record.pk == txn.id
+        # owner_id is the txn's actual owner (== the companion's linked owner).
+        assert record.owner_id == seed_user["user"].id
+        assert record.path == "/some/path"
+
+    def test_get_accessible_transaction_silent_on_success(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A successful owner load emits NO ACCESS event (deep-hunt #85)."""
+        with app.test_request_context("/some/path"):
+            login_user(seed_user["user"])
+            txn = self._make_owned_txn(db, seed_user, seed_periods[0])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_accessible_transaction(txn.id)
+
+        assert result is not None
+        assert result.id == txn.id
+        access_records = [
+            r for r in cap.records if getattr(r, "category", None) == ACCESS
+        ]
+        assert not access_records, (
+            "Successful get_accessible_transaction emitted ACCESS events; "
+            "the helper must stay silent on the happy path.  Records: "
+            f"{[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
         )

@@ -63,6 +63,7 @@ from app import ref_cache
 from app.enums import CalcMethodEnum, DeductionTimingEnum
 from app.services import tax_calculator
 from app.services.calibration_service import apply_calibration
+from app.utils.deduction_cap import cap_period_amount
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +214,7 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
         PaycheckBreakdown dataclass.
     """
     # Step 1: Determine annual salary after raises.
-    annual_salary = _apply_raises(profile, period)
+    annual_salary = apply_raises(profile.annual_salary, profile.raises, period.start_date)
 
     # Step 2: Gross biweekly.  Residue from the per-cycle quantisation
     # is reconciled back into the annual aggregate (MED-05 / PA-07);
@@ -467,14 +468,14 @@ def _gross_biweekly_for_period(
 
     Args:
         annual_salary: The post-raise annual salary for ``period``,
-            as returned by :func:`_apply_raises`.  Constructed from a
+            as returned by :func:`apply_raises`.  Constructed from a
             Decimal upstream; the helper does not re-coerce.
         period: The :class:`PayPeriod` whose gross is being computed.
         all_periods: Every :class:`PayPeriod` known to the calling
             ``calculate_paycheck`` invocation.  Periods outside
             ``period.start_date.year`` are ignored.
         profile: The :class:`SalaryProfile`; consulted only for
-            ``_apply_raises`` so the group boundary respects mid-year
+            ``apply_raises`` so the group boundary respects mid-year
             raise events.
         pay_periods_per_year: The full-year denominator (typically 26).
 
@@ -499,7 +500,8 @@ def _gross_biweekly_for_period(
     group = sorted(
         (
             p for p in same_year
-            if _apply_raises(profile, p) == annual_salary
+            if apply_raises(profile.annual_salary, profile.raises, p.start_date)
+            == annual_salary
         ),
         key=lambda p: p.start_date,
     )
@@ -569,29 +571,67 @@ def _residue_cents(annual_salary, group_size, pay_periods_dec, floor_value):
     return int((residue / ONE_CENT).to_integral_value(rounding=ROUND_HALF_UP))
 
 
-def _apply_raises(profile, period):
-    """Return the effective annual salary for the given period, after raises.
+def apply_raises(base_salary, raises, as_of):
+    """Return the effective annual salary as of a date, after applying raises.
 
-    Raises are sorted by (effective_year, effective_month) before
-    application so that flat raises apply before percentage raises
-    within the same effective date.  This ensures deterministic
-    results regardless of database query order (M-01).
+    The shared raise-application rule used by both the paycheck pipeline
+    (:func:`calculate_paycheck` / :func:`project_salary`) and the pension
+    salary projection
+    (:func:`app.services.pension_calculator.project_salaries_by_year`).
+    Promoted from the former private ``_apply_raises(profile, period)`` to
+    plain inputs so the pension projector no longer reaches into a private
+    symbol with fabricated duck-typed objects (deep-hunt #83).
+
+    Raises are sorted by (effective_year, effective_month, method)
+    before application -- the method key sorts flat raises ahead of
+    percentage raises -- so that within the same effective date a flat
+    raise applies before a percentage raise.  Raise application is
+    non-commutative (``(salary + flat) * pct`` != ``salary * pct +
+    flat``), so this makes the result deterministic regardless of
+    database query order (M-01; deep-hunt #12 added the method
+    tie-break the original M-01 fix specified but omitted, leaving
+    same-date ties resolved by DB row order).
 
     A raise applies if:
-    - Its effective_year matches the period's year (or is None for recurring)
-    - Its effective_month is on or before the period's month (for that year)
-    """
-    salary = Decimal(str(profile.annual_salary))
+    - Its effective_year matches ``as_of``'s year (or is None for recurring)
+    - Its effective_month is on or before ``as_of``'s month (for that year)
 
-    if not profile.raises:
+    Args:
+        base_salary: The pre-raise annual salary -- a Decimal, or any
+            value ``Decimal(str(...))`` accepts.
+        raises: An iterable of raise objects, each exposing
+            ``effective_year``, ``effective_month``, ``is_recurring``,
+            ``percentage``, and ``flat_amount``.  A falsy/empty value
+            returns ``base_salary`` unchanged (unquantized, matching the
+            prior behavior).
+        as_of: The :class:`datetime.date` the salary is evaluated at;
+            only its ``year`` and ``month`` are consulted (day ignored).
+
+    Returns:
+        Decimal -- the post-raise annual salary, quantized to cents
+        (ROUND_HALF_UP) when any raise applied.
+    """
+    salary = Decimal(str(base_salary))
+
+    if not raises:
         return salary
 
-    period_year = period.start_date.year
-    period_month = period.start_date.month
+    period_year = as_of.year
+    period_month = as_of.month
 
     sorted_raises = sorted(
-        profile.raises,
-        key=lambda r: (r.effective_year or 0, r.effective_month or 0),
+        raises,
+        key=lambda r: (
+            r.effective_year or 0,
+            r.effective_month or 0,
+            # Flat raises sort ahead of percentage within one effective
+            # date so the documented flat-before-percentage order holds
+            # regardless of DB row order (M-01 / deep-hunt #12).  A raise
+            # is exactly one method (ck_salary_raises_one_method) with a
+            # positive amount, so a truthy flat_amount uniquely marks the
+            # flat leg.
+            0 if r.flat_amount else 1,
+        ),
     )
 
     for raise_obj in sorted_raises:
@@ -648,7 +688,14 @@ def _get_raise_event(profile, period):
         eff_year = raise_obj.effective_year
 
         is_match = False
-        if raise_obj.is_recurring and period_month == eff_month:
+        if raise_obj.is_recurring and period_month == eff_month and (
+            not eff_year or period_year >= eff_year
+        ):
+            # A recurring raise recurs at eff_month every year from
+            # eff_year onward (or every year when eff_year is NULL),
+            # matching apply_raises' application gate -- so it must not
+            # badge an event in a calendar year before it takes effect
+            # (deep-hunt #13).
             is_match = True
         elif eff_year == period_year and eff_month == period_month:
             is_match = True
@@ -710,7 +757,10 @@ def _calculate_deductions(ctx, timing_id):
     - deductions_per_year (26/24/12) filtering based on 3rd paycheck
     - calc_method (flat vs percentage)
     - inflation adjustment
-    - annual cap tracking
+    - annual cap: once a deduction's calendar-year total reaches its
+      ``annual_cap`` the period amount is clamped so the year sums to the
+      cap and stops (deep-hunt #2; shares ``cap_period_amount`` with the
+      investment-contribution timeline so the two surfaces agree)
     """
     deductions = []
     if not ctx.profile.deductions:
@@ -722,40 +772,112 @@ def _calculate_deductions(ctx, timing_id):
             continue
         if ded.deduction_timing_id != timing_id:
             continue
-
-        # Skip 24-per-year deductions on 3rd paychecks
-        if ded.deductions_per_year == 24 and ctx.is_third_paycheck:
+        if not _deduction_applies_in_period(
+            ded, ctx.period, ctx.all_periods, ctx.is_third_paycheck
+        ):
             continue
 
-        # Skip 12-per-year deductions unless first paycheck of month
-        if ded.deductions_per_year == 12:
-            if not _is_first_paycheck_of_month(ctx.period, ctx.all_periods):
-                continue
+        amount = _raw_deduction_amount(
+            ded, ctx.gross_biweekly, ctx.period, ctx.profile, pct_id
+        )
 
-        # Calculate amount
-        amount = Decimal(str(ded.amount))
-        if ded.calc_method_id == pct_id:
-            amount = (ctx.gross_biweekly * amount).quantize(
-                TWO_PLACES, rounding=ROUND_HALF_UP
+        # Clamp to the user-set calendar-year cap (deep-hunt #2).  Only a
+        # capped deduction pays for the prior-period cumulative replay; an
+        # uncapped one (the common case) passes through untouched.  Read via
+        # getattr to match the sibling ``target_account_id`` line: a deduction-
+        # like duck type (test fake) may omit the optional column.
+        annual_cap = getattr(ded, "annual_cap", None)
+        if annual_cap is not None:
+            amount = cap_period_amount(
+                amount,
+                _cumulative_deduction_before(ded, ctx, pct_id),
+                annual_cap,
             )
 
-        # Apply inflation if enabled
-        if ded.inflation_enabled and ded.inflation_rate:
-            inflation_rate = Decimal(str(ded.inflation_rate))
-            eff_month = ded.inflation_effective_month or 1
-            # Calculate years of inflation based on period date
-            years = _inflation_years(ctx.period, ctx.profile, eff_month)
-            if years > 0:
-                amount = (amount * (1 + inflation_rate) ** years).quantize(
-                    TWO_PLACES, rounding=ROUND_HALF_UP
-                )
-
-        target_id = getattr(ded, "target_account_id", None)
         deductions.append(DeductionLine(
-            name=ded.name, amount=amount, target_account_id=target_id
+            name=ded.name, amount=amount,
+            target_account_id=getattr(ded, "target_account_id", None),
         ))
 
     return deductions
+
+
+def _deduction_applies_in_period(ded, period, all_periods, is_third_paycheck):
+    """Whether a deduction is taken in a given period by its per-year cadence.
+
+    26-per-year deductions apply every period; 24-per-year skip the 3rd
+    paycheck of a month; 12-per-year apply only on the first paycheck of the
+    month.  Shared by the line-building pass and the annual-cap cumulative so a
+    period the deduction skips contributes nothing to either.
+    """
+    if ded.deductions_per_year == 24 and is_third_paycheck:
+        return False
+    if ded.deductions_per_year == 12:
+        return _is_first_paycheck_of_month(period, all_periods)
+    return True
+
+
+def _raw_deduction_amount(ded, gross_biweekly, period, profile, pct_id):
+    """Per-period deduction amount before any annual-cap clamp.
+
+    Applies the flat-vs-percentage calc method and the optional inflation
+    escalation.  Pulled out of the line-building loop so the annual-cap
+    cumulative reproduces, for prior periods, the exact amount the loop
+    applies to the current one.
+    """
+    amount = Decimal(str(ded.amount))
+    if ded.calc_method_id == pct_id:
+        amount = (gross_biweekly * amount).quantize(
+            TWO_PLACES, rounding=ROUND_HALF_UP
+        )
+    if ded.inflation_enabled and ded.inflation_rate:
+        inflation_rate = Decimal(str(ded.inflation_rate))
+        eff_month = ded.inflation_effective_month or 1
+        years = _inflation_years(period, profile, eff_month)
+        if years > 0:
+            amount = (amount * (1 + inflation_rate) ** years).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+    return amount
+
+
+def _cumulative_deduction_before(ded, ctx, pct_id):
+    """Sum a deduction's raw amounts for the prior periods in the same year.
+
+    Mirrors :func:`_get_cumulative_wages` (the FICA wage-base precedent): walk
+    the same-year periods that start before ``ctx.period``, skip the ones where
+    the deduction is not taken, and sum each applicable period's raw amount --
+    recomputing that period's gross via :func:`_gross_biweekly_for_period` so a
+    percentage deduction tracks the raise-adjusted gross exactly as the live
+    paycheck does.  Summing the raw (pre-cap) amounts is equivalent to summing
+    the capped ones (see ``cap_period_amount``), so no capped running state has
+    to be threaded across the per-period calls.
+
+    Like the FICA cap, the cumulative is read from ``ctx.all_periods``; a
+    partial-context caller (route preview, isolated fixture) that omits earlier
+    periods under-counts it and defers the cap -- the same documented limitation
+    :func:`_get_cumulative_wages` carries.
+    """
+    period_year = ctx.period.start_date.year
+    pay_periods_per_year = ctx.profile.pay_periods_per_year or 26
+    cumulative = ZERO
+    for p in sorted(ctx.all_periods, key=lambda p: p.start_date):
+        if p.start_date.year != period_year:
+            continue
+        if p.start_date >= ctx.period.start_date:
+            break
+        if not _deduction_applies_in_period(
+            ded, p, ctx.all_periods, _is_third_paycheck(p, ctx.all_periods),
+        ):
+            continue
+        salary = apply_raises(
+            ctx.profile.annual_salary, ctx.profile.raises, p.start_date,
+        )
+        gross = _gross_biweekly_for_period(
+            salary, p, ctx.all_periods, ctx.profile, pay_periods_per_year,
+        )
+        cumulative += _raw_deduction_amount(ded, gross, p, ctx.profile, pct_id)
+    return cumulative
 
 
 def _inflation_years(period, profile, effective_month):
@@ -793,7 +915,7 @@ def _get_cumulative_wages(profile, period, all_periods):
         if p.start_date >= period.start_date:
             break
 
-        salary = _apply_raises(profile, p)
+        salary = apply_raises(profile.annual_salary, profile.raises, p.start_date)
         # Reuse the same reconciliation contract as ``calculate_paycheck``
         # so prior-period grosses summed here match the per-period
         # ``gross_biweekly`` exactly.  Without this, the FICA cap path

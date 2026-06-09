@@ -109,6 +109,44 @@ def balance_excluded_status_ids() -> frozenset[int]:
     })
 
 
+def settled_status_ids() -> frozenset[int]:
+    """Return the cached set of status IDs that represent a settled transaction.
+
+    Per ``app/ref_seeds.py`` the rows with ``is_settled=True`` are
+    exactly ``Paid`` (``StatusEnum.DONE``), ``Received`` and ``Settled``
+    -- the three statuses whose real-world money movement has completed.
+    This is the ID-list counterpart of the semantic ``Status.is_settled``
+    column: SQLAlchemy filters that need the set for a
+    ``status_id.in_(...)`` clause consume this accessor, while the sibling
+    sites that read ``txn.status.is_settled`` (the calendar, variance,
+    savings-metric, and balance-calculator Python loops) consult the
+    column directly. Both forms resolve to the same three rows by
+    construction, so a "settled spending" total computed via the ID list
+    can never disagree with one gated on the boolean column. The
+    ``TestSettledStatusIds`` parity test derives the expected set from the
+    ``is_settled`` column itself, so adding or removing a settled status
+    in the seed matrix without updating this accessor fails that test.
+
+    Returns:
+        A ``frozenset[int]`` of the ``ref.statuses.id`` values for
+        ``StatusEnum.DONE``, ``StatusEnum.RECEIVED`` and
+        ``StatusEnum.SETTLED``. ``frozenset`` (not ``set``) so the value
+        is hashable and immutable -- callers treat it as an inert lookup,
+        never mutate it.
+
+    Raises:
+        RuntimeError: propagated from ``ref_cache.status_id`` if the
+            reference cache has not been initialized. The cache is
+            populated by ``create_app()`` after seeding; production and
+            test paths both initialize it before any service runs.
+    """
+    return frozenset({
+        ref_cache.status_id(StatusEnum.DONE),
+        ref_cache.status_id(StatusEnum.RECEIVED),
+        ref_cache.status_id(StatusEnum.SETTLED),
+    })
+
+
 def status_contributes_to_balance(txn) -> bool:
     """Return True iff *txn*'s status alone permits balance contribution.
 

@@ -1,0 +1,10 @@
+# Presence of this file flips the Stop hook (scripts/hooks/stop-check.sh) from
+# WARN to HARD-BLOCK when `pylint app/` is not clean.
+#
+# Created at the pylint-10 cleanup lock-in (docs/audits/pylint-cleanup/plan.md
+# Phase 5): app/ reached a clean 10.00/10 (zero messages) and CI enforces
+# `--fail-under=10`, so from here a turn that leaves app/ below 10.00/10 cannot
+# finish locally.  The hook only checks this file's existence, not its contents.
+#
+# Delete this file only to deliberately suspend the local floor (e.g. a large
+# in-progress refactor); restore it as soon as app/ is clean again.

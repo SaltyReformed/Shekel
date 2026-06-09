@@ -67,8 +67,14 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
             "(effective_year >= 2000 AND effective_year <= 2100)",
             name="ck_salary_raises_valid_effective_year",
         ),
-        db.CheckConstraint("percentage IS NULL OR percentage > 0", name="ck_salary_raises_positive_pct"),
-        db.CheckConstraint("flat_amount IS NULL OR flat_amount > 0", name="ck_salary_raises_positive_flat"),
+        db.CheckConstraint(
+            "percentage IS NULL OR percentage > 0",
+            name="ck_salary_raises_positive_pct",
+        ),
+        db.CheckConstraint(
+            "flat_amount IS NULL OR flat_amount > 0",
+            name="ck_salary_raises_positive_flat",
+        ),
         db.CheckConstraint(
             "version_id > 0",
             name="ck_salary_raises_version_id_positive",

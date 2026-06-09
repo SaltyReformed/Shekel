@@ -143,6 +143,8 @@ def carry_forward(period_id):
         db.session.rollback()
         return str(exc), 400
 
-    logger.info("user_id=%d carried forward %d items from period %d", current_user.id, count, period_id)
+    logger.info(
+        "user_id=%d carried forward %d items from period %d", current_user.id, count, period_id
+    )
     # Trigger a full grid refresh.
     return "", 200, {"HX-Trigger": "gridRefresh"}

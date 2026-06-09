@@ -36,6 +36,7 @@ from app.services.loan_resolver import (
     compute_payoff_scenarios,
     resolve_loan,
 )
+from app.utils.dates import add_months
 
 
 def _loan_resolver_package_source() -> str:
@@ -118,26 +119,6 @@ def _origination_anchor(
     )
 
 
-def _add_months(start: date, months: int) -> date:
-    """Convenience month-adder for test as_of dates (day-clamp to last day).
-
-    Mirrors :func:`loan_resolver._add_months_to_date` so the tests
-    do not depend on that private helper directly.
-    """
-    target_month = start.month + months
-    target_year = start.year + (target_month - 1) // 12
-    target_month = ((target_month - 1) % 12) + 1
-    last_day_lookup = (31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    last_day = last_day_lookup[target_month - 1]
-    if target_month == 2:
-        is_leap = (
-            target_year % 4 == 0
-            and (target_year % 100 != 0 or target_year % 400 == 0)
-        )
-        last_day = 29 if is_leap else 28
-    return date(target_year, target_month, min(start.day, last_day))
-
-
 # -- C13-1 -- ARM payment constant across the fixed-rate window -------------
 
 
@@ -165,7 +146,7 @@ def test_arm_payment_constant_in_fixed_window():
 
     payments_observed = set()
     for month_offset in range(60):
-        as_of = _add_months(params.origination_date, month_offset)
+        as_of = add_months(params.origination_date, month_offset)
         state = resolve_loan(
             LoanInputs(params, [anchor], None, None), as_of,
         )
@@ -193,11 +174,11 @@ def test_arm_no_creep_month_24_vs_25():
 
     state_24 = resolve_loan(
         LoanInputs(params, [anchor], None, None),
-        _add_months(params.origination_date, 24),
+        add_months(params.origination_date, 24),
     )
     state_25 = resolve_loan(
         LoanInputs(params, [anchor], None, None),
-        _add_months(params.origination_date, 25),
+        add_months(params.origination_date, 25),
     )
 
     # Byte-identical Decimal comparison (not numeric equality with
@@ -1503,7 +1484,7 @@ class TestComputePayoffScenarios:
         for gap_months in (12, 24, 36):
             # First confirmed payment fixed at 2026-01-01; vary
             # origination to create the requested gap.
-            origination = _add_months(
+            origination = add_months(
                 date(2026, 1, 1), -gap_months,
             )
             params = FakeLoanParams(

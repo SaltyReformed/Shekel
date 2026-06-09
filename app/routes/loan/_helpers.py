@@ -34,6 +34,7 @@ from app.services import escrow_calculator, loan_resolver
 from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.loan_resolver import LoanState
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.auth_helpers import get_or_404
 
 
 # Field allowlist for the loan-params update route.  E-18 / D-C:
@@ -71,8 +72,8 @@ def _load_loan_account(account_id):
     Returns:
         (account, params, account_type) or (None, None, None) if invalid.
     """
-    account = db.session.get(Account, account_id)
-    if account is None or account.user_id != current_user.id:
+    account = get_or_404(Account, account_id)
+    if account is None:
         return None, None, None
 
     account_type = db.session.get(AccountType, account.account_type_id)

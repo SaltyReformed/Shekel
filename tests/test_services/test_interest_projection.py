@@ -8,7 +8,20 @@ different compounding frequencies, edge cases, and rounding behavior.
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import CompoundingFrequencyEnum
 from app.services.interest_projection import calculate_interest
+
+
+def _freq_id(member):
+    """Resolve a CompoundingFrequencyEnum member to its ref-table id.
+
+    ``calculate_interest`` branches on the compounding-frequency ref id
+    (#38).  ref_cache is initialized for every test by the autouse
+    conftest fixtures, so these computation tests resolve the id the
+    same way production does instead of hardcoding a magic integer.
+    """
+    return ref_cache.compounding_frequency_id(member)
 
 
 class TestDailyCompounding:
@@ -19,7 +32,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -32,7 +45,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 3, 1),
             period_end=date(2026, 3, 2),
         )
@@ -45,7 +58,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 31),
         )
@@ -68,7 +81,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2028, 2, 15),
             period_end=date(2028, 2, 28),
         )
@@ -97,7 +110,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2028, 2, 20),
             period_end=date(2028, 3, 5),
         )
@@ -118,7 +131,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -140,7 +153,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2028, 2, 15),
             period_end=date(2028, 2, 29),
         )
@@ -161,7 +174,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2028, 2, 29),
             period_end=date(2028, 3, 14),
         )
@@ -178,7 +191,7 @@ class TestDailyCompounding:
         result = calculate_interest(
             balance=Decimal("1000.00"),
             apy=Decimal("1.00000"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -193,7 +206,7 @@ class TestMonthlyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="monthly",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.MONTHLY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -206,7 +219,7 @@ class TestMonthlyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="monthly",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.MONTHLY),
             period_start=date(2026, 2, 1),
             period_end=date(2026, 2, 15),
         )
@@ -226,7 +239,7 @@ class TestMonthlyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="monthly",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.MONTHLY),
             period_start=date(2026, 1, 25),
             period_end=date(2026, 2, 7),
         )
@@ -245,7 +258,7 @@ class TestQuarterlyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="quarterly",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.QUARTERLY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -266,7 +279,7 @@ class TestQuarterlyCompounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="quarterly",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.QUARTERLY),
             period_start=date(2026, 10, 1),
             period_end=date(2026, 10, 15),
         )
@@ -284,7 +297,7 @@ class TestEdgeCases:
         result = calculate_interest(
             balance=Decimal("0.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -295,7 +308,7 @@ class TestEdgeCases:
         result = calculate_interest(
             balance=Decimal("-5000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -306,7 +319,7 @@ class TestEdgeCases:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.00000"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -317,7 +330,7 @@ class TestEdgeCases:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 15),
             period_end=date(2026, 1, 15),
         )
@@ -328,7 +341,7 @@ class TestEdgeCases:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 15),
             period_end=date(2026, 1, 1),
         )
@@ -339,7 +352,7 @@ class TestEdgeCases:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.10000"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -352,7 +365,7 @@ class TestEdgeCases:
         result = calculate_interest(
             balance=Decimal("1000000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -369,7 +382,7 @@ class TestEdgeCases:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("-0.05000"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -385,7 +398,7 @@ class TestRounding:
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="daily",
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )
@@ -393,11 +406,17 @@ class TestRounding:
         assert result == result.quantize(Decimal("0.01"))
 
     def test_unknown_frequency_returns_zero(self):
-        """Unrecognized compounding frequency returns zero as fallback."""
+        """An id matching no compounding-frequency ref row returns zero.
+
+        ``-1`` is not a valid ``ref.compounding_frequencies.id`` (a real
+        row could never resolve to it), so the engine's else branch
+        fires -- the defensive fallback for a frequency the engine does
+        not recognise (#38).
+        """
         result = calculate_interest(
             balance=Decimal("10000.00"),
             apy=Decimal("0.04500"),
-            compounding_frequency="invalid",
+            compounding_frequency_id=-1,
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
         )

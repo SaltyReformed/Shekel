@@ -89,7 +89,7 @@ def _frequency_label(rule):
         RecurrencePatternEnum.EVERY_N_PERIODS
     )
     if rule.pattern_id == every_n_id:
-        n = rule.interval_n or 1
+        n = rule.interval_n
         if n == 1:
             return "Biweekly"
         return f"Every {n} Periods"

@@ -8,7 +8,11 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.enums import (
+    CalcMethodEnum,
+    DeductionTimingEnum,
+    EmployerContributionTypeEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
@@ -42,7 +46,7 @@ def _create_investment_params(db_session, account_id, **overrides):
         "assumed_annual_return": Decimal("0.07000"),
         "annual_contribution_limit": Decimal("23500.00"),
         "contribution_limit_year": 2026,
-        "employer_contribution_type": "none",
+        "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
     }
     defaults.update(overrides)
     params = InvestmentParams(**defaults)
@@ -231,7 +235,7 @@ class TestInvestmentParams:
                 "assumed_annual_return": "7",
                 "annual_contribution_limit": "23500",
                 "contribution_limit_year": "2026",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -251,7 +255,7 @@ class TestInvestmentParams:
                 "assumed_annual_return": "8",
                 "annual_contribution_limit": "23500",
                 "contribution_limit_year": "2026",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -277,7 +281,7 @@ class TestInvestmentParams:
                 "assumed_annual_return": "7.5",
                 "annual_contribution_limit": "23500",
                 "contribution_limit_year": "2026",
-                "employer_contribution_type": "match",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
                 "employer_match_percentage": "100",
                 "employer_match_cap_percentage": "6",
             },
@@ -302,7 +306,7 @@ class TestInvestmentParams:
                 "assumed_annual_return": "7",
                 "annual_contribution_limit": "23500",
                 "contribution_limit_year": "2026",
-                "employer_contribution_type": "match",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
                 "employer_match_percentage": "100",
                 "employer_match_cap_percentage": "6",
             },
@@ -312,7 +316,11 @@ class TestInvestmentParams:
             account_id=acct.id
         ).first()
         assert params is not None
-        assert params.employer_contribution_type == "match"
+        assert params.employer_contribution_type_id == (
+            ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.MATCH,
+            )
+        )
         assert params.employer_match_percentage == Decimal("1.0000")
         assert params.employer_match_cap_percentage == Decimal("0.0600")
 
@@ -329,7 +337,7 @@ class TestInvestmentParams:
             f"/accounts/{other_acct.id}/investment/params",
             data={
                 "assumed_annual_return": "7",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
 
@@ -351,7 +359,7 @@ class TestInvestmentParams:
             f"/accounts/{acct.id}/investment/params",
             data={
                 "assumed_annual_return": "not_a_number",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -383,7 +391,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{acct.id}/investment/params",
             data={
                 "assumed_annual_return": "7",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -398,7 +406,7 @@ class TestInvestmentNegativePaths:
         params = InvestmentParams(
             account_id=other_acct.id,
             assumed_annual_return=Decimal("0.07000"),
-            employer_contribution_type="none",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
         )
         db.session.add(params)
         db.session.commit()
@@ -407,7 +415,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{other_acct.id}/investment/params",
             data={
                 "assumed_annual_return": "99",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 404
@@ -433,7 +441,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{acct.id}/investment/params",
             data={
                 "assumed_annual_return": "not_a_number",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -450,7 +458,7 @@ class TestInvestmentNegativePaths:
             "/accounts/999999/investment/params",
             data={
                 "assumed_annual_return": "7",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 404
@@ -464,7 +472,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{checking_acct.id}/investment/params",
             data={
                 "assumed_annual_return": "7",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         # The route checks account is None or user_id mismatch -- checking account
@@ -484,7 +492,7 @@ class TestInvestmentNegativePaths:
             f"/accounts/{acct.id}/investment/params",
             data={
                 "assumed_annual_return": "-5",
-                "employer_contribution_type": "none",
+                "employer_contribution_type_id": ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             },
         )
         assert resp.status_code == 302
@@ -1275,7 +1283,7 @@ class TestWhatIfContributionCalculator:
             assumed_annual_return=Decimal("0.00000"),
             annual_contribution_limit=None,
             contribution_limit_year=None,
-            employer_contribution_type="match",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
             employer_match_percentage=Decimal("1.0000"),
             employer_match_cap_percentage=Decimal("0.0600"),
         )
@@ -1827,7 +1835,7 @@ class TestEmployerMatchCapped:
             assumed_annual_return=Decimal("0.00000"),
             annual_contribution_limit=Decimal("23500.00"),
             contribution_limit_year=2026,
-            employer_contribution_type="match",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
             employer_match_percentage=Decimal("0.5000"),
             employer_match_cap_percentage=Decimal("0.0600"),
         )
@@ -1902,7 +1910,7 @@ class TestEmployerMatchCapped:
             assumed_annual_return=Decimal("0.00000"),
             annual_contribution_limit=Decimal("23500.00"),
             contribution_limit_year=2026,
-            employer_contribution_type="match",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.MATCH),
             employer_match_percentage=Decimal("0.5000"),
             employer_match_cap_percentage=Decimal("0.0600"),
         )
@@ -1931,3 +1939,105 @@ class TestEmployerMatchCapped:
             "period.  cap_contribution_at_limit may be incorrectly "
             "clamping below the limit."
         )
+
+
+class TestProjectionNoCurrentPeriodDoubleCount:
+    """deep-quality-hunt #9: the investment dashboard projection applies the
+    current period's transfer contribution exactly once.
+
+    Pre-fix the projection seeded the END-of-current-period balance (which
+    already contains the current period's contribution) while also
+    including the current period in the projection window, so the growth
+    engine re-applied the contribution -- double-counting it on the first
+    row and the whole forward curve.  The fix seeds the end-of-current
+    balance with only the current period's own transfer contribution
+    removed.
+    """
+
+    def _make_projected_shadow_income(
+        self, seed_user, to_account, period, amount, db_session,
+    ):
+        """Seed a PROJECTED transfer into the investment account in *period*.
+
+        A projected shadow income is BOTH counted in the entries-aware
+        end-of-current balance (``balance_calculator._sum_projected``) and
+        re-applied by the growth-engine timeline -- the exact double-count
+        the seed correction removes.
+        """
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+        cat = seed_user["categories"]["Groceries"]
+        xfer = transfer_service.create_transfer(
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=to_account.id,
+                pay_period_id=period.id,
+                scenario_id=seed_user["scenario"].id,
+                amount=amount,
+                status_id=projected_id,
+                category_id=cat.id,
+                name="current-period contribution",
+            ),
+        )
+        db_session.commit()
+        return xfer
+
+    def test_current_period_transfer_applied_once_in_projection(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A $1,000 current-period transfer is applied once, not twice.
+
+        Setup (0% return isolates the contribution from growth):
+          401(k) anchored at the current period at $10,000.
+          $1,000 PROJECTED shadow contribution in the current period.
+
+        Entries-aware end-of-current balance = 10,000 + 1,000 = $11,000
+        (the displayed tile).  The projection seed removes the current
+        period's own $1,000 contribution -> $10,000, then the engine
+        re-applies it once for the current period:
+          projection[0].start_balance = $10,000  (seed)
+          projection[0].contribution  = $1,000
+          projection[0].end_balance   = $11,000  (10,000 + 0 growth + 1,000)
+        The pre-fix double-count seeded $11,000 and re-added $1,000, giving
+        a $12,000 first-row end balance -- which this test forbids.
+        """
+        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+        from app.services.investment_dashboard_service import (  # pylint: disable=import-outside-toplevel
+            compute_dashboard_data,
+        )
+
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="401(k)",
+            name="Double-count 401k", balance="10000.00",
+        )
+        _create_investment_params(
+            db.session, acct.id,
+            assumed_annual_return=Decimal("0.00000"),
+            annual_contribution_limit=Decimal("100000.00"),
+        )
+        current_period = pay_period_service.get_current_period(
+            seed_user["user"].id,
+        )
+        assert current_period is not None
+        self._make_projected_shadow_income(
+            seed_user, acct, current_period, Decimal("1000.00"), db.session,
+        )
+
+        data = compute_dashboard_data(seed_user["user"].id, acct)
+
+        # Displayed tile = entries-aware end-of-current (unchanged by the fix).
+        assert data["current_balance"] == Decimal("11000.00")
+
+        projection = data["projection"]
+        assert projection, "projection should include the current period forward"
+        first = projection[0]
+        assert first.period_id == current_period.id
+        # Seed = end-of-current 11,000 minus the current period's own 1,000.
+        assert first.start_balance == Decimal("10000.00")
+        assert first.contribution == Decimal("1000.00")
+        # 10,000 + 0% growth + 1,000 contribution = 11,000 (NOT the
+        # pre-fix double-counted 12,000).
+        assert first.end_balance == Decimal("11000.00")

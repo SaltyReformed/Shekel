@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.utils.money import round_money
+from app.utils.dates import months_between
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
 
@@ -153,10 +154,7 @@ def calculate_remaining_months(
     """
     if as_of is None:
         as_of = date.today()
-    months_elapsed = (
-        (as_of.year - origination_date.year) * 12
-        + (as_of.month - origination_date.month)
-    )
+    months_elapsed = months_between(origination_date, as_of)
     return max(0, term_months - months_elapsed)
 
 
@@ -216,7 +214,7 @@ def calculate_monthly_payment(
     if annual_rate <= 0:
         return (principal / remaining_months).quantize(TWO_PLACES, ROUND_HALF_UP)
 
-    monthly_rate = annual_rate / 12
+    monthly_rate = annual_rate / MONTHS_PER_YEAR
     factor = (1 + monthly_rate) ** remaining_months
     payment = principal * (monthly_rate * factor) / (factor - 1)
     return payment.quantize(TWO_PLACES, ROUND_HALF_UP)
@@ -403,10 +401,10 @@ def _apply_override_payment(
     if principal_portion >= balance:
         principal_portion = balance
         return principal_portion, principal_portion + interest, Decimal("0.00")
+    # principal_portion < balance here (the >= case returned above), so
+    # balance - principal_portion is strictly positive and round_money
+    # (ROUND_HALF_UP) cannot yield a negative -- no clamp is needed.
     new_balance = round_money(balance - principal_portion)
-    # Guard against sub-penny negative balance from rounding.
-    if new_balance < 0:
-        new_balance = Decimal("0.00")
     return principal_portion, principal_portion + interest, new_balance
 
 
@@ -422,9 +420,9 @@ def _apply_contractual_payment(
     The remaining balance is absorbed exactly (and no extra applies)
     when the contractual principal already covers it OR this is the
     loop's last scheduled month.  Otherwise ``extra_monthly`` is clamped
-    so acceleration alone cannot drive the balance below zero, and any
-    sub-penny rounding residue is folded back into ``extra`` so payment,
-    principal, and extra reconcile.
+    to ``[0, balance - principal_portion]`` so acceleration alone cannot
+    drive the balance below zero -- which also guarantees the quantized
+    new balance is non-negative without a clamp.
 
     Args:
         balance: Outstanding balance before this month's payment.
@@ -454,11 +452,10 @@ def _apply_contractual_payment(
     # acceleration alone.
     extra = min(extra_monthly, balance - principal_portion)
     extra = max(extra, Decimal("0.00"))
+    # extra is clamped to [0, balance - principal_portion] above, so
+    # balance - principal_portion - extra is non-negative and round_money
+    # (ROUND_HALF_UP) cannot yield a negative -- no clamp/fold is needed.
     new_balance = round_money(balance - principal_portion - extra)
-    # Guard against sub-penny negative balance from rounding.
-    if new_balance < 0:
-        extra += new_balance
-        new_balance = Decimal("0.00")
     return principal_portion, monthly_payment, extra, new_balance
 
 
@@ -511,7 +508,7 @@ def _recast_for_rate_change(
     if period_rate != state.annual_rate:
         state.annual_rate = period_rate
         state.monthly_rate = (
-            period_rate / 12 if period_rate > 0 else Decimal("0")
+            period_rate / MONTHS_PER_YEAR if period_rate > 0 else Decimal("0")
         )
         state.monthly_payment = calculate_monthly_payment(
             state.balance, period_rate, months_left,
@@ -623,7 +620,7 @@ def project_forward(
         monthly_payment=inputs.contractual_payment,
         annual_rate=inputs.annual_rate,
         monthly_rate=(
-            inputs.annual_rate / 12 if inputs.annual_rate > 0 else Decimal("0")
+            inputs.annual_rate / MONTHS_PER_YEAR if inputs.annual_rate > 0 else Decimal("0")
         ),
     )
 
@@ -941,19 +938,11 @@ def calculate_payoff_by_date(
     if standard_payoff <= request.target_date:
         return Decimal("0.00")
 
-    # Calculate how many months until target_date based on the same
-    # starting reference point ``starting_date`` would land on.  The
-    # inclusive ``+ 1`` matches the legacy convention so the "target
-    # in the past" / "target later than remaining_months" gates fire
-    # for the same inputs as before.
-    start_year = starting_date.year
-    start_month = starting_date.month
-
-    target_months = (
-        (request.target_date.year - start_year) * 12
-        + (request.target_date.month - start_month)
-        + 1  # inclusive
-    )
+    # Calculate how many months until target_date from ``starting_date``.
+    # The inclusive ``+ 1`` matches the legacy convention so the "target
+    # in the past" / "target later than remaining_months" gates fire for
+    # the same inputs as before.
+    target_months = months_between(starting_date, request.target_date) + 1
 
     if target_months <= 0:
         return None  # Target date is in the past.

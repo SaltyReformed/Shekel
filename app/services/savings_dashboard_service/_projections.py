@@ -24,7 +24,10 @@ from app.services.account_projection import (
     compute_loan_period_balance_map,
     find_period_containing_date,
 )
-from app.services.investment_projection import adapt_deductions
+from app.services.investment_projection import (
+    adapt_deductions,
+    current_period_transfer_contribution,
+)
 from app.services.loan_payment_service import load_loan_context
 from app.services.projection_inputs import build_investment_projection_inputs
 from app.services.savings_dashboard_service._types import _LoanAccountResult
@@ -284,7 +287,19 @@ def _investment_horizons(projection, all_periods, current_period):
 
 
 def _project_investment(acct, investment_params, current_bal, ctx):
-    """Compute growth projections for an investment/retirement account."""
+    """Compute growth projections for an investment/retirement account.
+
+    *current_bal* is the entries-aware END-of-current-period balance.  The
+    projection window includes the current period and the growth engine
+    re-applies that period's contribution, so the seed removes the current
+    period's own transfer contribution first (and uses the strictly-before
+    YTD seed) to leave the current period's contribution and growth applied
+    exactly once.  Other current-period balance movements (expenses,
+    deposits) stay in the seed because the engine never re-creates them
+    (deep-quality-hunt #9 / #10; this savings-dashboard site shares the
+    root cause the register recorded only for the investment and
+    retirement dashboards).
+    """
     acct_deductions = ctx.params.deductions_by_account.get(acct.id, [])
     adapted_deductions = adapt_deductions(acct_deductions)
     acct_contributions = [
@@ -305,14 +320,17 @@ def _project_investment(acct, investment_params, current_bal, ctx):
     if not future_periods:
         return {}
 
+    seed = current_bal - current_period_transfer_contribution(
+        acct_contributions, ctx.current_period,
+    )
     projection = growth_engine.project_balance(
-        current_balance=current_bal,
+        current_balance=seed,
         assumed_annual_return=investment_params.assumed_annual_return,
         periods=future_periods,
         periodic_contribution=inputs.periodic_contribution,
         employer_params=inputs.employer_params,
         annual_contribution_limit=inputs.annual_contribution_limit,
-        ytd_contributions_start=inputs.ytd_contributions,
+        ytd_contributions_start=inputs.ytd_contributions_seed,
     )
     return _investment_horizons(
         projection, ctx.all_periods, ctx.current_period,

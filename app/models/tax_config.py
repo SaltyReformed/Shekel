@@ -19,8 +19,14 @@ class TaxBracketSet(UserScopedMixin, CreatedAtMixin, db.Model):
             name="uq_tax_bracket_sets_user_year_status",
         ),
         db.CheckConstraint("standard_deduction >= 0", name="ck_tax_bracket_sets_nonneg_deduction"),
-        db.CheckConstraint("child_credit_amount >= 0", name="ck_tax_bracket_sets_nonneg_child_credit"),
-        db.CheckConstraint("other_dependent_credit_amount >= 0", name="ck_tax_bracket_sets_nonneg_other_credit"),
+        db.CheckConstraint(
+            "child_credit_amount >= 0",
+            name="ck_tax_bracket_sets_nonneg_child_credit",
+        ),
+        db.CheckConstraint(
+            "other_dependent_credit_amount >= 0",
+            name="ck_tax_bracket_sets_nonneg_other_credit",
+        ),
         # F-077 / C-24: ``tax_year`` is the IRS tax year a bracket
         # set applies to.  The schema layer added the same Range in
         # commit C-24; the CHECK is the storage-tier counterpart.
@@ -183,12 +189,18 @@ class FicaConfig(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         db.CheckConstraint("ss_rate >= 0 AND ss_rate <= 1", name="ck_fica_configs_valid_ss_rate"),
         db.CheckConstraint("ss_wage_base > 0", name="ck_fica_configs_positive_wage_base"),
-        db.CheckConstraint("medicare_rate >= 0 AND medicare_rate <= 1", name="ck_fica_configs_valid_medicare_rate"),
+        db.CheckConstraint(
+            "medicare_rate >= 0 AND medicare_rate <= 1",
+            name="ck_fica_configs_valid_medicare_rate",
+        ),
         db.CheckConstraint(
             "medicare_surtax_rate >= 0 AND medicare_surtax_rate <= 1",
             name="ck_fica_configs_valid_surtax_rate",
         ),
-        db.CheckConstraint("medicare_surtax_threshold > 0", name="ck_fica_configs_positive_surtax_threshold"),
+        db.CheckConstraint(
+            "medicare_surtax_threshold > 0",
+            name="ck_fica_configs_positive_surtax_threshold",
+        ),
         # F-077 / C-24: tax_year sweep paired with the tax_bracket_sets
         # and state_tax_configs equivalents.
         db.CheckConstraint(

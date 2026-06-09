@@ -12,11 +12,24 @@ from marshmallow import (
 )
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum
+from app.enums import AcctCategoryEnum, CompoundingFrequencyEnum
 from app.schemas.validation._helpers import (
     BaseSchema,
     _normalize_percent_fields,
 )
+
+
+def _valid_compounding_frequency_ids() -> set[int]:
+    """Return the set of valid ``ref.compounding_frequencies`` IDs.
+
+    Resolved from the cache at call time (request context) so the
+    schema validates the posted FK id against the live ref table
+    rather than a hardcoded id set -- the IDs-for-logic invariant (#38).
+    """
+    return {
+        ref_cache.compounding_frequency_id(member)
+        for member in CompoundingFrequencyEnum
+    }
 
 
 class AnchorUpdateSchema(BaseSchema):
@@ -256,10 +269,21 @@ class InterestParamsCreateSchema(BaseSchema):
         required=True, places=5, as_string=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
-    compounding_frequency = fields.String(
-        required=True,
-        validate=validate.OneOf(["daily", "monthly", "quarterly"]),
-    )
+    # #38: compounding frequency is now a ref-table FK id, not a free
+    # string.  Required on create, mirroring the prior String field.
+    compounding_frequency_id = fields.Integer(required=True)
+
+    @validates_schema
+    def validate_compounding_frequency(self, data, **kwargs):
+        """Reject a compounding-frequency id outside the ref table."""
+        freq_id = data.get("compounding_frequency_id")
+        if freq_id is not None and (
+            freq_id not in _valid_compounding_frequency_ids()
+        ):
+            raise ValidationError(
+                "Invalid compounding frequency.",
+                field_name="compounding_frequency_id",
+            )
 
 
 class InterestParamsUpdateSchema(BaseSchema):
@@ -282,6 +306,23 @@ class InterestParamsUpdateSchema(BaseSchema):
         places=5, as_string=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
-    compounding_frequency = fields.String(
-        validate=validate.OneOf(["daily", "monthly", "quarterly"]),
-    )
+    # #38: ref-table FK id (see :class:`InterestParamsCreateSchema`).
+    # Optional on update so a partial payload (e.g. apy only) need not
+    # resubmit the frequency.
+    compounding_frequency_id = fields.Integer()
+
+    @validates_schema
+    def validate_compounding_frequency(self, data, **kwargs):
+        """Reject a compounding-frequency id outside the ref table.
+
+        Only fires when present -- a partial update that omits it
+        leaves the stored frequency unchanged.
+        """
+        freq_id = data.get("compounding_frequency_id")
+        if freq_id is not None and (
+            freq_id not in _valid_compounding_frequency_ids()
+        ):
+            raise ValidationError(
+                "Invalid compounding frequency.",
+                field_name="compounding_frequency_id",
+            )

@@ -351,6 +351,52 @@ class TestTrackingExpenseOnlyValidation:
             )
             assert template.transaction_type_id == expense_type.id
 
+    def test_update_income_partial_payload_rejected_by_route_fallback(
+        self, app, auth_client, seed_user,
+    ):
+        """Partial update omitting the type is caught by the route fallback.
+
+        deep-quality-hunt #22: when a POST sets ``is_envelope='on'`` but
+        omits ``transaction_type_id``, the schema cross-field validator
+        (``validate_envelope_only_on_expense``) returns early because the
+        type is absent from the payload.  The route-layer fallback
+        ``_is_tracking_on_non_expense`` is then the SOLE enforcer -- it reads
+        the stored type via ``getattr(template, "transaction_type_id")`` and
+        rejects when it is not Expense.
+
+        Every other rejection test submits ``transaction_type_id`` (income),
+        so the schema catches them first and this ``getattr`` branch is never
+        exercised.  Posting against a stored income template with no type in
+        the payload proves the defense-in-depth path actually rejects -- a
+        regression there (dropped check or flipped ``getattr`` default) would
+        otherwise let a partial update silently attach envelope semantics to
+        an income flow, corrupting expense-only carry-forward rollover.
+        """
+        with app.app_context():
+            template = _make_template(
+                seed_user, name="Stored Income", txn_type="Income",
+            )
+
+            # Enable tracking but OMIT transaction_type_id so the schema
+            # validator returns early and only the route fallback (against
+            # the stored income type) can reject.
+            form = _base_form_data(
+                seed_user, name="Stored Income", is_envelope="on",
+            )
+            del form["transaction_type_id"]
+
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=form,
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Purchase tracking is only available for expense templates" in resp.data
+            assert b"updated" not in resp.data
+
+            # The rejection short-circuits before any field is applied.
+            db.session.refresh(template)
+            assert template.is_envelope is False
+
     def test_update_change_type_income_and_disable_tracking_succeeds(
         self, app, auth_client, seed_user,
     ):

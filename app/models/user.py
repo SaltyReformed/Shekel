@@ -191,7 +191,10 @@ class UserSettings(TimestampMixin, db.Model):
             name="ck_user_settings_valid_inflation",
         ),
         db.CheckConstraint("grid_default_periods > 0", name="ck_user_settings_positive_periods"),
-        db.CheckConstraint("low_balance_threshold >= 0", name="ck_user_settings_positive_threshold"),
+        db.CheckConstraint(
+            "low_balance_threshold >= 0",
+            name="ck_user_settings_positive_threshold",
+        ),
         db.CheckConstraint(
             "large_transaction_threshold >= 0",
             name="ck_user_settings_large_txn_threshold",

@@ -5,6 +5,8 @@ Tests for retirement planning routes.
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import EmployerContributionTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -109,7 +111,9 @@ def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
         account_id=account.id,
         assumed_annual_return=Decimal("0.07000"),
         annual_contribution_limit=Decimal("23500.00"),
-        employer_contribution_type="match",
+        employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+            EmployerContributionTypeEnum.MATCH,
+        ),
         employer_match_percentage=Decimal("1.0000"),
         employer_match_cap_percentage=Decimal("0.0600"),
     )
@@ -1475,6 +1479,9 @@ class TestReturnRateClarity:
             account_id=acct2.id,
             assumed_annual_return=Decimal("0.09500"),
             annual_contribution_limit=Decimal("7000.00"),
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.NONE,
+            ),
         )
         db.session.add(params2)
 
@@ -1631,7 +1638,12 @@ class TestIsPretaxDispatch:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.add(InvestmentParams(
+                account_id=acct.id,
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                ),
+            ))
             db.session.commit()
 
             data = compute_gap_data(seed_user["user"].id)
@@ -1676,7 +1688,12 @@ class TestIsPretaxDispatch:
             )
             db.session.add(acct)
             db.session.flush()
-            db.session.add(InvestmentParams(account_id=acct.id))
+            db.session.add(InvestmentParams(
+                account_id=acct.id,
+                employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.NONE,
+                ),
+            ))
             db.session.commit()
 
             data = compute_gap_data(seed_user["user"].id)

@@ -39,8 +39,14 @@ class SalaryProfile(
         db.CheckConstraint("qualifying_children >= 0", name="ck_salary_profiles_nonneg_children"),
         db.CheckConstraint("other_dependents >= 0", name="ck_salary_profiles_nonneg_dependents"),
         db.CheckConstraint("additional_income >= 0", name="ck_salary_profiles_nonneg_add_income"),
-        db.CheckConstraint("additional_deductions >= 0", name="ck_salary_profiles_nonneg_add_deductions"),
-        db.CheckConstraint("extra_withholding >= 0", name="ck_salary_profiles_nonneg_extra_withholding"),
+        db.CheckConstraint(
+            "additional_deductions >= 0",
+            name="ck_salary_profiles_nonneg_add_deductions",
+        ),
+        db.CheckConstraint(
+            "extra_withholding >= 0",
+            name="ck_salary_profiles_nonneg_extra_withholding",
+        ),
         db.CheckConstraint(
             "version_id > 0",
             name="ck_salary_profiles_version_id_positive",

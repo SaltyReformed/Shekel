@@ -2034,7 +2034,55 @@ Per-file residue at baseline (re-measure before starting; Phase 1-3 will have ch
 (`unused-argument` and `protected-access` rows overlap with Phase 1 handling; resolve in whichever
 phase touches the file first and note it.)
 
-**Status:** NOT STARTED.
+**Status:** DONE (2026-06-08). Cleared the 39-message residue that survived Phases 0-3 (34
+`line-too-long`, 5 `unused-argument`), all at the root -- no `# noqa`, no disables:
+
+- **`app/__init__.py` (5x `unused-argument`):** the five Flask error handlers' required-but-unused
+  `e` parameter renamed to `_e` (matches `.pylintrc`'s `ignored-argument-names=_.*` mechanism -- the
+  same one the Marshmallow `**kwargs` hooks use; a naming convention, not a suppression).
+- **`app/jinja_globals.py` (19x `line-too-long`):** the 46 repetitive
+  `app.jinja_env.globals[KEY] = ref_cache.X_id(Enum.MEMBER)` registrations replaced with a
+  declarative `_REF_ID_GLOBALS` table (grouped by accessor) + a 3-line nested loop
+  (developer-selected: data-table over wrap-only). Behavior-identical (same 46 keys/values); all
+  lines fit; the docstring's "edit exactly one list" is now literally true.
+- **Model `CheckConstraint` one-liners (tax_config x4, salary_profile x2, salary_raise x2,
+  paycheck_deduction x1, user x1):** wrapped to the multi-line `db.CheckConstraint("...",
+  name="...")` form already used elsewhere in each file.
+- **`routes/auth.py:27`:** the long `from flask import ...` parenthesized one-per-line.
+- **3 logger calls + 1 ternary (salary/profiles, transactions/carry_forward,
+  transactions/mutations, retirement_gap_calculator):** standard arg / paren wraps.
+
+**Surfaced + fixed during the sweep (DRY, developer-selected Option C):** wrapping
+`update_profile`'s logger extended a run of identical lines past the effective
+`min-similarity-lines=8`, exposing a formatting-masked `duplicate-code` (R0801) in the salary
+routes' `except SQLAlchemyError` fallback (rollback -> exception-log -> danger-flash -> redirect),
+duplicated across 10 sites. Extracted `DbErrorContext`/`handle_db_error` (the un-extracted companion
+to the existing `handle_stale_conflict`) + `UniqueViolationContext`/`handle_unique_violation` + the
+`regenerate_commit_or_report` orchestrator into `app/routes/_commit_helpers.py`, and routed all 10
+fallback sites, the 2 `update_*` unique-violation branches (F-051/F-052/C-23), and the 5
+`regenerate_and_commit_or_stale` users through them -- the 5 regenerate-users now carry no
+hand-written try/except. **Trust-but-verify catch:** the extraction introduced an ordering bug that
+`test_create_profile_double_submit` caught -- the 5 *inline*-except sites built their
+`DbErrorContext` (evaluating `current_user.id`, an expired ORM attr) after the failed flush but
+before `handle_db_error`'s rollback, lazy-loading on the rolled-back session (PendingRollbackError).
+Fixed by capturing `user_id = current_user.id` on the clean session up front at each inline site
+(the orchestrator sites were already safe -- their contexts are built pre-flush). One intentional
+log-text nuance: the unexpected-IntegrityError path now logs without its "(unexpected
+IntegrityError)" suffix (the `logger.exception` traceback still identifies the class); user-facing
+flashes/categories/redirects are byte-identical. `pylint app/` 10.00/10, **zero messages**; full
+suite **5867 passed**.
+
+**Follow-up (out of scope this pass, for a new session):** `add_raise` / `add_deduction` ALSO
+translate a unique-constraint `IntegrityError`, but to an INFO "already exists" flash + an HTMX
+`_respond_after_*_change` response (not a redirect), and they use a plain `db.session.commit()` (not
+`regenerate_and_commit_or_stale`) -- a third sub-pattern distinct from the `handle_db_error` /
+`handle_unique_violation` shapes extracted here, so it was deliberately left inline (developer
+decision: handle as a separate follow-up). A future pass could (a) extract that idempotent-create
+idiom IF it earns a shared helper (verify it is not a forced abstraction first -- the INFO/HTMX
+shape and plain-commit lifecycle differ from the redirect-based update/delete paths), and (b) add
+direct unit tests for the three new `_commit_helpers` functions (`handle_db_error`,
+`handle_unique_violation`, `regenerate_commit_or_report`), which are currently covered only
+transitively by the 124 salary route tests (incl. the C-23 collision + double-submit cases).
 
 ---
 
@@ -2056,7 +2104,23 @@ phase touches the file first and note it.)
 4. Full test suite green (`./scripts/test.sh`) as the final gate.
 5. Repeat Phases 0-4 for `scripts/` (baseline 9.27/10). Build its own register if needed.
 
-**Status:** NOT STARTED.
+**Status:** DONE (2026-06-08) -- for `app/`. `pylint app/` confirmed at a clean 10.00/10 with ZERO
+messages (`pylint app/ --output-format=json` -> `[]`). Lock-in applied (developer-approved, ratified
+decision #4):
+
+1. **CI:** `.github/workflows/ci.yml` `--fail-under=9.0` -> `--fail-under=10` (kept the
+   `--fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale`
+   list); the explanatory comment block updated to state the gate is now a full 10.00 floor.
+   Verified the exact CI command exits 0.
+2. **Local Stop hook:** created `scripts/hooks/ENFORCE_PYLINT_FLOOR`, flipping
+   `scripts/hooks/stop-check.sh` from WARN to HARD-BLOCK on a non-clean `pylint app/`. Verified
+   `pylint app/ --score=no` emits nothing (floor satisfied).
+3. **Import-error sanity (step 3):** `pylint app/ --enable=import-error` clean (the `.pylintrc`
+   config-level disable masks no genuinely-broken import).
+4. **Full suite (step 4):** `./scripts/test.sh` -> 5867 passed.
+
+**Step 5 (`scripts/`, baseline 9.27/10) is NOT started** -- a separate later effort with its own
+register if needed. The lock-in above applies to `app/` only.
 
 ---
 
@@ -2313,3 +2377,6 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-07 | `4f7737e` | 3 | **carry_forward_service.py -> package split (decision #5) -- file DONE:** the 1038-line module (over the 1000 ceiling after the `CarryForwardPlan` instance-attr note) genuinely split into `app/services/carry_forward_service/` (`_context` = `_CarryForwardContext` + `_build_carry_forward_context` shared partition + 3 shared target-row helpers; `_preview` = `PLAN_KIND_*`/`BLOCK_*` + `CarryForwardPlan`/`CarryForwardPreview` DTOs + `preview_carry_forward` + 4 read-only builders; `_execute` = `carry_forward_unpaid` + 2 mutating helpers; `__init__` re-exports the public surface). DAG `_preview -> _context <- _execute` (acyclic; `loan_resolver` precedent). All importers (`from app.services import carry_forward_service` / `carry_forward_service.X`) preserved verbatim -- no direct-import symbols exist. Developer-chosen layout A (seam = the two public entry points; DTOs live with their producer, preview). **Split trap (decision #5): 2 R0801 clusters surfaced** (the preview path deliberately MIRRORS the mutating path's target-row query + finalised-status check, invisible cross-file in the monolith) -> resolved by **GENUINE DEDUP, not a disable**: 3 shared `_context` helpers (`_target_canonical_rows(..., *, include_deleted)` / `_is_finalised` / `_target_status_label`) now called by both paths, each caller keeping its own `is_deleted`/`.all()` so the SQL is byte-unchanged; the mirror is now structural not textual (a robustness win). **Monkeypatch trap:** the 2 test sites patching `_build_carry_forward_context` repointed to `carry_forward_service._execute` (where `carry_forward_unpaid` looks the name up; patching the `__init__` namespace would not take effect) -- a patch-PATH update following moved code (decision #5), not a rule-5 assertion change. The logger name change (`...carry_forward_service` -> `..._execute`) is immaterial -- `_LogCapture` captures via logging propagation (handler on the parent), and dashboards key on the `event` field. Independent 2-reviewer panel (behavior-equivalence/verbatim-relocation + design/DRY, run `wofshnj0y`): **behavior_equivalent=yes, both ACCEPT (14 + 10 findings), 0 REFINE, 0 REVERT-OVERREACH** -- every function body verified byte-identical, the 3 dedup helpers SQL-exact + genuine (not false-DRY), DAG acyclic, public surface complete. package 10.00/10 (+0.11 vs the transient split state); 0 disables added (86; the `CarryForwardPlan` R0902 moved into `_preview`); 0 new R0801; useless-suppression 0; E/F 0. Score 9.93 held; visible 90->89; smell items 2->1 (**`schemas/validation.py` tm-lines is the SOLE remaining visible smell**). 120 carry_forward (service + preview + adhoc + log-events) targeted + **full suite 5771 passed.** | 9.93/10 | 89 |
 | 2026-06-07 | `c3d05de` | 3 | **schemas/validation.py -> package split (decision #5) -- file DONE:** the 2937-line monolith (the SOLE remaining visible design smell, `too-many-lines`) genuinely split into `app/schemas/validation/`: `_helpers` (BaseSchema + shared range validators + `_normalize_percent_fields` E-28 + `_reject_envelope_on_income`) + 16 domain modules mirroring the route packages that consume each schema (transactions/templates/transfers/salary/savings/accounts/loans/investments/retirement/settings/categories/pay_periods/debt_strategy/entries/auth) + `__init__` re-exporting all 61 public schemas via `__all__`. Every consumer's `from app.schemas.validation import XSchema` preserved verbatim (28 importers, 0 edits). **Split trap (decision #5): 0 R0801 surfaced** -- empirically pre-tested (the repeated `strip_empty_strings`/`normalize_inputs` @pre_load hooks fall below pylint's default `min-similarity-lines=4` once ignore-signatures/docstrings apply; the large `validate_*` bodies stay co-located within their Create/Update pairs) and confirmed 0 after. **No monkeypatch repoint needed** (grep: no test patches `app.schemas.validation.<attr>`; the only dotted refs are Sphinx `:class:`/`:func:` in test docstrings). **Pure move:** all 84 top-level symbols byte-identical AST vs the monolith (verified). Independent quality-pass (fresh subagent, A-G rubric, run `a1f8eb56`): **behavior_equivalent=yes (reviewer re-verified the AST itself), all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH** -- grouping is the right cut, `_helpers` boundary sound, auth-only constants correctly kept in `auth.py`, the un-extracted 1-line `strip_empty_strings` is the correct conservative call for a move (a base class would fight `AccountTypeUpdateSchema`'s legitimately-divergent MultiDict variant); 2 pre-existing out-of-scope follow-ups noted (dead `_COMPANION_*` aliases in `auth.py` with 0 consumers; create/update validator dup). package 10.00/10; 0 disables added (70); 0 new R0801. Score 9.94 (the monolithic marshmallow-import long line auto-resolved per-module); visible 87->85; smell items 1->0 (**zero visible design smells remain in app/**). 615 targeted (204 schema + 411 consumer) + **full suite 5778 passed.** | 9.94/10 | 85 |
 | 2026-06-07 | `8cda673` | 4 | **validation package -- Phase-4 residue cleared to 10.00/10 (file fully DONE):** added the 18 missing function docstrings (the inconsistently-documented `strip_empty_strings`/`validate_one_method`/`validate_different_accounts` @pre_load/@validates_schema hooks) + the `BaseSchema.Meta` class docstring + reflowed the 11 over-length `fields.Decimal(...)` declarations that moved verbatim from the monolith. Behavior-inert: with docstrings stripped, all 84 top-level symbols remain AST-identical to the pre-split monolith (the reflows changed no AST node). package 10.00/10; app/ 9.94->9.96; visible 85->55 (the 30-message validation residue cleared; 50 line-too-long + 5 `__init__` error-handler unused-argument remain, all other files/phases). 257 targeted + **full suite 5778 passed.** | 9.96/10 | 55 |
+| 2026-06-09 | `0eaf91f` | 4 | **Phase-4 mechanical residue cleared (line-too-long + unused-argument).** (Session-start baseline 9.97/10, 39 visible -- the `8cda673` 55->39 reduction in between was the deep-hunt/other batches, tracked in `deep-quality-hunt.md`.) Cleared 38 of 39 at the root, no noqa/disables: 5 error-handler `e`->`_e` (`__init__`); `jinja_globals` 46 ID-globals -> declarative `_REF_ID_GLOBALS` table + loop; 10 model `CheckConstraint` one-liners wrapped; `auth` import + 3 logger calls + 1 ternary wrapped. The 39th (`salary/profiles.py:344` update_profile logger) DEFERRED to `db24f34` -- wrapping it surfaces a format-masked R0801 in the salary except-fallback, and `profiles.py` ships with `_commit_helpers` (interdependent). Score rounds to 10.00 (the lone remaining convention message is score-invisible at app/'s statement count) but is NOT clean: 1 visible. | 10.00/10 (1 msg) | 1 |
+| 2026-06-09 | `db24f34` | 4 | **Salary error-handling DRY extraction (+ the deferred `profiles.py:344` wrap) -- app/ reaches a clean 10.00/10, ZERO messages.** Extracted `DbErrorContext`/`handle_db_error` (generic DB-error fallback -- the un-extracted companion to `handle_stale_conflict`) + `UniqueViolationContext`/`handle_unique_violation` (F-051/F-052/C-23 collision UX) + the `regenerate_commit_or_report` orchestrator into `_commit_helpers.py`; routed all 10 `except SQLAlchemyError` fallback sites + the 5 `regenerate_and_commit_or_stale` salary users through them (no hand-written try/except left). Resolves the R0801 the `:344` wrap surfaced. **Trust-but-verify catch:** the extraction introduced a rollback-ordering bug (the 5 inline-except sites built `DbErrorContext` reading the expired `current_user.id` after the failed flush, before `handle_db_error`'s rollback -> `PendingRollbackError`) that `test_create_profile_double_submit` caught; fixed by capturing `user_id` on the clean session up front (orchestrator sites already safe -- contexts built pre-flush). Behaviour-preserving (one log-text nuance: dropped the "(unexpected IntegrityError)" suffix; the `logger.exception` traceback still identifies the class). **Full suite 5867 passed.** | 10.00/10 | 0 |
+| 2026-06-09 | `c6f83a1` | 5 | **LOCK-IN (app/).** CI (`ci.yml`) + pre-commit (`.pre-commit-config.yaml`) pylint `--fail-under=9.0` -> `--fail-under=10`; created `scripts/hooks/ENFORCE_PYLINT_FLOOR` (Stop hook WARN -> HARD-BLOCK on a non-clean `pylint app/`). Verified: `--fail-under=10` returns exit 16 on a sub-10 score (genuinely gates); the exact CI command exits 0; `pylint app/ --score=no` empty; `--enable=import-error` clean. No app/ code change. `scripts/` (9.27, step 5) remains. | 10.00/10 | 0 |

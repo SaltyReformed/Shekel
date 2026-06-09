@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.utils.dates import months_between
 from app.utils.money import MONTHS_PER_YEAR
 
 TWO_PLACES = Decimal("0.01")
@@ -112,10 +113,7 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
                 # Month-aware elapsed calculation prevents inflating
                 # a full year for a component created late in the
                 # previous calendar year (M-05).
-                months_elapsed = (
-                    (as_of_date.year - created.year) * 12
-                    + (as_of_date.month - created.month)
-                )
+                months_elapsed = months_between(created, as_of_date)
                 years_elapsed = max(
                     months_elapsed / MONTHS_PER_YEAR, Decimal("0")
                 )

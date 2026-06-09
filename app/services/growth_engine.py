@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+from app import ref_cache
+from app.enums import EmployerContributionTypeEnum
+
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
@@ -157,7 +160,9 @@ def calculate_employer_contribution(employer_params, employee_contribution):
 
     Args:
         employer_params: dict with keys:
-            - type: 'none', 'flat_percentage', or 'match'
+            - type_id: ``ref.employer_contribution_types.id`` -- the
+              flat_percentage or match row (#38; the NONE row never
+              reaches here, ``_employer_params`` returns None for it)
             - flat_percentage: Decimal (for flat_percentage type)
             - match_percentage: Decimal (for match type)
             - match_cap_percentage: Decimal (for match type)
@@ -170,14 +175,21 @@ def calculate_employer_contribution(employer_params, employee_contribution):
     if not employer_params:
         return ZERO
 
-    emp_type = employer_params.get("type", "none")
+    emp_type_id = employer_params.get("type_id")
     gross = Decimal(str(employer_params.get("gross_biweekly", 0)))
 
-    if emp_type == "flat_percentage":
+    flat_id = ref_cache.employer_contribution_type_id(
+        EmployerContributionTypeEnum.FLAT_PERCENTAGE
+    )
+    match_id = ref_cache.employer_contribution_type_id(
+        EmployerContributionTypeEnum.MATCH
+    )
+
+    if emp_type_id == flat_id:
         pct = Decimal(str(employer_params.get("flat_percentage", 0)))
         return (gross * pct).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
-    if emp_type == "match":
+    if emp_type_id == match_id:
         match_pct = Decimal(str(employer_params.get("match_percentage", 0)))
         cap_pct = Decimal(str(employer_params.get("match_cap_percentage", 0)))
         matchable_salary = (gross * cap_pct).quantize(

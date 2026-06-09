@@ -154,6 +154,33 @@ class TestRecurrenceRuleRangeConstraints:
             assert "ck_recurrence_rules_moy" in str(exc_info.value)
             db.session.rollback()
 
+    def test_interval_n_and_offset_periods_default_non_null(
+        self, app, db, seed_user,
+    ):
+        """A rule created without interval_n / offset_periods persists 1 / 0.
+
+        Both columns are NOT NULL with a server_default (1 / 0) plus the
+        model's Python ``default=``, so a rule constructed without setting
+        them lands a real integer once persisted -- never NULL.  The
+        recurrence engine (``match_periods`` EVERY_N_PERIODS branch), the
+        obligations frequency label, and
+        ``savings_goal_service.amount_to_monthly`` read these directly --
+        ``interval_n`` as a modulus / division divisor -- with NO
+        ``or 1`` / ``or 0`` coalesce (deep-hunt #65), so this pins the
+        invariant that makes that safe: a persisted rule can never feed
+        them None.
+        """
+        with app.app_context():
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=_monthly_pattern_id(),
+            )
+            db.session.add(rule)
+            db.session.flush()
+            assert rule.interval_n == 1
+            assert rule.offset_periods == 0
+            db.session.rollback()
+
     def test_null_day_and_month_allowed(self, app, db, seed_user):
         """A RecurrenceRule with day_of_month=NULL and month_of_year=NULL inserts.
 

@@ -21,7 +21,11 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.enums import (
+    CalcMethodEnum,
+    DeductionTimingEnum,
+    EmployerContributionTypeEnum,
+)
 from app.extensions import db
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
@@ -72,7 +76,7 @@ class _FakePeriod:
 class _FakeInvestmentParams:
     assumed_annual_return: Decimal
     annual_contribution_limit: Decimal
-    employer_contribution_type: str
+    employer_contribution_type_id: int
     employer_flat_percentage: Decimal = Decimal("0")
     employer_match_percentage: Decimal = Decimal("0")
     employer_match_cap_percentage: Decimal = Decimal("0")
@@ -101,7 +105,9 @@ class TestBuildInvestmentProjectionInputsEquivalence:
         params = _FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type="flat_percentage",
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+            ),
             employer_flat_percentage=Decimal("0.05"),
         )
         deductions = [

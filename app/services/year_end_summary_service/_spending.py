@@ -21,7 +21,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services.year_end_summary_service._data import _get_settled_status_ids
+from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import round_money
 
 ZERO = Decimal("0")
@@ -124,7 +124,6 @@ def _compute_entry_breakdowns(
     if not period_ids:
         return {}
 
-    settled_status_ids = _get_settled_status_ids()
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
     rows = (
@@ -167,7 +166,7 @@ def _compute_entry_breakdowns(
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),
             Transaction.transaction_type_id == expense_type_id,
-            Transaction.status_id.in_(settled_status_ids),
+            Transaction.status_id.in_(settled_status_ids()),
             or_(
                 TransactionTemplate.is_envelope.is_(True),
                 and_(
@@ -355,7 +354,7 @@ def _query_settled_expenses(
             Transaction.transaction_type_id == ref_cache.txn_type_id(
                 TxnTypeEnum.EXPENSE,
             ),
-            Transaction.status_id.in_(_get_settled_status_ids()),
+            Transaction.status_id.in_(settled_status_ids()),
         )
         .all()
     )
