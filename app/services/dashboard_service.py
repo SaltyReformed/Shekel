@@ -28,7 +28,7 @@ from app.services import balance_resolver, pay_period_service, paycheck_calculat
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import load_tax_configs_for_year
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 from app.utils.money import percent_complete
 
@@ -522,7 +522,12 @@ def _get_net_pay_for_period(
     if profile is None:
         return None
 
-    tax_configs = load_tax_configs(user_id, profile)
+    # Resolve the period's OWN tax year (DH-#30): the "next paycheck" can
+    # fall in next calendar year, which may have its own brackets/FICA.
+    # Falls back to the current year when that year has no configs.
+    tax_configs = load_tax_configs_for_year(
+        user_id, profile, period.start_date.year,
+    )
     breakdown = paycheck_calculator.calculate_paycheck(
         profile, period, all_periods, tax_configs,
     )

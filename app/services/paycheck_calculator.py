@@ -275,21 +275,51 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     )
 
 
-def project_salary(profile, periods, tax_configs, *, calibration=None):
+def project_salary(profile, periods, tax_configs=None, *,
+                   configs_by_year=None, calibration=None):
     """Generate paycheck breakdowns for all given periods.
 
+    Exactly one tax-config source must be supplied:
+
+    * ``tax_configs`` -- ONE config set applied to every period.  Correct
+      when every period is in the same tax year (the year-end summary, the
+      route previews, and the unit tests that hand-build a config dict).
+    * ``configs_by_year`` -- a ``{tax_year: config set}`` mapping; each
+      period is calculated with ``configs_by_year[period.start_date.year]``.
+      This is the multi-year projection path: a ~2-year horizon spans more
+      than one tax year, so each period must use its own year's brackets
+      and FICA wage base/cap, matching the recurrence engine that generates
+      the stored grid amounts (DH-#30).  Callers resolve the mapping via
+      :func:`app.services.tax_config_service.load_tax_configs_for_periods`
+      and pass it in -- this module performs no DB access (purity contract).
+
     Args:
-        profile:      SalaryProfile with loaded raises and deductions.
-        periods:      List of PayPeriod objects.
-        tax_configs:  dict with bracket_set, state_config, fica_config.
-        calibration:  Optional CalibrationOverride for rate-based taxes.
+        profile:          SalaryProfile with loaded raises and deductions.
+        periods:          List of PayPeriod objects.
+        tax_configs:      dict with bracket_set, state_config, fica_config,
+                          or ``None`` when ``configs_by_year`` is given.
+        configs_by_year:  ``{tax_year: configs dict}`` mapping covering
+                          every year present in ``periods``, or ``None``
+                          when ``tax_configs`` is given.
+        calibration:      Optional CalibrationOverride for rate-based taxes.
 
     Returns:
         List of PaycheckBreakdown, one per period.
+
+    Raises:
+        ValueError: if not exactly one of ``tax_configs`` /
+            ``configs_by_year`` is supplied.
     """
+    if (tax_configs is None) == (configs_by_year is None):
+        raise ValueError(
+            "project_salary requires exactly one of tax_configs or "
+            "configs_by_year"
+        )
     return [
         calculate_paycheck(
-            profile, period, periods, tax_configs,
+            profile, period, periods,
+            tax_configs if tax_configs is not None
+            else configs_by_year[period.start_date.year],
             calibration=calibration,
         )
         for period in periods

@@ -718,15 +718,13 @@ def _get_salary_profile(template_id):
 def _get_transaction_amount(template, salary_profile, period, all_periods):
     """Determine the transaction amount, using paycheck calculator if salary-linked.
 
-    Uses load_tax_configs from the shared tax config service to avoid
-    duplicating query logic.  The tax year is derived from the period's
-    start date so that future-year periods pick up the correct configs.
-
-    When no tax configs exist for a future year, falls back to the
-    current calendar year's configs.  This matches the salary profile
-    page's behavior (which always uses the current year) and prevents
-    a mismatch between the grid's stored income amounts and the salary
-    page's live-calculated net pay.
+    Resolves tax configs for the period's OWN tax year via the shared
+    ``load_tax_configs_for_year`` SSOT (current-year fallback when a future
+    year has no configs at all).  The salary projection page and the
+    live net-pay recompute (``income_service.live_projected_net``) resolve
+    the SAME way (DH-#30), so the grid's stored income amount and the
+    salary page's live-calculated net pay agree on which year's brackets
+    and FICA wage base/cap apply -- they cannot silently diverge.
     """
     if salary_profile is None:
         return template.default_amount
@@ -736,33 +734,25 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
         # SOURCE modules (app.services.tax_config_service.load_tax_configs and
         # app.services.paycheck_calculator.calculate_paycheck -- the
         # testing-standards-preferred patch target).  A module-level
-        # ``from ... import load_tax_configs`` would bind the name once at
-        # import and not see the patch, so this import stays local.
+        # ``from ... import`` would bind the name once at import and not see
+        # the patch, so these imports stay local.
         # Pylint: ``import-outside-toplevel`` -- kept local so the fallback
         # tests' patches of app.services.paycheck_calculator take effect.
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
         # Pylint: ``import-outside-toplevel`` -- kept local so the fallback
         # tests' patches of app.services.tax_config_service.load_tax_configs
-        # take effect.
-        from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
+        # take effect (load_tax_configs_for_year calls it internally).
+        from app.services.tax_config_service import load_tax_configs_for_year  # pylint: disable=import-outside-toplevel
 
-        tax_year = period.start_date.year
-        tax_configs = load_tax_configs(
-            salary_profile.user_id, salary_profile, tax_year=tax_year
+        # Resolve the period's own tax year, falling back to the current
+        # year when that year has no configs at all (else future-year
+        # periods would produce zero federal tax and the grid would
+        # disagree with the salary page).  The fallback rule is owned ONCE
+        # by load_tax_configs_for_year, the SSOT shared with the salary
+        # projection and the year-end summary (DH-#30).
+        tax_configs = load_tax_configs_for_year(
+            salary_profile.user_id, salary_profile, period.start_date.year,
         )
-
-        # Fall back to current-year configs when the period's year has
-        # no configs at all.  Without this, future-year periods produce
-        # zero federal tax (bracket_set=None) and the grid shows a
-        # different net pay than the salary profile page.
-        current_year = date.today().year
-        if (tax_year != current_year
-                and tax_configs["bracket_set"] is None
-                and tax_configs["state_config"] is None
-                and tax_configs["fica_config"] is None):
-            tax_configs = load_tax_configs(
-                salary_profile.user_id, salary_profile, tax_year=current_year
-            )
 
         # Load calibration override if the profile has one.
         calibration = getattr(salary_profile, "calibration", None)

@@ -1269,6 +1269,55 @@ class TestProjectSalary:
         result = project_salary(base_profile, [], simple_tax_configs)
         assert result == []
 
+    def test_configs_by_year_applies_each_periods_own_year(
+        self, base_profile, simple_bracket_set, standard_fica,
+    ):
+        """DH-#30: in configs_by_year mode each period uses its own year's configs.
+
+        Same $60k profile and identical gross both years, but 2027 carries
+        a higher state flat rate (9.0%) than 2026 (4.5%), so the 2027
+        period's net pay must be strictly lower -- proving the per-period
+        year selection, not a single shared config set, drives the tax.
+        Revert-proof: applying a single dict to both periods would make the
+        two nets equal.
+        """
+        configs_by_year = {
+            2026: {
+                "bracket_set": simple_bracket_set,
+                "state_config": FakeStateTaxConfig(flat_rate="0.045"),
+                "fica_config": standard_fica,
+            },
+            2027: {
+                "bracket_set": simple_bracket_set,
+                "state_config": FakeStateTaxConfig(flat_rate="0.090"),
+                "fica_config": standard_fica,
+            },
+        }
+        periods = [
+            FakePeriod(start_date=date(2026, 6, 5), period_id=1),
+            FakePeriod(start_date=date(2027, 6, 4), period_id=2),
+        ]
+
+        result = project_salary(
+            base_profile, periods, configs_by_year=configs_by_year,
+        )
+
+        assert result[0].earnings.gross_biweekly == result[1].earnings.gross_biweekly
+        assert result[1].earnings.net_pay < result[0].earnings.net_pay
+
+    def test_requires_exactly_one_config_source(
+        self, base_profile, simple_tax_configs,
+    ):
+        """ValueError when neither or both config sources are supplied."""
+        periods = [FakePeriod(start_date=date(2026, 1, 2), period_id=1)]
+        with pytest.raises(ValueError, match="exactly one"):
+            project_salary(base_profile, periods)
+        with pytest.raises(ValueError, match="exactly one"):
+            project_salary(
+                base_profile, periods, simple_tax_configs,
+                configs_by_year={2026: simple_tax_configs},
+            )
+
 
 # ── FICA Wage Cap Tests ─────────────────────────────────────────
 

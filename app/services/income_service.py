@@ -40,7 +40,10 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services import pay_period_service, paycheck_calculator
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import (
+    load_tax_configs,
+    load_tax_configs_for_periods,
+)
 from app.utils.balance_predicates import is_projected
 
 logger = logging.getLogger(__name__)
@@ -142,8 +145,10 @@ def live_projected_net(
     :class:`SalaryProfile` in ``scenario_id``, recompute the net
     paycheck LIVE from that profile -- the same path the salary
     projection page uses (:func:`paycheck_calculator.project_salary`
-    over the full pay-period set, current-year tax configs, the
-    profile's calibration).  The result lets a balance/display consumer
+    over the full pay-period set, tax configs resolved PER period year --
+    the same per-year resolution the recurrence engine uses to GENERATE
+    the stored amount (DH-#30) -- the profile's calibration).  The result
+    lets a balance/display consumer
     treat the stored ``Transaction.estimated_amount`` as a cache that
     cannot silently disagree with the salary page after a profile,
     calibration, or financial-calc CODE change that did not fire a
@@ -222,9 +227,17 @@ def live_projected_net(
     all_periods = pay_period_service.get_all_periods(user_id)
     net_by_period_per_profile: dict[int, dict[int, Decimal]] = {}
     for profile in profile_by_template.values():
-        tax_configs = load_tax_configs(user_id, profile)
+        # Resolve tax configs PER period year (DH-#30) so this live
+        # recompute uses each period's own year's brackets/FICA -- exactly
+        # as the recurrence engine does when it GENERATES the stored grid
+        # amount.  A single current-year dict (the pre-fix behaviour) made
+        # the two silently disagree once future-year configs existed,
+        # breaking the reconciliation contract this helper advertises.
+        configs_by_year = load_tax_configs_for_periods(
+            user_id, profile, all_periods,
+        )
         breakdowns = paycheck_calculator.project_salary(
-            profile, all_periods, tax_configs,
+            profile, all_periods, configs_by_year=configs_by_year,
             calibration=profile.calibration,
         )
         net_by_period_per_profile[profile.id] = {
