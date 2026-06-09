@@ -63,7 +63,9 @@ from app.schemas.validation import (
     DeductionCreateSchema,
     FicaConfigSchema,
     InvestmentParamsCreateSchema,
+    InvestmentParamsUpdateSchema,
     RaiseCreateSchema,
+    RetirementGapQuerySchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
     StateTaxConfigSchema,
@@ -80,6 +82,7 @@ from app.schemas.validation import (
 CK_ESCROW_NONNEG = "ck_escrow_components_nonneg_annual_amount"
 CK_ESCROW_INFLATION = "ck_escrow_components_valid_inflation_rate"
 CK_INTEREST_APY = "ck_interest_params_valid_apy"
+CK_INVEST_RETURN = "ck_investment_params_valid_return"
 CK_INVEST_LIMIT = "ck_investment_params_nonneg_contribution_limit"
 CK_INVEST_FLAT = "ck_investment_params_valid_employer_flat_pct"
 CK_INVEST_MATCH = "ck_investment_params_valid_employer_match_pct"
@@ -504,6 +507,45 @@ class TestMiscSchemaBounds:
             })
         assert "contribution_limit_year" in info.value.messages
 
+    def test_invest_return_negative_100_percent_rejected(self):
+        """DH-#28 follow-up: a -100% return (fraction -1) is rejected.
+
+        The schema's percent @pre_load turns "-100" into the fraction
+        "-1"; the exclusive lower bound (min_inclusive=False) rejects it
+        because -1 is the degenerate, non-invertible reverse-projection
+        rate (1 + rate == 0).
+        """
+        schema = InvestmentParamsCreateSchema()
+        with pytest.raises(ValidationError) as info:
+            schema.load({"assumed_annual_return": "-100"})
+        assert "assumed_annual_return" in info.value.messages
+
+    def test_invest_update_return_negative_100_percent_rejected(self):
+        """The update schema rejects -100% just like the create schema."""
+        schema = InvestmentParamsUpdateSchema()
+        with pytest.raises(ValidationError) as info:
+            schema.load({"assumed_annual_return": "-100"})
+        assert "assumed_annual_return" in info.value.messages
+
+    def test_invest_return_just_above_negative_one_accepted(self):
+        """A return just above -100% (-99.999% -> -0.99999) is accepted.
+
+        Pins that the bound is exclusive only AT -1, not a wholesale ban
+        on deep-loss assumptions: -0.99999 is the smallest Numeric(7,5)
+        value above the new bound.
+        """
+        schema = InvestmentParamsCreateSchema()
+        result = schema.load({"assumed_annual_return": "-99.999"})
+        # "-99.999" percent / 100 -> Decimal("-0.99999")
+        assert result["assumed_annual_return"] == Decimal("-0.99999")
+
+    def test_retirement_return_rate_negative_100_percent_rejected(self):
+        """The retirement return-rate slider mirrors the same > -1 bound."""
+        schema = RetirementGapQuerySchema()
+        with pytest.raises(ValidationError) as info:
+            schema.load({"return_rate": "-100"})
+        assert "return_rate" in info.value.messages
+
 
 # ── F-077: Storage-tier CHECK enforcement (raw SQL bypass) ────────
 #
@@ -674,6 +716,32 @@ class TestInvestmentParamsCheck:
                 db.session.flush()
             db.session.rollback()
             assert _constraint_name_from(info.value) == CK_INVEST_LIMIT
+
+    def test_return_at_negative_one_rejected(self, app, seed_user):
+        """DH-#28 follow-up: storage rejects assumed_annual_return = -1.
+
+        Raw INSERT bypasses the tightened schema; the DB CHECK
+        ``ck_investment_params_valid_return`` (now ``> -1``) is the last
+        line of defence against the non-invertible -100% return.
+        """
+        with app.app_context():
+            account = self._account(seed_user)
+            with pytest.raises(IntegrityError) as info:
+                db.session.execute(
+                    text(
+                        "INSERT INTO budget.investment_params "
+                        "(account_id, assumed_annual_return, "
+                        " employer_contribution_type_id, "
+                        " created_at, updated_at) "
+                        "VALUES (:aid, -1.00, "
+                        "(SELECT id FROM ref.employer_contribution_types "
+                        " WHERE name = 'none'), now(), now())"
+                    ),
+                    {"aid": account.id},
+                )
+                db.session.flush()
+            db.session.rollback()
+            assert _constraint_name_from(info.value) == CK_INVEST_RETURN
 
     def test_employer_flat_above_one_rejected(self, app, seed_user):
         with app.app_context():

@@ -80,7 +80,11 @@ class InvestmentParamsCreateSchema(BaseSchema):
 
     assumed_annual_return = fields.Decimal(
         required=True, places=5, as_string=True,
-        validate=validate.Range(min=-1, max=1),
+        # Exclusive lower bound: a -100% annual return (fraction -1) is a
+        # degenerate, non-invertible assumption -- the reverse growth
+        # projection divides by (1 + per-period rate), which is 0 at -1
+        # (DH-#28 follow-up).  Mirrors the DB CHECK ``> -1 AND <= 1``.
+        validate=validate.Range(min=-1, max=1, min_inclusive=False),
     )
     # F-077 / C-24: Backstop the new DB CHECK
     # ``annual_contribution_limit IS NULL OR annual_contribution_limit >= 0``
@@ -166,7 +170,10 @@ class InvestmentParamsUpdateSchema(BaseSchema):
 
     assumed_annual_return = fields.Decimal(
         places=5, as_string=True,
-        validate=validate.Range(min=-1, max=1),
+        # Exclusive lower bound: see ``InvestmentParamsCreateSchema`` -- a
+        # -100% return (fraction -1) breaks the reverse projection's
+        # ``1 + rate`` divisor (DH-#28 follow-up).  Mirrors the DB CHECK.
+        validate=validate.Range(min=-1, max=1, min_inclusive=False),
     )
     # F-077 / C-24: see :class:`InvestmentParamsCreateSchema` for
     # the bound rationale; the same Range applies on update.
