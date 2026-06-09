@@ -24,6 +24,8 @@ from app.services.calibration_service import (
     PayStubActuals,
     derive_effective_rates,
 )
+from app.routes._commit_helpers import DbErrorContext, handle_db_error
+from app.routes._redirect_target import RedirectTarget
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _calibration_confirm_schema,
@@ -192,6 +194,11 @@ def calibrate_confirm(profile_id):
     # one cent of withholding (E-20 / C19-2 tampering signal).
     _reject_if_rates_inconsistent(data, derived_rates, taxable, profile_id)
 
+    # Capture the requester id on the clean session up front; the failure
+    # path builds its DbErrorContext after a failed flush, where reading the
+    # expired current_user attribute would hit the rolled-back session.
+    user_id = current_user.id
+
     try:
         # Delete any existing calibration for this profile.
         existing = (
@@ -238,13 +245,13 @@ def calibrate_confirm(profile_id):
         # subsequent transactions regeneration (FK, CHECK, NUMERIC
         # range, OperationalError) produce the user-facing flash.
         # Non-SQLAlchemy exceptions propagate to the 500 handler.
-        db.session.rollback()
-        logger.exception(
-            "user_id=%d failed to save calibration for profile %d",
-            current_user.id, profile_id,
-        )
-        flash("Failed to save calibration. Please try again.", "danger")
-        return redirect(url_for("salary.calibrate_form", profile_id=profile_id))
+        return handle_db_error(DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to save calibration for profile %d",
+            log_args=(user_id, profile_id),
+            flash_message="Failed to save calibration. Please try again.",
+            redirect=RedirectTarget("salary.calibrate_form", {"profile_id": profile_id}),
+        ))
 
     logger.info("user_id=%d calibrated profile %d", current_user.id, profile_id)
     flash("Paycheck calibration saved. Projections updated.", "success")
@@ -259,6 +266,11 @@ def calibrate_delete(profile_id):
     profile = get_or_404(SalaryProfile, profile_id)
     if profile is None:
         abort(404)
+
+    # Capture the requester id on the clean session up front; the failure
+    # path builds its DbErrorContext after a failed flush, where reading the
+    # expired current_user attribute would hit the rolled-back session.
+    user_id = current_user.id
 
     existing = (
         db.session.query(CalibrationOverride)
@@ -279,13 +291,13 @@ def calibrate_delete(profile_id):
             # Narrow catch (C-46 / F-145): DB-tier failures during
             # the post-deletion regeneration land here.  Non-
             # SQLAlchemy exceptions propagate to the 500 handler.
-            db.session.rollback()
-            logger.exception(
-                "user_id=%d failed to remove calibration for profile %d",
-                current_user.id, profile_id,
-            )
-            flash("Failed to remove calibration. Please try again.", "danger")
-            return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+            return handle_db_error(DbErrorContext(
+                logger=logger,
+                log_message="user_id=%d failed to remove calibration for profile %d",
+                log_args=(user_id, profile_id),
+                flash_message="Failed to remove calibration. Please try again.",
+                redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+            ))
 
         logger.info("user_id=%d removed calibration from profile %d", current_user.id, profile_id)
         flash("Calibration removed. Reverted to bracket-based taxes.", "info")
