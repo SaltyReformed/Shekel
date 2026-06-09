@@ -421,12 +421,20 @@ def _reverse_project_periods(
     if not pre_anchor or anchor_period is None:
         return {}
 
+    # DH-#28: thread the annual contribution limit so the reverse caps each
+    # period exactly as the forward path does (otherwise a maxed-out account's
+    # pre-anchor balances are derived too low).  ytd_contributions_start=ZERO
+    # because this window starts at the user's earliest period, before which
+    # no contribution exists; each later calendar year inside the window resets
+    # YTD on its own (the engine replays the year-boundary reset).
     reversed_proj = growth_engine.reverse_project_balance(
         anchor_balance=anchor_balance,
         assumed_annual_return=investment_params.assumed_annual_return,
         periods=pre_anchor + [anchor_period],
         periodic_contribution=proj_inputs.periodic_contribution,
         employer_params=proj_inputs.employer_params,
+        annual_contribution_limit=proj_inputs.annual_contribution_limit,
+        ytd_contributions_start=ZERO,
     )
     return {
         pb.period_id: pb.end_balance
