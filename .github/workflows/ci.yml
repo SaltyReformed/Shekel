@@ -113,11 +113,12 @@ jobs:
       #     stays above the threshold.  These have zero violations today, so this
       #     only ever catches a regression -- it cannot turn the current green
       #     build red.
-      #   --fail-under=9.0: also fail if warnings drop the score below 9.0.
-      #     Flip to 10 at the cleanup lock-in (docs/audits/pylint-cleanup/plan.md
-      #     Phase 5), together with `touch scripts/hooks/ENFORCE_PYLINT_FLOOR`.
+      #   --fail-under=10: the cleanup lock-in (docs/audits/pylint-cleanup/plan.md
+      #     Phase 5).  app/ is at a clean 10.00/10, so any new convention/warning
+      #     that drops the score fails the build.  Enforced locally by the Stop
+      #     hook via the scripts/hooks/ENFORCE_PYLINT_FLOOR sentinel.
       - name: Lint with pylint
-        run: pylint app/ --fail-under=9.0 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale --output-format=colorized
+        run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale --output-format=colorized
 
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
       # The checkers themselves are unit-tested (every "flags" case paired with a
