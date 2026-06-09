@@ -2072,6 +2072,18 @@ IntegrityError)" suffix (the `logger.exception` traceback still identifies the c
 flashes/categories/redirects are byte-identical. `pylint app/` 10.00/10, **zero messages**; full
 suite **5867 passed**.
 
+**Follow-up (out of scope this pass, for a new session):** `add_raise` / `add_deduction` ALSO
+translate a unique-constraint `IntegrityError`, but to an INFO "already exists" flash + an HTMX
+`_respond_after_*_change` response (not a redirect), and they use a plain `db.session.commit()` (not
+`regenerate_and_commit_or_stale`) -- a third sub-pattern distinct from the `handle_db_error` /
+`handle_unique_violation` shapes extracted here, so it was deliberately left inline (developer
+decision: handle as a separate follow-up). A future pass could (a) extract that idempotent-create
+idiom IF it earns a shared helper (verify it is not a forced abstraction first -- the INFO/HTMX
+shape and plain-commit lifecycle differ from the redirect-based update/delete paths), and (b) add
+direct unit tests for the three new `_commit_helpers` functions (`handle_db_error`,
+`handle_unique_violation`, `regenerate_commit_or_report`), which are currently covered only
+transitively by the 124 salary route tests (incl. the C-23 collision + double-submit cases).
+
 ---
 
 ## Phase 5 -- Lock it in (CI), then scripts/
