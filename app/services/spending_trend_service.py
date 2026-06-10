@@ -1,10 +1,10 @@
 """
 Shekel Budget App -- Spending Trend Service
 
-Detects per-category spending trends over rolling windows using
-linear regression.  Flags categories exceeding a configurable
-threshold and produces ranked top-5 lists of increasing and
-decreasing categories.
+Detects per-category spending trends over rolling windows by comparing
+recent-half versus prior-half average spending across completed pay
+periods.  Flags categories exceeding a configurable threshold and produces
+ranked top-5 lists of increasing and decreasing categories.
 
 Pure-function service -- no Flask imports, no database writes.
 """
@@ -39,6 +39,24 @@ _FLAT_THRESHOLD = Decimal("1")  # 1%
 # Maximum items in the top-increasing / top-decreasing lists.
 _TOP_N = 5
 
+# F2 -- a category needs spending in at least this many distinct periods
+# of the window before it is treated as a trend.  Below it there is no
+# time series to fit (a single transaction is not a trend), so the
+# category is excluded from the report entirely.
+_MIN_ACTIVE_PERIODS = 3
+
+# R1 -- materiality floor.  A category must average at least this many
+# dollars of spending per window period to be trended.  Below it a large
+# percentage swing is noise on pocket change, so the category is excluded.
+_MATERIALITY_FLOOR = Decimal("20.00")
+
+# R2 -- new-baseline floor.  When the prior half of the window averages
+# below this, the category has effectively no earlier baseline to divide
+# by (it ramped up from ~zero).  A percentage relative to a near-zero base
+# is meaningless and explodes, so such a category is reported as emerging
+# ("New", pct_change=None) rather than with a fabricated percentage.
+_NEW_BASELINE_FLOOR = Decimal("5.00")
+
 
 # ── Data Structures ─────────────────────────────────────────────────
 
@@ -56,6 +74,12 @@ class ItemTrend:  # pylint: disable=too-many-instance-attributes
     trend metrics, timing) as a unit, and no field owns a section total.
     Every field is an irreducible column of the row; splitting it would
     fragment one domain concept for no design gain.
+
+    ``pct_change`` is ``None`` for an emerging category -- one whose
+    prior-half spend is below ``_NEW_BASELINE_FLOOR`` so there is no stable
+    base to divide by.  Such a row renders as "New" with a positive
+    ``absolute_change`` and ``trend_direction == "up"``; every other field
+    stays populated.
     """
 
     category_id: int
@@ -63,7 +87,7 @@ class ItemTrend:  # pylint: disable=too-many-instance-attributes
     item_name: str
     period_average: Decimal
     trend_direction: str
-    pct_change: Decimal
+    pct_change: Decimal | None
     absolute_change: Decimal
     is_flagged: bool
     data_points: int
@@ -120,9 +144,13 @@ def compute_trends(
 
     Determines the window size based on data sufficiency (6 months
     preferred, 3 months if preliminary, insufficient if < 3 months).
-    For each category item with paid expense transactions, fits a
-    linear regression to per-period totals and computes percentage
-    change, direction, and flagging.
+    The window covers only completed pay periods (F1).  Each trendable
+    category -- one with spending in at least ``_MIN_ACTIVE_PERIODS``
+    periods (F2) and an average of at least ``_MATERIALITY_FLOOR`` per
+    period (R1) -- is measured by comparing its recent-half versus
+    prior-half average spend, yielding percentage change, direction, and
+    flagging.  A category ramping up from a near-zero prior half is
+    reported as emerging ("New", pct_change=None).
 
     Args:
         user_id: The user's ID.
@@ -166,7 +194,7 @@ def compute_trends(
         window_periods=len(periods),
         top_increasing=top_inc,
         top_decreasing=top_dec,
-        all_items=sorted(items, key=lambda i: abs(i.pct_change), reverse=True),
+        all_items=sorted(items, key=_all_items_sort_key),
         group_trends=sorted(groups, key=lambda g: abs(g.pct_change), reverse=True),
         data_sufficiency=sufficiency,
         threshold=threshold,
@@ -213,27 +241,21 @@ def _get_window_periods(
     user_id: int,
     window_months: int,
 ) -> list[PayPeriod]:
-    """Return pay periods whose start_date falls within the window.
+    """Return the completed pay periods that fall within the window.
 
-    The window spans the first of the month ``window_months`` before the
-    current month, up to (but not including) the first of next month -- so
-    it covers history through the end of the current month and EXCLUDES
-    future pay periods.  The app projects ~2 years of pay periods forward;
-    without the upper bound those future, never-settled periods would
-    zero-fill into ``period_average`` (inflating the divisor) and drag
-    every category's regression slope toward "decreasing".
+    The lower bound is the first of the month ``window_months`` before the
+    current month.  The upper bound is the present: a period is included
+    only once it has fully elapsed (``end_date < today``).
+
+    F1 -- the in-progress current period and any future periods are
+    EXCLUDED.  The app projects ~2 years of pay periods forward, and the
+    current period is only partially settled, so their expense rows are
+    mostly still ``projected`` (unsettled).  Counting them would zero-fill
+    the tail of every category's series, dragging nearly every trend toward
+    "decreasing" purely because the latest periods have not been paid yet.
+    Only completed periods carry realized spending.
     """
     today = date.today()
-
-    # Upper bound (exclusive): the first of next month.  Periods that
-    # start anywhere in the current month are included; future months are
-    # not.
-    next_month = today.month + 1
-    next_year = today.year
-    if next_month > 12:
-        next_month = 1
-        next_year += 1
-    window_end = date(next_year, next_month, 1)
 
     # Lower bound: the first of the month ``window_months`` before the
     # current month.
@@ -249,7 +271,7 @@ def _get_window_periods(
         .filter(
             PayPeriod.user_id == user_id,
             PayPeriod.start_date >= first_day,
-            PayPeriod.start_date < window_end,
+            PayPeriod.end_date < today,
         )
         .order_by(PayPeriod.period_index)
         .all()
@@ -304,11 +326,13 @@ def _build_item_trends(
     periods: list[PayPeriod],
     threshold: Decimal,
 ) -> list[ItemTrend]:
-    """Build ItemTrend for each category item with data.
+    """Build an ItemTrend for each eligible category item.
 
     Groups transactions by category_id, computes per-period totals
-    (including zero-spending periods), runs linear regression, and
-    derives trend metrics.
+    (including zero-spending periods), and derives the recent-vs-prior-half
+    trend metrics.  Categories that fail the F2 (min active periods) or R1
+    (materiality) gates are dropped, so the returned list is already
+    filtered to trendable categories.
     """
     # Group transactions by category_id.
     by_category: dict[int, list[Transaction]] = defaultdict(list)
@@ -325,7 +349,11 @@ def _build_item_trends(
         item = _compute_item_trend(
             cat_id, cat_txns, period_index_map, n_periods, threshold,
         )
-        items.append(item)
+        # _compute_item_trend returns None for categories that fail the
+        # F2 (min active periods) or R1 (materiality) gates -- they have no
+        # meaningful trend and are excluded from every report surface.
+        if item is not None:
+            items.append(item)
 
     return items
 
@@ -365,23 +393,44 @@ def _period_totals_for_item(
     return period_totals, len(data_point_periods)
 
 
-def _trend_change(period_totals: list[Decimal], n_periods: int) -> tuple[Decimal, Decimal]:
-    """Derive the absolute and percentage change across the window.
+def _half_window_change(
+    period_totals: list[Decimal],
+) -> tuple[Decimal, Decimal | None]:
+    """Derive the dollar and percentage change between window halves (Design A).
 
-    Runs linear regression over the per-period totals: ``absolute_change``
-    is the per-period slope; ``pct_change`` is the regression-predicted
-    change from the first to the last period.
+    Splits the chronological per-period totals into a prior half and a
+    recent half of equal length.  When the count is odd the middle period
+    is dropped, so the two halves share one denominator and the comparison
+    stays fair.  ``absolute_change`` is the per-period dollar delta
+    ``recent_avg - prior_avg``; ``pct_change`` is that delta relative to
+    ``prior_avg``.
+
+    Returns ``pct_change = None`` (emerging / "New") when ``prior_avg`` is
+    below ``_NEW_BASELINE_FLOOR``: there is no stable earlier base, so a
+    percentage would divide by ~zero and explode.  Callers reach this only
+    for materially-spending categories (R1), so a sub-floor prior half
+    means the spend is concentrated in the recent half -- a genuine
+    ramp-up -- and ``absolute_change`` is positive.
+
+    Because both averages are non-negative, a real percentage is bounded
+    below at -100% (recent spend cannot fall below zero), so no separate
+    downside clamp is needed.
     """
-    slope, intercept = _compute_linear_regression(period_totals)
-    absolute_change = round_money(slope)
+    n = len(period_totals)
+    half = n // 2
+    if half == 0:
+        return _ZERO, None
 
-    first_predicted = intercept
-    last_predicted = intercept + slope * Decimal(str(n_periods - 1))
-    pct_change = _safe_pct_change(
-        first_predicted, last_predicted, period_totals, n_periods,
-    )
+    half_dec = Decimal(str(half))
+    prior_avg = sum(period_totals[:half]) / half_dec
+    recent_avg = sum(period_totals[n - half:]) / half_dec
+    absolute_change = round_money(recent_avg - prior_avg)
 
-    return absolute_change, pct_change
+    if prior_avg < _NEW_BASELINE_FLOOR:
+        return absolute_change, None
+
+    pct_change = (recent_avg - prior_avg) / prior_avg * _HUNDRED
+    return absolute_change, pct_change.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 def _compute_item_trend(
@@ -390,12 +439,23 @@ def _compute_item_trend(
     period_index_map: dict[int, int],
     n_periods: int,
     threshold: Decimal,
-) -> ItemTrend:
-    """Compute trend metrics for a single category item.
+) -> ItemTrend | None:
+    """Compute trend metrics for a single category item (Design A).
 
-    Builds per-period totals (with zeros for empty periods), runs
-    regression, and derives direction/flagging.  Also computes
-    avg_days_before_due from the days_paid_before_due property.
+    Builds per-period totals (with zeros for empty periods), then applies
+    the eligibility gates before measuring any trend:
+
+    - F2: spending in at least ``_MIN_ACTIVE_PERIODS`` periods.  Below it
+      there is no time series -- a single transaction is not a trend.
+    - R1: an average of at least ``_MATERIALITY_FLOOR`` dollars per period.
+      Below it a large percentage swing is noise on pocket change.
+
+    A category failing either gate has no meaningful trend and is excluded
+    from the report (returns ``None``).  For eligible categories the change
+    is a recent-vs-prior-half comparison; an emerging category (prior half
+    below the new-baseline floor) is reported as "New" with
+    ``pct_change=None`` and an upward direction.  Also computes
+    ``avg_days_before_due`` from the ``days_paid_before_due`` property.
     """
     group_name, item_name = _item_category_names(txns)
 
@@ -403,22 +463,37 @@ def _compute_item_trend(
         txns, period_index_map, n_periods,
     )
 
+    if data_points < _MIN_ACTIVE_PERIODS:
+        return None
+
     total_spending = sum(period_totals)
     period_average = round_money(
         total_spending / Decimal(str(n_periods))
     ) if n_periods > 0 else _ZERO
+    if period_average < _MATERIALITY_FLOOR:
+        return None
 
-    absolute_change, pct_change = _trend_change(period_totals, n_periods)
+    absolute_change, pct_change = _half_window_change(period_totals)
+
+    if pct_change is None:
+        # Emerging spending: no earlier base to divide by.  Direction is
+        # up by construction (material spend concentrated in the recent
+        # half) and the row is flagged as a notable change.
+        trend_direction = "up"
+        is_flagged = True
+    else:
+        trend_direction = _direction_from_pct(pct_change)
+        is_flagged = abs(pct_change) >= threshold * _HUNDRED
 
     return ItemTrend(
         category_id=cat_id,
         group_name=group_name,
         item_name=item_name,
         period_average=period_average,
-        trend_direction=_direction_from_pct(pct_change),
+        trend_direction=trend_direction,
         pct_change=pct_change,
         absolute_change=absolute_change,
-        is_flagged=abs(pct_change) >= threshold * _HUNDRED,
+        is_flagged=is_flagged,
         data_points=data_points,
         total_spending=total_spending,
         # OP-3: average days a bill is paid before its due date.
@@ -432,8 +507,12 @@ def _build_group_trends(
 ) -> list[GroupTrend]:
     """Build group-level trends from item trends.
 
-    Group pct_change is a spending-weighted average of item pct_change
+    Group pct_change is a spending-weighted average of the item pct_change
     values: items with more spending influence the group trend more.
+    Emerging ("New") items carry no percentage (pct_change=None), so they
+    cannot enter a weighted average -- they are listed under the group but
+    excluded from its weighting; a group with no measurable items reads as
+    flat.
     """
     by_group: dict[str, list[ItemTrend]] = defaultdict(list)
     for item in items:
@@ -441,15 +520,17 @@ def _build_group_trends(
 
     groups: list[GroupTrend] = []
     for group_name, group_items in by_group.items():
-        sorted_items = sorted(group_items, key=lambda i: abs(i.pct_change), reverse=True)
+        sorted_items = sorted(group_items, key=_all_items_sort_key)
         total_spending = sum(i.total_spending for i in group_items)
 
-        if total_spending == _ZERO:
+        measurable = [i for i in group_items if i.pct_change is not None]
+        weight_base = sum(i.total_spending for i in measurable)
+        if weight_base == _ZERO:
             weighted_pct = _ZERO
         else:
             weighted_pct = sum(
-                i.pct_change * i.total_spending for i in group_items
-            ) / total_spending
+                i.pct_change * i.total_spending for i in measurable
+            ) / weight_base
 
         weighted_pct = weighted_pct.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
         direction = _direction_from_pct(weighted_pct)
@@ -467,14 +548,30 @@ def _build_group_trends(
     return groups
 
 
+def _all_items_sort_key(item: ItemTrend) -> tuple[int, Decimal]:
+    """Sort key for the full ``all_items`` list.
+
+    Real-percentage rows come first, ordered by descending percentage
+    magnitude; emerging ("New") rows come last, ordered by descending
+    dollar change.  A new row has no percentage to rank by, so it is
+    grouped at the end rather than interleaved with percentages via an
+    apples-to-oranges comparison.
+    """
+    if item.pct_change is None:
+        return (1, -item.absolute_change)
+    return (0, -abs(item.pct_change))
+
+
 def _build_top_lists(
     items: list[ItemTrend],
 ) -> tuple[list[ItemTrend], list[ItemTrend]]:
     """Build top-5 increasing and decreasing lists from flagged items.
 
-    Only flagged items qualify.  Increasing sorted by pct_change
-    descending; decreasing sorted by pct_change ascending (most
-    negative first).
+    Only flagged items qualify.  Both lists order by
+    :func:`_all_items_sort_key`: increases lead with the largest
+    percentage, decreases lead with the most negative percentage, and
+    emerging ("New") increases -- which have no percentage -- sort after
+    the real-percentage increases by descending dollar change.
     """
     flagged_up = [
         i for i in items
@@ -485,96 +582,10 @@ def _build_top_lists(
         if i.is_flagged and i.trend_direction == "down"
     ]
 
-    flagged_up.sort(key=lambda i: i.pct_change, reverse=True)
-    flagged_down.sort(key=lambda i: i.pct_change)
+    flagged_up.sort(key=_all_items_sort_key)
+    flagged_down.sort(key=_all_items_sort_key)
 
     return flagged_up[:_TOP_N], flagged_down[:_TOP_N]
-
-
-def _compute_linear_regression(
-    values: list[Decimal],
-) -> tuple[Decimal, Decimal]:
-    """Simple OLS linear regression over equally-spaced data points.
-
-    Returns (slope, intercept) using Decimal arithmetic throughout.
-    x-values are integer indices [0, 1, 2, ..., n-1].
-
-    Guards:
-    - Empty input raises ValueError.
-    - Single value returns (Decimal("0"), value).
-    - Zero denominator returns (Decimal("0"), mean).
-
-    Args:
-        values: Per-period spending totals, ordered chronologically.
-
-    Returns:
-        Tuple of (slope, intercept) as Decimal values.
-
-    Raises:
-        ValueError: If values is empty.
-    """
-    n = len(values)
-    if n == 0:
-        raise ValueError("Cannot compute regression on empty input.")
-    if n == 1:
-        return _ZERO, values[0]
-
-    n_dec = Decimal(str(n))
-    # Closed-form sums for x = 0, 1, ..., n-1.
-    sum_x = n_dec * (n_dec - 1) / Decimal("2")
-    sum_x2 = n_dec * (n_dec - 1) * (2 * n_dec - 1) / Decimal("6")
-    sum_y = sum(values)
-    sum_xy = sum(Decimal(str(i)) * v for i, v in enumerate(values))
-
-    denominator = n_dec * sum_x2 - sum_x * sum_x
-    if denominator == _ZERO:
-        return _ZERO, values[0]
-
-    slope = (n_dec * sum_xy - sum_x * sum_y) / denominator
-    intercept = (sum_y - slope * sum_x) / n_dec
-
-    return slope, intercept
-
-
-def _safe_pct_change(
-    first_predicted: Decimal,
-    last_predicted: Decimal,
-    period_totals: list[Decimal],
-    n_periods: int,
-) -> Decimal:
-    """Compute percentage change between regression endpoints.
-
-    The base is the regression-predicted first-period value
-    (``first_predicted``).  When that base is non-positive -- a category
-    that ramps up from zero produces a negative intercept -- a percentage
-    relative to it is meaningless and SIGN-UNSTABLE: dividing the
-    (positive) change by a negative base flips the sign and mislabels a
-    rising category as decreasing.  In that case fall back to the window's
-    mean spend (``sum(period_totals) / n_periods``, always >= 0) as the
-    base, so ``pct_change`` keeps the sign of the actual change (which
-    equals the slope's sign).  This guarantees ``pct_change`` and
-    ``absolute_change`` never disagree in direction.
-
-    Returns ``Decimal("0")`` only when no positive base exists at all (an
-    all-zero window).  Rounds to 2 decimal places.
-
-    Args:
-        first_predicted: Regression value at the first period (intercept).
-        last_predicted: Regression value at the last period.
-        period_totals: Per-period spending totals; their mean is the
-            fallback base when the intercept is non-positive.
-        n_periods: Number of periods in the window.
-
-    Returns:
-        The percentage change, signed to match the slope, at 2 places.
-    """
-    base = first_predicted
-    if base <= _ZERO:
-        base = sum(period_totals) / Decimal(str(n_periods)) if n_periods else _ZERO
-    if base <= _ZERO:
-        return _ZERO
-    change = (last_predicted - first_predicted) / base * _HUNDRED
-    return change.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 def _direction_from_pct(pct_change: Decimal) -> str:

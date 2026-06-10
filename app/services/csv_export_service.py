@@ -436,12 +436,16 @@ def export_trends_csv(report) -> str:
     rows.append(headers)
 
     for item in report.all_items:
+        # pct_change is None for an emerging ("New") category -- one with no
+        # prior-half baseline to divide by.  Emit the literal "New" so the
+        # CSV mirrors the on-screen label instead of a blank cell.
+        change_pct = "New" if item.pct_change is None else _pct(item.pct_change)
         rows.append([
             _safe(item.group_name),
             _safe(item.item_name),
             _dec(item.period_average),
             item.trend_direction,
-            _pct(item.pct_change),
+            change_pct,
             _dec(item.absolute_change),
             str(item.data_points),
             _bool_yn(item.is_flagged),

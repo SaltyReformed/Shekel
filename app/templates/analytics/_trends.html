@@ -6,7 +6,7 @@
 {%- endmacro %}
 
 {% macro fmt_pct(value) -%}
-  {% if value > 0 %}+{{ "{:.2f}".format(value) }}%{% elif value < 0 %}{{ "{:.2f}".format(value) }}%{% else %}0.00%{% endif %}
+  {% if value is none %}New{% elif value > 0 %}+{{ "{:.2f}".format(value) }}%{% elif value < 0 %}{{ "{:.2f}".format(value) }}%{% else %}0.00%{% endif %}
 {%- endmacro %}
 
 {% macro fmt_change(value) -%}
