@@ -18,6 +18,8 @@ import csv
 import io
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.utils.money import round_money
+
 TWO_PLACES = Decimal("0.01")
 HUNDRED = Decimal("100")
 
@@ -48,7 +50,7 @@ def _dec(value: Decimal | int | float | None) -> str:
     """
     if value is None:
         return ""
-    return str(Decimal(str(value)).quantize(TWO_PLACES, rounding=ROUND_HALF_UP))
+    return str(round_money(Decimal(str(value))))
 
 
 def _pct(value: Decimal | None) -> str:

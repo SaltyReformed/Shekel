@@ -19,14 +19,12 @@ import calendar
 import logging
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from app.utils.dates import months_between
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
-
-TWO_PLACES = Decimal("0.01")
 
 
 @dataclass(frozen=True)
@@ -212,12 +210,12 @@ def calculate_monthly_payment(
         return Decimal("0.00")
 
     if annual_rate <= 0:
-        return (principal / remaining_months).quantize(TWO_PLACES, ROUND_HALF_UP)
+        return round_money(principal / remaining_months)
 
     monthly_rate = annual_rate / MONTHS_PER_YEAR
     factor = (1 + monthly_rate) ** remaining_months
     payment = principal * (monthly_rate * factor) / (factor - 1)
-    return payment.quantize(TWO_PLACES, ROUND_HALF_UP)
+    return round_money(payment)
 
 
 def _advance_month(year: int, month: int, day: int) -> date:
@@ -814,7 +812,7 @@ def _search_extra_for_payoff(
     hi = upper_bound  # Upper bound: pay it all off immediately.
 
     for _ in range(100):  # Max iterations for convergence.
-        mid = ((lo + hi) / 2).quantize(TWO_PLACES, ROUND_HALF_UP)
+        mid = round_money((lo + hi) / 2)
         schedule = project_forward(
             projection_inputs, monthly_override=None, extra_monthly=mid,
         )

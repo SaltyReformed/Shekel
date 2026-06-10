@@ -12,15 +12,15 @@ import logging
 from collections import namedtuple
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import EmployerContributionTypeEnum
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
-TWO_PLACES = Decimal("0.01")
 
 
 @dataclass
@@ -187,18 +187,14 @@ def calculate_employer_contribution(employer_params, employee_contribution):
 
     if emp_type_id == flat_id:
         pct = Decimal(str(employer_params.get("flat_percentage", 0)))
-        return (gross * pct).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        return round_money(gross * pct)
 
     if emp_type_id == match_id:
         match_pct = Decimal(str(employer_params.get("match_percentage", 0)))
         cap_pct = Decimal(str(employer_params.get("match_cap_percentage", 0)))
-        matchable_salary = (gross * cap_pct).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        matchable_salary = round_money(gross * cap_pct)
         matched_amount = min(employee_contribution, matchable_salary)
-        return (matched_amount * match_pct).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        return round_money(matched_amount * match_pct)
 
     return ZERO
 
@@ -352,9 +348,9 @@ def _project_one_period(
     start_balance = state.current_balance
 
     # Step 1: Growth on the existing balance, before this period's contribution.
-    growth = (
+    growth = round_money(
         start_balance * _period_return_rate(inputs.assumed_annual_return, period)
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    )
 
     # Determine this period's contribution and confirmed status.  A dated
     # entry (even $0) wins; a missing entry falls back to the periodic
@@ -589,11 +585,11 @@ def reverse_project_balance(  # pylint: disable=too-many-arguments,too-many-posi
     end_balance = anchor_balance
     for period, forward_row in zip(reversed(periods), reversed(schedule)):
         # Inverse of: end = start * (1 + rate) + contribution + employer
-        start_balance = (
+        start_balance = round_money(
             (end_balance - forward_row.contribution
              - forward_row.employer_contribution)
             / (1 + _period_return_rate(assumed_annual_return, period))
-        ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        )
         start_balance = max(start_balance, ZERO)
 
         reversed_results.append(ProjectedBalance(

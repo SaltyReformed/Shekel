@@ -6,7 +6,7 @@ contribution limits, employer contributions, and year boundary resets.
 """
 
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 import pytest
 
@@ -21,8 +21,8 @@ from app.services.growth_engine import (
     project_balance,
     reverse_project_balance,
     ZERO,
-    TWO_PLACES,
 )
+from app.utils.money import round_money
 
 
 def _emp_type_id(member):
@@ -706,7 +706,7 @@ class TestGenerateProjectionPeriods:
         Independent computation replicates the growth engine formula:
         For each period (14-day cadence → 13 actual days per period):
           period_return = (1 + 0.07)^(period_days / 365) - 1
-          growth = (balance * period_return).quantize(0.01, ROUND_HALF_UP)
+          growth = round_money(balance * period_return)
           balance = balance + growth + 500
         Starting from balance = 10,000 over 27 periods (one calendar year).
         """
@@ -728,9 +728,7 @@ class TestGenerateProjectionPeriods:
                 ** (Decimal(str(period_days)) / Decimal("365"))
                 - 1
             )
-            growth = (expected_balance * period_return_rate).quantize(
-                TWO_PLACES, rounding=ROUND_HALF_UP
-            )
+            growth = round_money(expected_balance * period_return_rate)
             expected_balance = expected_balance + growth + Decimal("500")
 
         assert result[-1].end_balance == expected_balance

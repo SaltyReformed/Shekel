@@ -64,6 +64,7 @@ from app.enums import CalcMethodEnum, DeductionTimingEnum
 from app.services import tax_calculator
 from app.services.calibration_service import apply_calibration
 from app.utils.deduction_cap import cap_period_amount
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
@@ -258,12 +259,12 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
         )
 
     # Step 9: Net pay.
-    net_pay = (
+    net_pay = round_money(
         gross_biweekly
         - deductions.total_pre_tax
         - taxes.total
         - deductions.total_post_tax
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    )
 
     return PaycheckBreakdown(
         period=PeriodInfo(
@@ -470,9 +471,7 @@ def _bracket_state(taxable_biweekly, pay_periods_per_year, state_config):
     state_annual = tax_calculator.calculate_state_tax(
         taxable_biweekly * pay_periods_per_year, state_config
     )
-    return (state_annual / pay_periods_per_year).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP
-    )
+    return round_money(state_annual / pay_periods_per_year)
 
 
 def _gross_biweekly_for_period(
@@ -542,9 +541,7 @@ def _gross_biweekly_for_period(
     # half-up semantics so single-period callers (route previews,
     # isolated tests) are unaffected by the reconciliation contract.
     if len(same_year) < pay_periods_per_year:
-        return (annual_salary / pay_periods_dec).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        return round_money(annual_salary / pay_periods_dec)
 
     floor_value = (annual_salary / pay_periods_dec).quantize(
         TWO_PLACES, rounding=ROUND_DOWN
@@ -594,9 +591,9 @@ def _residue_cents(annual_salary, group_size, pay_periods_dec, floor_value):
         earliest ``residue_cents`` periods in group order).
     """
     group_size_dec = Decimal(group_size)
-    exact_share = (
+    exact_share = round_money(
         annual_salary * group_size_dec / pay_periods_dec
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    )
     residue = exact_share - floor_value * group_size_dec
     return int((residue / ONE_CENT).to_integral_value(rounding=ROUND_HALF_UP))
 
@@ -691,7 +688,7 @@ def apply_raises(base_salary, raises, as_of):
             ):
                 salary = _apply_single_raise(salary, raise_obj)
 
-    return salary.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    return round_money(salary)
 
 
 def _apply_single_raise(salary, raise_obj):

@@ -25,6 +25,7 @@ from app.models.transaction import Transaction
 from app.services.account_resolver import resolve_analytics_account
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import settled_status_ids
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
@@ -372,7 +373,7 @@ def _trend_change(period_totals: list[Decimal], n_periods: int) -> tuple[Decimal
     change from the first to the last period.
     """
     slope, intercept = _compute_linear_regression(period_totals)
-    absolute_change = slope.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+    absolute_change = round_money(slope)
 
     first_predicted = intercept
     last_predicted = intercept + slope * Decimal(str(n_periods - 1))
@@ -403,9 +404,9 @@ def _compute_item_trend(
     )
 
     total_spending = sum(period_totals)
-    period_average = (
+    period_average = round_money(
         total_spending / Decimal(str(n_periods))
-    ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP) if n_periods > 0 else _ZERO
+    ) if n_periods > 0 else _ZERO
 
     absolute_change, pct_change = _trend_change(period_totals, n_periods)
 

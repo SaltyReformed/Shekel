@@ -12,14 +12,14 @@ from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum
 from app.utils.dates import add_months, months_between
-from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
+from app.utils.money import (
+    MONTHS_PER_YEAR,
+    PAY_PERIODS_PER_YEAR,
+    round_money,
+    round_money_ceiling,
+)
 
 logger = logging.getLogger(__name__)
-
-# Constants for Decimal arithmetic -- avoids constructing these per call.
-# Pay-period and month conversion factors come from app.utils.money so
-# every 26/12 site shares one definition (E-24, HIGH-05).
-_TWO_PLACES = Decimal("0.01")
 
 
 def resolve_goal_target(
@@ -105,7 +105,7 @@ def resolve_goal_target(
         )
         return target_amount if target_amount is not None else Decimal("0.00")
 
-    return result.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+    return round_money(result)
 
 
 def calculate_required_contribution(current_balance, target_amount, remaining_periods):
@@ -133,9 +133,7 @@ def calculate_required_contribution(current_balance, target_amount, remaining_pe
     if remaining_periods is None or remaining_periods <= 0:
         return None
 
-    return (gap / remaining_periods).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP
-    )
+    return round_money(gap / remaining_periods)
 
 
 def calculate_savings_metrics(savings_balance, average_monthly_expenses):
@@ -411,6 +409,4 @@ def _compute_required_monthly(
     if months_available <= 0:
         return None
 
-    return (remaining / Decimal(str(months_available))).quantize(
-        _TWO_PLACES, rounding=ROUND_CEILING
-    )
+    return round_money_ceiling(remaining / Decimal(str(months_available)))
