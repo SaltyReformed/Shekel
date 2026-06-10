@@ -239,7 +239,7 @@ def _build_grid_subtotals(account, scenario, periods, amount_overrides=None):
     """Compute per-period subtotals via the canonical entries-aware producer.
 
     Routing the on-screen subtotal row through
-    :func:`balance_resolver.period_subtotal` (E-25 / Commit 10) closes
+    :func:`balance_resolver.period_subtotals` (E-25 / Commit 10) closes
     F-002 Pair C / F-004 (Q-10): the same Projected-only,
     entries-aware formula now generates both the subtotal row and the
     balance row, so ``balances[p] - balances[p-1] ==
@@ -247,6 +247,13 @@ def _build_grid_subtotals(account, scenario, periods, amount_overrides=None):
     loop used raw ``txn.effective_amount`` and disagreed with the
     entries-aware balance row whenever a Projected envelope expense
     carried cleared/uncleared/credit entries.
+
+    Uses the batch :func:`balance_resolver.period_subtotals` (one
+    transaction query for the whole window), NOT a per-period
+    :func:`balance_resolver.period_subtotal` loop -- the latter was an
+    N+1 (one SELECT per visible column) over a transaction set the page
+    had already loaded (DH-#36; ``database.md`` flags grid N+1
+    especially).
 
     The :class:`balance_resolver.PeriodSubtotal` dataclass exposes
     ``.income``, ``.expense``, ``.net`` which the grid templates
@@ -257,20 +264,16 @@ def _build_grid_subtotals(account, scenario, periods, amount_overrides=None):
     ``.net`` access does not raise ``AttributeError`` and the
     rendered subtotals match the empty-balance projection.
     """
-    subtotals = {}
-    for period in periods:
-        if account is None:
-            subtotals[period.id] = balance_resolver.PeriodSubtotal(
-                income=Decimal("0.00"),
-                expense=Decimal("0.00"),
-                net=Decimal("0.00"),
-            )
-        else:
-            subtotals[period.id] = balance_resolver.period_subtotal(
-                account, scenario.id, period,
-                amount_overrides=amount_overrides,
-            )
-    return subtotals
+    if account is None:
+        zero = balance_resolver.PeriodSubtotal(
+            income=Decimal("0.00"),
+            expense=Decimal("0.00"),
+            net=Decimal("0.00"),
+        )
+        return {period.id: zero for period in periods}
+    return balance_resolver.period_subtotals(
+        account, scenario.id, periods, amount_overrides=amount_overrides,
+    )
 
 
 class _GridRowData(NamedTuple):

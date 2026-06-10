@@ -7,7 +7,8 @@ entries-aware balance/subtotal producer (E-25; CRIT-01 / F-009).  This
 module exposes:
 
   * :func:`resolve_anchor` -- Commit 4, the dated anchor SoT.
-  * :func:`balances_for` and :func:`period_subtotal` -- Commit 5, the
+  * :func:`balances_for`, :func:`period_subtotal`, and
+    :func:`period_subtotals` (its batch sibling) -- Commit 5, the
     canonical entries-aware producer that grid, dashboard, and
     (post-Commits 6-8) every other balance consumer route through.
   * :class:`AnchorPoint`, :class:`BalanceResult`,
@@ -516,6 +517,40 @@ def balances_for(
     )
 
 
+def _subtotal_from_transactions(
+    transactions: list[Transaction],
+    amount_overrides: dict[int, Decimal],
+) -> PeriodSubtotal:
+    """Income / expense / net subtotal for one period's loaded txns.
+
+    The shared per-period core of :func:`period_subtotals` (and thus
+    :func:`period_subtotal`, which delegates to it).  Delegates to the
+    engine's :func:`~app.services.balance_calculator._sum_projected`
+    (Projected-only, entry-aware expense reduction, ``effective_amount``
+    for income) and rounds ``net`` as ONE combined
+    ``round_money(income - expense)`` -- the once-at-the-boundary
+    discipline that makes ``net`` reconcile with the balance
+    roll-forward (DH-#62 / Batch V; rationale on :class:`PeriodSubtotal`).
+
+    ``transactions`` is one ``pay_period_id``'s balance-contributing
+    rows (``entries`` eager-loaded); an empty list yields a zero
+    subtotal.  Only the ``amount_overrides`` keys for ``transactions``
+    are read, so a map built over a wider set (the batch case) is
+    equivalent to a per-period one.
+    """
+    # Pylint: ``protected-access`` -- ``_sum_projected`` is an internal helper
+    # of ``balance_calculator``; the resolver is its sibling canonical producer
+    # (see module docstring) and the audit's E-25 mandate explicitly reuses the
+    # engine's math rather than rewriting it (CLAUDE.md rule 10).
+    # pylint: disable=protected-access
+    income, expense = balance_calculator._sum_projected(transactions, amount_overrides)
+    return PeriodSubtotal(
+        income=round_money(income),
+        expense=round_money(expense),
+        net=round_money(income - expense),
+    )
+
+
 def period_subtotal(
     account: Account,
     scenario_id: int,
@@ -526,88 +561,90 @@ def period_subtotal(
     """Entries-aware income / expense / net subtotal for one period (E-25).
 
     The single source of truth for "what is the projected net change
-    in checking for this period."  The grid's footer subtotal, the
-    obligations summary, and any future per-period roll-up must all
-    consume this -- the F-002 Pair C / F-004 same-page divergence
-    (the grid currently has an inline ``sum(... effective_amount
-    ...)`` loop while the balance row uses the entries-aware
-    reduction) closes when Commit 10 routes those callers through
-    this function.  ``net`` is rounded as a single combined operation
-    (``round_money(income - expense)`` -- the same once-at-the-boundary
-    discipline ``balances_for`` and ``balance_as_of_date`` use), so by
-    construction
-    ``balances_for(account, scenario_id, periods).balances[p]
-    - balances_for(...).balances[prev]
-    == period_subtotal(account, scenario_id, p).net``
-    for every period whose entering running balance is an exact number
-    of cents -- which holds for all data, since every leg is
-    cent-quantized at the storage tier (``Numeric(12,2)``) and via the
-    HALF_UP-quantized live overrides.  Were a future leg to carry a
-    sub-cent fraction, ``net`` -- not the separately-rounded ``income``
-    and ``expense`` display legs, whose difference could then disagree
-    by a cent -- remains the balance-reconciling figure.
+    in checking for this period" -- the grid footer, obligations
+    summary, and any per-period roll-up consume this so the same
+    entries-aware formula generates both the subtotal and the balance
+    row (closing the F-002 Pair C / F-004 divergence).  ``net`` is the
+    combined-rounded delta, so ``balances[p] - balances[p-1] ==
+    period_subtotal(..., p).net`` by construction (rounding rationale on
+    :class:`PeriodSubtotal`).
 
-    Algorithm: re-uses :func:`_load_balance_transactions` (one query,
-    entries eager-loaded, shared status clause) then delegates to
-    :func:`~app.services.balance_calculator._sum_projected`, the engine's
-    single Projected-only period sum (it gates on Projected and applies
-    the entry-aware reduction for expenses, using ``effective_amount``
-    for income).  Calling it directly avoids the carry-forward
-    bookkeeping in ``calculate_balances`` that is irrelevant when only
-    one period is needed.
+    A thin single-period adapter over :func:`period_subtotals` (returns
+    its :class:`PeriodSubtotal` for ``period``); to subtotal MANY
+    periods (the grid footer) call that directly -- it issues ONE
+    transaction load for the whole window, not one per period.
+    ``amount_overrides`` is the optional Workstream-B live projected-net
+    ``{transaction_id: Decimal}`` map, built when None so income
+    reflects the live paycheck consistently with the balance row.
+    """
+    return period_subtotals(
+        account, scenario_id, [period], amount_overrides=amount_overrides,
+    )[period.id]
+
+
+def period_subtotals(
+    account: Account,
+    scenario_id: int,
+    periods: list[PayPeriod],
+    *,
+    amount_overrides: dict[int, Decimal] | None = None,
+) -> dict[int, PeriodSubtotal]:
+    """Batch entries-aware subtotal -- one query for the whole window.
+
+    The canonical multi-period producer (and the implementation
+    :func:`period_subtotal` delegates to).  Issues a SINGLE
+    :func:`_load_balance_transactions` over all ``periods`` then groups
+    the rows by ``pay_period_id``, instead of one SELECT per period.
+    This is what the grid footer consumes: the pre-existing per-period
+    loop was an N+1 (one transaction query per visible column, over a
+    set the page had already loaded twice) -- exactly the N+1 the
+    ``database.md`` rule calls out for the grid route "especially"
+    (DH-#36).
+
+    Byte-identical to per-period :func:`_subtotal_from_transactions`
+    calls: the grouping reproduces the single-period filter exactly,
+    and the override map is read per transaction (so a union-set build
+    equals per-period maps -- the build-once-and-thread property
+    :func:`balances_for` relies on), so the E-25 balance-delta
+    invariant ``balances[p] - balances[p-1] == ...[p].net`` holds for
+    every period.
 
     Args:
         account: The :class:`~app.models.account.Account`.  Must be
             attached to ``db.session``.
         scenario_id: The scenario id.
-        period: The :class:`~app.models.pay_period.PayPeriod` to
-            sum.  Can be the anchor period or any post-anchor period
-            -- the same Projected-only entries-aware sum applies.
+        periods: The pay periods to subtotal.  A period with no
+            contributing transactions maps to a zero subtotal.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net map (Workstream B); built here when None so
-            the subtotal's income line reflects the live paycheck
-            consistently with the balance row.
+            projected-net map (Workstream B); built ONCE here over the
+            whole loaded set when None, so the income line reflects the
+            live paycheck consistently with the balance row.
 
     Returns:
-        :class:`PeriodSubtotal` -- the three Decimals (income,
-        expense, net), each quantized to cents via
-        :func:`~app.utils.money.round_money`.
+        ``dict`` mapping each ``period.id`` to its
+        :class:`PeriodSubtotal`.  Every input period is present as a
+        key (a zero subtotal when it has no contributing transactions).
     """
     transactions = _load_balance_transactions(
-        account, scenario_id, [period.id],
+        account, scenario_id, [period.id for period in periods],
     )
-    # Workstream B: live projected income (built here when not supplied,
-    # so the same Projected-only, entries-aware subtotal the balance row
-    # uses also reflects the live paycheck -- keeping the F-002 Pair C
-    # invariant ``balances[p] - balances[p-1] == subtotal.net`` true).
+    # Build the live override map ONCE over the union set (the same
+    # build-once-and-thread pattern ``balances_for`` uses); each period's
+    # subtotal reads only the keys for its own transactions, so a union
+    # map is equivalent to per-period maps.
     if amount_overrides is None:
         amount_overrides = live_amount_overrides(
             account, scenario_id, transactions,
         )
-    # Pylint: ``protected-access`` -- ``_sum_projected`` is an internal helper
-    # of ``balance_calculator``; the resolver is its sibling canonical producer
-    # (see module docstring) and the audit's E-25 mandate explicitly reuses the
-    # engine's math rather than rewriting it (CLAUDE.md rule 10).
-    # pylint: disable=protected-access
-    income, expense = balance_calculator._sum_projected(transactions, amount_overrides)
-    # Round NET as ONE combined operation -- ``round_money(income - expense)`` --
-    # not as the difference of two separately-rounded legs.  This matches the
-    # single-rounding discipline of the balance roll-forward (``balances_for``
-    # rounds each cumulative snapshot once; ``balance_as_of_date`` returns
-    # ``round_money(prior + income - expense)``) and makes the E-25 reconciliation
-    # ``balances[p] - balances[p-1] == net`` hold by construction: for any
-    # cent-quantized entering balance B, ``round_money(B + d) - B == round_money(d)``
-    # (adding an exact number of cents shifts no rounding boundary), so the
-    # period's balance delta equals this combined-rounded net.  Per-leg rounding
-    # would instead diverge from the balance delta by a cent whenever a leg
-    # carried a sub-cent fraction; every leg is cent-quantized today
-    # (``Numeric(12,2)`` storage + the HALF_UP-quantized live overrides), so the
-    # two strategies agree on all current data -- this change is behaviour-neutral.
-    return PeriodSubtotal(
-        income=round_money(income),
-        expense=round_money(expense),
-        net=round_money(income - expense),
-    )
+    grouped: dict[int, list[Transaction]] = {}
+    for txn in transactions:
+        grouped.setdefault(txn.pay_period_id, []).append(txn)
+    return {
+        period.id: _subtotal_from_transactions(
+            grouped.get(period.id, []), amount_overrides,
+        )
+        for period in periods
+    }
 
 
 def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
