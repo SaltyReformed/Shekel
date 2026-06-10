@@ -403,6 +403,7 @@ def _compute_suggested_contribution(
     investment_params: InvestmentParams,
     ytd_contributions: Decimal,
     all_periods: list,
+    current_period: PayPeriod | None,
 ) -> Decimal:
     """Return the per-period contribution suggestion under the annual limit.
 
@@ -413,14 +414,31 @@ def _compute_suggested_contribution(
     configured" state.  When no cap is configured the suggestion is
     zero (Brokerage-style accounts -- no IRS limit to spread over
     remaining periods).
+
+    ``remaining_periods`` is anchored on ``current_period.start_date`` --
+    the SAME boundary the subtracted ``ytd_contributions`` uses
+    (:func:`investment_projection._current_year_period_ids`: same
+    calendar year, ``<= current_period.start_date``).  So the current
+    period is counted once -- in YTD (already contributed) -- and the
+    remaining limit is spread over the periods STRICTLY AFTER it.
+    Anchoring on ``date.today()`` instead double-counted the current
+    period on the single calendar day a period begins
+    (``today == period start``), where it landed in BOTH the YTD window
+    and the remaining spread (deep-quality-hunt #59).  When there is no
+    current period (today falls outside every period, so YTD is zero)
+    the boundary falls back to today -- behaviour-identical there, since
+    no period can start on a day no period covers.
     """
     if investment_params.annual_contribution_limit is None:
         return Decimal("0")
-    today_date = date.today()
+    boundary = (
+        current_period.start_date if current_period is not None
+        else date.today()
+    )
     remaining_periods = sum(
         1 for p in all_periods
-        if p.start_date.year == today_date.year
-        and p.start_date >= today_date
+        if p.start_date.year == boundary.year
+        and p.start_date > boundary
     )
     remaining_limit = max(
         investment_params.annual_contribution_limit
@@ -547,7 +565,9 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
         **_project_dashboard_balances(ctx, all_periods, current_period),
         # Contribution-prompt block, including the two underscore-prefixed
         # ``_salary_profile_action`` / ``_active_profile_id`` route hints.
-        **_compute_contribution_prompt(user_id, account, ctx, all_periods),
+        **_compute_contribution_prompt(
+            user_id, account, ctx, all_periods, current_period,
+        ),
     }
 
 
@@ -593,6 +613,7 @@ def _compute_contribution_prompt(
     account: Account,
     ctx: _ProjectionContext,
     all_periods: list,
+    current_period: PayPeriod | None,
 ) -> dict:
     """Decide whether to show the "set up contributions" prompt + how.
 
@@ -653,7 +674,7 @@ def _compute_contribution_prompt(
     # Transfer-path: compute the suggested per-period amount and
     # load eligible source accounts.
     result["suggested_amount"] = _compute_suggested_contribution(
-        ctx.params, ctx.inputs.ytd_contributions, all_periods,
+        ctx.params, ctx.inputs.ytd_contributions, all_periods, current_period,
     )
     result["source_accounts"], result["default_source_id"] = (
         _load_transfer_source_accounts(user_id, account.id)
