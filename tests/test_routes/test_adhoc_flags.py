@@ -297,7 +297,7 @@ class TestAdhocFlagValidation:
     def test_inline_create_income_rejects_is_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """create_inline rejects is_envelope on an income transaction (400)."""
+        """create_inline rejects is_envelope on an income transaction (422)."""
         with app.app_context():
             category = list(seed_user["categories"].values())[0]
             income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
@@ -310,7 +310,7 @@ class TestAdhocFlagValidation:
                 "scenario_id": seed_user["scenario"].id,
                 "is_envelope": "true",
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             assert (
                 db.session.query(Transaction)
                 .filter_by(pay_period_id=seed_periods_today[0].id).count() == 0
@@ -345,7 +345,7 @@ class TestAdhocFlagValidation:
     def test_create_transaction_income_rejects_is_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """create_transaction rejects is_envelope on an income transaction (400)."""
+        """create_transaction rejects is_envelope on an income transaction (422)."""
         with app.app_context():
             category = list(seed_user["categories"].values())[0]
             income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
@@ -359,7 +359,7 @@ class TestAdhocFlagValidation:
                 "scenario_id": seed_user["scenario"].id,
                 "is_envelope": "true",
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             assert (
                 db.session.query(Transaction)
                 .filter_by(name="Modal Income").count() == 0

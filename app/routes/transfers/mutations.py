@@ -137,7 +137,7 @@ def update_transfer(xfer_id):
 
     errors = _xfer_update_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 400
+        return jsonify(errors=errors), 422
 
     data = _xfer_update_schema.load(request.form)
 
@@ -243,7 +243,7 @@ def create_ad_hoc():
     """
     errors = _xfer_create_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 400
+        return jsonify(errors=errors), 422
 
     data = _xfer_create_schema.load(request.form)
 

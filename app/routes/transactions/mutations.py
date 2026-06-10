@@ -371,7 +371,7 @@ def update_transaction(txn_id):
     # Parse and validate input.
     errors = _update_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 400
+        return jsonify(errors=errors), 422
 
     data = _update_schema.load(request.form)
 
@@ -598,10 +598,12 @@ def mark_done(txn_id):
     actual_amount from the entry sum.  For all others, accepts an
     optional actual_amount from the form -- parsed via
     :class:`MarkDoneSchema` so a malformed numeric value returns a
-    clean 400 with the Marshmallow per-field message instead of the
+    clean 422 with the Marshmallow per-field message instead of the
     legacy ``"Invalid actual amount"`` translation, and a negative
     value is rejected at the schema tier (commit C-27 / F-042 /
-    F-162 of the 2026-04-15 security remediation plan).
+    F-162 of the 2026-04-15 security remediation plan).  422 (not 400)
+    is the validation-error status the entry routes and
+    ``coding-standards.md`` mandate (DH-#81).
 
     Optimistic locking (commit C-18 / F-010): the button-click path
     has no form-side ``version_id`` to compare, so the optimistic
@@ -624,7 +626,7 @@ def mark_done(txn_id):
     try:
         mark_done_data = _mark_done_schema.load(request.form)
     except MarshmallowValidationError as exc:
-        return jsonify(errors=exc.messages), 400
+        return jsonify(errors=exc.messages), 422
     actual_amount = mark_done_data.get("actual_amount")
 
     # Rendering surface for the response.  The mobile / companion card

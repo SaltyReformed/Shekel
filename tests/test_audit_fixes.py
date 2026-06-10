@@ -703,7 +703,7 @@ class TestSelfTransferRejection:
         """Creating an ad-hoc transfer where from == to is rejected.
 
         The TransferCreateSchema validates_schema method catches
-        from_account_id == to_account_id and returns 400 with JSON errors.
+        from_account_id == to_account_id and returns 422 with JSON errors.
         """
         resp = auth_client.post("/transfers/ad-hoc", data={
             "from_account_id": str(seed_user["account"].id),
@@ -713,8 +713,8 @@ class TestSelfTransferRejection:
             "scenario_id": str(seed_user["scenario"].id),
         })
 
-        # Schema validation fails → 400 with error details.
-        assert resp.status_code == 400
+        # Schema validation fails → 422 with error details.
+        assert resp.status_code == 422
 
         # Verify no transfer was created.
         from app.models.transfer import Transfer as XferModel

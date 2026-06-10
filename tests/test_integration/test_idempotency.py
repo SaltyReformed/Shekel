@@ -341,7 +341,7 @@ class TestTransactionDoubleSubmit:
                 "account_id": str(seed_user["account"].id),
             }
             resp2 = auth_client.post("/transactions", data=invalid_data)
-            assert resp2.status_code == 400
+            assert resp2.status_code == 422
 
             # Database has exactly 1 transaction -- the valid one.
             db.session.expire_all()
@@ -374,7 +374,7 @@ class TestTransactionDoubleSubmit:
                 "account_id": str(seed_user["account"].id),
             }
             resp1 = auth_client.post("/transactions", data=invalid_data)
-            assert resp1.status_code == 400
+            assert resp1.status_code == 422
 
             # Second submit -- valid.
             valid_data = {

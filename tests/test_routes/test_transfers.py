@@ -989,13 +989,13 @@ class TestAdHoc:
             assert all(s.due_date == date(2026, 3, 15) for s in shadows)
 
     def test_create_ad_hoc_validation_error(self, app, auth_client, seed_user):
-        """POST /transfers/ad-hoc with missing fields returns 400."""
+        """POST /transfers/ad-hoc with missing fields returns 422."""
         with app.app_context():
             response = auth_client.post("/transfers/ad-hoc", data={
                 "name": "Bad Transfer",
             })
 
-            assert response.status_code == 400
+            assert response.status_code == 422
             body = response.get_json()
             assert "errors" in body
 
@@ -1409,7 +1409,7 @@ class TestTransferNegativePaths:
             })
 
             # TransferCreateSchema requires amount > 0 (min_inclusive=False).
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             body = resp.get_json()
             assert "errors" in body
 
@@ -1435,7 +1435,7 @@ class TestTransferNegativePaths:
                 "category_id": str(seed_user["categories"]["Rent"].id),
             })
 
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             body = resp.get_json()
             assert "errors" in body
 

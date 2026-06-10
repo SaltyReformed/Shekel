@@ -852,7 +852,7 @@ class TestTransactionNegativePaths:
     # ── Schema validation failure tests ───────────────────────────
 
     def test_create_transaction_missing_name(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions without required 'name' field returns 400 with field error."""
+        """POST /transactions without required 'name' field returns 422 with field error."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
@@ -865,7 +865,7 @@ class TestTransactionNegativePaths:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             resp_json = resp.get_json()
             assert "name" in resp_json["errors"]
 
@@ -876,7 +876,7 @@ class TestTransactionNegativePaths:
             assert count == 0
 
     def test_create_transaction_negative_amount(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions with negative estimated_amount returns 400."""
+        """POST /transactions with negative estimated_amount returns 422."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
@@ -890,7 +890,7 @@ class TestTransactionNegativePaths:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             resp_json = resp.get_json()
             assert "estimated_amount" in resp_json["errors"]
 
@@ -925,7 +925,7 @@ class TestTransactionNegativePaths:
     def test_create_transaction_missing_pay_period_id(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions without required pay_period_id returns 400 with field error."""
+        """POST /transactions without required pay_period_id returns 422 with field error."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
@@ -938,7 +938,7 @@ class TestTransactionNegativePaths:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             resp_json = resp.get_json()
             assert "pay_period_id" in resp_json["errors"]
 
@@ -988,7 +988,7 @@ class TestTransactionNegativePaths:
             assert count == 0
 
     def test_update_transaction_invalid_amount(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH /transactions/<id> with non-numeric amount returns 400."""
+        """PATCH /transactions/<id> with non-numeric amount returns 422."""
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
             txn_id = txn.id
@@ -997,7 +997,7 @@ class TestTransactionNegativePaths:
                 f"/transactions/{txn_id}",
                 data={"estimated_amount": "not_a_number"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
             # Verify the transaction's amount was NOT changed.
             db.session.expire_all()
@@ -1095,7 +1095,7 @@ class TestTransactionNegativePaths:
     def test_mark_done_with_invalid_actual_amount(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions/<id>/mark-done with non-numeric actual_amount returns 400.
+        """POST /transactions/<id>/mark-done with non-numeric actual_amount returns 422.
 
         Pre-C-27: the route caught ``InvalidOperation`` and returned
         the literal string ``"Invalid actual amount"`` with status
@@ -1114,7 +1114,7 @@ class TestTransactionNegativePaths:
                 f"/transactions/{txn_id}/mark-done",
                 data={"actual_amount": "not_a_number"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             payload = resp.get_json()
             assert payload is not None
             assert "actual_amount" in payload["errors"]
@@ -1154,7 +1154,7 @@ class TestTransactionNegativePaths:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "-50.00"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
             db.session.expire_all()
             db.session.refresh(txn)
@@ -1415,7 +1415,7 @@ class TestAccountIdColumn:
             "transaction_type_id": expense_type.id,
             "estimated_amount": "50.00",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_inline_create_rejects_other_users_account_id(
         self, app, auth_client, seed_user, seed_periods_today, second_user

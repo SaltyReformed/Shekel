@@ -144,7 +144,7 @@ class TestStateMachineViolations:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "-500.00"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
     def test_mark_done_already_done_transaction(self, app, auth_client, seed_user, seed_periods):
         """POST mark_done on an already-done transaction.
@@ -1104,7 +1104,7 @@ class TestSQLInjectionPrevention:
         """SQL injection in estimated_amount is rejected by schema validation.
 
         The Marshmallow schema validates estimated_amount as a Decimal.
-        A SQL injection string is not a valid decimal and returns 400.
+        A SQL injection string is not a valid decimal and returns 422.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
@@ -1115,7 +1115,7 @@ class TestSQLInjectionPrevention:
                 f"/transactions/{txn.id}",
                 data={"estimated_amount": "0; DROP TABLE budget.transactions"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
             db.session.refresh(txn)
             assert txn.estimated_amount == original_amount

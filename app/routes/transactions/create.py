@@ -64,7 +64,7 @@ def create_inline():
     """
     errors = _inline_create_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 400
+        return jsonify(errors=errors), 422
 
     data = _inline_create_schema.load(request.form)
 
@@ -114,7 +114,7 @@ def create_transaction():
     """Create an ad-hoc transaction (not from a template)."""
     errors = _create_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 400
+        return jsonify(errors=errors), 422
 
     data = _create_schema.load(request.form)
 
