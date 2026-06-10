@@ -28,6 +28,7 @@ from app.services.credit_workflow import (
     lock_source_transaction_for_payback,
 )
 from app.exceptions import ValidationError
+from app.utils.entry_partition import partition_entries
 from app.utils.log_events import (
     BUSINESS,
     EVT_ENTRY_PAYBACK_CREATED,
@@ -107,9 +108,10 @@ def sync_entry_payback(
     # collection.
     db.session.expire(txn, ["entries"])
 
-    # Sum credit entries with explicit Decimal("0") start to avoid
-    # integer 0 from sum() on an empty iterator.
-    credit_entries = [e for e in txn.entries if e.is_credit]
+    # Partition via the shared helper so "which entries are credits" has
+    # one definition (DH-#75); sum with an explicit Decimal("0") start to
+    # avoid integer 0 from sum() on an empty iterator.
+    _, credit_entries = partition_entries(txn.entries)
     total_credit = sum(
         (e.amount for e in credit_entries), Decimal("0"),
     )
