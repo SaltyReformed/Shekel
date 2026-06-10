@@ -1,9 +1,12 @@
 """
 Shekel Budget App -- State Machine Unit Tests
 
-Direct tests of ``app.services.state_machine.verify_transition`` -- the
-single helper that governs every legal transition for both
-Transaction.status_id and Transfer.status_id.
+Direct tests of the two ``app.services.state_machine`` helpers:
+``verify_transition`` -- governs every legal transition for both
+Transaction.status_id and Transfer.status_id -- and
+``finalised_edit_rejection`` -- the companion that locks money / period
+/ category / due-date field edits on a finalised (is_immutable) row
+(#26).
 
 Audit reference: F-046 / F-047 / F-161 / commit C-21 of the
 2026-04-15 security remediation plan.
@@ -28,7 +31,11 @@ import pytest
 from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
-from app.services.state_machine import verify_transition
+from app.models.ref import Status
+from app.services.state_machine import (
+    finalised_edit_rejection,
+    verify_transition,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -327,3 +334,64 @@ class TestContextLabelPropagation:
                     ids["settled"], ids["projected"], context="transfer",
                 )
             assert "transfer" in str(excinfo.value)
+
+
+# ── finalised_edit_rejection: the field-edit lock ───────────────────
+
+
+class TestFinalisedEditRejection:
+    """``finalised_edit_rejection`` locks money / period / category /
+    due-date edits on a finalised (``is_immutable``) row unless the same
+    request reverts it to a mutable status.  Pure policy + message: it
+    reads only ``Status.is_immutable`` / ``Status.name``, so the tests
+    construct in-memory ``Status`` rows (no DB) to pin every branch."""
+
+    # In-memory Status fixtures mirroring app/ref_seeds.py: Projected is
+    # the only mutable status; the rest are finalised.
+    _PROJECTED = Status(name="Projected", is_immutable=False)
+    _PAID = Status(name="Paid", is_immutable=True)
+    _SETTLED = Status(name="Settled", is_immutable=True)
+
+    def test_mutable_row_allows_edit(self):
+        """A Projected row is never locked, regardless of new status."""
+        assert finalised_edit_rejection(self._PROJECTED, None) is None
+
+    def test_mutable_row_allows_edit_even_marking_done(self):
+        """Projected -> Paid in one request (settle at an amount) is allowed:
+        the row is mutable at edit time."""
+        assert finalised_edit_rejection(self._PROJECTED, self._PAID) is None
+
+    def test_finalised_row_blocks_edit(self):
+        """A Paid row with no status change is locked; the message names the
+        status, the entity, and the revert remedy."""
+        message = finalised_edit_rejection(self._PAID, None, context="transaction")
+        assert message is not None
+        assert "Paid" in message
+        assert "transaction" in message
+        assert "Revert" in message
+
+    def test_finalised_row_unlocked_by_revert_to_projected(self):
+        """Paid -> Projected in one request lifts the lock so a 'revert and
+        correct' edit is atomic."""
+        assert finalised_edit_rejection(self._PAID, self._PROJECTED) is None
+
+    def test_finalised_row_blocked_when_new_status_also_immutable(self):
+        """Paid -> Settled (archive) does NOT lift the lock -- the row stays
+        finalised, so a concurrent amount rewrite is still refused."""
+        assert finalised_edit_rejection(self._PAID, self._SETTLED) is not None
+
+    def test_terminal_settled_row_blocks_edit(self):
+        """A Settled row (terminal) is locked; it cannot even revert, so no
+        new status can unlock it."""
+        assert finalised_edit_rejection(self._SETTLED, self._SETTLED) is not None
+
+    def test_none_current_status_fails_open(self):
+        """A missing current status is treated as mutable -- the transition
+        guard owns the corrupt-status case, so this fails open."""
+        assert finalised_edit_rejection(None, None) is None
+
+    def test_context_label_in_message(self):
+        """The context label ("transfer") appears in the rejection message."""
+        message = finalised_edit_rejection(self._PAID, None, context="transfer")
+        assert message is not None
+        assert "transfer" in message

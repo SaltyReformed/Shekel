@@ -702,6 +702,88 @@ class TestTransferInstance:
             db.session.refresh(xfer)
             assert xfer.status.name == "Cancelled"
 
+    def test_finalised_transfer_amount_edit_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH amount on a Paid transfer is refused; amount unchanged (#26).
+
+        A finalised transfer's money fields must not be silently
+        rewritten through the inline edit -- the user reverts to
+        Projected first.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            db.session.refresh(xfer)
+            assert xfer.status.name == "Paid"
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"amount": "999.99"},
+            )
+            assert response.status_code == 400
+            body = response.data.decode()
+            assert "finalised" in body
+            assert "transfer" in body
+
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("200.00")
+
+    def test_finalised_transfer_revert_and_amount_edit_allowed(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Reverting Paid -> Projected AND editing amount in one PATCH is
+        allowed -- the escape hatch the lock preserves (#26)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            projected_id = (
+                db.session.query(Status).filter_by(name="Projected").one().id
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"status_id": str(projected_id), "amount": "250.00"},
+            )
+            assert response.status_code == 200
+            db.session.refresh(xfer)
+            assert xfer.status_id == projected_id
+            assert xfer.amount == Decimal("250.00")
+
+    def test_finalised_transfer_shadow_amount_edit_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Editing a finalised transfer's amount via its SHADOW transaction
+        PATCH is also refused -- the lock covers the transaction-shadow
+        entry point, and the parent amount is unchanged (#26)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .first()
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{shadow.id}",
+                data={"estimated_amount": "999.99"},
+            )
+            assert response.status_code == 400
+            assert "finalised" in response.data.decode()
+
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("200.00")
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert all(s.estimated_amount == Decimal("200.00") for s in shadows)
+
     def test_delete_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transfers/instance/<id> hard-deletes an ad-hoc transfer."""
         with app.app_context():

@@ -4513,7 +4513,15 @@ class TestPaidAtLifecycle:
     def test_paid_at_preserved_on_non_status_update(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH /transactions/<id> updating amount only preserves paid_at."""
+        """PATCH /transactions/<id> editing a non-status field preserves paid_at.
+
+        Edits a display field (``notes``) rather than ``estimated_amount``:
+        the finalised-row edit lock (#26) refuses money/period/category
+        edits on a Paid row, but display fields stay editable, so this
+        remains the faithful probe that a non-status edit does not clear
+        ``paid_at`` (the revert-paid_at logic fires only on a status
+        change to a non-settled status).
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
 
@@ -4523,14 +4531,15 @@ class TestPaidAtLifecycle:
             original_paid_at = txn.paid_at
             assert original_paid_at is not None
 
-            # Update estimated_amount only -- no status change.
+            # Edit a non-status, non-locked field -- no status change.
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "200.00"},
+                data={"notes": "Reconciled against statement"},
             )
             assert response.status_code == 200
 
             db.session.refresh(txn)
+            assert txn.notes == "Reconciled against statement"
             assert txn.paid_at is not None
 
     def test_mark_done_idempotent_updates_paid_at(
