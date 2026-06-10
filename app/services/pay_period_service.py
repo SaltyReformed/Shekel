@@ -39,7 +39,10 @@ def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
         List of newly created PayPeriod objects.
 
     Raises:
-        ValidationError: If start_date is not a date or cadence is invalid.
+        ValidationError: If start_date is not a date, cadence is invalid,
+            or the batch would create periods that overlap or predate the
+            user's existing schedule (the forward-only invariant that keeps
+            ``period_index`` order chronological -- see DH-#39).
     """
     if not isinstance(start_date, date):
         raise ValidationError("start_date must be a date object.")
@@ -54,7 +57,6 @@ def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
     )
     next_index = 0 if max_index is None else max_index + 1
 
-    # Check if any existing periods overlap with the requested range.
     existing_starts = set(
         row[0]
         for row in db.session.query(PayPeriod.start_date)
@@ -62,26 +64,53 @@ def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
         .all()
     )
 
-    created = []
+    # Determine which paydays this batch would create -- every requested
+    # start that is not already an existing period.  An exact-match re-run
+    # is skipped (not duplicated), so re-running with the same start and a
+    # larger count legitimately extends the schedule.
+    new_starts = []
     current_start = start_date
-    assigned_index = next_index  # Track separately to avoid gaps.
     for _ in range(num_periods):
-        # Skip if this start_date already exists.
-        if current_start in existing_starts:
-            current_start += timedelta(days=cadence_days)
-            continue
+        if current_start not in existing_starts:
+            new_starts.append(current_start)
+        current_start += timedelta(days=cadence_days)
 
-        end = current_start + timedelta(days=cadence_days - 1)
+    # Forward-only invariant (DH-#39): new periods are appended with the
+    # highest ``period_index`` values, so their start dates MUST fall after
+    # every existing payday.  Otherwise ``period_index`` order stops
+    # matching calendar order, and the balance engine -- which walks
+    # periods by index and trusts that order to be chronological
+    # (``balance_resolver.balance_as_of_date``, ``balances_for``) -- skips
+    # the out-of-order period and silently drops its transactions from
+    # as-of balances.  A start date that lands among existing periods also
+    # produces overlapping date ranges (two periods covering one day).
+    # That is a user mistake or a schedule change that needs a dedicated
+    # realign flow, not a silent reshuffle, so reject the whole batch
+    # loudly before writing anything.
+    if existing_starts and new_starts:
+        latest_existing = max(existing_starts)
+        if min(new_starts) <= latest_existing:
+            raise ValidationError(
+                "New pay periods must start after your latest existing "
+                f"payday ({latest_existing.isoformat()}). The requested "
+                "start date would create periods that overlap or predate "
+                "your current schedule; choose a later start date to "
+                "extend your schedule forward."
+            )
+
+    created = []
+    assigned_index = next_index  # Highest existing index + 1; gap-free.
+    for new_start in new_starts:
+        end = new_start + timedelta(days=cadence_days - 1)
         period = PayPeriod(
             user_id=user_id,
-            start_date=current_start,
+            start_date=new_start,
             end_date=end,
             period_index=assigned_index,
         )
         db.session.add(period)
         created.append(period)
         assigned_index += 1
-        current_start += timedelta(days=cadence_days)
 
     db.session.flush()  # Assign IDs without committing.
     log_event(

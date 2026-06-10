@@ -111,6 +111,33 @@ class TestPayPeriodGenerate:
             # Should still be 5, not 10 (duplicates skipped).
             assert second_count == 5
 
+    def test_generate_offset_start_rejected_422(self, app, bare_auth_client, bare_user):
+        """A second batch whose start predates the existing schedule returns
+        422 with the forward-only error and creates nothing (DH-#39)."""
+        with app.app_context():
+            user_id = bare_user["user"].id
+            # First schedule: Jun 1 biweekly x5 -> latest payday Jul 27.
+            bare_auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-06-01", "num_periods": "5",
+                "cadence_days": "14",
+            }, follow_redirects=True)
+            assert db.session.query(PayPeriod).filter_by(
+                user_id=user_id,
+            ).count() == 5
+
+            # Offset second batch starting Jun 8 lands among the existing
+            # periods -- rejected before anything is written.
+            resp = bare_auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-06-08", "num_periods": "5",
+                "cadence_days": "14",
+            })
+            assert resp.status_code == 422
+            assert b"must start after your latest existing payday" in resp.data
+            # Nothing created -- still exactly the original 5.
+            assert db.session.query(PayPeriod).filter_by(
+                user_id=user_id,
+            ).count() == 5
+
 
 # ── Negative Path Tests ─────────────────────────────────────────────
 

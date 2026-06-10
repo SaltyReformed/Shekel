@@ -785,11 +785,14 @@ class TestPaydayInfo:
     def test_payday_info_no_future_period(self, app, seed_user, db):
         """No future periods -> all fields None."""
         with app.app_context():
-            # Create periods in the past.
+            # Periods all in the past relative to today, but extending
+            # FORWARD of seed_user's 2024-01-05 bootstrap period (the
+            # forward-only generation invariant, DH-#39): start in early
+            # 2024, well before any plausible test-run date.
             from app.services import pay_period_service
             old_periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date(2020, 1, 2),
+                start_date=date(2024, 2, 2),
                 num_periods=5,
                 cadence_days=14,
             )
