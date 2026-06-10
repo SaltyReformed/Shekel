@@ -281,9 +281,10 @@ class BalanceResult:
 class PeriodSubtotal:
     """Immutable producer output for one period's entries-aware subtotal.
 
-    Returned by :func:`period_subtotal`.  All three Decimal fields use
-    the same entries-aware reduction the balance calculator applies,
-    so by construction
+    Returned by :func:`period_subtotal`.  ``income`` and ``expense``
+    use the same entries-aware reduction the balance calculator
+    applies; ``net`` is the combined-rounded period delta
+    (``round_money(income - expense)``), so by construction
     ``balances[p] - balances[p-1] == period_subtotal(..., p).net`` --
     the same-page same-formula property F-002 Pair C / F-004 break
     and E-25 restore.
@@ -300,9 +301,18 @@ class PeriodSubtotal:
             ``effective_amount``, which matches the no-entries
             consumer behavior pre-Commit-5 (regression-safe for
             grid/dashboard whose pinned tests stay byte-identical).
-        net: ``income - expense``.  Returned pre-computed so a
-            consumer never has to re-derive it (and risk a divergent
-            sign or rounding mode).
+        net: ``round_money(income - expense)`` -- the period delta
+            rounded once at the boundary (NOT the difference of the two
+            separately-rounded legs), so it equals the balance
+            roll-forward's once-rounded period delta and the E-25
+            reconciliation ``balances[p] - balances[p-1] == net`` holds
+            by construction (see :func:`period_subtotal`).  Returned
+            pre-computed so a consumer never has to re-derive it (and
+            risk a divergent sign or rounding mode).  Equals
+            ``income - expense`` exactly on all current data (every leg
+            is cent-quantized); only a hypothetical sub-cent leg would
+            make it differ from the displayed legs' difference by a
+            cent, with ``net`` being the balance-reconciling value.
     """
 
     income: Decimal
@@ -522,10 +532,20 @@ def period_subtotal(
     (the grid currently has an inline ``sum(... effective_amount
     ...)`` loop while the balance row uses the entries-aware
     reduction) closes when Commit 10 routes those callers through
-    this function.  By construction
+    this function.  ``net`` is rounded as a single combined operation
+    (``round_money(income - expense)`` -- the same once-at-the-boundary
+    discipline ``balances_for`` and ``balance_as_of_date`` use), so by
+    construction
     ``balances_for(account, scenario_id, periods).balances[p]
     - balances_for(...).balances[prev]
-    == period_subtotal(account, scenario_id, p).net``.
+    == period_subtotal(account, scenario_id, p).net``
+    for every period whose entering running balance is an exact number
+    of cents -- which holds for all data, since every leg is
+    cent-quantized at the storage tier (``Numeric(12,2)``) and via the
+    HALF_UP-quantized live overrides.  Were a future leg to carry a
+    sub-cent fraction, ``net`` -- not the separately-rounded ``income``
+    and ``expense`` display legs, whose difference could then disagree
+    by a cent -- remains the balance-reconciling figure.
 
     Algorithm: re-uses :func:`_load_balance_transactions` (one query,
     entries eager-loaded, shared status clause) then delegates to
@@ -570,12 +590,23 @@ def period_subtotal(
     # engine's math rather than rewriting it (CLAUDE.md rule 10).
     # pylint: disable=protected-access
     income, expense = balance_calculator._sum_projected(transactions, amount_overrides)
-    rounded_income = round_money(income)
-    rounded_expense = round_money(expense)
+    # Round NET as ONE combined operation -- ``round_money(income - expense)`` --
+    # not as the difference of two separately-rounded legs.  This matches the
+    # single-rounding discipline of the balance roll-forward (``balances_for``
+    # rounds each cumulative snapshot once; ``balance_as_of_date`` returns
+    # ``round_money(prior + income - expense)``) and makes the E-25 reconciliation
+    # ``balances[p] - balances[p-1] == net`` hold by construction: for any
+    # cent-quantized entering balance B, ``round_money(B + d) - B == round_money(d)``
+    # (adding an exact number of cents shifts no rounding boundary), so the
+    # period's balance delta equals this combined-rounded net.  Per-leg rounding
+    # would instead diverge from the balance delta by a cent whenever a leg
+    # carried a sub-cent fraction; every leg is cent-quantized today
+    # (``Numeric(12,2)`` storage + the HALF_UP-quantized live overrides), so the
+    # two strategies agree on all current data -- this change is behaviour-neutral.
     return PeriodSubtotal(
-        income=rounded_income,
-        expense=rounded_expense,
-        net=rounded_income - rounded_expense,
+        income=round_money(income),
+        expense=round_money(expense),
+        net=round_money(income - expense),
     )
 
 

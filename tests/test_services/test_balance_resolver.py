@@ -775,6 +775,108 @@ class TestPeriodSubtotal:
             # 700.00 - 1000.00 = -300.00 == sub.net.
             assert next_bal - anchor_bal == sub.net == Decimal("-300.00")
 
+    def test_period_subtotal_net_combined_rounding_reconciles_subcent_leg(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """#62: ``net`` reconciles with the balance delta under a sub-cent leg.
+
+        ``net`` is ``round_money(income - expense)`` (ONE combined
+        rounding), not ``round_money(income) - round_money(expense)``.
+        Only the combined form reconciles with the balance roll-forward,
+        which rounds the *cumulative* balance once per snapshot: for a
+        cent-quantized entering balance B,
+        ``round_money(B + delta) - B == round_money(delta) == net``.
+
+        Every stored/override leg is cent-quantized in production, so the
+        per-leg-vs-combined divergence is unreachable today.  The live
+        override seam carries its value verbatim into the sum
+        (``balance_calculator._income_amount`` / ``_expense_amount``), so
+        it is the only way to inject a sub-cent leg; this test does so
+        directly to lock the rounding discipline against a regression to
+        per-leg rounding.
+
+        Setup: the anchor period (``seed_periods[0]``) keeps the
+        ``seed_user`` default $1000 balance (no projected items).  On the
+        first post-anchor period a Projected income txn and a Projected
+        expense txn are given the sub-cent live overrides $100.005 and
+        $50.004.
+
+        Hand arithmetic:
+          income leg = 100.005, expense leg = 50.004 (overrides, verbatim)
+          running    = 1000.00 + 100.005 - 50.004 = 1050.001
+          next_bal   = round_money(1050.001) = 1050.00
+          balance_delta = 1050.00 - 1000.00 = 50.00
+          net (combined) = round_money(100.005 - 50.004)
+                         = round_money(50.001) = 50.00  == balance_delta
+          per-leg net    = round_money(100.005) - round_money(50.004)
+                         = 100.01 - 50.00 = 50.01 != 50.00  (the reverted bug)
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            anchor_period = seed_periods[0]
+            next_period = seed_periods[1]
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+            income_type = (
+                db.session.query(TransactionType).filter_by(name="Income").one()
+            )
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            income_txn = Transaction(
+                pay_period_id=next_period.id,
+                scenario_id=scenario_id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Paycheck",
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("100.00"),
+            )
+            expense_txn = Transaction(
+                pay_period_id=next_period.id,
+                scenario_id=scenario_id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Rent",
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
+            )
+            db.session.add_all([income_txn, expense_txn])
+            db.session.commit()
+
+            # Sub-cent live overrides flow verbatim into the sum, so they
+            # are the only way to feed a sub-cent leg through the producer.
+            overrides = {
+                income_txn.id: Decimal("100.005"),
+                expense_txn.id: Decimal("50.004"),
+            }
+
+            result = balances_for(
+                account, scenario_id, seed_periods,
+                amount_overrides=overrides,
+            )
+            sub = period_subtotal(
+                account, scenario_id, next_period,
+                amount_overrides=overrides,
+            )
+
+            anchor_bal = result.balances[anchor_period.id]
+            next_bal = result.balances[next_period.id]
+            assert anchor_bal == Decimal("1000.00")
+            assert next_bal == Decimal("1050.00")
+            # The E-25 reconciliation holds for the sub-cent leg ONLY
+            # because net is the combined-rounded delta; per-leg rounding
+            # (the reverted bug) makes sub.net 50.01 and breaks this.
+            assert next_bal - anchor_bal == sub.net == Decimal("50.00")
+            # The display legs are each rounded to cents (a no-op in
+            # production); here the income leg shows the sub-cent round-up,
+            # so income - expense (50.01) deliberately differs from the
+            # balance-reconciling net (50.00) by a cent.
+            assert sub.income == Decimal("100.01")
+            assert sub.expense == Decimal("50.00")
+
 
 # ── balance_as_of_date (E-27, Commit 9) ────────────────────────────
 
