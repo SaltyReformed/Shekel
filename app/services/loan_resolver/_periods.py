@@ -40,20 +40,56 @@ if TYPE_CHECKING:
 ZERO_MONEY = Decimal("0.00")
 
 
-def _loan_terms_from(loan_params) -> LoanTerms:
+def _origination_rate(rate_changes: list | None) -> Decimal:
+    """Return the loan's origination (period-0) rate from the rate-change feed.
+
+    DH-#56 retired ``LoanParams.interest_rate``, so the engine's base /
+    period-0 rate is now the earliest :class:`RateChangeRecord` in the
+    feed -- the origination :class:`RateHistory` row every loan carries
+    (``create_params`` seeds it on setup; the DH-#56 migration backfilled
+    every pre-existing loan).  Because that origination-dated row always
+    covers period 0 via :func:`_rate_at_date`, this value is what
+    :func:`build_rate_periods` resolves for period 0 anyway; populating
+    ``LoanTerms.base_rate`` from it keeps the (now-unreached) fallback
+    consistent with the feed.
+
+    Raises:
+        ValueError: When ``rate_changes`` is empty/``None``.  Every loan
+            must carry an origination :class:`RateHistory` row, so an
+            empty feed is a data-invariant violation the caller must
+            surface loudly rather than paper over with a silent default.
+    """
+    if not rate_changes:
+        raise ValueError(
+            "loan rate resolution requires at least one RateHistory row "
+            "(the origination rate) -- received an empty rate-change "
+            "feed.  create_params seeds the origination row on setup and "
+            "the DH-#56 migration backfilled every pre-existing loan; an "
+            "empty feed means that invariant was violated."
+        )
+    earliest = min(rate_changes, key=lambda change: change.effective_date)
+    return Decimal(str(earliest.interest_rate))
+
+
+def _loan_terms_from(loan_params, base_rate: Decimal) -> LoanTerms:
     """Build the rate-period engine's :class:`LoanTerms` from a LoanParams.
 
     Reads the immutable origination fields a loan's amortization is
-    defined by.  ``interest_rate`` is the engine's base rate (the
-    :class:`RateHistory`-layered rate changes override it per period);
-    the ARM cadence columns drive the fixed-rate period boundaries.
+    defined by.  ``base_rate`` is the loan's origination (period-0) rate,
+    supplied by the caller from the origination :class:`RateHistory` row
+    (see :func:`_origination_rate`) since DH-#56 retired the
+    ``LoanParams.interest_rate`` column; the :class:`RateHistory`-layered
+    rate changes override it per period.  The ARM cadence columns drive
+    the fixed-rate period boundaries.
 
     Args:
         loan_params: A LoanParams-shaped object exposing
             ``origination_date``, ``original_principal``,
-            ``interest_rate``, ``term_months``, ``is_arm``,
+            ``term_months``, ``is_arm``,
             ``arm_first_adjustment_months``, and
             ``arm_adjustment_interval_months``.
+        base_rate: The origination annual rate (decimal fraction) the
+            caller resolved from the loan's earliest rate-change record.
 
     Returns:
         The corresponding :class:`LoanTerms`.
@@ -61,7 +97,7 @@ def _loan_terms_from(loan_params) -> LoanTerms:
     return LoanTerms(
         origination_date=loan_params.origination_date,
         original_principal=Decimal(str(loan_params.original_principal)),
-        base_rate=Decimal(str(loan_params.interest_rate)),
+        base_rate=base_rate,
         term_months=loan_params.term_months,
         is_arm=bool(getattr(loan_params, "is_arm", False)),
         arm_first_adjustment_months=getattr(
@@ -119,7 +155,7 @@ def _resolve_periods(loan_params, rate_changes):
         list for the loan.
     """
     return build_rate_periods(
-        terms=_loan_terms_from(loan_params),
+        terms=_loan_terms_from(loan_params, _origination_rate(rate_changes)),
         rate_changes=rate_changes,
         recorded_period_pi=_recorded_pi_from(rate_changes),
     )

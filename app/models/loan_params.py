@@ -6,23 +6,23 @@ rate, term, payment day, and optional ARM fields.  One row per
 amortizing account, linked one-to-one via account_id.
 
 E-18 / Commit 15 demoted ``current_principal`` and ``interest_rate``
-from authoritative storage to non-authoritative seed columns.  The
-loan resolver (``app/services/loan_resolver.py``) derives the
-displayed current balance from the latest
-:class:`LoanAnchorEvent` plus the confirmed payment stream, and
-derives the current applicable rate from the
-:class:`RateHistory` log layered over ``interest_rate``.  Display
-surfaces (loan dashboard card, /savings debt card, /savings account
-card, year-end net-worth liability, debt strategy) read the resolver,
-not these columns.  The columns remain populated by the setup /
-update flows because (a) the origination ``LoanAnchorEvent`` derives
-``anchor_balance`` from ``original_principal``, not
-``current_principal``, so the seed is independent and (b) the
-resolver still reads ``interest_rate`` as the base rate when no
-:class:`RateHistory` row applies.  Both columns are nullable to
-record their demotion in the schema; the optional OPT-1 destructive
-drop is deferred until a production cycle confirms zero display
-reads remain (see ``docs/audits/financial_calculations/
+from authoritative storage to non-authoritative seed columns.  DH-#56
+then completed the OPT-1 drop for ``interest_rate``: the column is
+gone, and the loan's base / period-0 rate now lives in its origination
+:class:`RateHistory` row (``create_params`` seeds one for every loan;
+the DH-#56 migration backfilled pre-existing loans).  The loan resolver
+(``app/services/loan_resolver``) derives the displayed current balance
+from the latest :class:`LoanAnchorEvent` plus the confirmed payment
+stream, and derives the current applicable rate from the
+:class:`RateHistory` series.  Display and money surfaces (loan
+dashboard card, /savings debt card, /savings account card, year-end
+net-worth liability, debt strategy) read the resolver's
+``state.current_rate`` / ``state.current_balance``, never a stored
+scalar.  ``current_principal`` remains a nullable, non-authoritative
+seed (its OPT-1 drop is still deferred); the origination
+``LoanAnchorEvent`` derives ``anchor_balance`` from
+``original_principal``, not ``current_principal``, so that seed is
+independent (see ``docs/audits/financial_calculations/
 remediation_plan.md`` Section 5 OPT-1).
 """
 
@@ -37,9 +37,11 @@ class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     (mortgage, auto loan, student loan, personal loan, HELOC, etc.).
     ARM-specific columns are nullable and cost nothing when unused.
 
-    E-18 demotion: ``current_principal`` and ``interest_rate`` are
-    nullable, non-authoritative seed columns.  See the module
-    docstring for the resolver-as-source-of-truth contract.
+    E-18 demotion: ``current_principal`` is a nullable,
+    non-authoritative seed column; DH-#56 dropped ``interest_rate``
+    entirely (the origination :class:`RateHistory` row is the source of
+    truth for the loan's rate).  See the module docstring for the
+    resolver-as-source-of-truth contract.
     """
 
     __tablename__ = "loan_params"
@@ -55,29 +57,16 @@ class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
         # CHECK constraints survive demotion to nullable: PostgreSQL
         # treats NULL as "unknown" under boolean predicates, so
         # ``CHECK(current_principal >= 0)`` permits NULL and rejects
-        # any non-NULL negative.  Same applies to ``interest_rate``.
+        # any non-NULL negative.
         db.CheckConstraint(
             "current_principal >= 0",
             name="ck_loan_params_curr_principal",
         ),
-        db.CheckConstraint(
-            "interest_rate >= 0",
-            name="ck_loan_params_interest_rate",
-        ),
-        # F-18 / Commit 13: storage-tier upper bound mirrors the
-        # Marshmallow ``Range(0, 1)`` on ``LoanParamsCreateSchema``
-        # (HIGH-06 / Commit 24).  ``interest_rate`` is persisted as a
-        # decimal fraction (e.g. ``0.06500`` for 6.5%), so the unit
-        # interval is the natural domain.  ``IS NULL OR ...`` preserves
-        # the E-18 / Commit 15 demotion that made the column nullable:
-        # PostgreSQL treats NULL as "unknown" under boolean predicates,
-        # but writing the guard explicitly documents the intent and
-        # keeps the constraint trivially comparable with the sibling
-        # ``escrow_components.inflation_rate`` shape.
-        db.CheckConstraint(
-            "interest_rate IS NULL OR interest_rate <= 1",
-            name="ck_loan_params_interest_rate_upper",
-        ),
+        # DH-#56 dropped ``interest_rate`` (and its two CHECKs
+        # ``ck_loan_params_interest_rate`` / ``..._upper``); the rate
+        # domain ``[0, 1]`` is now enforced on ``rate_history.interest_rate``
+        # (``ck_rate_history_valid_interest_rate``), the single source
+        # of truth for the loan's rate.
         db.CheckConstraint(
             "term_months > 0",
             name="ck_loan_params_term_months",
@@ -97,15 +86,11 @@ class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     # at a true-up event so this column is never written by humans
     # again.
     current_principal = db.Column(db.Numeric(12, 2), nullable=True)
-    # Non-authoritative seed; resolver is source of truth (E-18).
-    # Demoted to nullable by migration ``c4f0a5b71e83`` (Commit 15).
-    # The resolver still reads this as the base rate when no
-    # :class:`RateHistory` row applies (``loan_resolver._rate_at_date``
-    # fallback), so a non-NULL value remains required at insert by
-    # the setup flow's Marshmallow schema; the column is nullable at
-    # the storage tier to record the demotion and to keep the OPT-1
-    # destructive-drop migration trivial when promoted.
-    interest_rate = db.Column(db.Numeric(7, 5), nullable=True)
+    # DH-#56 dropped the ``interest_rate`` column.  The loan's base /
+    # period-0 rate lives in its origination :class:`RateHistory` row
+    # (the resolver derives ``state.current_rate`` from the RateHistory
+    # series); ``create_params`` seeds the origination row and the
+    # DH-#56 migration backfilled pre-existing loans.
     term_months = db.Column(db.Integer, nullable=False)
     origination_date = db.Column(db.Date, nullable=False)
     payment_day = db.Column(db.Integer, nullable=False)
@@ -122,5 +107,5 @@ class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     def __repr__(self):
         return (
             f"<LoanParams account_id={self.account_id} "
-            f"rate={self.interest_rate} term={self.term_months}>"
+            f"term={self.term_months}>"
         )

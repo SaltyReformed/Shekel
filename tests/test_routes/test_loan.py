@@ -11,7 +11,6 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -26,6 +25,7 @@ from app.services import account_service
 from tests._test_helpers import (
     freeze_today,
     insert_origination_event,
+    insert_origination_rate,
     insert_trueup_event,
     select_option_values,
 )
@@ -101,7 +101,6 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
         account_id=account.id,
         original_principal=original_principal,
         current_principal=principal,
-        interest_rate=rate,
         term_months=term,
         origination_date=orig_date,
         payment_day=payment_day,
@@ -114,6 +113,12 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
     # ``loan.create_params`` writes the same paired row; tests that
     # build LoanParams directly must mirror it.
     insert_origination_event(params)
+    # Origination RateHistory row (DH-#56): the loan's base rate lives
+    # in the RateHistory row effective at origination, not the dropped
+    # ``LoanParams.interest_rate`` column.  The resolver raises
+    # ``ValueError`` on an empty rate feed, so seed it alongside the
+    # origination anchor event.
+    insert_origination_rate(params, rate)
     # User-trueup event at the lower current_principal -- preserves
     # the pre-Commit-15 test contract that ``principal`` matches the
     # displayed Current Principal.  Dated one day after origination
@@ -167,7 +172,6 @@ def _create_other_loan(second_user, db_session, type_name="Auto Loan"):
         account_id=account.id,
         original_principal=Decimal("20000.00"),
         current_principal=Decimal("15000.00"),
-        interest_rate=Decimal("0.04000"),
         term_months=48,
         origination_date=date(2024, 6, 1),
         payment_day=1,
@@ -175,6 +179,7 @@ def _create_other_loan(second_user, db_session, type_name="Auto Loan"):
     db_session.add(params)
     db_session.flush()
     insert_origination_event(params)
+    insert_origination_rate(params, Decimal("0.04000"))
     db_session.commit()
     return account
 
@@ -302,7 +307,18 @@ class TestLoanSetup:
         assert "/loan" in resp.headers.get("Location", "")
 
         params = db.session.query(LoanParams).filter_by(account_id=account.id).one()
-        assert params.interest_rate == Decimal("0.05000")
+        # DH-#56: the loan's rate now lives in the origination
+        # RateHistory row (effective_date == origination_date), not the
+        # dropped ``LoanParams.interest_rate`` column.
+        origination_rate = (
+            db.session.query(RateHistory)
+            .filter_by(
+                account_id=account.id,
+                effective_date=params.origination_date,
+            )
+            .one()
+        )
+        assert origination_rate.interest_rate == Decimal("0.05000")
         assert params.term_months == 60
 
     def test_create_params_already_configured(self, auth_client, seed_user, db, seed_periods):
@@ -450,7 +466,19 @@ class TestLoanParamsUpdate:
 
         db.session.expire_all()
         params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
-        assert params.interest_rate == Decimal("0.04500")
+        # DH-#56: the rate form field now edits the loan's ORIGINATION
+        # rate -- the route upserts the RateHistory row effective at
+        # origination_date (the resolver's period-0 rate), not the
+        # dropped ``LoanParams.interest_rate`` column.
+        origination_rate = (
+            db.session.query(RateHistory)
+            .filter_by(
+                account_id=acct.id,
+                effective_date=params.origination_date,
+            )
+            .one()
+        )
+        assert origination_rate.interest_rate == Decimal("0.04500")
         # E-18 / Commit 16: the stray ``current_principal`` post must
         # NOT mutate the seed column.  Users edit the displayed
         # balance via the dated true-up form, not this endpoint.
@@ -662,7 +690,14 @@ class TestRateHistory:
     """Tests for ARM rate change recording."""
 
     def test_rate_change_create(self, auth_client, seed_user, db, seed_periods):
-        """POST rate change creates history row and updates params rate."""
+        """POST rate change creates a RateHistory row at the effective date.
+
+        DH-#56: the prior ``params.interest_rate`` mirror-write is gone --
+        the rate's sole source of truth is now the RateHistory feed.  The
+        new change row (effective 2026-04-01) records the 7.000% rate; the
+        origination row seeded by ``_create_mortgage`` (effective
+        2023-06-01) keeps the loan's period-0 rate.
+        """
         acct = _create_mortgage(seed_user, db.session)
         params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
         params.is_arm = True
@@ -674,13 +709,15 @@ class TestRateHistory:
         )
         assert resp.status_code == 200
 
-        entry = db.session.query(RateHistory).filter_by(account_id=acct.id).first()
-        assert entry is not None
+        # Scope the lookup to the posted effective date: the loan now has
+        # two RateHistory rows (origination + this change), so an
+        # unscoped ``first()`` is non-deterministic.
+        entry = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id, effective_date=date(2026, 4, 1))
+            .one()
+        )
         assert entry.interest_rate == Decimal("0.07000")
-
-        db.session.expire_all()
-        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
-        assert params.interest_rate == Decimal("0.07000")
 
     def test_rate_change_records_monthly_pi(
         self, auth_client, seed_user, db, seed_periods,
@@ -747,17 +784,59 @@ class TestRateHistory:
         )
         assert resp.status_code == 400
 
+    def test_rate_change_before_origination_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A rate change dated before origination is rejected (400), no row.
+
+        DH-#56: the origination RateHistory row is the loan's period-0 /
+        base rate; a pre-origination change would become the earliest row
+        and displace the true origination row in the dashboard's
+        ``origination_rate`` derivation (``rate_history[-1]``) and in
+        ``_origination_rate``'s ``min()``.  ``_create_mortgage`` originates
+        the loan on 2023-06-01, so a change effective 2023-01-01 is
+        pre-origination.  Revert-proof: without the route guard the POST
+        would persist a row and return 200, failing both assertions.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(
+            account_id=acct.id,
+        ).one()
+        params.is_arm = True
+        db.session.commit()
+        before = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2023-01-01", "interest_rate": "7.000"},
+        )
+        assert resp.status_code == 400
+        after = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id)
+            .count()
+        )
+        assert after == before
+
     def test_rate_change_idor(self, auth_client, second_user, db, seed_periods):
         """Rate change to another user's loan returns 404 with no side effects."""
         other = _create_other_loan(second_user, db.session, "Mortgage")
+        # DH-#56: the fixture seeds an origination RateHistory row, so the
+        # "no side effects" invariant is that the count is UNCHANGED by the
+        # IDOR POST -- not that it is zero.
+        before = db.session.query(RateHistory).filter_by(account_id=other.id).count()
         resp = auth_client.post(
             f"/accounts/{other.id}/loan/rate",
             data={"interest_rate": "9.0", "effective_date": "2026-06-01"},
         )
         assert resp.status_code == 404
 
-        count = db.session.query(RateHistory).filter_by(account_id=other.id).count()
-        assert count == 0
+        after = db.session.query(RateHistory).filter_by(account_id=other.id).count()
+        assert after == before
 
     def test_rate_change_same_date_double_submit(
         self, auth_client, seed_user, db, seed_periods,
@@ -786,9 +865,13 @@ class TestRateHistory:
         assert r2.status_code == 200
 
         db.session.expire_all()
+        # Scope to the duplicated effective date: DH-#56 seeds an
+        # origination RateHistory row (effective 2023-06-01), so an
+        # unscoped count includes it.  The F-104 dedupe invariant is
+        # that the 2026-04-01 change exists exactly once.
         count = (
             db.session.query(RateHistory)
-            .filter_by(account_id=acct.id)
+            .filter_by(account_id=acct.id, effective_date=date(2026, 4, 1))
             .count()
         )
         assert count == 1, (
@@ -817,9 +900,18 @@ class TestRateHistory:
         assert r2.status_code == 200
 
         db.session.expire_all()
+        # Scope to the two posted change dates: DH-#56 seeds an
+        # origination RateHistory row (effective 2023-06-01), so an
+        # unscoped count would include it.  The invariant is that both
+        # distinct-date changes were admitted (two change rows).
         count = (
             db.session.query(RateHistory)
-            .filter_by(account_id=acct.id)
+            .filter(
+                RateHistory.account_id == acct.id,
+                RateHistory.effective_date.in_(
+                    [date(2026, 4, 1), date(2026, 5, 1)],
+                ),
+            )
             .count()
         )
         assert count == 2
@@ -1315,16 +1407,29 @@ class TestLoanNegativePaths:
     def test_negative_interest_rate(self, auth_client, seed_user, db, seed_periods):
         """Negative interest rate is rejected."""
         acct = _create_auto_loan(seed_user, db.session)
-        orig = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
-        orig_rate = orig.interest_rate
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        # DH-#56: the loan's rate lives in the origination RateHistory row,
+        # not the dropped ``LoanParams.interest_rate`` column.  A rejected
+        # negative-rate POST must leave that origination rate unchanged.
+        orig_rate = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id, effective_date=params.origination_date)
+            .one()
+            .interest_rate
+        )
 
         auth_client.post(
             f"/accounts/{acct.id}/loan/params",
             data={"current_principal": "25000.00", "interest_rate": "-0.01", "payment_day": "15"},
         )
         db.session.expire_all()
-        after = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
-        assert after.interest_rate == orig_rate
+        after_rate = (
+            db.session.query(RateHistory)
+            .filter_by(account_id=acct.id, effective_date=params.origination_date)
+            .one()
+            .interest_rate
+        )
+        assert after_rate == orig_rate
 
     def test_payment_day_zero(self, auth_client, seed_user, db, seed_periods):
         """Payment day 0 is rejected."""
@@ -2585,7 +2690,6 @@ def _create_loan_account_exact(seed_user, db_session, type_name, name,
         account_id=account.id,
         original_principal=original_principal,
         current_principal=current_principal,
-        interest_rate=rate,
         term_months=term,
         origination_date=orig_date,
         payment_day=payment_day,
@@ -2594,6 +2698,7 @@ def _create_loan_account_exact(seed_user, db_session, type_name, name,
     db_session.add(params)
     db_session.flush()
     insert_origination_event(params)
+    insert_origination_rate(params, rate)
     db_session.commit()
     return account
 
@@ -4190,7 +4295,6 @@ def _create_exact_mortgage(seed_user, db_session):
         account_id=account.id,
         original_principal=Decimal("200000.00"),
         current_principal=Decimal("200000.00"),
-        interest_rate=Decimal("0.06500"),
         term_months=360,
         origination_date=date.today(),
         payment_day=1,
@@ -4198,6 +4302,7 @@ def _create_exact_mortgage(seed_user, db_session):
     db_session.add(params)
     db_session.flush()
     insert_origination_event(params)
+    insert_origination_rate(params, Decimal("0.06500"))
     db_session.commit()
     return account
 
@@ -4446,8 +4551,10 @@ class TestRefinanceCalculator:
             interest_rate=Decimal("0.07000"),
         )
         db.session.add(rh)
-        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
-        params.interest_rate = Decimal("0.07000")
+        # DH-#56: the prior ``params.interest_rate = 0.07`` mirror-write is
+        # gone -- the RateHistory change row at 2025-01-01 (above) already
+        # makes the resolver-derived current rate 7% as of the frozen today
+        # (2026-03-20), which is what the refinance current side reads.
         db.session.commit()
 
         resp = auth_client.post(
@@ -5239,135 +5346,11 @@ class TestLoanBalanceTrueUp:
         )
 
 
-class TestLoanParamsInterestRateUpperBoundCheck:
-    """Storage-tier guard for ``ck_loan_params_interest_rate_upper`` (F-18).
-
-    The Marshmallow ``LoanParamsCreateSchema`` already pins the
-    application tier at ``Range(0, 1)`` (HIGH-06 / Commit 24).  These
-    tests verify the parallel storage-tier CHECK introduced in Commit
-    13 of the follow-up remediation: a raw-SQL INSERT that bypasses
-    the schema must be rejected by PostgreSQL with the named CHECK
-    constraint visible in the error.  Boundary value 1.0 succeeds;
-    NULL succeeds (the E-18 / Commit 15 nullable demotion is
-    preserved).
-    """
-
-    @staticmethod
-    def _make_loan_account(seed_user, db_session):
-        """Create a loan Account row without LoanParams.
-
-        ``LoanParams.account_id`` is UNIQUE so each raw-SQL INSERT
-        below targets a fresh account to keep the tests independent.
-        """
-        loan_type = db_session.query(AccountType).filter_by(
-            name="Auto Loan",
-        ).one()
-        acct = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=loan_type.id,
-                name="F-18 Raw-SQL Test Loan",
-                anchor_balance=Decimal("10000.00"),
-            ),
-        )
-        db_session.add(acct)
-        db_session.commit()
-        return acct
-
-    @staticmethod
-    def _insert_loan_params_raw(account_id, interest_rate):
-        """Issue a raw-SQL INSERT into ``budget.loan_params``.
-
-        Bypasses the Marshmallow schema so the CHECK constraint is
-        the only remaining guard.  ``interest_rate`` may be ``None``
-        to test the nullable path.  Caller asserts whether
-        ``IntegrityError`` surfaces on flush/commit.
-        """
-        db.session.execute(
-            sa.text(
-                "INSERT INTO budget.loan_params ("
-                "account_id, original_principal, current_principal, "
-                "interest_rate, term_months, origination_date, "
-                "payment_day, is_arm) VALUES ("
-                ":account_id, :orig, :curr, :rate, :term, :orig_date, "
-                ":pay_day, FALSE)"
-            ),
-            {
-                "account_id": account_id,
-                "orig": Decimal("15000.00"),
-                "curr": Decimal("10000.00"),
-                "rate": interest_rate,
-                "term": 60,
-                "orig_date": date(2025, 1, 1),
-                "pay_day": 15,
-            },
-        )
-
-    # C13-1
-    def test_raw_insert_rate_above_one_rejected(
-        self, seed_user, db, seed_periods,
-    ):
-        """Raw-SQL INSERT with ``interest_rate = 9.5`` raises IntegrityError.
-
-        Hand-check: ``9.5 > 1`` violates the new CHECK
-        ``ck_loan_params_interest_rate_upper``.  The application tier
-        is bypassed (raw SQL), so the storage tier must be the
-        rejecting layer.  The exception text mentions the constraint
-        name so production operators can correlate the error to the
-        guard.
-        """
-        acct = self._make_loan_account(seed_user, db.session)
-
-        with pytest.raises(IntegrityError) as exc_info:
-            self._insert_loan_params_raw(acct.id, Decimal("9.5"))
-            db.session.flush()
-        assert "ck_loan_params_interest_rate_upper" in str(exc_info.value)
-        db.session.rollback()
-
-    # C13-2
-    def test_raw_insert_rate_at_one_boundary_succeeds(
-        self, seed_user, db, seed_periods,
-    ):
-        """``interest_rate = 1.0`` is the inclusive upper bound and admitted.
-
-        Hand-check: ``1.0 <= 1`` satisfies the CHECK.  The boundary
-        match the sibling ``ck_interest_params_valid_apy`` semantic
-        (closed unit interval) and the Marshmallow ``Range(0, 1)``'s
-        inclusive default.
-        """
-        acct = self._make_loan_account(seed_user, db.session)
-
-        self._insert_loan_params_raw(acct.id, Decimal("1.0"))
-        db.session.commit()
-
-        params = (
-            db.session.query(LoanParams)
-            .filter_by(account_id=acct.id)
-            .one()
-        )
-        assert params.interest_rate == Decimal("1.00000")
-
-    # C13-3
-    def test_raw_insert_rate_null_succeeds(
-        self, seed_user, db, seed_periods,
-    ):
-        """``interest_rate = NULL`` is admitted (E-18 demotion preserved).
-
-        Hand-check: ``IS NULL OR interest_rate <= 1`` short-circuits
-        TRUE for NULL inputs.  PostgreSQL would already admit NULL
-        under a bare ``interest_rate <= 1`` (NULL booleans evaluate
-        UNKNOWN under CHECK), but the explicit ``IS NULL OR ...``
-        documents the intent and matches the sibling
-        ``ck_escrow_components_valid_inflation_rate`` shape.
-        """
-        acct = self._make_loan_account(seed_user, db.session)
-
-        self._insert_loan_params_raw(acct.id, None)
-        db.session.commit()
-
-        params = (
-            db.session.query(LoanParams)
-            .filter_by(account_id=acct.id)
-            .one()
-        )
-        assert params.interest_rate is None
+# DH-#56: TestLoanParamsInterestRateUpperBoundCheck was retired here.  It
+# exercised the storage-tier CHECK on budget.loan_params.interest_rate
+# (ck_loan_params_interest_rate_upper) and the column's nullable demotion --
+# both dropped, with the column, by DH-#56's migration (b7d2f4a619c5).  The
+# equivalent storage-tier rate-domain [0, 1] guard now lives on
+# budget.rate_history.interest_rate (ck_rate_history_valid_interest_rate),
+# already covered by tests/test_routes/test_c24_range_check_sweep.py::
+# TestRateHistoryCheck -- so no coverage is lost.

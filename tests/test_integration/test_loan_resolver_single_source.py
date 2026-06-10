@@ -48,6 +48,7 @@ from app.services import (
     year_end_summary_service,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from tests._test_helpers import insert_origination_rate
 
 
 # -- Hand-computed reference values (mirror principal-settle ones) ---------
@@ -112,7 +113,6 @@ def _create_fixed_loan(seed_user, period_id):
         account_id=account.id,
         original_principal=FIXED_PRINCIPAL,
         current_principal=FIXED_PRINCIPAL,
-        interest_rate=FIXED_RATE,
         term_months=FIXED_TERM,
         origination_date=ORIGINATION_DATE,
         payment_day=1,
@@ -120,6 +120,7 @@ def _create_fixed_loan(seed_user, period_id):
     )
     db.session.add(loan_params)
     db.session.flush()
+    insert_origination_rate(loan_params, FIXED_RATE)
 
     db.session.add(LoanAnchorEvent(
         account_id=account.id,
@@ -158,7 +159,6 @@ def _create_arm_loan(seed_user, period_id):
         account_id=account.id,
         original_principal=ARM_PRINCIPAL,
         current_principal=ARM_PRINCIPAL,
-        interest_rate=ARM_RATE,
         term_months=ARM_TERM,
         origination_date=ORIGINATION_DATE,
         payment_day=1,
@@ -168,6 +168,7 @@ def _create_arm_loan(seed_user, period_id):
     )
     db.session.add(loan_params)
     db.session.flush()
+    insert_origination_rate(loan_params, ARM_RATE)
 
     db.session.add(LoanAnchorEvent(
         account_id=account.id,
@@ -326,15 +327,16 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
             seed_user, seed_periods[0].id,
         )
 
+        ctx = loan_payment_service.load_loan_context(
+            account.id, seed_user["scenario"].id, loan_params,
+        )
         resolver_state = loan_resolver.resolve_loan(
             loan_resolver.LoanInputs(
                 loan_params,
                 db.session.query(LoanAnchorEvent)
                     .filter_by(account_id=account.id).all(),
-                loan_payment_service.load_loan_context(
-                    account.id, seed_user["scenario"].id, loan_params,
-                ).payments,
-                None,
+                ctx.payments,
+                ctx.rate_changes,
             ),
             date.today(),
         )

@@ -17,6 +17,7 @@ from app.enums import LoanAnchorSourceEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_anchor_event import LoanAnchorEvent
+from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.routes.loan._bp import loan_bp
@@ -74,15 +75,30 @@ def create_params(account_id):
             "loan/setup.html", account=account, account_type=account_type,
         )
 
-    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load`` already
-    # divides the form percent by 100, so ``data["interest_rate"]``
-    # is already the storage-domain fraction.  The DB CHECK
-    # ``interest_rate >= 0`` (combined with the schema's
-    # ``Range(0, 1)``) enforces the same bounds.
+    # DH-#56: ``interest_rate`` is no longer a LoanParams column -- it
+    # seeds the loan's origination RateHistory row (the resolver's
+    # base / period-0 rate).  Pop it before constructing LoanParams.
+    # The schema's ``@pre_load`` (E-28 / HIGH-06) already divided the
+    # form percent by 100, so the value is the storage-domain fraction
+    # the ``rate_history.interest_rate`` CHECK (0..1) accepts.
+    origination_rate = data.pop("interest_rate")
 
     params = LoanParams(account_id=account.id, **data)
     db.session.add(params)
     db.session.flush()
+
+    # Origination RateHistory row (DH-#56): every loan carries a rate
+    # row effective at origination so the resolver derives its
+    # period-0 / base rate from RateHistory rather than a stored scalar.
+    # ``monthly_pi=None`` lets the rate-period engine derive the
+    # origination P&I from the original principal and term (exact for an
+    # on-schedule loan).
+    db.session.add(RateHistory(
+        account_id=account.id,
+        effective_date=params.origination_date,
+        interest_rate=origination_rate,
+        monthly_pi=None,
+    ))
 
     # Origination LoanAnchorEvent (E-18 / Commit 15; closes F-9).
     # The loan resolver requires at least one event per loan; Commit
@@ -130,9 +146,15 @@ def update_params(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load`` already
-    # converted the form percent to the storage-domain fraction, so
-    # ``data["interest_rate"]`` is stored verbatim.
+    # DH-#56: ``interest_rate`` is no longer a LoanParams column; when
+    # submitted it edits the loan's ORIGINATION rate -- upsert the
+    # RateHistory row effective at origination (the resolver's period-0
+    # rate).  The schema's ``@pre_load`` (E-28 / HIGH-06) already
+    # converted the form percent to the storage-domain fraction.  The
+    # remaining params flow through the ``_PARAM_FIELDS`` setattr loop
+    # (``interest_rate`` is no longer a member).
+    if "interest_rate" in data:
+        _upsert_origination_rate(params, data["interest_rate"])
 
     for field, value in data.items():
         if field in _PARAM_FIELDS:
@@ -142,6 +164,40 @@ def update_params(account_id):
     logger.info("Updated loan params for account %d", account.id)
     flash("Loan parameters updated.", "success")
     return redirect(url_for("loan.dashboard", account_id=account_id))
+
+
+def _upsert_origination_rate(params, rate):
+    """Set the loan's origination (period-0) rate to ``rate``.
+
+    DH-#56 retired ``LoanParams.interest_rate``; the loan's base /
+    period-0 rate now lives in the :class:`RateHistory` row effective at
+    ``origination_date``.  The "Loan Parameters" form's rate field edits
+    that origination rate, so this updates the existing origination row
+    (the common case -- ``create_params`` and the DH-#56 migration both
+    seed one for every loan) or inserts it if somehow absent (defensive).
+    Does not commit; the caller commits with the rest of the update.
+
+    Args:
+        params: The loan's :class:`LoanParams` row.
+        rate: The new origination rate as a storage-domain fraction.
+    """
+    origination_row = (
+        db.session.query(RateHistory)
+        .filter_by(
+            account_id=params.account_id,
+            effective_date=params.origination_date,
+        )
+        .first()
+    )
+    if origination_row is not None:
+        origination_row.interest_rate = rate
+    else:
+        db.session.add(RateHistory(
+            account_id=params.account_id,
+            effective_date=params.origination_date,
+            interest_rate=rate,
+            monthly_pi=None,
+        ))
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/trueup", methods=["POST"])

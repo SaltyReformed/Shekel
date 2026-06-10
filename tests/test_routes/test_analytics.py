@@ -723,14 +723,17 @@ class TestYearEndTab:
                 account_id=acct.id,
                 original_principal=Decimal("240000.00"),
                 current_principal=Decimal("240000.00"),
-                interest_rate=Decimal("0.06500"),
                 term_months=360,
                 origination_date=date(2025, 1, 1),
                 payment_day=1,
             )
             db.session.add(lp)
             db.session.flush()
-            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                insert_origination_event,
+                insert_origination_rate,
+            )
+            insert_origination_rate(lp, Decimal("0.06500"))
             insert_origination_event(lp)
             db.session.commit()
 
@@ -838,14 +841,17 @@ class TestYearEndTab:
                 account_id=acct.id,
                 original_principal=Decimal("200000.00"),
                 current_principal=Decimal("200000.00"),
-                interest_rate=Decimal("0.05000"),
                 term_months=360,
                 origination_date=date(2025, 1, 1),
                 payment_day=1,
             )
             db.session.add(lp)
             db.session.flush()
-            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                insert_origination_event,
+                insert_origination_rate,
+            )
+            insert_origination_rate(lp, Decimal("0.05000"))
             insert_origination_event(lp)
             db.session.commit()
 

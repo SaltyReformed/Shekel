@@ -733,12 +733,14 @@ def _create_small_loan(seed_user, db_session, name="Test Loan",
     db_session.flush()
 
     from app.models.loan_params import LoanParams as LP  # pylint: disable=import-outside-toplevel
-    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+        insert_origination_event,
+        insert_origination_rate,
+    )
     params = LP(
         account_id=account.id,
         original_principal=principal,
         current_principal=principal,
-        interest_rate=rate,
         term_months=term,
         origination_date=date(2026, 1, 1),
         payment_day=1,
@@ -748,6 +750,9 @@ def _create_small_loan(seed_user, db_session, name="Test Loan",
     # E-18 / Commit 15: origination event so the resolver can
     # answer "paid off?" by replaying confirmed payments forward.
     insert_origination_event(params)
+    # DH-#56: origination RateHistory row -- the loan's rate now lives
+    # here, not the dropped LoanParams.interest_rate column.
+    insert_origination_rate(params, rate)
     db_session.commit()
     return account
 
@@ -1118,12 +1123,14 @@ class TestDebtSummary:
             db.session.flush()
 
             from app.models.loan_params import LoanParams as LP
-            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                insert_origination_event as _ioe,
+                insert_origination_rate as _ior,
+            )
             lp1 = LP(
                 account_id=mortgage.id,
                 original_principal=Decimal("200000.00"),
                 current_principal=Decimal("200000.00"),
-                interest_rate=Decimal("0.06500"),
                 term_months=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
@@ -1131,6 +1138,7 @@ class TestDebtSummary:
             db.session.add(lp1)
             db.session.flush()
             _ioe(lp1)
+            _ior(lp1, Decimal("0.06500"))  # DH-#56 origination rate
 
             auto_type = (
                 db.session.query(AccountType)
@@ -1151,7 +1159,6 @@ class TestDebtSummary:
                 account_id=auto.id,
                 original_principal=Decimal("25000.00"),
                 current_principal=Decimal("25000.00"),
-                interest_rate=Decimal("0.04900"),
                 term_months=60,
                 origination_date=date(2024, 6, 1),
                 payment_day=15,
@@ -1159,6 +1166,7 @@ class TestDebtSummary:
             db.session.add(lp2)
             db.session.flush()
             _ioe(lp2)
+            _ior(lp2, Decimal("0.04900"))  # DH-#56 origination rate
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -1335,15 +1343,18 @@ class TestDebtSummary:
                 account_id=mortgage.id,
                 original_principal=Decimal("200000.00"),
                 current_principal=Decimal("200000.00"),
-                interest_rate=Decimal("0.06500"),
                 term_months=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
             )
             db.session.add(lp)
             db.session.flush()
-            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                insert_origination_event as _ioe,
+                insert_origination_rate as _ior,
+            )
             _ioe(lp)
+            _ior(lp, Decimal("0.06500"))  # DH-#56 origination rate
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -1389,15 +1400,18 @@ class TestDebtSummary:
                 account_id=mortgage.id,
                 original_principal=Decimal("200000.00"),
                 current_principal=Decimal("200000.00"),
-                interest_rate=Decimal("0.06500"),
                 term_months=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
             )
             db.session.add(lp)
             db.session.flush()
-            from tests._test_helpers import insert_origination_event as _ioe  # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                insert_origination_event as _ioe,
+                insert_origination_rate as _ior,
+            )
             _ioe(lp)
+            _ior(lp, Decimal("0.06500"))  # DH-#56 origination rate
 
             ec = EscrowComponent(
                 account_id=mortgage.id,

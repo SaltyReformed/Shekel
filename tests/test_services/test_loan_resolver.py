@@ -119,6 +119,47 @@ def _origination_anchor(
     )
 
 
+def _origination_rate_change(params: FakeLoanParams) -> RateChangeRecord:
+    """Return the origination (period-0) ``RateChangeRecord`` for *params*.
+
+    DH-#56 retired ``LoanParams.interest_rate``; the resolver now derives a
+    loan's base / period-0 rate from the earliest entry in its rate-change
+    feed -- the origination :class:`RateHistory` row every loan carries
+    (effective at ``origination_date``).  These resolver tests build
+    duck-typed :class:`FakeLoanParams` rather than DB-bound ORM rows, so the
+    in-memory analogue of that origination row is a
+    :class:`RateChangeRecord` effective at ``origination_date`` carrying the
+    params' ``interest_rate``.  ``_origination_rate`` raises ``ValueError``
+    on an empty feed, so every ``resolve_loan`` / ``compute_payoff_scenarios``
+    call must include this record.  The rate value is unchanged from the
+    retired column, so every hand-computed expectation stays byte-identical.
+    """
+    return RateChangeRecord(
+        effective_date=params.origination_date,
+        interest_rate=params.interest_rate,
+        monthly_pi=None,
+    )
+
+
+def _rate_feed(
+    params: FakeLoanParams,
+    rate_changes: list[RateChangeRecord] | None = None,
+) -> list[RateChangeRecord]:
+    """Return the loan's full rate-change feed including the origination rate.
+
+    Prepends the origination (period-0) :class:`RateChangeRecord` (see
+    :func:`_origination_rate_change`) to any later ARM ``rate_changes`` the
+    test supplies.  When the test passes no later changes the feed is just
+    the origination rate -- enough for the resolver to resolve period 0.
+    The origination rate equals the retired ``LoanParams.interest_rate``, so
+    period 0 (and every downstream expectation) is byte-identical.
+    """
+    feed = [_origination_rate_change(params)]
+    if rate_changes:
+        feed.extend(rate_changes)
+    return feed
+
+
 # -- C13-1 -- ARM payment constant across the fixed-rate window -------------
 
 
@@ -148,7 +189,7 @@ def test_arm_payment_constant_in_fixed_window():
     for month_offset in range(60):
         as_of = add_months(params.origination_date, month_offset)
         state = resolve_loan(
-            LoanInputs(params, [anchor], None, None), as_of,
+            LoanInputs(params, [anchor], None, _rate_feed(params)), as_of,
         )
         payments_observed.add(state.monthly_payment)
 
@@ -173,11 +214,11 @@ def test_arm_no_creep_month_24_vs_25():
     anchor = _origination_anchor(params)
 
     state_24 = resolve_loan(
-        LoanInputs(params, [anchor], None, None),
+        LoanInputs(params, [anchor], None, _rate_feed(params)),
         add_months(params.origination_date, 24),
     )
     state_25 = resolve_loan(
-        LoanInputs(params, [anchor], None, None),
+        LoanInputs(params, [anchor], None, _rate_feed(params)),
         add_months(params.origination_date, 25),
     )
 
@@ -188,6 +229,45 @@ def test_arm_no_creep_month_24_vs_25():
     assert state_24.monthly_payment == Decimal("2398.20")
     assert state_25.monthly_payment == Decimal("2398.20")
     assert state_24.monthly_payment == state_25.monthly_payment
+
+
+# -- DH-#56 -- current_rate is the resolver-derived rate in effect today -----
+
+
+def test_current_rate_is_rate_at_today_not_a_stored_scalar():
+    """DH-#56: ``state.current_rate`` is the rate in effect on ``as_of``.
+
+    A 5/5 ARM originated at 6% with a recorded adjustment to 7% effective at
+    its first reset (month 60, 2031-01-01).  Inside the fixed-rate window the
+    current rate is the 6% origination rate; after the reset it is the 7%
+    rate now in effect.  This is the headline DH-#56 fix: the retired
+    ``LoanParams.interest_rate`` mirror drifted to the LATEST recorded rate on
+    every change (corrupting period 0 for a backdated / out-of-order change),
+    whereas ``current_rate`` is resolved per-date from the rate-period series,
+    so it always reports the rate actually in effect.
+
+    Revert-proof: a single stored scalar cannot be BOTH 6% and 7%, so any
+    regression that re-sourced ``current_rate`` from one column would fail
+    one of the two assertions.
+    """
+    params = _arm_400k_params()  # 2026-01-01, 6%, 5/5 ARM
+    anchor = _origination_anchor(params)
+    reset = RateChangeRecord(
+        effective_date=date(2031, 1, 1),  # month 60: the first ARM reset
+        interest_rate=Decimal("0.07"),
+        monthly_pi=None,
+    )
+    feed = _rate_feed(params, [reset])
+
+    in_window = resolve_loan(
+        LoanInputs(params, [anchor], None, feed), date(2027, 1, 1),
+    )
+    assert in_window.current_rate == Decimal("0.06")
+
+    after_reset = resolve_loan(
+        LoanInputs(params, [anchor], None, feed), date(2031, 6, 1),
+    )
+    assert after_reset.current_rate == Decimal("0.07")
 
 
 # -- C13-3 -- confirmed payment reduces balance -----------------------------
@@ -234,7 +314,8 @@ def test_confirmed_payment_reduces_balance():
     )
 
     state = resolve_loan(
-        LoanInputs(params, [anchor], [payment], None), date(2026, 3, 1),
+        LoanInputs(params, [anchor], [payment], _rate_feed(params)),
+        date(2026, 3, 1),
     )
 
     assert state.current_balance == Decimal("299701.35")
@@ -265,7 +346,8 @@ def test_projected_payment_not_replayed():
     )
 
     state = resolve_loan(
-        LoanInputs(params, [anchor], [projected], None), date(2026, 3, 1),
+        LoanInputs(params, [anchor], [projected], _rate_feed(params)),
+        date(2026, 3, 1),
     )
 
     # No confirmed payments; balance equals the anchor balance
@@ -306,7 +388,8 @@ def test_fixed_rate_replays_from_origination_anchor():
     ]
 
     state = resolve_loan(
-        LoanInputs(params, [anchor], payments, None), date(2026, 5, 1),
+        LoanInputs(params, [anchor], payments, _rate_feed(params)),
+        date(2026, 5, 1),
     )
 
     assert state.current_balance == Decimal("299099.57")
@@ -367,7 +450,7 @@ def test_anchor_trueup_resets_replay():
             params,
             [origination_anchor, trueup_anchor],
             payments,
-            None,
+            _rate_feed(params),
         ),
         date(2026, 6, 1),
     )
@@ -430,7 +513,7 @@ def test_payment_due_after_trueup_replays_though_pay_period_started_before():
             params,
             [origination_anchor, trueup_anchor],
             payments,
-            None,
+            _rate_feed(params),
         ),
         date(2026, 6, 2),
     )
@@ -473,11 +556,12 @@ def test_rate_change_after_window_applied():
         ),
     ]
 
+    feed = _rate_feed(params, rate_changes)
     state_feb = resolve_loan(
-        LoanInputs(params, [anchor], None, rate_changes), date(2031, 2, 1),
+        LoanInputs(params, [anchor], None, feed), date(2031, 2, 1),
     )
     state_later = resolve_loan(
-        LoanInputs(params, [anchor], None, rate_changes), date(2033, 6, 1),
+        LoanInputs(params, [anchor], None, feed), date(2033, 6, 1),
     )
 
     # Period recast of the reduced month-60 balance at 7% (NOT the old
@@ -583,7 +667,8 @@ def test_zero_rate_loan_payment_is_principal_over_n():
     anchor = _origination_anchor(params)
 
     state = resolve_loan(
-        LoanInputs(params, [anchor], None, None), date(2026, 2, 1),
+        LoanInputs(params, [anchor], None, _rate_feed(params)),
+        date(2026, 2, 1),
     )
 
     assert state.monthly_payment == Decimal("1000.00")
@@ -655,7 +740,8 @@ def test_payoff_date_and_total_interest():
     anchor = _origination_anchor(params)
 
     state = resolve_loan(
-        LoanInputs(params, [anchor], None, None), date(2026, 2, 1),
+        LoanInputs(params, [anchor], None, _rate_feed(params)),
+        date(2026, 2, 1),
     )
 
     assert state.payoff_date == date(2027, 1, 1)
@@ -679,7 +765,10 @@ def test_empty_anchor_events_raises_value_error():
     """
     params = _arm_400k_params()
     with pytest.raises(ValueError, match="at least one LoanAnchorEvent"):
-        resolve_loan(LoanInputs(params, [], None, None), date(2026, 6, 1))
+        resolve_loan(
+            LoanInputs(params, [], None, _rate_feed(params)),
+            date(2026, 6, 1),
+        )
 
 
 def test_latest_anchor_breaks_tie_by_created_at():
@@ -710,7 +799,8 @@ def test_latest_anchor_breaks_tie_by_created_at():
     )
 
     state = resolve_loan(
-        LoanInputs(params, [earlier, later], None, None), date(2026, 7, 1),
+        LoanInputs(params, [earlier, later], None, _rate_feed(params)),
+        date(2026, 7, 1),
     )
 
     # Latest anchor's balance is returned (no confirmed payments
@@ -729,7 +819,8 @@ def test_loan_state_is_frozen():
     params = _arm_400k_params()
     anchor = _origination_anchor(params)
     state = resolve_loan(
-        LoanInputs(params, [anchor], None, None), date(2026, 6, 1),
+        LoanInputs(params, [anchor], None, _rate_feed(params)),
+        date(2026, 6, 1),
     )
 
     with pytest.raises(AttributeError):
@@ -765,13 +856,15 @@ def test_arm_trueup_does_not_change_payment():
     # Resolve at two as_of dates past the trueup.
     state_a = resolve_loan(
         LoanInputs(
-            params, [origination_anchor, trueup_anchor], None, None,
+            params, [origination_anchor, trueup_anchor], None,
+            _rate_feed(params),
         ),
         date(2028, 6, 1),
     )
     state_b = resolve_loan(
         LoanInputs(
-            params, [origination_anchor, trueup_anchor], None, None,
+            params, [origination_anchor, trueup_anchor], None,
+            _rate_feed(params),
         ),
         date(2030, 6, 1),
     )
@@ -817,20 +910,22 @@ def test_arm_second_period_uses_recorded_recast_held_constant():
         ),
     ]
 
+    feed = _rate_feed(params, rate_changes)
+
     # Two as_of dates inside the second period -> the recorded recast,
     # held constant (no month-to-month re-amortization).
     state_early = resolve_loan(
-        LoanInputs(params, [anchor], None, rate_changes), date(2032, 6, 1),
+        LoanInputs(params, [anchor], None, feed), date(2032, 6, 1),
     )
     state_late = resolve_loan(
-        LoanInputs(params, [anchor], None, rate_changes), date(2035, 6, 1),
+        LoanInputs(params, [anchor], None, feed), date(2035, 6, 1),
     )
     assert state_early.monthly_payment == Decimal("2500.00")
     assert state_early.monthly_payment == state_late.monthly_payment
 
     # The origination period is unaffected: still the contractual P&I.
     state_p0 = resolve_loan(
-        LoanInputs(params, [anchor], None, rate_changes), date(2028, 1, 1),
+        LoanInputs(params, [anchor], None, feed), date(2028, 1, 1),
     )
     assert state_p0.monthly_payment == Decimal("2398.20")
 
@@ -898,7 +993,8 @@ def test_history_rows_marked_confirmed():
     ]
 
     state = resolve_loan(
-        LoanInputs(params, [anchor], payments, None), date(2026, 5, 1),
+        LoanInputs(params, [anchor], payments, _rate_feed(params)),
+        date(2026, 5, 1),
     )
 
     # First three rows are the replayed confirmed payments.
@@ -940,7 +1036,8 @@ def test_forward_rows_marked_unconfirmed():
     ]
 
     state = resolve_loan(
-        LoanInputs(params, [anchor], payments, None), date(2026, 5, 1),
+        LoanInputs(params, [anchor], payments, _rate_feed(params)),
+        date(2026, 5, 1),
     )
 
     # All rows past the three history rows are forward projections.
@@ -1036,7 +1133,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("0.00"),
             as_of=self.AS_OF,
@@ -1069,7 +1166,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1107,7 +1204,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1155,7 +1252,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=anchors,
                 payments=payments,
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("0.00"),
             as_of=date(2026, 6, 2),
@@ -1186,7 +1283,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1220,7 +1317,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=payments,
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1252,7 +1349,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=payments,
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("0.00"),
             as_of=self.AS_OF,
@@ -1289,7 +1386,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=payments,
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1341,7 +1438,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1376,7 +1473,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1429,7 +1526,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1501,7 +1598,7 @@ class TestComputePayoffScenarios:
                     loan_params=params,
                     anchor_events=[anchor],
                     payments=payments,
-                    rate_changes=None,
+                    rate_changes=_rate_feed(params),
                 ),
                 extra_monthly=Decimal("500.00"),
                 as_of=self.AS_OF,
@@ -1565,7 +1662,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=payments,
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
@@ -1648,7 +1745,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor_origin, anchor_trueup],
                 payments=payments,
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("0.00"),
             as_of=date(2026, 3, 1),
@@ -1706,7 +1803,7 @@ class TestComputePayoffScenarios:
                 loan_params=params,
                 anchor_events=[anchor],
                 payments=payments,
-                rate_changes=None,
+                rate_changes=_rate_feed(params),
             ),
             extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,

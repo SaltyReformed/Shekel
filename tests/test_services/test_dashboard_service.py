@@ -920,18 +920,21 @@ def _create_loan_account(
     db_session.flush()
 
     from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
-    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+        insert_origination_event,
+        insert_origination_rate,
+    )
     params = LoanParams(
         account_id=account.id,
         original_principal=principal,
         current_principal=principal,
-        interest_rate=rate,
         term_months=term,
         origination_date=date(2026, 1, 1),
         payment_day=1,
     )
     db_session.add(params)
     db_session.flush()
+    insert_origination_rate(params, rate)
     insert_origination_event(params)
     db_session.commit()
     return account
