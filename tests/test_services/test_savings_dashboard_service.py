@@ -166,22 +166,24 @@ class TestGoalProgress:
             )
             assert len(result["goal_data"]) == 1
             gd = result["goal_data"][0]
-            assert gd["progress_pct"] == 50
+            # 5000 / 10000 * 100 = 50.00 via money.percent_complete (Decimal).
+            assert gd["progress_pct"] == Decimal("50.00")
             assert gd["current_balance"] == Decimal("5000.00")
 
-    def test_progress_pct_truncates_fractional_percent(
+    def test_progress_pct_rounds_half_up_fractional_percent(
         self, app, db, seed_user, seed_periods
     ):
-        """progress_pct truncates a fractional percent via int(), not rounds.
+        """progress_pct rounds a fractional percent HALF_UP via percent_complete.
 
-        $4,980 / $5,000 = 99.6%.  The inline rule in
-        ``savings_dashboard_service/_goals.py`` is
-        ``min(100, int(balance / target * 100))`` -- ``int()`` truncates
-        99.6 to 99.  This pins that behavior and distinguishes it from the
-        canonical ``money.percent_complete`` (ROUND_HALF_UP), which would
-        not truncate.  Whether to unify the two rules is the PAUSED
-        deep-quality-hunt #20/#78; this test documents the CURRENT rule so
-        that decision (or any regression) must change it deliberately.
+        $4,980 / $5,000 = 99.6%.  deep-quality-hunt #20/#78 routed this
+        savings card through the canonical ``money.percent_complete``
+        (ROUND_HALF_UP, clamped [0, 100], Decimal), retiring the prior
+        ``min(100, int(...))`` truncation that disagreed with the
+        budget-dashboard savings-goal card for the same goal.  So the value
+        is now ``Decimal("99.60")`` (not the old truncated ``99``); the
+        template renders it ``"{:.0f}".format(...)`` -> "100%", matching the
+        budget dashboard's ``_savings_goals.html`` label.  Revert-proof: the
+        old ``int(99.6) == 99`` fails this ``99.60`` assertion.
         """
         with app.app_context():
             savings_type = (
@@ -215,20 +217,19 @@ class TestGoalProgress:
             )
             gd = result["goal_data"][0]
             assert gd["current_balance"] == Decimal("4980.00")
-            # int(99.6) == 99 (truncated down), NOT 100.
-            assert gd["progress_pct"] == 99
+            # 4980 / 5000 * 100 = 99.60, ROUND_HALF_UP via percent_complete
+            # (NOT the old int()-truncated 99).
+            assert gd["progress_pct"] == Decimal("99.60")
 
     def test_progress_pct_clamps_over_funded_to_100(
         self, app, db, seed_user, seed_periods
     ):
         """progress_pct clamps an over-funded goal to 100 (upper bound).
 
-        $6,000 / $5,000 = 120%, capped by the inline ``min(100, ...)``;
-        no existing test pinned the over-100 clamp.  (The MISSING lower
-        clamp on a negative balance -- where the inline rule diverges from
-        ``percent_complete``'s 0-floor -- is part of the PAUSED #20/#78
-        rule decision, so it is intentionally not asserted here; this test
-        covers only the unambiguous, reachable upper clamp.)
+        $6,000 / $5,000 = 120%, clamped to ``Decimal("100.00")`` by
+        ``money.percent_complete`` (deep-quality-hunt #20/#78).  The
+        companion lower clamp on a negative balance is covered by
+        ``test_progress_pct_clamps_negative_balance_to_zero``.
         """
         with app.app_context():
             savings_type = (
@@ -262,8 +263,56 @@ class TestGoalProgress:
             )
             gd = result["goal_data"][0]
             assert gd["current_balance"] == Decimal("6000.00")
-            # int(120) == 120, clamped to 100 by min(100, ...).
-            assert gd["progress_pct"] == 100
+            # 6000 / 5000 * 100 = 120, clamped to 100.00 by percent_complete.
+            assert gd["progress_pct"] == Decimal("100.00")
+
+    def test_progress_pct_clamps_negative_balance_to_zero(
+        self, app, db, seed_user, seed_periods
+    ):
+        """progress_pct floors a negative-balance goal at 0% (lower bound).
+
+        A goal backed by an overdrawn account (negative projected balance)
+        previously produced a NEGATIVE progress_pct -- the prior
+        ``min(100, int(...))`` rule had no lower clamp, so an overdrawn
+        -$500 against a $5,000 target rendered a -10%-width / "-10%"-label
+        bar (deep-quality-hunt #20).  Routing through ``percent_complete``
+        floors the ratio at ``Decimal("0")``.  Revert-proof: the old rule
+        yields ``min(100, int(-10)) == -10``, failing this 0 assertion.
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings").one()
+            )
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Overdrawn Account",
+                    anchor_balance=Decimal("-500.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=savings.id,
+                name="Underwater",
+                target_amount=Decimal("5000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            gd = result["goal_data"][0]
+            assert gd["current_balance"] == Decimal("-500.00")
+            # -500 / 5000 * 100 = -10%, floored to 0.00 by percent_complete.
+            assert gd["progress_pct"] == Decimal("0")
 
     def test_no_goals_returns_empty_list(
         self, app, db, seed_user, seed_periods

@@ -379,7 +379,7 @@
                  aria-valuemax="100">
             </div>
           </div>
-          <small class="text-muted">{{ gd.progress_pct }}% complete</small>
+          <small class="text-muted">{{ "{:.0f}".format(gd.progress_pct) }}% complete</small>
         </div>
 
         {# Target date and contribution #}

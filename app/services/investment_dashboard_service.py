@@ -63,7 +63,7 @@ from app.services.projection_inputs import (
     load_shadow_income_contributions_for_account,
 )
 from app.services.scenario_resolver import get_baseline_scenario
-from app.utils.money import round_money
+from app.utils.money import percent_complete, round_money
 
 logger = logging.getLogger(__name__)
 
@@ -353,13 +353,23 @@ def _compute_limit_info(
     if limit is None:
         return None
     if limit > 0:
-        pct = min(100, int(ytd_contributions / limit * 100))
+        # Canonical money.percent_complete (ROUND_HALF_UP, clamped [0, 100],
+        # Decimal) -- the one "percent funded" contract the budget-dashboard
+        # savings cards and the companion entry view also use, so a fractional
+        # YTD rounds the same everywhere instead of truncating only here
+        # (deep-quality-hunt #78).  limit > 0 guards the divide, so
+        # percent_complete's own target <= 0 branch never collides with the
+        # E-12 zero-cap semantics below.
+        pct = percent_complete(ytd_contributions, limit)
     elif ytd_contributions > 0:
-        # Cap is zero, contributions exist -> 100% used (over).
-        pct = 100
+        # Cap is zero, contributions exist -> 100% used (over).  Kept explicit
+        # (not percent_complete, which returns 0 for a <= 0 target) to preserve
+        # the E-12 / HIGH-06 zero-cap semantics matching the growth engine's
+        # min(contribution, 0) = 0.
+        pct = Decimal("100")
     else:
         # Cap and YTD both zero -> 0% used.
-        pct = 0
+        pct = Decimal("0")
     return {
         "limit": limit,
         "ytd": ytd_contributions,
