@@ -874,6 +874,33 @@ class TestRateHistoryCheck:
             db.session.commit()
             assert row.id is not None
 
+    def test_rate_below_zero_rejected(self, app, seed_user):
+        """The lower bound of ``ck_rate_history_valid_interest_rate``.
+
+        The CHECK is ``interest_rate >= 0 AND interest_rate <= 1``; the
+        sibling tests pin the upper bound, this pins the lower.  Both
+        bounds matter because DH-#56 retired ``loan_params.interest_rate``
+        (and its CHECKs), making ``rate_history.interest_rate`` the loan
+        rate's sole storage-tier domain guard.
+        """
+        with app.app_context():
+            account = _insert_account(
+                seed_user, "Mortgage R3", "Mortgage",
+            )
+            with pytest.raises(IntegrityError) as info:
+                db.session.execute(
+                    text(
+                        "INSERT INTO budget.rate_history "
+                        "(account_id, effective_date, interest_rate, "
+                        " created_at) "
+                        "VALUES (:aid, '2026-01-01', -0.01, now())"
+                    ),
+                    {"aid": account.id},
+                )
+                db.session.flush()
+            db.session.rollback()
+            assert _constraint_name_from(info.value) == CK_RATE_HISTORY
+
 
 class TestUserSettingsCheck:
     """``auth.user_settings`` rate CHECK constraints (F-077)."""
