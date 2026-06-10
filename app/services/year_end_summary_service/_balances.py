@@ -11,6 +11,8 @@ from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy.orm import joinedload
+
 from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
@@ -597,27 +599,97 @@ def _compute_interest_for_year(
     return total
 
 
+def _settled_net_by_period(
+    account: Account,
+    scenario: Scenario,
+    period_ids: list[int],
+) -> dict[int, Decimal]:
+    """Sum settled income-minus-expenses per pay period for an account.
+
+    Returns the net balance change each period's *settled* transactions
+    contributed -- income ``effective_amount`` minus expense
+    ``effective_amount`` -- keyed by ``pay_period_id``.  Only settled
+    (done / received / settled) rows are summed because those are the
+    transactions that actually moved money to build the captured anchor
+    balance, so subtracting them walks the balance backward correctly;
+    projected rows are not yet reflected in the anchor, exactly as the
+    forward balance walk excludes them past the anchor (E-25).
+    ``effective_amount`` returns the settled ``actual_amount`` for these
+    rows.
+
+    Args:
+        account: The interest-bearing account.
+        scenario: Baseline scenario (query scope).
+        period_ids: Pay period IDs to sum.
+
+    Returns:
+        dict mapping ``pay_period_id`` to net Decimal (income minus
+        expenses); a period with no settled income/expense rows is absent.
+    """
+    if not period_ids:
+        return {}
+
+    transactions = (
+        db.session.query(Transaction)
+        .options(joinedload(Transaction.status))
+        .filter(
+            Transaction.account_id == account.id,
+            Transaction.scenario_id == scenario.id,
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.is_deleted.is_(False),
+        )
+        .all()
+    )
+
+    net_by_period: dict[int, Decimal] = {}
+    for txn in transactions:
+        if txn.status is None or not txn.status.is_settled:
+            continue
+        if txn.is_income:
+            delta = txn.effective_amount
+        elif txn.is_expense:
+            delta = -txn.effective_amount
+        else:
+            continue
+        net_by_period[txn.pay_period_id] = (
+            net_by_period.get(txn.pay_period_id, ZERO) + delta
+        )
+
+    return net_by_period
+
+
 def _compute_pre_anchor_interest(
     account: Account,
     interest_params: InterestParams,
+    scenario: Scenario,
     all_periods: list,
     year: int,
 ) -> Decimal:
     """Estimate interest earned in pre-anchor periods of the target year.
 
     When the anchor falls after January 1 of the target year,
-    calculate_balances_with_interest does not compute interest for
-    pre-anchor periods.  This function fills that gap using the
-    anchor balance as an approximation of the account balance during
-    those periods.
+    ``calculate_balances_with_interest`` produces no balance for the
+    pre-anchor periods, so :func:`_compute_interest_for_year` does not
+    count their interest.  This function fills that gap.
 
-    This slightly overstates interest (the actual balance was lower
-    before contributions), but is a reasonable approximation for
-    display purposes.
+    The balance during those periods was lower than the anchor balance
+    (the contributions that built it up had not yet arrived), so accruing
+    interest on the flat anchor balance overstates it.  Instead this
+    reverse-derives each pre-anchor period's end balance: it walks
+    backward from the anchor balance, subtracting the net settled activity
+    (income minus expenses) that occurred after each period -- the
+    transactions that actually built the balance up to the captured anchor
+    -- and accrues interest on that lower, period-correct balance via the
+    same ``calculate_interest`` the forward path (``_layer_interest``)
+    uses on each period's end balance.  Only settled activity is
+    un-walked, matching how the anchor reflects settled rows only.  The
+    second-order interest-on-interest term is not un-walked (sub-dollar
+    over a partial year); the dominant contribution-driven bias is removed.
 
     Args:
         account: Interest-bearing account.
         interest_params: InterestParams for the account.
+        scenario: Baseline scenario (transaction-query scope).
         all_periods: All user pay periods.
         year: Target calendar year.
 
@@ -638,23 +710,42 @@ def _compute_pre_anchor_interest(
     if anchor_period.start_date <= year_start:
         return ZERO  # No pre-anchor gap in this year.
 
-    # Pre-anchor periods in the target year.
-    pre_anchor = [
-        p for p in all_periods
-        if p.start_date.year == year
-        and p.start_date < anchor_period.start_date
-    ]
+    # Pre-anchor periods in the target year, chronological.
+    pre_anchor = sorted(
+        (
+            p for p in all_periods
+            if p.start_date.year == year
+            and p.start_date < anchor_period.start_date
+        ),
+        key=lambda p: p.start_date,
+    )
+    if not pre_anchor:
+        return ZERO
 
-    balance = account.current_anchor_balance or ZERO
+    # Net settled activity per period; subtracting it walks the balance
+    # backward through the pre-anchor gap.  The anchor period is included
+    # so its own settled activity can be removed first.
+    net_by_period = _settled_net_by_period(
+        account, scenario, [p.id for p in pre_anchor] + [anchor_pid],
+    )
+
+    # The latest pre-anchor period's end balance is the anchor period's
+    # start balance: the anchor balance minus the anchor period's own
+    # settled activity.
+    balance = (account.current_anchor_balance or ZERO) - net_by_period.get(
+        anchor_pid, ZERO,
+    )
+
     total_interest = ZERO
-    for period in pre_anchor:
-        interest = calculate_interest(
+    for period in reversed(pre_anchor):
+        total_interest += calculate_interest(
             balance=balance,
             apy=interest_params.apy,
             compounding_frequency_id=interest_params.compounding_frequency_id,
             period_start=period.start_date,
             period_end=period.end_date,
         )
-        total_interest += interest
+        # Step back to the prior period's end balance.
+        balance -= net_by_period.get(period.id, ZERO)
 
     return total_interest

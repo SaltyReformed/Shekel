@@ -49,8 +49,12 @@ from app.models.tax_config import (
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import amortization_engine, paycheck_calculator
+from app.services.interest_projection import calculate_interest
 from app.services.tax_config_service import load_tax_configs
 from app.services.year_end_summary_service import compute_year_end_summary
+from app.services.year_end_summary_service._balances import (
+    _compute_pre_anchor_interest,
+)
 from app.services import account_service
 
 ZERO = Decimal("0")
@@ -1064,6 +1068,63 @@ class TestTransfersSummary:
         transfers = result["transfers_summary"]
         totals = [t["total_amount"] for t in transfers]
         assert totals == sorted(totals, reverse=True)
+
+    def test_transfer_attributed_by_due_date_not_period_year(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """#61: a boundary-period transfer is attributed by its due_date.
+
+        A transfer sits in a 2026 pay period but carries a 2025 due_date
+        (a period straddling the Dec/Jan boundary).  The year-end report
+        must attribute it by COALESCE(due_date, start_date) -- to 2025 --
+        so it lands in the same calendar year as the same event's expense
+        shadow in the spending section, instead of being counted in 2026
+        purely because its period's start_date is in 2026.
+        """
+        data = seed_user
+        user = data["user"]
+        account = data["account"]
+        scenario = data["scenario"]
+        periods = seed_periods
+
+        savings_type = (
+            db.session.query(AccountType).filter_by(name="Savings").one()
+        )
+        savings_acct = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=ZERO,
+                anchor_period_id=periods[0].id,
+            ),
+        )
+        db.session.add(savings_acct)
+        db.session.flush()
+
+        # In-year transfer: no due_date -> falls back to the period
+        # start date (2026), so it is attributed to 2026.
+        _create_transfer_with_shadows(
+            user, account, savings_acct, scenario, periods[1],
+            "Save 2026", Decimal("200.00"),
+        )
+        # Boundary transfer: a 2026 period, but a 2025 due_date.
+        boundary, _, _ = _create_transfer_with_shadows(
+            user, account, savings_acct, scenario, periods[0],
+            "Save boundary", Decimal("999.00"),
+        )
+        boundary.due_date = date(2025, 12, 30)
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)  # 2026
+        transfers = result["transfers_summary"]
+
+        # Only the in-year ($200) transfer counts; the 2025-due $999
+        # boundary transfer belongs to 2025.  Under the pre-fix
+        # period-membership rule the total would be $1,199.00.
+        assert len(transfers) == 1
+        assert transfers[0]["destination_account"] == "Savings"
+        assert transfers[0]["total_amount"] == Decimal("200.00")
 
 
 # ── Net Worth Tests ───────────────────────────────────────────────
@@ -2202,6 +2263,107 @@ class TestSavingsProgressPreAnchor:
         assert entry["jan1_balance"] > ZERO
         # Interest should include pre-anchor periods.
         assert entry["investment_growth"] > ZERO
+
+    def test_pre_anchor_interest_reverse_derives_ramping_balance(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """#60: pre-anchor interest accrues on the reverse-derived balance.
+
+        A HYSA anchored mid-year (period 5, $25,000) received five settled
+        $5,000 contributions in periods 1-5, so its real balance ramped
+        0 -> 5k -> 10k -> 15k -> 20k -> 25k.  The pre-anchor interest must
+        accrue on each period's true (lower) end balance, not the flat
+        $25,000 anchor balance.  By construction the reverse-derived
+        pre-anchor end balances are period4=$20k, period3=$15k,
+        period2=$10k, period1=$5k, period0=$0, so the estimate equals the
+        sum of ``calculate_interest`` over those balances -- and is
+        strictly less than the pre-fix flat-anchor sum (five interest
+        accruals on $25,000).
+        """
+        data = seed_user
+        user = data["user"]
+        account = data["account"]  # checking -- the transfer source
+        scenario = data["scenario"]
+        periods = seed_periods
+
+        hysa_type = (
+            db.session.query(AccountType).filter_by(name="HYSA").one()
+        )
+        hysa = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=user.id,
+                account_type_id=hysa_type.id,
+                name="HYSA Ramp",
+                anchor_balance=Decimal("25000.00"),
+                anchor_period_id=periods[5].id,
+            ),
+        )
+        db.session.add(hysa)
+        db.session.flush()
+        apy = Decimal("0.05000")
+        freq_id = ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.DAILY,
+        )
+        interest_params = InterestParams(
+            account_id=hysa.id, apy=apy, compounding_frequency_id=freq_id,
+        )
+        db.session.add(interest_params)
+        # Five settled $5,000 contributions into the HYSA, periods 1..5,
+        # so the captured $25,000 anchor reflects them: the real balance
+        # ramped from $0 at period 0 to $25,000 at the period-5 anchor.
+        for idx in range(1, 6):
+            _create_transfer_with_shadows(
+                user, account, hysa, scenario, periods[idx],
+                f"Contribution {idx}", Decimal("5000.00"),
+            )
+        db.session.commit()
+
+        result = _compute_pre_anchor_interest(
+            hysa, interest_params, scenario, periods, YEAR,
+        )
+
+        # Independent oracle: the by-construction reverse-derived end
+        # balance of each pre-anchor period (period i ended at $5k * i).
+        expected_balances = {
+            periods[0].id: Decimal("0"),
+            periods[1].id: Decimal("5000.00"),
+            periods[2].id: Decimal("10000.00"),
+            periods[3].id: Decimal("15000.00"),
+            periods[4].id: Decimal("20000.00"),
+        }
+        expected = sum(
+            (
+                calculate_interest(
+                    balance=expected_balances[p.id],
+                    apy=apy,
+                    compounding_frequency_id=freq_id,
+                    period_start=p.start_date,
+                    period_end=p.end_date,
+                )
+                for p in periods[0:5]
+            ),
+            ZERO,
+        )
+        assert result == expected
+
+        # Revert guard: the pre-fix code accrued interest on the flat
+        # $25,000 anchor balance for every pre-anchor period, which is
+        # strictly more than accruing on the ramping balances above.
+        flat_anchor = sum(
+            (
+                calculate_interest(
+                    balance=Decimal("25000.00"),
+                    apy=apy,
+                    compounding_frequency_id=freq_id,
+                    period_start=p.start_date,
+                    period_end=p.end_date,
+                )
+                for p in periods[0:5]
+            ),
+            ZERO,
+        )
+        assert result < flat_anchor
+        assert result > ZERO
 
     def test_plain_savings_pre_anchor_jan1(
         self, app, db, seed_full_user_data,

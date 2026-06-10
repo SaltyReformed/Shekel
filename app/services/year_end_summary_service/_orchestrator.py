@@ -117,7 +117,7 @@ def _build_summary(
             user_id, year, ctx["year_period_ids"], scenario.id,
         ),
         "transfers_summary": _compute_transfers_summary(
-            user_id, ctx["year_period_ids"], scenario.id,
+            user_id, year, ctx["year_period_ids"], scenario.id,
         ),
         "net_worth": _compute_net_worth(
             ctx["accounts"], year_ctx, inputs,

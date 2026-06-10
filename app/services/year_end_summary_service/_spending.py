@@ -21,7 +21,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.utils.balance_predicates import settled_status_ids
+from app.utils.balance_predicates import attribution_year, settled_status_ids
 from app.utils.money import round_money
 
 ZERO = Decimal("0")
@@ -187,12 +187,10 @@ def _compute_entry_breakdowns(
 
     breakdowns: dict[tuple[str, str], dict] = {}
     for row in rows:
-        # Match _attribution_year(): COALESCE(due_date, pp.start_date).
-        attr_year = (
-            row.due_date.year if row.due_date is not None
-            else row.pp_start_date.year
-        )
-        if attr_year != year:
+        # Match _attribution_year(): COALESCE(due_date, pp.start_date),
+        # via the same shared rule so this SQL-row path cannot drift from
+        # the object path.
+        if attribution_year(row.due_date, row.pp_start_date) != year:
             continue
         _accumulate_entry_row(breakdowns, row)
 
@@ -363,14 +361,12 @@ def _query_settled_expenses(
 def _attribution_year(txn: Transaction) -> int:
     """Return the calendar year a transaction is attributed to.
 
-    Uses COALESCE(due_date, pay_period.start_date), consistent with
-    calendar and variance services.
+    Delegates to the shared
+    :func:`app.utils.balance_predicates.attribution_year` rule
+    (COALESCE(due_date, pay_period.start_date)), the single definition
+    used by the transfers section and the calendar / variance services.
     """
-    attr_date = (
-        txn.due_date if txn.due_date is not None
-        else txn.pay_period.start_date
-    )
-    return attr_date.year
+    return attribution_year(txn.due_date, txn.pay_period.start_date)
 
 
 def _txn_category_names(txn: Transaction) -> tuple[str, str]:

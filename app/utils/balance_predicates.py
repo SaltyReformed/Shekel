@@ -433,3 +433,33 @@ def monthly_attribution_clause(first_day: date, last_day: date, period_ids: list
             period_ids if period_ids else [-1],
         ),
     )
+
+
+def attribution_year(due_date: date | None, period_start: date) -> int:
+    """Return the calendar year a dated budget event is attributed to.
+
+    The single definition of the year-end report's calendar-year
+    attribution rule: ``COALESCE(due_date, period_start).year`` -- the
+    explicit due date when present, else the owning pay period's start
+    date.  This is the year-bucket form of the same precedence
+    :func:`monthly_attribution_clause` applies to a date range (due_date
+    wins; an undated row falls back to its period), so a boundary-period
+    event -- a December pay period carrying a January due_date -- lands
+    in the same calendar year on every surface that uses it.
+
+    Shared by the year-end spending section (settled expense
+    ``Transaction`` rows) and the transfers section (parent ``Transfer``
+    rows) so the two cannot drift on which year a boundary-period event
+    belongs to (#61): the same event's expense shadow and parent transfer
+    are attributed identically.
+
+    Args:
+        due_date: The event's explicit due date, or None.
+        period_start: The owning pay period's ``start_date`` -- the
+            fallback used when ``due_date`` is None.
+
+    Returns:
+        The calendar year (int) the event is attributed to.
+    """
+    attr_date = due_date if due_date is not None else period_start
+    return attr_date.year

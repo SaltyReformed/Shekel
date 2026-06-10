@@ -126,7 +126,7 @@ def _savings_progress_for_account(
             account, int_params, scenario, all_periods, year,
         )
         growth_total += _compute_pre_anchor_interest(
-            account, int_params, all_periods, year,
+            account, int_params, scenario, all_periods, year,
         )
     else:
         balances = _base_account_balance_map(account, scenario, all_periods)
