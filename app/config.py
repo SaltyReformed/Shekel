@@ -142,21 +142,33 @@ class BaseConfig:
     # who want a longer window (see REMEMBER_COOKIE_DURATION below).
     # Operators can override via SESSION_LIFETIME_HOURS in .env -- the
     # range is intentionally wide to support short-lived test envs and
-    # longer-lived dev shells.
+    # longer-lived dev shells.  NOTE: this cap only bites on a
+    # ``permanent`` session, and the app deliberately leaves sessions
+    # non-permanent so Flask-Login's ``strong`` session protection
+    # (F-038 / C-07) keeps wiping the session on IP / User-Agent drift
+    # -- a permanent session is exempt from that wipe.  The effective
+    # bound on an open session is therefore IDLE_TIMEOUT_MINUTES below,
+    # not this value; "remember me" is the supported cross-restart path.
     PERMANENT_SESSION_LIFETIME = timedelta(
         hours=int(os.getenv("SESSION_LIFETIME_HOURS", "12"))
     )
 
     # Maximum gap between authenticated requests before ``load_user``
-    # rejects the session.  Defends against the "I left the browser
-    # open at the coffee shop" scenario: a 30-minute idle window is
-    # short enough that an attacker who reaches an unlocked device has
-    # to act fast, long enough that legitimate switching between tabs
-    # or apps does not constantly bounce the user back to /login.
-    # Refreshed by the ``before_request`` hook in
-    # ``app/__init__.py`` on every authenticated request; checked by
-    # ``load_user`` via ``_session_last_activity_at``.
-    IDLE_TIMEOUT_MINUTES = int(os.getenv("IDLE_TIMEOUT_MINUTES", "30"))
+    # rejects the session.  This is a single-owner budget app holding
+    # only account balances and budget items -- no bank links, no
+    # account numbers, no PII beyond an email -- reached only behind
+    # full authentication.  The unattended-access blast radius of a
+    # stale-but-still-open browser is therefore low, and a short idle
+    # window mostly punishes the legitimate owner: a 30-minute timeout
+    # bounced them back to a full password + MFA login whenever they
+    # stepped away from an open tab and came back.  A 12-hour (720 min)
+    # window covers a normal day of on-and-off use without that
+    # friction, while still expiring a forgotten session overnight.
+    # Operators who want a tighter window can override via
+    # IDLE_TIMEOUT_MINUTES in .env.  Refreshed by the ``before_request``
+    # hook in ``app/__init__.py`` on every authenticated request;
+    # checked by ``load_user`` via ``_session_last_activity_at``.
+    IDLE_TIMEOUT_MINUTES = int(os.getenv("IDLE_TIMEOUT_MINUTES", "720"))
 
     # Maximum age of the most recent password verification before
     # ``fresh_login_required`` redirects to ``/reauth``.  Five

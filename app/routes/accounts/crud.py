@@ -301,17 +301,15 @@ def edit_account(account_id):
 @accounts_bp.route("/accounts/<int:account_id>", methods=["POST"])
 @login_required
 @require_owner
-@fresh_login_required()
 def update_account(account_id):
     """Update an account.
 
-    Step-up gated (commit C-10 / F-045) because the form payload
-    accepts ``anchor_balance`` and writes it through with the same
-    ``AccountAnchorHistory`` audit trail as :func:`true_up` and
-    :func:`inline_anchor_update`.  Without the gate, an attacker who
-    avoids the inline editors and POSTs to ``/accounts/<id>`` directly
-    would sidestep the step-up requirement that protects the other
-    two anchor-balance paths.
+    The form payload also accepts ``anchor_balance`` and writes it
+    through with the same ``AccountAnchorHistory`` audit trail as
+    :func:`true_up` and :func:`inline_anchor_update`, so all three
+    anchor-balance edit paths stay consistent.  Like those two, this
+    route is owner-only but no longer step-up gated: anchor balances
+    are reversible, version-locked values, not credentials.
 
     Optimistic locking (commit C-17 / F-009) operates in two layers:
 

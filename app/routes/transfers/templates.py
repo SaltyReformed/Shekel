@@ -15,7 +15,7 @@ from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
+from app.utils.auth_helpers import get_or_404, require_owner
 from app.extensions import db
 from app.models.category import Category
 from app.models.transfer_template import TransferTemplate
@@ -472,7 +472,6 @@ def unarchive_transfer_template(template_id):
 @transfers_bp.route("/transfers/<int:template_id>/hard-delete", methods=["POST"])
 @login_required
 @require_owner
-@fresh_login_required()
 def hard_delete_transfer_template(template_id):
     """Permanently delete a transfer template if it has no payment history.
 
