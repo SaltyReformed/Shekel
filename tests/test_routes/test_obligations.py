@@ -2,8 +2,9 @@
 Tests for the recurring obligations summary route.
 
 Covers page rendering, empty state, monthly equivalent calculations,
-summary totals, IDOR isolation, filtering of inactive/non-recurring
-templates, and section grouping correctness.
+section subtotals, the grid-reconciled projection panel, IDOR
+isolation, filtering of inactive/non-recurring templates, and section
+grouping correctness.
 """
 
 from datetime import date, timedelta
@@ -266,18 +267,18 @@ class TestMonthlyEquivalents:
         html = resp.data.decode()
         assert "$100.00" in html
 
-    def test_summary_totals_correct(
+    def test_section_subtotals_render(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Summary totals correctly sum expenses, transfers, and income.
+        """Each section's monthly subtotal renders for its own obligations.
 
         Setup: $100 biweekly expense, $500 monthly transfer, $1500 biweekly income.
-        Expected:
-          expense_monthly = 100 * 26 / 12 = $216.67
+        Expected per-section monthly subtotals:
+          expense_monthly  = 100 * 26 / 12  = $216.67
           transfer_monthly = $500.00
-          income_monthly = 1500 * 26 / 12 = $3,250.00
-          total_outflows = 216.67 + 500.00 = $716.67
-          net = 3250.00 - 716.67 = $2,533.33
+          income_monthly   = 1500 * 26 / 12 = $3,250.00
+        The page no longer shows a combined outflows/net composite -- that
+        was replaced by the grid-reconciled projection panel.
         """
         user = seed_user["user"]
         checking = seed_user["account"]
@@ -304,48 +305,52 @@ class TestMonthlyEquivalents:
         resp = auth_client.get("/obligations")
         html = resp.data.decode()
 
-        # Verify individual monthly equivalents.
+        # Per-section monthly subtotals each render.
         assert "$216.67" in html    # expense monthly
         assert "$500.00" in html    # transfer monthly
         assert "$3,250.00" in html  # income monthly
 
-        # Verify outflows = expense + transfer.
-        assert "$716.67" in html    # total outflows
-
-    def test_net_positive_green(
+    def test_projection_panel_renders(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Positive net cash flow is shown with text-success class."""
+        """The summary shows the grid-reconciled projection panel.
+
+        With the seed anchor of $1,000.00 and no projected transactions,
+        the panel projects flat, so "Now" reflects the $1,000.00 anchor
+        balance for the Checking account.
+        """
         user = seed_user["user"]
         checking = seed_user["account"]
         category = list(seed_user["categories"].values())[0]
         rule = _create_rule(user, db.session, "Every Period")
 
-        _create_income_template(
-            user, db.session, checking, category,
-            "Paycheck", "2000.00", rule,
-        )
         _create_expense_template(
             user, db.session, checking, category,
-            "Small Bill", "50.00", rule,
+            "Some Bill", "75.00", rule,
         )
         db.session.commit()
 
         resp = auth_client.get("/obligations")
+        assert resp.status_code == 200
         html = resp.data.decode()
-        # Net is positive: income > outflows.
-        assert "text-success" in html
+        assert "Projected Checking Balance" in html
+        assert "Now" in html
+        assert "$1,000.00" in html  # seed anchor, projected flat
 
-    def test_net_negative_red(
+    def test_old_flat_net_labels_removed(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Negative net cash flow is shown with text-danger class."""
+        """The misleading flat composite labels are gone, panel replaces them.
+
+        "Monthly Outflows" and "Net Cash Flow" were the old flat-scalar
+        labels that contradicted the grid; the projection panel supersedes
+        them.
+        """
         user = seed_user["user"]
         checking = seed_user["account"]
         category = list(seed_user["categories"].values())[0]
         rule = _create_rule(user, db.session, "Every Period")
 
-        # High expense, no income.
         _create_expense_template(
             user, db.session, checking, category,
             "Big Bill", "5000.00", rule,
@@ -354,8 +359,9 @@ class TestMonthlyEquivalents:
 
         resp = auth_client.get("/obligations")
         html = resp.data.decode()
-        # Net is negative: no income, all outflows.
-        assert "text-danger" in html
+        assert "Monthly Outflows" not in html
+        assert "Net Cash Flow" not in html
+        assert "Projected Checking Balance" in html
 
 
 # ── Filtering Tests ──────────────────────────────────────────────────
