@@ -358,3 +358,28 @@ class TestPatchAllowsEditableField:
             db.session.refresh(txn)
             assert txn.status_id == projected_id
             assert txn.estimated_amount == Decimal("200.00")
+
+    def test_finalised_full_edit_notes_save_with_money_omitted_allowed(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The real finalised full-edit save: the disabled money inputs are
+        OMITTED from the POST and only ``notes`` + the unchanged Status
+        dropdown value are submitted.  The guard passes (no locked field in
+        the payload) and the notes update commits while the amount is
+        untouched -- proving the template's ``disabled`` (not ``readonly``)
+        choice is what lets a notes-only save through (#26)."""
+        with app.app_context():
+            txn = _create_projected_expense(seed_user, seed_periods_today)
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            txn.status_id = done_id
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"notes": "Reconciled", "status_id": str(done_id)},
+            )
+            assert response.status_code == 200
+            db.session.refresh(txn)
+            assert txn.notes == "Reconciled"
+            assert txn.status_id == done_id
+            assert txn.estimated_amount == Decimal("123.45")

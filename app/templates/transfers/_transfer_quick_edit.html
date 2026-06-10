@@ -3,8 +3,15 @@
    Expand button (⋯) or F2 opens the full edit popover.
 
    Expected context: xfer -- a Transfer object.
+
+   Finalised transfers (is_immutable: Paid / Received / Settled /
+   Cancelled) lock the amount: the input is disabled (so it neither
+   accepts nor submits a value, matching the route guard #26) and a hint
+   directs the user to the full-edit popover, where the Status dropdown
+   reverts the transfer to Projected so it can be edited.
 #}
-<form class="txn-quick-edit d-flex align-items-center gap-1"
+{% set locked = xfer.status and xfer.status.is_immutable %}
+<form class="txn-quick-edit d-flex flex-wrap align-items-center gap-1"
       hx-patch="{{ url_for('transfers.update_transfer', xfer_id=xfer.id) }}"
       hx-target="#xfer-cell-{{ xfer.id }}"
       hx-swap="innerHTML"
@@ -18,7 +25,7 @@
          value="{{ xfer.amount }}"
          class="form-control form-control-sm txn-quick-input flex-1-min-0"
          aria-label="Edit amount for {{ xfer.name or 'Transfer' }}"
-         autofocus>
+         {% if locked %}disabled{% else %}autofocus{% endif %}>
   <button type="button"
           class="btn btn-sm btn-link p-0 xfer-expand-btn"
           title="More options (F2)"
@@ -26,4 +33,10 @@
           data-xfer-id="{{ xfer.id }}">
     <i class="bi bi-three-dots"></i>
   </button>
+  {% if locked %}
+  <small class="text-muted fs-mini w-100">
+    <i class="bi bi-lock-fill"></i> Finalised -- open
+    <i class="bi bi-three-dots"></i> to revert &amp; edit
+  </small>
+  {% endif %}
 </form>

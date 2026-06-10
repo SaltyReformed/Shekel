@@ -21,6 +21,7 @@ from app.models.ref import AccountType, RecurrencePattern, Status
 from app.services import transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
+from tests._test_helpers import field_is_disabled
 
 
 def _create_savings_account(seed_user):
@@ -559,6 +560,60 @@ class TestGridCells:
             assert response.status_code == 200
             assert b"Monthly Savings" in response.data
             assert b'name="amount"' in response.data
+
+    def test_quick_edit_disables_amount_on_finalised_transfer(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The transfer inline quick-edit disables the amount input on a
+        finalised transfer and shows the revert hint (#26)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+
+            resp = auth_client.get(f"/transfers/quick-edit/{xfer.id}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert field_is_disabled(html, "amount")
+            assert "Finalised" in html
+            assert "autofocus" not in html
+
+    def test_full_edit_locks_money_fields_on_finalised_transfer(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The transfer full-edit disables amount / period / category /
+        due-date on a finalised transfer and shows the revert notice, while
+        the Status dropdown and Notes stay editable (#26)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+
+            resp = auth_client.get(f"/transfers/{xfer.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "This transfer is finalised" in html
+            assert field_is_disabled(html, "amount")
+            assert field_is_disabled(html, "pay_period_id")
+            assert field_is_disabled(html, "category_id")
+            assert field_is_disabled(html, "due_date")
+            assert not field_is_disabled(html, "status_id")
+            assert not field_is_disabled(html, "notes")
+
+    def test_full_edit_editable_on_projected_transfer(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A projected transfer's full-edit money fields stay editable with no
+        finalised notice (no regression)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            resp = auth_client.get(f"/transfers/{xfer.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "finalised" not in html.lower()
+            assert not field_is_disabled(html, "amount")
 
     def test_full_edit_renders_due_date_input_for_transfer_shadow(
         self, app, auth_client, seed_user, seed_periods_today

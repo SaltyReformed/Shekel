@@ -5,7 +5,15 @@
    Expected context: xfer, statuses, categories.
    Optional: source_txn_id -- when opened from a shadow transaction cell,
    the form targets #txn-cell-<source_txn_id> instead of #xfer-cell-<xfer.id>.
+
+   Finalised transfers (is_immutable: Paid / Received / Settled /
+   Cancelled) lock the amount / period / category / due-date fields: those
+   inputs are disabled so they neither accept nor submit a value (matching
+   the route guard #26 -- a disabled input is omitted from the POST, so a
+   notes-only save still succeeds).  The Status dropdown and Notes stay
+   editable; set Status to Projected to unlock the amounts.
 #}
+{% set locked = xfer.status and xfer.status.is_immutable %}
 <div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <small class="fw-semibold text-truncate mw-px-200" title="{{ xfer.name or 'Transfer' }}">
@@ -32,13 +40,24 @@
       <input type="hidden" name="source_txn_id" value="{{ source_txn_id }}">
     {% endif %}
 
+    {# Finalised-row notice (#26): the amount / period / category /
+       due-date below are locked until the transfer is reverted to
+       Projected via the Status dropdown. #}
+    {% if locked %}
+    <div class="alert alert-secondary py-1 px-2 mb-2 small" role="status">
+      <i class="bi bi-lock-fill"></i> This transfer is finalised. Set
+      <strong>Status</strong> to Projected to edit the amount.
+    </div>
+    {% endif %}
+
     {# Amount #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Amount</label>
       <input type="number" step="0.01" min="0.01" name="amount"
              value="{{ xfer.amount }}"
              class="form-control form-control-sm"
-             placeholder="Amount">
+             placeholder="Amount"
+             {{ 'disabled' if locked else '' }}>
     </div>
 
     {# Status selector #}
@@ -62,7 +81,8 @@
     {% if periods %}
     <div class="mb-2">
       <label class="form-label mb-0 small">Pay Period</label>
-      <select name="pay_period_id" class="form-select form-select-sm">
+      <select name="pay_period_id" class="form-select form-select-sm"
+              {{ 'disabled' if locked else '' }}>
         {% for p in periods %}
         <option value="{{ p.id }}" {{ 'selected' if xfer.pay_period_id == p.id else '' }}>
           {{ p.label }}
@@ -75,7 +95,8 @@
     {# Category #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Category</label>
-      <select name="category_id" class="form-select form-select-sm">
+      <select name="category_id" class="form-select form-select-sm"
+              {{ 'disabled' if locked else '' }}>
         <option value="">-- None --</option>
         {% for cat in categories %}
         <option value="{{ cat.id }}" {{ 'selected' if xfer.category_id == cat.id else '' }}>
@@ -103,7 +124,8 @@
       <label class="form-label mb-0 small">Due Date</label>
       <input type="date" name="due_date"
              value="{{ xfer.due_date.isoformat() if xfer.due_date is not none else '' }}"
-             class="form-control form-control-sm">
+             class="form-control form-control-sm"
+             {{ 'disabled' if locked else '' }}>
     </div>
 
     {# Save / Cancel buttons #}

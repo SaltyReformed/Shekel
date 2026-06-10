@@ -61,6 +61,34 @@ def select_option_values(html: str, select_key: str) -> list[str]:
     )
 
 
+def field_is_disabled(html: str, field_name: str) -> bool:
+    """Return True if the ``<input>``/``<select>`` named ``field_name`` is disabled.
+
+    Slices from the ``name="<field_name>"`` attribute to the end of that
+    opening tag (the next ``>``) and reports whether the ``disabled``
+    attribute appears there.  The grid edit popovers append ``disabled``
+    after ``name=`` on a finalised row's locked money / period / category
+    / due-date fields (#26), so this distinguishes a locked field from the
+    still-editable Status dropdown and Notes input in the same form.
+
+    Args:
+        html: The full HTML response body to search.
+        field_name: The ``name`` attribute of the input/select to inspect.
+
+    Returns:
+        True when the named field's opening tag carries ``disabled``.
+
+    Raises:
+        AssertionError: The field is absent, so a typo'd name fails loud
+            rather than silently reporting an editable field as locked.
+    """
+    marker = f'name="{field_name}"'
+    idx = html.find(marker)
+    assert idx != -1, f"{marker} not found in rendered HTML"
+    tag_end = html.find(">", idx)
+    return "disabled" in html[idx:tag_end]
+
+
 def freeze_today(monkeypatch, target_date, modules=None):
     """Patch ``date.today()`` and ``datetime.now()`` to ``target_date``.
 

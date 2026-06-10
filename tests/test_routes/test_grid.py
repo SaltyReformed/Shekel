@@ -21,7 +21,7 @@ from app.services.auth_service import hash_password
 from app.services import pay_period_service
 from app.services import account_service
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import field_is_disabled, freeze_today
 
 
 class TestGridView:
@@ -322,6 +322,77 @@ class TestTransactionCRUD:
         db.session.add(txn)
         db.session.commit()
         return txn
+
+    def test_quick_edit_disables_amount_on_finalised_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The inline quick-edit disables the amount input on a finalised row
+        and shows the revert hint, so the cell never offers an amount edit the
+        route guard (#26) would reject.  autofocus marks the editable case."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+
+            resp = auth_client.get(f"/transactions/{txn.id}/quick-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert field_is_disabled(html, "estimated_amount")
+            assert "Finalised" in html
+            assert "autofocus" not in html
+
+    def test_quick_edit_amount_editable_on_projected_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A projected row's quick-edit amount stays editable (no lock, no
+        regression for the common inline-edit path)."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            resp = auth_client.get(f"/transactions/{txn.id}/quick-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert not field_is_disabled(html, "estimated_amount")
+            assert "Finalised" not in html
+            assert "autofocus" in html
+
+    def test_full_edit_locks_money_fields_on_finalised_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The full-edit popover disables the money / period / due-date inputs
+        on a finalised row and shows the revert notice, while the Status
+        dropdown and Notes stay editable so the user can revert to Projected
+        and then edit (#26)."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "This transaction is finalised" in html
+            # Locked money / period / due-date fields.
+            assert field_is_disabled(html, "estimated_amount")
+            assert field_is_disabled(html, "actual_amount")
+            assert field_is_disabled(html, "pay_period_id")
+            assert field_is_disabled(html, "due_date")
+            # The revert path and display fields stay editable.
+            assert not field_is_disabled(html, "status_id")
+            assert not field_is_disabled(html, "notes")
+
+    def test_full_edit_money_fields_editable_on_projected_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A projected row's full-edit money fields stay editable with no
+        finalised notice (no regression for the common edit path)."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "finalised" not in html.lower()
+            assert not field_is_disabled(html, "estimated_amount")
+            assert not field_is_disabled(html, "due_date")
 
     def test_create_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions creates a new ad-hoc transaction."""
