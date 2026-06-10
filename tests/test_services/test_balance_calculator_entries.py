@@ -436,7 +436,7 @@ class TestEntryAwareBalance:
     def test_entry_aware_paid_uses_effective_amount(self, app, db, seed_user, seed_periods):
         """Paid (DONE) transaction with entries -- excluded from balance (settled).
 
-        Settled transactions are skipped by _sum_projected (status != projected).
+        Settled transactions are skipped by sum_projected (status != projected).
         Balance is anchor only.
         """
         with app.app_context():
@@ -500,7 +500,7 @@ class TestEntryAwareBalance:
     def test_entry_aware_cancelled_excluded(self, app, db, seed_user, seed_periods):
         """Cancelled transaction with entries loaded -- excluded from balance.
 
-        Cancelled status is skipped by _sum_projected (status != projected).
+        Cancelled status is skipped by sum_projected (status != projected).
         """
         with app.app_context():
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
@@ -1423,12 +1423,12 @@ class TestEntryAwareBalance:
             # 5000 - 500 - 200 = 4300
             assert balances[seed_periods[1].id] == Decimal("4300.00")
 
-    # ── Anchor period (verifies _sum_projected on the anchor) ────────
+    # ── Anchor period (verifies sum_projected on the anchor) ────────
 
     def test_anchor_period_entry_aware(self, app, db, seed_user, seed_periods):
-        """Entry-aware formula works in the anchor period via _sum_projected.
+        """Entry-aware formula works in the anchor period via sum_projected.
 
-        This verifies that the anchor-period call to _sum_projected (not
+        This verifies that the anchor-period call to sum_projected (not
         just the post-anchor calls) uses the entry-aware formula for
         expenses.
 
@@ -1491,7 +1491,7 @@ class TestEntryAwareBalance:
                 transactions=all_txns,
             )
 
-            # Anchor period uses _sum_projected:
+            # Anchor period uses sum_projected:
             # max(500 - 400, 0) = 100; 5000 - 100 = 4900
             assert balances[seed_periods[0].id] == Decimal("4900.00")
 

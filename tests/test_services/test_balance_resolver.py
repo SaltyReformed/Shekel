@@ -204,7 +204,7 @@ class TestBalancesForEntriesAware:
           - anchor 614.29 on seed_periods[0] (overrides seed_user's
             default 1000.00 anchor).
           - one Projected envelope expense est=500.00 on
-            seed_periods[0] (the anchor period, so ``_sum_projected``
+            seed_periods[0] (the anchor period, so ``sum_projected``
             applies).
           - three cleared debit entries 20.00 + 15.71 + 10.00 = 45.71.
           - no uncleared debits, no credits.
@@ -792,7 +792,7 @@ class TestPeriodSubtotal:
         Every stored/override leg is cent-quantized in production, so the
         per-leg-vs-combined divergence is unreachable today.  The live
         override seam carries its value verbatim into the sum
-        (``balance_calculator._income_amount`` / ``_expense_amount``), so
+        (``balance_calculator.income_amount`` / ``_expense_amount``), so
         it is the only way to inject a sub-cent leg; this test does so
         directly to lock the rounding discipline against a regression to
         per-leg rounding.

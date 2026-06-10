@@ -499,7 +499,7 @@ def current_period_transfer_contribution(contribution_transactions, current_peri
     """Sum the effective contribution the current period's transfers add.
 
     These shadow income transactions are BOTH counted in the entries-aware
-    end-of-current-period balance (``balance_calculator._income_amount``
+    end-of-current-period balance (``balance_calculator.income_amount``
     uses ``effective_amount``) AND re-applied by the growth engine when the
     projection window includes the current period
     (:func:`build_contribution_timeline` Path 2, the same

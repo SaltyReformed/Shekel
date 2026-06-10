@@ -454,7 +454,7 @@ def balances_for(
          scenario across the period span, with entries eager-loaded.
       3. Delegate to ``calculate_balances`` for anchor + post-anchor
          period-by-period roll-forward (the engine's
-         ``_sum_projected`` applies the entry-aware reduction).
+         ``sum_projected`` applies the entry-aware reduction).
       4. Quantize each balance to cents with
          :func:`~app.utils.money.round_money`.
 
@@ -525,7 +525,7 @@ def _subtotal_from_transactions(
 
     The shared per-period core of :func:`period_subtotals` (and thus
     :func:`period_subtotal`, which delegates to it).  Delegates to the
-    engine's :func:`~app.services.balance_calculator._sum_projected`
+    engine's :func:`~app.services.balance_calculator.sum_projected`
     (Projected-only, entry-aware expense reduction, ``effective_amount``
     for income) and rounds ``net`` as ONE combined
     ``round_money(income - expense)`` -- the once-at-the-boundary
@@ -538,12 +538,10 @@ def _subtotal_from_transactions(
     are read, so a map built over a wider set (the batch case) is
     equivalent to a per-period one.
     """
-    # Pylint: ``protected-access`` -- ``_sum_projected`` is an internal helper
-    # of ``balance_calculator``; the resolver is its sibling canonical producer
-    # (see module docstring) and the audit's E-25 mandate explicitly reuses the
-    # engine's math rather than rewriting it (CLAUDE.md rule 10).
-    # pylint: disable=protected-access
-    income, expense = balance_calculator._sum_projected(transactions, amount_overrides)
+    # The resolver is ``balance_calculator``'s sibling canonical producer
+    # (see module docstring); the audit's E-25 mandate reuses the engine's
+    # public projected-sum rather than rewriting it (CLAUDE.md rule 10).
+    income, expense = balance_calculator.sum_projected(transactions, amount_overrides)
     return PeriodSubtotal(
         income=round_money(income),
         expense=round_money(expense),
@@ -651,7 +649,7 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
     """Date-cut variant of the balance-calculator entry-aware reduction (E-27).
 
     Reuses the engine's shared three-bucket reservation core
-    (:func:`~app.services.balance_calculator._entry_checking_impact`,
+    (:func:`~app.services.balance_calculator.entry_checking_impact`,
     the same math :func:`~app.services.balance_calculator._entry_aware_amount`
     runs) but over only the entries whose ``entry_date`` is on or before
     ``as_of``.  A purchase that has not happened yet (entry dated after
@@ -711,15 +709,14 @@ def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
         # this matches the engine helper's empty-entries branch.
         return txn.effective_amount
 
-    # Pylint: ``protected-access`` -- the credit / cleared-debit /
-    # uncleared-debit bucketing + reservation formula is the engine's
-    # internal ``_entry_checking_impact``.  The resolver is
-    # ``balance_calculator``'s sibling canonical producer (E-25/E-27) and
-    # reuses the engine's math over the windowed entries rather than
-    # keeping a second copy that could drift (CLAUDE.md rule 10); the
-    # as-of window stays here, the bucketing lives once in the engine.
-    # pylint: disable=protected-access
-    return balance_calculator._entry_checking_impact(
+    # The credit / cleared-debit / uncleared-debit bucketing + reservation
+    # formula is the engine's public ``entry_checking_impact``.  The
+    # resolver is ``balance_calculator``'s sibling canonical producer
+    # (E-25/E-27) and reuses the engine's math over the windowed entries
+    # rather than keeping a second copy that could drift (CLAUDE.md rule
+    # 10); the as-of window stays here, the bucketing lives once in the
+    # engine.
+    return balance_calculator.entry_checking_impact(
         windowed, txn.estimated_amount,
     )
 
@@ -755,7 +752,7 @@ def _sum_period_as_of(
         as_of: The calendar date that bounds entry inclusion.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live
             projected-net map (Workstream B); the income line uses it
-            via :func:`~app.services.balance_calculator._income_amount`.
+            via :func:`~app.services.balance_calculator.income_amount`.
 
     Returns:
         ``(income, expense)`` as a ``Decimal`` tuple, both unquantized.
@@ -764,16 +761,15 @@ def _sum_period_as_of(
     expense = Decimal("0.00")
     for txn in transactions:
         # Centralized ``is_projected`` predicate (D6-09 / MED-02);
-        # mirrors ``balance_calculator._sum_projected`` exactly so the
+        # mirrors ``balance_calculator.sum_projected`` exactly so the
         # date-cut path classifies non-Projected rows identically.
         if not is_projected(txn):
             continue
         if txn.is_income:
-            # Pylint: ``protected-access`` -- Workstream B live projected-net
-            # seam; reuse ``balance_calculator``'s internal ``_income_amount``
-            # helper so the date-cut path and ``_sum_projected`` cannot drift.
-            # pylint: disable=protected-access
-            income += balance_calculator._income_amount(txn, amount_overrides)
+            # Workstream B live projected-net seam; reuse
+            # ``balance_calculator``'s public ``income_amount`` helper so the
+            # date-cut path and ``sum_projected`` cannot drift.
+            income += balance_calculator.income_amount(txn, amount_overrides)
         elif txn.is_expense:
             # The live-derive seam applies to the expense leg too (e.g. a
             # derive-from-loan transfer's checking debit); fall back to

@@ -102,13 +102,13 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
         if period.id == anchor_period_id:
             # Anchor period: start from the real balance, add the projected
             # remainder (settled items are already in the anchor balance).
-            income, expenses = _sum_projected(period_txns, amount_overrides)
+            income, expenses = sum_projected(period_txns, amount_overrides)
             running_balance = anchor_balance + income - expenses
 
         elif running_balance is not None:
             # Post-anchor: roll forward from the previous end balance, adding
             # this period's projected income and expenses.
-            income, expenses = _sum_projected(period_txns, amount_overrides)
+            income, expenses = sum_projected(period_txns, amount_overrides)
             running_balance = running_balance + income - expenses
 
         else:
@@ -226,15 +226,19 @@ def _layer_interest(base_balances, periods, interest_params):
     return balances, interest_by_period
 
 
-def _entry_checking_impact(entries, estimated_amount):
+def entry_checking_impact(entries, estimated_amount):
     """Three-bucket checking reservation for a sequence of debit/credit entries.
 
     The shared core of the entry-aware reduction, used by both the
     undated engine helper :func:`_entry_aware_amount` and the date-cut
     resolver variant
     :func:`~app.services.balance_resolver._entry_aware_amount_dated`
-    (E-27).  Partitions the supplied entries into three buckets and
-    returns the portion of the budget still held back against checking:
+    (E-27).  Part of this module's public surface (no leading underscore):
+    the sibling canonical producer ``balance_resolver`` reuses it directly
+    so the bucketing rule and reservation formula live in exactly one place
+    rather than drifting between the two balance paths.  Partitions the
+    supplied entries into three buckets and returns the portion of the
+    budget still held back against checking:
 
         cleared_debit   = sum(amount where not is_credit and     is_cleared)
         uncleared_debit = sum(amount where not is_credit and not is_cleared)
@@ -392,13 +396,19 @@ def _entry_aware_amount(txn):
 
     # Partition the entries and hold back the unreconciled budget.  The
     # bucketing rule and the reservation formula are shared with the
-    # resolver's date-cut variant via ``_entry_checking_impact`` so the
+    # resolver's date-cut variant via ``entry_checking_impact`` so the
     # core balance math has a single home (E-27).
-    return _entry_checking_impact(entries, txn.estimated_amount)
+    return entry_checking_impact(entries, txn.estimated_amount)
 
 
-def _income_amount(txn, amount_overrides):
+def income_amount(txn, amount_overrides):
     """Return the income contribution for ``txn``, honoring a live override.
+
+    Part of this module's public surface (no leading underscore): the
+    sibling canonical producer ``balance_resolver``'s date-cut income leg
+    reuses it so the override seam resolves identically on both paths.
+    (The expense analogue stays private -- the resolver's date-cut expense
+    leg has its own variant rather than calling ``_expense_amount``.)
 
     ``amount_overrides`` is the live projected-net seam (Workstream B):
     a dict mapping transaction id -> Decimal produced by
@@ -430,7 +440,7 @@ def _income_amount(txn, amount_overrides):
 def _expense_amount(txn, amount_overrides):
     """Return the expense contribution for ``txn``, honoring a live override.
 
-    The expense-leg analogue of :func:`_income_amount`.  When the
+    The expense-leg analogue of :func:`income_amount`.  When the
     transaction's id is in ``amount_overrides`` (the live-derive seam --
     e.g. a recurring loan-payment transfer whose cash debit is derived
     from the destination loan via
@@ -457,8 +467,13 @@ def _expense_amount(txn, amount_overrides):
     return _entry_aware_amount(txn)
 
 
-def _sum_projected(transactions, amount_overrides=None):
+def sum_projected(transactions, amount_overrides=None):
     """Sum projected (unsettled) income and expenses for one pay period.
+
+    Part of this module's public surface (no leading underscore): the
+    sibling canonical producer ``balance_resolver`` calls it directly for
+    the period subtotal so the projected-sum rule lives in exactly one
+    place rather than being re-implemented per surface.
 
     Only Projected items contribute to the projected balance: settled
     (done / received), credit, and cancelled transactions are excluded
@@ -477,7 +492,7 @@ def _sum_projected(transactions, amount_overrides=None):
     historically-separate ``_sum_remaining`` / ``_sum_all`` once both
     became Projected-only).
 
-    Income uses :func:`_income_amount` (effective_amount, or a live
+    Income uses :func:`income_amount` (effective_amount, or a live
     override when present).  Expenses use :func:`_expense_amount`, which
     applies the entry-checking formula for projected expenses with loaded
     entries and honors a live override, falling back to effective_amount
@@ -500,7 +515,7 @@ def _sum_projected(transactions, amount_overrides=None):
             continue
 
         if txn.is_income:
-            income += _income_amount(txn, amount_overrides)
+            income += income_amount(txn, amount_overrides)
         elif txn.is_expense:
             expenses += _expense_amount(txn, amount_overrides)
 
