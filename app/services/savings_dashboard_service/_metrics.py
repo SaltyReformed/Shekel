@@ -282,7 +282,6 @@ def _accumulate_loan_debt(
         if ad["is_paid_off"]:
             continue
 
-        lp = ad["loan_params"]
         # Resolver-derived current_balance (E-18 / Commit 15).  Same
         # dollar figure as the loan card; replaces the previous read
         # of the non-authoritative ``LoanParams.current_principal``
@@ -292,12 +291,13 @@ def _accumulate_loan_debt(
         if principal <= Decimal("0.00"):
             continue
 
-        # ``LoanParams.interest_rate`` is the BASE rate (the
-        # rate-history layered current rate would require the
-        # resolver's ``_rate_at_date`` and is HIGH-08 territory).
-        # Carried forward so weighted_avg_rate retains its historical
-        # meaning across this commit.
-        rate = Decimal(str(lp.interest_rate))
+        # DH-#56: the loan's CURRENT rate (resolver-derived,
+        # ``state.current_rate``), replacing the retired
+        # ``LoanParams.interest_rate`` column.  weighted_avg_rate now
+        # reflects the rate the loan is actually accruing at today --
+        # for a changed ARM the in-effect rate, not the stale origination
+        # value the dropped column had drifted from.
+        rate = ad["current_rate"]
         monthly_pi = ad["monthly_payment"]
 
         # Include escrow (property tax, insurance) for PITI total.

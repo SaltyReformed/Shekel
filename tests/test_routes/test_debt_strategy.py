@@ -23,6 +23,8 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.services import account_service
 
+from tests._test_helpers import insert_origination_rate
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -57,13 +59,13 @@ def _create_debt_account(user, db_session, type_name, name, principal,
         account_id=account.id,
         original_principal=original_principal,
         current_principal=principal,
-        interest_rate=rate,
         term_months=term,
         origination_date=orig_date,
         payment_day=payment_day,
     )
     db_session.add(params)
     db_session.flush()
+    insert_origination_rate(params, rate)
     db_session.add(LoanAnchorEvent(
         account_id=account.id,
         anchor_date=orig_date,
@@ -627,7 +629,6 @@ class TestDebtStrategyMetrics:
             account_id=arm_acct.id,
             original_principal=Decimal("205000.00"),
             current_principal=Decimal("200000.00"),
-            interest_rate=Decimal("0.05500"),
             term_months=360,
             origination_date=date(2023, 1, 1),
             payment_day=1,
@@ -635,6 +636,7 @@ class TestDebtStrategyMetrics:
         )
         db.session.add(params)
         db.session.flush()
+        insert_origination_rate(params, Decimal("0.05500"))
         # E-18 / Commit 15: resolver needs origination + trueup
         # events so its current_balance == $200,000 (matches the
         # pre-Commit-15 stored current_principal display).

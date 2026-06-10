@@ -247,6 +247,47 @@ def insert_origination_event(loan_params):
     return event
 
 
+def insert_origination_rate(loan_params, interest_rate):
+    """Append the origination :class:`RateHistory` row for a loan.
+
+    Mirrors the production-code pattern in
+    :func:`app.routes.loan.create_params` (DH-#56): the loan's base /
+    period-0 rate lives in the :class:`RateHistory` row effective at
+    origination, not the retired ``LoanParams.interest_rate`` column.
+    The resolver raises ``ValueError`` when a loan's rate-change feed is
+    empty (no origination row), so every fixture that builds
+    :class:`LoanParams` directly and then resolves it (loan dashboard,
+    debt strategy, /savings debt card, year-end liability, contractual
+    P&I) MUST call this helper after inserting :class:`LoanParams`.
+
+    Args:
+        loan_params: The :class:`LoanParams` ORM instance, already
+            flushed (``loan_params.account_id`` populated).
+        interest_rate: The origination annual rate as a Decimal fraction
+            (e.g. ``Decimal("0.06875")`` for 6.875%).
+
+    Returns:
+        The newly added :class:`RateHistory` instance,
+        ``db.session.add()``'d but not committed.  The caller's existing
+        ``db.session.commit()`` carries the row into the same transaction.
+    """
+    # pylint: disable=import-outside-toplevel  -- avoid module-load
+    # circular deps via models package; tests/_test_helpers loads
+    # early enough that an unconditional top-level import would
+    # snowball into ref_cache / Flask app bootstrapping.
+    from app.extensions import db
+    from app.models.loan_features import RateHistory
+
+    row = RateHistory(
+        account_id=loan_params.account_id,
+        effective_date=loan_params.origination_date,
+        interest_rate=interest_rate,
+        monthly_pi=None,
+    )
+    db.session.add(row)
+    return row
+
+
 def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     """Append a user-trueup :class:`LoanAnchorEvent` asserting a balance.
 

@@ -25,14 +25,14 @@ class LoanParamsCreateSchema(BaseSchema):
     enforced by the route using ref.account_types.max_term_months.
 
     E-28 / HIGH-06 / PA-02: ``interest_rate`` is validated as a
-    decimal fraction.  ``loan_params.interest_rate`` carries a DB
-    CHECK ``interest_rate >= 0`` (no upper bound on the storage tier),
-    but a 100% APR is the practical user-facing ceiling, so the
-    schema pins the fraction to ``[0, 1]``.  The ``@pre_load``
-    converts the form percent (e.g. ``"4.5"``) to its fraction
-    equivalent (``"0.045"``) so the schema validates the same domain
-    the database stores; ``loan_resolver`` reads the stored
-    fraction directly.
+    decimal fraction pinned to ``[0, 1]`` (a 100% APR is the practical
+    user-facing ceiling).  The ``@pre_load`` converts the form percent
+    (e.g. ``"4.5"``) to its fraction equivalent (``"0.045"``).  DH-#56
+    retired the ``loan_params.interest_rate`` column: ``create_params``
+    pops this value and seeds the loan's origination
+    :class:`RateHistory` row with it, so the rate is validated in the
+    same domain ``rate_history.interest_rate``'s
+    ``CHECK(interest_rate >= 0 AND interest_rate <= 1)`` stores.
     """
 
     _PERCENT_FIELDS = ("interest_rate",)
@@ -92,6 +92,10 @@ class LoanParamsUpdateSchema(BaseSchema):
         data = {k: v for k, v in data.items() if v != ""}
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
+    # DH-#56: ``interest_rate`` no longer maps to a LoanParams column.
+    # When submitted it edits the loan's ORIGINATION rate --
+    # ``update_params`` upserts the origination :class:`RateHistory` row
+    # with it.  Validation domain is unchanged (the fraction ``[0, 1]``).
     interest_rate = fields.Decimal(
         places=5, as_string=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),

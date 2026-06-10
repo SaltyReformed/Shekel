@@ -2094,7 +2094,6 @@ def _create_small_loan(seed_user, name="Test Loan",
         account_id=account.id,
         original_principal=principal,
         current_principal=principal,
-        interest_rate=rate,
         term_months=term,
         origination_date=date(2026, 1, 1),
         payment_day=1,
@@ -2102,8 +2101,12 @@ def _create_small_loan(seed_user, name="Test Loan",
     db.session.add(params)
     db.session.flush()
     # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
-    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    # DH-#56: origination RateHistory row carries the loan's base rate.
+    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+        insert_origination_event, insert_origination_rate,
+    )
     insert_origination_event(params)
+    insert_origination_rate(params, rate)
     db.session.commit()
     return account
 

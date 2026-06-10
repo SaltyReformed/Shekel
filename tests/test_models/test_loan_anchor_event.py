@@ -45,6 +45,7 @@ from app.models.loan_anchor_event import (
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType, LoanAnchorSource
 from app.services import account_service
+from tests._test_helpers import insert_origination_rate
 
 
 # ---------------------------------------------------------------------------
@@ -83,13 +84,17 @@ def _create_loan_account(seed_user, db_session, *,
         account_id=account.id,
         original_principal=original_principal,
         current_principal=current_principal,
-        interest_rate=rate,
         term_months=term_months,
         origination_date=origination_date,
         payment_day=payment_day,
         is_arm=is_arm,
     )
     db_session.add(params)
+    db_session.flush()
+    # DH-#56: the loan's rate now lives in an origination RateHistory
+    # row (effective at origination_date), not the dropped
+    # LoanParams.interest_rate column.
+    insert_origination_rate(params, rate)
     db_session.commit()
     return account, params
 

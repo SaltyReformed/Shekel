@@ -56,7 +56,6 @@ def _create_loan_account(seed_user):
         account_id=account.id,
         original_principal=Decimal("250000.00"),
         current_principal=Decimal("200000.00"),
-        interest_rate=Decimal("0.06500"),
         term_months=360,
         origination_date=date(2024, 1, 1),
         payment_day=1,
@@ -67,9 +66,15 @@ def _create_loan_account(seed_user):
     # does not exercise the resolver directly (it tests
     # loan_payment_service which is a pure data-loading shim) but
     # downstream tests calling load_loan_context + resolver expect
-    # an event-present invariant.
-    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    # an event-present invariant.  DH-#56: the rate now lives in the
+    # origination RateHistory row (the retired LoanParams.interest_rate
+    # column), so seed it alongside the anchor event.
+    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+        insert_origination_event,
+        insert_origination_rate,
+    )
     insert_origination_event(params)
+    insert_origination_rate(params, Decimal("0.06500"))
     return account
 
 
@@ -449,60 +454,82 @@ class TestComputeContractualPi:
         M = P * [r(1+r)^n] / [(1+r)^n - 1]
         r = 0.065/12; n = 360
         The engine's Decimal arithmetic produces $1,516.96.
+
+        DH-#56: the rate is sourced from the rate-change feed (the
+        origination RateChangeRecord), not the retired
+        ``LoanParams.interest_rate`` column.
         """
+        from app.services.amortization_engine import RateChangeRecord  # pylint: disable=import-outside-toplevel
         with app.app_context():
             params = LoanParams(
                 account_id=1,
                 original_principal=Decimal("240000.00"),
                 current_principal=Decimal("237000.00"),
-                interest_rate=Decimal("0.06500"),
                 term_months=360,
                 origination_date=date(2025, 1, 1),
                 payment_day=1,
                 is_arm=False,
             )
 
-            result = compute_contractual_pi(params)
+            result = compute_contractual_pi(
+                params,
+                rate_changes=[
+                    RateChangeRecord(
+                        effective_date=params.origination_date,
+                        interest_rate=Decimal("0.06500"),
+                        monthly_pi=None,
+                    ),
+                ],
+            )
 
             # Standard amortization payment for $240k at 6.5% / 30yr.
             # Uses original_principal (not current) and full term.
             assert result == Decimal("1516.96")
 
-    def test_arm_fallback_path_uses_original_terms(
+    def test_arm_rate_from_origination_feed_uses_original_terms(
         self, app, db, seed_user,
     ):
-        """C1-2: ARM loan without anchor_events falls back to original terms.
+        """C1-2: ARM loan whose only rate is the origination row uses original terms.
 
-        The legacy pure-LoanParams call shape (no anchor_events) is
-        the unit-test fallback documented in the
-        :func:`compute_contractual_pi` docstring.  Production callers
-        always go through :func:`load_loan_context`, which loads
-        anchor_events and routes through
-        :func:`loan_resolver.compute_monthly_payment_baseline` for
-        the ARM-aware SSOT value (see
-        :class:`TestComputeContractualPiArmAware`).  This test pins
-        the fallback's behavior: pure ARM call without anchor_events
-        returns the original-terms amortization.
+        DH-#56 retired the legacy pure-LoanParams fallback (it read the
+        dropped ``LoanParams.interest_rate`` column).  The rate now comes
+        from the rate-change feed; production callers go through
+        :func:`load_loan_context`, which loads anchor_events and routes
+        through :func:`loan_resolver.compute_monthly_payment_baseline`
+        for the ARM-aware SSOT value (see
+        :class:`TestComputeContractualPiArmAware`).  This pins the same
+        value via the feed: an ARM whose rate-change feed carries only
+        the origination 7.0% row (no recorded adjustment) holds the
+        original-terms level payment in its first period.
 
             P = 250000.00, r = 0.07/12, n = 360
             M = P * [r(1+r)^n] / [(1+r)^n - 1] approx $1,663.26
         """
+        from app.services.amortization_engine import RateChangeRecord  # pylint: disable=import-outside-toplevel
         with app.app_context():
             params = LoanParams(
                 account_id=1,
                 original_principal=Decimal("250000.00"),
                 current_principal=Decimal("230000.00"),
-                interest_rate=Decimal("0.07000"),
                 term_months=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
                 is_arm=True,
             )
 
-            result = compute_contractual_pi(params)
+            result = compute_contractual_pi(
+                params,
+                rate_changes=[
+                    RateChangeRecord(
+                        effective_date=params.origination_date,
+                        interest_rate=Decimal("0.07000"),
+                        monthly_pi=None,
+                    ),
+                ],
+            )
 
-            # Legacy fallback: original-terms amortization, ignores
-            # is_arm because no anchor_events were supplied.
+            # Origination-feed only: the first rate period holds the
+            # original-terms amortization at the 7.0% origination rate.
             # Hand-computed: 250000 * 0.07/12 * (1.005833)^360 /
             # ((1.005833)^360 - 1) ~= 1663.26.
             assert result == Decimal("1663.26")
@@ -556,7 +583,6 @@ class TestComputeContractualPiArmAware:
             account_id=1,
             original_principal=Decimal("202000.00"),
             current_principal=Decimal("177999.54"),
-            interest_rate=Decimal("0.06875"),
             term_months=360,
             origination_date=date(2018, 12, 1),
             payment_day=1,
@@ -595,12 +621,16 @@ class TestComputeContractualPiArmAware:
         the fixed-rate branch in
         :func:`loan_resolver._compute_monthly_payment` ignores
         ``current_balance`` and uses ``original_principal``.
+
+        DH-#56: the rate is sourced from the origination
+        RateChangeRecord, not the retired ``LoanParams.interest_rate``
+        column.
         """
+        from app.services.amortization_engine import RateChangeRecord  # pylint: disable=import-outside-toplevel
         params = LoanParams(
             account_id=1,
             original_principal=Decimal("240000.00"),
             current_principal=Decimal("200000.00"),
-            interest_rate=Decimal("0.06500"),
             term_months=360,
             origination_date=date(2025, 1, 1),
             payment_day=1,
@@ -614,28 +644,35 @@ class TestComputeContractualPiArmAware:
         result = compute_contractual_pi(
             params,
             anchor_events=[anchor],
-            rate_changes=None,
+            rate_changes=[
+                RateChangeRecord(
+                    effective_date=params.origination_date,
+                    interest_rate=Decimal("0.06500"),
+                    monthly_pi=None,
+                ),
+            ],
             as_of=date(2026, 5, 21),
         )
         # Original-terms: $240k at 6.5% / 360 = $1,516.96.
         assert result == Decimal("1516.96")
 
-    def test_empty_anchor_events_falls_back_to_original_terms(self):
-        """C1-5: empty anchor_events list takes the fallback path.
+    def test_empty_anchor_events_still_returns_original_terms(self):
+        """C1-5: empty anchor_events does not affect the period P&I.
 
         Mirrors a hypothetical pre-anchor-backfill caller; production
         callers always pass a non-empty list (Commit 12's backfill
-        invariant).  The empty case is documented as falling back
-        to the original-terms amortization rather than raising,
-        because the function's other consumers (legacy tests, a
-        hypothetical "estimate" UI) want a usable number even
-        without anchor data.
+        invariant).  ``compute_contractual_pi`` does not read
+        anchor_events (the period P&I is anchor-independent), so an
+        empty list yields the same original-terms amortization.  The
+        rate still comes from the rate-change feed (DH-#56 retired the
+        ``LoanParams.interest_rate`` column); an empty feed is the only
+        thing that raises.
         """
+        from app.services.amortization_engine import RateChangeRecord  # pylint: disable=import-outside-toplevel
         params = LoanParams(
             account_id=1,
             original_principal=Decimal("240000.00"),
             current_principal=Decimal("200000.00"),
-            interest_rate=Decimal("0.06500"),
             term_months=360,
             origination_date=date(2025, 1, 1),
             payment_day=1,
@@ -644,10 +681,16 @@ class TestComputeContractualPiArmAware:
         result = compute_contractual_pi(
             params,
             anchor_events=[],
-            rate_changes=None,
+            rate_changes=[
+                RateChangeRecord(
+                    effective_date=params.origination_date,
+                    interest_rate=Decimal("0.06500"),
+                    monthly_pi=None,
+                ),
+            ],
             as_of=date(2026, 5, 21),
         )
-        # Same as the fallback path.
+        # Original-terms amortization, independent of anchor data.
         assert result == Decimal("1516.96")
 
 

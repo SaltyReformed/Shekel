@@ -3,12 +3,17 @@
 E-18 / Commit 15 alters
 ``budget.loan_params.current_principal`` and
 ``budget.loan_params.interest_rate`` from NOT NULL to nullable.
+DH-#56 later completed the OPT-1 destructive drop for
+``interest_rate`` (the column is gone; the loan's rate now lives in
+its origination :class:`RateHistory` row), so the locks here cover
+only ``current_principal``, which remains a nullable,
+non-authoritative seed.
 Decision D-A (``docs/audits/financial_calculations/remediation_plan.md``
 Section 2): the loan resolver
 (``app/services/loan_resolver.py``) is the single source of truth
 for "this loan's current principal, monthly payment, schedule,
-payoff date, life-of-loan interest"; the demoted columns are
-non-authoritative seed values that no display surface reads after
+payoff date, life-of-loan interest"; the demoted column is a
+non-authoritative seed value that no display surface reads after
 this commit.
 
 Three locks land here:
@@ -20,14 +25,16 @@ Three locks land here:
   the moment any commit re-introduces a stored-column read.
 
 * **C15-4 (column nullability)** -- ``information_schema`` confirms
-  both columns now accept NULL.  Catches a regression the moment any
-  future migration or model edit silently re-tightens the contract
-  without a coordinated change to the resolver.
+  ``current_principal`` still accepts NULL.  Catches a regression the
+  moment any future migration or model edit silently re-tightens the
+  contract without a coordinated change to the resolver.
 
-* **C15-5 (downgrade round-trip)** -- the migration's downgrade
-  restores NOT NULL after upgrade, proving the additive demotion is
-  reversible.  Uses raw SQL against the running test database so the
-  test exercises the literal SQL the operator would run.
+* **C15-5 (downgrade round-trip)** -- the Commit-15 migration's
+  downgrade restores NOT NULL on ``current_principal`` after upgrade,
+  proving the additive demotion is reversible.  Uses raw SQL against
+  the running test database so the test exercises the literal SQL the
+  operator would run.  (``interest_rate`` was dropped by DH-#56 and is
+  no longer part of this round-trip.)
 """
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest
@@ -228,13 +235,15 @@ def test_current_principal_column_nullable():
     )
 
 
-def test_interest_rate_column_nullable():
-    """C15-4: ``interest_rate`` is nullable after migration ``c4f0a5b71e83``.
+def test_interest_rate_column_dropped():
+    """DH-#56: ``interest_rate`` no longer exists on ``loan_params``.
 
-    Same logic as the current_principal test.  Both columns demoted
-    together so the resolver can read them as optional seed values;
-    the OPT-1 destructive drop (Section 5) becomes a single later
-    migration after a production cycle.
+    The Commit-15 nullable demotion was the precursor to the OPT-1
+    destructive drop, which DH-#56 carried out (migration
+    ``b7d2f4a619c5``).  The loan's rate is now derived from its
+    origination :class:`RateHistory` row, so the column must be gone --
+    this lock catches any migration that re-introduces the denormalized
+    scalar.
     """
     row = _db.session.execute(text(
         "SELECT is_nullable FROM information_schema.columns "
@@ -242,12 +251,10 @@ def test_interest_rate_column_nullable():
         "  AND table_name = 'loan_params' "
         "  AND column_name = 'interest_rate'"
     )).fetchone()
-    assert row is not None, (
-        "budget.loan_params.interest_rate column missing"
-    )
-    assert row[0] == "YES", (
-        f"interest_rate is_nullable={row[0]!r}, expected 'YES' "
-        "per E-18 / Commit 15 demotion (migration c4f0a5b71e83)."
+    assert row is None, (
+        "budget.loan_params.interest_rate still exists -- DH-#56 dropped "
+        "it (migration b7d2f4a619c5); the loan's rate is now the "
+        "origination RateHistory row, not a stored column."
     )
 
 
@@ -271,29 +278,26 @@ def test_downgrade_restores_not_null_then_upgrade_round_trips():
     operational rollback should encounter, since the
     Commit-15-shipping code never writes NULL.
     """
+    # ``interest_rate`` is excluded: DH-#56 dropped it, so only
+    # ``current_principal`` carries the Commit-15 nullable demotion now.
     # Down: ALTER COLUMN ... SET NOT NULL.  Matches the literal
     # ``op.alter_column(..., nullable=False)`` that Alembic emits.
     _db.session.execute(text(
         "ALTER TABLE budget.loan_params "
         "ALTER COLUMN current_principal SET NOT NULL"
     ))
-    _db.session.execute(text(
-        "ALTER TABLE budget.loan_params "
-        "ALTER COLUMN interest_rate SET NOT NULL"
-    ))
     _db.session.commit()
 
-    for column_name in ("current_principal", "interest_rate"):
-        row = _db.session.execute(text(
-            "SELECT is_nullable FROM information_schema.columns "
-            "WHERE table_schema = 'budget' "
-            "  AND table_name = 'loan_params' "
-            "  AND column_name = :col"
-        ), {"col": column_name}).fetchone()
-        assert row[0] == "NO", (
-            f"After downgrade, {column_name} is_nullable={row[0]!r}, "
-            "expected 'NO' (the pre-Commit-15 contract)."
-        )
+    row = _db.session.execute(text(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_schema = 'budget' "
+        "  AND table_name = 'loan_params' "
+        "  AND column_name = 'current_principal'"
+    )).fetchone()
+    assert row[0] == "NO", (
+        f"After downgrade, current_principal is_nullable={row[0]!r}, "
+        "expected 'NO' (the pre-Commit-15 contract)."
+    )
 
     # Up: ALTER COLUMN ... DROP NOT NULL.  Re-applies the
     # Commit-15 demotion so subsequent tests see the post-upgrade
@@ -302,20 +306,15 @@ def test_downgrade_restores_not_null_then_upgrade_round_trips():
         "ALTER TABLE budget.loan_params "
         "ALTER COLUMN current_principal DROP NOT NULL"
     ))
-    _db.session.execute(text(
-        "ALTER TABLE budget.loan_params "
-        "ALTER COLUMN interest_rate DROP NOT NULL"
-    ))
     _db.session.commit()
 
-    for column_name in ("current_principal", "interest_rate"):
-        row = _db.session.execute(text(
-            "SELECT is_nullable FROM information_schema.columns "
-            "WHERE table_schema = 'budget' "
-            "  AND table_name = 'loan_params' "
-            "  AND column_name = :col"
-        ), {"col": column_name}).fetchone()
-        assert row[0] == "YES", (
-            f"After re-upgrade, {column_name} is_nullable={row[0]!r}, "
-            "expected 'YES' (the Commit-15 contract)."
-        )
+    row = _db.session.execute(text(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_schema = 'budget' "
+        "  AND table_name = 'loan_params' "
+        "  AND column_name = 'current_principal'"
+    )).fetchone()
+    assert row[0] == "YES", (
+        f"After re-upgrade, current_principal is_nullable={row[0]!r}, "
+        "expected 'YES' (the Commit-15 contract)."
+    )

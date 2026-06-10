@@ -231,6 +231,7 @@ def _compute_loan_account(acct, acct_loan_params, scenario_id, all_periods):
     return _LoanAccountResult(
         current_balance=state.current_balance,
         monthly_payment=state.monthly_payment,
+        current_rate=state.current_rate,
         payoff_date=state.payoff_date,
         projected=projected,
         is_paid_off=_loan_ever_paid_off(
@@ -400,6 +401,10 @@ def _project_one_account(acct, ctx):
     if acct_loan_params:
         ad["loan_params"] = acct_loan_params
         ad["monthly_payment"] = loan_result.monthly_payment
+        # DH-#56: the loan's current rate (resolver-derived) replaces the
+        # retired ``LoanParams.interest_rate`` column read on the /savings
+        # debt card and in the weighted-average-rate metric.
+        ad["current_rate"] = loan_result.current_rate
         ad["payoff_date"] = loan_result.payoff_date
     return ad
 

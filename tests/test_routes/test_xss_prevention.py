@@ -116,7 +116,6 @@ def _create_mortgage_account_with_params(seed_user):
         account_id=acct.id,
         original_principal=Decimal("200000"),
         current_principal=Decimal("195000"),
-        interest_rate=Decimal("0.065"),
         term_months=360,
         origination_date=date(2024, 1, 1),
         payment_day=1,
@@ -124,7 +123,12 @@ def _create_mortgage_account_with_params(seed_user):
     db.session.add(params)
     db.session.flush()
     # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
-    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    # DH-#56: origination RateHistory row carries the loan's rate.
+    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+        insert_origination_event,
+        insert_origination_rate,
+    )
+    insert_origination_rate(params, Decimal("0.065"))
     insert_origination_event(params)
     db.session.commit()
     return acct, params

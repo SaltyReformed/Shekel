@@ -50,6 +50,7 @@ from app.services import (
     year_end_summary_service,
 )
 from app.utils.money import round_money
+from tests._test_helpers import insert_origination_rate
 
 
 # ── Hand-computed reference values ────────────────────────────────
@@ -108,7 +109,6 @@ def _create_fixed_loan(seed_user, period_id, *, name="C17 Mortgage"):
         account_id=account.id,
         original_principal=FIXED_PRINCIPAL,
         current_principal=FIXED_PRINCIPAL,
-        interest_rate=FIXED_RATE,
         term_months=FIXED_TERM,
         origination_date=FIXED_ORIGINATION,
         payment_day=1,
@@ -116,6 +116,7 @@ def _create_fixed_loan(seed_user, period_id, *, name="C17 Mortgage"):
     )
     db.session.add(loan_params)
     db.session.flush()
+    insert_origination_rate(loan_params, FIXED_RATE)
 
     db.session.add(LoanAnchorEvent(
         account_id=account.id,
@@ -149,7 +150,6 @@ def _create_arm_loan(seed_user, period_id, *, name="C17 ARM"):
         account_id=account.id,
         original_principal=ARM_PRINCIPAL,
         current_principal=ARM_PRINCIPAL,
-        interest_rate=ARM_RATE,
         term_months=ARM_TERM,
         origination_date=FIXED_ORIGINATION,
         payment_day=1,
@@ -159,6 +159,7 @@ def _create_arm_loan(seed_user, period_id, *, name="C17 ARM"):
     )
     db.session.add(loan_params)
     db.session.flush()
+    insert_origination_rate(loan_params, ARM_RATE)
 
     db.session.add(LoanAnchorEvent(
         account_id=account.id,

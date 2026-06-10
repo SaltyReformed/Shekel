@@ -78,7 +78,6 @@ class TestLoanPaymentPipeline:
                 account_id=mortgage.id,
                 original_principal=Decimal("250000.00"),
                 current_principal=Decimal("200000.00"),
-                interest_rate=Decimal("0.06500"),
                 term_months=360,
                 origination_date=periods[0].start_date,
                 payment_day=1,
@@ -86,8 +85,13 @@ class TestLoanPaymentPipeline:
             db.session.add(loan_params)
             db.session.flush()
             # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
-            from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+            # DH-#56: origination RateHistory row carries the loan's rate.
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                insert_origination_event,
+                insert_origination_rate,
+            )
             insert_origination_event(loan_params)
+            insert_origination_rate(loan_params, Decimal("0.06500"))
             db.session.commit()
 
             # Step 2: Create recurring transfer via the route.

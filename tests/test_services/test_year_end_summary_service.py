@@ -26,6 +26,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
+from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.ref import (
@@ -58,6 +59,23 @@ YEAR = 2026
 
 
 # ── Helper Functions ──────────────────────────────────────────────
+
+
+def _origination_rate(account_id):
+    """Return the origination annual rate from the loan's RateHistory.
+
+    DH-#56 dropped ``LoanParams.interest_rate``; a loan's base rate now
+    lives in the earliest :class:`RateHistory` row (effective at
+    origination).  Tests that previously read ``params.interest_rate``
+    re-source the same value from that row.
+    """
+    return (
+        db.session.query(RateHistory)
+        .filter_by(account_id=account_id)
+        .order_by(RateHistory.effective_date.asc())
+        .first()
+        .interest_rate
+    )
 
 
 def _add_tax_configs(user, profile):
@@ -265,7 +283,6 @@ def _create_mortgage_account(user, periods):
         account_id=mortgage_acct.id,
         original_principal=Decimal("240000.00"),
         current_principal=Decimal("240000.00"),
-        interest_rate=Decimal("0.06500"),
         term_months=360,
         origination_date=date(2025, 1, 1),
         payment_day=1,
@@ -274,8 +291,14 @@ def _create_mortgage_account(user, periods):
     db.session.flush()
     # E-18 / Commit 15: origination LoanAnchorEvent so the resolver
     # can derive current_balance from the event stream.
-    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    # DH-#56: the rate now lives in an origination RateHistory row, not
+    # the dropped LoanParams.interest_rate column.
+    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+        insert_origination_event,
+        insert_origination_rate,
+    )
     insert_origination_event(params)
+    insert_origination_rate(params, Decimal("0.06500"))
     db.session.commit()
 
     return mortgage_acct, params
@@ -592,16 +615,21 @@ class TestMortgageInterest:
         starting_date = amortization_engine.advance_to_next_payment_date(
             params.origination_date, params.payment_day,
         )
+        # DH-#56: the rate now lives in the origination RateHistory row
+        # seeded by _create_mortgage_account (Decimal("0.06500")), not the
+        # dropped LoanParams.interest_rate column.
+        annual_rate = _origination_rate(mortgage_acct.id)
+        assert annual_rate == Decimal("0.06500")
         contractual = amortization_engine.calculate_monthly_payment(
             params.original_principal,
-            params.interest_rate,
+            annual_rate,
             params.term_months,
         )
         schedule = amortization_engine.project_forward(
             amortization_engine.ProjectionInputs(
                 starting_balance=params.original_principal,
                 starting_date=starting_date,
-                annual_rate=params.interest_rate,
+                annual_rate=annual_rate,
                 remaining_months=params.term_months,
                 payment_day=params.payment_day,
                 contractual_payment=contractual,
@@ -659,7 +687,6 @@ class TestMortgageInterest:
             account_id=mortgage_acct.id,
             original_principal=Decimal("200000.00"),
             current_principal=Decimal("200000.00"),
-            interest_rate=Decimal("0.05000"),
             term_months=360,
             origination_date=date(2026, 7, 1),
             payment_day=1,
@@ -667,8 +694,14 @@ class TestMortgageInterest:
         db.session.add(params)
         db.session.flush()
         # E-18 / Commit 15: origination LoanAnchorEvent.
-        from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+        # DH-#56: the rate now lives in an origination RateHistory row,
+        # not the dropped LoanParams.interest_rate column.
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            insert_origination_event,
+            insert_origination_rate,
+        )
         insert_origination_event(params)
+        insert_origination_rate(params, Decimal("0.05000"))
         db.session.commit()
 
         # Expected: first payment Aug 1 2026.  5 or 6 payments in 2026.
@@ -677,16 +710,19 @@ class TestMortgageInterest:
         starting_date = amortization_engine.advance_to_next_payment_date(
             params.origination_date, params.payment_day,
         )
+        # DH-#56: re-source the rate from the origination RateHistory row.
+        annual_rate = _origination_rate(mortgage_acct.id)
+        assert annual_rate == Decimal("0.05000")
         contractual = amortization_engine.calculate_monthly_payment(
             params.original_principal,
-            params.interest_rate,
+            annual_rate,
             params.term_months,
         )
         schedule = amortization_engine.project_forward(
             amortization_engine.ProjectionInputs(
                 starting_balance=params.original_principal,
                 starting_date=starting_date,
-                annual_rate=params.interest_rate,
+                annual_rate=annual_rate,
                 remaining_months=params.term_months,
                 payment_day=params.payment_day,
                 contractual_payment=contractual,

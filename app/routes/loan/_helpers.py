@@ -37,13 +37,15 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 
 
-# Field allowlist for the loan-params update route.  E-18 / D-C:
-# ``current_principal`` is intentionally excluded -- it is non-authoritative
-# seed and the resolver derives the displayed balance from
-# :class:`LoanAnchorEvent`; ``LoanParamsUpdateSchema`` no longer declares
-# the field, so a stale client submitting it via this form is a silent no-op.
+# Field allowlist for the loan-params update route -- the LoanParams
+# columns the update form may set directly.  ``current_principal`` is
+# excluded (E-18 / D-C): it is non-authoritative seed and the resolver
+# derives the displayed balance from :class:`LoanAnchorEvent`.
+# ``interest_rate`` is excluded (DH-#56): the column was retired, and the
+# form's rate field edits the loan's origination RateHistory row through
+# ``update_params``'s ``_upsert_origination_rate`` instead of a column set.
 _PARAM_FIELDS = {
-    "interest_rate", "payment_day", "term_months",
+    "payment_day", "term_months",
     "is_arm", "arm_first_adjustment_months", "arm_adjustment_interval_months",
 }
 
@@ -155,17 +157,17 @@ class _RouteLoanContext:
     Composes rather than copies: ``loan`` is the service-loaded
     :class:`LoanContext` (the prepared payment / rate-change feeds, escrow,
     and rate history); ``state`` is the resolver output; and
-    ``original_for_engine`` / ``base_rate`` are the two route-derived engine
-    inputs the payoff / refinance calculators read.  Replaces the former
-    untyped dict so the dashboard and calculator consumers read typed
-    attributes (``ctx.state`` / ``ctx.loan.payments`` / ``ctx.base_rate``)
+    ``original_for_engine`` / ``current_rate`` are the two route-derived
+    engine inputs the payoff / refinance calculators read.  Replaces the
+    former untyped dict so the dashboard and calculator consumers read typed
+    attributes (``ctx.state`` / ``ctx.loan.payments`` / ``ctx.current_rate``)
     instead of string keys.
     """
 
     state: LoanState
     loan: LoanContext
     original_for_engine: Decimal | None
-    base_rate: Decimal
+    current_rate: Decimal
 
 
 def _resolve(account, params) -> tuple[LoanState, LoanContext]:
@@ -223,11 +225,13 @@ def _load_loan_context(account, params) -> _RouteLoanContext:
     Delegates payment / escrow / rate-change loading to
     :func:`loan_payment_service.load_loan_context`, then runs the
     loan resolver (E-18 / Commit 13) to derive the authoritative
-    current balance and monthly payment.  Display surfaces read
-    ``ctx.state`` instead of the stored
-    ``LoanParams.current_principal`` / ``LoanParams.interest_rate``
-    columns (E-18 / Commit 15, decision D-A); the stored columns
-    remain only as non-authoritative seed.
+    current balance, monthly payment, and current rate.  Display
+    surfaces read ``ctx.state`` (``state.current_balance`` /
+    ``state.current_rate``) instead of the stored
+    ``LoanParams.current_principal`` column and the retired
+    ``LoanParams.interest_rate`` column (E-18 / Commit 15, decision D-A;
+    DH-#56 dropped ``interest_rate`` entirely in favour of the
+    origination :class:`RateHistory` row).
 
     Returns a :class:`_RouteLoanContext` with:
         state: :class:`LoanState` from the resolver.
@@ -241,11 +245,12 @@ def _load_loan_context(account, params) -> _RouteLoanContext:
             :func:`amortization_engine.calculate_payoff_by_date` wrapper
             internally on :func:`project_forward`); other chart paths now
             route through :func:`loan_resolver.compute_payoff_scenarios`.
-        base_rate: Decimal annual interest rate -- the resolver's
-            ``base_rate`` input, used by the refinance / payoff
-            calculators.  ``params.interest_rate`` remains the
-            system-of-record; the resolver layers :class:`RateHistory`
-            over it for ARM display.
+        current_rate: Decimal annual interest rate in effect today --
+            ``state.current_rate`` (DH-#56), the loan's current rate used
+            by the refinance / payoff calculators as the existing loan's
+            rate.  Replaces the read of the retired
+            ``LoanParams.interest_rate`` column; the resolver derives it
+            from the rate-period containing today.
 
     Args:
         account: Account model instance.
@@ -257,13 +262,12 @@ def _load_loan_context(account, params) -> _RouteLoanContext:
         None if params.is_arm
         else Decimal(str(params.original_principal))
     )
-    base_rate = Decimal(str(params.interest_rate))
 
     return _RouteLoanContext(
         state=state,
         loan=ctx,
         original_for_engine=original_for_engine,
-        base_rate=base_rate,
+        current_rate=state.current_rate,
     )
 
 

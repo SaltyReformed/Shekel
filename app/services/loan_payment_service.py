@@ -43,7 +43,7 @@ from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services import amortization_engine, escrow_calculator
+from app.services import escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import (
@@ -72,13 +72,18 @@ class LoanContext:
     Attributes:
         payments: Prepared PaymentRecord list (escrow-subtracted,
             biweekly month-aligned).  Ready for the amortization engine.
-        rate_changes: List of RateChangeRecord for ARM loans, or None.
+        rate_changes: List of RateChangeRecord for the loan -- its
+            origination row plus any ARM adjustments (DH-#56: every loan
+            carries an origination row).  ``None`` only for a loan with
+            no RateHistory rows at all, which the origination-row
+            invariant forbids in production.
         escrow_components: Active EscrowComponent ORM objects for
             display and escrow calculation.
         monthly_escrow: Aggregated monthly escrow Decimal.
         contractual_pi: Standard monthly P&I payment (no escrow).
-        rate_history: RateHistory ORM objects for ARM rate display.
-            Empty list for fixed-rate loans.
+        rate_history: RateHistory ORM objects for rate display.  Carries
+            the origination row for every loan plus any ARM adjustments;
+            the loan dashboard shows the table only for ARM loans.
     """
 
     payments: list[PaymentRecord]
@@ -125,35 +130,40 @@ def load_loan_context(
         escrow_components,
     )
 
-    # Rate history for ARM loans -- needed BEFORE contractual_pi so
-    # the ARM rate adjustments factor into the SSOT monthly_payment.
-    rate_history_records: list = []
+    # Rate history for EVERY loan -- needed BEFORE contractual_pi so
+    # the rate (origination plus any ARM adjustments) factors into the
+    # SSOT monthly_payment.  DH-#56 retired LoanParams.interest_rate, so
+    # the loan's base / period-0 rate now lives in its origination
+    # RateHistory row; every loan carries one (create_params seeds it on
+    # setup; the DH-#56 migration backfilled pre-existing loans).  The
+    # load is therefore no longer ARM-gated -- a fixed-rate loan resolves
+    # its single rate period from its one origination row.
+    rate_history_records = (
+        db.session.query(RateHistory)
+        .filter_by(account_id=account_id)
+        .order_by(RateHistory.effective_date.desc())
+        .all()
+    )
     rate_changes: list[RateChangeRecord] | None = None
-    if loan_params.is_arm:
-        rate_history_records = (
-            db.session.query(RateHistory)
-            .filter_by(account_id=account_id)
-            .order_by(RateHistory.effective_date.desc())
-            .all()
-        )
-        if rate_history_records:
-            rate_changes = [
-                RateChangeRecord(
-                    effective_date=rh.effective_date,
-                    interest_rate=Decimal(str(rh.interest_rate)),
-                    monthly_pi=(
-                        Decimal(str(rh.monthly_pi))
-                        if rh.monthly_pi is not None else None
-                    ),
-                )
-                for rh in rate_history_records
-            ]
+    if rate_history_records:
+        rate_changes = [
+            RateChangeRecord(
+                effective_date=rh.effective_date,
+                interest_rate=Decimal(str(rh.interest_rate)),
+                monthly_pi=(
+                    Decimal(str(rh.monthly_pi))
+                    if rh.monthly_pi is not None else None
+                ),
+            )
+            for rh in rate_history_records
+        ]
 
     # Anchor events for the SSOT monthly_payment calculation.  Commit
     # 12's origination backfill guarantees at least one anchor per
-    # loan; the empty-list case below is for direct unit-test
-    # invocations that bypass the backfill (compute_contractual_pi's
-    # fallback path covers it).
+    # loan; an empty list only arises in direct unit-test invocations
+    # that bypass the backfill, and compute_contractual_pi tolerates it
+    # (the period P&I is anchor-independent -- it reads the rate-change
+    # feed, not the anchor).
     anchor_events = (
         db.session.query(LoanAnchorEvent)
         .filter_by(account_id=account_id)
@@ -323,73 +333,59 @@ def compute_contractual_pi(
     """Return the SSOT monthly P&I number for a loan.
 
     Routes through :func:`loan_resolver.compute_monthly_payment_baseline`
-    when ``anchor_events`` is provided so the returned value is
-    byte-identical to ``LoanState.monthly_payment`` -- the loan card,
-    the schedule's projected rows, and the escrow-subtraction
-    threshold in :func:`prepare_payments_for_engine` all converge on
-    one number.
+    so the returned value is byte-identical to
+    ``LoanState.monthly_payment`` -- the loan card, the schedule's
+    projected rows, and the escrow-subtraction threshold in
+    :func:`prepare_payments_for_engine` all converge on one number.
 
-    Without the ARM-aware routing, an ARM loan whose rate has
-    adjusted since origination produced a stale original-terms value
-    here, which under-subtracted escrow from the prepared payments
-    and made the schedule's "Payment" column disagree with the loan
-    card by the rate-adjustment delta.  ``anchor_events`` is therefore
-    REQUIRED in production; the legacy pure-LoanParams call shape is
-    retained only as a degenerate fallback (origination-anchor +
-    no-rate-changes) for unit tests that exercise the function
-    without a resolver context.
+    The monthly P&I is the level payment of the rate period containing
+    ``as_of``, derived from the loan's rate-change feed (its origination
+    :class:`RateHistory` row plus any ARM adjustments).  DH-#56 retired
+    the ``LoanParams.interest_rate`` column, so the rate now comes
+    exclusively from ``rate_changes``; the prior legacy pure-LoanParams
+    fallback (which read the column) is gone.  The value is independent
+    of the running balance, so ``anchor_events`` and ``payments`` are
+    accepted for caller compatibility only and are not read.
 
     Args:
         params: LoanParams model instance with ``original_principal``,
-            ``interest_rate``, and ``term_months``.
-        anchor_events: Optional non-empty list of LoanAnchorEvent-
-            shaped objects.  When provided (the production path),
-            routes through the resolver baseline.  ``None`` (or
-            empty) falls back to the original-terms amortization for
-            backward compatibility with unit tests.
-        rate_changes: Optional ARM rate-history, passed through to
-            the resolver baseline.  ``None`` or empty for fixed-rate.
-        as_of: Optional evaluation date.  Defaults to
-            ``date.today()`` when ``anchor_events`` is provided.
-            Ignored on the legacy fallback path.
-        payments: Optional list of :class:`PaymentRecord` -- the RAW
-            shadow-income amounts BEFORE escrow subtraction.  When
-            provided, drives the conservative current-balance
-            approximation in :func:`loan_resolver.compute_monthly_payment_baseline`
-            so the threshold is guaranteed to be at-or-below the
-            true ``state.monthly_payment``.  Without it (legacy
-            callers), the baseline uses ``anchor_balance``, which
-            slightly overestimates the threshold for an ARM whose
-            principal has paid down since the latest anchor.
+            ``term_months``, and the ARM cadence fields.
+        anchor_events: Accepted for caller compatibility; unused (the
+            period P&I does not depend on the anchor balance).
+        rate_changes: The loan's rate-change feed (origination row plus
+            any ARM adjustments).  Required -- an empty/``None`` feed
+            raises in the resolver, because every loan must carry an
+            origination :class:`RateHistory` row.
+        as_of: Optional evaluation date.  Defaults to ``date.today()``.
+        payments: Accepted for caller compatibility; unused.
 
     Returns:
-        Decimal monthly P&I payment, or ``Decimal("0")`` when either
-        seed input is NULL (the E-18 / Commit 15 demotion permits
-        ``interest_rate`` to be NULL at the storage tier).
+        Decimal monthly P&I payment, or ``Decimal("0")`` when
+        ``original_principal`` is NULL (defensive: the column is NOT
+        NULL, so this is unreachable in practice).
 
     Raises:
-        ValueError: When ``anchor_events`` is provided but empty
-            (via :func:`loan_resolver._select_latest_anchor`).
+        ValueError: When ``rate_changes`` is empty/``None`` (the
+            origination-rate invariant is violated) -- surfaced by
+            :func:`loan_resolver._periods._origination_rate`.
     """
-    if params.original_principal is None or params.interest_rate is None:
+    if params.original_principal is None:
         return Decimal("0")
-    if anchor_events:
-        # Pylint: ``import-outside-toplevel`` -- local import avoids a
-        # top-level circular import (loan_resolver imports nothing from
-        # this module today, but the policy boundary is one-way and the
-        # local import documents that).
-        from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
-        return loan_resolver.compute_monthly_payment_baseline(
-            params,
-            anchor_events,
-            rate_changes,
-            as_of or date.today(),
-            payments=payments,
-        )
-    return amortization_engine.calculate_monthly_payment(
-        Decimal(str(params.original_principal)),
-        Decimal(str(params.interest_rate)),
-        params.term_months,
+    # Pylint: ``import-outside-toplevel`` -- local import avoids a
+    # top-level circular import (loan_resolver imports ``load_loan_context``
+    # from this module, so a top-level import here would be circular).
+    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
+    # ``anchor_events`` and ``payments`` are unused by the baseline (the
+    # period P&I is anchor-independent); passed through for signature
+    # compatibility.  The rate comes from ``rate_changes`` (DH-#56 retired
+    # ``LoanParams.interest_rate``), so an empty feed raises in the
+    # resolver rather than silently defaulting to a wrong payment.
+    return loan_resolver.compute_monthly_payment_baseline(
+        params,
+        anchor_events or [],
+        rate_changes,
+        as_of or date.today(),
+        payments=payments,
     )
 
 
