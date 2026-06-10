@@ -209,7 +209,7 @@ def test_derived_transfer_due_date_matches_loan_due_date(
 
     The loan card derives its due dates from LoanParams.payment_day via
     rate_period_engine.monthly_due_date.  The transfer recurrence now uses the
-    shared _compute_due_date, and the loan template's rule carries
+    shared compute_due_date, and the loan template's rule carries
     day_of_month = payment_day (1), so the transfer's parent + both shadows
     land on the 1st of each month -- matching the loan card -- rather than the
     pay-period start (~2 weeks early) they used before.  Over seed_periods

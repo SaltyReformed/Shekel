@@ -4,7 +4,7 @@ Shekel Budget App -- Transfer Recurrence Engine
 Parallel to recurrence_engine.py but generates Transfer records instead
 of Transaction records.  The model-agnostic halves of the two engines
 (the gating + pattern-matching preamble via
-``recurrence_engine._resolve_generation_plan``, the per-period skip
+``recurrence_engine.resolve_generation_plan``, the per-period skip
 predicate, the regenerate fetch/partition, and the cross-user audit
 logging) are shared through that module and
 ``app/services/_recurrence_common.py`` so the two cannot drift.
@@ -29,7 +29,7 @@ from app.services._recurrence_common import (
     query_rows_from_effective_date,
     should_skip_period,
 )
-from app.services.recurrence_engine import _compute_due_date, _resolve_generation_plan
+from app.services.recurrence_engine import compute_due_date, resolve_generation_plan
 from app.services import transfer_service
 from app.exceptions import RecurrenceConflict
 from app.utils.log_events import (
@@ -61,8 +61,8 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     # match) via the transaction engine's helper -- the transfer engine
     # is a deliberate parallel and must apply the rule identically.  A
     # None result means generate nothing.  See
-    # recurrence_engine._resolve_generation_plan.
-    plan = _resolve_generation_plan(
+    # recurrence_engine.resolve_generation_plan.
+    plan = resolve_generation_plan(
         template, periods, scenario_id, effective_from,
         block_message="Blocked cross-user transfer recurrence generation",
     )
@@ -84,7 +84,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         # created atomically alongside the transfer record.  The due
         # date is computed from the recurrence rule via the same shared
         # helper the transaction engine uses (recurrence_engine.
-        # _compute_due_date): a rule with a day_of_month (monthly,
+        # compute_due_date): a rule with a day_of_month (monthly,
         # quarterly, and -- via routes/loan/payment_transfer.py -- the
         # mortgage payment, whose rule carries day_of_month=payment_day) yields
         # that calendar day placed in the period's month, so the
@@ -104,7 +104,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
                 category_id=template.category_id,
                 name=template.name,
                 transfer_template_id=template.id,
-                due_date=_compute_due_date(plan.rule, period),
+                due_date=compute_due_date(plan.rule, period),
             ),
         )
         created.append(xfer)

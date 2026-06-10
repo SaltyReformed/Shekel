@@ -57,12 +57,14 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-class _GenerationPlan(NamedTuple):
+class GenerationPlan(NamedTuple):
     """Resolved inputs a recurrence generate pass needs after gating.
 
-    Returned by :func:`_resolve_generation_plan` once the cross-user
+    Returned by :func:`resolve_generation_plan` once the cross-user
     ownership check and the rule/ONCE gating have passed, so the caller
-    can proceed straight to model-specific row creation.
+    can proceed straight to model-specific row creation.  Public (no
+    leading underscore) because it is the return contract of the public
+    :func:`resolve_generation_plan`, which the transfer engine consumes.
     """
 
     rule: RecurrenceRule
@@ -70,7 +72,7 @@ class _GenerationPlan(NamedTuple):
     projected_id: int
 
 
-def _resolve_generation_plan(
+def resolve_generation_plan(
     template, periods, scenario_id, effective_from, *, block_message,
 ):
     """Run the shared gating + period-matching preamble for a generate pass.
@@ -81,7 +83,9 @@ def _resolve_generation_plan(
     cross-user ownership check, the rule-present / not-ONCE gating, the
     ``effective_from`` defaulting, and the pattern match.  Centralising
     them guarantees the two engines cannot drift on which periods a rule
-    applies to.
+    applies to.  Public (no leading underscore) because the transfer
+    engine calls it cross-module -- the shared preamble is deliberately
+    part of this module's public surface, like :func:`match_periods`.
 
     Args:
         template: The (Transaction|Transfer)Template to generate from.
@@ -93,7 +97,7 @@ def _resolve_generation_plan(
             calling engine.
 
     Returns:
-        A :class:`_GenerationPlan` when generation should proceed, or
+        A :class:`GenerationPlan` when generation should proceed, or
         ``None`` when ownership fails or the rule is absent / ONCE (every
         caller returns an empty list in the None case).
     """
@@ -121,7 +125,7 @@ def _resolve_generation_plan(
 
     matching_periods = match_periods(rule, pattern_id, periods, effective_from)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    return _GenerationPlan(rule, matching_periods, projected_id)
+    return GenerationPlan(rule, matching_periods, projected_id)
 
 
 def generate_for_template(template, periods, scenario_id, effective_from=None):
@@ -145,8 +149,8 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     # Resolve the shared gating + period-matching preamble: cross-user
     # defense, rule/ONCE gating, effective_from defaulting, and the
     # pattern match.  A None result means generate nothing (ownership
-    # failed, or no rule / ONCE).  See _resolve_generation_plan.
-    plan = _resolve_generation_plan(
+    # failed, or no rule / ONCE).  See resolve_generation_plan.
+    plan = resolve_generation_plan(
         template, periods, scenario_id, effective_from,
         block_message="Blocked cross-user recurrence generation",
     )
@@ -174,7 +178,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         )
 
         # Compute the due date from the rule and period context.
-        due = _compute_due_date(plan.rule, period)
+        due = compute_due_date(plan.rule, period)
 
         # No existing entry -- create a new one.
         txn = Transaction(
@@ -607,11 +611,16 @@ def _match_annual(periods, month, day):
     return matched
 
 
-def _compute_due_date(rule, period):
+def compute_due_date(rule, period):
     """Compute the due_date for a generated transaction.
 
     Derives the calendar date the bill is actually due, using the
     recurrence rule's scheduling day and optional due-day override.
+    Public (no leading underscore): the transfer engine, the transfers
+    preview route, the due-date backfill script, and a data migration all
+    derive a row's due date through this same pure helper, so it is
+    deliberately part of this module's public surface (like
+    :func:`match_periods`) rather than a leading-underscore internal.
 
     Source priority:
       1. rule.due_day_of_month (if set and differs from day_of_month)

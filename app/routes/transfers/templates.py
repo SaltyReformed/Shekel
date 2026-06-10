@@ -33,7 +33,7 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
-from app.services.recurrence_engine import _compute_due_date
+from app.services.recurrence_engine import compute_due_date
 from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import (
     NotFoundError,
@@ -654,7 +654,7 @@ def _materialize_initial_transfers(template, rule, start_period_id):
                         # rule carries no day_of_month, so this resolves to
                         # period.start_date -- an improvement on the prior
                         # NULL and consistent with every other transfer path.
-                        due_date=_compute_due_date(rule, period),
+                        due_date=compute_due_date(rule, period),
                     ),
                 )
             except (NotFoundError, ShekelValidationError) as exc:

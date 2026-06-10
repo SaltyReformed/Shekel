@@ -27,7 +27,7 @@ Backfill, two steps:
      non-override, template-linked transfers and write it to the parent and
      both shadows.  Historically the recurrence engine stamped these with the
      pay-period START, discarding the rule's ``day_of_month``; the engine now
-     uses ``recurrence_engine._compute_due_date``, and this step brings
+     uses ``recurrence_engine.compute_due_date``, and this step brings
      already-generated rows into line so monthly transfers (including
      derive-from-loan mortgage payments, whose rule carries
      ``day_of_month = LoanParams.payment_day``) land on their true monthly due
@@ -37,7 +37,7 @@ Backfill, two steps:
      ``IS DISTINCT FROM`` guard makes those rows a no-op.
 
      The inputs are read via raw SQL (NOT ORM models) and fed to the shared
-     pure ``_compute_due_date`` via lightweight namespaces -- this keeps the
+     pure ``compute_due_date`` via lightweight namespaces -- this keeps the
      date logic single-sourced (DRY) while staying drift-safe: a later
      migration that adds columns to the involved tables cannot break this
      migration's replay, because no mapped class is queried.  The raw UPDATEs
@@ -72,7 +72,7 @@ depends_on = None
 
 # Eligible-row selector for the step-2 recompute: projected (non-immutable),
 # non-override, template-linked, non-deleted transfers, joined to the inputs
-# _compute_due_date needs.  The INNER JOIN to recurrence_rules naturally
+# compute_due_date needs.  The INNER JOIN to recurrence_rules naturally
 # excludes any template without a rule (nothing to compute from).
 _RECOMPUTE_SELECT = sa.text(
     """
@@ -130,7 +130,7 @@ def upgrade():
     # Step 2: recompute eligible transfers from the recurrence rule, reusing
     # the shared pure helper.  Local imports defer app-code loading to upgrade
     # time.
-    from app.services.recurrence_engine import _compute_due_date  # pylint: disable=import-outside-toplevel
+    from app.services.recurrence_engine import compute_due_date  # pylint: disable=import-outside-toplevel
 
     rows = bind.execute(_RECOMPUTE_SELECT).mappings().all()
     for row in rows:
@@ -142,7 +142,7 @@ def upgrade():
             start_date=row["start_date"],
             end_date=row["end_date"],
         )
-        due = _compute_due_date(rule, period)
+        due = compute_due_date(rule, period)
         params = {"d": due, "i": row["transfer_id"]}
         bind.execute(_UPDATE_TRANSFER, params)
         bind.execute(_UPDATE_SHADOWS, params)

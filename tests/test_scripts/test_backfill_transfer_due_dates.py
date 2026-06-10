@@ -1,7 +1,7 @@
 """Tests for ``scripts/backfill_transfer_due_dates.py``.
 
 The backfill recomputes recurring-transfer due dates from the recurrence
-rule (via the shared ``recurrence_engine._compute_due_date``) and writes them
+rule (via the shared ``recurrence_engine.compute_due_date``) and writes them
 through ``transfer_service`` so the parent transfer and both shadow
 transactions stay equal.  It targets template-linked, non-override,
 non-immutable transfers only; ad-hoc, overridden, and settled transfers are
