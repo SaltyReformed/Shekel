@@ -391,22 +391,18 @@ def check_data_consistency(session):
         session: SQLAlchemy session.
 
     Returns:
-        List of CheckResult for checks DC-01 through DC-09.
+        List of CheckResult for checks DC-02 through DC-09.
+
+    Note:
+        DC-01 ("done/received transactions without actual_amount") was
+        removed 2026-06-11: settling without a manual actual is a
+        designed, documented state (``MarkDoneSchema`` deliberately
+        leaves the column untouched and ``Transaction.effective_amount``
+        falls back to ``estimated_amount``), so the check flagged
+        routine legal data on every prod run.  The remaining IDs keep
+        their historical numbers so past run logs stay comparable.
     """
     results = []
-
-    # DC-01: Done/received transactions without actual_amount (critical).
-    results.append(_run_check(session, CheckSpec(
-        "DC-01", "consistency", "critical",
-        "Transactions with status done/received but no actual_amount",
-        """
-        SELECT t.id, t.name, s.name AS status
-        FROM budget.transactions t
-        JOIN ref.statuses s ON t.status_id = s.id
-        WHERE s.name IN ('Paid', 'Received')
-          AND t.actual_amount IS NULL
-        """,
-    )))
 
     # DC-02: Transfers where from_account equals to_account (warning).
     results.append(_run_check(session, CheckSpec(
@@ -464,6 +460,12 @@ def check_data_consistency(session):
     )))
 
     # DC-06: Duplicate non-deleted transactions per template/period/scenario (critical).
+    # The predicate mirrors the schema's own uniqueness contract -- the
+    # partial unique index ``idx_transactions_template_period_scenario``
+    # is unique only WHERE ``is_override = FALSE``: an override sibling
+    # (a carried-forward unpaid item) legally coexists with the
+    # rule-generated row for its target period, so override rows must
+    # not count toward the duplicate group.
     results.append(_run_check(session, CheckSpec(
         "DC-06", "consistency", "critical",
         "Duplicate non-deleted transactions per template/period/scenario",
@@ -472,6 +474,7 @@ def check_data_consistency(session):
         FROM budget.transactions
         WHERE template_id IS NOT NULL
           AND is_deleted = FALSE
+          AND is_override = FALSE
         GROUP BY template_id, pay_period_id, scenario_id
         HAVING COUNT(*) > 1
         """,
@@ -490,15 +493,21 @@ def check_data_consistency(session):
     )))
 
     # DC-08: Users without a baseline scenario (critical).
+    # Companion-role users are excluded: a companion views the linked
+    # owner's data and owns no budget rows of their own (no accounts,
+    # no periods, no scenarios) by design, so "no baseline scenario"
+    # is their correct steady state, not a defect.
     results.append(_run_check(session, CheckSpec(
         "DC-08", "consistency", "critical",
         "Users without a baseline scenario",
         """
         SELECT u.id, u.email
         FROM auth.users u
+        JOIN ref.user_roles r ON u.role_id = r.id
         LEFT JOIN budget.scenarios s
           ON u.id = s.user_id AND s.is_baseline = TRUE
         WHERE s.id IS NULL
+          AND r.name != 'companion'
         """,
     )))
 
