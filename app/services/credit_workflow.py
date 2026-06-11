@@ -139,6 +139,42 @@ def get_active_payback(source_txn_id: int) -> Transaction | None:
     )
 
 
+def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
+    """Delete the live auto-generated payback for a reverted credit row.
+
+    The single cleanup rule for "a Credit transaction returned to
+    Projected": the live payback (if any) is hard-deleted and the
+    reversion is logged with ``EVT_CREDIT_UNMARKED``.  Shared by
+    :func:`unmark_credit` and the transaction PATCH route's
+    status-revert path so a credit reversion can never orphan its
+    payback regardless of which endpoint performed it.  A soft-deleted
+    prior payback stays in place for the audit trail (the
+    :func:`get_active_payback` contract).
+
+    The caller owns the status flip itself and must already have
+    verified ownership and the transition's legality; this helper does
+    not commit -- the deletion joins the caller's transaction so the
+    status change and the payback removal land atomically.
+
+    Args:
+        txn: The credit transaction being reverted to Projected.
+        user_id: The owning user's ID, recorded on the audit event.
+    """
+    payback = get_active_payback(txn.id)
+    deleted_payback_id = None
+    if payback:
+        deleted_payback_id = payback.id
+        db.session.delete(payback)
+
+    log_event(
+        logger, logging.INFO, EVT_CREDIT_UNMARKED, BUSINESS,
+        "Credit reverted to Projected; payback deleted",
+        user_id=user_id,
+        transaction_id=txn.id,
+        deleted_payback_id=deleted_payback_id,
+    )
+
+
 def mark_as_credit(transaction_id, user_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense.
 
@@ -340,21 +376,10 @@ def unmark_credit(transaction_id, user_id):
     # Revert the original transaction's status.
     txn.status_id = projected_id
 
-    # Delete the auto-generated payback transaction (the live one only --
-    # a soft-deleted prior payback stays in place for the audit trail).
-    payback = get_active_payback(txn.id)
-    deleted_payback_id = None
-    if payback:
-        deleted_payback_id = payback.id
-        db.session.delete(payback)
-
-    log_event(
-        logger, logging.INFO, EVT_CREDIT_UNMARKED, BUSINESS,
-        "Credit reverted to Projected; payback deleted",
-        user_id=user_id,
-        transaction_id=txn.id,
-        deleted_payback_id=deleted_payback_id,
-    )
+    # Delete the live payback + write the audit event.  Shared with the
+    # transaction PATCH route's status-revert path via the single
+    # cleanup helper so the two endpoints cannot disagree.
+    delete_payback_on_credit_revert(txn, user_id)
 
 
 def get_or_create_cc_category(user_id: int) -> Category:

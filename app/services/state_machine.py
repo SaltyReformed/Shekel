@@ -103,9 +103,11 @@ def _build_transitions():
         done: {done, projected, settled},
         # Received income mirrors the Paid expense transitions.
         received: {received, projected, settled},
-        # Credit can only revert to Projected -- the dedicated
-        # unmark_credit workflow handles cleanup of the auto-generated
-        # payback row.  No direct -> Done jump.
+        # Credit can only revert to Projected -- both revert paths
+        # (the dedicated unmark_credit workflow and the PATCH status
+        # edit) delete the auto-generated payback row through the
+        # shared credit_workflow cleanup helper.  No direct -> Done
+        # jump.
         credit: {credit, projected},
         # Cancelled rows can be reactivated to Projected.  No direct
         # transitions to Done / Received -- the user must reproject

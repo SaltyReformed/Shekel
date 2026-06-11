@@ -33,6 +33,7 @@ from app.services import credit_workflow, transaction_service, transfer_service
 from app.services.state_machine import finalised_edit_rejection, verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
+from app.utils.balance_predicates import is_credit
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
@@ -230,10 +231,13 @@ def _apply_regular_update(txn, txn_id, data):
 
     Validates any status change (:func:`_resolve_status_change`),
     enforces the expense-only purchase-tracking guard, writes the
-    submitted fields, flags template-generated rows as overridden when
-    the amount or period changed, and commits under the optimistic
-    lock.  A ``pay_period_id`` change relocates the row across the grid,
-    so it triggers a full ``gridRefresh`` instead of the in-place
+    submitted fields, deletes the auto-generated payback when the
+    change reverts a Credit row (mirroring ``unmark_credit`` via the
+    shared ``credit_workflow.delete_payback_on_credit_revert``), flags
+    template-generated rows as overridden when the amount or period
+    changed, and commits under the optimistic lock.  A
+    ``pay_period_id`` change relocates the row across the grid, so it
+    triggers a full ``gridRefresh`` instead of the in-place
     ``balanceChanged`` swap.
 
     Args:
@@ -282,6 +286,19 @@ def _apply_regular_update(txn, txn_id, data):
         "pay_period_id" in data and data["pay_period_id"] != txn.pay_period_id
     )
 
+    # Detect a Credit reversion before the setattr loop rewrites
+    # status_id.  A Credit row leaving Credit status (the state machine
+    # only admits Credit -> Projected besides identity) must delete its
+    # auto-generated payback exactly like unmark_credit -- otherwise the
+    # PATCH path orphans the payback and inflates the next period's
+    # projected expenses.  An identity re-submit (Credit -> Credit)
+    # keeps the payback.
+    reverts_credit = (
+        "status_id" in data
+        and is_credit(txn)
+        and data["status_id"] != ref_cache.status_id(StatusEnum.CREDIT)
+    )
+
     # Apply updates (regular transactions only).
     for field, value in data.items():
         setattr(txn, field, value)
@@ -295,6 +312,17 @@ def _apply_regular_update(txn, txn_id, data):
         txn.is_override = True
 
     try:
+        if reverts_credit:
+            # Inside the StaleDataError net deliberately: the payback
+            # lookup autoflushes the already-dirtied row (the
+            # version-pinned UPDATE), so a concurrent commit surfaces
+            # here as StaleDataError and must yield the 409 conflict
+            # cell, not a 500.  The helper does not commit -- the
+            # deletion joins this request's commit so the status flip
+            # and the payback removal land atomically.
+            credit_workflow.delete_payback_on_credit_revert(
+                txn, current_user.id,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info(
