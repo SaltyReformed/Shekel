@@ -452,6 +452,128 @@ thead .sticky-col {
 }
 
 /* =============================================
+   2c. COMMAND PALETTE (Ctrl+K, rebuild decision 4)
+   ============================================= */
+.cmdk-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  background: rgba(10, 12, 16, 0.45);
+}
+
+.cmdk {
+  position: fixed;
+  z-index: 1051;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  max-width: 92vw;
+  background: var(--shekel-surface);
+  border: 1px solid var(--shekel-border-strong);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.cmdk-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--shekel-border-strong);
+  color: var(--shekel-text-muted);
+}
+
+.cmdk-input {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--shekel-text-primary);
+  flex: 1;
+  font-size: 1rem;
+}
+
+.cmdk-results {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0.25rem 0;
+}
+
+.cmdk-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.cmdk-row.selected,
+.cmdk-row:hover {
+  background: color-mix(in srgb, var(--shekel-accent) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--shekel-accent);
+}
+
+.cmdk-ic {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+  background: var(--shekel-surface-raised);
+  color: var(--shekel-text-secondary);
+}
+
+.cmdk-ic.pay {
+  background: color-mix(in srgb, var(--shekel-done) 18%, transparent);
+  color: var(--shekel-done);
+}
+
+.cmdk-ic.credit {
+  background: color-mix(in srgb, var(--shekel-credit) 18%, transparent);
+  color: var(--shekel-credit);
+}
+
+.cmdk-ic.anchor {
+  background: color-mix(in srgb, var(--shekel-accent) 18%, transparent);
+  color: var(--shekel-accent);
+}
+
+.cmdk-main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmdk-meta {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--shekel-text-muted);
+}
+
+.cmdk-empty {
+  padding: 0.75rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--shekel-text-muted);
+}
+
+.cmdk-foot {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.7rem;
+  color: var(--shekel-text-muted);
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+/* =============================================
    3. SECTION BANNERS
    ============================================= */
 .section-banner-income td {

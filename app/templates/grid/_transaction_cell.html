@@ -52,6 +52,7 @@
         data-txn-id="{{ t.id }}"
         {% if t.is_expense and t.status_id == STATUS_PROJECTED
            and not t.transfer_id and not t.tracks_purchases %}data-can-credit="1"{% endif %}
+        {% if t.tracks_purchases %}data-envelope="1"{% endif %}
         role="button"
         tabindex="0"
         aria-label="{% if is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{% if show_progress %}{{ t.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}"

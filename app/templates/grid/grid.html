@@ -67,6 +67,12 @@
       <i class="bi bi-list-ul"></i> All Rows
     </a>
     {% endif %}
+
+    {# Command palette trigger (rebuild decision 4); Ctrl+K also opens it #}
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="cmdk-open-btn"
+            title="Command palette (Ctrl+K)" aria-label="Open command palette">
+      <i class="bi bi-terminal"></i> Ctrl K
+    </button>
   </div>
 
   {# --- Add buttons (all screen sizes) --- #}
@@ -258,6 +264,27 @@
 
 {# Popover/bottom-sheet container -- outside both grid variants #}
 <div id="txn-popover" class="txn-full-edit-popover d-none" role="dialog" aria-label="Edit transaction" aria-live="assertive"></div>
+
+{# Command palette (rebuild decision 4) -- Ctrl+K fuzzy actions over the
+   rendered grid.  The action index is derived from the grid DOM itself
+   (command_palette.js), so the palette surfaces exactly what the server
+   rendered and executes through the same controls and endpoints the
+   buttons use.  Result rows are built with createElement/textContent,
+   never innerHTML, because they carry user-named transactions. #}
+<div id="cmdk-scrim" class="cmdk-scrim d-none"></div>
+<div id="cmdk" class="cmdk d-none" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="cmdk-input-row">
+    <i class="bi bi-search" aria-hidden="true"></i>
+    <input type="text" id="cmdk-input" class="cmdk-input"
+           placeholder="Type a command&hellip; try &quot;pay&quot;, a row name, or &quot;anchor&quot;"
+           autocomplete="off" spellcheck="false" aria-label="Command search">
+  </div>
+  <div id="cmdk-results" class="cmdk-results" role="listbox" aria-label="Matching commands"></div>
+  <div class="cmdk-foot">
+    <span><kbd>&#8593;&#8595;</kbd> select &middot; <kbd>&#9166;</kbd> run &middot; <kbd>Esc</kbd> close</span>
+    <span id="cmdk-count" aria-live="polite"></span>
+  </div>
+</div>
 
 {# --- Add Transaction Modal --- #}
 <div class="modal fade" id="addTransactionModal" tabindex="-1" aria-labelledby="addTransactionModalLabel">
