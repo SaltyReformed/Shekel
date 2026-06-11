@@ -529,11 +529,14 @@ function revertQuickEditForm(quickForm) {
 
 // --- Keyboard handlers for quick edit/create and full edit ---
 document.addEventListener('keydown', function(e) {
-    // Enter / Space on a focused cell amount opens the action card --
+    // Enter on a Tab-focused cell amount opens the action card --
     // .txn-open carries role="button" + tabindex="0", and without this
-    // handler the role is a lie for keyboard users (the open path is a
-    // delegated click handler, not a native button).
-    if ((e.key === 'Enter' || e.key === ' ')
+    // handler the role is a lie for keyboard users.  Space is NOT
+    // bound here: per the keyboard model (rebuild decision 3) Space
+    // always means "mark paid" (app.js grid navigation).  The
+    // defaultPrevented guard skips this when app.js's cell cursor has
+    // already opened the same cell, so the card is not opened twice.
+    if (e.key === 'Enter' && !e.defaultPrevented
         && e.target.matches && e.target.matches('.txn-open[data-txn-id]')) {
         e.preventDefault();
         openFullEdit(parseInt(e.target.dataset.txnId), e.target);

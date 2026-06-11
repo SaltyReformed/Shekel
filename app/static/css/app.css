@@ -426,14 +426,23 @@ thead .sticky-col {
 }
 
 .grid-table td:hover .txn-chip.st-projected,
-.grid-table td:focus-within .txn-chip.st-projected {
+.grid-table td:focus-within .txn-chip.st-projected,
+.grid-table td.cell-focused .txn-chip.st-projected {
   border-color: var(--shekel-done);
   border-style: dashed;
 }
 
 .grid-table td:hover .txn-chip.st-projected .paybtn,
-.grid-table td:focus-within .txn-chip.st-projected .paybtn {
+.grid-table td:focus-within .txn-chip.st-projected .paybtn,
+.grid-table td.cell-focused .txn-chip.st-projected .paybtn {
   display: inline-flex;
+}
+
+/* Keyboard cursor cell (grid_keyboard.js) gets the hovered-cell tint
+   on top of the existing .cell-focused accent outline, so the cursor
+   reads like a frozen hover. */
+.grid-table td.cell-focused {
+  background-color: var(--shekel-row-hover);
 }
 
 /* Envelope progress underline beneath the amount (cell hierarchy,
