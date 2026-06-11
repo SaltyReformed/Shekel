@@ -39,11 +39,13 @@
    else ('credit' if t.status_id == STATUS_CREDIT else 'projected') %}
 {% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}">{% endif %}
 <div class="txn-chip st-{{ chip_state }}{% if is_conflict %} text-warning{% endif %}">
+  {# Clicking the amount opens the anchored action card (rebuild
+     decision 2): grid_edit.js's delegated handler reads data-txn-id
+     and fetches the full-edit partial into #txn-popover, anchored to
+     this cell.  For transfer shadows the same endpoint returns the
+     transfer edit form, so one open path covers both. #}
   <span class="txn-open"
-        hx-get="{{ url_for('transactions.get_quick_edit', txn_id=t.id) }}"
-        hx-trigger="click"
-        hx-target="#txn-cell-{{ t.id }}"
-        hx-swap="innerHTML"
+        data-txn-id="{{ t.id }}"
         role="button"
         tabindex="0"
         aria-label="{% if is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{% if show_progress %}{{ t.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}"

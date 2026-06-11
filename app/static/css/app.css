@@ -777,7 +777,7 @@ thead .sticky-col {
    17. FULL EDIT POPOVER (TIER 2)
    ============================================= */
 .txn-full-edit-popover {
-  width: 280px;
+  width: 300px;
   /* Cap height to the viewport so a very tall popover (e.g., a transaction
      with many individual-purchase entries) cannot overflow off the top or
      bottom of the window.  grid_edit.js's positioner also clamps, and this
@@ -786,15 +786,59 @@ thead .sticky-col {
   overflow-y: auto;
   overscroll-behavior: contain;
   background: var(--shekel-surface, var(--bs-body-bg));
-  border: 1px solid var(--shekel-border-subtle, var(--bs-border-color));
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  /* Anchored action card chrome (rebuild decision 2): the accent
+     border marks it as the selection-anchored surface. */
+  border: 1px solid var(--shekel-accent);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
   padding: 12px;
   /* Fixed positioning escapes the grid-scroll-wrapper's overflow:auto
      clipping.  The popover is now a sibling of the wrapper, not a child,
      so it cannot be obscured by the sticky tfoot. */
   position: fixed;
   z-index: 100;
+}
+
+/* Card context line under the transaction name. */
+.txn-card-meta {
+  font-size: 0.72rem;
+  color: var(--shekel-text-muted);
+}
+
+.txn-card-more-toggle {
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+
+/* Status action buttons inside the card track the money-state tokens
+   instead of Bootstrap's stock green/yellow, so "Paid" is the same
+   green as a paid chip. */
+.txn-full-edit-popover .btn-success {
+  --bs-btn-bg: var(--shekel-done);
+  --bs-btn-border-color: var(--shekel-done);
+  --bs-btn-hover-bg: color-mix(in srgb, var(--shekel-done) 80%, #000);
+  --bs-btn-hover-border-color: color-mix(in srgb, var(--shekel-done) 80%, #000);
+}
+
+.txn-full-edit-popover .btn-warning {
+  --bs-btn-bg: var(--shekel-credit);
+  --bs-btn-border-color: var(--shekel-credit);
+  --bs-btn-hover-bg: color-mix(in srgb, var(--shekel-credit) 80%, #000);
+  --bs-btn-hover-border-color: color-mix(in srgb, var(--shekel-credit) 80%, #000);
+}
+
+.txn-full-edit-popover .btn-outline-warning {
+  --bs-btn-color: var(--shekel-credit);
+  --bs-btn-border-color: var(--shekel-credit);
+  --bs-btn-hover-bg: var(--shekel-credit);
+  --bs-btn-hover-border-color: var(--shekel-credit);
+}
+
+.txn-full-edit-popover .btn-outline-danger {
+  --bs-btn-color: var(--shekel-danger);
+  --bs-btn-border-color: var(--shekel-danger);
+  --bs-btn-hover-bg: var(--shekel-danger);
+  --bs-btn-hover-border-color: var(--shekel-danger);
 }
 
 .txn-full-edit-popover .form-control-sm,
