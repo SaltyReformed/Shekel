@@ -53,17 +53,21 @@ class TestMarkDoneSchema:
         result = MarkDoneSchema().load({})
         assert result == {}
 
-    def test_empty_string_stripped_by_pre_load(self):
-        """An empty ``actual_amount`` string is dropped before validation.
+    def test_empty_string_maps_to_explicit_none(self):
+        """An empty ``actual_amount`` string loads as an explicit None.
 
         HTML forms submit unfilled inputs as empty strings.  Without
         the ``strip_empty_strings`` pre-load hook, those empties
-        would fail Decimal coercion and the route would have to
-        special-case the empty branch -- defeating the purpose of
-        replacing the inline ``try/except``.
+        would fail Decimal coercion.  Because the field is
+        ``allow_none``, the empty input maps to the same explicit
+        ``None`` a JSON caller posts as ``null`` (the nullable-field
+        clear rule in ``_normalize_empty_inputs``); the routes treat
+        ``None`` as "leave untouched" (see
+        ``test_explicit_none_passes``), so the form UX is unchanged
+        while the loaded shape is now honest about the user's input.
         """
         result = MarkDoneSchema().load({"actual_amount": ""})
-        assert result == {}
+        assert result == {"actual_amount": None}
 
     def test_valid_decimal_round_trips(self):
         """Numeric ``actual_amount`` strings deserialise to Decimal."""

@@ -115,11 +115,12 @@
              placeholder="Notes">
     </div>
 
-    {# Due Date -- empty when unset, so a user can add one to a transfer that
-       lacks it.  An untouched empty field submits "" which
-       TransferUpdateSchema.strip_empty_strings drops, so saving another field
-       cannot clobber an existing due date.  The service mirrors the value to
-       both shadow transactions. #}
+    {# Due Date -- always rendered, pre-filled with the stored value, so a
+       user can add, change, or CLEAR a due date.  An empty submit loads as
+       an explicit None (TransferUpdateSchema strip_empty_strings maps "" to
+       None for nullable fields) and clears the parent and both shadows; an
+       existing due date is never clobbered by a save that leaves the
+       pre-filled value untouched. #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Due Date</label>
       <input type="date" name="due_date"

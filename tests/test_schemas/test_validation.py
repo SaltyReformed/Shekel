@@ -380,14 +380,22 @@ class TestSavingsGoalCreateSchema:
 class TestSavingsGoalUpdateSchema:
     """Tests for SavingsGoalUpdateSchema."""
 
-    def test_empty_strings_stripped(self):
-        """@pre_load strips empty strings -- empty update is valid."""
+    def test_empty_strings_dropped_or_mapped_to_none(self):
+        """@pre_load drops empty non-nullable fields, Nones nullable ones.
+
+        ``name`` is not nullable, so its empty submit is dropped
+        (partial-update semantics: the stored name is untouched).
+        ``target_amount`` is ``allow_none``, so its empty submit loads
+        as an explicit ``None`` -- the update route's setattr loop then
+        clears the stored value, which is what an emptied form field
+        means.
+        """
         data = SavingsGoalUpdateSchema().load({
             "name": "",
             "target_amount": "",
         })
         assert "name" not in data
-        assert "target_amount" not in data
+        assert data["target_amount"] is None
 
     def test_valid_partial_update(self):
         """Partial update with is_active loads correctly."""

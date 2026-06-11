@@ -16,7 +16,10 @@ from app.services.debt_strategy_service import (
     STRATEGY_CUSTOM,
     STRATEGY_SNOWBALL,
 )
-from app.schemas.validation._helpers import BaseSchema
+from app.schemas.validation._helpers import (
+    BaseSchema,
+    _normalize_empty_inputs,
+)
 
 
 class DebtStrategyCalculateSchema(BaseSchema):
@@ -62,8 +65,8 @@ class DebtStrategyCalculateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields stay missing."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     extra_monthly = fields.Decimal(
         load_default=Decimal("0"), places=2, as_string=True,

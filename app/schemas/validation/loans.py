@@ -14,6 +14,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    _normalize_empty_inputs,
     _normalize_percent_fields,
 )
 
@@ -39,8 +40,8 @@ class LoanParamsCreateSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     # F-107 / C-25: DB CHECK enforces ``original_principal > 0``;
@@ -84,12 +85,12 @@ class LoanParamsUpdateSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions.
+        """Normalize empty inputs, then convert percent fields to fractions.
 
         See :class:`LoanParamsCreateSchema` for the E-28 fraction-
         domain rationale.
         """
-        data = {k: v for k, v in data.items() if v != ""}
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     # DH-#56: ``interest_rate`` no longer maps to a LoanParams column.
@@ -136,8 +137,8 @@ class LoanAnchorTrueupSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     anchor_date = fields.Date(required=True)
     anchor_balance = fields.Decimal(
@@ -176,8 +177,8 @@ class RateChangeSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     effective_date = fields.Date(required=True)
@@ -212,8 +213,8 @@ class EscrowComponentSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
@@ -233,8 +234,8 @@ class PayoffCalculatorSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     mode = fields.String(required=True, validate=validate.OneOf(["extra_payment", "target_date"]))
     extra_monthly = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
@@ -257,8 +258,8 @@ class RefinanceSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     new_rate = fields.Decimal(

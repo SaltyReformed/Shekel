@@ -185,10 +185,12 @@
                placeholder="Notes">
       </div>
 
-      {# Due Date -- always rendered (empty when unset) so a user can add a
-         due date to a transaction or transfer that lacks one.  An untouched
-         empty field submits "" which TransactionUpdateSchema.strip_empty_strings
-         drops, so saving another field cannot clobber an existing due date. #}
+      {# Due Date -- always rendered, pre-filled with the stored value, so a
+         user can add, change, or CLEAR a due date.  An empty submit loads as
+         an explicit None (TransactionUpdateSchema strip_empty_strings maps
+         "" to None for nullable fields) and clears the column; an existing
+         due date is never clobbered by a save that leaves the pre-filled
+         value untouched. #}
       <div class="mb-2">
         <label class="form-label mb-0 small">Due Date</label>
         <input type="date" name="due_date"

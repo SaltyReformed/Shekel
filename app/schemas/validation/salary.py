@@ -15,6 +15,7 @@ from app import ref_cache
 from app.enums import CalcMethodEnum
 from app.schemas.validation._helpers import (
     BaseSchema,
+    _normalize_empty_inputs,
     _PERCENT_INPUT_RANGE,
     _NON_NEGATIVE_MONETARY,
 )
@@ -25,8 +26,8 @@ class SalaryProfileCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     annual_salary = fields.Decimal(
@@ -79,8 +80,8 @@ class SalaryProfileUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     name = fields.String(validate=validate.Length(min=1, max=200))
     annual_salary = fields.Decimal(
@@ -124,8 +125,8 @@ class RaiseCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     raise_type_id = fields.Integer(required=True)
     effective_month = fields.Integer(
@@ -223,8 +224,8 @@ class DeductionCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     deduction_timing_id = fields.Integer(required=True)
@@ -341,8 +342,8 @@ class TaxBracketSetSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     filing_status_id = fields.Integer(required=True)
     tax_year = fields.Integer(
@@ -384,8 +385,8 @@ class FicaConfigSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     tax_year = fields.Integer(
         required=True, validate=validate.Range(min=2000, max=2100),
@@ -417,8 +418,8 @@ class StateTaxConfigSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     state_code = fields.String(
         required=True, validate=validate.Length(min=2, max=2),
@@ -443,8 +444,8 @@ class CalibrationSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     actual_gross_pay = fields.Decimal(
         required=True, places=2, as_string=True,
@@ -495,8 +496,8 @@ class CalibrationConfirmSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     actual_gross_pay = fields.Decimal(
         required=True, places=2, as_string=True,

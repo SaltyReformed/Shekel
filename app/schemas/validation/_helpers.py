@@ -55,6 +55,46 @@ _NON_NEGATIVE_MONETARY = validate.Range(
 _PERCENT_DIVISOR = Decimal("100")
 
 
+def _normalize_empty_inputs(schema, data):
+    """Drop empty-string inputs; map them to ``None`` for nullable fields.
+
+    HTML forms submit every rendered control, so an untouched optional
+    input arrives as ``""``.  For a field that is not ``allow_none``
+    that means "not provided": the key is dropped so ``load_default``
+    and partial-update semantics apply.  For an ``allow_none`` field
+    the form's empty value IS the null state (a "-- None --" select, a
+    cleared date or number input), so the key is kept with an explicit
+    ``None``.  Dropping those too made every nullable field unclearable
+    from the UI: update routes apply only the keys present in the
+    loaded payload, so the user's clear was a silent no-op (the
+    deep-hunt pension salary-unlink follow-up; same class at the
+    transfer category, deduction target-account, and date/notes
+    clears).  ``dump_only`` fields keep the drop behavior -- they can
+    never load a value, so mapping them would only feed the loader a
+    key it discards as unknown.
+
+    Args:
+        schema: the schema instance (``self`` inside a ``@pre_load``
+            hook); nullability is read from ``schema.fields``.
+        data: the incoming ``@pre_load`` payload (a mapping).
+
+    Returns:
+        A new dict with each ``""`` value dropped or mapped to ``None``
+        as above; non-empty values pass through unchanged.  Keys not
+        declared on the schema (e.g. ``csrf_token``) are dropped when
+        empty, exactly as before.
+    """
+    cleaned = {}
+    for key, value in data.items():
+        if value != "":
+            cleaned[key] = value
+            continue
+        field = schema.fields.get(key)
+        if field is not None and field.allow_none and not field.dump_only:
+            cleaned[key] = None
+    return cleaned
+
+
 def _normalize_percent_fields(data, field_names):
     """Divide each named percent field in ``data`` by 100 in place.
 

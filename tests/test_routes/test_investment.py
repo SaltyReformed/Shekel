@@ -357,6 +357,34 @@ class TestInvestmentParams:
         ).first()
         assert params.assumed_annual_return == Decimal("0.08000")
 
+    def test_update_params_clears_contribution_limit(
+        self, auth_client, seed_user, db, seed_periods_today
+    ):
+        """Emptied limit inputs clear the stored cap and its year.
+
+        The nullable-field clear rule: ``annual_contribution_limit``
+        and ``contribution_limit_year`` are allow_none on the update
+        schema, so the empty submits load as explicit None (they used
+        to be DROPPED, making the cap unremovable from the UI) and the
+        route's setattr loop nulls the columns.  A NULL limit means
+        uncapped: the growth engine's clamp is ``is None``-guarded.
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        params = _create_investment_params(db.session, acct.id)
+        assert params.annual_contribution_limit == Decimal("23500.00")
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/params",
+            data={
+                "annual_contribution_limit": "",
+                "contribution_limit_year": "",
+            },
+        )
+        assert resp.status_code == 302
+        db.session.refresh(params)
+        assert params.annual_contribution_limit is None
+        assert params.contribution_limit_year is None
+
     def test_update_params_percent_normalized_by_schema(
         self, auth_client, seed_user, db, seed_periods_today,
     ):

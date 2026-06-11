@@ -11,6 +11,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    _normalize_empty_inputs,
     _normalize_percent_fields,
 )
 
@@ -35,15 +36,15 @@ class UserSettingsSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings (with the grid-account "clear" carve-out),
-        then convert percent fields to fractions."""
-        cleaned = {}
-        for k, v in data.items():
-            if k == "default_grid_account_id" and v == "":
-                cleaned[k] = None  # Empty string means "clear".
-            elif v != "":
-                cleaned[k] = v
-        return _normalize_percent_fields(cleaned, self._PERCENT_FIELDS)
+        """Normalize empty inputs, then convert percent fields to fractions.
+
+        The grid-account "clear" carve-out this hook used to hand-roll
+        is now the general rule: ``_normalize_empty_inputs`` maps an
+        empty ``allow_none`` field (here ``default_grid_account_id``)
+        to ``None`` instead of dropping it.
+        """
+        data = _normalize_empty_inputs(self, data)
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     grid_default_periods = fields.Integer(
         validate=validate.Range(min=1, max=52),

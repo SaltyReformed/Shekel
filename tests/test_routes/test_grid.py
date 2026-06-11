@@ -951,6 +951,47 @@ class TestTransactionCRUD:
             db.session.refresh(txn)
             assert txn.due_date == date(2026, 2, 20)
 
+    def test_full_edit_clears_due_date(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Emptying the pre-filled due_date input clears the stored date.
+
+        The nullable-field clear rule: the schema pre_load maps the
+        empty submit on the allow_none ``due_date`` to an explicit
+        None (it used to DROP the key, making the date unclearable
+        from the UI); the non-transfer update path's setattr loop then
+        nulls the column.  The popover pre-fills the current value, so
+        an empty submit is always the user's deliberate clear.
+        """
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            auth_client.post("/transactions", data={
+                "name": "Clearable Due Date",
+                "estimated_amount": "75.00",
+                "pay_period_id": seed_periods_today[0].id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "transaction_type_id": expense_type.id,
+                "status_id": projected.id,
+                "account_id": str(seed_user["account"].id),
+                "due_date": "2026-02-20",
+            })
+            txn = db.session.query(Transaction).filter_by(
+                name="Clearable Due Date"
+            ).one()
+            assert txn.due_date == date(2026, 2, 20)
+
+            save_resp = auth_client.patch(f"/transactions/{txn.id}", data={
+                "due_date": "",
+                "version_id": txn.version_id,
+            })
+            assert save_resp.status_code == 200
+            db.session.refresh(txn)
+            assert txn.due_date is None
+
     def test_full_edit_period_selector_renders_and_moves_transaction(
         self, app, auth_client, seed_user, seed_periods_today
     ):
