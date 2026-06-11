@@ -2,7 +2,7 @@
 {% block title %}Budget Grid -- Shekel{% endblock %}
 
 {% block content %}
-{% from "grid/_grid_row_macros.html" import render_row_cells %}
+{% from "grid/_grid_row_macros.html" import render_row_cells, mstart %}
 {# --- Scenario Controls (Phase 7) --- #}
 <div class="d-none" id="scenario-controls-slot">{# Phase 7: Scenario controls will go here. This row will contain: (1) a scenario selector dropdown, (2) a "Compare" mode toggle button, and (3) when compare mode is active, a second scenario selector for the comparison target. This row is separate from period navigation to avoid crowding the header. #}</div>
 {# --- Anchor Balance Display --- #}
@@ -67,6 +67,12 @@
       <i class="bi bi-list-ul"></i> All Rows
     </a>
     {% endif %}
+
+    {# Command palette trigger (rebuild decision 4); Ctrl+K also opens it #}
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="cmdk-open-btn"
+            title="Command palette (Ctrl+K)" aria-label="Open command palette">
+      <i class="bi bi-terminal"></i> Ctrl K
+    </button>
   </div>
 
   {# --- Add buttons (all screen sizes) --- #}
@@ -81,15 +87,15 @@
   </div>
 </div>
 
-{% if stale_anchor_warning %}
-<div class="alert alert-warning alert-dismissible fade show mb-3" role="alert">
-  <i class="bi bi-exclamation-triangle-fill"></i>
-  Some transactions are marked as done in periods after your anchor.
-  Your projected balances may be inaccurate. Update your anchor balance
-  to reflect recent activity.
-  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+{# Stale-anchor warning -- the wrapper renders ALWAYS (with a stable id)
+   so the balance-row HTMX response can keep it current via an
+   out-of-band swap on every balanceChanged: a desktop mark-done that
+   creates the condition surfaces the banner without the old full page
+   reload, and clearing the condition empties the wrapper.  The alert is
+   inside only when the condition holds.  See grid/_stale_anchor_warning.html. #}
+<div id="stale-anchor-warning">
+  {% include "grid/_stale_anchor_warning.html" %}
 </div>
-{% endif %}
 
 {# --- Desktop Grid (hidden on mobile) --- #}
 <div class="d-none d-md-block">
@@ -97,12 +103,39 @@
   <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">
     <caption class="visually-hidden">Budget grid showing income and expenses by pay period</caption>
     <thead class="table-dark">
+      {# Month band -- the C3 "Month Spine" (rebuild decision 1):
+         one <th> per calendar month spanning its periods, so the eye
+         gets month landmarks across a wide window.  Pure display
+         grouping over the period start dates. #}
+      <tr class="month-band-row">
+        <th class="sticky-col month-band-corner" aria-hidden="true"></th>
+        {% set mb = namespace(label=none, span=0, first=true) %}
+        {% for period in periods %}
+          {% set lbl = period.start_date.strftime('%b')|upper
+             ~ ('' if period.start_date.year == today.year else " '" ~ period.start_date.strftime('%y')) %}
+          {% if lbl != mb.label %}
+            {% if mb.label is not none %}
+        <th scope="colgroup" colspan="{{ mb.span }}"
+            class="month-band{{ '' if mb.first else ' mstart' }}">{{ mb.label }}</th>
+              {% set mb.first = false %}
+            {% endif %}
+            {% set mb.label = lbl %}
+            {% set mb.span = 1 %}
+          {% else %}
+            {% set mb.span = mb.span + 1 %}
+          {% endif %}
+          {% if loop.last %}
+        <th scope="colgroup" colspan="{{ mb.span }}"
+            class="month-band{{ '' if mb.first else ' mstart' }}">{{ mb.label }}</th>
+          {% endif %}
+        {% endfor %}
+      </tr>
       <tr>
         <th scope="col" class="row-label-col sticky-col">Item</th>
         {% set current_year = today.year %}
         {% for period in periods %}
         <th scope="col" class="text-center period-header
-            {{ 'current-period' if period.id == current_period.id else '' }}">
+            {{ 'current-period' if period.id == current_period.id else '' }}{{ mstart(periods, loop.index0) }}">
           {% if period.start_date.year == current_year %}
           <div class="fw-bold">{{ period.start_date.strftime('%-m/%-d') }}</div>
           {% else %}
@@ -128,6 +161,11 @@
       </tr>
     </thead>
 
+    {# Main body holds the income section + its rows.  The summary
+       subtotal rows live in their own self-refreshing <tbody> sections
+       (Total Income after this block; Total Expenses + Net Cash Flow
+       after the expense block) so each refreshes on balanceChanged
+       without reloading the page -- see grid/_subtotal_rows.html. #}
     <tbody>
       {# --- Income Section --- #}
       <tr class="section-banner-income">
@@ -150,20 +188,18 @@
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
-                             entry_sums, TXN_TYPE_INCOME, account, today) }}
+                             entry_sums, TXN_TYPE_INCOME, account, today,
+                             current_period_id=current_period.id) }}
       {% endfor %}
 
-      {# --- Total Income Subtotal (server-side Decimal) --- #}
-      <tr class="subtotal-row subtotal-row-income">
-        <th class="sticky-col row-label fw-bold">Total Income</th>
-        {% for period in periods %}
-          {% set val = subtotals[period.id].income %}
-          <td class="text-end font-mono fw-bold">
-            {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
-          </td>
-        {% endfor %}
-      </tr>
+    </tbody>
 
+    {# --- Total Income subtotal (self-refreshing tbody) --- #}
+    {% with section = "income" %}
+      {% include "grid/_subtotal_rows.html" %}
+    {% endwith %}
+
+    <tbody>
       {# --- Spacer between Income and Expenses --- #}
       <tr class="spacer-row">
         <td colspan="{{ periods|length + 1 }}"></td>
@@ -189,35 +225,16 @@
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
-                             entry_sums, TXN_TYPE_EXPENSE, account, today) }}
+                             entry_sums, TXN_TYPE_EXPENSE, account, today,
+                             current_period_id=current_period.id) }}
       {% endfor %}
 
-      {# --- Total Expenses Subtotal (server-side Decimal) --- #}
-      <tr class="subtotal-row subtotal-row-expense">
-        <th class="sticky-col row-label fw-bold">Total Expenses</th>
-        {% for period in periods %}
-          {% set val = subtotals[period.id].expense %}
-          <td class="text-end font-mono fw-bold">
-            {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
-          </td>
-        {% endfor %}
-      </tr>
-
-      {# --- Net Cash Flow (server-side Decimal) --- #}
-      <tr class="net-cash-flow-row">
-        <th class="sticky-col row-label fw-bold">Net Cash Flow</th>
-        {% for period in periods %}
-          {% set net = subtotals[period.id].net %}
-          <td class="text-end font-mono fw-bold {{ 'balance-negative' if net < 0 else '' }}">
-            {% if net %}
-              {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
-              ${{ "{:,.0f}".format(net) }}
-            {% endif %}
-          </td>
-        {% endfor %}
-      </tr>
-
     </tbody>
+
+    {# --- Total Expenses + Net Cash Flow subtotals (self-refreshing tbody) --- #}
+    {% with section = "expense" %}
+      {% include "grid/_subtotal_rows.html" %}
+    {% endwith %}
 
     {% include "grid/_balance_row.html" %}
   </table>
@@ -229,6 +246,27 @@
 
 {# Popover/bottom-sheet container -- outside both grid variants #}
 <div id="txn-popover" class="txn-full-edit-popover d-none" role="dialog" aria-label="Edit transaction" aria-live="assertive"></div>
+
+{# Command palette (rebuild decision 4) -- Ctrl+K fuzzy actions over the
+   rendered grid.  The action index is derived from the grid DOM itself
+   (command_palette.js), so the palette surfaces exactly what the server
+   rendered and executes through the same controls and endpoints the
+   buttons use.  Result rows are built with createElement/textContent,
+   never innerHTML, because they carry user-named transactions. #}
+<div id="cmdk-scrim" class="cmdk-scrim d-none"></div>
+<div id="cmdk" class="cmdk d-none" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="cmdk-input-row">
+    <i class="bi bi-search" aria-hidden="true"></i>
+    <input type="text" id="cmdk-input" class="cmdk-input"
+           placeholder="Type a command&hellip; try &quot;pay&quot;, a row name, or &quot;anchor&quot;"
+           autocomplete="off" spellcheck="false" aria-label="Command search">
+  </div>
+  <div id="cmdk-results" class="cmdk-results" role="listbox" aria-label="Matching commands"></div>
+  <div class="cmdk-foot">
+    <span><kbd>&#8593;&#8595;</kbd> select &middot; <kbd>&#9166;</kbd> run &middot; <kbd>Esc</kbd> close</span>
+    <span id="cmdk-count" aria-live="polite"></span>
+  </div>
+</div>
 
 {# --- Add Transaction Modal --- #}
 <div class="modal fade" id="addTransactionModal" tabindex="-1" aria-labelledby="addTransactionModalLabel">

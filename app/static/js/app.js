@@ -481,14 +481,30 @@ document.addEventListener('keydown', function(e) {
     });
   }
 
-  /** Return the number of data columns (excluding the sticky label column). */
+  /** Return the number of data columns (excluding the sticky label column).
+      The period header is the LAST thead row -- the C3 month band sits
+      above it with one th per month, so counting the first row would
+      undercount the columns. */
   function getColCount() {
     var table = getGridTable();
     if (!table) return 0;
-    var headerRow = table.querySelector('thead tr');
+    var headerRow = table.querySelector('thead tr:last-child');
     if (!headerRow) return 0;
     // Subtract 1 for the sticky label column
     return headerRow.children.length - 1;
+  }
+
+  /** Column index of the current pay period (0 = first data column),
+      so keyboard navigation starts where the daily loop happens. */
+  function currentPeriodCol() {
+    var table = getGridTable();
+    if (!table) return 0;
+    var headerRow = table.querySelector('thead tr:last-child');
+    if (!headerRow) return 0;
+    var cur = headerRow.querySelector('th.current-period');
+    if (!cur) return 0;
+    var idx = Array.prototype.indexOf.call(headerRow.children, cur) - 1;
+    return idx >= 0 ? idx : 0;
   }
 
   function clearFocus() {
@@ -542,11 +558,12 @@ document.addEventListener('keydown', function(e) {
     var colCount = getColCount();
     if (rows.length === 0 || colCount === 0) return;
 
-    // Initialize focus if not set
+    // Initialize focus if not set -- start in the current period's
+    // column, where the daily loop happens.
     if (focusedRow < 0) {
       if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', 'Home', 'End'].indexOf(e.key) !== -1) {
         e.preventDefault();
-        setFocus(0, 0);
+        setFocus(0, currentPeriodCol());
         return;
       }
       return;
@@ -602,10 +619,14 @@ document.addEventListener('keydown', function(e) {
         }
         break;
       case 'Enter':
+        // Enter opens the cell's edit surface: the anchored action
+        // card for a transaction (.txn-open), or quick-create on an
+        // empty cell (rebuild decision 3, docs/design/grid_audit.md).
         e.preventDefault();
         var cell = getFocusedCell();
         if (cell) {
-          var clickable = cell.querySelector('.txn-cell');
+          var clickable = cell.querySelector(
+            '.txn-open[data-txn-id], .txn-empty-cell');
           if (clickable) clickable.click();
         }
         break;
@@ -616,12 +637,35 @@ document.addEventListener('keydown', function(e) {
         focusedCol = -1;
         break;
       case ' ':
-        // Space: toggle status (click the cell to open edit form)
+        // Space marks the focused cell paid via its one-click check
+        // button -- the button only renders on projected cells, the
+        // exact precondition of the projected -> done transition, so
+        // Space on any other cell is a deliberate no-op.
         e.preventDefault();
         var spaceCell = getFocusedCell();
         if (spaceCell) {
-          var txnCell = spaceCell.querySelector('.txn-cell');
-          if (txnCell) txnCell.click();
+          var payBtn = spaceCell.querySelector('.paybtn');
+          if (payBtn) payBtn.click();
+        }
+        break;
+      case 'c':
+      case 'C':
+        // C marks the focused cell credit.  The template stamps
+        // data-can-credit with the same predicate as the card's
+        // Credit button (expense, projected, not a transfer shadow,
+        // not an envelope), so this cannot fire where the button
+        // would not render.
+        var creditCell = getFocusedCell();
+        var creditable = creditCell
+          && creditCell.querySelector('.txn-open[data-can-credit]');
+        if (creditable) {
+          e.preventDefault();
+          htmx.ajax('POST',
+            '/transactions/' + creditable.dataset.txnId + '/mark-credit',
+            {
+              target: '#txn-cell-' + creditable.dataset.txnId,
+              swap: 'innerHTML',
+            });
         }
         break;
       case 'Home':

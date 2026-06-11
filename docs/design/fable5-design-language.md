@@ -5,7 +5,7 @@ first and is checked against it afterward. The companion `shekel-design` skill
 (`.claude/skills/shekel-design/`) loads this document so the constraints reload in every design
 session and screen 1 stays coherent with screen 50.
 
-Last evaluated: 2026-06-10.
+Last evaluated: 2026-06-11.
 
 ## Purpose
 
@@ -103,6 +103,49 @@ inlined hex onto these names.
 Semantic mapping for money state: positive / settled uses `--shekel-done`, negative / over-budget
 uses `--shekel-danger`, credit uses `--shekel-credit`. These already match the grid; the rebuild
 keeps them consistent so a color means the same thing on every screen.
+
+### Committed theme: Steel Ink (decided 2026-06-11)
+
+Chosen through the Loop A theme exploration on the rebuilt grid canvas (matrix T1-T4, wildcards
+U1-U3, merges M1-M2; the developer selected M1). Steel Ink pairs an achromatic carbon base with
+the Steel Blue signature accent: the accent is the only non-money chroma on screen, so the money
+state colors carry the contrast ("the number is the hero," applied to color). Dark mode is the
+first-class theme; light mode is an e-ink paper derivation. These values replace the per-theme
+blocks in `app/static/css/app.css` during Loop B phase 1 and apply app-wide, not just to the grid.
+
+| Token | Dark | Light |
+| ----- | ---- | ----- |
+| `--shekel-page-bg` (new; page behind surfaces) | `#0D0E11` | `#EFEDE8` |
+| `--shekel-surface` | `#14161A` | `#FBFAF7` |
+| `--shekel-surface-raised` | `#1B1E24` | `#EDEBE5` |
+| `--shekel-header-bg` | `#1E2128` | `#22242A` |
+| `--shekel-header-text` (new; header stays dark in light mode) | `#F0F1F3` | `#F0F1F3` |
+| `--shekel-sticky-bg` | `#101216` | `#EAE8E1` |
+| `--shekel-row-hover` | `#23262E` | `#E6E3DC` |
+| `--shekel-group-header-bg` | `#191C22` | `#F0EEE8` |
+| `--shekel-summary-bg` | `#101216` | `#ECEAE3` |
+| `--shekel-border-strong` | `#3A3F4A` | `#C8C5BD` |
+| `--shekel-border-subtle` | `#242832` | `#DDDAD2` |
+| `--shekel-text-primary` | `#ECEEF1` | `#1B1D22` |
+| `--shekel-text-secondary` | `#ADB3BD` | `#4A4E57` |
+| `--shekel-text-muted` | `#757C88` | `#6E737D` |
+| `--shekel-accent` | `#4A9ECC` | `#2878A8` |
+| `--shekel-accent-hover` | `#2878A8` | `#1C5E86` |
+| `--shekel-accent-light` | `#6BB8E0` | `#4A9ECC` |
+| `--shekel-accent-rgb` | `74, 158, 204` | `40, 120, 168` |
+| `--shekel-done` | `#3FB950` | `#1A7F37` |
+| `--shekel-credit` | `#D29922` | `#9A6700` |
+| `--shekel-danger` | `#F85149` | `#CF222E` |
+| `--shekel-section-income-bg` | `#142219` | `#DCEBDD` |
+| `--shekel-section-income-text` | `#4CC368` | `#185C2C` |
+| `--shekel-section-expense-bg` | `#271619` | `#F3DCDF` |
+| `--shekel-section-expense-text` | `#E5697E` | `#8E2336` |
+
+Notes: the accent now differs between modes (`#4A9ECC` dark, `#2878A8` light) for contrast on the
+paper background, so accent tints should use `color-mix` with `--shekel-accent` (or the per-theme
+`--shekel-accent-rgb`) rather than hardcoded rgba values. The state trio is the vivid set; the
+soft Tokyo Night trio (M2) was considered and rejected because the achromatic base exists
+precisely to let the state colors carry maximum contrast.
 
 ## Accessibility
 

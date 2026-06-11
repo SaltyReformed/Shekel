@@ -27,66 +27,115 @@
   {% set over_budget = es.over_budget %}
 {% endif %}
 {% set is_conflict = conflict is defined and conflict %}
+{# C3 "Month Spine" cell (rebuild decisions 1, docs/design/grid_audit.md):
+   the amount renders inside a status chip -- filled for settled /
+   credit, plain for projected.  The chip splits into two siblings so
+   HTMX events cannot collide under CSP (no inline JS to stop
+   propagation): `.txn-open` keeps the quick-edit click-to-open, and
+   the `.paybtn` check is the one-click mark-paid that posts to the
+   existing mark-done endpoint, whose desktop response is this same
+   cell partial re-rendered plus a gridRefresh trigger. #}
+{% set chip_state = 'done' if (t.status and t.status.is_settled)
+   else ('credit' if t.status_id == STATUS_CREDIT else 'projected') %}
 {% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}">{% endif %}
-<div class="txn-cell{% if is_conflict %} text-warning{% endif %}"
-     hx-get="{{ url_for('transactions.get_quick_edit', txn_id=t.id) }}"
-     hx-trigger="click"
-     hx-target="#txn-cell-{{ t.id }}"
-     hx-swap="innerHTML"
-     role="button"
-     tabindex="0"
-     aria-label="{% if is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{% if show_progress %}{{ t.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}"
-     title="{% if is_conflict %}This transaction was changed by another action -- click to retry. {% endif %}{% if show_progress %}${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}">
-  {% if is_conflict %}
-  <i class="bi bi-exclamation-triangle text-warning small me-1"
-     aria-label="Edit conflict"></i>
-  {% endif %}
-
-  {# Entry progress display for tracked transactions #}
-  {% if show_progress %}
-    <span class="font-mono{% if over_budget %} text-danger fw-semibold{% endif %}">
-      {{ "{:,.0f}".format(es.total) }} / {{ "{:,.0f}".format(t.estimated_amount) }}
-    </span>
-  {# Show crossed-out estimate + actual when they differ #}
-  {% elif t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
-    <span class="text-decoration-line-through small text-muted-shekel">
-      {{ "{:,.0f}".format(t.estimated_amount) }}
-    </span>
-    <span class="fw-semibold font-mono">{{ "{:,.0f}".format(t.actual_amount) }}</span>
-  {% else %}
-    {% if est_display != 0 %}
-      <span class="font-mono">{{ "{:,.0f}".format(est_display) }}</span>
+<div class="txn-chip st-{{ chip_state }}{% if is_conflict %} text-warning{% endif %}">
+  {# Clicking the amount opens the anchored action card (rebuild
+     decision 2): grid_edit.js's delegated handler reads data-txn-id
+     and fetches the full-edit partial into #txn-popover, anchored to
+     this cell.  For transfer shadows the same endpoint returns the
+     transfer edit form, so one open path covers both. #}
+  {# data-can-credit mirrors the card's Credit-button predicate so the
+     keyboard C action (grid_keyboard.js) only fires where the button
+     would render -- expense, projected, not a transfer shadow, not an
+     envelope. #}
+  <span class="txn-open"
+        data-txn-id="{{ t.id }}"
+        {% if t.is_expense and t.status_id == STATUS_PROJECTED
+           and not t.transfer_id and not t.tracks_purchases %}data-can-credit="1"{% endif %}
+        {% if t.tracks_purchases %}data-envelope="1"{% endif %}
+        role="button"
+        tabindex="0"
+        aria-label="{% if is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{% if show_progress %}{{ t.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}"
+        title="{% if is_conflict %}This transaction was changed by another action -- click to retry. {% endif %}{% if show_progress %}${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}">
+    {% if is_conflict %}
+    <i class="bi bi-exclamation-triangle text-warning small me-1"
+       aria-label="Edit conflict"></i>
     {% endif %}
-  {% endif %}
 
-  {# Status badge #}
-  {% if t.status %}
-    {% if t.status.is_settled %}
-      <span class="badge-done ms-1" aria-label="{{ t.status.name }}" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="{{ t.status.name }}">✓</span>
-    {% elif t.status_id == STATUS_CREDIT %}
-      <span class="badge-credit ms-1" aria-label="Credit card" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="Credit card">CC</span>
+    {# Entry progress display for tracked transactions #}
+    {% if show_progress %}
+      <span class="font-mono{% if over_budget %} text-danger fw-semibold{% endif %}">
+        {{ "{:,.0f}".format(es.total) }} / {{ "{:,.0f}".format(t.estimated_amount) }}
+      </span>
+    {# Show crossed-out estimate + actual when they differ #}
+    {% elif t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
+      <span class="text-decoration-line-through small text-muted-shekel">
+        {{ "{:,.0f}".format(t.estimated_amount) }}
+      </span>
+      <span class="fw-semibold font-mono">{{ "{:,.0f}".format(t.actual_amount) }}</span>
+    {% else %}
+      {% if est_display != 0 %}
+        <span class="font-mono">{{ "{:,.0f}".format(est_display) }}</span>
+      {% endif %}
     {% endif %}
-  {% endif %}
 
-  {# Transfer indicator #}
-  {% if t.transfer_id %}
-    <i class="bi bi-arrow-left-right text-muted ms-1 small" title="Transfer" aria-label="Transfer"></i>
-  {% endif %}
+    {# Status badge #}
+    {% if t.status %}
+      {% if t.status.is_settled %}
+        <span class="badge-done ms-1" aria-label="{{ t.status.name }}" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="{{ t.status.name }}">✓</span>
+      {% elif t.status_id == STATUS_CREDIT %}
+        <span class="badge-credit ms-1" aria-label="Credit card" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="Credit card">CC</span>
+      {% endif %}
+    {% endif %}
 
-  {# Override indicator #}
-  {% if t.is_override %}
-    <i class="bi bi-pencil text-info ms-1 small" title="Overridden"></i>
-  {% endif %}
+    {# Transfer indicator #}
+    {% if t.transfer_id %}
+      <i class="bi bi-arrow-left-right text-muted ms-1 small" title="Transfer" aria-label="Transfer"></i>
+    {% endif %}
 
-  {# Credit payback indicator #}
-  {% if t.credit_payback_for_id %}
-    <span class="badge-credit ms-1" aria-label="Credit card payback" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="CC Payback">CC</span>
-  {% endif %}
+    {# Override indicator #}
+    {% if t.is_override %}
+      <i class="bi bi-pencil text-info ms-1 small" title="Overridden"></i>
+    {% endif %}
 
-  {# Due date indicator -- shown only when due_date differs from period start #}
-  {% if t.due_date and t.pay_period and t.due_date != t.pay_period.start_date %}
-    <small class="text-muted d-block fs-mini">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
+    {# Credit payback indicator #}
+    {% if t.credit_payback_for_id %}
+      <span class="badge-credit ms-1" aria-label="Credit card payback" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="CC Payback">CC</span>
+    {% endif %}
+  </span>
+
+  {# One-click mark-paid (rebuild decision 1, audit A1): revealed on
+     cell hover via CSS for projected transactions only -- the exact
+     precondition of the projected -> done|received transition.  The
+     response replaces this cell's wrapper content in place. #}
+  {% if t.status_id == STATUS_PROJECTED %}
+  <button type="button" class="paybtn"
+          hx-post="{{ url_for('transactions.mark_done', txn_id=t.id) }}"
+          hx-target="#txn-cell-{{ t.id }}"
+          hx-swap="innerHTML"
+          hx-disabled-elt="this"
+          aria-label="Mark {{ t.name }} paid"
+          title="Mark paid">&#10003;</button>
   {% endif %}
 </div>
+
+{# Due date indicator -- shown only when due_date differs from period start #}
+{% if t.due_date and t.pay_period and t.due_date != t.pay_period.start_date %}
+  <small class="text-muted d-block fs-mini">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
+{% endif %}
+
+{# Envelope progress underline (cell hierarchy, audit B2): a thin bar
+   under the amount for tracked rows.  Width set at runtime by
+   progress_bar.js from data-progress-pct (CSP forbids inline style). #}
+{% if show_progress %}
+<div class="progress progress-h-4 env-progress">
+  <div class="progress-bar{% if over_budget %} bg-danger{% endif %}"
+       role="progressbar"
+       data-progress-pct="{{ [es.pct, 100]|min }}"
+       aria-valuenow="{{ es.pct|int }}"
+       aria-valuemin="0"
+       aria-valuemax="100"></div>
+</div>
+{% endif %}
 {% if wrap_div is defined and wrap_div %}</div>{% endif %}
 {% endif %}

@@ -1,167 +1,185 @@
 /* Shekel Budget App -- Custom Styles
-   Bootstrap 5 handles most layout. Steel Blue theme with dark/light toggle. */
+   Bootstrap 5 handles most layout.  Theme: "Steel Ink" (decided 2026-06-11,
+   see docs/design/fable5-design-language.md) -- achromatic carbon base with
+   the Steel Blue signature accent as the only non-money chroma; dark mode is
+   the first-class theme, light mode is an e-ink paper derivation. */
 
 /* =============================================
-   1. STEEL BLUE COLOR SYSTEM (Dark Mode)
+   1. STEEL INK COLOR SYSTEM (Dark Mode)
    ============================================= */
 [data-bs-theme="dark"] {
-  --bs-body-bg: #1E2228;
-  --bs-body-color: #E2E6EB;
+  --bs-body-bg: #0D0E11;
+  --bs-body-color: #ECEEF1;
   --bs-primary: #4A9ECC;
   --bs-primary-rgb: 74, 158, 204;
   --bs-link-color: #4A9ECC;
   --bs-link-hover-color: #6BB8E0;
-  --bs-border-color: #3A4250;
-  --bs-tertiary-bg: #262B33;
-  --bs-secondary-bg: #2A3040;
-  --shekel-surface: #262B33;
-  --shekel-surface-raised: #2A3040;
+  --bs-border-color: #242832;
+  --bs-tertiary-bg: #14161A;
+  --bs-secondary-bg: #1B1E24;
+  --shekel-page-bg: #0D0E11;
+  --shekel-surface: #14161A;
+  --shekel-surface-raised: #1B1E24;
   --shekel-accent: #4A9ECC;
   --shekel-accent-hover: #2878A8;
   --shekel-accent-light: #6BB8E0;
   --shekel-accent-rgb: 74, 158, 204;
-  --shekel-text-primary: #E2E6EB;
-  --shekel-text-secondary: #B0B9C6;
-  --shekel-text-muted: #8892A0;
-  --shekel-border-strong: #4A5568;
-  --shekel-border-subtle: #3A4250;
-  --shekel-sticky-bg: #1E2228;
-  --shekel-header-bg: #343B47;
-  --shekel-row-hover: #333B4A;
-  --shekel-done: #2ECC71;
-  --shekel-credit: #E67E22;
-  --shekel-danger: #E74C3C;
-  --shekel-section-income-bg: #1A3D2E;
-  --shekel-section-income-text: #5ED9A0;
-  --shekel-section-expense-bg: #3D1A2E;
-  --shekel-section-expense-text: #D97BA0;
-  --shekel-group-header-bg: #2A2F38;
-  --shekel-summary-bg: #1E2228;
+  --shekel-text-primary: #ECEEF1;
+  --shekel-text-secondary: #ADB3BD;
+  --shekel-text-muted: #757C88;
+  --shekel-border-strong: #3A3F4A;
+  --shekel-border-subtle: #242832;
+  --shekel-sticky-bg: #101216;
+  --shekel-header-bg: #1E2128;
+  --shekel-header-text: #F0F1F3;
+  --shekel-row-hover: #23262E;
+  --shekel-done: #3FB950;
+  --shekel-credit: #D29922;
+  --shekel-danger: #F85149;
+  --shekel-section-income-bg: #142219;
+  --shekel-section-income-text: #4CC368;
+  --shekel-section-expense-bg: #271619;
+  --shekel-section-expense-text: #E5697E;
+  --shekel-group-header-bg: #191C22;
+  --shekel-summary-bg: #101216;
 }
 
 [data-bs-theme="dark"] .navbar {
-  background-color: #1E2228 !important;
-  border-bottom: 1px solid #3A4250;
+  background-color: var(--shekel-page-bg) !important;
+  border-bottom: 1px solid var(--shekel-border-subtle);
 }
 
 [data-bs-theme="dark"] .navbar-brand {
-  color: #4A9ECC !important;
+  color: var(--shekel-accent) !important;
 }
 
 [data-bs-theme="dark"] .card {
   background-color: var(--shekel-surface);
-  border-color: #3A4250;
+  border-color: var(--shekel-border-subtle);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 [data-bs-theme="dark"] .card-header {
   background-color: var(--shekel-surface-raised);
-  border-bottom-color: #3A4250;
+  border-bottom-color: var(--shekel-border-subtle);
 }
 
 [data-bs-theme="dark"] .table {
   --bs-table-bg: var(--shekel-surface);
-  --bs-table-border-color: #3A4250;
+  --bs-table-border-color: var(--shekel-border-subtle);
 }
 
 [data-bs-theme="dark"] .table-dark {
   --bs-table-bg: var(--shekel-header-bg);
-  --bs-table-border-color: #4A5568;
-  --bs-table-color: #E2E6EB;
+  --bs-table-border-color: var(--shekel-border-strong);
+  --bs-table-color: var(--shekel-header-text);
 }
 
 [data-bs-theme="dark"] .modal-content {
   background-color: var(--shekel-surface);
-  border-color: #3A4250;
+  border-color: var(--shekel-border-subtle);
 }
 
 [data-bs-theme="dark"] .modal-header {
-  border-bottom-color: #3A4250;
+  border-bottom-color: var(--shekel-border-subtle);
 }
 
 [data-bs-theme="dark"] .modal-footer {
-  border-top-color: #3A4250;
+  border-top-color: var(--shekel-border-subtle);
 }
 
 [data-bs-theme="dark"] .form-control,
 [data-bs-theme="dark"] .form-select {
-  background-color: #1E2228;
-  border-color: #3A4250;
-  color: #E2E6EB;
+  background-color: var(--shekel-page-bg);
+  border-color: var(--shekel-border-subtle);
+  color: var(--shekel-text-primary);
 }
 
 [data-bs-theme="dark"] .btn-outline-primary {
-  --bs-btn-color: #4A9ECC;
-  --bs-btn-border-color: #4A9ECC;
-  --bs-btn-hover-bg: #4A9ECC;
-  --bs-btn-hover-border-color: #4A9ECC;
+  --bs-btn-color: var(--shekel-accent);
+  --bs-btn-border-color: var(--shekel-accent);
+  --bs-btn-hover-bg: var(--shekel-accent);
+  --bs-btn-hover-border-color: var(--shekel-accent);
   --bs-btn-hover-color: #fff;
 }
 
 [data-bs-theme="dark"] .btn-primary {
-  --bs-btn-bg: #4A9ECC;
-  --bs-btn-border-color: #4A9ECC;
-  --bs-btn-hover-bg: #2878A8;
-  --bs-btn-hover-border-color: #2878A8;
+  --bs-btn-bg: var(--shekel-accent);
+  --bs-btn-border-color: var(--shekel-accent);
+  --bs-btn-hover-bg: var(--shekel-accent-hover);
+  --bs-btn-hover-border-color: var(--shekel-accent-hover);
   --bs-btn-color: #fff;
 }
 
 [data-bs-theme="dark"] .list-group-item {
   background-color: var(--shekel-surface);
-  border-color: #3A4250;
-  color: #E2E6EB;
+  border-color: var(--shekel-border-subtle);
+  color: var(--shekel-text-primary);
 }
 
-/* Light mode variables */
+/* Light mode variables -- e-ink paper derivation of Steel Ink.  The
+   accent deepens to #2878A8 for contrast on the paper background; the
+   navbar/header intentionally stays dark in light mode. */
 [data-bs-theme="light"] {
-  --bs-primary: #4A9ECC;
-  --bs-primary-rgb: 74, 158, 204;
-  --shekel-surface: #FFFFFF;
-  --shekel-surface-raised: #F0F3F7;
-  --shekel-accent: #4A9ECC;
-  --shekel-accent-hover: #2878A8;
-  --shekel-accent-light: #6BB8E0;
-  --shekel-accent-rgb: 74, 158, 204;
-  --shekel-text-primary: #1E2228;
-  --shekel-text-secondary: #3E4A5C;
-  --shekel-text-muted: #5A6577;
-  --shekel-border-strong: #B0BCCC;
-  --shekel-border-subtle: #D0D8E2;
-  --shekel-sticky-bg: #EAEFF4;
-  --shekel-header-bg: #343B47;
-  --shekel-row-hover: #E8EDF3;
-  --shekel-done: #2ECC71;
-  --shekel-credit: #E67E22;
-  --shekel-danger: #E74C3C;
-  --shekel-section-income-bg: #D0EDDF;
-  --shekel-section-income-text: #1A6B40;
-  --shekel-section-expense-bg: #EDCFDE;
-  --shekel-section-expense-text: #6B1A40;
-  --shekel-group-header-bg: #F0F3F7;
-  --shekel-summary-bg: #F0F4F8;
+  --bs-body-bg: #EFEDE8;
+  --bs-body-color: #1B1D22;
+  --bs-primary: #2878A8;
+  --bs-primary-rgb: 40, 120, 168;
+  --bs-link-color: #2878A8;
+  --bs-link-hover-color: #1C5E86;
+  --bs-border-color: #DDDAD2;
+  --bs-tertiary-bg: #FBFAF7;
+  --bs-secondary-bg: #EDEBE5;
+  --shekel-page-bg: #EFEDE8;
+  --shekel-surface: #FBFAF7;
+  --shekel-surface-raised: #EDEBE5;
+  --shekel-accent: #2878A8;
+  --shekel-accent-hover: #1C5E86;
+  --shekel-accent-light: #4A9ECC;
+  --shekel-accent-rgb: 40, 120, 168;
+  --shekel-text-primary: #1B1D22;
+  --shekel-text-secondary: #4A4E57;
+  --shekel-text-muted: #6E737D;
+  --shekel-border-strong: #C8C5BD;
+  --shekel-border-subtle: #DDDAD2;
+  --shekel-sticky-bg: #EAE8E1;
+  --shekel-header-bg: #22242A;
+  --shekel-header-text: #F0F1F3;
+  --shekel-row-hover: #E6E3DC;
+  --shekel-done: #1A7F37;
+  --shekel-credit: #9A6700;
+  --shekel-danger: #CF222E;
+  --shekel-section-income-bg: #DCEBDD;
+  --shekel-section-income-text: #185C2C;
+  --shekel-section-expense-bg: #F3DCDF;
+  --shekel-section-expense-text: #8E2336;
+  --shekel-group-header-bg: #F0EEE8;
+  --shekel-summary-bg: #ECEAE3;
 }
 
 [data-bs-theme="light"] .navbar {
-  background-color: #343B47 !important;
-  border-bottom: 1px solid #B0BCCC;
+  background-color: var(--shekel-header-bg) !important;
+  border-bottom: 1px solid var(--shekel-border-strong);
 }
 
 [data-bs-theme="light"] .navbar-brand {
-  color: #4A9ECC !important;
+  /* Brand sits on the dark header even in light mode, so it uses the
+     lighter accent tint for contrast. */
+  color: var(--shekel-accent-light) !important;
 }
 
 [data-bs-theme="light"] .btn-primary {
-  --bs-btn-bg: #4A9ECC;
-  --bs-btn-border-color: #4A9ECC;
-  --bs-btn-hover-bg: #2878A8;
-  --bs-btn-hover-border-color: #2878A8;
+  --bs-btn-bg: var(--shekel-accent);
+  --bs-btn-border-color: var(--shekel-accent);
+  --bs-btn-hover-bg: var(--shekel-accent-hover);
+  --bs-btn-hover-border-color: var(--shekel-accent-hover);
 }
 
 [data-bs-theme="light"] .btn-outline-primary {
-  --bs-btn-color: #4A9ECC;
-  --bs-btn-border-color: #4A9ECC;
-  --bs-btn-hover-bg: #4A9ECC;
-  --bs-btn-hover-border-color: #4A9ECC;
+  --bs-btn-color: var(--shekel-accent);
+  --bs-btn-border-color: var(--shekel-accent);
+  --bs-btn-hover-bg: var(--shekel-accent);
+  --bs-btn-hover-border-color: var(--shekel-accent);
   --bs-btn-hover-color: #fff;
 }
 
@@ -212,9 +230,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Row hover */
+/* Hover model (C3 rebuild): a mild full-row tint plus a stronger tint
+   on the hovered cell only -- the one-click mark-paid reveal is
+   cell-scoped, per the rebuild decisions in docs/design/grid_audit.md
+   (no crosshair, no row-wide reveal). */
 .grid-table tbody tr:hover td,
 .grid-table tbody tr:active td {
+  background-color: color-mix(in srgb, var(--shekel-surface) 65%, var(--shekel-row-hover));
+}
+
+.grid-table tbody tr:hover td:hover {
   background-color: var(--shekel-row-hover);
 }
 
@@ -252,7 +277,7 @@
 thead .sticky-col {
   z-index: 6;
   background-color: var(--shekel-header-bg);
-  color: #fff;
+  color: var(--shekel-header-text);
 }
 
 .row-label-col {
@@ -284,6 +309,268 @@ thead .sticky-col {
 /* Period header */
 .period-header {
   font-size: 0.8rem;
+}
+
+/* =============================================
+   2b. C3 "MONTH SPINE" (grid rebuild, 2026-06-11)
+   Decisions recorded in docs/design/grid_audit.md.
+   ============================================= */
+/* Month band -- second header row grouping the period columns by
+   calendar month. */
+.month-band-row th {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-align: center;
+  color: var(--shekel-header-text);
+  opacity: 0.85;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+
+/* Month boundary rule, drawn down the first column of each new month
+   (the shared mstart() macro in _grid_row_macros.html emits the
+   class on header, body, subtotal, and balance cells so the rule is
+   one continuous line). */
+.grid-table th.mstart,
+.grid-table td.mstart {
+  border-left: 2px solid var(--shekel-border-strong);
+}
+
+/* Current pay period: accent top rule on the header plus a faint
+   tint down the body column. */
+.grid-table thead th.current-period {
+  box-shadow: inset 0 2px 0 var(--shekel-accent);
+}
+
+.grid-table td.cur {
+  background-color: color-mix(in srgb, var(--shekel-accent) 7%, transparent);
+}
+
+/* Status chips: settled and credit amounts render as filled pills;
+   projected stays plain text until hover previews the chip. */
+.txn-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 0.45rem;
+}
+
+.txn-chip .txn-open {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+
+.txn-chip.st-done {
+  background-color: color-mix(in srgb, var(--shekel-done) 16%, transparent);
+}
+
+.txn-chip.st-done .font-mono {
+  color: var(--shekel-done);
+}
+
+.txn-chip.st-credit {
+  background-color: color-mix(in srgb, var(--shekel-credit) 16%, transparent);
+}
+
+.txn-chip.st-credit .font-mono {
+  color: var(--shekel-credit);
+}
+
+/* Inside a chip the status badge flattens to a glyph -- the chip fill
+   already carries the color, so a solid pill-on-pill reads as
+   clutter. */
+.txn-chip .badge-done,
+.txn-chip .badge-received {
+  background: transparent;
+  color: var(--shekel-done);
+  font-size: 0.7rem;
+  padding: 0;
+}
+
+.txn-chip .badge-credit {
+  background: transparent;
+  color: var(--shekel-credit);
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0;
+}
+
+/* One-click mark-paid: hidden at rest, revealed on the hovered (or
+   keyboard-focused) cell only.  The dashed outline previews the chip
+   the click will complete. */
+.paybtn {
+  display: none;
+  width: 18px;
+  height: 18px;
+  margin-left: 0.3rem;
+  border: 1.5px solid var(--shekel-done);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--shekel-done) 10%, transparent);
+  color: var(--shekel-done);
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.paybtn:hover,
+.paybtn:focus-visible {
+  background: var(--shekel-done);
+  color: #fff;
+}
+
+.grid-table td:hover .txn-chip.st-projected,
+.grid-table td:focus-within .txn-chip.st-projected,
+.grid-table td.cell-focused .txn-chip.st-projected {
+  border-color: var(--shekel-done);
+  border-style: dashed;
+}
+
+.grid-table td:hover .txn-chip.st-projected .paybtn,
+.grid-table td:focus-within .txn-chip.st-projected .paybtn,
+.grid-table td.cell-focused .txn-chip.st-projected .paybtn {
+  display: inline-flex;
+}
+
+/* Keyboard cursor cell (grid_keyboard.js) gets the hovered-cell tint
+   on top of the existing .cell-focused accent outline, so the cursor
+   reads like a frozen hover. */
+.grid-table td.cell-focused {
+  background-color: var(--shekel-row-hover);
+}
+
+/* Envelope progress underline beneath the amount (cell hierarchy,
+   audit B2); width set by progress_bar.js from data-progress-pct. */
+.env-progress {
+  margin-top: 2px;
+}
+
+/* =============================================
+   2c. COMMAND PALETTE (Ctrl+K, rebuild decision 4)
+   ============================================= */
+.cmdk-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  background: rgba(10, 12, 16, 0.45);
+}
+
+.cmdk {
+  position: fixed;
+  z-index: 1051;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  max-width: 92vw;
+  background: var(--shekel-surface);
+  border: 1px solid var(--shekel-border-strong);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.cmdk-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--shekel-border-strong);
+  color: var(--shekel-text-muted);
+}
+
+.cmdk-input {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--shekel-text-primary);
+  flex: 1;
+  font-size: 1rem;
+}
+
+.cmdk-results {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0.25rem 0;
+}
+
+.cmdk-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.cmdk-row.selected,
+.cmdk-row:hover {
+  background: color-mix(in srgb, var(--shekel-accent) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--shekel-accent);
+}
+
+.cmdk-ic {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+  background: var(--shekel-surface-raised);
+  color: var(--shekel-text-secondary);
+}
+
+.cmdk-ic.pay {
+  background: color-mix(in srgb, var(--shekel-done) 18%, transparent);
+  color: var(--shekel-done);
+}
+
+.cmdk-ic.credit {
+  background: color-mix(in srgb, var(--shekel-credit) 18%, transparent);
+  color: var(--shekel-credit);
+}
+
+.cmdk-ic.anchor {
+  background: color-mix(in srgb, var(--shekel-accent) 18%, transparent);
+  color: var(--shekel-accent);
+}
+
+.cmdk-main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmdk-meta {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--shekel-text-muted);
+}
+
+.cmdk-empty {
+  padding: 0.75rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--shekel-text-muted);
+}
+
+.cmdk-foot {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.7rem;
+  color: var(--shekel-text-muted);
+  border-top: 1px solid var(--shekel-border-subtle);
 }
 
 /* =============================================
@@ -390,18 +677,13 @@ thead .sticky-col {
   z-index: 3;
 }
 
-[data-bs-theme="dark"] .balance-negative {
+.balance-negative {
   color: var(--shekel-danger) !important;
-  background-color: #3A1A1A;
-}
-
-[data-bs-theme="light"] .balance-negative {
-  color: var(--shekel-danger) !important;
-  background-color: #FDE8E6;
+  background-color: color-mix(in srgb, var(--shekel-danger) 12%, transparent);
 }
 
 .balance-low {
-  color: #E6A817 !important;
+  color: var(--shekel-credit) !important;
 }
 
 /* Totals row (kept for non-summary usage) */
@@ -626,7 +908,7 @@ thead .sticky-col {
    17. FULL EDIT POPOVER (TIER 2)
    ============================================= */
 .txn-full-edit-popover {
-  width: 280px;
+  width: 300px;
   /* Cap height to the viewport so a very tall popover (e.g., a transaction
      with many individual-purchase entries) cannot overflow off the top or
      bottom of the window.  grid_edit.js's positioner also clamps, and this
@@ -635,15 +917,59 @@ thead .sticky-col {
   overflow-y: auto;
   overscroll-behavior: contain;
   background: var(--shekel-surface, var(--bs-body-bg));
-  border: 1px solid var(--shekel-border-subtle, var(--bs-border-color));
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  /* Anchored action card chrome (rebuild decision 2): the accent
+     border marks it as the selection-anchored surface. */
+  border: 1px solid var(--shekel-accent);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
   padding: 12px;
   /* Fixed positioning escapes the grid-scroll-wrapper's overflow:auto
      clipping.  The popover is now a sibling of the wrapper, not a child,
      so it cannot be obscured by the sticky tfoot. */
   position: fixed;
   z-index: 100;
+}
+
+/* Card context line under the transaction name. */
+.txn-card-meta {
+  font-size: 0.72rem;
+  color: var(--shekel-text-muted);
+}
+
+.txn-card-more-toggle {
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+
+/* Status action buttons inside the card track the money-state tokens
+   instead of Bootstrap's stock green/yellow, so "Paid" is the same
+   green as a paid chip. */
+.txn-full-edit-popover .btn-success {
+  --bs-btn-bg: var(--shekel-done);
+  --bs-btn-border-color: var(--shekel-done);
+  --bs-btn-hover-bg: color-mix(in srgb, var(--shekel-done) 80%, #000);
+  --bs-btn-hover-border-color: color-mix(in srgb, var(--shekel-done) 80%, #000);
+}
+
+.txn-full-edit-popover .btn-warning {
+  --bs-btn-bg: var(--shekel-credit);
+  --bs-btn-border-color: var(--shekel-credit);
+  --bs-btn-hover-bg: color-mix(in srgb, var(--shekel-credit) 80%, #000);
+  --bs-btn-hover-border-color: color-mix(in srgb, var(--shekel-credit) 80%, #000);
+}
+
+.txn-full-edit-popover .btn-outline-warning {
+  --bs-btn-color: var(--shekel-credit);
+  --bs-btn-border-color: var(--shekel-credit);
+  --bs-btn-hover-bg: var(--shekel-credit);
+  --bs-btn-hover-border-color: var(--shekel-credit);
+}
+
+.txn-full-edit-popover .btn-outline-danger {
+  --bs-btn-color: var(--shekel-danger);
+  --bs-btn-border-color: var(--shekel-danger);
+  --bs-btn-hover-bg: var(--shekel-danger);
+  --bs-btn-hover-border-color: var(--shekel-danger);
 }
 
 .txn-full-edit-popover .form-control-sm,

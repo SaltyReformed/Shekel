@@ -1,0 +1,110 @@
+{# Summary subtotal rows -- the two self-refreshing <tbody> sections.
+   Returned by the grid.subtotal_rows HTMX endpoint and also included
+   inline by grid/grid.html for the initial render.
+
+   The grid keeps Total Income grouped with the income block and Total
+   Expenses + Net Cash Flow grouped with the expense block, so the two
+   groups live in two separate <tbody> elements at different positions
+   in the table.  A <table> may hold multiple <tbody> elements, so
+   wrapping each group in its own <tbody> (rather than tagging bare <tr>
+   elements with hx-swap-oob, whose table-row parsing is unreliable)
+   lets htmx swap a whole, parseable table section.
+
+   ONE GET per balanceChanged: only the income <tbody> carries the
+   self-refresh hx-get / hx-trigger / hx-swap="outerHTML"; the endpoint
+   response also carries the expense <tbody> as an hx-swap-oob fragment
+   (a whole <tbody id=...> is a parseable OOB target, unlike a bare
+   <tr>), so the single GET refreshes both sections.  The expense
+   <tbody> therefore has the matching id but no trigger of its own.
+
+   Two render modes:
+     - Endpoint response (``oob`` true): emit BOTH <tbody> sections --
+       income (with the self-refresh trigger) and expense (as an
+       hx-swap-oob fragment) -- so one GET refreshes both.
+     - Initial page-load include (``oob`` false): grid.html includes
+       this once per section via the ``section`` variable, so each
+       <tbody> lands at its own position in the table.  The expense
+       <tbody> is emitted as a plain section here (no hx-swap-oob),
+       because the OOB target does not exist until the page is built.
+
+   The figures are computed in the route with Decimal and passed in via
+   ``subtotals``; this template only displays them.
+
+   Expected context (* required):
+     periods *    -- the visible PayPeriod slice.
+     subtotals *  -- dict keyed by period.id, each with .income /
+                     .expense / .net Decimals.
+     num_periods  -- visible column count, for the self-refresh url.
+     start_offset -- window offset, for the self-refresh url.
+     account      -- the grid Account (None for the zero-accounts edge),
+                     for the self-refresh url's account_id.
+     oob          -- (optional) bool, default false.  True for the
+                     grid.subtotal_rows HTMX response (emit both
+                     sections, expense as an OOB fragment).
+     section      -- (include-only) "income" or "expense": which single
+                     <tbody> to render on the initial page-load include.
+                     Ignored when ``oob`` is true.
+#}
+{% from "grid/_grid_row_macros.html" import mstart %}
+{% set _refresh_url = url_for('grid.subtotal_rows', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.subtotal_rows', periods=num_periods|default(periods|length), offset=start_offset|default(0)) %}
+
+{%- macro income_tbody(periods, subtotals, refresh_url) -%}
+<tbody id="grid-subtotals-income"
+       hx-get="{{ refresh_url }}"
+       hx-trigger="balanceChanged from:body"
+       hx-swap="outerHTML"
+       aria-live="polite"
+       aria-atomic="true">
+  {# --- Total Income Subtotal (server-side Decimal) --- #}
+  <tr class="subtotal-row subtotal-row-income">
+    <th class="sticky-col row-label fw-bold">Total Income</th>
+    {% for period in periods %}
+      {% set val = subtotals[period.id].income %}
+      <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
+        {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+</tbody>
+{%- endmacro -%}
+
+{%- macro expense_tbody(periods, subtotals, oob) -%}
+<tbody id="grid-subtotals-expense"
+       {% if oob %}hx-swap-oob="true"{% endif %}
+       aria-live="polite"
+       aria-atomic="true">
+  {# --- Total Expenses Subtotal (server-side Decimal) --- #}
+  <tr class="subtotal-row subtotal-row-expense">
+    <th class="sticky-col row-label fw-bold">Total Expenses</th>
+    {% for period in periods %}
+      {% set val = subtotals[period.id].expense %}
+      <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
+        {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+
+  {# --- Net Cash Flow (server-side Decimal) --- #}
+  <tr class="net-cash-flow-row">
+    <th class="sticky-col row-label fw-bold">Net Cash Flow</th>
+    {% for period in periods %}
+      {% set net = subtotals[period.id].net %}
+      <td class="text-end font-mono fw-bold {{ 'balance-negative' if net < 0 else '' }}{{ mstart(periods, loop.index0) }}">
+        {% if net %}
+          {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
+          ${{ "{:,.0f}".format(net) }}
+        {% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+</tbody>
+{%- endmacro -%}
+
+{% if oob %}
+  {{ income_tbody(periods, subtotals, _refresh_url) }}
+  {{ expense_tbody(periods, subtotals, True) }}
+{% elif section == "income" %}
+  {{ income_tbody(periods, subtotals, _refresh_url) }}
+{% else %}
+  {{ expense_tbody(periods, subtotals, False) }}
+{% endif %}
