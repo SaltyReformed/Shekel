@@ -5,7 +5,7 @@ C-08 of the 2026-04-15 security remediation plan:
 
   * F-002 (CWE-613): pending-MFA session state has no time limit.
     Closed by ``_mfa_pending_at`` + ``_MFA_PENDING_MAX_AGE`` in
-    ``app/routes/auth.py``.
+    ``app/routes/auth/_helpers.py``.
 
   * F-003 (CWE-613): backup-code consumption does not invalidate
     other sessions.  Closed by the ``invalidate_other_sessions``
@@ -851,7 +851,7 @@ class TestExistingInvariantsPreserved:
         """``change_password`` continues to bump session_invalidated_at.
 
         Locks down the existing pattern in
-        ``app/routes/auth.py:change_password`` so a future refactor
+        ``app/routes/auth/session_security.py:change_password`` so a future refactor
         onto :func:`invalidate_other_sessions` cannot silently drop
         the bump (e.g. by forgetting the helper call).
         """

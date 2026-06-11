@@ -110,8 +110,8 @@ Caller contract for :func:`invalidate_other_sessions`
 
 Audit references: F-002, F-003, F-006, F-032, F-035, F-045 (commits
 C-08 and C-10 of the 2026-04-15 security remediation plan).  See
-also ``app/routes/auth.py`` for the call sites that consume these
-helpers, and ``app/__init__.py:load_user`` for the read paths.
+also the ``app/routes/auth/`` package for the call sites that consume
+these helpers, and ``app/__init__.py:load_user`` for the read paths.
 """
 from __future__ import annotations
 

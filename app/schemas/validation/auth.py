@@ -133,7 +133,7 @@ def _verify_password_bytes(password, *, field_name="password"):
 
 # --- Auth blueprint schemas (commit C-26) --------------------------------
 #
-# Every POST handler in app/routes/auth.py validates its form payload
+# Every POST handler in the app/routes/auth/ package validates its form payload
 # through one of the schemas below before invoking auth_service or
 # mfa_service.  Schema-level validation is the only line of defence
 # against megabyte-sized backup codes hitting bcrypt (F-163), and it

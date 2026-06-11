@@ -119,8 +119,9 @@ def test_remember_me_cookie_flags_after_login(client, app, db, seed_user):
             app.config["REMEMBER_COOKIE_HTTPONLY"] = True
             app.config["REMEMBER_COOKIE_SAMESITE"] = "Lax"
             # Form posts ``remember=on`` (HTML checkbox standard);
-            # the auth route at app/routes/auth.py:87 explicitly
-            # checks for the literal string "on".
+            # ``LoginSchema.remember`` (app/schemas/validation/auth.py)
+            # accepts "on" in its truthy set (C-26 moved the check
+            # from the route into the schema).
             resp = client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",

@@ -22,7 +22,7 @@ of the 2026-04-15 security remediation plan:
   * F-045 (CWE-306): no step-up re-auth for high-value operations.
     Closed by the ``fresh_login_required`` decorator in
     ``app/utils/auth_helpers.py``, the ``/reauth`` route in
-    ``app/routes/auth.py``, and the high-value routes the decorator
+    ``app/routes/auth/session_security.py``, and the high-value routes the decorator
     is applied to.  The decorated set was later narrowed to the
     account-control and credential operations -- account hard-delete
     and companion create / edit / deactivate / reactivate -- after the

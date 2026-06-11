@@ -15,7 +15,7 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.user import MfaConfig, User, UserSettings
 from app.models.scenario import Scenario
-from app.routes.auth import _is_safe_redirect
+from app.routes.auth._helpers import _is_safe_redirect
 from app.services import mfa_service
 from app.services.mfa_service import TotpVerificationResult
 from app.services.auth_service import hash_password
@@ -736,7 +736,7 @@ class TestMfaSetup:
         """GET /mfa/setup sets pending_secret_expires_at ~15 minutes ahead.
 
         The TTL constant is ``MFA_SETUP_PENDING_TTL = timedelta(minutes=15)``
-        in ``app/routes/auth.py``.  Allow a 60-second slack on either
+        in ``app/routes/auth/_helpers.py``.  Allow a 60-second slack on either
         side so the test is stable under slow CI without permitting a
         regression that bumps the TTL by hours.
         """
