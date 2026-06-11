@@ -66,7 +66,8 @@ class _RenderTarget:
     ``card_prefix`` and the ``can_edit`` flag) so :func:`mark_done` and
     its helpers thread one value instead of three parallel arguments.
     The desktop grid and full-edit popover omit these, so the default
-    (empty ``render_mode``) resolves to the cell + ``gridRefresh`` path.
+    (empty ``render_mode``) resolves to the cell + ``balanceChanged``
+    targeted-swap path.
     """
 
     render_mode: str
@@ -167,8 +168,20 @@ def _mark_done_success_response(txn, target):
         the companion page has no summary blocks so only the card
         updates.
       * otherwise (desktop grid / full-edit popover): the desktop cell +
-        ``HX-Trigger: gridRefresh`` -- the existing reload-driven path,
-        unchanged.
+        ``HX-Trigger: balanceChanged`` -- a targeted swap, no reload.
+        The freshly settled cell swaps in place (``hx-target`` is the
+        cell), and ``balanceChanged from:body`` drives the self-refresh
+        on the sticky ``<tfoot>`` balance row (grid/_balance_row.html)
+        and the two summary subtotal ``<tbody>`` sections
+        (grid/_subtotal_rows.html), so the daily desktop mark-paid feels
+        instant.  This is the REGULAR (non-transfer) mark_done path only:
+        the helper is reached solely from :func:`_mark_done_regular`.
+        The transfer-shadow path (:func:`_mark_done_shadow`) deliberately
+        keeps ``gridRefresh`` because the sibling shadow cell on the
+        other leg also changes and only a full reload re-renders it
+        today; ``mark_credit`` / ``cancel_transaction`` / ``unmark_credit``
+        likewise keep ``gridRefresh`` because they add or remove grid
+        rows, which an in-place cell swap cannot express.
 
     Args:
         txn: The settled Transaction.
@@ -188,7 +201,7 @@ def _mark_done_success_response(txn, target):
             200,
             {"HX-Trigger": "mobileCardSettled"},
         )
-    return _render_cell(txn), 200, {"HX-Trigger": "gridRefresh"}
+    return _render_cell(txn), 200, {"HX-Trigger": "balanceChanged"}
 
 
 def _credit_payback_idempotent_response(exc, txn_id):

@@ -593,6 +593,132 @@ def create_baseline():
     return redirect(url_for("grid.index"))
 
 
+class _PartialBase(NamedTuple):
+    """Scenario + grid account shared by every self-refresh grid partial.
+
+    Produced by :func:`_resolve_partial_base`, the scenario-guard +
+    account-resolve prefix that all three self-refresh endpoints --
+    :func:`balance_row`, :func:`subtotal_rows`, and
+    :func:`mobile_this_period_summary` -- share.  ``None`` from the
+    resolver (no baseline scenario) is each route's 204 no-op.
+
+    Attributes:
+        scenario: The baseline scenario for the requesting user.
+        account: The grid account (checking by default, or the user's
+            preferred grid account), or ``None`` for the
+            user-with-zero-accounts edge case.
+    """
+
+    scenario: Scenario
+    account: Account | None
+
+
+def _resolve_partial_base(user_id):
+    """Resolve the scenario + grid account shared by the grid partials.
+
+    The scenario-guard + account-resolve prefix every self-refresh grid
+    partial performs identically.  Returns ``None`` when the user has no
+    baseline scenario -- the transient-miss on which each caller returns
+    its 204 No Content no-op (never a 404), an idempotent refresh that
+    leaves the existing summary DOM untouched.
+
+    Args:
+        user_id: ID of the requesting user.
+
+    Returns:
+        A :class:`_PartialBase`, or ``None`` when the user has no
+        baseline scenario.
+    """
+    scenario = get_baseline_scenario(user_id)
+    if scenario is None:
+        return None
+
+    account = resolve_grid_account(
+        user_id, current_user.settings,
+        request.args.get("account_id", type=int),
+    )
+    return _PartialBase(scenario=scenario, account=account)
+
+
+class _PartialWindow(NamedTuple):
+    """Resolved request context shared by the windowed grid partials.
+
+    Produced by :func:`_resolve_partial_window` for the two desktop
+    self-refresh endpoints -- :func:`balance_row` and
+    :func:`subtotal_rows` -- which both answer "recompute the summary for
+    the same ``periods`` / ``offset`` window the page is showing".
+    Carrying it as a :class:`typing.NamedTuple` lets each route read
+    fields by attribute (``window.periods``) without a parallel local per
+    field, the same convention :class:`_GridContext` uses for
+    :func:`index`.
+
+    Attributes:
+        scenario: The baseline scenario for the requesting user.
+        account: The grid account (checking by default, or the user's
+            preferred grid account), or ``None`` for the
+            user-with-zero-accounts edge case.
+        num_periods: Count of visible pay-period columns (the ``periods``
+            query param, default 6).
+        start_offset: Offset added to the current period's
+            ``period_index`` for the leftmost visible column (the
+            ``offset`` query param, default 0).
+        periods: The visible period slice (length up to ``num_periods``).
+    """
+
+    scenario: Scenario
+    account: Account | None
+    num_periods: int
+    start_offset: int
+    periods: list[PayPeriod]
+
+
+def _resolve_partial_window(user_id):
+    """Resolve the shared scenario / account / period-window context.
+
+    Extracts the identical scenario-guard, account-resolve,
+    ``periods`` / ``offset`` parse, current-period guard, and range query
+    that :func:`balance_row` and :func:`subtotal_rows` each performed
+    inline (the two had copied the same ~20-line block).  Both endpoints
+    recompute their summary for the same visible window, so the
+    resolution is one definition shared by both.  Builds on
+    :func:`_resolve_partial_base` so the scenario + account prefix is the
+    same one :func:`mobile_this_period_summary` uses.
+
+    Args:
+        user_id: ID of the requesting user.
+
+    Returns:
+        A :class:`_PartialWindow` on success, or ``None`` when the user
+        has no baseline scenario or no current pay period -- the same
+        transient-miss conditions on which both callers return their
+        204 No Content no-op (an idempotent refresh that leaves the
+        existing summary DOM untouched, never a 404).
+    """
+    base = _resolve_partial_base(user_id)
+    if base is None:
+        return None
+
+    num_periods = request.args.get("periods", default=6, type=int)
+    start_offset = request.args.get("offset", default=0, type=int)
+
+    current_period = pay_period_service.get_current_period(user_id)
+    if not current_period:
+        return None
+
+    start_index = current_period.period_index + start_offset
+    periods = pay_period_service.get_periods_in_range(
+        user_id, start_index, num_periods,
+    )
+
+    return _PartialWindow(
+        scenario=base.scenario,
+        account=base.account,
+        num_periods=num_periods,
+        start_offset=start_offset,
+        periods=periods,
+    )
+
+
 @grid_bp.route("/grid/balance-row")
 @login_required
 @require_owner
@@ -605,40 +731,33 @@ def balance_row():
     this endpoint has nothing to render -- returning 204 leaves the
     existing DOM untouched and avoids the ``AttributeError`` that
     dereferencing the missing scenario would have raised (F-099).
+
+    The stale-anchor warning banner is swapped out-of-band on every
+    refresh: the balance row already computes
+    ``balance_result.stale_anchor_warning``, so the response carries the
+    ``#stale-anchor-warning`` wrapper (with the alert inside only when
+    the condition holds) so a desktop mark-done that creates the
+    condition surfaces the banner without the old full page reload.
     """
-    user_id = current_user.id
-
-    scenario = get_baseline_scenario(user_id)
-    if scenario is None:
+    window = _resolve_partial_window(current_user.id)
+    if window is None:
         return "", 204
 
-    account = resolve_grid_account(
-        user_id, current_user.settings,
-        request.args.get("account_id", type=int),
-    )
-
-    num_periods = request.args.get("periods", default=6, type=int)
-    start_offset = request.args.get("offset", default=0, type=int)
-
-    current_period = pay_period_service.get_current_period(user_id)
-    if not current_period:
-        return "", 204
-
-    start_index = current_period.period_index + start_offset
-    periods = pay_period_service.get_periods_in_range(user_id, start_index, num_periods)
-    all_periods = pay_period_service.get_all_periods(user_id)
+    all_periods = pay_period_service.get_all_periods(current_user.id)
 
     # Balances via the canonical entries-aware producer (E-25 / Commit 5).
     # The producer owns the transaction query, so this HTMX partial no
     # longer needs its own ``selectinload(entries)`` query: that
     # responsibility moved into ``balance_resolver.balances_for``.
-    if account is not None:
+    if window.account is not None:
         balance_result = balance_resolver.balances_for(
-            account, scenario.id, all_periods,
+            window.account, window.scenario.id, all_periods,
         )
         balances = balance_result.balances
+        stale_anchor_warning = balance_result.stale_anchor_warning
     else:
         balances = OrderedDict()
+        stale_anchor_warning = False
 
     low_balance_threshold = (
         current_user.settings.low_balance_threshold
@@ -648,12 +767,71 @@ def balance_row():
 
     return render_template(
         "grid/_balance_row.html",
-        periods=periods,
+        periods=window.periods,
         balances=balances,
-        account=account,
-        num_periods=num_periods,
-        start_offset=start_offset,
+        account=window.account,
+        num_periods=window.num_periods,
+        start_offset=window.start_offset,
         low_balance_threshold=low_balance_threshold,
+        stale_anchor_warning=stale_anchor_warning,
+        oob=True,
+    )
+
+
+@grid_bp.route("/grid/subtotal-rows")
+@login_required
+@require_owner
+def subtotal_rows():
+    """HTMX partial: recompute and return both summary subtotal ``<tbody>``.
+
+    The desktop grid's three summary rows (Total Income, Total
+    Expenses, Net Cash Flow) live in two self-refreshing ``<tbody>``
+    sections.  Only the income ``<tbody>`` fires this endpoint on
+    ``balanceChanged from:body`` -- the same event-driven swap pattern
+    :func:`balance_row` gives the sticky ``<tfoot>`` balance row.  Before
+    this endpoint existed the summary rows only updated on a full page
+    reload, so an inline amount edit or a mark-paid (which now triggers
+    ``balanceChanged`` instead of ``gridRefresh`` on the regular desktop
+    path) left them stale.
+
+    ONE GET refreshes both sections.  The response renders the income
+    ``<tbody>`` (which an ``outerHTML`` swap replaces in place) AND the
+    expense ``<tbody>`` as an ``hx-swap-oob`` fragment -- a whole
+    ``<tbody id=...>`` is a parseable out-of-band target, unlike a bare
+    ``<tr>`` -- so the two summary blocks never need two separate GETs
+    (which would double the fan-out and risk the ``RATELIMIT_DEFAULT``
+    ceiling silently 429-ing the refresh).  Both ``<tbody>`` blocks read
+    the same :func:`_build_grid_subtotals` computation, so the financial
+    figures match the grid index route and the balance row exactly (no
+    duplicated subtotal logic).
+
+    Mirrors :func:`balance_row`'s auth, ownership, and param handling:
+    ``@login_required`` + ``@require_owner``, the same
+    ``account_id`` / ``periods`` / ``offset`` parse, and the same 204
+    No Content no-op (rather than 404) when the user has no baseline
+    scenario or no current pay period -- an idempotent GET refresh that
+    leaves the existing summary DOM untouched on a transient miss.
+    """
+    window = _resolve_partial_window(current_user.id)
+    if window is None:
+        return "", 204
+
+    # Same canonical, entries-aware subtotal computation the grid index
+    # route and the balance row use -- never a re-derived inline loop --
+    # so ``balances[p] - balances[p-1] == subtotals[p].net`` keeps
+    # holding across the live swap (E-25 / Commit 10).
+    subtotals = _build_grid_subtotals(
+        window.account, window.scenario, window.periods,
+    )
+
+    return render_template(
+        "grid/_subtotal_rows.html",
+        oob=True,
+        periods=window.periods,
+        subtotals=subtotals,
+        account=window.account,
+        num_periods=window.num_periods,
+        start_offset=window.start_offset,
     )
 
 
@@ -684,8 +862,8 @@ def mobile_this_period_summary():
     """
     user_id = current_user.id
 
-    scenario = get_baseline_scenario(user_id)
-    if scenario is None:
+    base = _resolve_partial_base(user_id)
+    if base is None:
         return "", 204
 
     period_id = request.args.get("period_id", type=int)
@@ -695,26 +873,21 @@ def mobile_this_period_summary():
     if period is None or period.user_id != user_id:
         return "", 204
 
-    account = resolve_grid_account(
-        user_id, current_user.settings,
-        request.args.get("account_id", type=int),
-    )
-
     all_periods = pay_period_service.get_all_periods(user_id)
-    if account is not None:
+    if base.account is not None:
         balances = balance_resolver.balances_for(
-            account, scenario.id, all_periods,
+            base.account, base.scenario.id, all_periods,
         ).balances
     else:
         balances = OrderedDict()
 
-    subtotals = _build_grid_subtotals(account, scenario, [period])
+    subtotals = _build_grid_subtotals(base.account, base.scenario, [period])
 
     return render_template(
         "grid/_mobile_tp_summary.html",
         period=period,
         subtotals=subtotals,
         balances=balances,
-        account=account,
+        account=base.account,
         oob=True,
     )

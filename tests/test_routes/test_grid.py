@@ -283,6 +283,74 @@ class TestBalanceRow:
             assert b"Projected End Balance" in resp.data
             assert b"Total Expenses" not in resp.data
 
+    def test_balance_row_oob_stale_anchor_banner_when_condition_holds(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A settled post-anchor txn makes the response carry the OOB banner.
+
+        The anchor sits at periods[0]; a Paid (settled) expense in a
+        later period (periods[2]) is the stale-anchor condition. The
+        balance-row response must surface the banner out-of-band -- the
+        ``#stale-anchor-warning`` wrapper with ``hx-swap-oob="true"`` and
+        the warning alert inside -- so a desktop mark-done that creates
+        the condition shows the banner without the old full page reload.
+        """
+        with app.app_context():
+            from app.models.ref import TransactionType  # pylint: disable=import-outside-toplevel
+            paid = db.session.query(Status).filter_by(name="Paid").one()
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            # periods[0] is the anchor; periods[2] is post-anchor.
+            post_anchor = seed_periods_today[2]
+            db.session.add(Transaction(
+                pay_period_id=post_anchor.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=paid.id,
+                name="Paid Rent",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("1200.00"),
+            ))
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/grid/balance-row?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # OOB wrapper present and carrying the alert.
+            assert 'id="stale-anchor-warning"' in html
+            assert 'hx-swap-oob="true"' in html
+            assert "alert-warning" in html
+            assert "marked as done in periods after your anchor" in html
+            # Still dismissible.
+            assert 'data-bs-dismiss="alert"' in html
+
+    def test_balance_row_oob_stale_anchor_wrapper_empty_when_no_condition(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """No settled post-anchor txn -> the OOB wrapper is empty (no alert).
+
+        The wrapper still ships (so a later refresh can fill or clear it),
+        but with no stale-anchor condition it carries no alert -- a
+        desktop refresh must not flash a spurious warning.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                f"/grid/balance-row?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # Wrapper ships for the OOB swap, but holds no alert.
+            assert 'id="stale-anchor-warning"' in html
+            assert 'hx-swap-oob="true"' in html
+            assert "alert-warning" not in html
+            assert "marked as done in periods after your anchor" not in html
+
     def test_grid_periods_large_value(
         self, app, auth_client, seed_user, seed_periods, monkeypatch,
     ):
@@ -299,6 +367,235 @@ class TestBalanceRow:
             assert resp.status_code == 200
             assert b"Projected End Balance" in resp.data
             assert b"01/02" in resp.data
+
+
+class TestSubtotalRowsEndpoint:
+    """Tests for GET /grid/subtotal-rows HTMX partial.
+
+    The desktop grid splits its three summary rows (Total Income, Total
+    Expenses, Net Cash Flow) into two self-refreshing ``<tbody>``
+    sections (grid rebuild Phase 6, audit item C3).  Only the income
+    ``<tbody>`` fires this endpoint on ``balanceChanged from:body``; the
+    single response carries the income ``<tbody>`` (an outerHTML swap
+    replaces it in place) AND the expense ``<tbody>`` as an
+    ``hx-swap-oob`` fragment, so ONE GET refreshes both sections.
+    Mirrors the :class:`TestBalanceRow` style: auth required, the no-op
+    204 contracts, and hand-computed Decimal figures asserted in the
+    rendered rows.
+    """
+
+    def _seed_income_expense(self, seed_user, period_id, income, expense):
+        """Seed one projected income + one projected expense in a period.
+
+        Returns nothing; the caller asserts the rendered subtotals.  Uses
+        the Salary/Rent seed categories so the rows render under the
+        income and expense sections respectively.
+        """
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        income_type = (
+            db.session.query(TransactionType).filter_by(name="Income").one()
+        )
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        db.session.add_all([
+            Transaction(
+                pay_period_id=period_id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Paycheck",
+                category_id=seed_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=income,
+            ),
+            Transaction(
+                pay_period_id=period_id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Rent",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=expense,
+            ),
+        ])
+        db.session.commit()
+
+    def test_one_response_carries_both_sections(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A single GET returns BOTH the income and expense subtotal tbodies.
+
+        Income $2,000, expense $1,400 in the current period.  One GET (the
+        income tbody's self-refresh) must return both sections so a single
+        balanceChanged event refreshes the whole summary: the income
+        tbody (Total Income = $2,000) carries the self-refresh trigger and
+        an outerHTML swap, while the expense tbody (Total Expenses =
+        $1,400, Net Cash Flow = $2,000 - $1,400 = $600) rides along as an
+        hx-swap-oob fragment so it never needs its own GET.
+        """
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            self._seed_income_expense(
+                seed_user, current.id, Decimal("2000.00"), Decimal("1400.00"),
+            )
+
+            resp = auth_client.get(
+                f"/grid/subtotal-rows?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Income tbody: present, self-refreshing, $2,000.
+            assert 'id="grid-subtotals-income"' in html
+            assert "subtotal-row-income" in html
+            assert "Total Income" in html
+            assert "$2,000" in html
+            # Only the income tbody carries the self-refresh trigger -- it
+            # is the single GET; the expense tbody rides along OOB.
+            assert 'hx-trigger="balanceChanged from:body"' in html
+            assert html.count('hx-trigger="balanceChanged from:body"') == 1
+
+            # Expense tbody: present, OOB, $1,400 + $600 net.
+            assert 'id="grid-subtotals-expense"' in html
+            assert 'hx-swap-oob="true"' in html
+            assert "subtotal-row-expense" in html
+            assert "net-cash-flow-row" in html
+            assert "Total Expenses" in html
+            assert "Net Cash Flow" in html
+            # Expense = $1,400; Net = $2,000 - $1,400 = $600.
+            assert "$1,400" in html
+            assert "$600" in html
+
+    def test_refresh_url_carries_account_and_window(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The income tbody's self-refresh URL pins account_id + window.
+
+        So the next balanceChanged refresh fetches the same account and
+        the same periods / offset window, mirroring balance_row threading
+        account_id through its hx-get URL.  The section param is gone --
+        one GET returns both sections -- so it must NOT appear.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                f"/grid/subtotal-rows?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f"account_id={seed_user['account'].id}" in html
+            assert "periods=6" in html
+            assert "offset=0" in html
+            # The collapsed-to-one-GET endpoint no longer takes a section.
+            assert "section=" not in html
+
+    def test_aria_live_polite_on_both_tbodies(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Both self-refreshing tbodies announce updates politely (a11y).
+
+        The mirrored ``_balance_row.html`` tfoot carries
+        ``aria-live="polite"`` + ``aria-atomic="true"``; both summary
+        tbodies must too so a screen reader announces the refreshed
+        figures after a mark-done.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                f"/grid/subtotal-rows?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # Two tbodies, each with the polite/atomic pair.
+            assert html.count('aria-live="polite"') == 2
+            assert html.count('aria-atomic="true"') == 2
+
+    def test_no_current_period_returns_204(
+        self, app, auth_client, seed_user,
+    ):
+        """No generated periods (no current period) returns 204."""
+        with app.app_context():
+            resp = auth_client.get("/grid/subtotal-rows")
+            assert resp.status_code == 204
+            assert resp.data == b""
+
+    def test_no_baseline_scenario_returns_204(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """No baseline scenario returns 204, matching balance_row (F-099)."""
+        with app.app_context():
+            db.session.query(Scenario).filter_by(
+                user_id=seed_user["user"].id,
+            ).delete()
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/grid/subtotal-rows?periods=6&offset=0",
+            )
+            assert resp.status_code == 204
+            assert resp.data == b""
+
+    def test_other_users_account_id_does_not_leak_subtotals(
+        self, app, auth_client, seed_user, seed_periods_today,
+        seed_second_user,
+    ):
+        """A cross-user account_id never leaks the other account's subtotals.
+
+        The first user requests subtotals while passing the SECOND user's
+        account_id.  ``resolve_grid_account`` rejects the cross-user id
+        (it is not owned by the requester) and falls back to the
+        requester's own account, so a $9,999 income seeded against the
+        second user's account never appears in the response -- the
+        404-for-not-yours guarantee expressed as data isolation (the
+        endpoint scopes strictly to ``current_user``).  The first user's
+        own $2,000 income IS shown because the fallback lands on their
+        account.
+        """
+        with app.app_context():
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+            income_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Income").one()
+            )
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            # First user's own income -- shown via the fallback.
+            self._seed_income_expense(
+                seed_user, current.id,
+                Decimal("2000.00"), Decimal("0.00"),
+            )
+            # Second user's income on the second user's account/period --
+            # must NOT leak into the first user's subtotal response.
+            db.session.add(Transaction(
+                pay_period_id=seed_second_user["account"].current_anchor_period_id,
+                scenario_id=seed_second_user["scenario"].id,
+                account_id=seed_second_user["account"].id,
+                status_id=projected.id,
+                name="Other Paycheck",
+                category_id=seed_second_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("9999.00"),
+            ))
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/grid/subtotal-rows?periods=6&offset=0"
+                f"&account_id={seed_second_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The second user's $9,999 income must not appear.
+            assert "$9,999" not in html
+            # The first user's own $2,000 income is shown via the fallback.
+            assert "$2,000" in html
 
 
 class TestTransactionCRUD:

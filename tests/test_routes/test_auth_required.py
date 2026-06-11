@@ -32,6 +32,8 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/"),  # dashboard.page
     # -- grid blueprint --
     ("GET", "/grid/balance-row"),  # grid.balance_row
+    # grid.subtotal_rows
+    ("GET", "/grid/subtotal-rows"),
 
     # -- transactions blueprint --
     # transactions.get_cell
