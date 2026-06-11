@@ -9,12 +9,14 @@
 > gate. Verify every finding against the code before applying. The auto-loaded
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
-**Status: Phases 0-5 DONE for `app/` -- LOCKED at 10.00/10 with ZERO messages (re-confirmed
-2026-06-11: `pylint app/` -> 10.00/10; CI `--fail-under=10` + `scripts/hooks/ENFORCE_PYLINT_FLOOR`
-enforce the floor; see the Phase 5 status block). The ONLY remaining plan.md work is Phase 5
-step 5: `scripts/` (measured 5.22/10 on 2026-06-11 -- the 9.27 baseline was stale). P-1 and P-3
+**Status: ALL PHASES DONE -- `app/` LOCKED at 10.00/10 with ZERO messages (CI `--fail-under=10` +
+`scripts/hooks/ENFORCE_PYLINT_FLOOR` enforce the floor; see the Phase 5 status block), and Phase 5
+step 5 (`scripts/`) COMPLETED 2026-06-11: `pylint scripts/` 10.00/10 with ZERO messages (from the
+5.22/10 corrected baseline; see the Phase 5 step-5 completion block for the register). P-1 and P-3
 under "Problems surfaced" are both RESOLVED (see their status lines). Subsequent quality work is
-tracked in `deep-quality-hunt.md` (register exhausted through Batch AK) and `quality-pass.md`
+tracked in `deep-quality-hunt.md` (register exhausted through Batch AK, plus the 2026-06-11
+closeout fixes recorded on their own rows: credit-reversion payback delete, #82 narrow producer,
+the `_first_validation_message` rename, and the trueup-test disposal) and `quality-pass.md`
 (fix-batches B1-B7 complete).**
 
 *(The paragraphs below are the historical session narratives from the Phase-3 era, kept as the
@@ -636,7 +638,7 @@ Measured at the state below. Reproduce with the [Verification](#verification-com
 | **`app/` score** | **9.68/10** |
 | Visible messages (`app/`) | **423** |
 | Inline `# pylint: disable=` directives (`app/`) | **74**, across 28 files |
-| `scripts/` score (out of scope until app/ is done) | 9.27/10 (STALE -- measured 5.22/10 on 2026-06-09, re-confirmed 2026-06-11; see the Phase 5 step-5 note) |
+| `scripts/` score (out of scope until app/ is done) | 9.27/10 (STALE -- measured 5.22/10 on 2026-06-09, re-confirmed 2026-06-11; **10.00/10 since 2026-06-11**, see the Phase 5 step-5 completion block) |
 
 ### Visible message breakdown (the 423)
 
@@ -2160,12 +2162,66 @@ decision #4):
    config-level disable masks no genuinely-broken import).
 4. **Full suite (step 4):** `./scripts/test.sh` -> 5867 passed.
 
-**Step 5 (`scripts/`, baseline 9.27/10) is NOT started** -- a separate later effort with its own
-register if needed. The lock-in above applies to `app/` only.
+~~**Step 5 (`scripts/`, baseline 9.27/10) is NOT started** -- a separate later effort with its own
+register if needed. The lock-in above applies to `app/` only.~~
 
 **Baseline correction (2026-06-11):** the 9.27/10 is stale -- `pylint scripts/` measures **5.22/10**
 (first caught by the 2026-06-09 deep-hunt triage sweep, re-confirmed today). Use 5.22 as the step-5
 starting point.
+
+**Step 5 DONE (2026-06-11): `pylint scripts/` 10.00/10, ZERO messages; the full
+`--fail-on=E,F,<4 shekel checkers>` gate exits 0 for BOTH `app/` and `scripts/`; full suite 5985
+passed / 0 skipped.** The register, in order:
+
+1. **Root cause of the 79 `import-error`s (5.22 -> 8.96 in one config line):** pylint's static
+   analysis never executes the scripts' runtime `sys.path.insert` bootstrap, and linting
+   `scripts/` puts only `scripts/` itself on the path (for `app/` the linted package's parent IS
+   the repo root, which is why `app/` never saw this). Fixed in `.pylintrc`'s `init-hook` -- the
+   repo root joins `sys.path` alongside `tools/pylint` (a no-op for `app/` linting, verified
+   10.00/10 unchanged).
+2. **Shared CLI library `scripts/_script_lib.py` (the R0801 root fix):** `run_in_app_context`
+   (owns the `--database-url` env override + the deferred app import -- the app config reads
+   `os.environ` at import time, verified `app/config.py:114` -- + `create_app` + app-context
+   execution of a session-taking runner), `setup_script_logging`, `parse_confirm_args` +
+   `confirm_gate` (the destructive-script `--confirm` skeleton; per-script exit-code contracts
+   NOT flattened). All four cross-file `duplicate-code` clusters dissolved at the root; 0 R0801
+   remain.
+3. **Per-file cleanup (4 parallel agents, disjoint file sets), highlights:** the
+   threading-imported-classes-as-args anti-pattern removed at root (was the source of the
+   invalid-name/too-many-args/unused-argument cluster); `integrity_check`'s `except Exception`
+   narrowed to the verified `(ImportError, OSError, RuntimeError, ValueError, SQLAlchemyError)`
+   (also FIXES the documented exit-3-on-connection-failure contract -- `OperationalError` is a
+   `SQLAlchemyError`, not an `OSError`, so a connection failure previously escaped as a
+   traceback); `benchmark_triggers`' 35-local/83-statement monolith decomposed;
+   `vendor_google_fonts` decomposed; every surviving disable carries the standard `Pylint:`
+   rationale or was deleted; `wrong-import-position` standardized to one block-scoped
+   disable/enable pair + rationale per bootstrap block; vestigial `# noqa` tags dropped (no
+   flake8 anywhere in the project).
+4. **Two pinned `# BUG`s in `tests/test_scripts/` VERIFIED REAL and FIXED at the root (rule-5
+   contract changes, developer-ratified):** (a) `audit_cleanup.execute_cleanup` accepted
+   `days <= 0`, producing a FUTURE cutoff that deleted the ENTIRE audit log from the programmatic
+   entry point (the CLI already rejected it); now raises `ValueError` before any DB work --
+   revert-proven (the old behavior really deleted all rows). (b) `reset_mfa` early-returned on
+   `not is_enabled`, leaving an orphaned `totp_secret_encrypted` (+ backup codes/confirmed_at/
+   last_totp_timestep) at rest after a "reset"; the early-return predicate is now
+   "nothing to clear" and any residual material triggers the full clear + audit event --
+   revert-proven.
+5. **W9903 checker gap closed (`tools/pylint/shekel_checkers.py`):** the combined
+   `# noqa: E402  pylint: disable=...` trailing form evaded `_DISABLE_RE` (the regex required
+   `#` immediately before `pylint:`), so 8 undocumented suppressions were invisible to the
+   rationale gate while pylint still honored them. Regex tightened to `#.*?pylint:` (+2 unit
+   tests, 38 total); repo-wide scan confirmed the 8 evaders were the only instances, all
+   converted to the standard form.
+6. **Four one-shot scripts DELETED (developer-ratified 2026-06-11)** instead of polished:
+   `repair_orphaned_transfers.py` (self-described one-time repair for a long-fixed bug;
+   `integrity_check` owns orphan detection), `backfill_transfer_due_dates.py` (its own docstring:
+   migration `48e2c7ee593d` performs the backfill automatically on deploy -- the script was the
+   redundant manual twin), `scan_destroyed_received_history.py` (CRIT-05 forensic scan; the
+   guard landed, assessment done, audit log unchanged if ever needed), `benchmark_triggers.py`
+   (one-time perf investigation, decision long made). Their 2 test files went with them
+   (suite 6004 -> 5985); `.dockerignore` + the `test_seed_credential_hygiene` pins updated, and
+   `scripts/_script_lib.py` ADDED to the runtime-essential pin list (the shipped docker-exec
+   scripts now import it at runtime).
 
 ---
 
@@ -2446,3 +2502,4 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-09 | `c6f83a1` | 5 | **LOCK-IN (app/).** CI (`ci.yml`) + pre-commit (`.pre-commit-config.yaml`) pylint `--fail-under=9.0` -> `--fail-under=10`; created `scripts/hooks/ENFORCE_PYLINT_FLOOR` (Stop hook WARN -> HARD-BLOCK on a non-clean `pylint app/`). Verified: `--fail-under=10` returns exit 16 on a sub-10 score (genuinely gates); the exact CI command exits 0; `pylint app/ --score=no` empty; `--enable=import-error` clean. No app/ code change. `scripts/` (9.27, step 5) remains. | 10.00/10 | 0 |
 | 2026-06-11 | `6eab545` + `33de78e` | -- | **Deferred small follow-ups cleared (post-lock-in quality batch).** `6eab545` (test-only): direct `_commit_helpers` contracts (9 tests, Phase-4 follow-up (b) -- rollback-spied, forged `orig.diag.constraint_name` discrimination, full `regenerate_commit_or_report` routing matrix); `TestInvestmentHorizons` closes the DH-#35 no-coverage caveat; the two false-`# BUG` test docstrings (P-3 class) rewritten against the verified double boundary guards. `33de78e`: the two deferred `6e3c32d` entries.py notes DONE (typed private-helper cluster incl. the first `flask.typing.ResponseReturnValue` use; the 3-site ownership preamble -> single security-critical `_accessible_txn_and_entry`); salary `add_*` IntegrityError arms log the pre-captured `user_id` (post-rollback lazy-refresh removed). Phase-4 follow-up (a) evaluated -> **KEEP inline** (forced-abstraction test failed; see the Phase-4 disposition block). P-1 verified RESOLVED in code (rate-period SSOT; docstrings consistent) and P-3 CLOSED (boundary-guarded) -- status lines updated with citations. Independent quality-pass: ACCEPT, 0 REVERT-OVERREACH. `pylint app/` 10.00/10, full `--fail-on` gate exit 0. **Full suite 6001 passed / 5 skipped.** | 10.00/10 | 0 |
 | 2026-06-11 | `0aceb6c` | -- | **`auth.py` package split (decision #5) -- the last tracked module split DONE.** The 1358-line monolith + its `too-many-lines` waiver became `app/routes/auth/` (`_bp` cycle-break / `_helpers` shared constants + cross-module security helpers / `credentials` / `mfa` co-located / `session_security`), the salary/accounts precedent; `__init__` re-exports `auth_bp`, all 14 endpoints/methods/URLs verified identical via a `create_app` URL-map diff. Byte-identical move AST-verified (19/21 functions + all 3 constants identical; 4 helpers docstring-refs-only). The ONE change: the split exposed the reauth<->mfa_disable_confirm byte-identical key-failure block to R0801 (cross-file only -- the monolith masked it); root-fixed by extracting `_helpers._totp_accepted_or_key_failure` + `_MFA_KEY_FAILURE_MESSAGE` (joined flash text proven identical at both sites, control flow + exception tuple + ACCEPTED-commit timing equivalent; `mfa_verify`'s distinct clear-pending variant untouched), NOT by a disable. All 5 rate limits intact; waiver deleted, no new module needs one (largest `mfa.py` 612 lines); the only package disable is `mfa_verify`'s pre-existing documented tm-return. 1 test import repointed + 9 stale prose path refs updated. Independent quality-pass: ACCEPT, 0 REVERT-OVERREACH (contingent REFINE -- stale prose refs -- cleared in-commit; noted: the F-142 replay event now logs under `app.routes.auth._helpers`, external dashboards should filter by `event`, not logger name). `pylint app/` 10.00/10, full `--fail-on` gate TRUE exit 0 (unpiped); 293 auth tests; **full suite 6001 passed / 5 skipped.** | 10.00/10 | 0 |
+| 2026-06-11 | (this commit) | 5 | **Phase 5 step 5 -- `scripts/` to 10.00/10, ZERO messages (from the corrected 5.22/10 baseline); plan.md COMPLETE.** Root fix first: `.pylintrc` `init-hook` adds the repo root to `sys.path` (pylint cannot see the scripts' runtime bootstrap; cleared all 79 `import-error`s, 5.22 -> 8.96, `app/` unaffected). Then the remaining 111 messages at the root across 13 files (4 parallel agents, disjoint sets): new shared `scripts/_script_lib.py` (`run_in_app_context` / `setup_script_logging` / `parse_confirm_args` / `confirm_gate`) dissolves all 4 cross-file R0801 clusters; class-threading anti-pattern removed; `integrity_check` broad-except narrowed (fixing the exit-3-on-connection-failure contract); every disable rationale'd to standard or deleted; vestigial `# noqa` dropped (no flake8). Two pinned test `# BUG`s verified REAL + fixed (rule 5, ratified): `audit_cleanup` negative-days total-audit-log deletion -> `ValueError` guard; `reset_mfa` orphaned `totp_secret_encrypted` -> full-clear predicate; both revert-proven. W9903 checker regex tightened so the combined `# noqa ... pylint: disable` form can no longer evade the rationale gate (+2 checker tests, 38 pass). Four one-shot scripts DELETED (developer-ratified): repair_orphaned_transfers / backfill_transfer_due_dates (migration `48e2c7ee593d` owns it) / scan_destroyed_received_history / benchmark_triggers, with their 2 test files; `.dockerignore` + hygiene pins updated, `_script_lib.py` pinned runtime-essential. Full `--fail-on` gate exit 0 for app/ AND scripts/. **Full suite 5985 passed / 0 skipped.** | 10.00/10 (app/ AND scripts/) | 0 |
