@@ -620,7 +620,8 @@ def apply_raises(base_salary, raises, as_of):
     same-date ties resolved by DB row order).
 
     A raise applies if:
-    - Its effective_year matches ``as_of``'s year (or is None for recurring)
+    - Its effective_year is on or before ``as_of``'s year (recurring
+      raises compound once per year from ``effective_year`` onward)
     - Its effective_month is on or before ``as_of``'s month (for that year)
 
     Args:
@@ -649,7 +650,7 @@ def apply_raises(base_salary, raises, as_of):
     sorted_raises = sorted(
         raises,
         key=lambda r: (
-            r.effective_year or 0,
+            r.effective_year,
             r.effective_month or 0,
             # Flat raises sort ahead of percentage within one effective
             # date so the documented flat-before-percentage order holds
@@ -669,11 +670,7 @@ def apply_raises(base_salary, raises, as_of):
             # Recurring raises compound each year at the specified month.
             # Count total applications: one per year from eff_year onward
             # where the effective month has been reached.
-            if not eff_year:
-                # No start year -- apply once if month reached this year.
-                if period_month >= eff_month:
-                    salary = _apply_single_raise(salary, raise_obj)
-            elif period_year >= eff_year:
+            if period_year >= eff_year:
                 total_applications = period_year - eff_year
                 if period_month >= eff_month:
                     total_applications += 1
@@ -681,8 +678,6 @@ def apply_raises(base_salary, raises, as_of):
                     salary = _apply_single_raise(salary, raise_obj)
         else:
             # One-time raise: apply if we're at or past the effective date.
-            if eff_year is None:
-                continue
             if (period_year > eff_year) or (
                 period_year == eff_year and period_month >= eff_month
             ):
@@ -715,14 +710,12 @@ def _get_raise_event(profile, period):
         eff_year = raise_obj.effective_year
 
         is_match = False
-        if raise_obj.is_recurring and period_month == eff_month and (
-            not eff_year or period_year >= eff_year
-        ):
+        if (raise_obj.is_recurring and period_month == eff_month
+                and period_year >= eff_year):
             # A recurring raise recurs at eff_month every year from
-            # eff_year onward (or every year when eff_year is NULL),
-            # matching apply_raises' application gate -- so it must not
-            # badge an event in a calendar year before it takes effect
-            # (deep-hunt #13).
+            # eff_year onward, matching apply_raises' application gate --
+            # so it must not badge an event in a calendar year before it
+            # takes effect (deep-hunt #13).
             is_match = True
         elif eff_year == period_year and eff_month == period_month:
             is_match = True

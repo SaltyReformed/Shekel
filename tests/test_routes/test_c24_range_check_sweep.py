@@ -56,7 +56,6 @@ from app.models.ref import (
     FilingStatus, RaiseType, TaxType,
 )
 from app.models.salary_profile import SalaryProfile
-from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
 from app.services import account_service
 from app.schemas.validation import (
@@ -1070,25 +1069,35 @@ class TestSalaryRaiseCheck:
             db.session.rollback()
             assert _constraint_name_from(info.value) == CK_RAISE_YEAR
 
-    def test_effective_year_null_accepted(self, app, seed_user):
-        """Recurring raises legitimately carry NULL year."""
+    def test_effective_year_null_rejected(self, app, seed_user):
+        """Storage rejects a NULL effective_year (DH-#57 NOT NULL).
+
+        The never-UI-reachable NULL-year recurring raise was retired:
+        ``effective_year`` is NOT NULL at the storage tier, in lockstep
+        with the create/update schema's ``required=True``.  A raw INSERT
+        of NULL must raise the not-null IntegrityError.
+        """
         with app.app_context():
             profile = self._make_profile(seed_user)
             type_id = (
                 db.session.query(RaiseType)
                 .filter_by(name="cola").one().id
             )
-            raise_row = SalaryRaise(
-                salary_profile_id=profile.id,
-                raise_type_id=type_id,
-                effective_year=None,
-                effective_month=1,
-                percentage=Decimal("0.0300"),
-                is_recurring=True,
-            )
-            db.session.add(raise_row)
-            db.session.commit()
-            assert raise_row.id is not None
+            with pytest.raises(IntegrityError):
+                db.session.execute(
+                    text(
+                        "INSERT INTO salary.salary_raises "
+                        "(salary_profile_id, raise_type_id, "
+                        " effective_year, effective_month, "
+                        " percentage, is_recurring, version_id, "
+                        " created_at) "
+                        "VALUES (:pid, :tid, NULL, 1, 0.0300, "
+                        "        true, 1, now())"
+                    ),
+                    {"pid": profile.id, "tid": type_id},
+                )
+                db.session.flush()
+            db.session.rollback()
 
 
 class TestStateTaxConfigCheck:

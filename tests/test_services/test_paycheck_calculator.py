@@ -352,22 +352,6 @@ class TestRecurringRaiseCompounding:
         # 100000 * 1.03^2 = 106090
         assert result == Decimal("106090.00")
 
-    def test_recurring_raise_no_effective_year(self):
-        """Recurring raise with no effective_year applies once if month reached.
-
-        This is a legacy edge case -- the UI now requires effective_year for
-        all raises.  Without an effective_year the function cannot count
-        compounding applications, so it falls back to a single application.
-        """
-        profile = FakeProfile(
-            annual_salary=100000,
-            raises=[FakeRaise(percentage="0.03", effective_month=3,
-                              effective_year=None, is_recurring=True)],
-        )
-        period = FakePeriod(start_date=date(2027, 4, 1))
-        result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
-        assert result == Decimal("103000.00")
-
 
 class TestRaiseOrdering:
     """Same-date raises apply flat-before-percentage, deterministically (M-01 / deep-hunt #12)."""
