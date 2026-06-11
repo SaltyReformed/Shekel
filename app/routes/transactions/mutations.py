@@ -444,6 +444,12 @@ def delete_transaction(txn_id):
     Shadow transactions cannot be directly deleted -- the user must
     delete the parent transfer instead.
 
+    A source with a live CC payback (transaction-level Credit or
+    entry-level credit) takes the payback down with it in the same
+    commit via ``credit_workflow.delete_payback_on_source_delete`` --
+    otherwise the ``SET NULL`` FK leaves the payback inflating the
+    next period with no offsetting credit row.
+
     Optimistic locking (commit C-18 / F-010): both the soft-delete
     UPDATE and the hard-delete DELETE are version-pinned by
     SQLAlchemy.  A concurrent commit that bumps the row's version
@@ -457,6 +463,12 @@ def delete_transaction(txn_id):
     # --- Transfer detection guard: block direct shadow deletion ---
     if txn.transfer_id is not None:
         return "Cannot delete a transfer shadow directly. Delete the parent transfer instead.", 400
+
+    # Delete the live payback (if any) before the source goes.  Runs
+    # for both branches below: a hard-deleted ad-hoc source would
+    # otherwise leave the payback with its link NULLed, a soft-deleted
+    # template row would leave it linked to an invisible source.
+    credit_workflow.delete_payback_on_source_delete(txn, current_user.id)
 
     if txn.template_id:
         # Template-linked: soft-delete so the recurrence engine knows.

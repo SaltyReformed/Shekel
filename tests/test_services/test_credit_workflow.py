@@ -218,6 +218,148 @@ class TestCreditWorkflow:
             with pytest.raises(NotFoundError):
                 credit_workflow.unmark_credit(999999, seed_user["user"].id)
 
+    def test_delete_payback_on_source_delete_removes_live_payback(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The helper hard-deletes the live payback of a Credit source.
+
+        The deletion-side invariant: when the source goes, its live
+        payback must go in the same transaction -- otherwise the
+        payback survives via the SET NULL FK and inflates the next
+        period with no offsetting credit row.
+        """
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+            payback_id = payback.id
+
+            credit_workflow.delete_payback_on_source_delete(
+                txn, seed_user["user"].id,
+            )
+            db.session.flush()
+
+            assert db.session.get(Transaction, payback_id) is None
+
+    def test_delete_payback_on_source_delete_noop_without_payback(
+        self, app, db, seed_user, seed_periods
+    ):
+        """No live payback -> the helper is a silent no-op.
+
+        This is the hot path for every ordinary delete; it must not
+        raise or delete anything.
+        """
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+            before = db.session.query(Transaction).count()
+
+            credit_workflow.delete_payback_on_source_delete(
+                txn, seed_user["user"].id,
+            )
+            db.session.flush()
+
+            assert db.session.query(Transaction).count() == before
+
+    def test_delete_payback_on_source_delete_preserves_soft_deleted(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A soft-deleted prior payback stays for the audit trail.
+
+        Mirrors the ``get_active_payback`` contract pinned for
+        ``unmark_credit`` (#58): only the LIVE payback dies with the
+        source; a previously soft-deleted payback row is untouched.
+        """
+        with app.app_context():
+            txn = self._create_expense(seed_user, seed_periods)
+            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
+            db.session.flush()
+            payback_id = payback.id
+
+            payback.is_deleted = True
+            db.session.flush()
+
+            credit_workflow.delete_payback_on_source_delete(
+                txn, seed_user["user"].id,
+            )
+            db.session.flush()
+
+            survived = db.session.get(Transaction, payback_id)
+            assert survived is not None
+            assert survived.is_deleted is True
+
+    def test_delete_payback_on_source_delete_clears_entry_links(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Entry-level credit source: payback deleted, entry links severed.
+
+        An entry-tracking source's own status is NOT Credit, so a
+        status-based guard would miss it -- the helper keys on
+        ``get_active_payback`` instead.  The surviving entries (a
+        soft-deleted source keeps its entries as rows) must not point
+        at the vanished payback.
+        """
+        with app.app_context():
+            from app.models.transaction_entry import TransactionEntry
+            from app.services import entry_credit_workflow
+
+            txn = self._create_expense(seed_user, seed_periods)
+            txn.is_envelope = True
+            entry = TransactionEntry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                amount=Decimal("40.00"),
+                description="Card purchase",
+                is_credit=True,
+            )
+            db.session.add(entry)
+            db.session.flush()
+
+            payback = entry_credit_workflow.sync_entry_payback(
+                txn.id, seed_user["user"].id,
+            )
+            db.session.flush()
+            payback_id = payback.id
+            assert entry.credit_payback_id == payback_id
+
+            credit_workflow.delete_payback_on_source_delete(
+                txn, seed_user["user"].id,
+            )
+            db.session.flush()
+
+            # Payback gone; the source stays Projected throughout.
+            assert db.session.get(Transaction, payback_id) is None
+            assert txn.status.name == "Projected"
+
+            # The entry survives with its payback link severed.
+            db.session.refresh(entry)
+            assert entry.credit_payback_id is None
+
+    def test_delete_payback_on_source_delete_takes_chain_down(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A payback that was itself marked Credit dies with its own payback.
+
+        A payback is an ordinary projected expense, so it can be
+        marked Credit and grow a payback of its own.  Deleting the
+        chain's root must take the whole live chain down -- a
+        surviving grandchild payback would be the same orphan one
+        level deeper.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            txn = self._create_expense(seed_user, seed_periods)
+            payback = credit_workflow.mark_as_credit(txn.id, user_id)
+            db.session.flush()
+            grandchild = credit_workflow.mark_as_credit(payback.id, user_id)
+            db.session.flush()
+            payback_id, grandchild_id = payback.id, grandchild.id
+
+            credit_workflow.delete_payback_on_source_delete(txn, user_id)
+            db.session.flush()
+
+            assert db.session.get(Transaction, payback_id) is None
+            assert db.session.get(Transaction, grandchild_id) is None
+
 
 class TestCarryForward:
     """Tests for the carry-forward-unpaid service."""

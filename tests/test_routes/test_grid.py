@@ -881,6 +881,73 @@ class TestTransactionCRUD:
             ).first()
             assert payback is None
 
+    def test_hard_delete_credit_source_deletes_payback(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """DELETE on an ad-hoc Credit source removes the live payback too.
+
+        Without the delete-side cleanup the ``SET NULL`` FK keeps the
+        payback alive with its link nulled, silently inflating the next
+        period's projected expenses with no offsetting credit row.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            txn_id = txn.id
+            auth_client.post(f"/transactions/{txn_id}/mark-credit")
+            payback = db.session.query(Transaction).filter_by(
+                credit_payback_for_id=txn_id, is_deleted=False,
+            ).one()
+            payback_id = payback.id
+
+            response = auth_client.delete(f"/transactions/{txn_id}")
+            assert response.status_code == 200
+
+            # Source hard-deleted (ad-hoc) and the payback with it.
+            assert db.session.get(Transaction, txn_id) is None
+            assert db.session.get(Transaction, payback_id) is None
+
+    def test_soft_delete_credit_source_deletes_payback(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """DELETE on a template-linked Credit source removes the payback.
+
+        The source itself only soft-deletes (the recurrence engine needs
+        the row), but the payback is an ad-hoc projected expense that
+        must not survive its now-invisible source.
+        """
+        with app.app_context():
+            from app.models.transaction_template import TransactionTemplate
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                name="Template",
+                default_amount=Decimal("123.45"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            txn.template_id = template.id
+            db.session.commit()
+
+            auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            payback = db.session.query(Transaction).filter_by(
+                credit_payback_for_id=txn.id, is_deleted=False,
+            ).one()
+            payback_id = payback.id
+
+            response = auth_client.delete(f"/transactions/{txn.id}")
+            assert response.status_code == 200
+
+            # Source soft-deleted, payback hard-deleted.
+            db.session.refresh(txn)
+            assert txn.is_deleted is True
+            assert db.session.get(Transaction, payback_id) is None
+
     def test_create_transaction_full_form(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions with all fields creates a complete transaction."""
         with app.app_context():
