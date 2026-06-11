@@ -267,11 +267,14 @@ python scripts/seed_ref_tables.py
 #   script's idempotent path on the next start.
 #
 # Alternative to seed-script: leave SEED_USER_EMAIL empty and use
-# /register instead.  seed_user.py creates: user, settings, checking
-# account, baseline scenario, and default categories.  It does NOT
-# create tax data -- that is handled by seed_tax_brackets.py in the
-# next step.  The /register web route creates all of the above PLUS
-# tax data in a single transaction via auth_service.register_user().
+# /register instead.  seed_user.py delegates to
+# auth_service.register_user() -- the same provisioning path the
+# /register web route uses -- so both create the identical shape in
+# one transaction: user, settings, bootstrap pay period, checking
+# account, baseline scenario, default categories, AND default tax
+# data.  seed_tax_brackets.py in the next step then finds the new
+# user's tax rows already present and skips them; it remains the
+# idempotent repair tool for pre-existing users with missing rows.
 SEED_STATE_DIR="/home/shekel/app/state"
 SEED_SENTINEL="${SEED_STATE_DIR}/.seed-complete"
 if [ -n "${SEED_USER_EMAIL}" ]; then

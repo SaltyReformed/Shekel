@@ -1,8 +1,17 @@
 """
 Shekel Budget App -- Seed User & Default Data
 
-Creates the single Phase 1 user plus their default checking account,
-baseline scenario, user settings, and starter categories.
+Creates the single Phase 1 user by delegating to
+``auth_service.register_user`` -- the same provisioning path the
+/register route uses -- so the seeded user is identical in shape to a
+self-registered one: user, settings, bootstrap pay period, checking
+account (with origination anchor history), baseline scenario, default
+categories, and default tax configuration.  This script owns only the
+operator-facing policy around that call: env parsing, production
+password guards, the idempotent already-exists skip, redacted
+logging, and the credential scrub.  (Historically it hand-copied the
+provisioning sequence and had already drifted from the service --
+e.g. it never seeded tax data.)
 
 Validates that the password is at least 12 characters, matching the
 minimum enforced by the application's change_password() and
@@ -31,8 +40,6 @@ Environment variables (or .env file):
 
 import os
 import sys
-from datetime import date, timedelta
-from decimal import Decimal
 
 
 # Names of the seed-only env vars that must be scrubbed from
@@ -55,24 +62,25 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # root, in that mode).
 # pylint: disable=wrong-import-position
 from app import create_app
+from app.exceptions import ConflictError, ValidationError
 from app.extensions import db
-from app.models.user import User, UserSettings
-from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
-from app.models.category import Category
-from app.models.ref import AccountType
-from app.services import account_service
-from app.services.auth_service import hash_password, DEFAULT_CATEGORIES
+from app.models.user import User
+from app.services import auth_service
 # pylint: enable=wrong-import-position
 
 
 def seed_user():
-    """Create the seeded user and all associated default data.
+    """Create the seeded user via ``auth_service.register_user``.
 
-    Validates that the password is at least 12 characters, matching the
-    minimum enforced by the application's change_password() and
-    register_user() functions.  Exits with code 1 if the password is
-    too short.
+    Applies the script-side guards (production password policy, the
+    12-character minimum with operator guidance), then delegates the
+    provisioning itself to the registration service so the seeded
+    user's shape is identical to a /register user's.  Idempotent: an
+    existing user takes the already-exists skip and is returned
+    unchanged.  Exits with code 1 on a password or input problem.
+
+    Returns:
+        The created (or pre-existing) User.
     """
     email = os.getenv("SEED_USER_EMAIL", "admin@shekel.local")
     password = os.getenv("SEED_USER_PASSWORD", "ChangeMe!2026")
@@ -116,91 +124,43 @@ def seed_user():
         )
         sys.exit(1)
 
-    # Check if user already exists.  Audit finding F-114 / C-16:
-    # the script's stdout is captured by the container log driver
-    # and shipped off-host for retention.  Logging the seed user's
-    # email on every container start would surface a real PII value
-    # in the long-term log store with no operational benefit -- the
-    # operator already knows which account they seeded.  Use the
-    # synthetic primary key instead so the line stays useful for
-    # idempotency debugging without being a PII source.
-    existing = db.session.query(User).filter_by(email=email).first()
-    if existing:
+    # Provision via the canonical registration service -- the same
+    # path /register uses -- so the seeded user's shape (settings,
+    # bootstrap period, checking account, baseline scenario,
+    # categories, tax configuration) cannot drift from a
+    # self-registered user's.  ``register_user`` checks email
+    # uniqueness itself and raises BEFORE creating anything, so the
+    # ConflictError branch is the idempotent already-exists skip
+    # (container restarts re-run this script).  Audit finding F-114 /
+    # C-16: stdout is captured by the container log driver and shipped
+    # off-host, so log lines carry the synthetic primary key, never
+    # the email.
+    try:
+        user = auth_service.register_user(email, password, display_name)
+    except ConflictError:
+        existing = (
+            db.session.query(User)
+            .filter_by(email=email.strip().lower())
+            .one()
+        )
         print(
             f"User id={existing.id} already exists (email redacted).  "
             "Skipping."
         )
         return existing
-
-    # Create the user.
-    user = User(
-        email=email,
-        password_hash=hash_password(password),
-        display_name=display_name,
-    )
-    db.session.add(user)
-    db.session.flush()  # Get user.id
-    print(f"Created user id={user.id} (email redacted from log).")
-
-    # Create user settings.
-    settings = UserSettings(user_id=user.id)
-    db.session.add(settings)
-    print("  + User settings created.")
-
-    # Bootstrap pay period (E-19, Commit 3).  The accounts.NOT NULL
-    # anchor columns require an existing period to point at; the
-    # operator can later overwrite this via /pay-periods/generate to
-    # match their actual payday cadence.
-    today = date.today()
-    bootstrap_period = PayPeriod(
-        user_id=user.id,
-        start_date=today,
-        end_date=today + timedelta(days=13),
-        period_index=0,
-    )
-    db.session.add(bootstrap_period)
-    db.session.flush()
-    print("  + Bootstrap pay period created (period_index=0).")
-
-    # Create checking account via the canonical factory (E-19):
-    # ``account_service.create_account`` writes both anchor columns
-    # and the matching AccountAnchorHistory row in one call so the
-    # contract is identical to the /accounts route and the signup
-    # path.  Decimal("0.00") is a real value per E-12, not "missing."
-    checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
-    account_service.create_account(
-        account_service.AccountSpec(
-            user_id=user.id,
-            account_type_id=checking_type.id,
-            name="Checking",
-            anchor_balance=Decimal("0.00"),
-            anchor_period_id=bootstrap_period.id,
-            notes="origination (seed_user.py)",
-        ),
-    )
-    print("  + Checking account created with origination anchor history.")
-
-    # Create baseline scenario.
-    scenario = Scenario(
-        user_id=user.id,
-        name="Baseline",
-        is_baseline=True,
-    )
-    db.session.add(scenario)
-    print("  + Baseline scenario created.")
-
-    # Create default categories.
-    for sort_idx, (group, item) in enumerate(DEFAULT_CATEGORIES):
-        cat = Category(
-            user_id=user.id,
-            group_name=group,
-            item_name=item,
-            sort_order=sort_idx,
-        )
-        db.session.add(cat)
-    print(f"  + {len(DEFAULT_CATEGORIES)} default categories created.")
+    except ValidationError as exc:
+        # Operator input problem (e.g. a malformed SEED_USER_EMAIL).
+        # The message is safe to print: it describes the rule, not the
+        # value.
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     db.session.commit()
+    print(
+        f"Created user id={user.id} (email redacted from log) with "
+        "settings, bootstrap pay period, checking account, baseline "
+        "scenario, default categories, and default tax configuration."
+    )
     # Final summary stays on user_id only -- the email is the same
     # value the operator passed in via SEED_USER_EMAIL (or the
     # documented default), so re-emitting it here would only add a
