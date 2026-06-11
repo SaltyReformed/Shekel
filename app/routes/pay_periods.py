@@ -13,6 +13,7 @@ from flask_login import current_user, login_required
 from app.utils.auth_helpers import require_owner
 
 from app.extensions import db
+from app.exceptions import ValidationError
 from app.schemas.validation import PayPeriodGenerateSchema
 from app.services import pay_period_service
 
@@ -42,12 +43,21 @@ def generate():
 
     data = _generate_schema.load(request.form)
 
-    periods = pay_period_service.generate_pay_periods(
-        user_id=current_user.id,
-        start_date=data["start_date"],
-        num_periods=data["num_periods"],
-        cadence_days=data["cadence_days"],
-    )
+    try:
+        periods = pay_period_service.generate_pay_periods(
+            user_id=current_user.id,
+            start_date=data["start_date"],
+            num_periods=data["num_periods"],
+            cadence_days=data["cadence_days"],
+        )
+    except ValidationError as exc:
+        # Forward-only invariant (DH-#39): a start date that would
+        # interleave or overlap the existing schedule is rejected.
+        # Surface it on the start_date field, mirroring the schema 422.
+        return render_template(
+            "pay_periods/generate.html",
+            errors={"start_date": [str(exc)]},
+        ), 422
     db.session.commit()
 
     flash(f"Generated {len(periods)} pay periods.", "success")

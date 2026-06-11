@@ -23,7 +23,7 @@ from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service
 
-from tests._test_helpers import insert_origination_event
+from tests._test_helpers import insert_origination_event, insert_origination_rate
 
 
 def _create_savings_account(seed_user, db_session, name="My Savings"):
@@ -140,7 +140,6 @@ class TestDashboardGrouping:
             account_id=acct.id,
             original_principal=Decimal("250000.00"),
             current_principal=Decimal("200000.00"),
-            interest_rate=Decimal("0.06500"),
             term_months=360,
             origination_date=date(2023, 1, 1),
             payment_day=1,
@@ -148,6 +147,7 @@ class TestDashboardGrouping:
         db.session.add(params)
         db.session.flush()
         insert_origination_event(params)
+        insert_origination_rate(params, Decimal("0.06500"))
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -174,7 +174,6 @@ class TestDashboardGrouping:
             account_id=acct.id,
             original_principal=Decimal("25000.00"),
             current_principal=Decimal("20000.00"),
-            interest_rate=Decimal("0.05000"),
             term_months=60,
             origination_date=date(2024, 6, 1),
             payment_day=15,
@@ -182,6 +181,7 @@ class TestDashboardGrouping:
         db.session.add(params)
         db.session.flush()
         insert_origination_event(params)
+        insert_origination_rate(params, Decimal("0.05000"))
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -208,7 +208,6 @@ class TestDashboardGrouping:
             account_id=acct.id,
             original_principal=Decimal("200000.00"),
             current_principal=Decimal("150000.00"),
-            interest_rate=Decimal("0.06000"),
             term_months=360,
             origination_date=date(2022, 1, 1),
             payment_day=1,
@@ -216,6 +215,7 @@ class TestDashboardGrouping:
         db.session.add(params)
         db.session.flush()
         insert_origination_event(params)
+        insert_origination_rate(params, Decimal("0.06000"))
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -399,7 +399,6 @@ class TestAccountHardDelete:
                 account_id=acct.id,
                 original_principal=Decimal("250000.00"),
                 current_principal=Decimal("200000.00"),
-                interest_rate=Decimal("0.06500"),
                 term_months=360,
                 origination_date=date(2023, 1, 1),
                 payment_day=1,
@@ -407,6 +406,7 @@ class TestAccountHardDelete:
             db.session.add(params)
             db.session.flush()
             insert_origination_event(params)
+            insert_origination_rate(params, Decimal("0.06500"))
             db.session.commit()
 
             acct_id = acct.id

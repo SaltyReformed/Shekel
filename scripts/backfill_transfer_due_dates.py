@@ -16,7 +16,7 @@ Background
 Recurring transfers were historically stamped with ``due_date = period.start_date``
 (the pay-period start), discarding the recurrence rule's ``day_of_month``.  The
 transfer recurrence engine now computes the due date the same way the transaction
-engine does, via ``recurrence_engine._compute_due_date(rule, period)``: a rule with
+engine does, via ``recurrence_engine.compute_due_date(rule, period)``: a rule with
 a ``day_of_month`` (monthly/quarterly, and the mortgage payment whose rule carries
 ``day_of_month = LoanParams.payment_day``) yields that calendar day placed in the
 period's month; rules without one (every-paycheck, every-N) still resolve to the
@@ -90,7 +90,7 @@ def collect_due_date_changes(db_session):
     # in main(), so app modules must not be imported at file scope.
     from app.models.transfer import Transfer  # pylint: disable=import-outside-toplevel
     from app.models.ref import Status  # pylint: disable=import-outside-toplevel
-    from app.services.recurrence_engine import _compute_due_date  # pylint: disable=import-outside-toplevel
+    from app.services.recurrence_engine import compute_due_date  # pylint: disable=import-outside-toplevel
 
     transfers = (
         db_session.query(Transfer)
@@ -124,7 +124,7 @@ def collect_due_date_changes(db_session):
             summary["skipped_no_rule"] += 1
             continue
 
-        computed = _compute_due_date(rule, xfer.pay_period)
+        computed = compute_due_date(rule, xfer.pay_period)
         if computed == xfer.due_date:
             summary["unchanged"] += 1
             continue

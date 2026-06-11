@@ -130,7 +130,7 @@ class FakeItemTrend:
     item_name: str = "Rent"
     period_average: Decimal = Decimal("500.00")
     trend_direction: str = "up"
-    pct_change: Decimal = Decimal("10.50")
+    pct_change: Decimal | None = Decimal("10.50")
     absolute_change: Decimal = Decimal("50.00")
     is_flagged: bool = True
     data_points: int = 10
@@ -292,6 +292,15 @@ class TestTrendsExport:
         rows = _parse_csv(result)
         # metadata + header + 5 items
         assert len(rows) == 7
+
+    def test_export_trends_emerging_new(self, app):
+        """An emerging item (pct_change=None) exports 'New' in the % column."""
+        item = FakeItemTrend(item_name="New Bill", pct_change=None)
+        report = FakeTrendReport(all_items=[item])
+        result = export_trends_csv(report)
+        rows = _parse_csv(result)
+        # Header order: ..., Direction(3), Change (%)(4), ... -> index 4.
+        assert rows[2][4] == "New"
 
 
 # ── Cross-Cutting Tests ──────────────────────────────────────────

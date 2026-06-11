@@ -26,7 +26,10 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, loan_payment_service, transfer_recurrence
 from app.services.rate_period_engine import monthly_due_date
-from tests._test_helpers import insert_origination_event
+from tests._test_helpers import (
+    insert_origination_event,
+    insert_origination_rate,
+)
 
 
 def _build_derived_loan_transfer(seed_user, escrow_annual):
@@ -59,7 +62,6 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
         account_id=loan.id,
         original_principal=Decimal("200000.00"),
         current_principal=Decimal("200000.00"),
-        interest_rate=Decimal("0.06000"),
         term_months=360,
         origination_date=date(2026, 1, 1),
         payment_day=1,
@@ -67,6 +69,7 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     db.session.add(params)
     db.session.flush()
     insert_origination_event(params)
+    insert_origination_rate(params, Decimal("0.06000"))
 
     escrow = EscrowComponent(
         account_id=loan.id, name="Property Tax",
@@ -206,7 +209,7 @@ def test_derived_transfer_due_date_matches_loan_due_date(
 
     The loan card derives its due dates from LoanParams.payment_day via
     rate_period_engine.monthly_due_date.  The transfer recurrence now uses the
-    shared _compute_due_date, and the loan template's rule carries
+    shared compute_due_date, and the loan template's rule carries
     day_of_month = payment_day (1), so the transfer's parent + both shadows
     land on the 1st of each month -- matching the loan card -- rather than the
     pay-period start (~2 weeks early) they used before.  Over seed_periods

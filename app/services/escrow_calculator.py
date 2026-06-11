@@ -7,12 +7,10 @@ No database access -- operates only on values passed in.
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from app.utils.dates import months_between
-from app.utils.money import MONTHS_PER_YEAR
-
-TWO_PLACES = Decimal("0.01")
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 
 @dataclass(frozen=True)
@@ -65,7 +63,7 @@ def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
         if hasattr(comp, "is_active") and not comp.is_active:
             continue
         annual = Decimal(str(comp.annual_amount))
-        monthly = (annual / MONTHS_PER_YEAR).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        monthly = round_money(annual / MONTHS_PER_YEAR)
         if getattr(comp, "inflation_rate", None) is not None:
             inflation = Decimal(str(comp.inflation_rate))
             inflation_pct = inflation * Decimal("100")
@@ -123,7 +121,7 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
         monthly = annual / MONTHS_PER_YEAR
         total += monthly
 
-    return total.quantize(TWO_PLACES, ROUND_HALF_UP)
+    return round_money(total)
 
 
 def calculate_total_payment(
@@ -142,7 +140,7 @@ def calculate_total_payment(
         Total monthly payment (P&I + escrow).
     """
     escrow = calculate_monthly_escrow(components, as_of_date)
-    return (monthly_pi + escrow).quantize(TWO_PLACES, ROUND_HALF_UP)
+    return round_money(monthly_pi + escrow)
 
 
 def project_annual_escrow(
@@ -177,8 +175,8 @@ def project_annual_escrow(
                 rate = Decimal(str(comp.inflation_rate))
                 annual = annual * (1 + rate) ** year_offset
 
-            annual_total += annual.quantize(TWO_PLACES, ROUND_HALF_UP)
+            annual_total += round_money(annual)
 
-        results.append((year, annual_total.quantize(TWO_PLACES, ROUND_HALF_UP)))
+        results.append((year, round_money(annual_total)))
 
     return results

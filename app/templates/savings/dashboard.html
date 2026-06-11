@@ -137,7 +137,9 @@
                 -- APY: {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%
               {% endif %}
               {% if ad.loan_params is defined and ad.loan_params %}
-                -- {{ "%.3f"|format(ad.loan_params.interest_rate|to_percent) }}%
+                {# DH-#56: resolver-derived current rate, not the retired
+                   LoanParams.interest_rate column. #}
+                -- {{ "%.3f"|format(ad.current_rate|to_percent) }}%
               {% endif %}
               {% if ad.investment_params is defined and ad.investment_params %}
                 -- Return: {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%
@@ -377,7 +379,7 @@
                  aria-valuemax="100">
             </div>
           </div>
-          <small class="text-muted">{{ gd.progress_pct }}% complete</small>
+          <small class="text-muted">{{ "{:.0f}".format(gd.progress_pct) }}% complete</small>
         </div>
 
         {# Target date and contribution #}

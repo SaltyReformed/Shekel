@@ -1,11 +1,14 @@
 {# HTMX fragment: ARM rate change history #}
 
-{# OOB swap: update the interest rate on the Overview tab #}
-{% if params is defined and params %}
+{# OOB swap: update the current interest rate on the Overview tab.
+   DH-#56: shows the resolver-derived current rate (the rate in effect
+   today after this change is recorded), not the retired
+   LoanParams.interest_rate column. #}
+{% if params is defined and params and current_rate is defined %}
 <div class="d-flex justify-content-between mb-2" id="interest-rate-display" hx-swap-oob="true">
   <span class="text-muted">Interest Rate</span>
   <span class="fw-bold text-accent">
-    {{ "%.3f"|format(params.interest_rate|to_percent) }}%
+    {{ "%.3f"|format(current_rate|to_percent) }}%
     {% if params.is_arm %}<span class="badge bg-warning text-dark ms-1">ARM</span>{% endif %}
   </span>
 </div>

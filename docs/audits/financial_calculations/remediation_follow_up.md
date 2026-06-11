@@ -2011,10 +2011,11 @@ soft-delete callable; design discussion warranted.
   that plan (and Q-1 of the architectural plan
   `docs/plans/2026-05-21-amortization-engine-split-replay-projection.md`);
   Commit 7 is a behavior-preserving refactor only.
-- **Status:** not addressed.  The refactor onto `project_forward`
-  is intentionally a pure structural migration; introducing
-  `monthly_override` for projected payments here is a separate
-  user-facing behavior change.
+- **Status:** not addressed; **PAUSED for UX reconsideration (2026-06-09).**
+  The refactor onto `project_forward` was intentionally a pure structural
+  migration; introducing `monthly_override` for projected payments here is a
+  separate user-facing behavior change.  A 2026-06-09 implementation attempt
+  was paused after the discovery in the Reconsideration note below.
 
 ### Problem
 
@@ -2117,6 +2118,45 @@ solo developer:
 - Composer (already honours projections via
   `monthly_override`).
 - ARM rate-change handling (no change from current behaviour).
+
+### Reconsideration note (2026-06-09) -- why this is PAUSED, not built
+
+A scoped implementation attempt established three things by reading the live
+engine (HEAD `16f7c9e`), which together argue for reconsidering the UX before
+coding:
+
+1. **The prescribed `monthly_override` fix delivers only a PARTIAL correction.**
+   In `project_forward` an override month *replaces contractual AND suppresses
+   `extra_monthly`* (`amortization_engine.py:581-591, 656-660` -- a deliberate
+   regression-prevention property).  Projected payments only extend the
+   recurrence horizon (~2yr).  So threading projected payments as
+   `monthly_override` corrects "required extra" only across that window; beyond
+   it the projection reverts to contractual.  This is the ratified, exact,
+   additive, escrow-correct, low-risk option ("A").  It does NOT fully match the
+   finding's prose framing ("they need $X - $500" implies the over-payment
+   continues for the whole term).
+
+2. **A full-term correction CANNOT use `monthly_override`.**  Extrapolating the
+   template to every remaining month makes every month an override month, which
+   suppresses the searched `extra_monthly` everywhere -- the binary search then
+   has no month to vary and cannot compute a required additional extra.  Full
+   term ("C") instead requires *raising the projection's `contractual_payment`
+   baseline* to the user's steady recurring monthly P&I-equivalent and solving
+   extra on top (mathematically: raw-required-extra minus current over-payment).
+   That needs (a) deriving the steady recurring payment -- an APPROXIMATION,
+   since the transfer cash amount mixes drifting escrow and, for a biweekly
+   transfer, varies month to month; and (b) changing the displayed numbers
+   (current payment / additional extra / new total).
+
+3. **The single "Required Extra Monthly Payment" number is the real weak point.**
+   For a user who already has a payment plan it is ambiguous (extra vs what
+   baseline?) and either partial (A) or approximate (C).  The clean, EXACT datum
+   the system already computes is the *committed scenario's payoff date* from
+   `loan_resolver.compute_payoff_scenarios` (the user's actual projected plan).
+   A reframe -- "your current plan pays off on DATE_Y; to hit your target add
+   $Z/mo" -- may be a better UX than patching the single number.  Decide the UX
+   before implementing.  Until then, "A" remains the safe fallback if a quick,
+   exact, in-window correction is wanted without a display change.
 
 ---
 

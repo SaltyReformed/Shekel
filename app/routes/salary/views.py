@@ -13,7 +13,10 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.models.salary_profile import SalaryProfile
 from app.models.pay_period import PayPeriod
 from app.services import paycheck_calculator, pay_period_service
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import (
+    load_tax_configs_for_periods,
+    load_tax_configs_for_year,
+)
 from app.routes.salary._bp import salary_bp
 
 
@@ -31,7 +34,13 @@ def breakdown(profile_id, period_id):
         abort(404)
 
     periods = pay_period_service.get_all_periods(current_user.id)
-    tax_configs = load_tax_configs(current_user.id, profile)
+    # Resolve the breakdown period's OWN tax year (DH-#30): viewing a
+    # future-year period must use that year's brackets/FICA, not the
+    # current year's.  Falls back to the current year when the period's
+    # year has no configs.
+    tax_configs = load_tax_configs_for_year(
+        current_user.id, profile, period.start_date.year,
+    )
     result = paycheck_calculator.calculate_paycheck(
         profile, period, periods, tax_configs,
         calibration=profile.calibration,
@@ -87,9 +96,15 @@ def projection(profile_id):
         abort(404)
 
     periods = pay_period_service.get_all_periods(current_user.id)
-    tax_configs = load_tax_configs(current_user.id, profile)
+    # Resolve tax configs PER period year (DH-#30): the ~2-year horizon
+    # spans multiple tax years, so each period uses its own year's
+    # brackets/FICA (current-year fallback), matching the recurrence
+    # engine that generates the stored grid amounts.
+    configs_by_year = load_tax_configs_for_periods(
+        current_user.id, profile, periods,
+    )
     breakdowns = paycheck_calculator.project_salary(
-        profile, periods, tax_configs,
+        profile, periods, configs_by_year=configs_by_year,
         calibration=profile.calibration,
     )
 

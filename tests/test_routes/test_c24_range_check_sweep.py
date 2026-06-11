@@ -56,14 +56,15 @@ from app.models.ref import (
     FilingStatus, RaiseType, TaxType,
 )
 from app.models.salary_profile import SalaryProfile
-from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
 from app.services import account_service
 from app.schemas.validation import (
     DeductionCreateSchema,
     FicaConfigSchema,
     InvestmentParamsCreateSchema,
+    InvestmentParamsUpdateSchema,
     RaiseCreateSchema,
+    RetirementGapQuerySchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
     StateTaxConfigSchema,
@@ -80,6 +81,7 @@ from app.schemas.validation import (
 CK_ESCROW_NONNEG = "ck_escrow_components_nonneg_annual_amount"
 CK_ESCROW_INFLATION = "ck_escrow_components_valid_inflation_rate"
 CK_INTEREST_APY = "ck_interest_params_valid_apy"
+CK_INVEST_RETURN = "ck_investment_params_valid_return"
 CK_INVEST_LIMIT = "ck_investment_params_nonneg_contribution_limit"
 CK_INVEST_FLAT = "ck_investment_params_valid_employer_flat_pct"
 CK_INVEST_MATCH = "ck_investment_params_valid_employer_match_pct"
@@ -504,6 +506,45 @@ class TestMiscSchemaBounds:
             })
         assert "contribution_limit_year" in info.value.messages
 
+    def test_invest_return_negative_100_percent_rejected(self):
+        """DH-#28 follow-up: a -100% return (fraction -1) is rejected.
+
+        The schema's percent @pre_load turns "-100" into the fraction
+        "-1"; the exclusive lower bound (min_inclusive=False) rejects it
+        because -1 is the degenerate, non-invertible reverse-projection
+        rate (1 + rate == 0).
+        """
+        schema = InvestmentParamsCreateSchema()
+        with pytest.raises(ValidationError) as info:
+            schema.load({"assumed_annual_return": "-100"})
+        assert "assumed_annual_return" in info.value.messages
+
+    def test_invest_update_return_negative_100_percent_rejected(self):
+        """The update schema rejects -100% just like the create schema."""
+        schema = InvestmentParamsUpdateSchema()
+        with pytest.raises(ValidationError) as info:
+            schema.load({"assumed_annual_return": "-100"})
+        assert "assumed_annual_return" in info.value.messages
+
+    def test_invest_return_just_above_negative_one_accepted(self):
+        """A return just above -100% (-99.999% -> -0.99999) is accepted.
+
+        Pins that the bound is exclusive only AT -1, not a wholesale ban
+        on deep-loss assumptions: -0.99999 is the smallest Numeric(7,5)
+        value above the new bound.
+        """
+        schema = InvestmentParamsCreateSchema()
+        result = schema.load({"assumed_annual_return": "-99.999"})
+        # "-99.999" percent / 100 -> Decimal("-0.99999")
+        assert result["assumed_annual_return"] == Decimal("-0.99999")
+
+    def test_retirement_return_rate_negative_100_percent_rejected(self):
+        """The retirement return-rate slider mirrors the same > -1 bound."""
+        schema = RetirementGapQuerySchema()
+        with pytest.raises(ValidationError) as info:
+            schema.load({"return_rate": "-100"})
+        assert "return_rate" in info.value.messages
+
 
 # ── F-077: Storage-tier CHECK enforcement (raw SQL bypass) ────────
 #
@@ -675,6 +716,32 @@ class TestInvestmentParamsCheck:
             db.session.rollback()
             assert _constraint_name_from(info.value) == CK_INVEST_LIMIT
 
+    def test_return_at_negative_one_rejected(self, app, seed_user):
+        """DH-#28 follow-up: storage rejects assumed_annual_return = -1.
+
+        Raw INSERT bypasses the tightened schema; the DB CHECK
+        ``ck_investment_params_valid_return`` (now ``> -1``) is the last
+        line of defence against the non-invertible -100% return.
+        """
+        with app.app_context():
+            account = self._account(seed_user)
+            with pytest.raises(IntegrityError) as info:
+                db.session.execute(
+                    text(
+                        "INSERT INTO budget.investment_params "
+                        "(account_id, assumed_annual_return, "
+                        " employer_contribution_type_id, "
+                        " created_at, updated_at) "
+                        "VALUES (:aid, -1.00, "
+                        "(SELECT id FROM ref.employer_contribution_types "
+                        " WHERE name = 'none'), now(), now())"
+                    ),
+                    {"aid": account.id},
+                )
+                db.session.flush()
+            db.session.rollback()
+            assert _constraint_name_from(info.value) == CK_INVEST_RETURN
+
     def test_employer_flat_above_one_rejected(self, app, seed_user):
         with app.app_context():
             account = self._account(seed_user)
@@ -805,6 +872,33 @@ class TestRateHistoryCheck:
             db.session.add(row)
             db.session.commit()
             assert row.id is not None
+
+    def test_rate_below_zero_rejected(self, app, seed_user):
+        """The lower bound of ``ck_rate_history_valid_interest_rate``.
+
+        The CHECK is ``interest_rate >= 0 AND interest_rate <= 1``; the
+        sibling tests pin the upper bound, this pins the lower.  Both
+        bounds matter because DH-#56 retired ``loan_params.interest_rate``
+        (and its CHECKs), making ``rate_history.interest_rate`` the loan
+        rate's sole storage-tier domain guard.
+        """
+        with app.app_context():
+            account = _insert_account(
+                seed_user, "Mortgage R3", "Mortgage",
+            )
+            with pytest.raises(IntegrityError) as info:
+                db.session.execute(
+                    text(
+                        "INSERT INTO budget.rate_history "
+                        "(account_id, effective_date, interest_rate, "
+                        " created_at) "
+                        "VALUES (:aid, '2026-01-01', -0.01, now())"
+                    ),
+                    {"aid": account.id},
+                )
+                db.session.flush()
+            db.session.rollback()
+            assert _constraint_name_from(info.value) == CK_RATE_HISTORY
 
 
 class TestUserSettingsCheck:
@@ -975,25 +1069,35 @@ class TestSalaryRaiseCheck:
             db.session.rollback()
             assert _constraint_name_from(info.value) == CK_RAISE_YEAR
 
-    def test_effective_year_null_accepted(self, app, seed_user):
-        """Recurring raises legitimately carry NULL year."""
+    def test_effective_year_null_rejected(self, app, seed_user):
+        """Storage rejects a NULL effective_year (DH-#57 NOT NULL).
+
+        The never-UI-reachable NULL-year recurring raise was retired:
+        ``effective_year`` is NOT NULL at the storage tier, in lockstep
+        with the create/update schema's ``required=True``.  A raw INSERT
+        of NULL must raise the not-null IntegrityError.
+        """
         with app.app_context():
             profile = self._make_profile(seed_user)
             type_id = (
                 db.session.query(RaiseType)
                 .filter_by(name="cola").one().id
             )
-            raise_row = SalaryRaise(
-                salary_profile_id=profile.id,
-                raise_type_id=type_id,
-                effective_year=None,
-                effective_month=1,
-                percentage=Decimal("0.0300"),
-                is_recurring=True,
-            )
-            db.session.add(raise_row)
-            db.session.commit()
-            assert raise_row.id is not None
+            with pytest.raises(IntegrityError):
+                db.session.execute(
+                    text(
+                        "INSERT INTO salary.salary_raises "
+                        "(salary_profile_id, raise_type_id, "
+                        " effective_year, effective_month, "
+                        " percentage, is_recurring, version_id, "
+                        " created_at) "
+                        "VALUES (:pid, :tid, NULL, 1, 0.0300, "
+                        "        true, 1, now())"
+                    ),
+                    {"pid": profile.id, "tid": type_id},
+                )
+                db.session.flush()
+            db.session.rollback()
 
 
 class TestStateTaxConfigCheck:

@@ -103,23 +103,58 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     # pylint: enable=duplicate-code
 
 
-def _recent_settled_expenses_monthly(all_periods, current_period, scenario):
-    """Average monthly settled expenses over the last 6 pay periods.
+def _checking_account_ids(accounts):
+    """IDs of the user's checking accounts.
 
-    Sums settled expense transactions across the most recent 6 periods
-    (at or before the current period) and converts the per-period
-    average to a monthly figure via the biweekly-to-monthly factor.
+    The single source for the checking-account scope shared by the two
+    operands of :func:`_compute_avg_monthly_expenses` (DH-#29): both the
+    committed-template floor and the recent-settled-expenses average
+    measure outflow from these accounts, so the set is derived once here
+    and threaded into both.  Resolved by the CHECKING ref-type id (IDs
+    for logic), not a name string.
 
     Args:
+        accounts: List of Account model instances.
+
+    Returns:
+        List of integer account IDs whose type is the CHECKING ref type.
+    """
+    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+    return [
+        acct.id for acct in accounts
+        if acct.account_type_id == checking_type_id
+    ]
+
+
+def _recent_settled_expenses_monthly(
+    checking_ids, all_periods, current_period, scenario,
+):
+    """Average monthly settled checking expenses over the last 6 periods.
+
+    Sums settled expense transactions on the user's checking accounts
+    across the most recent 6 periods (at or before the current period)
+    and converts the per-period average to a monthly figure via the
+    biweekly-to-monthly factor.  Scoped to the same checking-account set
+    as :func:`_committed_expense_floor` (DH-#29) so the two operands of
+    :func:`_compute_avg_monthly_expenses`'s ``max()`` measure the same
+    "outflow from checking" universe -- a settled expense on a
+    non-checking account (e.g. a transfer's expense shadow on a
+    savings/HSA source) is excluded here just as it is from the floor,
+    rather than inflating only the historical operand.
+
+    Args:
+        checking_ids: IDs of the user's checking accounts (the
+            :func:`_checking_account_ids` set the floor also uses).
         all_periods: All pay periods for the user.
         current_period: The current :class:`PayPeriod`, or ``None``.
         scenario: The baseline scenario, or ``None``.
 
     Returns:
         The monthly average as a Decimal.  ``Decimal("0.00")`` when
-        there is no current period / scenario or no recent periods.
+        there is no current period / scenario, no checking account, or
+        no recent periods.
     """
-    if not (current_period and scenario):
+    if not (current_period and scenario) or not checking_ids:
         return Decimal("0.00")
 
     recent_periods = [
@@ -134,6 +169,7 @@ def _recent_settled_expenses_monthly(all_periods, current_period, scenario):
         db.session.query(Transaction)
         .filter(
             Transaction.pay_period_id.in_(recent_period_ids),
+            Transaction.account_id.in_(checking_ids),
             Transaction.scenario_id == scenario.id,
             Transaction.is_deleted.is_(False),
         )
@@ -149,7 +185,7 @@ def _recent_settled_expenses_monthly(all_periods, current_period, scenario):
     return per_period * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
 
 
-def _committed_expense_floor(user_id, accounts):
+def _committed_expense_floor(user_id, checking_ids):
     """Committed monthly expense floor from active checking templates.
 
     Sums the monthly-normalized commitment of active expense templates
@@ -160,17 +196,14 @@ def _committed_expense_floor(user_id, accounts):
 
     Args:
         user_id: Integer ID of the current user.
-        accounts: List of Account model instances.
+        checking_ids: IDs of the user's checking accounts (the
+            :func:`_checking_account_ids` set the historical operand
+            also uses).
 
     Returns:
         The committed monthly floor as a Decimal.  ``Decimal("0.00")``
         when the user has no checking account.
     """
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-    checking_ids = [
-        acct.id for acct in accounts
-        if acct.account_type_id == checking_type_id
-    ]
     if not checking_ids:
         return Decimal("0.00")
 
@@ -207,11 +240,17 @@ def _compute_avg_monthly_expenses(
 
     Uses the higher of: historical settled expenses from the last 6
     periods, or the committed monthly baseline from active templates.
+    Both operands are scoped to the user's checking accounts (DH-#29)
+    so the ``max()`` compares like with like -- the "outflow from
+    checking" universe the committed floor (E-24) defines -- rather than
+    pairing an all-accounts historical figure against a checking-only
+    floor.
     """
+    checking_ids = _checking_account_ids(accounts)
     historical = _recent_settled_expenses_monthly(
-        all_periods, current_period, scenario,
+        checking_ids, all_periods, current_period, scenario,
     )
-    floor = _committed_expense_floor(user_id, accounts)
+    floor = _committed_expense_floor(user_id, checking_ids)
     return max(historical, floor)
 
 
@@ -243,7 +282,6 @@ def _accumulate_loan_debt(
         if ad["is_paid_off"]:
             continue
 
-        lp = ad["loan_params"]
         # Resolver-derived current_balance (E-18 / Commit 15).  Same
         # dollar figure as the loan card; replaces the previous read
         # of the non-authoritative ``LoanParams.current_principal``
@@ -253,12 +291,13 @@ def _accumulate_loan_debt(
         if principal <= Decimal("0.00"):
             continue
 
-        # ``LoanParams.interest_rate`` is the BASE rate (the
-        # rate-history layered current rate would require the
-        # resolver's ``_rate_at_date`` and is HIGH-08 territory).
-        # Carried forward so weighted_avg_rate retains its historical
-        # meaning across this commit.
-        rate = Decimal(str(lp.interest_rate))
+        # DH-#56: the loan's CURRENT rate (resolver-derived,
+        # ``state.current_rate``), replacing the retired
+        # ``LoanParams.interest_rate`` column.  weighted_avg_rate now
+        # reflects the rate the loan is actually accruing at today --
+        # for a changed ARM the in-effect rate, not the stale origination
+        # value the dropped column had drifted from.
+        rate = ad["current_rate"]
         monthly_pi = ad["monthly_payment"]
 
         # Include escrow (property tax, insurance) for PITI total.

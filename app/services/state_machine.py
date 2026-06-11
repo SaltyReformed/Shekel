@@ -169,3 +169,58 @@ def verify_transition(current_status_id, new_status_id, context="transaction"):
             f"Invalid {context} status transition from "
             f"{current_status_id} to {new_status_id}."
         )
+
+
+def finalised_edit_rejection(current_status, new_status, context="transaction"):
+    """Return a rejection message when a finalised row's fields are locked.
+
+    The companion to :func:`verify_transition`: where that gates the
+    ``status_id`` mutation, this gates the *other* field mutations on a
+    finalised row.  A row whose status ``is_immutable`` (every status
+    except Projected) must not have its money / period / category /
+    due-date fields silently rewritten through the manual edit routes --
+    the same lock the recurrence engine
+    (:mod:`app.services._recurrence_common`), carry-forward
+    (:mod:`app.services.carry_forward_service`), and
+    ``transaction_service.settle_from_entries`` already enforce against
+    *programmatic* mutation.  Without it, an owner (or a replayed stale
+    form) can retroactively change the amount of an already-paid
+    movement, shifting the projected balance and the audit trail (#26).
+
+    The lock lifts when the same request reverts the row to a mutable
+    status (Projected), so a "revert and correct" edit is still atomic:
+    ``done -> projected`` (or ``received -> projected``) is a legal
+    transition, after which the fields are editable.  A row already in a
+    mutable status is never blocked.
+
+    Callers invoke this ONLY when the request actually edits a locked
+    field; this function does not know the per-schema field names (they
+    differ -- ``estimated_amount`` for a transaction, ``amount`` for a
+    transfer), so the caller owns the locked-field set and this owns the
+    status policy and the message.
+
+    Args:
+        current_status: The row's current :class:`~app.models.ref.Status`
+            (or ``None`` -- treated as mutable, fail-open, since the
+            transition guard owns the corrupt-status case).
+        new_status: The :class:`~app.models.ref.Status` the request
+            transitions to, or ``None`` when the request changes no
+            status.
+        context: Short human-readable label embedded in the message
+            ("transaction" or "transfer"), mirroring
+            :func:`verify_transition`.
+
+    Returns:
+        A user-facing rejection message string when the edit must be
+        refused, or ``None`` when the row is mutable (or is being
+        reverted to a mutable status) and the edit may proceed.
+    """
+    if current_status is None or not current_status.is_immutable:
+        return None
+    if new_status is not None and not new_status.is_immutable:
+        return None
+    return (
+        f"Cannot edit a finalised ({current_status.name}) {context}. "
+        "Revert it to Projected before changing the amount, category, "
+        "period, or due date."
+    )

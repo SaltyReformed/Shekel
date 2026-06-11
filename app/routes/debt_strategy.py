@@ -160,17 +160,20 @@ def _load_debt_accounts(user_id):
         ):
             continue
 
-        # DebtAccount.interest_rate carries the BASE rate from
-        # :class:`LoanParams`; the rate-history layered current rate
-        # (resolver-aware) does not flow into the strategy service
-        # because :mod:`debt_strategy_service` assumes a fixed rate
-        # per debt (R-5 limitation documented in that module).
-        # Promoting strategy ARM-awareness is out of scope here.
+        # DH-#56: DebtAccount.interest_rate is the loan's CURRENT rate
+        # (``state.current_rate`` -- the rate in effect today, from the
+        # resolver's rate periods), replacing the retired
+        # ``LoanParams.interest_rate`` column.  For a fixed-rate loan this
+        # is the origination rate; for an ARM it is the rate currently in
+        # effect, which is the correct rate to accrue a payoff projection
+        # at.  ``debt_strategy_service`` still treats the rate as fixed
+        # for the projection (R-5: it does not re-apply future ARM
+        # adjustments) -- the documented, in-scope limitation.
         debt_accounts.append(DebtAccount(
             account_id=account.id,
             name=account.name,
             current_principal=state.current_balance,
-            interest_rate=Decimal(str(params.interest_rate)),
+            interest_rate=state.current_rate,
             minimum_payment=state.monthly_payment,
         ))
 

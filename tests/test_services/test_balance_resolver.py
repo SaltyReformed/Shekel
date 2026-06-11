@@ -46,6 +46,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import selectinload
 
 from app.enums import StatusEnum, TxnTypeEnum
@@ -62,6 +63,7 @@ from app.services.balance_resolver import (
     balance_as_of_date,
     balances_for,
     period_subtotal,
+    period_subtotals,
 )
 
 
@@ -202,7 +204,7 @@ class TestBalancesForEntriesAware:
           - anchor 614.29 on seed_periods[0] (overrides seed_user's
             default 1000.00 anchor).
           - one Projected envelope expense est=500.00 on
-            seed_periods[0] (the anchor period, so ``_sum_projected``
+            seed_periods[0] (the anchor period, so ``sum_projected``
             applies).
           - three cleared debit entries 20.00 + 15.71 + 10.00 = 45.71.
           - no uncleared debits, no credits.
@@ -774,6 +776,252 @@ class TestPeriodSubtotal:
             next_bal = result.balances[next_period.id]
             # 700.00 - 1000.00 = -300.00 == sub.net.
             assert next_bal - anchor_bal == sub.net == Decimal("-300.00")
+
+    def test_period_subtotal_net_combined_rounding_reconciles_subcent_leg(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """#62: ``net`` reconciles with the balance delta under a sub-cent leg.
+
+        ``net`` is ``round_money(income - expense)`` (ONE combined
+        rounding), not ``round_money(income) - round_money(expense)``.
+        Only the combined form reconciles with the balance roll-forward,
+        which rounds the *cumulative* balance once per snapshot: for a
+        cent-quantized entering balance B,
+        ``round_money(B + delta) - B == round_money(delta) == net``.
+
+        Every stored/override leg is cent-quantized in production, so the
+        per-leg-vs-combined divergence is unreachable today.  The live
+        override seam carries its value verbatim into the sum
+        (``balance_calculator.income_amount`` / ``_expense_amount``), so
+        it is the only way to inject a sub-cent leg; this test does so
+        directly to lock the rounding discipline against a regression to
+        per-leg rounding.
+
+        Setup: the anchor period (``seed_periods[0]``) keeps the
+        ``seed_user`` default $1000 balance (no projected items).  On the
+        first post-anchor period a Projected income txn and a Projected
+        expense txn are given the sub-cent live overrides $100.005 and
+        $50.004.
+
+        Hand arithmetic:
+          income leg = 100.005, expense leg = 50.004 (overrides, verbatim)
+          running    = 1000.00 + 100.005 - 50.004 = 1050.001
+          next_bal   = round_money(1050.001) = 1050.00
+          balance_delta = 1050.00 - 1000.00 = 50.00
+          net (combined) = round_money(100.005 - 50.004)
+                         = round_money(50.001) = 50.00  == balance_delta
+          per-leg net    = round_money(100.005) - round_money(50.004)
+                         = 100.01 - 50.00 = 50.01 != 50.00  (the reverted bug)
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            anchor_period = seed_periods[0]
+            next_period = seed_periods[1]
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+            income_type = (
+                db.session.query(TransactionType).filter_by(name="Income").one()
+            )
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            income_txn = Transaction(
+                pay_period_id=next_period.id,
+                scenario_id=scenario_id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Paycheck",
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("100.00"),
+            )
+            expense_txn = Transaction(
+                pay_period_id=next_period.id,
+                scenario_id=scenario_id,
+                account_id=account.id,
+                status_id=projected.id,
+                name="Rent",
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("50.00"),
+            )
+            db.session.add_all([income_txn, expense_txn])
+            db.session.commit()
+
+            # Sub-cent live overrides flow verbatim into the sum, so they
+            # are the only way to feed a sub-cent leg through the producer.
+            overrides = {
+                income_txn.id: Decimal("100.005"),
+                expense_txn.id: Decimal("50.004"),
+            }
+
+            result = balances_for(
+                account, scenario_id, seed_periods,
+                amount_overrides=overrides,
+            )
+            sub = period_subtotal(
+                account, scenario_id, next_period,
+                amount_overrides=overrides,
+            )
+
+            anchor_bal = result.balances[anchor_period.id]
+            next_bal = result.balances[next_period.id]
+            assert anchor_bal == Decimal("1000.00")
+            assert next_bal == Decimal("1050.00")
+            # The E-25 reconciliation holds for the sub-cent leg ONLY
+            # because net is the combined-rounded delta; per-leg rounding
+            # (the reverted bug) makes sub.net 50.01 and breaks this.
+            assert next_bal - anchor_bal == sub.net == Decimal("50.00")
+            # The display legs are each rounded to cents (a no-op in
+            # production); here the income leg shows the sub-cent round-up,
+            # so income - expense (50.01) deliberately differs from the
+            # balance-reconciling net (50.00) by a cent.
+            assert sub.income == Decimal("100.01")
+            assert sub.expense == Decimal("50.00")
+
+
+# ── period_subtotals batch (DH-#36) ────────────────────────────────
+
+
+class TestPeriodSubtotalsBatch:
+    """The batch ``period_subtotals`` -- one query for the whole window.
+
+    DH-#36: the grid footer looped the single-period ``period_subtotal``
+    once per visible column, an N+1 (one transactions SELECT per period)
+    over a set the page had already loaded.  ``period_subtotals`` issues
+    a single load and groups it by ``pay_period_id``.  These tests pin
+    (a) the batch is byte-identical to the per-period calls -- so the
+    E-25 balance-delta invariant the single-period tests lock carries
+    over -- and (b) it issues exactly one transactions query.
+    """
+
+    def test_period_subtotals_matches_single_per_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Each ``period_subtotals[p]`` equals ``period_subtotal(p)``.
+
+        Pins that grouping a single load by ``pay_period_id`` reproduces
+        the single-period filter exactly, including an empty period that
+        must map to a zero subtotal (not be absent).
+
+        Setup:
+          - period 0: $300 envelope expense with a $45.71 cleared entry
+            -> entries-aware expense max(300 - 45.71, 0) = 254.29.
+          - period 1: $150 expense (no entries -> effective_amount).
+          - period 2: nothing (the empty-period -> zero subtotal case).
+          - period 3: $80 expense.
+        seed_user seeds no salary/loan, so the live override map is
+        empty for both the batch (one build) and the single calls (per
+        build) -- isolating this comparison to the grouping itself.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+
+            txn0 = _make_projected_expense(
+                db.session, seed_user=seed_user,
+                pay_period=seed_periods[0], estimated=Decimal("300.00"),
+            )
+            _add_entry(
+                db.session, txn=txn0, user_id=seed_user["user"].id,
+                amount=Decimal("45.71"), is_cleared=True,
+            )
+            _make_projected_expense(
+                db.session, seed_user=seed_user,
+                pay_period=seed_periods[1], estimated=Decimal("150.00"),
+                name="Gas",
+            )
+            _make_projected_expense(
+                db.session, seed_user=seed_user,
+                pay_period=seed_periods[3], estimated=Decimal("80.00"),
+                name="Misc",
+            )
+            db.session.commit()
+
+            batch = period_subtotals(account, scenario_id, seed_periods)
+
+            # Every input period is a key, including the empty period 2.
+            assert set(batch) == {p.id for p in seed_periods}
+            for period in seed_periods:
+                single = period_subtotal(account, scenario_id, period)
+                assert batch[period.id] == single, (
+                    f"period_index {period.period_index}: batch "
+                    f"{batch[period.id]} != single {single}"
+                )
+
+            # Spot-check the entries-aware reduction survived grouping.
+            # period 0: max(300.00 - 45.71, 0) = 254.29.
+            assert batch[seed_periods[0].id].expense == Decimal("254.29")
+            assert batch[seed_periods[1].id].expense == Decimal("150.00")
+            # period 2 has no transactions -> zero subtotal (present key).
+            assert batch[seed_periods[2].id] == PeriodSubtotal(
+                income=Decimal("0.00"),
+                expense=Decimal("0.00"),
+                net=Decimal("0.00"),
+            )
+
+    def test_period_subtotals_issues_one_transaction_query(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The batch loads transactions ONCE for the whole window (no N+1).
+
+        Revert-proof: a per-period ``period_subtotal`` loop over these
+        10 periods would issue 10 transactions SELECTs (one per period,
+        each returning that period's rows -- including the empty ones).
+        ``period_subtotals`` groups a single load instead, so exactly
+        one statement hits the ``transactions`` table.
+
+        ``amount_overrides={}`` is passed so the count isolates the
+        transaction load: a ``None`` would additionally run the live
+        override seam (``income_service`` / ``loan_payment_service``),
+        whose queries are not what this guard measures.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            # Spread rows across non-adjacent periods so grouping is real
+            # and the empty periods between them are genuinely empty.
+            for idx, name in ((0, "Groceries"), (2, "Gas"), (5, "Misc")):
+                _make_projected_expense(
+                    db.session, seed_user=seed_user,
+                    pay_period=seed_periods[idx],
+                    estimated=Decimal("100.00"), name=name,
+                )
+            db.session.commit()
+
+            statements: list[str] = []
+
+            def _capture(conn, cursor, statement, parameters,
+                         context, executemany):
+                statements.append(statement)
+
+            engine = db.session.get_bind()
+            event.listen(engine, "before_cursor_execute", _capture)
+            try:
+                result = period_subtotals(
+                    account, scenario_id, seed_periods,
+                    amount_overrides={},
+                )
+            finally:
+                event.remove(engine, "before_cursor_execute", _capture)
+
+            # The entries selectinload references ``transaction_entries``
+            # (a distinct table), not ``transactions``, so it is excluded.
+            txn_selects = [
+                s for s in statements
+                if "transactions" in s.lower()
+                and "transaction_entries" not in s.lower()
+            ]
+            assert len(txn_selects) == 1, (
+                f"Expected exactly one transactions SELECT for "
+                f"{len(seed_periods)} periods, got {len(txn_selects)}: "
+                f"{txn_selects}"
+            )
+            # Sanity: all periods present; the three seeded periods nonzero.
+            assert len(result) == len(seed_periods)
+            assert result[seed_periods[0].id].expense == Decimal("100.00")
+            assert result[seed_periods[2].id].expense == Decimal("100.00")
+            assert result[seed_periods[5].id].expense == Decimal("100.00")
 
 
 # ── balance_as_of_date (E-27, Commit 9) ────────────────────────────

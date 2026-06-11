@@ -64,6 +64,7 @@ from app.enums import CalcMethodEnum, DeductionTimingEnum
 from app.services import tax_calculator
 from app.services.calibration_service import apply_calibration
 from app.utils.deduction_cap import cap_period_amount
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
@@ -258,12 +259,12 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
         )
 
     # Step 9: Net pay.
-    net_pay = (
+    net_pay = round_money(
         gross_biweekly
         - deductions.total_pre_tax
         - taxes.total
         - deductions.total_post_tax
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    )
 
     return PaycheckBreakdown(
         period=PeriodInfo(
@@ -275,21 +276,51 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     )
 
 
-def project_salary(profile, periods, tax_configs, *, calibration=None):
+def project_salary(profile, periods, tax_configs=None, *,
+                   configs_by_year=None, calibration=None):
     """Generate paycheck breakdowns for all given periods.
 
+    Exactly one tax-config source must be supplied:
+
+    * ``tax_configs`` -- ONE config set applied to every period.  Correct
+      when every period is in the same tax year (the year-end summary, the
+      route previews, and the unit tests that hand-build a config dict).
+    * ``configs_by_year`` -- a ``{tax_year: config set}`` mapping; each
+      period is calculated with ``configs_by_year[period.start_date.year]``.
+      This is the multi-year projection path: a ~2-year horizon spans more
+      than one tax year, so each period must use its own year's brackets
+      and FICA wage base/cap, matching the recurrence engine that generates
+      the stored grid amounts (DH-#30).  Callers resolve the mapping via
+      :func:`app.services.tax_config_service.load_tax_configs_for_periods`
+      and pass it in -- this module performs no DB access (purity contract).
+
     Args:
-        profile:      SalaryProfile with loaded raises and deductions.
-        periods:      List of PayPeriod objects.
-        tax_configs:  dict with bracket_set, state_config, fica_config.
-        calibration:  Optional CalibrationOverride for rate-based taxes.
+        profile:          SalaryProfile with loaded raises and deductions.
+        periods:          List of PayPeriod objects.
+        tax_configs:      dict with bracket_set, state_config, fica_config,
+                          or ``None`` when ``configs_by_year`` is given.
+        configs_by_year:  ``{tax_year: configs dict}`` mapping covering
+                          every year present in ``periods``, or ``None``
+                          when ``tax_configs`` is given.
+        calibration:      Optional CalibrationOverride for rate-based taxes.
 
     Returns:
         List of PaycheckBreakdown, one per period.
+
+    Raises:
+        ValueError: if not exactly one of ``tax_configs`` /
+            ``configs_by_year`` is supplied.
     """
+    if (tax_configs is None) == (configs_by_year is None):
+        raise ValueError(
+            "project_salary requires exactly one of tax_configs or "
+            "configs_by_year"
+        )
     return [
         calculate_paycheck(
-            profile, period, periods, tax_configs,
+            profile, period, periods,
+            tax_configs if tax_configs is not None
+            else configs_by_year[period.start_date.year],
             calibration=calibration,
         )
         for period in periods
@@ -440,9 +471,7 @@ def _bracket_state(taxable_biweekly, pay_periods_per_year, state_config):
     state_annual = tax_calculator.calculate_state_tax(
         taxable_biweekly * pay_periods_per_year, state_config
     )
-    return (state_annual / pay_periods_per_year).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP
-    )
+    return round_money(state_annual / pay_periods_per_year)
 
 
 def _gross_biweekly_for_period(
@@ -512,9 +541,7 @@ def _gross_biweekly_for_period(
     # half-up semantics so single-period callers (route previews,
     # isolated tests) are unaffected by the reconciliation contract.
     if len(same_year) < pay_periods_per_year:
-        return (annual_salary / pay_periods_dec).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        return round_money(annual_salary / pay_periods_dec)
 
     floor_value = (annual_salary / pay_periods_dec).quantize(
         TWO_PLACES, rounding=ROUND_DOWN
@@ -564,9 +591,9 @@ def _residue_cents(annual_salary, group_size, pay_periods_dec, floor_value):
         earliest ``residue_cents`` periods in group order).
     """
     group_size_dec = Decimal(group_size)
-    exact_share = (
+    exact_share = round_money(
         annual_salary * group_size_dec / pay_periods_dec
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    )
     residue = exact_share - floor_value * group_size_dec
     return int((residue / ONE_CENT).to_integral_value(rounding=ROUND_HALF_UP))
 
@@ -593,7 +620,8 @@ def apply_raises(base_salary, raises, as_of):
     same-date ties resolved by DB row order).
 
     A raise applies if:
-    - Its effective_year matches ``as_of``'s year (or is None for recurring)
+    - Its effective_year is on or before ``as_of``'s year (recurring
+      raises compound once per year from ``effective_year`` onward)
     - Its effective_month is on or before ``as_of``'s month (for that year)
 
     Args:
@@ -622,8 +650,8 @@ def apply_raises(base_salary, raises, as_of):
     sorted_raises = sorted(
         raises,
         key=lambda r: (
-            r.effective_year or 0,
-            r.effective_month or 0,
+            r.effective_year,
+            r.effective_month,
             # Flat raises sort ahead of percentage within one effective
             # date so the documented flat-before-percentage order holds
             # regardless of DB row order (M-01 / deep-hunt #12).  A raise
@@ -642,11 +670,7 @@ def apply_raises(base_salary, raises, as_of):
             # Recurring raises compound each year at the specified month.
             # Count total applications: one per year from eff_year onward
             # where the effective month has been reached.
-            if not eff_year:
-                # No start year -- apply once if month reached this year.
-                if period_month >= eff_month:
-                    salary = _apply_single_raise(salary, raise_obj)
-            elif period_year >= eff_year:
+            if period_year >= eff_year:
                 total_applications = period_year - eff_year
                 if period_month >= eff_month:
                     total_applications += 1
@@ -654,14 +678,12 @@ def apply_raises(base_salary, raises, as_of):
                     salary = _apply_single_raise(salary, raise_obj)
         else:
             # One-time raise: apply if we're at or past the effective date.
-            if eff_year is None:
-                continue
             if (period_year > eff_year) or (
                 period_year == eff_year and period_month >= eff_month
             ):
                 salary = _apply_single_raise(salary, raise_obj)
 
-    return salary.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    return round_money(salary)
 
 
 def _apply_single_raise(salary, raise_obj):
@@ -688,14 +710,12 @@ def _get_raise_event(profile, period):
         eff_year = raise_obj.effective_year
 
         is_match = False
-        if raise_obj.is_recurring and period_month == eff_month and (
-            not eff_year or period_year >= eff_year
-        ):
+        if (raise_obj.is_recurring and period_month == eff_month
+                and period_year >= eff_year):
             # A recurring raise recurs at eff_month every year from
-            # eff_year onward (or every year when eff_year is NULL),
-            # matching apply_raises' application gate -- so it must not
-            # badge an event in a calendar year before it takes effect
-            # (deep-hunt #13).
+            # eff_year onward, matching apply_raises' application gate --
+            # so it must not badge an event in a calendar year before it
+            # takes effect (deep-hunt #13).
             is_match = True
         elif eff_year == period_year and eff_month == period_month:
             is_match = True

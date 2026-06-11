@@ -173,7 +173,7 @@ def _payoff_target_date_result(params, ctx, data):
     required_extra = amortization_engine.calculate_payoff_by_date(
         amortization_engine.PayoffRequest(
             current_principal=state.current_balance,
-            annual_rate=ctx.base_rate,
+            annual_rate=ctx.current_rate,
             remaining_months=remaining_months,
             target_date=target_date,
             origination_date=date.today().replace(day=1),

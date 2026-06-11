@@ -60,9 +60,23 @@ class _FakeStatus:
 
 @dataclass
 class _FakeContribution:
+    """Shadow income contribution; ``effective_amount`` mirrors the real model.
+
+    ``effective_amount`` is the realized ``actual_amount`` when populated,
+    else ``estimated_amount`` -- the accessor the inputs builder reads
+    (deep-quality-hunt #11).
+    """
     estimated_amount: Decimal
     pay_period_id: int
     status: _FakeStatus = field(default_factory=_FakeStatus)
+    actual_amount: Decimal | None = None
+
+    @property
+    def effective_amount(self) -> Decimal:
+        """Realized actual when populated, else the estimate (model parity)."""
+        if self.actual_amount is not None:
+            return self.actual_amount
+        return self.estimated_amount
 
 
 @dataclass

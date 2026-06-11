@@ -785,11 +785,14 @@ class TestPaydayInfo:
     def test_payday_info_no_future_period(self, app, seed_user, db):
         """No future periods -> all fields None."""
         with app.app_context():
-            # Create periods in the past.
+            # Periods all in the past relative to today, but extending
+            # FORWARD of seed_user's 2024-01-05 bootstrap period (the
+            # forward-only generation invariant, DH-#39): start in early
+            # 2024, well before any plausible test-run date.
             from app.services import pay_period_service
             old_periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date(2020, 1, 2),
+                start_date=date(2024, 2, 2),
                 num_periods=5,
                 cadence_days=14,
             )
@@ -920,18 +923,21 @@ def _create_loan_account(
     db_session.flush()
 
     from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
-    from tests._test_helpers import insert_origination_event  # pylint: disable=import-outside-toplevel
+    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+        insert_origination_event,
+        insert_origination_rate,
+    )
     params = LoanParams(
         account_id=account.id,
         original_principal=principal,
         current_principal=principal,
-        interest_rate=rate,
         term_months=term,
         origination_date=date(2026, 1, 1),
         payment_day=1,
     )
     db_session.add(params)
     db_session.flush()
+    insert_origination_rate(params, rate)
     insert_origination_event(params)
     db_session.commit()
     return account

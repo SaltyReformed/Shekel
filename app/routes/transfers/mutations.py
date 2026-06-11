@@ -24,10 +24,12 @@ from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.transfer import Transfer
+from app.models.ref import Status
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services import transfer_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
 from app.utils.auth_helpers import require_owner
 from app.utils.db_errors import is_unique_violation
@@ -49,6 +51,51 @@ logger = logging.getLogger(__name__)
 # ``migrations/versions/<C-22 revision>.py``; renaming the index
 # requires a coordinated edit across all three sites.
 _TRANSFER_ADHOC_UNIQUE_INDEX = "uq_transfers_adhoc_dedupe"
+
+# Money / period / category / due-date fields the finalised-row edit lock
+# (#26) protects.  Names match :class:`TransferUpdateSchema` (the route's
+# loaded ``data`` dict); it exposes no ``actual_amount`` -- a transfer's
+# actual is recorded only via the mark-done flow.  ``name`` / ``notes``
+# stay editable; the ``status_id`` transition is guarded by the service's
+# :func:`verify_transition` call.
+_LOCKED_EDIT_FIELDS = frozenset({
+    "amount", "category_id", "pay_period_id", "due_date",
+})
+
+
+def _reject_finalised_transfer_edit(xfer, data):
+    """Reject locked-field edits on a finalised (is_immutable) transfer.
+
+    The transfer-side counterpart of the transaction lock (#26),
+    enforced at this user edit boundary rather than inside
+    ``transfer_service.update_transfer`` so the recurrence
+    conflict-resolution and carry-forward paths -- which legitimately
+    update finalised-aware transfers -- are unaffected.  Defers the
+    status policy and the message to
+    :func:`finalised_edit_rejection`.
+
+    Args:
+        xfer: The owned Transfer being edited.
+        data: The loaded :class:`TransferUpdateSchema` payload.
+
+    Returns:
+        A ``(json_body, 400)`` Flask response tuple when a locked field
+        is edited on a finalised transfer not being reverted to a
+        mutable status, or ``None`` when the edit may proceed.
+    """
+    if not _LOCKED_EDIT_FIELDS & data.keys():
+        return None
+    new_status = (
+        db.session.get(Status, data["status_id"])
+        if "status_id" in data else None
+    )
+    message = finalised_edit_rejection(
+        db.session.get(Status, xfer.status_id), new_status,
+        context="transfer",
+    )
+    if message is None:
+        return None
+    return jsonify(errors={"_schema": [message]}), 400
 
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["PATCH"])
@@ -90,7 +137,7 @@ def update_transfer(xfer_id):
 
     errors = _xfer_update_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 400
+        return jsonify(errors=errors), 422
 
     data = _xfer_update_schema.load(request.form)
 
@@ -136,7 +183,13 @@ def update_transfer(xfer_id):
     if xfer.transfer_template_id and ("amount" in data or "pay_period_id" in data):
         data["is_override"] = True
 
-    error_response = _execute_transfer_update(xfer, data)
+    # The finalised-row edit lock (#26) and the service call share one
+    # error exit so adding the lock does not push the handler past
+    # pylint's too-many-returns threshold.
+    error_response = (
+        _reject_finalised_transfer_edit(xfer, data)
+        or _execute_transfer_update(xfer, data)
+    )
     if error_response is not None:
         return error_response
 
@@ -190,7 +243,7 @@ def create_ad_hoc():
     """
     errors = _xfer_create_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 400
+        return jsonify(errors=errors), 422
 
     data = _xfer_create_schema.load(request.form)
 

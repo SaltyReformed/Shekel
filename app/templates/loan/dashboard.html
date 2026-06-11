@@ -111,7 +111,10 @@
             <div class="d-flex justify-content-between mb-2" id="interest-rate-display">
               <span class="text-muted">Interest Rate</span>
               <span class="fw-bold text-accent">
-                {{ "%.3f"|format(params.interest_rate|to_percent) }}%
+                {# DH-#56: resolver-derived current rate (the rate in
+                   effect today), not the retired LoanParams.interest_rate
+                   column.  For an ARM this reflects the latest adjustment. #}
+                {{ "%.3f"|format(current_rate|to_percent) }}%
                 {% if params.is_arm %}<span class="badge bg-warning text-dark ms-1">ARM</span>{% endif %}
               </span>
             </div>
@@ -168,10 +171,16 @@
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <div class="row mb-3">
                 <div class="col-6">
-                  <label for="interest_rate" class="form-label">Interest Rate</label>
+                  {# DH-#56: this field edits the loan's ORIGINATION
+                     (period-0) rate -- its earliest RateHistory row,
+                     which update_params upserts.  For a fixed-rate loan
+                     that is the loan's only rate; for an ARM the current
+                     rate (shown above) and later adjustments are managed
+                     on the Rate History tab. #}
+                  <label for="interest_rate" class="form-label">Origination Rate</label>
                   <div class="input-group">
                     <input type="number" class="form-control" id="interest_rate" name="interest_rate"
-                           value="{{ "%.3f"|format(params.interest_rate|to_percent) }}" step="0.001" min="0" max="100">
+                           value="{{ "%.3f"|format(origination_rate|to_percent) }}" step="0.001" min="0" max="100">
                     <span class="input-group-text">%</span>
                   </div>
                 </div>

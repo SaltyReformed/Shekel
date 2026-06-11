@@ -15,6 +15,7 @@ from app.extensions import db
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, savings_goal_service
+from app.utils.money import percent_complete
 
 
 def _load_goal_templates(user_id, goals):
@@ -116,12 +117,15 @@ def _build_goal_datum(
         acct_balance, resolved_target, remaining_periods,
     ) if resolved_target and resolved_target > 0 else None
 
-    progress_pct = 0
+    # Progress percent via the canonical money.percent_complete contract
+    # (ROUND_HALF_UP, clamped [0, 100], Decimal) so this savings card, the
+    # budget-dashboard savings-goal card (dashboard_service), and the companion
+    # entry view (entry_service) all report the same number for the same goal,
+    # and a negative projected balance renders 0%, not a negative-width bar
+    # (deep-quality-hunt #20).
+    progress_pct = Decimal("0")
     if resolved_target and resolved_target > Decimal("0.00"):
-        progress_pct = min(
-            100,
-            int(acct_balance / resolved_target * 100),
-        )
+        progress_pct = percent_complete(acct_balance, resolved_target)
 
     # Build human-readable descriptor for income-relative goals.
     if goal.goal_mode_id != fixed_id:

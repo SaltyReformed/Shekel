@@ -12,7 +12,7 @@ from flask import Blueprint, Response, abort, flash, redirect, render_template, 
 from flask_login import current_user, login_required
 from markupsafe import Markup
 
-from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
+from app.utils.auth_helpers import get_or_404, require_owner
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
@@ -616,7 +616,6 @@ def unarchive_template(template_id):
 @templates_bp.route("/templates/<int:template_id>/hard-delete", methods=["POST"])
 @login_required
 @require_owner
-@fresh_login_required()
 def hard_delete_template(template_id):
     """Permanently delete a transaction template if it has no settled history.
 

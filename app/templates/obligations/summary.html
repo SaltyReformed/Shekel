@@ -37,39 +37,64 @@
 
 {% else %}
 
-{# --- Summary Metrics --- #}
+{# --- Cash-flow projection (grid-reconciled; replaces the old flat net) --- #}
+{% if projection %}
 <div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0">
+      <i class="bi bi-graph-up-arrow"></i> Projected {{ projection.account_name }} Balance
+      <span class="text-muted small fw-normal">from the grid</span>
+    </h6>
+  </div>
   <div class="card-body">
     <div class="row text-center">
       <div class="col-md-4">
-        <div class="text-muted small">Monthly Outflows</div>
-        <div class="fw-bold fs-5 font-mono text-danger">
-          ${{ "{:,.2f}".format(total_outflows) }}
+        <div class="text-muted small">Now</div>
+        <div class="fw-bold fs-5 font-mono {% if projection.now_balance < 0 %}text-danger{% endif %}">
+          {% if projection.now_balance < 0 %}-${{ "{:,.2f}".format(-projection.now_balance) }}{% else %}${{ "{:,.2f}".format(projection.now_balance) }}{% endif %}
         </div>
+      </div>
+      <div class="col-md-4">
         <div class="text-muted small">
-          Expenses ${{ "{:,.2f}".format(total_expense_monthly) }}
-          + Transfers ${{ "{:,.2f}".format(total_transfer_monthly) }}
+          In ~12 months{% if projection.twelve_month %} ({{ projection.twelve_month.as_of_date.strftime('%b %Y') }}){% endif %}
         </div>
+        <div class="fw-bold fs-5 font-mono {% if projection.twelve_month and projection.twelve_month.balance < 0 %}text-danger{% endif %}">
+          {% if projection.twelve_month is none %}--{% elif projection.twelve_month.balance < 0 %}-${{ "{:,.2f}".format(-projection.twelve_month.balance) }}{% else %}${{ "{:,.2f}".format(projection.twelve_month.balance) }}{% endif %}
+        </div>
+        {% if projection.negative_period_count > 0 %}
+        <div class="text-danger small">
+          <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+          {{ projection.negative_period_count }} period{{ 's' if projection.negative_period_count != 1 else '' }} dip below $0
+        </div>
+        {% endif %}
       </div>
       <div class="col-md-4">
-        <div class="text-muted small">Monthly Income</div>
-        <div class="fw-bold fs-5 font-mono text-success">
-          ${{ "{:,.2f}".format(total_income_monthly) }}
+        <div class="text-muted small">
+          End of projection{% if projection.end %} ({{ projection.end.as_of_date.strftime('%b %Y') }}){% endif %}
         </div>
-      </div>
-      <div class="col-md-4">
-        <div class="text-muted small">Net Cash Flow</div>
-        <div class="fw-bold fs-5 font-mono {{ 'text-success' if net_cash_flow >= 0 else 'text-danger' }}">
-          {% if net_cash_flow >= 0 %}
-          ${{ "{:,.2f}".format(net_cash_flow) }}
-          {% else %}
-          -${{ "{:,.2f}".format((-net_cash_flow)) }}
-          {% endif %}
+        <div class="fw-bold fs-5 font-mono {% if projection.end and projection.end.balance < 0 %}text-danger{% elif projection.direction == 'growing' %}text-success{% endif %}">
+          {% if projection.end is none %}--{% elif projection.end.balance < 0 %}-${{ "{:,.2f}".format(-projection.end.balance) }}{% else %}${{ "{:,.2f}".format(projection.end.balance) }}{% endif %}
         </div>
       </div>
     </div>
+    <div class="text-muted small text-center mt-2">
+      {% if projection.direction == 'growing' %}
+      Projected to grow over the period -- reconciled with the grid's per-period balances.
+      {% elif projection.direction == 'declining' %}
+      Projected to decline over the period -- reconciled with the grid's per-period balances.
+      {% else %}
+      Reconciled with the grid's per-period balances.
+      {% endif %}
+    </div>
   </div>
 </div>
+{% else %}
+<div class="card mb-4">
+  <div class="card-body text-muted text-center">
+    Add an account with a balance to see a projected cash-flow summary.
+  </div>
+</div>
+{% endif %}
 
 {# --- Recurring Expenses --- #}
 <div class="card mb-4">

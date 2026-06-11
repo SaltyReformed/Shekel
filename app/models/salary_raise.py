@@ -32,14 +32,12 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
     the paycheck calculator then applies the raise twice
     (``salary * 1.03 * 1.03`` instead of ``salary * 1.03``),
     silently overstating projected gross pay until the user notices
-    the drift.  The constraint is declared with PostgreSQL
-    ``NULLS NOT DISTINCT`` semantics: ``effective_year`` is
-    nullable for recurring raises that fire each year on a given
-    month with no anchored start year, and two such recurring
-    rows on the same ``(profile, type, month)`` are still
-    duplicates that would compound erroneously, so NULLs must
-    collide rather than the SQL-standard "every NULL is distinct"
-    default.  ``is_recurring`` is intentionally NOT part of the
+    the drift.  ``effective_year`` is required (NOT NULL), so every
+    raise -- one-time or recurring -- anchors to a concrete start
+    year; DH-#57 retired the never-UI-reachable NULL-year recurring
+    raise (and the constraint's former ``NULLS NOT DISTINCT`` modifier)
+    that the C-24 backfill ``b4c5d6e7f8a9`` had already eliminated from
+    the data.  ``is_recurring`` is intentionally NOT part of the
     key: a recurring raise on (profile, type, year, month) already
     covers that exact period, so adding a one-time raise with the
     same key compounds the recurring effect on the targeted year
@@ -58,13 +56,14 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
             "effective_month >= 1 AND effective_month <= 12",
             name="ck_salary_raises_valid_month",
         ),
-        # F-077 / C-24: ``effective_year`` is nullable -- recurring
-        # raises that fire every year on a given month carry NULL
-        # year, so the CHECK admits NULL.  When present, bound to
-        # the same 2000-2100 window the raise create schema enforces.
+        # F-077 / C-24 / DH-#57: ``effective_year`` is required (NOT
+        # NULL) -- every raise anchors to a concrete year, so the CHECK
+        # bounds it to the same 2000-2100 window the create/update
+        # schema's ``Range`` enforces.  The prior ``IS NULL OR`` clause
+        # admitted the never-UI-reachable NULL-year recurring raise the
+        # C-24 backfill (b4c5d6e7f8a9) had already eliminated.
         db.CheckConstraint(
-            "effective_year IS NULL OR "
-            "(effective_year >= 2000 AND effective_year <= 2100)",
+            "effective_year >= 2000 AND effective_year <= 2100",
             name="ck_salary_raises_valid_effective_year",
         ),
         db.CheckConstraint(
@@ -83,7 +82,6 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
             "salary_profile_id", "raise_type_id",
             "effective_year", "effective_month",
             name="uq_salary_raises_profile_type_year_month",
-            postgresql_nulls_not_distinct=True,
         ),
         # F-071 / F-079 / C-42: child-FK index restored after the
         # 22b3dd9d9ed3 migration dropped it without restoration.  The
@@ -111,7 +109,7 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
         nullable=False,
     )
     effective_month = db.Column(db.Integer, nullable=False)
-    effective_year = db.Column(db.Integer, nullable=True)
+    effective_year = db.Column(db.Integer, nullable=False)
     percentage = db.Column(db.Numeric(5, 4))
     flat_amount = db.Column(db.Numeric(12, 2))
     is_recurring = db.Column(

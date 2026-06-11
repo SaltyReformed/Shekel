@@ -6,7 +6,7 @@ contribution limits, employer contributions, and year boundary resets.
 """
 
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 import pytest
 
@@ -21,8 +21,8 @@ from app.services.growth_engine import (
     project_balance,
     reverse_project_balance,
     ZERO,
-    TWO_PLACES,
 )
+from app.utils.money import round_money
 
 
 def _emp_type_id(member):
@@ -706,7 +706,7 @@ class TestGenerateProjectionPeriods:
         Independent computation replicates the growth engine formula:
         For each period (14-day cadence → 13 actual days per period):
           period_return = (1 + 0.07)^(period_days / 365) - 1
-          growth = (balance * period_return).quantize(0.01, ROUND_HALF_UP)
+          growth = round_money(balance * period_return)
           balance = balance + growth + 500
         Starting from balance = 10,000 over 27 periods (one calendar year).
         """
@@ -728,9 +728,7 @@ class TestGenerateProjectionPeriods:
                 ** (Decimal(str(period_days)) / Decimal("365"))
                 - 1
             )
-            growth = (expected_balance * period_return_rate).quantize(
-                TWO_PLACES, rounding=ROUND_HALF_UP
-            )
+            growth = round_money(expected_balance * period_return_rate)
             expected_balance = expected_balance + growth + Decimal("500")
 
         assert result[-1].end_balance == expected_balance
@@ -1318,3 +1316,236 @@ class TestReverseProjectBalance:
         assert reversed_proj[0].period_id == 1
         assert reversed_proj[1].period_id == 2
         assert reversed_proj[2].period_id == 3
+
+    @staticmethod
+    def _year_2026_periods(count):
+        """Build ``count`` consecutive 14-day periods all starting in 2026."""
+        base = date(2026, 1, 2).toordinal()
+        return [
+            FakePeriod(
+                date.fromordinal(base + i * 14),
+                date.fromordinal(base + i * 14 + 13),
+                i + 1,
+            )
+            for i in range(count)
+        ]
+
+    def test_roundtrip_with_binding_annual_limit(self):
+        """DH-#28: reverse caps each period like forward, so a maxed-out
+        account's start balance is recovered EXACTLY (not derived too low).
+
+        IRA limit $7,000, periodic $1,000 with a 50% employer match capped
+        at 6% of a $3,000 gross.  At 0% return over 8 periods the cap binds
+        after period 7:
+          periods 1-7: contribution=1000, match=min(1000, 3000*0.06=180)*0.5=90
+          period 8:    contribution=0 (limit hit), match=min(0,180)*0.5=0
+        Forward end = 25000 + 7*1000 + 7*90 = 25000 + 7000 + 630 = 32630.00.
+        Reverse from 32630 with the SAME limit replays that capped schedule
+        and recovers 25000.00 exactly.
+        """
+        periods = self._year_2026_periods(8)
+        start_balance = Decimal("25000.00")
+        limit = Decimal("7000.00")
+        periodic = Decimal("1000.00")
+        employer = {
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
+            "match_percentage": Decimal("0.5"),
+            "match_cap_percentage": Decimal("0.06"),
+            "gross_biweekly": Decimal("3000.00"),
+        }
+
+        forward = project_balance(
+            current_balance=start_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=periodic,
+            employer_params=employer,
+            annual_contribution_limit=limit,
+        )
+        assert forward[-1].end_balance == Decimal("32630.00")
+
+        reversed_proj = reverse_project_balance(
+            anchor_balance=forward[-1].end_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=periodic,
+            employer_params=employer,
+            annual_contribution_limit=limit,
+        )
+
+        # Exact recovery -- the cap was replayed, not over-subtracted.
+        assert reversed_proj[0].start_balance == start_balance
+
+        # Per-period capped contribution + employer match mirror the forward
+        # (period 8 is capped to 0, with 0 employer match on it).
+        for rev, fwd in zip(reversed_proj, forward):
+            assert rev.contribution == fwd.contribution
+            assert rev.employer_contribution == fwd.employer_contribution
+        assert reversed_proj[7].contribution == ZERO
+        assert reversed_proj[7].employer_contribution == ZERO
+
+        # The reverse rows now carry the real replayed limit state, not the
+        # old hardcoded ZERO / None.
+        assert reversed_proj[6].ytd_contributions == Decimal("7000.00")
+        assert reversed_proj[6].contribution_limit_remaining == ZERO
+
+    def test_binding_limit_roundtrip_at_nonzero_return(self):
+        """The capped reverse still inverts the growth divisor at 7%.
+
+        Same binding IRA scenario as the 0% case but at a 7% annual return;
+        the forward end balance is recovered within the per-period $0.01
+        rounding tolerance (observed drift is 0.00).
+        """
+        periods = self._year_2026_periods(8)
+        start_balance = Decimal("25000.00")
+        limit = Decimal("7000.00")
+        periodic = Decimal("1000.00")
+        employer = {
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
+            "match_percentage": Decimal("0.5"),
+            "match_cap_percentage": Decimal("0.06"),
+            "gross_biweekly": Decimal("3000.00"),
+        }
+        annual_return = Decimal("0.07")
+
+        forward = project_balance(
+            current_balance=start_balance,
+            assumed_annual_return=annual_return,
+            periods=periods,
+            periodic_contribution=periodic,
+            employer_params=employer,
+            annual_contribution_limit=limit,
+        )
+        reversed_proj = reverse_project_balance(
+            anchor_balance=forward[-1].end_balance,
+            assumed_annual_return=annual_return,
+            periods=periods,
+            periodic_contribution=periodic,
+            employer_params=employer,
+            annual_contribution_limit=limit,
+        )
+
+        recovered = reversed_proj[0].start_balance
+        tolerance = Decimal("0.01") * len(periods)
+        assert abs(recovered - start_balance) <= tolerance
+
+    def test_without_limit_over_subtracts_when_cap_binds(self):
+        """Revert-proof: dropping the limit reproduces the DH-#28 bug.
+
+        On the exact binding scenario, calling the reverse WITHOUT the
+        annual limit (the old behaviour) subtracts the full $1,000 in the
+        post-cap period that actually contributed $0, deriving a start
+        balance STRICTLY LOWER than the true one:
+          uncapped reverse = 32630 - 8*(1000 + 90) = 32630 - 8720 = 23910.00.
+        So a revert that drops the limit threading re-breaks this assertion.
+        """
+        periods = self._year_2026_periods(8)
+        start_balance = Decimal("25000.00")
+        limit = Decimal("7000.00")
+        periodic = Decimal("1000.00")
+        employer = {
+            "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
+            "match_percentage": Decimal("0.5"),
+            "match_cap_percentage": Decimal("0.06"),
+            "gross_biweekly": Decimal("3000.00"),
+        }
+
+        forward = project_balance(
+            current_balance=start_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=periodic,
+            employer_params=employer,
+            annual_contribution_limit=limit,
+        )
+        reversed_no_limit = reverse_project_balance(
+            anchor_balance=forward[-1].end_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=periodic,
+            employer_params=employer,
+            # annual_contribution_limit omitted -- the pre-fix uncapped path.
+        )
+
+        assert reversed_no_limit[0].start_balance == Decimal("23910.00")
+        assert reversed_no_limit[0].start_balance < start_balance
+
+    def test_roundtrip_binding_limit_across_year_boundary(self):
+        """The reverse replays the year-boundary YTD reset.
+
+        limit $3,000, periodic $1,500, no employer, 0% return, over 5 periods
+        that straddle a calendar-year boundary (3 in 2026, 2 in 2027):
+          2026: 1500, 1500, then 0 (limit hit at $3,000)
+          2027 (YTD resets to 0): 1500, 1500
+        Forward end = 20000 + (1500+1500+0+1500+1500) = 26000.00.
+        Reverse recovers 20000.00 exactly, proving the reset is replayed.
+        """
+        periods = [
+            FakePeriod(date(2026, 12, 1), date(2026, 12, 14), 1),
+            FakePeriod(date(2026, 12, 15), date(2026, 12, 28), 2),
+            FakePeriod(date(2026, 12, 29), date(2027, 1, 11), 3),
+            FakePeriod(date(2027, 1, 12), date(2027, 1, 25), 4),
+            FakePeriod(date(2027, 1, 26), date(2027, 2, 8), 5),
+        ]
+        start_balance = Decimal("20000.00")
+        limit = Decimal("3000.00")
+        periodic = Decimal("1500.00")
+
+        forward = project_balance(
+            current_balance=start_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=periodic,
+            annual_contribution_limit=limit,
+        )
+        assert forward[-1].end_balance == Decimal("26000.00")
+        # Period 3 (2026) capped to 0; period 4 (2027) resets back to 1500.
+        assert forward[2].contribution == ZERO
+        assert forward[3].contribution == Decimal("1500.00")
+
+        reversed_proj = reverse_project_balance(
+            anchor_balance=forward[-1].end_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=periodic,
+            annual_contribution_limit=limit,
+        )
+        assert reversed_proj[0].start_balance == start_balance
+        assert reversed_proj[2].contribution == ZERO
+        assert reversed_proj[3].contribution == Decimal("1500.00")
+
+    def test_roundtrip_with_nonzero_ytd_start(self):
+        """ytd_contributions_start threads symmetrically into the reverse.
+
+        With $2,000 already contributed this year, limit $7,000, periodic
+        $1,000, 0% return, the cap binds after period 5 (not 7):
+          periods 1-5: 1000 each (YTD 3000->7000); periods 6-8: 0.
+        Forward end = 30000 + 5000 = 35000.00; reverse fed the same
+        ytd_contributions_start=2000 recovers 30000.00 exactly.
+        """
+        periods = self._year_2026_periods(8)
+        start_balance = Decimal("30000.00")
+        limit = Decimal("7000.00")
+        periodic = Decimal("1000.00")
+        ytd_start = Decimal("2000.00")
+
+        forward = project_balance(
+            current_balance=start_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=periodic,
+            annual_contribution_limit=limit,
+            ytd_contributions_start=ytd_start,
+        )
+        assert forward[-1].end_balance == Decimal("35000.00")
+
+        reversed_proj = reverse_project_balance(
+            anchor_balance=forward[-1].end_balance,
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            periodic_contribution=periodic,
+            annual_contribution_limit=limit,
+            ytd_contributions_start=ytd_start,
+        )
+        assert reversed_proj[0].start_balance == start_balance
+        assert reversed_proj[5].contribution == ZERO

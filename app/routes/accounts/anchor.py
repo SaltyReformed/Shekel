@@ -38,9 +38,7 @@ from app.routes.accounts._bp import accounts_bp
 from app.services import anchor_service, entry_service, pay_period_service
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
-from app.utils.auth_helpers import (
-    fresh_login_required, get_or_404, require_owner,
-)
+from app.utils.auth_helpers import get_or_404, require_owner
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +49,6 @@ logger = logging.getLogger(__name__)
 @accounts_bp.route("/accounts/<int:account_id>/inline-anchor", methods=["PATCH"])
 @login_required
 @require_owner
-@fresh_login_required()
 def inline_anchor_update(account_id):
     """HTMX endpoint: update anchor balance inline from the accounts list.
 
@@ -223,7 +220,6 @@ def _anchor_conflict_response(account: Account) -> tuple[str, int]:
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
 @login_required
 @require_owner
-@fresh_login_required()
 def true_up(account_id):
     """Update the anchor balance for an account (inline edit from grid).
 

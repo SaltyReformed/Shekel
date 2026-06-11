@@ -12,15 +12,15 @@ import logging
 from collections import namedtuple
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import EmployerContributionTypeEnum
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
-TWO_PLACES = Decimal("0.01")
 
 
 @dataclass
@@ -187,18 +187,14 @@ def calculate_employer_contribution(employer_params, employee_contribution):
 
     if emp_type_id == flat_id:
         pct = Decimal(str(employer_params.get("flat_percentage", 0)))
-        return (gross * pct).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        return round_money(gross * pct)
 
     if emp_type_id == match_id:
         match_pct = Decimal(str(employer_params.get("match_percentage", 0)))
         cap_pct = Decimal(str(employer_params.get("match_cap_percentage", 0)))
-        matchable_salary = (gross * cap_pct).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        matchable_salary = round_money(gross * cap_pct)
         matched_amount = min(employee_contribution, matchable_salary)
-        return (matched_amount * match_pct).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        return round_money(matched_amount * match_pct)
 
     return ZERO
 
@@ -352,9 +348,9 @@ def _project_one_period(
     start_balance = state.current_balance
 
     # Step 1: Growth on the existing balance, before this period's contribution.
-    growth = (
+    growth = round_money(
         start_balance * _period_return_rate(inputs.assumed_annual_return, period)
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    )
 
     # Determine this period's contribution and confirmed status.  A dated
     # entry (even $0) wins; a missing entry falls back to the periodic
@@ -491,28 +487,44 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
     return results
 
 
-def reverse_project_balance(
+def reverse_project_balance(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     anchor_balance,
     assumed_annual_return,
     periods,
     periodic_contribution=ZERO,
     employer_params=None,
+    annual_contribution_limit=None,
+    ytd_contributions_start=ZERO,
 ):
     """Reverse-project investment balance backward through pay periods.
 
-    Given the balance at the END of the last period in the list,
-    derives what the balance must have been at the START of each
-    prior period using the exact inverse of the forward growth
-    formula from project_balance():
+    Given the balance at the END of the last period in the list, derives
+    what the balance must have been at the START of each prior period by
+    inverting the forward growth formula from :func:`project_balance`:
 
         Forward:  end = start * (1 + rate) + contribution + employer
         Reverse:  start = (end - contribution - employer) / (1 + rate)
 
-    This is used by the year-end summary to infer the Jan 1 balance
-    when the account's anchor period is after January 1.
+    The per-period employee ``contribution`` here is the annual-limit-capped
+    amount, NOT the raw ``periodic_contribution``: this function recovers the
+    exact per-period contribution and employer match the forward projection
+    applied by REPLAYING :func:`project_balance` itself over the same periods
+    with a throwaway zero opening balance, then reverse-walks the balance
+    using those figures.  The cap/YTD/employer recurrence reads only the
+    periodic contribution, the annual limit, and the running YTD (resetting
+    at each year boundary) -- never the balance -- so the replayed schedule
+    is independent of the (zero) seed, making this an exact inverse of
+    ``project_balance(periodic_contribution, annual_contribution_limit,
+    ytd_contributions_start)`` (with no per-period ``contributions`` list),
+    within the per-period $0.01 rounding tolerance (DH-#28).  Replaying the
+    real engine -- rather than re-deriving the cap here -- guarantees the
+    reverse cannot diverge from the forward cap rule.
 
-    Annual contribution limits are NOT tracked in reverse because the
-    anchor balance already reflects historical limit enforcement.
+    The one forward step that is NOT invertible is the M-06
+    ``max(balance, 0)`` clamp; it cannot fire while every period balance
+    stays non-negative (start >= 0, rate >= 0, contributions >= 0), which
+    holds for the year-end investment Jan-1 derivation this serves, so the
+    inverse is exact there.
 
     Args:
         anchor_balance:       Decimal balance at the end of the last period.
@@ -520,51 +532,79 @@ def reverse_project_balance(
         periods:              List of period objects in forward chronological
                               order.  The anchor_balance corresponds to the
                               end of the final period.
-        periodic_contribution: Decimal employee contribution per period.
+        periodic_contribution: Decimal employee contribution per period (the
+                              forward periodic fallback, capped per period).
         employer_params:      dict for employer contribution calculation.
+        annual_contribution_limit: Decimal annual cap, or ``None`` for accounts
+                              with no IRS limit (uncapped).  ``None`` reproduces
+                              the prior uncapped behaviour.
+        ytd_contributions_start: Decimal employee contributions already made in
+                              the first period's calendar year BEFORE the window
+                              begins.  The year-end callers pass ``ZERO`` because
+                              their reverse window starts at the first period of
+                              a calendar year (savings) or the user's earliest
+                              period (net worth), before which no contribution
+                              exists.
 
     Returns:
         List of ProjectedBalance in forward chronological order, one per
         period.  The start_balance of the first entry is the inferred
         balance before the first period (the "Jan 1 balance").
+
+    Pylint: ``too-many-arguments`` (7/5) / ``too-many-positional-arguments``
+    (7/5) -- suppressed for the same reason as :func:`project_balance` (which
+    these now mirror so the forward and reverse share one input contract):
+    these are genuinely distinct projection inputs callers vary independently,
+    not a cohesive concept to bundle, and every call site passes them by
+    keyword so the positional count is moot.
     """
     anchor_balance = Decimal(str(anchor_balance))
     assumed_annual_return = Decimal(str(assumed_annual_return))
-    periodic_contribution = Decimal(str(periodic_contribution))
 
-    contribution = max(periodic_contribution, ZERO)
-    employer_contribution = calculate_employer_contribution(
-        employer_params, contribution,
+    # Recover the exact per-period capped contribution, employer match, and
+    # running YTD / remaining-limit the forward engine applies by replaying
+    # it with a throwaway zero opening balance.  The cap/YTD/employer
+    # recurrence is balance-independent, so the schedule does not depend on
+    # the seed; with a non-negative balance and contributions the M-06
+    # zero-clamp never fires, so the harvested figures match the real run
+    # exactly (DH-#28).
+    schedule = project_balance(
+        current_balance=ZERO,
+        assumed_annual_return=assumed_annual_return,
+        periods=periods,
+        periodic_contribution=periodic_contribution,
+        employer_params=employer_params,
+        annual_contribution_limit=annual_contribution_limit,
+        ytd_contributions_start=ytd_contributions_start,
     )
 
-    # Work backward: end_balance of each period is the start_balance
-    # of the next period.  For the last period, end_balance = anchor.
+    # Work backward: end_balance of each period is the start_balance of the
+    # next.  For the last period, end_balance = anchor.  Each step subtracts
+    # the replayed per-period contribution / employer (not a single constant).
     reversed_results = []
     end_balance = anchor_balance
-
-    for period in reversed(periods):
-        period_return_rate = _period_return_rate(assumed_annual_return, period)
-
+    for period, forward_row in zip(reversed(periods), reversed(schedule)):
         # Inverse of: end = start * (1 + rate) + contribution + employer
-        divisor = 1 + period_return_rate
-        start_balance = (
-            (end_balance - contribution - employer_contribution) / divisor
-        ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        start_balance = round_money(
+            (end_balance - forward_row.contribution
+             - forward_row.employer_contribution)
+            / (1 + _period_return_rate(assumed_annual_return, period))
+        )
         start_balance = max(start_balance, ZERO)
-
-        # Derive growth from the relationship:
-        # end = start + growth + contribution + employer
-        growth = end_balance - start_balance - contribution - employer_contribution
 
         reversed_results.append(ProjectedBalance(
             period_id=period.id,
             start_balance=start_balance,
-            growth=growth,
-            contribution=contribution,
-            employer_contribution=employer_contribution,
+            # Derive growth from: end = start + growth + contribution + employer
+            growth=(
+                end_balance - start_balance - forward_row.contribution
+                - forward_row.employer_contribution
+            ),
+            contribution=forward_row.contribution,
+            employer_contribution=forward_row.employer_contribution,
             end_balance=end_balance,
-            ytd_contributions=ZERO,
-            contribution_limit_remaining=None,
+            ytd_contributions=forward_row.ytd_contributions,
+            contribution_limit_remaining=forward_row.contribution_limit_remaining,
             is_confirmed=False,
         ))
 

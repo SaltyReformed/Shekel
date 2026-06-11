@@ -1,12 +1,22 @@
 """
 Shekel Budget App -- Spending Trend Service Tests
 
-Tests for the spending trend engine: data sufficiency detection,
-linear regression, trend direction/flagging, top-5 lists,
-group-level weighted averages, and filter correctness.
+Tests for the spending trend engine (Design A: recent-vs-prior-half
+comparison over completed pay periods).  Covers data sufficiency, the
+completed-period window (F1), the half-window change math, the min-active
+(F2) and materiality (R1) eligibility gates, emerging "New" spending (R2),
+trend direction/flagging, top-5 lists, group-level weighted averages, and
+filter correctness.
+
+The window is made deterministic by mocking ``date.today()`` to
+``_TODAY`` (2026-07-01) and generating biweekly periods from ``_WINDOW_START``
+(2026-01-02).  With those anchors exactly 12 periods have fully elapsed
+inside the 6-month window, so ``n == 12`` and each half holds 6 periods --
+the arithmetic in every value assertion below is computed against that
+fixed shape.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -14,26 +24,46 @@ import pytest
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
+from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import spending_trend_service
-from app.services.spending_trend_service import _compute_linear_regression
+from app.services.spending_trend_service import _half_window_change
+
+
+# ── Deterministic window anchors ─────────────────────────────────────
+
+# Mocked "today".  Chosen as the first of a month so the 6-month window
+# lower bound (first of the month 6 months earlier) is 2026-01-01.
+_TODAY = date(2026, 7, 1)
+
+# First generated payday.  Biweekly from here, exactly 12 periods have
+# fully elapsed before _TODAY and fall inside the window; periods 13-14
+# are still in progress / in the future and are excluded by F1.
+_WINDOW_START = date(2026, 1, 2)
+
+# Resulting in-window shape, asserted in test_window_excludes_incomplete.
+_N_WINDOW = 12
+_HALF = 6
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+def _patch_today(mock_date):
+    """Point the service module's ``date`` at the fixed test clock.
+
+    ``date.today()`` returns ``_TODAY``; ``date(y, m, d)`` construction
+    still works via the side_effect so window-bound math is unaffected.
+    """
+    mock_date.today.return_value = _TODAY
+    mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+
+
 def _generate_periods(db_session, user_id, start, count):
     """Generate biweekly pay periods for testing.
 
-    Args:
-        db_session: Active database session.
-        user_id: User ID to create periods for.
-        start: Start date for the first period.
-        count: Number of periods to create.
-
-    Returns:
-        List of PayPeriod objects, ordered chronologically.
+    Returns the list of created PayPeriod objects, ordered chronologically.
     """
     from app.services import pay_period_service
     periods = pay_period_service.generate_pay_periods(
@@ -46,24 +76,30 @@ def _generate_periods(db_session, user_id, start, count):
     return periods
 
 
+def _seed_window(db_session, seed_user, count=14):
+    """Create periods and return the completed in-window periods.
+
+    Generates ``count`` biweekly periods from ``_WINDOW_START``, anchors the
+    account to the first one, and returns
+    ``spending_trend_service._get_window_periods(user_id, 6)`` -- the
+    completed periods F1 admits.  MUST be called with the test clock already
+    patched (the window query reads ``date.today()``).
+    """
+    periods = _generate_periods(
+        db_session, seed_user["user"].id, _WINDOW_START, count,
+    )
+    seed_user["account"].current_anchor_period_id = periods[0].id
+    db_session.commit()
+    return spending_trend_service._get_window_periods(seed_user["user"].id, 6)
+
+
 def _add_paid_expense(
     db_session, seed_user, period, name, amount,
     category_key=None, due_date=None, paid_at=None,
 ):
-    """Create a paid expense transaction for trend testing.
+    """Create a settled (Done) paid expense transaction for trend testing.
 
-    Args:
-        db_session: Active database session.
-        seed_user: The seed_user fixture dict.
-        period: PayPeriod to assign to.
-        name: Transaction name.
-        amount: Amount (Decimal or str).
-        category_key: Key into seed_user["categories"] dict.
-        due_date: Optional due_date.
-        paid_at: Optional paid_at datetime.
-
-    Returns:
-        The created Transaction.
+    Returns the created Transaction.
     """
     cat_id = None
     if category_key and category_key in seed_user["categories"]:
@@ -85,6 +121,23 @@ def _add_paid_expense(
     db_session.add(txn)
     db_session.flush()
     return txn
+
+
+def _fill(db_session, seed_user, window, category_key, amounts):
+    """Add a paid expense to ``window[i]`` for each non-None amount.
+
+    ``amounts`` is positional over the window periods.  ``None`` skips the
+    period entirely (no transaction -> the service zero-fills it and it is
+    NOT counted as a data point), which is how true gaps and ramp-from-zero
+    patterns are expressed.
+    """
+    for period, amount in zip(window, amounts):
+        if amount is None:
+            continue
+        _add_paid_expense(
+            db_session, seed_user, period, category_key, str(amount),
+            category_key=category_key,
+        )
 
 
 def _add_txn_with_status(
@@ -123,64 +176,98 @@ def _add_txn_with_status(
     return txn
 
 
-# ── Linear Regression Tests ─────────────────────────────────────────
+def _item(result, item_name):
+    """Return the named ItemTrend from a report, or None."""
+    return next(
+        (i for i in result.all_items if i.item_name == item_name), None,
+    )
 
 
-class TestLinearRegression:
-    """Tests for the _compute_linear_regression pure math function."""
+# ── Half-Window Change Tests (Design A core math) ───────────────────
 
-    def test_regression_perfect_line(self):
-        """[10, 20, 30, 40, 50] -> slope=10, intercept=10."""
-        vals = [Decimal(str(x)) for x in [10, 20, 30, 40, 50]]
-        slope, intercept = _compute_linear_regression(vals)
-        assert slope == Decimal("10")
-        assert intercept == Decimal("10")
 
-    def test_regression_constant(self):
-        """[100, 100, 100] -> slope=0, intercept=100."""
-        vals = [Decimal("100")] * 3
-        slope, intercept = _compute_linear_regression(vals)
-        assert slope == Decimal("0")
-        assert intercept == Decimal("100")
+class TestHalfWindowChange:
+    """Tests for the _half_window_change pure math function."""
 
-    def test_regression_decreasing(self):
-        """[50, 40, 30, 20, 10] -> slope=-10, intercept=50."""
-        vals = [Decimal(str(x)) for x in [50, 40, 30, 20, 10]]
-        slope, intercept = _compute_linear_regression(vals)
-        assert slope == Decimal("-10")
-        assert intercept == Decimal("50")
+    def test_even_increasing(self):
+        """[10,20,30,40]: prior avg 15, recent avg 35 -> +133.33%, +20.00."""
+        abs_change, pct = _half_window_change(
+            [Decimal(str(x)) for x in [10, 20, 30, 40]],
+        )
+        # prior=(10+20)/2=15, recent=(30+40)/2=35; (35-15)/15*100=133.33.
+        assert abs_change == Decimal("20.00")
+        assert pct == Decimal("133.33")
 
-    def test_regression_single_value(self):
-        """[42] -> slope=0, intercept=42."""
-        slope, intercept = _compute_linear_regression([Decimal("42")])
-        assert slope == Decimal("0")
-        assert intercept == Decimal("42")
+    def test_odd_drops_middle(self):
+        """[10,20,30,40,50]: middle (30) dropped -> prior 15, recent 45."""
+        abs_change, pct = _half_window_change(
+            [Decimal(str(x)) for x in [10, 20, 30, 40, 50]],
+        )
+        # half=2: prior=(10+20)/2=15, recent=(40+50)/2=45; (45-15)/15*100=200.
+        assert abs_change == Decimal("30.00")
+        assert pct == Decimal("200.00")
 
-    def test_regression_two_values(self):
-        """[10, 20] -> slope=10, intercept=10."""
-        vals = [Decimal("10"), Decimal("20")]
-        slope, intercept = _compute_linear_regression(vals)
-        assert slope == Decimal("10")
-        assert intercept == Decimal("10")
+    def test_decreasing(self):
+        """[40,30,20,10]: prior 35, recent 15 -> -57.14%, -20.00."""
+        abs_change, pct = _half_window_change(
+            [Decimal(str(x)) for x in [40, 30, 20, 10]],
+        )
+        # (15-35)/35*100 = -57.142857... -> -57.14 (ROUND_HALF_UP).
+        assert abs_change == Decimal("-20.00")
+        assert pct == Decimal("-57.14")
 
-    def test_regression_empty_raises(self):
-        """Empty input raises ValueError."""
-        with pytest.raises(ValueError, match="empty"):
-            _compute_linear_regression([])
+    def test_flat(self):
+        """[100,100,100,100]: no change -> 0.00%, 0.00."""
+        abs_change, pct = _half_window_change([Decimal("100")] * 4)
+        assert abs_change == Decimal("0.00")
+        assert pct == Decimal("0.00")
 
-    def test_regression_all_decimal(self):
-        """Outputs are Decimal, not float."""
-        vals = [Decimal("10.50"), Decimal("20.75"), Decimal("30.25")]
-        slope, intercept = _compute_linear_regression(vals)
-        assert isinstance(slope, Decimal)
-        assert isinstance(intercept, Decimal)
+    def test_new_prior_zero(self):
+        """Prior half all zero -> emerging: pct None, positive dollar delta."""
+        abs_change, pct = _half_window_change(
+            [Decimal("0"), Decimal("0"), Decimal("100"), Decimal("100")],
+        )
+        # prior avg 0 < 5 floor -> None; recent avg 100, delta 100.00.
+        assert pct is None
+        assert abs_change == Decimal("100.00")
 
-    def test_regression_with_zeros(self):
-        """[0, 0, 100, 100, 200] -> valid slope/intercept."""
-        vals = [Decimal(str(x)) for x in [0, 0, 100, 100, 200]]
-        slope, intercept = _compute_linear_regression(vals)
-        # slope > 0 since values trend upward.
-        assert slope > Decimal("0")
+    def test_new_prior_below_floor(self):
+        """Prior half avg below the $5 floor -> emerging (None), not a %."""
+        abs_change, pct = _half_window_change(
+            [Decimal("2"), Decimal("2"), Decimal("100"), Decimal("100")],
+        )
+        # prior avg 2 < 5 -> None; recent avg 100, delta 98.00.
+        assert pct is None
+        assert abs_change == Decimal("98.00")
+
+    def test_baseline_floor_boundary_computes_pct(self):
+        """Prior half avg exactly at the floor ($5) still yields a percentage."""
+        abs_change, pct = _half_window_change(
+            [Decimal("5"), Decimal("5"), Decimal("100"), Decimal("100")],
+        )
+        # prior avg 5 is NOT < 5 -> compute: (100-5)/5*100 = 1900.00.
+        assert abs_change == Decimal("95.00")
+        assert pct == Decimal("1900.00")
+
+    def test_single_value(self):
+        """One period cannot be split -> (0, None)."""
+        abs_change, pct = _half_window_change([Decimal("42")])
+        assert abs_change == Decimal("0")
+        assert pct is None
+
+    def test_empty(self):
+        """Empty input -> (0, None), no exception."""
+        abs_change, pct = _half_window_change([])
+        assert abs_change == Decimal("0")
+        assert pct is None
+
+    def test_outputs_are_decimal(self):
+        """Numeric outputs are Decimal, not float."""
+        abs_change, pct = _half_window_change(
+            [Decimal("10.50"), Decimal("20.75"), Decimal("30.25"), Decimal("40.00")],
+        )
+        assert isinstance(abs_change, Decimal)
+        assert isinstance(pct, Decimal)
 
 
 # ── Data Sufficiency Tests ──────────────────────────────────────────
@@ -190,7 +277,7 @@ class TestDataSufficiency:
     """Tests for window auto-selection based on data availability."""
 
     def test_insufficient_data(self, app, seed_user, db):
-        """1 month of paid data -> insufficient, empty lists, window_months=0."""
+        """Under 3 distinct months of paid data -> insufficient, window 0."""
         with app.app_context():
             periods = _generate_periods(
                 db.session, seed_user["user"].id, date(2026, 1, 2), 2,
@@ -198,6 +285,7 @@ class TestDataSufficiency:
             seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
 
+            # One paid expense -> a single distinct month (January).
             _add_paid_expense(
                 db.session, seed_user, periods[0], "Rent", "1200.00",
                 category_key="Rent",
@@ -234,31 +322,20 @@ class TestDataSufficiency:
             assert result.group_trends == []
 
     @patch("app.services.spending_trend_service.date")
-    def test_preliminary_3_months(self, mock_date, app, seed_user, db):
-        """3 months of paid data -> preliminary, window_months=3.
-
-        ``date.today()`` is mocked to a value that places the test's
-        fixture data inside the 3-month sufficiency window.  Without
-        mocking, the test would silently break each month because the
-        window slides forward but the fixture data does not.
-        """
-        mock_date.today.return_value = date(2026, 2, 1)
-        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
-
+    def test_preliminary_three_months(self, mock_date, app, seed_user, db):
+        """Exactly 3 distinct months of paid data -> preliminary, window 3."""
+        _patch_today(mock_date)
         with app.app_context():
-            # 8 biweekly periods from Oct 3, 2025 span Oct 2025 to Jan
-            # 2026 (4 distinct calendar months; 3 <= 4 < 6 -> preliminary).
+            # Periods from 2026-04-03 cover Apr/May/Jun 2026 = 3 months.
             periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 10, 3), 8,
+                db.session, seed_user["user"].id, date(2026, 4, 3), 6,
             )
             seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
-
-            # Add paid expenses in 3+ distinct months.
             for p in periods:
                 _add_paid_expense(
-                    db.session, seed_user, p, "Groceries",
-                    "100.00", category_key="Groceries",
+                    db.session, seed_user, p, "Groceries", "100.00",
+                    category_key="Groceries",
                 )
             db.session.commit()
 
@@ -268,20 +345,21 @@ class TestDataSufficiency:
             assert result.data_sufficiency == "preliminary"
             assert result.window_months == 3
 
-    def test_preliminary_5_months(self, app, seed_user, db):
-        """5 months of paid data -> preliminary, window_months=3."""
+    @patch("app.services.spending_trend_service.date")
+    def test_preliminary_five_months(self, mock_date, app, seed_user, db):
+        """5 distinct months (3 <= 5 < 6) -> preliminary, window 3."""
+        _patch_today(mock_date)
         with app.app_context():
-            # 10 periods starting Nov 7 spans Nov-Mar = 5 months.
+            # Periods from 2026-02-06 cover Feb-Jun 2026 = 5 months.
             periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 11, 7), 10,
+                db.session, seed_user["user"].id, date(2026, 2, 6), 11,
             )
             seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
-
             for p in periods:
                 _add_paid_expense(
-                    db.session, seed_user, p, "Groceries",
-                    "100.00", category_key="Groceries",
+                    db.session, seed_user, p, "Groceries", "100.00",
+                    category_key="Groceries",
                 )
             db.session.commit()
 
@@ -291,20 +369,14 @@ class TestDataSufficiency:
             assert result.data_sufficiency == "preliminary"
             assert result.window_months == 3
 
-    def test_sufficient_6_months(self, app, seed_user, db):
-        """6+ months of paid data -> sufficient, window_months=6."""
+    @patch("app.services.spending_trend_service.date")
+    def test_sufficient_six_months(self, mock_date, app, seed_user, db):
+        """6+ distinct months of paid data -> sufficient, window 6."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Groceries",
-                    "100.00", category_key="Groceries",
-                )
+            window = _seed_window(db.session, seed_user)
+            # Rent in all 12 window periods (Jan-Jun) = 6 distinct months.
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
@@ -314,245 +386,204 @@ class TestDataSufficiency:
             assert result.window_months == 6
 
     @patch("app.services.spending_trend_service.date")
-    def test_window_excludes_future_periods(self, mock_date, app, seed_user, db):
-        """The window has an upper bound at end-of-current-month.
+    def test_window_excludes_incomplete(self, mock_date, app, seed_user, db):
+        """F1: only fully-elapsed periods are in-window; in-progress/future out.
 
-        The app projects ~2 years of pay periods forward; without the
-        upper bound those future, never-settled periods zero-fill into the
-        regression and period_average, biasing every category toward
-        'decreasing'.  Periods starting on or after the first of next
-        month must be excluded from the window.
+        With _TODAY=2026-07-01 and 14 biweekly periods from 2026-01-02, the
+        first 12 have end_date < today and are admitted; period 13 is still
+        in progress (ends 2026-07-02) and period 14 is in the future, so both
+        are excluded.
         """
-        mock_date.today.return_value = date(2026, 2, 1)
-        mock_date.side_effect = lambda *a, **k: date(*a, **k)
-
+        _patch_today(mock_date)
         with app.app_context():
-            # 12 biweekly periods from 2025-11-07 straddle the window end
-            # (first-of-next-month = 2026-03-01): the later ones fall in or
-            # after March 2026 and must be dropped.
             periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 11, 7), 12,
+                db.session, seed_user["user"].id, _WINDOW_START, 14,
             )
             db.session.commit()
 
-            in_window = spending_trend_service._get_window_periods(
+            window = spending_trend_service._get_window_periods(
                 seed_user["user"].id, 6,
             )
-            window_end = date(2026, 3, 1)
-            assert in_window, "expected at least one in-window period"
-            assert all(p.start_date < window_end for p in in_window)
+            assert len(window) == _N_WINDOW
+            assert all(p.end_date < _TODAY for p in window)
 
-            future = [p for p in periods if p.start_date >= window_end]
-            assert future, "fixture must include >=1 future period to be meaningful"
-            in_window_ids = {p.id for p in in_window}
-            assert all(p.id not in in_window_ids for p in future)
+            in_ids = {p.id for p in window}
+            future = [p for p in periods if p.end_date >= _TODAY]
+            assert future, "fixture must include >=1 incomplete period"
+            assert all(p.id not in in_ids for p in future)
 
 
 # ── Trend Detection Tests ───────────────────────────────────────────
 
 
 class TestTrendDetection:
-    """Tests for trend direction and flagging."""
-
-    def test_trend_increasing(self, app, seed_user, db):
-        """Steadily increasing spending -> direction='up', flagged."""
-        with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            # Increasing amounts over last several periods.
-            amounts = [400, 420, 440, 460, 480, 500, 520, 540, 560, 580,
-                       600, 620, 640, 660, 680, 700]
-            for p, amt in zip(periods, amounts):
-                _add_paid_expense(
-                    db.session, seed_user, p, "Groceries",
-                    str(amt), category_key="Groceries",
-                )
-            db.session.commit()
-
-            result = spending_trend_service.compute_trends(
-                user_id=seed_user["user"].id,
-            )
-            item = next(i for i in result.all_items if i.item_name == "Groceries")
-            assert item.trend_direction == "up"
-            assert item.pct_change > Decimal("0")
-            assert item.is_flagged is True
-
-    def test_trend_decreasing(self, app, seed_user, db):
-        """Steadily decreasing spending -> direction='down', flagged."""
-        with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            amounts = [700, 680, 660, 640, 620, 600, 580, 560, 540, 520,
-                       500, 480, 460, 440, 420, 400]
-            for p, amt in zip(periods, amounts):
-                _add_paid_expense(
-                    db.session, seed_user, p, "Groceries",
-                    str(amt), category_key="Groceries",
-                )
-            db.session.commit()
-
-            result = spending_trend_service.compute_trends(
-                user_id=seed_user["user"].id,
-            )
-            item = next(i for i in result.all_items if i.item_name == "Groceries")
-            assert item.trend_direction == "down"
-            assert item.pct_change < Decimal("0")
-            assert item.is_flagged is True
-
-    def test_trend_flat(self, app, seed_user, db):
-        """Constant spending -> direction='flat', not flagged."""
-        with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
-                )
-            db.session.commit()
-
-            result = spending_trend_service.compute_trends(
-                user_id=seed_user["user"].id,
-            )
-            item = next(i for i in result.all_items if i.item_name == "Rent")
-            assert item.trend_direction == "flat"
-            assert item.is_flagged is False
-            assert abs(item.pct_change) < Decimal("1")
-
-    def test_single_data_point_is_flat(self, app, seed_user, db):
-        """Category with spending in only 1 period -> flat, pct_change=0."""
-        with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            # Rent in every period for data sufficiency, but car only once.
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
-                )
-            _add_paid_expense(
-                db.session, seed_user, periods[0], "Car",
-                "350.00", category_key="Car Payment",
-            )
-            db.session.commit()
-
-            result = spending_trend_service.compute_trends(
-                user_id=seed_user["user"].id,
-            )
-            car = next(
-                (i for i in result.all_items if i.item_name == "Car Payment"),
-                None,
-            )
-            if car is not None:
-                assert car.data_points == 1
+    """Tests for trend direction, magnitude, and flagging (Design A)."""
 
     @patch("app.services.spending_trend_service.date")
-    def test_ramp_from_zero_is_increasing_not_decreasing(
-        self, mock_date, app, seed_user, db,
-    ):
-        """A category ramping up from zero is 'up', never mislabeled 'down'.
-
-        Regression on [0]*6 + [350]*6 yields a NEGATIVE intercept
-        (predicted first-period spend ~= -67.31).  A percentage relative
-        to that negative base would flip the sign (~ -719%) and route this
-        clearly-rising category into top_decreasing.  The slope-based
-        fallback uses the window mean (175) as the base, so the sign tracks
-        the positive slope.
-
-        date.today() is mocked so the full 12-period ramp lands inside the
-        6-month window (otherwise the window slides and the ramp falls out,
-        which is exactly why the prior version of this test silently never
-        exercised the zero-start path).
-        """
-        mock_date.today.return_value = date(2026, 2, 1)
-        mock_date.side_effect = lambda *a, **k: date(*a, **k)
-
+    def test_increasing(self, mock_date, app, seed_user, db):
+        """Rising spend -> up, exact +48.00% over the 12-period window."""
+        _patch_today(mock_date)
         with app.app_context():
-            # 12 biweekly periods from 2025-08-01 span Aug 2025 - Jan 2026
-            # (6 distinct months -> sufficient, window_months=6); the window
-            # [2025-08-01, 2026-03-01) holds all 12, so n_periods == 12.
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 8, 1), 12,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            # Rent every period for data sufficiency.
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
-                )
-            # Car ramps from zero: nothing in the first 6 periods, $350 in
-            # the last 6 -> totals [0]*6 + [350]*6.
-            for p in periods[6:]:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Car",
-                    "350.00", category_key="Car Payment",
-                )
+            window = _seed_window(db.session, seed_user)
+            amounts = [100 + 10 * i for i in range(_N_WINDOW)]
+            _fill(db.session, seed_user, window, "Groceries", amounts)
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            car = next(i for i in result.all_items if i.item_name == "Car Payment")
+            item = _item(result, "Groceries")
+            # prior=(100..150)/6=125, recent=(160..210)/6=185.
+            # pct=(185-125)/125*100=48.00; delta=185-125=60.00.
+            assert item.trend_direction == "up"
+            assert item.pct_change == Decimal("48.00")
+            assert item.absolute_change == Decimal("60.00")
+            assert item.period_average == Decimal("155.00")
+            assert item.data_points == _N_WINDOW
+            assert item.is_flagged is True
 
-            # Slope is positive (rising), so every signal must agree on 'up'.
-            assert car.absolute_change > Decimal("0")
+    @patch("app.services.spending_trend_service.date")
+    def test_decreasing(self, mock_date, app, seed_user, db):
+        """Falling spend -> down, exact -32.43% over the window."""
+        _patch_today(mock_date)
+        with app.app_context():
+            window = _seed_window(db.session, seed_user)
+            amounts = [210 - 10 * i for i in range(_N_WINDOW)]
+            _fill(db.session, seed_user, window, "Groceries", amounts)
+            db.session.commit()
+
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            item = _item(result, "Groceries")
+            # prior=(210..160)/6=185, recent=(150..100)/6=125.
+            # pct=(125-185)/185*100=-32.4324... -> -32.43; delta=-60.00.
+            assert item.trend_direction == "down"
+            assert item.pct_change == Decimal("-32.43")
+            assert item.absolute_change == Decimal("-60.00")
+            assert item.is_flagged is True
+
+    @patch("app.services.spending_trend_service.date")
+    def test_flat(self, mock_date, app, seed_user, db):
+        """Constant spend -> flat, 0.00%, not flagged."""
+        _patch_today(mock_date)
+        with app.app_context():
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            db.session.commit()
+
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            item = _item(result, "Rent")
+            assert item.trend_direction == "flat"
+            assert item.pct_change == Decimal("0.00")
+            assert item.is_flagged is False
+
+    @patch("app.services.spending_trend_service.date")
+    def test_ramp_from_zero_is_new(self, mock_date, app, seed_user, db):
+        """A category with no prior-half spend is reported as emerging 'New'.
+
+        The prior half is all zero, so there is no baseline to divide by:
+        pct_change is None (renders 'New'), direction is up, and the dollar
+        delta is the recent-half average.  R2's chosen treatment.
+        """
+        _patch_today(mock_date)
+        with app.app_context():
+            window = _seed_window(db.session, seed_user)
+            # Rent baseline (sufficiency); Car ramps from zero: nothing in
+            # the first 6 periods, $350 in the last 6.
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            _fill(
+                db.session, seed_user, window, "Car Payment",
+                [None] * _HALF + [350] * _HALF,
+            )
+            db.session.commit()
+
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            car = _item(result, "Car Payment")
+            assert car is not None
+            assert car.pct_change is None
             assert car.trend_direction == "up"
-            assert car.pct_change > Decimal("0")
-            # Hand-computed over [0]*6+[350]*6 (n=12):
-            #   slope = 6300/143 -> 44.06 (ROUND_HALF_UP)
-            #   intercept = -9625/143 (<= 0 -> fallback base = mean = 2100/12 = 175)
-            #   pct = (last-first)/175*100 = (69300/143)/175*100
-            #       = 6930000/25025 = 276.9230... -> 276.92
-            assert car.absolute_change == Decimal("44.06")
-            assert car.pct_change == Decimal("276.92")
+            # recent avg 350, prior avg 0 -> delta 350.00.
+            assert car.absolute_change == Decimal("350.00")
+            # period_average = 6*350 / 12 = 175.00.
+            assert car.period_average == Decimal("175.00")
+            assert car.data_points == _HALF
             assert car.is_flagged is True
-            # It must rank as INCREASING, never decreasing.
+            # Emerging spend ranks as an increase, never a decrease.
             assert "Car Payment" in [i.item_name for i in result.top_increasing]
             assert "Car Payment" not in [i.item_name for i in result.top_decreasing]
 
-    def test_noisy_data_trend_detected(self, app, seed_user, db):
-        """Noisy but upward data -> regression detects 'up' direction."""
-        with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
 
-            # Noisy upward trend.
-            amounts = [100, 150, 120, 170, 140, 200, 160, 220, 180, 250,
-                       200, 270, 220, 290, 240, 310]
-            for p, amt in zip(periods, amounts):
-                _add_paid_expense(
-                    db.session, seed_user, p, "Groceries",
-                    str(amt), category_key="Groceries",
-                )
+# ── Eligibility Gate Tests (F2 / R1) ────────────────────────────────
+
+
+class TestEligibilityGates:
+    """Tests for the min-active (F2) and materiality (R1) exclusions."""
+
+    @patch("app.services.spending_trend_service.date")
+    def test_below_min_active_periods_excluded(self, mock_date, app, seed_user, db):
+        """F2: a category active in < 3 periods is excluded entirely."""
+        _patch_today(mock_date)
+        with app.app_context():
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            # Car active in only 2 periods (material $500 each: passes R1,
+            # so the exclusion is attributable to F2 alone).
+            _fill(
+                db.session, seed_user, window, "Car Payment",
+                [500, 500] + [None] * (_N_WINDOW - 2),
+            )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            item = next(i for i in result.all_items if i.item_name == "Groceries")
-            assert item.trend_direction == "up"
+            assert _item(result, "Car Payment") is None
+
+    @patch("app.services.spending_trend_service.date")
+    def test_below_materiality_excluded(self, mock_date, app, seed_user, db):
+        """R1: a category averaging < $20/period is excluded entirely."""
+        _patch_today(mock_date)
+        with app.app_context():
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            # Car active in 3 periods (passes F2) but only $20 total/3 =
+            # $60 over 12 periods -> $5.00/period average < $20 floor.
+            _fill(
+                db.session, seed_user, window, "Car Payment",
+                [20, 20, 20] + [None] * (_N_WINDOW - 3),
+            )
+            db.session.commit()
+
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            assert _item(result, "Car Payment") is None
+
+    @patch("app.services.spending_trend_service.date")
+    def test_materiality_boundary_included(self, mock_date, app, seed_user, db):
+        """R1 boundary: an average of exactly $20.00/period is included."""
+        _patch_today(mock_date)
+        with app.app_context():
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            # $80 in 3 periods -> $240 / 12 = exactly $20.00/period.
+            _fill(
+                db.session, seed_user, window, "Car Payment",
+                [80, 80, 80] + [None] * (_N_WINDOW - 3),
+            )
+            db.session.commit()
+
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            car = _item(result, "Car Payment")
+            assert car is not None
+            assert car.period_average == Decimal("20.00")
 
 
 # ── Threshold and Flagging Tests ────────────────────────────────────
@@ -562,71 +593,43 @@ class TestThresholdFlagging:
     """Tests for threshold-based flagging."""
 
     @patch("app.services.spending_trend_service.date")
-    def test_threshold_boundary_flagged(self, mock_date, app, seed_user, db):
-        """Category with > 10% change -> flagged (>= threshold).
-
-        ``date.today()`` is mocked so the 6-month sufficiency window
-        contains a stable, predictable 7 of the 16 fixture periods --
-        Oct 10, 2025 through Jan 2, 2026.  Without mocking, the window
-        slides each calendar month and the windowed slope shrinks
-        below the 10% threshold within ~1 month of when the test was
-        written.
-        """
-        mock_date.today.return_value = date(2026, 4, 1)
-        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
-
+    def test_below_threshold_not_flagged(self, mock_date, app, seed_user, db):
+        """A 5% change with a 10% threshold -> up but not flagged."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
+            window = _seed_window(db.session, seed_user)
+            # prior avg 100, recent avg 105 -> +5.00%.
+            _fill(
+                db.session, seed_user, window, "Groceries",
+                [100] * _HALF + [105] * _HALF,
             )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            # Steep enough slope to exceed 10% in the windowed range.
-            # With 6-month window from mocked today (April 1, 2026),
-            # window starts Oct 1, 2025 and contains 7 periods (indices
-            # 9-15) with amounts 1270 through 1450.
-            # slope=30, intercept=1270, pct = 30*6/1270*100 ~14.17%.
-            for i, p in enumerate(periods):
-                amt = 1000 + i * 30
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    str(amt), category_key="Rent",
-                )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
-                user_id=seed_user["user"].id,
-                threshold=Decimal("0.1000"),
+                user_id=seed_user["user"].id, threshold=Decimal("0.1000"),
             )
-            item = next(i for i in result.all_items if i.item_name == "Rent")
-            assert item.pct_change >= Decimal("10")
-            assert item.is_flagged is True
+            item = _item(result, "Groceries")
+            assert item.pct_change == Decimal("5.00")
+            assert item.trend_direction == "up"
+            assert item.is_flagged is False
 
-    def test_custom_threshold(self, app, seed_user, db):
-        """Category with > 5% change, threshold=5% -> flagged."""
+    @patch("app.services.spending_trend_service.date")
+    def test_custom_threshold_flags(self, mock_date, app, seed_user, db):
+        """The same 5% change with a 5% threshold -> flagged (>= threshold)."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
+            window = _seed_window(db.session, seed_user)
+            _fill(
+                db.session, seed_user, window, "Groceries",
+                [100] * _HALF + [105] * _HALF,
             )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            # slope=15, ~7 periods in window, pct = 15*6/~1120*100 ~8%.
-            for i, p in enumerate(periods):
-                amt = 1000 + i * 15
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    str(amt), category_key="Rent",
-                )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
-                user_id=seed_user["user"].id,
-                threshold=Decimal("0.0500"),
+                user_id=seed_user["user"].id, threshold=Decimal("0.0500"),
             )
-            item = next(i for i in result.all_items if i.item_name == "Rent")
-            assert item.pct_change >= Decimal("5")
+            item = _item(result, "Groceries")
+            assert item.pct_change == Decimal("5.00")
             assert item.is_flagged is True
 
 
@@ -636,29 +639,49 @@ class TestThresholdFlagging:
 class TestTopLists:
     """Tests for top-5 increasing/decreasing lists."""
 
-    def test_flat_items_not_in_top_lists(self, app, seed_user, db):
-        """Flat items don't appear in top_increasing or top_decreasing."""
+    @patch("app.services.spending_trend_service.date")
+    def test_flat_items_not_in_top_lists(self, mock_date, app, seed_user, db):
+        """Flat items appear in neither top list."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
-                )
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            inc_names = [i.item_name for i in result.top_increasing]
-            dec_names = [i.item_name for i in result.top_decreasing]
-            assert "Rent" not in inc_names
-            assert "Rent" not in dec_names
+            inc = [i.item_name for i in result.top_increasing]
+            dec = [i.item_name for i in result.top_decreasing]
+            assert "Rent" not in inc
+            assert "Rent" not in dec
+
+    @patch("app.services.spending_trend_service.date")
+    def test_real_pct_ranks_above_new(self, mock_date, app, seed_user, db):
+        """In top_increasing, a real-percentage rise outranks an emerging row.
+
+        Real-percentage increases are ordered before 'New' rows (which have
+        no percentage to compare), so a +48% Groceries rise precedes the
+        emerging Car Payment in the increasing list.
+        """
+        _patch_today(mock_date)
+        with app.app_context():
+            window = _seed_window(db.session, seed_user)
+            _fill(
+                db.session, seed_user, window, "Groceries",
+                [100 + 10 * i for i in range(_N_WINDOW)],
+            )
+            _fill(
+                db.session, seed_user, window, "Car Payment",
+                [None] * _HALF + [350] * _HALF,
+            )
+            db.session.commit()
+
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            names = [i.item_name for i in result.top_increasing]
+            assert names.index("Groceries") < names.index("Car Payment")
 
 
 # ── Group-Level Trend Tests ─────────────────────────────────────────
@@ -667,20 +690,17 @@ class TestTopLists:
 class TestGroupTrends:
     """Tests for group-level weighted average trends."""
 
-    def test_group_single_item(self, app, seed_user, db):
-        """Group with one item -> group pct_change equals item pct_change."""
+    @patch("app.services.spending_trend_service.date")
+    def test_group_single_item(self, mock_date, app, seed_user, db):
+        """A group with one item -> group pct_change equals the item's."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
+            window = _seed_window(db.session, seed_user)
+            # Rent is the only item in group "Home".
+            _fill(
+                db.session, seed_user, window, "Rent",
+                [1000 + 20 * i for i in range(_N_WINDOW)],
             )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for i, p in enumerate(periods):
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    str(1000 + i * 20), category_key="Rent",
-                )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
@@ -692,50 +712,84 @@ class TestGroupTrends:
             )
             assert group is not None
             item = group.items[0]
+            # prior avg 1050, recent avg 1170 -> +11.43%; single item, so the
+            # spending-weighted group average collapses to the item's value.
+            assert item.pct_change == Decimal("11.43")
             assert group.pct_change == item.pct_change
+
+    @patch("app.services.spending_trend_service.date")
+    def test_group_excludes_new_item_from_weighting(self, mock_date, app, seed_user, db):
+        """An emerging ('New') item does not enter the group weighted average.
+
+        Group "Auto" holds a measurable Car Payment (down) and an emerging
+        Gas item.  The emerging item has no percentage, so the group's
+        weighted average reflects only Car Payment, yet both items are
+        still listed under the group.
+        """
+        _patch_today(mock_date)
+        with app.app_context():
+            # A second item in the "Auto" group (seed_user ships only one).
+            gas = Category(
+                user_id=seed_user["user"].id,
+                group_name="Auto",
+                item_name="Gas",
+            )
+            db.session.add(gas)
+            db.session.flush()
+            seed_user["categories"]["Gas"] = gas
+
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            # Car Payment: clear decrease (prior 200, recent 100 -> -50.00%).
+            _fill(
+                db.session, seed_user, window, "Car Payment",
+                [200] * _HALF + [100] * _HALF,
+            )
+            # Gas: ramps from zero -> emerging 'New', no percentage.
+            _fill(
+                db.session, seed_user, window, "Gas",
+                [None] * _HALF + [200] * _HALF,
+            )
+            db.session.commit()
+
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            group = next(
+                (g for g in result.group_trends if g.group_name == "Auto"),
+                None,
+            )
+            assert group is not None
+            # Only the measurable Car Payment drives the group: -50.00%.
+            assert group.pct_change == Decimal("-50.00")
+            assert {i.item_name for i in group.items} == {"Car Payment", "Gas"}
 
 
 # ── Zero-Period Handling Tests ──────────────────────────────────────
 
 
 class TestZeroPeriods:
-    """Tests for zero-spending period handling in regression."""
+    """Tests for zero-spending period handling."""
 
-    def test_zero_periods_included(self, app, seed_user, db):
-        """Item with gaps gets zero values for missing periods."""
+    @patch("app.services.spending_trend_service.date")
+    def test_gaps_count_as_zero(self, mock_date, app, seed_user, db):
+        """A category with gaps has data_points below the window length."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            # Add to all periods to ensure sufficiency, but car only some.
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
-                )
-            # Car only in even-indexed periods.
-            for i, p in enumerate(periods):
-                if i % 2 == 0:
-                    _add_paid_expense(
-                        db.session, seed_user, p, "Car",
-                        "100.00", category_key="Car Payment",
-                    )
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            # Car only in even-indexed window periods (6 of 12), $100 each.
+            car_amounts = [100 if i % 2 == 0 else None for i in range(_N_WINDOW)]
+            _fill(db.session, seed_user, window, "Car Payment", car_amounts)
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            car = next(
-                (i for i in result.all_items if i.item_name == "Car Payment"),
-                None,
-            )
+            car = _item(result, "Car Payment")
             assert car is not None
-            # data_points counts periods WITH spending.
-            # The regression receives all periods (including zeros).
-            # With alternating 100/0, data_points < window_periods.
+            # 6 active periods < 12 window periods.
+            assert car.data_points == _HALF
             assert car.data_points < result.window_periods
 
 
@@ -743,117 +797,88 @@ class TestZeroPeriods:
 
 
 class TestFilters:
-    """Tests for transaction filter correctness."""
+    """Tests for transaction filter correctness.
 
-    def test_excludes_projected(self, app, seed_user, db):
-        """Only paid transactions contribute to trends."""
+    Each off-status / off-type control row spans 3 material periods, so it
+    would be trendable (passes F2 and R1) if it were not filtered -- the
+    absence in the result is attributable to the filter, not the gates.
+    """
+
+    @patch("app.services.spending_trend_service.date")
+    def test_excludes_projected(self, mock_date, app, seed_user, db):
+        """Only settled transactions contribute; projected ones do not."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            # Paid expenses in all periods.
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            for p in window[:3]:
+                _add_txn_with_status(
+                    db.session, seed_user, p, "Future Car", "500.00",
+                    StatusEnum.PROJECTED, category_key="Car Payment",
                 )
-            # Add a projected expense (should NOT count).
-            _add_txn_with_status(
-                db.session, seed_user, periods[0], "Future Car",
-                "9999.00", StatusEnum.PROJECTED, category_key="Car Payment",
-            )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            car_items = [i for i in result.all_items if i.item_name == "Car Payment"]
-            assert len(car_items) == 0
+            assert _item(result, "Car Payment") is None
 
-    def test_excludes_income(self, app, seed_user, db):
+    @patch("app.services.spending_trend_service.date")
+    def test_excludes_income(self, mock_date, app, seed_user, db):
         """Income transactions are not analyzed for spending trends."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            for p in window[:3]:
+                _add_txn_with_status(
+                    db.session, seed_user, p, "Salary", "5000.00",
+                    StatusEnum.RECEIVED, category_key="Salary", is_income=True,
                 )
-            # Add paid income (should NOT appear in trends).
-            _add_txn_with_status(
-                db.session, seed_user, periods[0], "Salary",
-                "5000.00", StatusEnum.RECEIVED,
-                category_key="Salary", is_income=True,
-            )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            salary_items = [i for i in result.all_items if i.item_name == "Salary"]
-            assert len(salary_items) == 0
+            assert _item(result, "Salary") is None
 
-    def test_excludes_deleted(self, app, seed_user, db):
-        """Soft-deleted transactions excluded from trends."""
+    @patch("app.services.spending_trend_service.date")
+    def test_excludes_deleted(self, mock_date, app, seed_user, db):
+        """Soft-deleted transactions are excluded."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            for p in window[:3]:
+                _add_txn_with_status(
+                    db.session, seed_user, p, "Deleted Car", "500.00",
+                    StatusEnum.DONE, category_key="Car Payment", is_deleted=True,
                 )
-            _add_txn_with_status(
-                db.session, seed_user, periods[0], "Deleted Car",
-                "350.00", StatusEnum.DONE,
-                category_key="Car Payment", is_deleted=True,
-            )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            car_items = [i for i in result.all_items if i.item_name == "Car Payment"]
-            assert len(car_items) == 0
+            assert _item(result, "Car Payment") is None
 
-    def test_excludes_cancelled(self, app, seed_user, db):
-        """Cancelled transactions excluded (not a settled status)."""
+    @patch("app.services.spending_trend_service.date")
+    def test_excludes_cancelled(self, mock_date, app, seed_user, db):
+        """Cancelled transactions are excluded (not a settled status)."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for p in periods:
-                _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
+            window = _seed_window(db.session, seed_user)
+            _fill(db.session, seed_user, window, "Rent", ["1200.00"] * _N_WINDOW)
+            for p in window[:3]:
+                _add_txn_with_status(
+                    db.session, seed_user, p, "Cancelled Car", "500.00",
+                    StatusEnum.CANCELLED, category_key="Car Payment",
                 )
-            _add_txn_with_status(
-                db.session, seed_user, periods[0], "Cancelled Car",
-                "350.00", StatusEnum.CANCELLED,
-                category_key="Car Payment",
-            )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            car_items = [i for i in result.all_items if i.item_name == "Car Payment"]
-            assert len(car_items) == 0
+            assert _item(result, "Car Payment") is None
 
 
 # ── OP-3: Average Days Before Due ───────────────────────────────────
@@ -862,82 +887,67 @@ class TestFilters:
 class TestAvgDaysBeforeDue:
     """Tests for the OP-3 avg_days_before_due metric."""
 
-    def test_avg_days_before_due_early(self, app, seed_user, db):
-        """All txns paid 3 days before due -> avg_days_before_due=3."""
+    @patch("app.services.spending_trend_service.date")
+    def test_avg_days_before_due_early(self, mock_date, app, seed_user, db):
+        """All txns paid 3 days before due -> avg_days_before_due == 3.00."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for p in periods:
+            window = _seed_window(db.session, seed_user)
+            for p in window:
                 due = p.start_date
                 paid = datetime(
-                    due.year, due.month, due.day,
-                    tzinfo=timezone.utc,
-                ) - __import__("datetime").timedelta(days=3)
+                    due.year, due.month, due.day, tzinfo=timezone.utc,
+                ) - timedelta(days=3)
                 _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
-                    due_date=due, paid_at=paid,
+                    db.session, seed_user, p, "Rent", "1200.00",
+                    category_key="Rent", due_date=due, paid_at=paid,
                 )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            item = next(i for i in result.all_items if i.item_name == "Rent")
+            item = _item(result, "Rent")
             assert item.avg_days_before_due == Decimal("3.00")
 
-    def test_avg_days_before_due_late(self, app, seed_user, db):
-        """All txns paid 2 days after due -> avg_days_before_due=-2."""
+    @patch("app.services.spending_trend_service.date")
+    def test_avg_days_before_due_late(self, mock_date, app, seed_user, db):
+        """All txns paid 2 days after due -> avg_days_before_due == -2.00."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            for p in periods:
+            window = _seed_window(db.session, seed_user)
+            for p in window:
                 due = p.start_date
                 paid = datetime(
-                    due.year, due.month, due.day,
-                    tzinfo=timezone.utc,
-                ) + __import__("datetime").timedelta(days=2)
+                    due.year, due.month, due.day, tzinfo=timezone.utc,
+                ) + timedelta(days=2)
                 _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
-                    due_date=due, paid_at=paid,
+                    db.session, seed_user, p, "Rent", "1200.00",
+                    category_key="Rent", due_date=due, paid_at=paid,
                 )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            item = next(i for i in result.all_items if i.item_name == "Rent")
+            item = _item(result, "Rent")
             assert item.avg_days_before_due == Decimal("-2.00")
 
-    def test_avg_days_before_due_no_data(self, app, seed_user, db):
-        """Txns without paid_at -> avg_days_before_due=None."""
+    @patch("app.services.spending_trend_service.date")
+    def test_avg_days_before_due_no_data(self, mock_date, app, seed_user, db):
+        """Txns without paid_at -> avg_days_before_due is None."""
+        _patch_today(mock_date)
         with app.app_context():
-            periods = _generate_periods(
-                db.session, seed_user["user"].id, date(2025, 6, 6), 16,
-            )
-            seed_user["account"].current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            # No paid_at set -> days_paid_before_due returns None.
-            for p in periods:
+            window = _seed_window(db.session, seed_user)
+            for p in window:
                 _add_paid_expense(
-                    db.session, seed_user, p, "Rent",
-                    "1200.00", category_key="Rent",
-                    paid_at=None,
+                    db.session, seed_user, p, "Rent", "1200.00",
+                    category_key="Rent", paid_at=None,
                 )
             db.session.commit()
 
             result = spending_trend_service.compute_trends(
                 user_id=seed_user["user"].id,
             )
-            item = next(i for i in result.all_items if i.item_name == "Rent")
+            item = _item(result, "Rent")
             assert item.avg_days_before_due is None

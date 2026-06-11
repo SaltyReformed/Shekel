@@ -341,7 +341,7 @@ class TestTransactionDoubleSubmit:
                 "account_id": str(seed_user["account"].id),
             }
             resp2 = auth_client.post("/transactions", data=invalid_data)
-            assert resp2.status_code == 400
+            assert resp2.status_code == 422
 
             # Database has exactly 1 transaction -- the valid one.
             db.session.expire_all()
@@ -374,7 +374,7 @@ class TestTransactionDoubleSubmit:
                 "account_id": str(seed_user["account"].id),
             }
             resp1 = auth_client.post("/transactions", data=invalid_data)
-            assert resp1.status_code == 400
+            assert resp1.status_code == 422
 
             # Second submit -- valid.
             valid_data = {
@@ -460,11 +460,15 @@ class TestPayPeriodGenerationIdempotency:
                 assert period.end_date == expected_start + timedelta(days=14 * i + 13)
 
     def test_double_submit_pay_period_generate_overlapping_range(self, app, db, bare_user):
-        """Generating periods with an overlapping date range deduplicates overlap.
+        """Re-generating with an overlapping ON-GRID tail deduplicates the overlap.
 
-        First batch: 10 periods starting 2026-06-01 (covers through ~2026-08-30).
-        Second batch: 10 periods starting 2026-08-03 (overlaps with tail of first).
-        Overlapping start dates are skipped; non-overlapping ones are appended.
+        First batch: 10 periods starting 2026-06-01 (through 2026-10-05).
+        Second batch: 10 periods starting 2026-08-10 -- an existing payday on
+        the same biweekly grid, so the first 5 dates duplicate the first
+        batch's tail (skipped) and the last 5 fall AFTER 2026-10-05, extending
+        the schedule forward.  The start MUST be on the existing grid: an
+        off-grid start would interleave and is rejected by the forward-only
+        invariant (DH-#39), covered separately in test_pay_period_service.
         """
         from app.services import pay_period_service
         from datetime import date as dt_date, timedelta
@@ -485,14 +489,15 @@ class TestPayPeriodGenerationIdempotency:
 
             # Compute which start dates from batch 2 overlap with batch 1.
             batch1_starts = {dt_date(2026, 6, 1) + timedelta(days=14 * i) for i in range(10)}
-            batch2_starts = {dt_date(2026, 8, 3) + timedelta(days=14 * i) for i in range(10)}
+            batch2_starts = {dt_date(2026, 8, 10) + timedelta(days=14 * i) for i in range(10)}
             overlapping = batch1_starts & batch2_starts
+            assert overlapping  # the on-grid tail genuinely overlaps
             expected_new = len(batch2_starts - batch1_starts)
 
-            # Second generation: 10 periods starting 2026-08-03.
+            # Second generation: 10 periods starting 2026-08-10 (on-grid).
             periods2 = pay_period_service.generate_pay_periods(
                 user_id=user_id,
-                start_date=dt_date(2026, 8, 3),
+                start_date=dt_date(2026, 8, 10),
                 num_periods=10,
                 cadence_days=14,
             )

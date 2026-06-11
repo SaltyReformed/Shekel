@@ -30,7 +30,7 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.ref import Status
 from app.services import credit_workflow, transaction_service, transfer_service
-from app.services.state_machine import verify_transition
+from app.services.state_machine import finalised_edit_rejection, verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
 from app.routes.transactions._bp import transactions_bp
@@ -47,6 +47,53 @@ from app.routes.transactions._helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Money / period / category / due-date fields that the finalised-row edit
+# lock (#26) protects.  Names match :class:`TransactionUpdateSchema` (the
+# loaded ``data`` dict for both the regular and the transfer-shadow PATCH
+# paths).  Display fields (``notes``, ``name``) and the ad-hoc visibility
+# flags stay editable on a finalised row; the ``status_id`` transition is
+# guarded separately by :func:`verify_transition`.
+_LOCKED_EDIT_FIELDS = frozenset({
+    "estimated_amount", "actual_amount", "category_id",
+    "pay_period_id", "due_date",
+})
+
+
+def _finalised_edit_response(txn, data):
+    """Reject locked-field edits on a finalised (is_immutable) transaction.
+
+    Looks up the current and (if the PATCH transitions status) the new
+    :class:`Status` BEFORE the caller's ``setattr`` loop dirties the
+    session -- matching :func:`_resolve_status_change`'s autoflush-safe
+    ordering -- and defers the policy decision to
+    :func:`finalised_edit_rejection`.  Applies to the regular edit path
+    and the transfer-shadow path (the shadow's status mirrors its
+    parent transfer's, Invariant 3), the two user edit entry points;
+    the system mutation paths (recurrence, carry-forward, mark-done,
+    cancel) deliberately bypass this lock.
+
+    Args:
+        txn: The Transaction (or transfer shadow) being edited.
+        data: The schema-loaded PATCH payload (``version_id`` already
+            popped by the caller).
+
+    Returns:
+        A ``(message, 400)`` Flask response tuple when a locked field is
+        edited on a finalised row not being reverted to a mutable
+        status, or ``None`` when the edit may proceed.
+    """
+    if not _LOCKED_EDIT_FIELDS & data.keys():
+        return None
+    current_status = db.session.get(Status, txn.status_id)
+    new_status = (
+        db.session.get(Status, data["status_id"])
+        if "status_id" in data else None
+    )
+    message = finalised_edit_rejection(
+        current_status, new_status, context="transaction",
+    )
+    return (message, 400) if message is not None else None
 
 
 def _apply_shadow_update(txn, txn_id, data):
@@ -69,8 +116,13 @@ def _apply_shadow_update(txn, txn_id, data):
     Returns:
         A Flask response tuple: the updated cell + ``balanceChanged`` on
         success, a 409 conflict cell on a concurrent commit, or a 400
-        when the transfer service rejects the change.
+        when the transfer service rejects the change or the shadow's
+        parent transfer is finalised (#26).
     """
+    finalised_error = _finalised_edit_response(txn, data)
+    if finalised_error is not None:
+        return finalised_error
+
     # Map transaction field names to transfer service kwargs.
     svc_kwargs = {}
     if "estimated_amount" in data:
@@ -194,11 +246,21 @@ def _apply_regular_update(txn, txn_id, data):
         A Flask response tuple: the updated cell + ``gridRefresh`` (on a
         period move) or ``balanceChanged`` on success, a 409 conflict
         cell on a concurrent commit, or a 400 on a rejected status
-        change, the income purchase-tracking guard, or a bad FK.
+        change, a locked-field edit of a finalised row (#26), the income
+        purchase-tracking guard, or a bad FK.
     """
     revert_paid_at, status_error = _resolve_status_change(txn, data)
     if status_error is not None:
         return status_error
+
+    # Finalised-row edit lock (#26): a Paid/Received/Settled/Credit/
+    # Cancelled row's money/period/category/due-date fields cannot be
+    # rewritten unless this same request reverts it to Projected.  Runs
+    # after the transition guard (so an illegal status change reports its
+    # own message first) and before the setattr loop.
+    finalised_error = _finalised_edit_response(txn, data)
+    if finalised_error is not None:
+        return finalised_error
 
     # Purchase tracking is expense-only.  The popover only renders the
     # is_envelope checkbox for ad-hoc expense rows, but guard the route
@@ -309,7 +371,7 @@ def update_transaction(txn_id):
     # Parse and validate input.
     errors = _update_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 400
+        return jsonify(errors=errors), 422
 
     data = _update_schema.load(request.form)
 
@@ -536,10 +598,12 @@ def mark_done(txn_id):
     actual_amount from the entry sum.  For all others, accepts an
     optional actual_amount from the form -- parsed via
     :class:`MarkDoneSchema` so a malformed numeric value returns a
-    clean 400 with the Marshmallow per-field message instead of the
+    clean 422 with the Marshmallow per-field message instead of the
     legacy ``"Invalid actual amount"`` translation, and a negative
     value is rejected at the schema tier (commit C-27 / F-042 /
-    F-162 of the 2026-04-15 security remediation plan).
+    F-162 of the 2026-04-15 security remediation plan).  422 (not 400)
+    is the validation-error status the entry routes and
+    ``coding-standards.md`` mandate (DH-#81).
 
     Optimistic locking (commit C-18 / F-010): the button-click path
     has no form-side ``version_id`` to compare, so the optimistic
@@ -562,7 +626,7 @@ def mark_done(txn_id):
     try:
         mark_done_data = _mark_done_schema.load(request.form)
     except MarshmallowValidationError as exc:
-        return jsonify(errors=exc.messages), 400
+        return jsonify(errors=exc.messages), 422
     actual_amount = mark_done_data.get("actual_amount")
 
     # Rendering surface for the response.  The mobile / companion card

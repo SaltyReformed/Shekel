@@ -61,6 +61,34 @@ def select_option_values(html: str, select_key: str) -> list[str]:
     )
 
 
+def field_is_disabled(html: str, field_name: str) -> bool:
+    """Return True if the ``<input>``/``<select>`` named ``field_name`` is disabled.
+
+    Slices from the ``name="<field_name>"`` attribute to the end of that
+    opening tag (the next ``>``) and reports whether the ``disabled``
+    attribute appears there.  The grid edit popovers append ``disabled``
+    after ``name=`` on a finalised row's locked money / period / category
+    / due-date fields (#26), so this distinguishes a locked field from the
+    still-editable Status dropdown and Notes input in the same form.
+
+    Args:
+        html: The full HTML response body to search.
+        field_name: The ``name`` attribute of the input/select to inspect.
+
+    Returns:
+        True when the named field's opening tag carries ``disabled``.
+
+    Raises:
+        AssertionError: The field is absent, so a typo'd name fails loud
+            rather than silently reporting an editable field as locked.
+    """
+    marker = f'name="{field_name}"'
+    idx = html.find(marker)
+    assert idx != -1, f"{marker} not found in rendered HTML"
+    tag_end = html.find(">", idx)
+    return "disabled" in html[idx:tag_end]
+
+
 def freeze_today(monkeypatch, target_date, modules=None):
     """Patch ``date.today()`` and ``datetime.now()`` to ``target_date``.
 
@@ -245,6 +273,47 @@ def insert_origination_event(loan_params):
     )
     db.session.add(event)
     return event
+
+
+def insert_origination_rate(loan_params, interest_rate):
+    """Append the origination :class:`RateHistory` row for a loan.
+
+    Mirrors the production-code pattern in
+    :func:`app.routes.loan.create_params` (DH-#56): the loan's base /
+    period-0 rate lives in the :class:`RateHistory` row effective at
+    origination, not the retired ``LoanParams.interest_rate`` column.
+    The resolver raises ``ValueError`` when a loan's rate-change feed is
+    empty (no origination row), so every fixture that builds
+    :class:`LoanParams` directly and then resolves it (loan dashboard,
+    debt strategy, /savings debt card, year-end liability, contractual
+    P&I) MUST call this helper after inserting :class:`LoanParams`.
+
+    Args:
+        loan_params: The :class:`LoanParams` ORM instance, already
+            flushed (``loan_params.account_id`` populated).
+        interest_rate: The origination annual rate as a Decimal fraction
+            (e.g. ``Decimal("0.06875")`` for 6.875%).
+
+    Returns:
+        The newly added :class:`RateHistory` instance,
+        ``db.session.add()``'d but not committed.  The caller's existing
+        ``db.session.commit()`` carries the row into the same transaction.
+    """
+    # pylint: disable=import-outside-toplevel  -- avoid module-load
+    # circular deps via models package; tests/_test_helpers loads
+    # early enough that an unconditional top-level import would
+    # snowball into ref_cache / Flask app bootstrapping.
+    from app.extensions import db
+    from app.models.loan_features import RateHistory
+
+    row = RateHistory(
+        account_id=loan_params.account_id,
+        effective_date=loan_params.origination_date,
+        interest_rate=interest_rate,
+        monthly_pi=None,
+    )
+    db.session.add(row)
+    return row
 
 
 def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):

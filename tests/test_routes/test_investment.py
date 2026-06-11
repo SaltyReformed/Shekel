@@ -6,6 +6,7 @@ import json
 import re
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 from app import ref_cache
 from app.enums import (
@@ -20,6 +21,7 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.services import account_service, investment_dashboard_service
+from tests._test_helpers import freeze_today
 
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
@@ -160,7 +162,7 @@ class TestContributionLimitZeroCap:
         assert result == {
             "limit": Decimal("0"),
             "ytd": Decimal("100.00"),
-            "pct": 100,
+            "pct": Decimal("100"),
         }
 
     def test_limit_info_zero_cap_zero_ytd_is_zero_used(self):
@@ -177,7 +179,7 @@ class TestContributionLimitZeroCap:
         assert result == {
             "limit": Decimal("0"),
             "ytd": Decimal("0"),
-            "pct": 0,
+            "pct": Decimal("0"),
         }
 
     def test_limit_info_none_cap_hides_card(self):
@@ -194,6 +196,27 @@ class TestContributionLimitZeroCap:
         )
         assert result is None
 
+    def test_limit_info_positive_cap_rounds_half_up(self):
+        """Positive cap -> pct rounds the YTD ratio HALF_UP via percent_complete.
+
+        $4,980 / $5,000 = 99.6%.  deep-quality-hunt #78 routed the
+        ``limit > 0`` branch through ``money.percent_complete`` (clamped
+        [0, 100], ROUND_HALF_UP, Decimal), retiring the prior
+        ``min(100, int(...))`` truncation that disagreed with the budget
+        dashboard's "percent funded" surfaces.  So pct is ``Decimal("99.60")``
+        (the template renders ``"{:.0f}".format(...)`` -> "100%"), NOT the
+        old truncated ``99``.  Revert-proof: ``int(99.6) == 99`` fails this.
+        """
+        params = InvestmentParams(annual_contribution_limit=Decimal("5000"))
+        result = investment_dashboard_service._compute_limit_info(
+            params, Decimal("4980.00"),
+        )
+        assert result == {
+            "limit": Decimal("5000"),
+            "ytd": Decimal("4980.00"),
+            "pct": Decimal("99.60"),
+        }
+
     def test_suggested_contribution_zero_cap_is_zero(self):
         """Zero cap -> $0.00 per-period suggestion, never a phantom default.
 
@@ -204,7 +227,7 @@ class TestContributionLimitZeroCap:
         """
         params = InvestmentParams(annual_contribution_limit=Decimal("0"))
         result = investment_dashboard_service._compute_suggested_contribution(
-            params, Decimal("0"), [],
+            params, Decimal("0"), [], None,
         )
         assert result == Decimal("0.00")
 
@@ -218,9 +241,79 @@ class TestContributionLimitZeroCap:
         """
         params = InvestmentParams(annual_contribution_limit=None)
         result = investment_dashboard_service._compute_suggested_contribution(
-            params, Decimal("0"), [],
+            params, Decimal("0"), [], None,
         )
         assert result == Decimal("0")
+
+    def test_suggested_contribution_excludes_current_period_from_remaining(
+        self, monkeypatch,
+    ):
+        """remaining_periods is anchored on current_period, not date.today().
+
+        deep-quality-hunt #59: the YTD subtracted from the limit is summed
+        over periods ``<= current_period.start_date``
+        (``investment_projection._current_year_period_ids``), so the
+        per-period suggestion must spread the remainder over the periods
+        STRICTLY AFTER the current period -- else the current period is
+        double-counted (in YTD *and* in the remaining spread) on the single
+        calendar day a period begins (``today == period start``).  Four
+        same-year periods (Jan 1/15/29, Feb 12), current = the Jan 15 period,
+        with today frozen to Jan 15 (the period-start edge that triggered the
+        old bug): $7,000 limit - $3,000 YTD = $4,000 spread over the two
+        strictly-after periods (Jan 29, Feb 12) = $2,000.00.  Revert-proof:
+        the old ``start_date >= date.today()`` window includes the Jan 15
+        current period (3 periods) -> $1,333.33.
+        """
+        freeze_today(
+            monkeypatch, date(2026, 1, 15),
+            modules=("app.services.investment_dashboard_service",),
+        )
+        periods = [
+            SimpleNamespace(start_date=date(2026, 1, 1)),
+            SimpleNamespace(start_date=date(2026, 1, 15)),
+            SimpleNamespace(start_date=date(2026, 1, 29)),
+            SimpleNamespace(start_date=date(2026, 2, 12)),
+        ]
+        current_period = periods[1]
+        params = InvestmentParams(annual_contribution_limit=Decimal("7000"))
+        result = investment_dashboard_service._compute_suggested_contribution(
+            params, Decimal("3000"), periods, current_period,
+        )
+        # 7000 - 3000 = 4000; periods strictly after Jan 15 = {Jan 29,
+        # Feb 12} = 2; 4000 / 2 = 2000.00 (NOT the old 4000 / 3 = 1333.33).
+        assert result == Decimal("2000.00")
+
+    def test_suggested_contribution_mid_period_today_is_behaviour_neutral(
+        self, monkeypatch,
+    ):
+        """Anchoring on current_period leaves the typical case unchanged.
+
+        deep-quality-hunt #59: when today falls strictly inside the current
+        period (the common case), no period starts in (current.start, today],
+        so the current-period boundary (``> current.start``) and the old
+        today boundary (``>= today``) select the SAME set -- the fix is
+        behaviour-neutral here.  Same four periods, current = Jan 15, but
+        today frozen to Jan 22 (mid-period): both windows yield the two
+        strictly-after periods, so the suggestion is $2,000.00, identical to
+        what the old ``>= today`` rule produced.
+        """
+        freeze_today(
+            monkeypatch, date(2026, 1, 22),
+            modules=("app.services.investment_dashboard_service",),
+        )
+        periods = [
+            SimpleNamespace(start_date=date(2026, 1, 1)),
+            SimpleNamespace(start_date=date(2026, 1, 15)),
+            SimpleNamespace(start_date=date(2026, 1, 29)),
+            SimpleNamespace(start_date=date(2026, 2, 12)),
+        ]
+        current_period = periods[1]
+        params = InvestmentParams(annual_contribution_limit=Decimal("7000"))
+        result = investment_dashboard_service._compute_suggested_contribution(
+            params, Decimal("3000"), periods, current_period,
+        )
+        # 4000 spread over {Jan 29, Feb 12} = 2 -> 2000.00 (same as old).
+        assert result == Decimal("2000.00")
 
 
 class TestInvestmentParams:
@@ -1960,7 +2053,7 @@ class TestProjectionNoCurrentPeriodDoubleCount:
         """Seed a PROJECTED transfer into the investment account in *period*.
 
         A projected shadow income is BOTH counted in the entries-aware
-        end-of-current balance (``balance_calculator._sum_projected``) and
+        end-of-current balance (``balance_calculator.sum_projected``) and
         re-applied by the growth-engine timeline -- the exact double-count
         the seed correction removes.
         """

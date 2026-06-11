@@ -42,17 +42,35 @@ class FakeDeduction:
 
 @dataclass
 class FakeStatus:
-    """Minimal status stub for contribution filtering."""
+    """Minimal ``ref.Status`` stub for contribution filtering and timeline confirmation."""
     excludes_from_balance: bool = False
     is_settled: bool = False
 
 
 @dataclass
 class FakeContribution:
-    """Shadow income transaction representing a contribution (transfer into account)."""
+    """Shadow income transaction representing a contribution (transfer into account).
+
+    Mirrors the real ``Transaction`` amount accessors: ``effective_amount``
+    is the realized ``actual_amount`` when populated, else
+    ``estimated_amount`` -- the same rule the model property applies for an
+    active row, which is all this fake represents (the contribution feeds
+    filter cancelled/credit/deleted rows out via
+    ``status_contributes_to_balance`` before reading the amount).  A settled
+    shadow whose actual differs from its estimate is the deep-quality-hunt
+    #11 case the inputs builder must read off ``effective_amount``.
+    """
     estimated_amount: Decimal
     pay_period_id: int
     status: FakeStatus = field(default_factory=FakeStatus)
+    actual_amount: Decimal | None = None
+
+    @property
+    def effective_amount(self) -> Decimal:
+        """Realized actual when populated, else the estimate (model parity)."""
+        if self.actual_amount is not None:
+            return self.actual_amount
+        return self.estimated_amount
 
 
 @dataclass
@@ -551,19 +569,156 @@ class TestCalculateInvestmentInputs:
         assert result.ytd_contributions == Decimal("0")
 
 
+class TestEstimatedVsEffectiveAlignment:
+    """deep-quality-hunt #11: the inputs builder reads effective_amount.
+
+    A transfer shadow's ``actual_amount`` is normally ``None`` (so
+    ``effective_amount == estimated_amount``), but
+    ``transfer_service._apply_actual_amount`` sets a realized actual on
+    both shadows when a transfer is settled with a manual amount (the
+    ``Transfer`` parent has no ``actual_amount`` column).  Once that
+    happens, ``effective_amount`` (= actual) diverges from
+    ``estimated_amount``.  The per-period timeline
+    (``build_contribution_timeline``) applies ``effective_amount``, so the
+    averaged periodic contribution and the YTD-seed/limit accounting must
+    read ``effective_amount`` too -- otherwise the cap/limit math reads a
+    different dollar than the growth engine actually applies.  These tests
+    pin that alignment; they were proven to fail when the feeds summed
+    ``estimated_amount``.
+    """
+
+    @staticmethod
+    def _params(limit=None):
+        return FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=limit,
+            employer_contribution_type_id=_emp_type_id(
+                EmployerContributionTypeEnum.NONE,
+            ),
+        )
+
+    def test_periodic_contribution_uses_effective_not_estimated(self):
+        """A settled shadow's realized actual drives the averaged contribution.
+
+        One settled contribution, estimated $500 but actual $400
+        (effective $400), in one period -> per-period average $400.
+        Summing estimated_amount (the pre-#11 bug) would yield $500.
+        """
+        settled = FakeStatus(is_settled=True)
+        contributions = [
+            FakeContribution(
+                estimated_amount=Decimal("500"), actual_amount=Decimal("400"),
+                pay_period_id=1, status=settled,
+            ),
+        ]
+        current_period = FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)
+        result = calculate_investment_inputs(
+            investment_params=self._params(), deductions=[],
+            all_contributions=contributions, all_periods=[current_period],
+            current_period=current_period,
+        )
+        # effective $400 / 1 period = $400 (NOT estimated $500).
+        assert result.periodic_contribution == Decimal("400")
+
+    def test_over_contribution_actual_above_estimate_uses_effective(self):
+        """The realized actual is honored when it EXCEEDS the estimate.
+
+        Symmetric to the under-contribution case: a settled shadow
+        estimated $400 but actual $500 (came in higher than planned)
+        contributes its $500 effective amount -- the direction the annual
+        limit/cap accounting must catch.  Summing estimated_amount (the
+        pre-#11 bug) would under-count it at $400.
+        """
+        settled = FakeStatus(is_settled=True)
+        contributions = [
+            FakeContribution(
+                estimated_amount=Decimal("400"), actual_amount=Decimal("500"),
+                pay_period_id=1, status=settled,
+            ),
+        ]
+        current_period = FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)
+        result = calculate_investment_inputs(
+            investment_params=self._params(limit=Decimal("23500")), deductions=[],
+            all_contributions=contributions, all_periods=[current_period],
+            current_period=current_period,
+        )
+        # effective $500 / 1 period = $500 (NOT estimated $400).
+        assert result.periodic_contribution == Decimal("500")
+        # The displayed YTD (<= current) also reflects the realized $500.
+        assert result.ytd_contributions == Decimal("500")
+
+    def test_ytd_contributions_use_effective_not_estimated(self):
+        """YTD-display and the engine seed both sum effective_amount.
+
+        Three settled 2026 contributions, each estimated $500 but actual
+        $400 (effective $400), current = period 3.  ytd_contributions
+        (<= current) = 3 x $400 = $1,200; ytd_contributions_seed
+        (< current) = 2 x $400 = $800.  Summing estimated_amount (the
+        pre-#11 bug) would give $1,500 / $1,000.
+        """
+        settled = FakeStatus(is_settled=True)
+        periods = [
+            FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
+            FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
+            FakePeriod(id=3, start_date=date(2026, 1, 30), period_index=2),
+        ]
+        contributions = [
+            FakeContribution(
+                estimated_amount=Decimal("500"), actual_amount=Decimal("400"),
+                pay_period_id=pid, status=settled,
+            )
+            for pid in (1, 2, 3)
+        ]
+        result = calculate_investment_inputs(
+            investment_params=self._params(limit=Decimal("23500")), deductions=[],
+            all_contributions=contributions, all_periods=periods,
+            current_period=periods[2],
+        )
+        assert result.ytd_contributions == Decimal("1200")       # <= current (effective)
+        assert result.ytd_contributions_seed == Decimal("800")   # < current (effective)
+
+    def test_inputs_average_and_timeline_agree_on_effective(self):
+        """The averaged inputs feed and the per-period timeline read the same dollar.
+
+        The whole point of #11: build_contribution_timeline applies
+        effective per period, so the periodic-average / YTD-seed feed must
+        use effective too, or the limit/cap accounting reads a different
+        number than the engine applies.  The same $500-estimated /
+        $400-actual settled shadow yields $400 from BOTH feeds.
+        """
+        settled = FakeStatus(is_settled=True)
+        contribution = FakeContribution(
+            estimated_amount=Decimal("500"), actual_amount=Decimal("400"),
+            pay_period_id=1, status=settled,
+        )
+        period = FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)
+        inputs = calculate_investment_inputs(
+            investment_params=self._params(), deductions=[],
+            all_contributions=[contribution], all_periods=[period],
+            current_period=period,
+        )
+        timeline = build_contribution_timeline(
+            deductions=[], contribution_transactions=[contribution], periods=[period],
+        )
+        # Both feeds read effective_amount ($400), so they agree.
+        assert inputs.periodic_contribution == Decimal("400")
+        assert len(timeline) == 1
+        assert timeline[0].amount == Decimal("400")
+        assert inputs.periodic_contribution == timeline[0].amount
+
+
 # ── Fake Objects for build_contribution_timeline ──────────────
 
 
 @dataclass
-class FakeStatus:
-    """Mimics ref.Status model for testing."""
-    is_settled: bool
-    excludes_from_balance: bool = False
-
-
-@dataclass
 class FakeContribTransaction:
-    """Shadow income transaction with status for timeline tests."""
+    """Shadow income transaction with status for timeline tests.
+
+    Carries ``effective_amount`` as a pre-resolved field because the
+    timeline only ever reads the resolved value; unlike
+    :class:`FakeContribution` (the inputs-builder fake) it does NOT derive
+    it from ``estimated_amount`` / ``actual_amount``.
+    """
     effective_amount: Decimal
     pay_period_id: int
     status: FakeStatus

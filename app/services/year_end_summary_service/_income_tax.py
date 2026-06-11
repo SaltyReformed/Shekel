@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import load_tax_configs_for_year
 
 ZERO = Decimal("0")
 
@@ -83,9 +83,9 @@ def _compute_profile_breakdowns(
 ) -> list:
     """Run the paycheck calculator for one profile across all periods.
 
-    Loads tax configs for the target year with a fallback to the
-    current year if the target year has no configs (follows the
-    recurrence_engine.py pattern).
+    Loads tax configs for the target year (current-year fallback when the
+    target year has no configs) via the shared ``load_tax_configs_for_year``
+    SSOT (DH-#30).
 
     Args:
         user_id: User ID for tax config lookup.
@@ -96,9 +96,11 @@ def _compute_profile_breakdowns(
     Returns:
         List of PaycheckBreakdown from project_salary.
     """
-    tax_configs = load_tax_configs(user_id, profile, tax_year=year)
-    if all(v is None for v in tax_configs.values()):
-        tax_configs = load_tax_configs(user_id, profile)
+    # Single target year: every period in ``periods`` is in ``year``, so a
+    # single config set is correct.  The per-year + current-year fallback
+    # rule is owned by load_tax_configs_for_year, the SSOT shared with the
+    # recurrence engine and the salary projection (DH-#30).
+    tax_configs = load_tax_configs_for_year(user_id, profile, year)
 
     return paycheck_calculator.project_salary(
         profile, periods, tax_configs,

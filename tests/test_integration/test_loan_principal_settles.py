@@ -62,6 +62,7 @@ from app.services import (
     loan_resolver,
     transfer_service,
 )
+from tests._test_helpers import insert_origination_rate
 
 
 # -- Hand-computed reference values -----------------------------------------
@@ -181,7 +182,6 @@ def _create_mortgage(  # pylint: disable=too-many-arguments,too-many-positional-
         account_id=account.id,
         original_principal=original_principal,
         current_principal=current_principal,
-        interest_rate=interest_rate,
         term_months=term_months,
         origination_date=origination_date,
         payment_day=payment_day,
@@ -189,6 +189,7 @@ def _create_mortgage(  # pylint: disable=too-many-arguments,too-many-positional-
     )
     db.session.add(loan_params)
     db.session.flush()
+    insert_origination_rate(loan_params, interest_rate)
 
     origination_event = LoanAnchorEvent(
         account_id=account.id,

@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.utils.money import round_money
+
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
@@ -58,13 +60,11 @@ def calculate_benefit(benefit_multiplier, consecutive_high_years,
         salary_by_year, consecutive_high_years
     )
 
-    annual_benefit = (
+    annual_benefit = round_money(
         benefit_multiplier * years_of_service * high_avg
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-
-    monthly_benefit = (annual_benefit / 12).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP
     )
+
+    monthly_benefit = round_money(annual_benefit / 12)
 
     return PensionBenefit(
         years_of_service=years_of_service,
@@ -144,7 +144,7 @@ def _compute_high_salary_average(salary_by_year, consecutive_high_years):
     for i in range(n - window_size + 1):
         window = salary_by_year[i:i + window_size]
         total = sum(Decimal(str(s)) for _, s in window)
-        avg = (total / window_size).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        avg = round_money(total / window_size)
         if avg > best_avg:
             best_avg = avg
             best_window = window

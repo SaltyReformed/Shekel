@@ -85,7 +85,7 @@
            aria-valuemax="100">
       </div>
     </div>
-    <small class="text-muted">{{ limit_info.pct }}% of annual limit</small>
+    <small class="text-muted">{{ "{:.0f}".format(limit_info.pct) }}% of annual limit</small>
   </div>
 </div>
 {% endif %}

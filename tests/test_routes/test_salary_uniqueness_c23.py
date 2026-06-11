@@ -192,41 +192,6 @@ class TestSalaryRaiseUniqueConstraint:
                 f"constraint={getattr(getattr(excinfo.value.orig, 'diag', None), 'constraint_name', None)!r}"
             )
 
-    def test_duplicate_recurring_raise_with_null_year_rejected(
-        self, app, seed_user, seed_periods,
-    ):
-        """Two recurring raises with NULL year and same (profile, type, month) collide.
-
-        This is the load-bearing assertion for the
-        ``NULLS NOT DISTINCT`` modifier on the constraint: the
-        SQL-standard default treats every NULL as a distinct value,
-        which would let two recurring raises slip through and
-        compound erroneously in the paycheck calculator.
-        """
-        with app.app_context():
-            profile = _create_profile(seed_user)
-            cola = db.session.query(RaiseType).filter_by(name="cola").one()
-            _make_raise(
-                profile, cola, year=None, month=4,
-                percentage="0.025", is_recurring=True,
-            )
-
-            duplicate = SalaryRaise(
-                salary_profile_id=profile.id,
-                raise_type_id=cola.id,
-                effective_month=4,
-                effective_year=None,
-                percentage=Decimal("0.025"),
-                is_recurring=True,
-            )
-            db.session.add(duplicate)
-            with pytest.raises(IntegrityError) as excinfo:
-                db.session.commit()
-            db.session.rollback()
-            assert is_unique_violation(
-                excinfo.value, SALARY_RAISES_UNIQUE,
-            )
-
     def test_distinct_year_or_month_or_type_allowed(
         self, app, seed_user, seed_periods,
     ):

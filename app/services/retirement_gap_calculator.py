@@ -9,14 +9,13 @@ All functions are pure (no DB access) -- data is passed in as arguments.
 
 import logging
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
-from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
+from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
-TWO_PLACES = Decimal("0.01")
 
 
 @dataclass
@@ -89,9 +88,7 @@ def _after_tax_projected_savings(
             traditional_total += bal
         else:
             roth_total += bal
-    return (traditional_total * (1 - estimated_tax_rate) + roth_total).quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP
-    )
+    return round_money(traditional_total * (1 - estimated_tax_rate) + roth_total)
 
 
 def calculate_gap(
@@ -125,9 +122,9 @@ def calculate_gap(
     # Step 1: Pre-retirement net monthly income. Biweekly-to-monthly
     # uses the canonical factors from app.utils.money so this site
     # cannot drift from /obligations and /savings (E-24, HIGH-05).
-    pre_retirement_net_monthly = (
+    pre_retirement_net_monthly = round_money(
         net_biweekly_pay * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    )
 
     # Step 2: Monthly pension income (passed in directly).
 
@@ -135,9 +132,9 @@ def calculate_gap(
     after_tax_monthly_pension = None
     if estimated_tax_rate is not None:
         estimated_tax_rate = Decimal(str(estimated_tax_rate))
-        after_tax_monthly_pension = (
+        after_tax_monthly_pension = round_money(
             monthly_pension_income * (1 - estimated_tax_rate)
-        ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        )
 
     # Step 3: Monthly income gap.
     # Use after-tax pension when available for apples-to-apples comparison
@@ -156,9 +153,9 @@ def calculate_gap(
     # ``MONTHS_PER_YEAR`` annualizes the monthly gap so the SWR (an
     # annual rate) divides into an apples-to-apples figure.
     if safe_withdrawal_rate > 0:
-        required_retirement_savings = (
+        required_retirement_savings = round_money(
             monthly_income_gap * MONTHS_PER_YEAR / safe_withdrawal_rate
-        ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        )
     else:
         required_retirement_savings = ZERO
 

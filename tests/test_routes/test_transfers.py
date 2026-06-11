@@ -21,6 +21,7 @@ from app.models.ref import AccountType, RecurrencePattern, Status
 from app.services import transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
+from tests._test_helpers import field_is_disabled
 
 
 def _create_savings_account(seed_user):
@@ -560,6 +561,60 @@ class TestGridCells:
             assert b"Monthly Savings" in response.data
             assert b'name="amount"' in response.data
 
+    def test_quick_edit_disables_amount_on_finalised_transfer(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The transfer inline quick-edit disables the amount input on a
+        finalised transfer and shows the revert hint (#26)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+
+            resp = auth_client.get(f"/transfers/quick-edit/{xfer.id}")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert field_is_disabled(html, "amount")
+            assert "Finalised" in html
+            assert "autofocus" not in html
+
+    def test_full_edit_locks_money_fields_on_finalised_transfer(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The transfer full-edit disables amount / period / category /
+        due-date on a finalised transfer and shows the revert notice, while
+        the Status dropdown and Notes stay editable (#26)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+
+            resp = auth_client.get(f"/transfers/{xfer.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "This transfer is finalised" in html
+            assert field_is_disabled(html, "amount")
+            assert field_is_disabled(html, "pay_period_id")
+            assert field_is_disabled(html, "category_id")
+            assert field_is_disabled(html, "due_date")
+            assert not field_is_disabled(html, "status_id")
+            assert not field_is_disabled(html, "notes")
+
+    def test_full_edit_editable_on_projected_transfer(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A projected transfer's full-edit money fields stay editable with no
+        finalised notice (no regression)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            resp = auth_client.get(f"/transfers/{xfer.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "finalised" not in html.lower()
+            assert not field_is_disabled(html, "amount")
+
     def test_full_edit_renders_due_date_input_for_transfer_shadow(
         self, app, auth_client, seed_user, seed_periods_today
     ):
@@ -701,6 +756,88 @@ class TestTransferInstance:
 
             db.session.refresh(xfer)
             assert xfer.status.name == "Cancelled"
+
+    def test_finalised_transfer_amount_edit_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH amount on a Paid transfer is refused; amount unchanged (#26).
+
+        A finalised transfer's money fields must not be silently
+        rewritten through the inline edit -- the user reverts to
+        Projected first.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            db.session.refresh(xfer)
+            assert xfer.status.name == "Paid"
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"amount": "999.99"},
+            )
+            assert response.status_code == 400
+            body = response.data.decode()
+            assert "finalised" in body
+            assert "transfer" in body
+
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("200.00")
+
+    def test_finalised_transfer_revert_and_amount_edit_allowed(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Reverting Paid -> Projected AND editing amount in one PATCH is
+        allowed -- the escape hatch the lock preserves (#26)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            projected_id = (
+                db.session.query(Status).filter_by(name="Projected").one().id
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"status_id": str(projected_id), "amount": "250.00"},
+            )
+            assert response.status_code == 200
+            db.session.refresh(xfer)
+            assert xfer.status_id == projected_id
+            assert xfer.amount == Decimal("250.00")
+
+    def test_finalised_transfer_shadow_amount_edit_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Editing a finalised transfer's amount via its SHADOW transaction
+        PATCH is also refused -- the lock covers the transaction-shadow
+        entry point, and the parent amount is unchanged (#26)."""
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .first()
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{shadow.id}",
+                data={"estimated_amount": "999.99"},
+            )
+            assert response.status_code == 400
+            assert "finalised" in response.data.decode()
+
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("200.00")
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert all(s.estimated_amount == Decimal("200.00") for s in shadows)
 
     def test_delete_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transfers/instance/<id> hard-deletes an ad-hoc transfer."""
@@ -852,13 +989,13 @@ class TestAdHoc:
             assert all(s.due_date == date(2026, 3, 15) for s in shadows)
 
     def test_create_ad_hoc_validation_error(self, app, auth_client, seed_user):
-        """POST /transfers/ad-hoc with missing fields returns 400."""
+        """POST /transfers/ad-hoc with missing fields returns 422."""
         with app.app_context():
             response = auth_client.post("/transfers/ad-hoc", data={
                 "name": "Bad Transfer",
             })
 
-            assert response.status_code == 400
+            assert response.status_code == 422
             body = response.get_json()
             assert "errors" in body
 
@@ -1272,7 +1409,7 @@ class TestTransferNegativePaths:
             })
 
             # TransferCreateSchema requires amount > 0 (min_inclusive=False).
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             body = resp.get_json()
             assert "errors" in body
 
@@ -1298,7 +1435,7 @@ class TestTransferNegativePaths:
                 "category_id": str(seed_user["categories"]["Rent"].id),
             })
 
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             body = resp.get_json()
             assert "errors" in body
 

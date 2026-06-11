@@ -515,7 +515,7 @@ def _resolve_transfer_prompt(account):
     }
 
 
-def _build_schedule_tab(planned_schedule, monthly_escrow, base_rate, params):
+def _build_schedule_tab(planned_schedule, monthly_escrow, current_rate, params):
     """Build the amortization-schedule tab's template context.
 
     The planned schedule shows the user's trajectory with confirmed
@@ -538,7 +538,7 @@ def _build_schedule_tab(planned_schedule, monthly_escrow, base_rate, params):
         for row in planned_schedule
     ]
     schedule_row_rates_pct = [
-        (row.interest_rate if row.interest_rate is not None else base_rate)
+        (row.interest_rate if row.interest_rate is not None else current_rate)
         * Decimal("100")
         for row in planned_schedule
     ] if show_rate_column else None
@@ -605,6 +605,18 @@ def dashboard(account_id):
         "params": params,
         "summary": summary,
         "rate_history": ctx.loan.rate_history,
+        # DH-#56: the rate columns the dashboard displays/edits, derived
+        # from the resolver / RateHistory (the retired
+        # ``LoanParams.interest_rate`` is gone).  ``current_rate`` is the
+        # rate in effect today (the card display); ``origination_rate`` is
+        # the loan's earliest RateHistory row -- the period-0 rate the
+        # "Loan Parameters" form edits (and ``update_params`` upserts).
+        # ``rate_history`` is ordered effective_date DESC, so the last
+        # element is the earliest (origination) row; it is guaranteed
+        # non-empty here because ``_load_loan_context`` already resolved
+        # the loan (raising if no origination row exists).
+        "current_rate": ctx.state.current_rate,
+        "origination_rate": ctx.loan.rate_history[-1].interest_rate,
         "monthly_escrow": ctx.loan.monthly_escrow,
         # E-18 / Commit 16: today's ISO date pre-fills the "Record Loan
         # Balance" form's as-of date and caps its ``max``.  Computed here
@@ -620,6 +632,6 @@ def dashboard(account_id):
     ))
     context.update(prompt_context)
     context.update(_build_schedule_tab(
-        planned_schedule, ctx.loan.monthly_escrow, ctx.base_rate, params,
+        planned_schedule, ctx.loan.monthly_escrow, ctx.current_rate, params,
     ))
     return render_template("loan/dashboard.html", **context)

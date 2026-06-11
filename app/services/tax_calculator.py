@@ -15,7 +15,7 @@ Federal withholding follows the IRS Publication 15-T Percentage Method:
 
 import logging
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import TaxTypeEnum
@@ -25,11 +25,11 @@ from app.services.exceptions import (
     InvalidGrossPayError,
     InvalidPayPeriodsError,
 )
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
-TWO_PLACES = Decimal("0.01")
 
 
 # ── Federal Withholding (IRS Pub 15-T Percentage Method) ──────────
@@ -185,9 +185,7 @@ def calculate_federal_withholding(gross_pay, pay_periods, bracket_set, w4=W4Inpu
         annual_tax_after_credits / pay_periods
     ) + w4.extra_withholding
 
-    per_period_withholding = per_period_withholding.quantize(
-        TWO_PLACES, rounding=ROUND_HALF_UP
-    )
+    per_period_withholding = round_money(per_period_withholding)
 
     logger.debug(
         "Step 6 -- per_period_withholding: %s", per_period_withholding
@@ -252,7 +250,7 @@ def _apply_marginal_brackets(taxable_income, brackets):
         if amount_in_bracket > ZERO:
             total_tax += amount_in_bracket * rate
 
-    return total_tax.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    return round_money(total_tax)
 
 
 # ── State Tax ─────────────────────────────────────────────────────
@@ -281,7 +279,7 @@ def calculate_state_tax(annual_gross, state_config):
         std_ded = Decimal(str(getattr(state_config, "standard_deduction", None) or 0))
         taxable = annual_gross - std_ded
         taxable = max(taxable, ZERO)
-        return (taxable * rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        return round_money(taxable * rate)
 
     return ZERO
 
@@ -346,7 +344,7 @@ def capped_social_security(gross, cumulative_wages, fica_config, *, ss_rate=None
         Decimal: SS tax for the period, quantised HALF_UP to two places.
     """
     if fica_config is None:
-        return ZERO.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        return round_money(ZERO)
 
     gross = Decimal(str(gross))
     cumulative = Decimal(str(cumulative_wages))
@@ -358,7 +356,7 @@ def capped_social_security(gross, cumulative_wages, fica_config, *, ss_rate=None
     period_ss = rate * gross
     remaining = statutory_max - rate * cumulative
     capped = max(min(period_ss, remaining), ZERO)
-    return capped.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    return round_money(capped)
 
 
 def calculate_fica(annual_gross, fica_config, cumulative_wages=ZERO):
@@ -389,16 +387,14 @@ def calculate_fica(annual_gross, fica_config, cumulative_wages=ZERO):
     ss_tax = capped_social_security(gross, cumulative, fica_config)
 
     # Medicare -- base rate on all income + surtax above threshold
-    medicare_tax = (gross * medicare_rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    medicare_tax = round_money(gross * medicare_rate)
 
     if cumulative + gross > surtax_threshold:
         if cumulative >= surtax_threshold:
             surtax_income = gross
         else:
             surtax_income = (cumulative + gross) - surtax_threshold
-        medicare_tax += (surtax_income * surtax_rate).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        medicare_tax += round_money(surtax_income * surtax_rate)
 
     total = ss_tax + medicare_tax
     return {"ss": ss_tax, "medicare": medicare_tax, "total": total}

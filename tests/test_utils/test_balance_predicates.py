@@ -30,6 +30,7 @@ API per subsection C; the parity tests cover ``is_balance_contributing``
 and the clause but not the pure-status-equality predicate).
 """
 import ast
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import (
+    attribution_year,
     balance_contributing_clause,
     balance_excluded_status_ids,
     is_balance_contributing,
@@ -880,3 +882,30 @@ class TestJinjaUsesIdsNotNames:
             "Use the ID-based ``STATUS_*`` Jinja globals instead. "
             "Offenders: " + "; ".join(violations)
         )
+
+
+class TestAttributionYear:
+    """Pure pins for ``attribution_year`` (COALESCE(due_date, start).year).
+
+    The single year-bucket rule shared by the year-end spending and
+    transfers sections (#61); ``due_date`` wins when present, else the
+    owning pay period's ``start_date`` is the fallback.
+    """
+
+    def test_due_date_wins_over_period_start(self):
+        """An explicit due_date determines the year, not the period start."""
+        # December-2026 period carrying a January-2027 due_date -> 2027.
+        assert attribution_year(date(2027, 1, 5), date(2026, 12, 20)) == 2027
+
+    def test_due_date_in_earlier_year_than_period(self):
+        """A due_date before the period's year attributes to the earlier year."""
+        # January-2026 period carrying a December-2025 due_date -> 2025.
+        assert attribution_year(date(2025, 12, 30), date(2026, 1, 2)) == 2025
+
+    def test_falls_back_to_period_start_when_no_due_date(self):
+        """With no due_date the period's start_date year is used."""
+        assert attribution_year(None, date(2026, 7, 15)) == 2026
+
+    def test_due_date_same_year_as_period(self):
+        """A same-year due_date and period agree on the year."""
+        assert attribution_year(date(2026, 6, 1), date(2026, 5, 20)) == 2026

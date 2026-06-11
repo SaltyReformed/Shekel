@@ -23,6 +23,7 @@ from app.routes.loan._helpers import (
     _escrow_schema,
     _load_loan_account,
     _rate_schema,
+    _resolve_loan_state,
 )
 from app.services import escrow_calculator
 from app.utils.auth_helpers import require_owner
@@ -52,11 +53,17 @@ def _render_rate_history(account, params):
         .order_by(RateHistory.effective_date.desc())
         .all()
     )
+    # DH-#56: the OOB swap shows the resolver-derived current rate (the
+    # rate in effect today after the just-committed rate history), not the
+    # retired ``LoanParams.interest_rate`` column.  Resolve once here so
+    # the swapped Overview "Interest Rate" reflects the new change.
+    state = _resolve_loan_state(account, params)
     return render_template(
         "loan/_rate_history.html",
         account=account,
         params=params,
         rate_history=rate_history,
+        current_rate=state.current_rate,
     )
 
 
@@ -75,6 +82,25 @@ def add_rate_change(account_id):
 
     data = _rate_schema.load(request.form)
 
+    # A rate change cannot predate origination: period 0 starts at
+    # ``origination_date`` and the origination RateHistory row (DH-#56)
+    # is the loan's base / period-0 rate.  A pre-origination row would
+    # become the earliest entry, displacing the true origination row in
+    # the dashboard's ``origination_rate`` derivation
+    # (``rate_history[-1]``) and in ``_origination_rate``'s ``min()``.
+    # Enforced in the route (not the schema) because the schema has no
+    # access to the loan's origination date -- mirroring the
+    # ``anchor_date >= origination_date`` guard in
+    # :func:`true_up_balance`.  ``effective_date == origination_date``
+    # itself collides with the seeded origination row and is rejected by
+    # the existing same-date unique-constraint path below.
+    if data["effective_date"] < params.origination_date:
+        return (
+            "Rate change effective date cannot be before the loan's "
+            f"origination date ({params.origination_date.isoformat()}).",
+            400,
+        )
+
     # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load`` already
     # converted the form percent to the storage-domain fraction.
 
@@ -87,8 +113,12 @@ def add_rate_change(account_id):
     )
     db.session.add(entry)
 
-    # Also update the current rate on params.
-    params.interest_rate = data["interest_rate"]
+    # DH-#56: the prior ``params.interest_rate = data["interest_rate"]``
+    # mirror-write is gone.  The retired column drifted to the latest
+    # rate on every change (corrupting the resolver's period-0/base rate
+    # for a backdated or out-of-order change); RateHistory is now the
+    # sole source of truth and the resolver derives the current rate from
+    # it, so no scalar needs maintaining here.
     try:
         db.session.commit()
     except IntegrityError as exc:

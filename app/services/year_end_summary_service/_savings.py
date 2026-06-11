@@ -126,7 +126,7 @@ def _savings_progress_for_account(
             account, int_params, scenario, all_periods, year,
         )
         growth_total += _compute_pre_anchor_interest(
-            account, int_params, all_periods, year,
+            account, int_params, scenario, all_periods, year,
         )
     else:
         balances = _base_account_balance_map(account, scenario, all_periods)
@@ -287,12 +287,20 @@ def _derive_investment_jan1(
         p for p in all_periods
         if first_year_idx <= p.period_index <= anchor_idx
     ]
+    # DH-#28: thread the annual contribution limit so the reverse caps each
+    # period exactly as the forward path does; otherwise a maxed-out account's
+    # derived Jan-1 balance is too low.  ytd_contributions_start=ZERO because
+    # reverse_periods begins at the first period of the target year (its YTD is
+    # zero at the year boundary), matching the forward re-projection below which
+    # also seeds ytd_contributions_start=ZERO.
     reversed_proj = growth_engine.reverse_project_balance(
         anchor_balance=anchor_bal,
         assumed_annual_return=investment_params.assumed_annual_return,
         periods=reverse_periods,
         periodic_contribution=proj_inputs.periodic_contribution,
         employer_params=proj_inputs.employer_params,
+        annual_contribution_limit=proj_inputs.annual_contribution_limit,
+        ytd_contributions_start=ZERO,
     )
     return reversed_proj[0].start_balance if reversed_proj else ZERO
 

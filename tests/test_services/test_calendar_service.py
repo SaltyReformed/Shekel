@@ -1147,7 +1147,7 @@ class TestBalanceContributingPredicate:
         Same fixture as C10-2 (Projected $500 + Settled $200 +
         Cancelled $100 + Credit $50 on Jan 5).  The grid period
         subtotal is sourced from
-        ``balance_resolver.period_subtotal``, whose ``_sum_projected``
+        ``balance_resolver.period_subtotal``, whose ``sum_projected``
         helper gates on ``is_projected(txn)`` -- so only the
         Projected $500 expense contributes; Settled, Cancelled, and
         Credit are all excluded.  Hand arithmetic: 500.00.

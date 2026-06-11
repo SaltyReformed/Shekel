@@ -28,9 +28,10 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.ref import FilingStatus, RaiseType, Status, TransactionType
+from app.models.ref import FilingStatus, RaiseType, Status, TaxType, TransactionType
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
+from app.models.tax_config import StateTaxConfig
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
@@ -42,6 +43,7 @@ from app.services import (
     year_end_summary_service,
 )
 from app.services.tax_config_service import load_tax_configs
+from tests._test_helpers import freeze_today
 
 
 # Hand-computed expected values (see module docstring for derivation).
@@ -572,3 +574,90 @@ class TestConsumerIntegration:
             # could drift.
             investment_val = income_service.get_current_gross_biweekly(user_id)
             assert investment_val == canonical
+
+
+class TestLiveProjectedNetUsesPerYearTaxConfigs:
+    """DH-#30: live_projected_net resolves tax configs PER period year.
+
+    The recurrence engine GENERATES the stored grid amount using each
+    period's OWN tax year; the live recompute must resolve the same way or
+    the stored cache and the live value silently disagree -- the exact
+    reconciliation contract live_projected_net advertises.  Pre-fix it
+    loaded a single current-year config set and applied it across the whole
+    ~2-year horizon, so a future-year period was recomputed against the
+    wrong year's tax.
+    """
+
+    def test_future_year_txn_uses_future_year_state_rate(
+        self, app, db, monkeypatch, seed_user, seed_periods_52,
+    ):
+        """A 2027 salary income row recomputes against 2027's state rate.
+
+        Seeds NC flat state tax at different rates for 2026 (3.99%) and
+        2027 (6.00%), then asserts a 2027 period's live net equals the
+        2027-rate projection and differs from the 2026-rate one.  ``today``
+        is frozen to 2026 so the pre-fix single current-year load would
+        have used the 2026 rate -- the revert-proof property (without the
+        freeze, a suite run in 2027 would make the old code pick 2027 by
+        coincidence).
+        """
+        freeze_today(monkeypatch, date(2026, 6, 1))
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            profile = _create_profile(user_id, scenario_id)  # $104k, NC
+            template = _make_salary_template(seed_user, profile)
+
+            flat_type = db.session.query(TaxType).filter_by(name="flat").one()
+            db.session.add_all([
+                StateTaxConfig(
+                    user_id=user_id, state_code="NC", tax_year=2026,
+                    tax_type_id=flat_type.id, flat_rate=Decimal("0.0399"),
+                ),
+                StateTaxConfig(
+                    user_id=user_id, state_code="NC", tax_year=2027,
+                    tax_type_id=flat_type.id, flat_rate=Decimal("0.0600"),
+                ),
+            ])
+            db.session.commit()
+
+            periods = pay_period_service.get_all_periods(user_id)
+            period_2027 = next(
+                (p for p in periods if p.start_date.year == 2027), None,
+            )
+            assert period_2027 is not None, "seed_periods_52 must reach 2027"
+            txn = _make_txn(
+                seed_user, period_2027, template=template,
+                estimated_amount="1.00",
+            )
+            db.session.commit()
+
+            # Engine-faithful expectations that isolate WHICH year's rate
+            # was applied (the resolution under test, not the paycheck
+            # math): project the same periods with one year's config set at
+            # a time and read the 2027 period's net from each.
+            net_2027_rate = {
+                bd.period.period_id: bd.earnings.net_pay
+                for bd in paycheck_calculator.project_salary(
+                    profile, periods,
+                    load_tax_configs(user_id, profile, tax_year=2027),
+                    calibration=profile.calibration,
+                )
+            }[period_2027.id]
+            net_2026_rate = {
+                bd.period.period_id: bd.earnings.net_pay
+                for bd in paycheck_calculator.project_salary(
+                    profile, periods,
+                    load_tax_configs(user_id, profile, tax_year=2026),
+                    calibration=profile.calibration,
+                )
+            }[period_2027.id]
+            # The two state rates genuinely diverge, so the test cannot
+            # pass vacuously.
+            assert net_2027_rate != net_2026_rate
+
+            overrides = income_service.live_projected_net(
+                user_id, scenario_id, [txn],
+            )
+            assert overrides[txn.id] == net_2027_rate
+            assert overrides[txn.id] != net_2026_rate

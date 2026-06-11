@@ -13,16 +13,24 @@ of the 2026-04-15 security remediation plan:
   * F-035 (CWE-613): ``PERMANENT_SESSION_LIFETIME`` defaulted to
     Flask's 31-day fallback.  Closed by an explicit 12-hour default
     in ``BaseConfig`` (env-overridable via ``SESSION_LIFETIME_HOURS``).
+    Note this cap only bites on a ``permanent`` session; the app
+    keeps sessions non-permanent so Flask-Login ``strong`` session
+    protection (F-038 / C-07) still wipes the session on identifier
+    drift, so the effective bound on an open session is the idle
+    timeout below.
 
   * F-045 (CWE-306): no step-up re-auth for high-value operations.
     Closed by the ``fresh_login_required`` decorator in
     ``app/utils/auth_helpers.py``, the ``/reauth`` route in
-    ``app/routes/auth.py``, and the eleven high-value routes the
-    decorator is applied to: anchor true-up, inline anchor update,
-    account-edit form (which also accepts anchor_balance), account
-    hard-delete, transaction-template hard-delete, transfer-template
-    hard-delete, companion create / edit / deactivate, FICA config
-    update, state tax config update.
+    ``app/routes/auth.py``, and the high-value routes the decorator
+    is applied to.  The decorated set was later narrowed to the
+    account-control and credential operations -- account hard-delete
+    and companion create / edit / deactivate / reactivate -- after the
+    owner judged step-up on the reversible data edits (anchor balance,
+    account-edit form, state tax / FICA config, recurring
+    transaction- and transfer-template hard-delete) to be friction
+    without a matching benefit for this single-owner, low-sensitivity
+    app.  Those routes remain owner-only via ``@require_owner``.
 
 The tests in this file run against the full Flask app via
 ``test_client`` so that load_user, the before_request hook, the
@@ -228,17 +236,21 @@ class TestC10ConfigDefaults:
         finally:
             _restore_config_module()
 
-    def test_idle_timeout_default_is_30_minutes(self, monkeypatch):
-        """``IDLE_TIMEOUT_MINUTES`` defaults to 30 (F-006).
+    def test_idle_timeout_default_is_12_hours(self, monkeypatch):
+        """``IDLE_TIMEOUT_MINUTES`` defaults to 720 (12h).
 
-        Without this constant, ``_idle_session_is_fresh`` in
-        ``app/__init__.py`` would have no threshold to compare
-        against and the entire idle-timeout check would degrade to
-        "always allow".
+        Widened from the original 30 minutes: this is a single-owner,
+        low-sensitivity budget app, and a short idle window mostly
+        punished the legitimate owner by bouncing them to a full
+        password + MFA login whenever they stepped away from an open
+        tab.  Without this constant, ``_idle_session_is_fresh`` in
+        ``app/__init__.py`` would have no threshold to compare against
+        and the entire idle-timeout check would degrade to "always
+        allow".
         """
         try:
             reloaded = _reload_config_with_clean_env(monkeypatch)
-            assert reloaded.BaseConfig.IDLE_TIMEOUT_MINUTES == 30
+            assert reloaded.BaseConfig.IDLE_TIMEOUT_MINUTES == 720
         finally:
             _restore_config_module()
 
@@ -343,7 +355,7 @@ class TestIdleTimeoutAcceptance:
             )
 
     def test_recent_activity_passes(self, app, client, seed_user):
-        """Activity stamped 1 minute ago still passes the 30-min window.
+        """Activity stamped 1 minute ago still passes the 12-hour window.
 
         Boundary-control: without this test, a regression that always
         rejected (e.g. inverted comparison) would still pass the
@@ -369,15 +381,16 @@ class TestIdleTimeoutRejection:
         """Activity older than IDLE_TIMEOUT_MINUTES bounces to /login.
 
         The canonical F-006 attack: an attacker reaches the
-        unattended browser an hour after the user walked away from
-        their desk.  The session cookie is still cryptographically
-        valid (signature checks out) but ``load_user`` must refuse
-        because the last activity exceeds the 30-min idle window.
+        unattended browser the next day, long after the user walked
+        away from their desk.  The session cookie is still
+        cryptographically valid (signature checks out) but
+        ``load_user`` must refuse because the last activity exceeds
+        the 12-hour idle window.
         """
         with app.app_context():
             _do_login_no_mfa(client)
             stale = (
-                datetime.now(timezone.utc) - timedelta(minutes=31)
+                datetime.now(timezone.utc) - timedelta(hours=13)
             ).isoformat()
             with client.session_transaction() as sess:
                 sess[SESSION_LAST_ACTIVITY_KEY] = stale
@@ -580,29 +593,34 @@ class TestFreshLoginRequiredRedirects:
     """The decorator redirects users with no/old fresh-login stamp."""
 
     def test_high_value_route_with_fresh_session_succeeds(
-        self, app, auth_client, seed_user, seed_periods_today,
+        self, app, auth_client, seed_user,
     ):
-        """A user who just logged in can immediately hit a decorated
-        route without bouncing to /reauth.
+        """A freshly-logged-in user passes a decorated route without
+        bouncing to /reauth.
 
-        This is the test that locks down the auth_client UX: every
-        existing test in the suite that uses auth_client to hit
-        accounts.true_up / inline_anchor / hard_delete / companion
-        management / tax config relies on this being True.
+        Locks down the auth_client UX for the routes that REMAIN
+        step-up gated (account hard-delete, companion management):
+        every suite test that uses auth_client against one of them
+        relies on the login stamp letting the request through.
+        ``hard_delete_account`` always answers with a redirect to the
+        accounts list (delete on success, archive when history exists,
+        or a flash on a blocking dependent), so the decorator passing
+        is proven by the ABSENCE of a /reauth redirect, not a specific
+        2xx.
         """
         with app.app_context():
             account_id = seed_user["account"].id
-            resp = auth_client.patch(
-                f"/accounts/{account_id}/inline-anchor",
-                data={"anchor_balance": "1234.56"},
+            resp = auth_client.post(
+                f"/accounts/{account_id}/hard-delete",
+                follow_redirects=False,
             )
-            # 200 = decorator allowed the request through and the
-            # route returned its happy-path partial.  302 to /reauth
-            # would be a regression of the auth_client UX above.
-            assert resp.status_code == 200, (
-                f"auth_client must succeed on a freshly-stamped "
-                f"session; got {resp.status_code}: "
-                f"{resp.headers.get('Location')!r}"
+            assert resp.status_code == 302, (
+                f"auth_client must reach the route body on a freshly-"
+                f"stamped session; got {resp.status_code}."
+            )
+            assert "/reauth" not in resp.headers.get("Location", ""), (
+                "A freshly-stamped session must not be bounced to "
+                "/reauth on a decorated route."
             )
 
     def test_stale_fresh_login_redirects_to_reauth(
@@ -611,11 +629,10 @@ class TestFreshLoginRequiredRedirects:
         """A session with a stale ``_fresh_login_at`` bounces to /reauth.
 
         The canonical F-045 attack: an attacker hijacks a session
-        cookie that has been idle for 6 minutes (within the 30-min
-        idle window, but past the 5-min fresh-login window).  They
-        try to update the anchor balance.  The decorator must redirect
-        to /reauth so the destructive action requires a fresh password
-        prompt.
+        cookie whose last password entry is older than the 5-minute
+        fresh-login window and tries a destructive operation -- here,
+        permanently deleting an account.  The decorator must redirect
+        to /reauth so the action requires a fresh password prompt.
         """
         with app.app_context():
             account_id = seed_user["account"].id
@@ -626,11 +643,11 @@ class TestFreshLoginRequiredRedirects:
                 sess[FRESH_LOGIN_AT_KEY] = stale
 
             _reset_login_cache()
-            resp = auth_client.patch(
-                f"/accounts/{account_id}/inline-anchor",
-                data={"anchor_balance": "9999.00"},
+            resp = auth_client.post(
+                f"/accounts/{account_id}/hard-delete",
+                follow_redirects=False,
             )
-            # The PATCH carries no ``HX-Request`` header so the
+            # The POST carries no ``HX-Request`` header so the
             # decorator returns a 302 (rather than the HX-Redirect
             # 204).  The location must point at /reauth carrying
             # the original action URL as ``next``.
@@ -638,6 +655,9 @@ class TestFreshLoginRequiredRedirects:
             location = resp.headers.get("Location", "")
             assert "/reauth" in location
             assert "next=" in location
+            # The account must be untouched: the decorator ran before
+            # the route body.
+            assert db.session.get(Account, account_id) is not None
 
     def test_missing_fresh_login_redirects_to_reauth(
         self, app, auth_client, seed_user,
@@ -655,12 +675,13 @@ class TestFreshLoginRequiredRedirects:
                 sess.pop(FRESH_LOGIN_AT_KEY, None)
 
             _reset_login_cache()
-            resp = auth_client.patch(
-                f"/accounts/{account_id}/inline-anchor",
-                data={"anchor_balance": "9999.00"},
+            resp = auth_client.post(
+                f"/accounts/{account_id}/hard-delete",
+                follow_redirects=False,
             )
             assert resp.status_code == 302
             assert "/reauth" in resp.headers.get("Location", "")
+            assert db.session.get(Account, account_id) is not None
 
     def test_companion_reactivate_stale_session_redirects_to_reauth(
         self, app, auth_client, seed_companion,
@@ -714,9 +735,8 @@ class TestFreshLoginRequiredRedirects:
                 sess[FRESH_LOGIN_AT_KEY] = stale
 
             _reset_login_cache()
-            resp = auth_client.patch(
-                f"/accounts/{account_id}/inline-anchor",
-                data={"anchor_balance": "9999.00"},
+            resp = auth_client.post(
+                f"/accounts/{account_id}/hard-delete",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 204, (
@@ -1024,22 +1044,29 @@ class TestInvalidateSessionsDoesNotRefreshFreshLogin:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateAccountIsStepUpGated:
-    """``POST /accounts/<id>`` (the form-edit route) is step-up gated.
+class TestUpdateAccountIsNotStepUpGated:
+    """``POST /accounts/<id>`` (the form-edit route) is NOT step-up gated.
 
-    Distinct from :func:`true_up` and :func:`inline_anchor_update`
-    because all three accept an ``anchor_balance`` write but only
-    the latter two were originally enumerated by the C-10 plan.
-    The C-10 audit follow-up identified ``update_account`` as a
-    third anchor-balance write path; without the decorator a
-    session-hijacker who avoids the inline editors and POSTs the
-    form-edit endpoint instead would sidestep the step-up gate.
+    Step-up was removed from this route (and from the inline anchor
+    editors it shares an ``anchor_balance`` write with): an account
+    edit is a reversible, version-locked change, not a credential
+    operation, so the friction of a 5-minute re-auth window was judged
+    not worth it for this single-owner, low-sensitivity app.  These
+    tests are the regression lock for that decision -- they fail if the
+    decorator is ever re-added.  The route remains owner-only via
+    ``@require_owner``.
     """
 
-    def test_stale_fresh_login_redirects_to_reauth(
+    def test_stale_fresh_login_still_updates(
         self, app, auth_client, seed_user,
     ):
-        """A stale fresh-login bounces /accounts/<id> to /reauth."""
+        """A stale fresh-login no longer blocks /accounts/<id>.
+
+        A session whose last password entry is well past the old
+        5-minute window must update the account normally, NOT bounce
+        to /reauth.  The anchor-balance write the form accepts goes
+        through with it.
+        """
         with app.app_context():
             account_id = seed_user["account"].id
             checking_type = (
@@ -1063,30 +1090,17 @@ class TestUpdateAccountIsStepUpGated:
             )
 
             assert resp.status_code == 302
-            assert "/reauth" in resp.headers.get("Location", "")
+            assert "/reauth" not in resp.headers.get("Location", "")
 
-            # Critical: the anchor balance MUST NOT have been written.
-            # If the decorator ran AFTER the route's body, the balance
-            # would already be updated by the time the redirect was
-            # issued -- a defense-in-depth check that the decorator is
-            # ordered correctly relative to the route handler.
+            # The edit went through despite the stale step-up stamp.
             acct = db.session.get(Account, account_id)
-            assert acct.current_anchor_balance != Decimal("9999.99"), (
-                "Decorator must run BEFORE the route body; got an "
-                "anchor balance that matches the rejected request."
-            )
+            assert acct.name == "Renamed Checking"
+            assert acct.current_anchor_balance == Decimal("9999.99")
 
     def test_fresh_session_succeeds(
         self, app, auth_client, seed_user,
     ):
-        """A fresh session updates the account name normally.
-
-        Control test: locks down the auth_client UX after the
-        decorator addition.  Without this test, a regression that
-        always rejected would still pass the staleness rejection
-        test above (every value would be rejected, including
-        freshly-stamped ones).
-        """
+        """A fresh session updates the account name normally."""
         with app.app_context():
             account_id = seed_user["account"].id
             checking_type = (
@@ -1109,14 +1123,16 @@ class TestUpdateAccountIsStepUpGated:
             assert acct.name == "Primary Checking"
 
 
-class TestHardDeleteTemplateIsStepUpGated:
-    """``POST /templates/<id>/hard-delete`` is step-up gated.
+class TestHardDeleteTemplateIsNotStepUpGated:
+    """``POST /templates/<id>/hard-delete`` is NOT step-up gated.
 
-    Mirrors the protection on
-    :func:`accounts.hard_delete_account` -- both are permanent
-    destruction paths and a session-hijacker should not be able to
-    erase a user's recurring-transaction templates without re-typing
-    a password.
+    Unlike :func:`accounts.hard_delete_account` (which keeps its
+    gate), a recurring-transaction template is a lower-stakes,
+    regenerable object: deleting it only blocks future generation and
+    cannot destroy settled financial history (the route refuses when
+    settled rows exist).  Step-up was therefore removed.  This is the
+    regression lock for that decision; the route stays owner-only via
+    ``@require_owner``.
     """
 
     @staticmethod
@@ -1146,10 +1162,15 @@ class TestHardDeleteTemplateIsStepUpGated:
         db.session.commit()
         return template
 
-    def test_stale_fresh_login_redirects_to_reauth(
+    def test_stale_fresh_login_still_deletes(
         self, app, auth_client, seed_user,
     ):
-        """A stale fresh-login bounces /templates/<id>/hard-delete to /reauth."""
+        """A stale fresh-login no longer blocks the template hard-delete.
+
+        With step-up removed, a session whose last password entry is
+        past the old 5-minute window deletes the template normally
+        (302 to the list, NOT /reauth), and the row is gone.
+        """
         with app.app_context():
             template = self._create_minimal_template(seed_user)
             template_id = template.id
@@ -1166,11 +1187,10 @@ class TestHardDeleteTemplateIsStepUpGated:
                 follow_redirects=False,
             )
             assert resp.status_code == 302
-            assert "/reauth" in resp.headers.get("Location", "")
+            assert "/reauth" not in resp.headers.get("Location", "")
 
-            # Template must still exist -- the decorator ran before
-            # the route body deleted it.
-            assert db.session.get(TransactionTemplate, template_id) is not None
+            # The delete went through despite the stale step-up stamp.
+            assert db.session.get(TransactionTemplate, template_id) is None
 
     def test_fresh_session_succeeds(
         self, app, auth_client, seed_user,
@@ -1189,15 +1209,16 @@ class TestHardDeleteTemplateIsStepUpGated:
             assert db.session.get(TransactionTemplate, template_id) is None
 
 
-class TestHardDeleteTransferTemplateIsStepUpGated:
-    """``POST /transfers/<id>/hard-delete`` is step-up gated.
+class TestHardDeleteTransferTemplateIsNotStepUpGated:
+    """``POST /transfers/<id>/hard-delete`` is NOT step-up gated.
 
-    Mirrors the protection on
-    :func:`templates.hard_delete_template` -- both are permanent
-    destruction paths and the transfer-template variant carries the
-    additional shadow-invariant burden documented in CLAUDE.md, so a
-    session-hijacker triggering it without the user's knowledge
-    would invalidate audit trails the user relies on.
+    Mirrors :func:`templates.hard_delete_template`: a transfer
+    template is a lower-stakes, regenerable object and the route
+    refuses when settled history exists, so step-up was removed.  The
+    shadow invariants documented in CLAUDE.md are still enforced by
+    the transfer service on every delete -- they do not depend on the
+    step-up gate.  This is the regression lock for the removal; the
+    route stays owner-only via ``@require_owner``.
     """
 
     @staticmethod
@@ -1228,10 +1249,15 @@ class TestHardDeleteTransferTemplateIsStepUpGated:
         db.session.commit()
         return template
 
-    def test_stale_fresh_login_redirects_to_reauth(
+    def test_stale_fresh_login_still_deletes(
         self, app, auth_client, seed_user,
     ):
-        """A stale fresh-login bounces /transfers/<id>/hard-delete to /reauth."""
+        """A stale fresh-login no longer blocks the transfer-template delete.
+
+        With step-up removed, a session whose last password entry is
+        past the old 5-minute window deletes the transfer template
+        normally (302 to the list, NOT /reauth), and the row is gone.
+        """
         with app.app_context():
             template = self._create_minimal_transfer_template(seed_user)
             template_id = template.id
@@ -1248,11 +1274,10 @@ class TestHardDeleteTransferTemplateIsStepUpGated:
                 follow_redirects=False,
             )
             assert resp.status_code == 302
-            assert "/reauth" in resp.headers.get("Location", "")
+            assert "/reauth" not in resp.headers.get("Location", "")
 
-            # Transfer template must still exist after the rejected
-            # request.
-            assert db.session.get(TransferTemplate, template_id) is not None
+            # The delete went through despite the stale step-up stamp.
+            assert db.session.get(TransferTemplate, template_id) is None
 
     def test_fresh_session_succeeds(
         self, app, auth_client, seed_user,

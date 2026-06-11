@@ -40,6 +40,7 @@ from app.services.anchor_service import (
     apply_anchor_true_up,
     apply_loan_anchor_true_up,
 )
+from tests._test_helpers import insert_origination_rate
 
 
 def _bump_account_version_outside_session(account_id):
@@ -625,13 +626,14 @@ def _make_loan_account(seed_user, name="Helper Loan",
         account_id=account.id,
         original_principal=Decimal(original_principal),
         current_principal=Decimal(original_principal),
-        interest_rate=Decimal(interest_rate),
         term_months=term_months,
         origination_date=origination_date,
         payment_day=1,
     )
     db.session.add(params)
     db.session.flush()
+
+    insert_origination_rate(params, Decimal(interest_rate))
 
     db.session.add(LoanAnchorEvent(
         account_id=account.id,

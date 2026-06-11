@@ -57,12 +57,14 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-class _GenerationPlan(NamedTuple):
+class GenerationPlan(NamedTuple):
     """Resolved inputs a recurrence generate pass needs after gating.
 
-    Returned by :func:`_resolve_generation_plan` once the cross-user
+    Returned by :func:`resolve_generation_plan` once the cross-user
     ownership check and the rule/ONCE gating have passed, so the caller
-    can proceed straight to model-specific row creation.
+    can proceed straight to model-specific row creation.  Public (no
+    leading underscore) because it is the return contract of the public
+    :func:`resolve_generation_plan`, which the transfer engine consumes.
     """
 
     rule: RecurrenceRule
@@ -70,7 +72,7 @@ class _GenerationPlan(NamedTuple):
     projected_id: int
 
 
-def _resolve_generation_plan(
+def resolve_generation_plan(
     template, periods, scenario_id, effective_from, *, block_message,
 ):
     """Run the shared gating + period-matching preamble for a generate pass.
@@ -81,7 +83,9 @@ def _resolve_generation_plan(
     cross-user ownership check, the rule-present / not-ONCE gating, the
     ``effective_from`` defaulting, and the pattern match.  Centralising
     them guarantees the two engines cannot drift on which periods a rule
-    applies to.
+    applies to.  Public (no leading underscore) because the transfer
+    engine calls it cross-module -- the shared preamble is deliberately
+    part of this module's public surface, like :func:`match_periods`.
 
     Args:
         template: The (Transaction|Transfer)Template to generate from.
@@ -93,7 +97,7 @@ def _resolve_generation_plan(
             calling engine.
 
     Returns:
-        A :class:`_GenerationPlan` when generation should proceed, or
+        A :class:`GenerationPlan` when generation should proceed, or
         ``None`` when ownership fails or the rule is absent / ONCE (every
         caller returns an empty list in the None case).
     """
@@ -121,7 +125,7 @@ def _resolve_generation_plan(
 
     matching_periods = match_periods(rule, pattern_id, periods, effective_from)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    return _GenerationPlan(rule, matching_periods, projected_id)
+    return GenerationPlan(rule, matching_periods, projected_id)
 
 
 def generate_for_template(template, periods, scenario_id, effective_from=None):
@@ -145,8 +149,8 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     # Resolve the shared gating + period-matching preamble: cross-user
     # defense, rule/ONCE gating, effective_from defaulting, and the
     # pattern match.  A None result means generate nothing (ownership
-    # failed, or no rule / ONCE).  See _resolve_generation_plan.
-    plan = _resolve_generation_plan(
+    # failed, or no rule / ONCE).  See resolve_generation_plan.
+    plan = resolve_generation_plan(
         template, periods, scenario_id, effective_from,
         block_message="Blocked cross-user recurrence generation",
     )
@@ -174,7 +178,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         )
 
         # Compute the due date from the rule and period context.
-        due = _compute_due_date(plan.rule, period)
+        due = compute_due_date(plan.rule, period)
 
         # No existing entry -- create a new one.
         txn = Transaction(
@@ -607,11 +611,16 @@ def _match_annual(periods, month, day):
     return matched
 
 
-def _compute_due_date(rule, period):
+def compute_due_date(rule, period):
     """Compute the due_date for a generated transaction.
 
     Derives the calendar date the bill is actually due, using the
     recurrence rule's scheduling day and optional due-day override.
+    Public (no leading underscore): the transfer engine, the transfers
+    preview route, the due-date backfill script, and a data migration all
+    derive a row's due date through this same pure helper, so it is
+    deliberately part of this module's public surface (like
+    :func:`match_periods`) rather than a leading-underscore internal.
 
     Source priority:
       1. rule.due_day_of_month (if set and differs from day_of_month)
@@ -718,15 +727,13 @@ def _get_salary_profile(template_id):
 def _get_transaction_amount(template, salary_profile, period, all_periods):
     """Determine the transaction amount, using paycheck calculator if salary-linked.
 
-    Uses load_tax_configs from the shared tax config service to avoid
-    duplicating query logic.  The tax year is derived from the period's
-    start date so that future-year periods pick up the correct configs.
-
-    When no tax configs exist for a future year, falls back to the
-    current calendar year's configs.  This matches the salary profile
-    page's behavior (which always uses the current year) and prevents
-    a mismatch between the grid's stored income amounts and the salary
-    page's live-calculated net pay.
+    Resolves tax configs for the period's OWN tax year via the shared
+    ``load_tax_configs_for_year`` SSOT (current-year fallback when a future
+    year has no configs at all).  The salary projection page and the
+    live net-pay recompute (``income_service.live_projected_net``) resolve
+    the SAME way (DH-#30), so the grid's stored income amount and the
+    salary page's live-calculated net pay agree on which year's brackets
+    and FICA wage base/cap apply -- they cannot silently diverge.
     """
     if salary_profile is None:
         return template.default_amount
@@ -736,33 +743,25 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
         # SOURCE modules (app.services.tax_config_service.load_tax_configs and
         # app.services.paycheck_calculator.calculate_paycheck -- the
         # testing-standards-preferred patch target).  A module-level
-        # ``from ... import load_tax_configs`` would bind the name once at
-        # import and not see the patch, so this import stays local.
+        # ``from ... import`` would bind the name once at import and not see
+        # the patch, so these imports stay local.
         # Pylint: ``import-outside-toplevel`` -- kept local so the fallback
         # tests' patches of app.services.paycheck_calculator take effect.
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
         # Pylint: ``import-outside-toplevel`` -- kept local so the fallback
         # tests' patches of app.services.tax_config_service.load_tax_configs
-        # take effect.
-        from app.services.tax_config_service import load_tax_configs  # pylint: disable=import-outside-toplevel
+        # take effect (load_tax_configs_for_year calls it internally).
+        from app.services.tax_config_service import load_tax_configs_for_year  # pylint: disable=import-outside-toplevel
 
-        tax_year = period.start_date.year
-        tax_configs = load_tax_configs(
-            salary_profile.user_id, salary_profile, tax_year=tax_year
+        # Resolve the period's own tax year, falling back to the current
+        # year when that year has no configs at all (else future-year
+        # periods would produce zero federal tax and the grid would
+        # disagree with the salary page).  The fallback rule is owned ONCE
+        # by load_tax_configs_for_year, the SSOT shared with the salary
+        # projection and the year-end summary (DH-#30).
+        tax_configs = load_tax_configs_for_year(
+            salary_profile.user_id, salary_profile, period.start_date.year,
         )
-
-        # Fall back to current-year configs when the period's year has
-        # no configs at all.  Without this, future-year periods produce
-        # zero federal tax (bracket_set=None) and the grid shows a
-        # different net pay than the salary profile page.
-        current_year = date.today().year
-        if (tax_year != current_year
-                and tax_configs["bracket_set"] is None
-                and tax_configs["state_config"] is None
-                and tax_configs["fica_config"] is None):
-            tax_configs = load_tax_configs(
-                salary_profile.user_id, salary_profile, tax_year=current_year
-            )
 
         # Load calibration override if the profile has one.
         calibration = getattr(salary_profile, "calibration", None)

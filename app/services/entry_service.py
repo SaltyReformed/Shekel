@@ -40,6 +40,7 @@ from app.utils.balance_predicates import (
 # predicate keeps both the helper accessible and the public
 # function signatures stable.
 from app.utils.balance_predicates import is_credit as txn_is_credit
+from app.utils.entry_partition import partition_entries
 from app.utils.log_events import (
     BUSINESS,
     EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP,
@@ -395,13 +396,9 @@ def compute_entry_sums(
     Returns:
         Tuple of (sum_debit, sum_credit) as Decimals.
     """
-    sum_debit = Decimal("0")
-    sum_credit = Decimal("0")
-    for entry in entries:
-        if entry.is_credit:
-            sum_credit += entry.amount
-        else:
-            sum_debit += entry.amount
+    debit_entries, credit_entries = partition_entries(entries)
+    sum_debit = sum((e.amount for e in debit_entries), Decimal("0"))
+    sum_credit = sum((e.amount for e in credit_entries), Decimal("0"))
     return sum_debit, sum_credit
 
 

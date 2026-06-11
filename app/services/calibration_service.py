@@ -13,11 +13,11 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app.exceptions import ValidationError
 from app.services.tax_calculator import capped_social_security
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
-TWO_PLACES = Decimal("0.01")
 # 10 decimal places for effective rates to avoid penny rounding errors
 # when the rate is multiplied back against the taxable/gross base.
 RATE_PLACES = Decimal("0.0000000001")
@@ -177,16 +177,10 @@ def apply_calibration(
     medicare_rate = Decimal(str(calibration.effective_medicare_rate))
 
     return {
-        "federal": (taxable * federal_rate).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        ),
-        "state": (taxable * state_rate).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        ),
+        "federal": round_money(taxable * federal_rate),
+        "state": round_money(taxable * state_rate),
         "ss": capped_social_security(
             gross, cumulative_wages, fica_config, ss_rate=ss_rate
         ),
-        "medicare": (gross * medicare_rate).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        ),
+        "medicare": round_money(gross * medicare_rate),
     }

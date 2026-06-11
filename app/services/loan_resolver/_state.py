@@ -50,6 +50,14 @@ class LoanState:
             the window or for a fixed-rate loan this is the
             contractual / re-amortized payment per the resolver
             algorithm in the module docstring.
+        current_rate: Annual interest rate in effect on ``as_of`` (a
+            decimal fraction, e.g. ``Decimal("0.06875")``) -- the
+            governing rate period's rate.  The single source of truth
+            for "the loan's current rate" that DH-#56 retired the
+            ``LoanParams.interest_rate`` column in favour of: every
+            display and money surface (loan card, /savings cards,
+            debt-strategy accrual, payoff/refinance calculators) reads
+            this instead of the stored column.
         schedule: Full amortization schedule, with confirmed rows
             reflecting actual paid amounts and projected rows using
             the engine's contractual / re-amortized projections.
@@ -66,6 +74,7 @@ class LoanState:
 
     current_balance: Decimal
     monthly_payment: Decimal
+    current_rate: Decimal
     schedule: list[AmortizationRow]
     payoff_date: date
     total_interest: Decimal
@@ -238,8 +247,12 @@ def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
     # Monthly P&I is the current rate period's level payment, held
     # constant within the period and recast only at an adjustment
     # boundary -- independent of the anchor balance, so a balance
-    # true-up never moves the displayed payment.
-    monthly_payment = period_for_date(periods, as_of).period_pi
+    # true-up never moves the displayed payment.  The same period's
+    # rate is the loan's current rate (DH-#56: the resolver-derived
+    # source of truth that replaced the LoanParams.interest_rate column).
+    current_period = period_for_date(periods, as_of)
+    monthly_payment = current_period.period_pi
+    current_rate = current_period.annual_rate
 
     # Derive payoff_date and total_interest from the single
     # schedule generation (DRY -- no second engine call).
@@ -255,6 +268,7 @@ def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
     return LoanState(
         current_balance=round_money(current_balance_full),
         monthly_payment=monthly_payment,
+        current_rate=current_rate,
         schedule=schedule,
         payoff_date=payoff_date,
         total_interest=round_money(total_interest_full),

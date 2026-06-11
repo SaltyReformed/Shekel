@@ -39,8 +39,14 @@ class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
         # with an ``IN (...)`` CHECK; it is now the ref-table FK
         # ``employer_contribution_type_id`` (validity enforced by the
         # FK + RESTRICT, not a CHECK).
+        # Exclusive lower bound: a -100% annual return (fraction -1) is a
+        # degenerate, non-invertible assumption -- the reverse growth
+        # projection (growth_engine.reverse_project_balance) divides by
+        # (1 + per-period rate), which is 0 when the rate resolves to -1
+        # (DH-#28 follow-up).  Mirrors the schema's
+        # ``Range(min=-1, max=1, min_inclusive=False)``.
         db.CheckConstraint(
-            "assumed_annual_return >= -1 AND assumed_annual_return <= 1",
+            "assumed_annual_return > -1 AND assumed_annual_return <= 1",
             name="ck_investment_params_valid_return",
         ),
         # F-077 / C-24: ``annual_contribution_limit`` is nullable

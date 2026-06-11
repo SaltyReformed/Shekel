@@ -201,9 +201,16 @@ def _average_transfer_contribution(all_contributions):
     passes in already-deleted-filtered rows whose duck-typed test fakes
     (``FakeContribTransaction``) deliberately omit ``is_deleted``.
 
+    Contributions are summed on ``effective_amount`` -- the realized
+    actual when a shadow is settled, else the estimate -- the same
+    accessor the per-period timeline uses, so this average and the
+    YTD/limit accounting cannot disagree with the engine on a settled
+    transfer whose actual differs from its estimate (deep-quality-hunt
+    #11).
+
     Args:
         all_contributions: List of shadow income transactions with
-                           .estimated_amount, .pay_period_id, .status.
+                           .effective_amount, .pay_period_id, .status.
 
     Returns:
         The per-period average contribution (Decimal), or ZERO when no
@@ -217,7 +224,7 @@ def _average_transfer_contribution(all_contributions):
         if status_contributes_to_balance(t)
     ]
     total_contrib = sum(
-        Decimal(str(t.estimated_amount)) for t in active_contributions
+        Decimal(str(t.effective_amount)) for t in active_contributions
     )
     num_periods_with_contrib = len(
         set(t.pay_period_id for t in active_contributions)
@@ -288,17 +295,27 @@ def _current_year_period_ids(all_periods, current_period, *, inclusive):
 
 
 def _sum_year_contributions(all_contributions, period_ids):
-    """Sum ``estimated_amount`` of active contributions in ``period_ids``.
+    """Sum the ``effective_amount`` of active contributions in ``period_ids``.
 
     Active = passes the centralized ``status_contributes_to_balance``
-    filter (the same rule ``_average_transfer_contribution`` uses).  The
-    ``estimated_amount`` accessor matches the rest of this inputs builder
-    (the estimated-vs-effective alignment, deep-quality-hunt #11, is a
-    separate decision that cross-references audit finding F-027 S18).
+    filter (the same rule ``_average_transfer_contribution`` uses).
+    ``effective_amount`` (the realized actual when a shadow is settled,
+    else the estimate) is ``Transaction``'s single source of truth for
+    what a row contributes to a projection, so this YTD-seed/limit
+    accounting agrees with the per-period timeline
+    (:func:`build_contribution_timeline`, also ``effective_amount``) once
+    a transfer shadow is settled with an actual that differs from its
+    estimate (deep-quality-hunt #11).  Summing ``estimated_amount`` here
+    previously let the cap/limit math read a different dollar than the
+    engine actually applied; the prior "F-027 S18 contract-safe"
+    rationale assumed a shadow's ``actual_amount`` is always ``None``,
+    which is untrue once ``transfer_service._apply_actual_amount`` sets
+    it on settlement (the ``Transfer`` parent has no ``actual_amount``
+    column, so a settled actual lives only on the shadows).
 
     Args:
         all_contributions: Shadow income transactions for one account
-                           (.estimated_amount, .pay_period_id, .status).
+                           (.effective_amount, .pay_period_id, .status).
         period_ids:        The period_id set to sum over.
 
     Returns:
@@ -307,20 +324,20 @@ def _sum_year_contributions(all_contributions, period_ids):
     total = ZERO
     for t in all_contributions:
         if t.pay_period_id in period_ids and status_contributes_to_balance(t):
-            total += Decimal(str(t.estimated_amount))
+            total += Decimal(str(t.effective_amount))
     return total
 
 
 def _ytd_contributions(all_contributions, all_periods, current_period):
     """Sum year-to-date contributions THROUGH the current period (``<=``).
 
-    The displayed limit-card YTD value.  Sums ``estimated_amount`` for
+    The displayed limit-card YTD value.  Sums ``effective_amount`` for
     active contributions whose pay period falls in the current calendar
     year up to and including ``current_period``.
 
     Args:
         all_contributions: Shadow income transactions for one account
-                           (.estimated_amount, .pay_period_id, .status).
+                           (.effective_amount, .pay_period_id, .status).
         all_periods:       Period objects with .id and .start_date.
         current_period:    The current period object, or None.
 
@@ -347,7 +364,7 @@ def _ytd_contributions_seed(all_contributions, all_periods, current_period):
 
     Args:
         all_contributions: Shadow income transactions for one account
-                           (.estimated_amount, .pay_period_id, .status).
+                           (.effective_amount, .pay_period_id, .status).
         all_periods:       Period objects with .id and .start_date.
         current_period:    The current period object, or None.
 
@@ -381,7 +398,7 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
                                .pay_periods_per_year.
         all_contributions:     List of shadow income transactions
                                (transfer_id IS NOT NULL) in this account.
-                               Each has .estimated_amount, .pay_period_id,
+                               Each has .effective_amount, .pay_period_id,
                                .status.
         all_periods:           List of period objects with .id,
                                .start_date, .period_index.
@@ -482,7 +499,7 @@ def current_period_transfer_contribution(contribution_transactions, current_peri
     """Sum the effective contribution the current period's transfers add.
 
     These shadow income transactions are BOTH counted in the entries-aware
-    end-of-current-period balance (``balance_calculator._income_amount``
+    end-of-current-period balance (``balance_calculator.income_amount``
     uses ``effective_amount``) AND re-applied by the growth engine when the
     projection window includes the current period
     (:func:`build_contribution_timeline` Path 2, the same

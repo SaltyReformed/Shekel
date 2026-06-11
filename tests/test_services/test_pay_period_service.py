@@ -121,6 +121,66 @@ class TestGeneratePayPeriods:
             assert new[0].period_index == 3
             assert new[1].period_index == 4
 
+    def test_offset_start_before_existing_rejected(self, app, db, bare_user):
+        """An offset batch whose start predates the latest existing payday is
+        rejected (DH-#39).
+
+        The new periods would receive the highest period_index values while
+        carrying earlier dates -- out of calendar order AND overlapping the
+        existing periods' date ranges -- which silently drops their
+        transactions from as-of balances.  The whole batch is refused before
+        any row is written, so the original schedule is untouched.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            # Jan 2, Jan 16, Jan 30 (latest payday Jan 30).
+            pay_period_service.generate_pay_periods(
+                user_id=user_id, start_date=date(2026, 1, 2), num_periods=3,
+            )
+            db.session.commit()
+
+            # Offset start Jan 9 falls among the existing periods.
+            with pytest.raises(ValidationError) as excinfo:
+                pay_period_service.generate_pay_periods(
+                    user_id=user_id, start_date=date(2026, 1, 9), num_periods=4,
+                )
+            # The message names the latest existing payday as the bound.
+            assert "2026-01-30" in str(excinfo.value)
+            # Nothing was created -- still exactly the original 3.
+            assert len(pay_period_service.get_all_periods(user_id)) == 3
+
+    def test_larger_count_rerun_from_same_start_extends_forward(
+        self, app, db, bare_user
+    ):
+        """Re-running with the SAME start and a larger count is allowed.
+
+        The overlapping prefix is dup-skipped and the genuinely-new periods
+        all fall after the latest existing payday, so they extend forward and
+        the period_index == calendar-order invariant still holds (DH-#39 only
+        rejects batches that would break it).
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            # Jan 2, Jan 16, Jan 30.
+            pay_period_service.generate_pay_periods(
+                user_id=user_id, start_date=date(2026, 1, 2), num_periods=3,
+            )
+            db.session.commit()
+
+            # Same start, larger count: first 3 dup-skipped; Feb 13, Feb 27 new.
+            new = pay_period_service.generate_pay_periods(
+                user_id=user_id, start_date=date(2026, 1, 2), num_periods=5,
+            )
+            db.session.commit()
+
+            assert [p.period_index for p in new] == [3, 4]
+            assert [p.start_date for p in new] == [
+                date(2026, 2, 13), date(2026, 2, 27),
+            ]
+            # Index order still matches calendar order across the full set.
+            starts = [p.start_date for p in pay_period_service.get_all_periods(user_id)]
+            assert starts == sorted(starts)
+
     def test_invalid_start_date_raises_error(self, app, db, bare_user):
         """Passing a non-date start_date raises ValidationError."""
         with app.app_context():

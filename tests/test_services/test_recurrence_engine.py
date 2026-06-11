@@ -2177,7 +2177,7 @@ class TestDueDateGeneration:
     """Tests for due_date computation during transaction generation.
 
     Verifies that generate_for_template correctly computes due_date on
-    each created Transaction by delegating to _compute_due_date.  Tests
+    each created Transaction by delegating to compute_due_date.  Tests
     cover every recurrence pattern, day-of-month clamping for short
     months, the next-month convention for due_day_of_month, and edge
     cases around leap years and month boundaries.
@@ -2459,7 +2459,7 @@ class TestDueDateGeneration:
     ):
         """due_day_of_month == day_of_month treated as no override.
 
-        When due_day_of_month equals day_of_month, _compute_due_date
+        When due_day_of_month equals day_of_month, compute_due_date
         takes the 'due_dom is None or due_dom == dom' branch and uses
         day_of_month directly. due_date == Jan 15.
         """
@@ -2609,7 +2609,7 @@ class TestDueDateGeneration:
         """day_of_month=1, period Jan 17 - Feb 1: due_date is Feb 1, not Jan 1.
 
         The period spans two months. Jan 1 is before the period start,
-        so _compute_due_date checks both start_date and end_date months.
+        so compute_due_date checks both start_date and end_date months.
         Feb 1 falls within the period [Jan 17, Feb 1], so base_month
         resolves to February. due_date == 2026-02-01.
         """
@@ -2676,12 +2676,12 @@ class TestDueDateGeneration:
             # Feb 2026 has 28 days: min(30, 28) = 28.
             assert created[0].due_date == date(2026, 2, 28)
 
-    # -- Pure function test for _compute_due_date ------------------------------
+    # -- Pure function test for compute_due_date ------------------------------
 
     def test_compute_due_date_is_pure_function(self, app, db):
-        """_compute_due_date does not touch the database -- it's a pure function.
+        """compute_due_date does not touch the database -- it's a pure function.
 
-        Constructs a FakeRule and FakePeriod to verify that _compute_due_date
+        Constructs a FakeRule and FakePeriod to verify that compute_due_date
         can produce correct results without any DB interaction.
         """
         with app.app_context():
@@ -2705,14 +2705,14 @@ class TestDueDateGeneration:
                 end_date=date(2026, 3, 26),
                 period_index=5,
             )
-            result = recurrence_engine._compute_due_date(
+            result = recurrence_engine.compute_due_date(
                 rule_monthly, period,
             )
             assert result == date(2026, 3, 20)
 
             # Test with no day_of_month (every-period style).
             rule_every = FakeRule(pattern_name="Every Period")
-            result = recurrence_engine._compute_due_date(
+            result = recurrence_engine.compute_due_date(
                 rule_every, period,
             )
             assert result == date(2026, 3, 13)

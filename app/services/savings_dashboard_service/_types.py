@@ -87,6 +87,7 @@ class _LoanAccountResult:
 
     current_balance: Decimal
     monthly_payment: Decimal
+    current_rate: Decimal
     payoff_date: date | None
     projected: dict
     is_paid_off: bool

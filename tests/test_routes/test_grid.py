@@ -21,7 +21,7 @@ from app.services.auth_service import hash_password
 from app.services import pay_period_service
 from app.services import account_service
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import field_is_disabled, freeze_today
 
 
 class TestGridView:
@@ -322,6 +322,77 @@ class TestTransactionCRUD:
         db.session.add(txn)
         db.session.commit()
         return txn
+
+    def test_quick_edit_disables_amount_on_finalised_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The inline quick-edit disables the amount input on a finalised row
+        and shows the revert hint, so the cell never offers an amount edit the
+        route guard (#26) would reject.  autofocus marks the editable case."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+
+            resp = auth_client.get(f"/transactions/{txn.id}/quick-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert field_is_disabled(html, "estimated_amount")
+            assert "Finalised" in html
+            assert "autofocus" not in html
+
+    def test_quick_edit_amount_editable_on_projected_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A projected row's quick-edit amount stays editable (no lock, no
+        regression for the common inline-edit path)."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            resp = auth_client.get(f"/transactions/{txn.id}/quick-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert not field_is_disabled(html, "estimated_amount")
+            assert "Finalised" not in html
+            assert "autofocus" in html
+
+    def test_full_edit_locks_money_fields_on_finalised_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The full-edit popover disables the money / period / due-date inputs
+        on a finalised row and shows the revert notice, while the Status
+        dropdown and Notes stay editable so the user can revert to Projected
+        and then edit (#26)."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "This transaction is finalised" in html
+            # Locked money / period / due-date fields.
+            assert field_is_disabled(html, "estimated_amount")
+            assert field_is_disabled(html, "actual_amount")
+            assert field_is_disabled(html, "pay_period_id")
+            assert field_is_disabled(html, "due_date")
+            # The revert path and display fields stay editable.
+            assert not field_is_disabled(html, "status_id")
+            assert not field_is_disabled(html, "notes")
+
+    def test_full_edit_money_fields_editable_on_projected_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A projected row's full-edit money fields stay editable with no
+        finalised notice (no regression for the common edit path)."""
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "finalised" not in html.lower()
+            assert not field_is_disabled(html, "estimated_amount")
+            assert not field_is_disabled(html, "due_date")
 
     def test_create_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions creates a new ad-hoc transaction."""
@@ -781,7 +852,7 @@ class TestTransactionNegativePaths:
     # ── Schema validation failure tests ───────────────────────────
 
     def test_create_transaction_missing_name(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions without required 'name' field returns 400 with field error."""
+        """POST /transactions without required 'name' field returns 422 with field error."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
@@ -794,7 +865,7 @@ class TestTransactionNegativePaths:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             resp_json = resp.get_json()
             assert "name" in resp_json["errors"]
 
@@ -805,7 +876,7 @@ class TestTransactionNegativePaths:
             assert count == 0
 
     def test_create_transaction_negative_amount(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions with negative estimated_amount returns 400."""
+        """POST /transactions with negative estimated_amount returns 422."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
@@ -819,7 +890,7 @@ class TestTransactionNegativePaths:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             resp_json = resp.get_json()
             assert "estimated_amount" in resp_json["errors"]
 
@@ -854,7 +925,7 @@ class TestTransactionNegativePaths:
     def test_create_transaction_missing_pay_period_id(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions without required pay_period_id returns 400 with field error."""
+        """POST /transactions without required pay_period_id returns 422 with field error."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
@@ -867,7 +938,7 @@ class TestTransactionNegativePaths:
                 "category_id": seed_user["categories"]["Groceries"].id,
                 "transaction_type_id": expense_type.id,
             })
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             resp_json = resp.get_json()
             assert "pay_period_id" in resp_json["errors"]
 
@@ -917,7 +988,7 @@ class TestTransactionNegativePaths:
             assert count == 0
 
     def test_update_transaction_invalid_amount(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH /transactions/<id> with non-numeric amount returns 400."""
+        """PATCH /transactions/<id> with non-numeric amount returns 422."""
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
             txn_id = txn.id
@@ -926,7 +997,7 @@ class TestTransactionNegativePaths:
                 f"/transactions/{txn_id}",
                 data={"estimated_amount": "not_a_number"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
             # Verify the transaction's amount was NOT changed.
             db.session.expire_all()
@@ -1024,7 +1095,7 @@ class TestTransactionNegativePaths:
     def test_mark_done_with_invalid_actual_amount(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions/<id>/mark-done with non-numeric actual_amount returns 400.
+        """POST /transactions/<id>/mark-done with non-numeric actual_amount returns 422.
 
         Pre-C-27: the route caught ``InvalidOperation`` and returned
         the literal string ``"Invalid actual amount"`` with status
@@ -1043,7 +1114,7 @@ class TestTransactionNegativePaths:
                 f"/transactions/{txn_id}/mark-done",
                 data={"actual_amount": "not_a_number"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             payload = resp.get_json()
             assert payload is not None
             assert "actual_amount" in payload["errors"]
@@ -1083,7 +1154,7 @@ class TestTransactionNegativePaths:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "-50.00"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
             db.session.expire_all()
             db.session.refresh(txn)
@@ -1344,7 +1415,7 @@ class TestAccountIdColumn:
             "transaction_type_id": expense_type.id,
             "estimated_amount": "50.00",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_inline_create_rejects_other_users_account_id(
         self, app, auth_client, seed_user, seed_periods_today, second_user
@@ -4513,7 +4584,15 @@ class TestPaidAtLifecycle:
     def test_paid_at_preserved_on_non_status_update(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH /transactions/<id> updating amount only preserves paid_at."""
+        """PATCH /transactions/<id> editing a non-status field preserves paid_at.
+
+        Edits a display field (``notes``) rather than ``estimated_amount``:
+        the finalised-row edit lock (#26) refuses money/period/category
+        edits on a Paid row, but display fields stay editable, so this
+        remains the faithful probe that a non-status edit does not clear
+        ``paid_at`` (the revert-paid_at logic fires only on a status
+        change to a non-settled status).
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
 
@@ -4523,14 +4602,15 @@ class TestPaidAtLifecycle:
             original_paid_at = txn.paid_at
             assert original_paid_at is not None
 
-            # Update estimated_amount only -- no status change.
+            # Edit a non-status, non-locked field -- no status change.
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "200.00"},
+                data={"notes": "Reconciled against statement"},
             )
             assert response.status_code == 200
 
             db.session.refresh(txn)
+            assert txn.notes == "Reconciled against statement"
             assert txn.paid_at is not None
 
     def test_mark_done_idempotent_updates_paid_at(

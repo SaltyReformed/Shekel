@@ -223,7 +223,7 @@ class TestTransactionsMarkDoneActualAmount:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "-50.00"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
             db.session.refresh(txn)
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED), (
@@ -245,7 +245,7 @@ class TestTransactionsMarkDoneActualAmount:
                 f"/transactions/{txn.id}/mark-done",
                 data={"actual_amount": "abc"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
             payload = resp.get_json()
             assert payload is not None
             assert "actual_amount" in payload["errors"]
@@ -272,7 +272,7 @@ class TestTransactionsMarkDoneActualAmount:
                 f"/transactions/{shadow.id}/mark-done",
                 data={"actual_amount": "-25.00"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
             db.session.expire_all()
             db.session.refresh(xfer)

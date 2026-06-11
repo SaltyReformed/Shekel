@@ -29,6 +29,7 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
+from app.services import obligations_projection
 from app.services.obligations_aggregator import (
     committed_monthly,
     template_monthly_or_none,
@@ -420,8 +421,16 @@ def summary():
     """Render the recurring obligations summary page.
 
     Loads all active recurring transaction and transfer templates,
-    computes monthly equivalents and approximate next occurrence dates,
-    and displays grouped totals for expenses, transfers, and income.
+    computes per-section monthly equivalents and approximate next
+    occurrence dates, and lists them grouped by expenses, transfers, and
+    income.  The top-of-page summary is a grid-reconciled cash-flow
+    projection (``obligations_projection.project_cash_flow``) rather than
+    a flat monthly net: a single flat figure could neither reflect the
+    salary profile's scheduled raises nor a transfer's offsetting inflow,
+    so it contradicted the per-account ``/grid`` projection (see that
+    module's docstring).  The per-section monthly subtotals remain for the
+    obligation list itself, where each row's inclusion and its section
+    total both route through ``obligations_aggregator`` (E-24 / HIGH-05).
     """
     user_id = current_user.id
     as_of = date.today()
@@ -441,8 +450,10 @@ def summary():
     total_expense_monthly = committed_monthly(expense_templates, as_of)
     total_income_monthly = committed_monthly(income_templates, as_of)
     total_transfer_monthly = committed_monthly(transfer_templates, as_of)
-    total_outflows = total_expense_monthly + total_transfer_monthly
-    net_cash_flow = total_income_monthly - total_outflows
+
+    projection = obligations_projection.project_cash_flow(
+        user_id, current_user.settings,
+    )
 
     has_any = bool(expense_items or income_items or transfer_items)
 
@@ -454,7 +465,6 @@ def summary():
         total_expense_monthly=total_expense_monthly,
         total_income_monthly=total_income_monthly,
         total_transfer_monthly=total_transfer_monthly,
-        total_outflows=total_outflows,
-        net_cash_flow=net_cash_flow,
+        projection=projection,
         has_any=has_any,
     )

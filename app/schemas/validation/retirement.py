@@ -165,8 +165,9 @@ class RetirementGapQuerySchema(BaseSchema):
     inline ``Decimal("100")`` division in the retirement route to
     complete the "schemas own percent conversion" convention.  The
     range mirrors ``investment_params.assumed_annual_return``'s
-    ``[-1, 1]`` storage bound (returns may be negative in a loss
-    scenario).
+    ``(-1, 1]`` storage bound (returns may be negative in a loss
+    scenario, but a -100% return is degenerate -- the growth engine's
+    per-period rate would be -1; DH-#28 follow-up).
     """
 
     _PERCENT_FIELDS = ("swr", "return_rate")
@@ -183,5 +184,7 @@ class RetirementGapQuerySchema(BaseSchema):
     )
     return_rate = fields.Decimal(
         places=5, as_string=True, allow_none=True,
-        validate=validate.Range(min=Decimal("-1"), max=Decimal("1")),
+        validate=validate.Range(
+            min=Decimal("-1"), max=Decimal("1"), min_inclusive=False,
+        ),
     )
