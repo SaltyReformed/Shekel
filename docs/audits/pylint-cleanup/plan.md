@@ -622,7 +622,7 @@ Measured at the state below. Reproduce with the [Verification](#verification-com
 | **`app/` score** | **9.68/10** |
 | Visible messages (`app/`) | **423** |
 | Inline `# pylint: disable=` directives (`app/`) | **74**, across 28 files |
-| `scripts/` score (out of scope until app/ is done) | 9.27/10 |
+| `scripts/` score (out of scope until app/ is done) | 9.27/10 (STALE -- measured 5.22/10 on 2026-06-09, re-confirmed 2026-06-11; see the Phase 5 step-5 note) |
 
 ### Visible message breakdown (the 423)
 
@@ -2121,6 +2121,10 @@ decision #4):
 
 **Step 5 (`scripts/`, baseline 9.27/10) is NOT started** -- a separate later effort with its own
 register if needed. The lock-in above applies to `app/` only.
+
+**Baseline correction (2026-06-11):** the 9.27/10 is stale -- `pylint scripts/` measures **5.22/10**
+(first caught by the 2026-06-09 deep-hunt triage sweep, re-confirmed today). Use 5.22 as the step-5
+starting point.
 
 ---
 
