@@ -120,6 +120,18 @@ jobs:
       - name: Lint with pylint
         run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale --output-format=colorized
 
+      # ── 5a. Lint scripts/ ────────────────────────────────────────
+      # Same layered gate for the operational CLI scripts.  scripts/
+      # reached 10.00/10 on 2026-06-11 (docs/audits/pylint-cleanup/
+      # plan.md Phase 5 step 5); without this step nothing in CI stops
+      # a merge from regressing it -- the per-edit hooks only cover
+      # local edits.  Linted as a separate invocation (per-tree floor):
+      # whether the COMBINED `pylint app/ scripts/` run should also
+      # gate cross-tree duplicate-code is a separate open decision in
+      # docs/audits/pylint-cleanup/deep-quality-hunt.md.
+      - name: Lint scripts with pylint
+        run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale --output-format=colorized
+
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
       # The checkers themselves are unit-tested (every "flags" case paired with a
       # "must-not-flag" case). tests/ are out of general pylint scope, but a
