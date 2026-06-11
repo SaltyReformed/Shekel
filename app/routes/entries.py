@@ -8,8 +8,10 @@ the transaction detail popover and the companion view.
 
 import logging
 from datetime import date
+from typing import Any
 
 from flask import Blueprint, render_template, request
+from flask.typing import ResponseReturnValue
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
@@ -45,7 +47,7 @@ _update_schema = EntryUpdateSchema()
 _CREDIT_PAYBACK_UNIQUE_INDEX = "uq_transactions_credit_payback_unique"
 
 
-def _entry_list_host_id(txn_id, host):
+def _entry_list_host_id(txn_id: int, host: str) -> str:
     """Compose the entry-list root DOM id from a txn id and host prefix.
 
     Single Python-side source of truth that mirrors the Jinja default in
@@ -67,7 +69,12 @@ def _entry_list_host_id(txn_id, host):
     return "entry-list-" + (host + "-" if host else "") + str(txn_id)
 
 
-def _render_entry_list(txn, editing_id=None, conflict=False, host=""):
+def _render_entry_list(
+    txn: Transaction,
+    editing_id: int | None = None,
+    conflict: bool = False,
+    host: str = "",
+) -> str:
     """Render the entry list partial for a transaction.
 
     Loads entries, computes remaining balance, and checks for
@@ -109,7 +116,9 @@ def _render_entry_list(txn, editing_id=None, conflict=False, host=""):
     )
 
 
-def _credit_payback_idempotent_response(exc, txn_id, log_context):
+def _credit_payback_idempotent_response(
+    exc: IntegrityError, txn_id: int, log_context: str,
+) -> ResponseReturnValue:
     """Translate a credit-payback unique-index violation into a 200.
 
     Shared between :func:`create_entry`, :func:`update_entry`, and
@@ -159,7 +168,7 @@ def _credit_payback_idempotent_response(exc, txn_id, log_context):
     )
 
 
-def _stale_entry_response(txn):
+def _stale_entry_response(txn: Transaction | None) -> ResponseReturnValue:
     """Roll back the session and render the entry list in conflict mode.
 
     Used by every entry-mutating PATCH/DELETE handler to convert a
@@ -184,6 +193,40 @@ def _stale_entry_response(txn):
     if fresh_txn is None:
         return "Not found", 404
     return _render_entry_list(fresh_txn, conflict=True), 409
+
+
+def _accessible_txn_and_entry(
+    txn_id: int, entry_id: int,
+) -> tuple[Transaction, TransactionEntry] | None:
+    """Resolve the parent transaction and its owned entry, or ``None``.
+
+    The shared ownership preamble for the per-entry mutation routes
+    (:func:`update_entry`, :func:`toggle_cleared`, :func:`delete_entry`):
+    the parent must be accessible to the requester
+    (:func:`get_accessible_transaction` -- owner, or companion with
+    visibility) AND the entry must belong to that parent.  The second
+    check prevents parameter-confusion attacks where a visible
+    transaction's URL is paired with another transaction's entry id.
+    A single ``None`` covers every failure -- missing transaction,
+    missing entry, or an entry on a different transaction -- so the
+    caller's one guard clause returns the uniform 404 (the "404 for
+    both not-found and not-yours" security response rule), and the
+    security check has exactly one definition.
+
+    Args:
+        txn_id: Parent transaction id from the URL.
+        entry_id: Entry id from the URL.
+
+    Returns:
+        ``(txn, entry)`` when both checks pass; ``None`` otherwise.
+    """
+    txn = get_accessible_transaction(txn_id)
+    if txn is None:
+        return None
+    entry = db.session.get(TransactionEntry, entry_id)
+    if entry is None or entry.transaction_id != txn.id:
+        return None
+    return txn, entry
 
 
 @entries_bp.route("/transactions/<int:txn_id>/entries", methods=["GET"])
@@ -241,7 +284,9 @@ def create_entry(txn_id):
     return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
-def _execute_entry_update(entry_id, txn, data):
+def _execute_entry_update(
+    entry_id: int, txn: Transaction, data: dict[str, Any],
+) -> ResponseReturnValue:
     """Run the entry update + commit, translating service outcomes to HTTP.
 
     ``StaleDataError`` at flush -> 409 conflict entry list; the C-19
@@ -295,14 +340,10 @@ def update_entry(txn_id, entry_id):
     mode so the user sees the winner's values.  ``StaleDataError``
     raised at flush time is caught and produces the same response.
     """
-    txn = get_accessible_transaction(txn_id)
-    if txn is None:
+    target = _accessible_txn_and_entry(txn_id, entry_id)
+    if target is None:
         return "Not found", 404
-
-    # Guard: entry must belong to this transaction.
-    entry = db.session.get(TransactionEntry, entry_id)
-    if entry is None or entry.transaction_id != txn.id:
-        return "Not found", 404
+    txn, entry = target
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -346,14 +387,10 @@ def toggle_cleared(txn_id, entry_id):
     flush time and the handler converts ``StaleDataError`` into a
     409 + conflict entry list.
     """
-    txn = get_accessible_transaction(txn_id)
-    if txn is None:
+    target = _accessible_txn_and_entry(txn_id, entry_id)
+    if target is None:
         return "Not found", 404
-
-    # Guard: entry must belong to this transaction.
-    entry = db.session.get(TransactionEntry, entry_id)
-    if entry is None or entry.transaction_id != txn.id:
-        return "Not found", 404
+    txn, _entry = target
 
     try:
         entry_service.toggle_cleared(entry_id, current_user.id)
@@ -384,14 +421,10 @@ def delete_entry(txn_id, entry_id):
 
     Optimistic locking: see :func:`toggle_cleared`.
     """
-    txn = get_accessible_transaction(txn_id)
-    if txn is None:
+    target = _accessible_txn_and_entry(txn_id, entry_id)
+    if target is None:
         return "Not found", 404
-
-    # Guard: entry must belong to this transaction.
-    entry = db.session.get(TransactionEntry, entry_id)
-    if entry is None or entry.transaction_id != txn.id:
-        return "Not found", 404
+    txn, _entry = target
 
     try:
         entry_service.delete_entry(entry_id, current_user.id)
