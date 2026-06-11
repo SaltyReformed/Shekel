@@ -785,15 +785,14 @@ def _search_extra_for_payoff(
     projection_inputs: ProjectionInputs,
     target_date: date,
     upper_bound: Decimal,
+    monthly_override: dict[tuple[int, int], Decimal] | None = None,
 ) -> Decimal:
     """Binary-search the extra monthly payment that pays off by target_date.
 
-    Repeats the forward projection with a candidate ``extra_monthly`` and
-    narrows the bracket until the bisection width drops below one cent
-    (the convergence criterion the legacy implementation used).  The
-    caller guarantees the standard schedule pays off AFTER
-    ``target_date`` (so some positive extra is required) and that
-    ``target_date`` falls within the loan's remaining months, so the
+    Repeats the forward projection with a candidate ``extra_monthly``,
+    narrowing the bracket below one cent (the legacy convergence
+    criterion).  The caller guarantees the baseline schedule pays off
+    AFTER ``target_date`` within the loan's remaining months, so the
     search always has a valid bracket to converge in.
 
     Args:
@@ -803,6 +802,11 @@ def _search_extra_for_payoff(
         target_date: The desired payoff date the search drives toward.
         upper_bound: The initial high bracket -- the current principal
             (paying it all off immediately is the trivial upper bound).
+        monthly_override: Optional ``(year, month) -> Decimal``
+            planned-outlay map.  Override months replace contractual
+            AND suppress the searched ``extra_monthly``, so the search
+            finds the extra needed on NON-override months on top of
+            the user's plan (F-27).
 
     Returns:
         The Decimal extra-monthly payment, rounded to cents, that
@@ -814,7 +818,9 @@ def _search_extra_for_payoff(
     for _ in range(100):  # Max iterations for convergence.
         mid = round_money((lo + hi) / 2)
         schedule = project_forward(
-            projection_inputs, monthly_override=None, extra_monthly=mid,
+            projection_inputs,
+            monthly_override=monthly_override,
+            extra_monthly=mid,
         )
         if not schedule:
             return mid
@@ -831,23 +837,90 @@ def _search_extra_for_payoff(
     return hi
 
 
+def required_extra_for_projection(
+    projection_inputs: ProjectionInputs,
+    target_date: date,
+    *,
+    monthly_override: dict[tuple[int, int], Decimal] | None = None,
+    gate_months: int | None = None,
+) -> Decimal | None:
+    """Required extra-monthly payment to retire a projection by a date.
+
+    The reusable core of :func:`calculate_payoff_by_date`, factored out
+    so the loan resolver's committed-plan path (F-27) can answer the
+    same question from ITS replay-derived starting state with the
+    planned-outlay ``monthly_override`` -- one starting state then
+    drives both the committed payoff date and the additional-extra
+    search, so the two figures cannot rest on diverging projections.
+
+    Args:
+        projection_inputs: The starting state every projection in the
+            answer shares (baseline run and each search iteration).
+        target_date: The desired payoff date.
+        monthly_override: Optional ``(year, month) -> Decimal``
+            planned-outlay map, honored by the baseline run and the
+            search alike, so the returned extra is the amount needed
+            ON TOP of the user's committed plan (in-window; beyond the
+            plan's horizon months revert to contractual, the committed-
+            scenario convention).
+        gate_months: The month count the "target too far out" gate
+            compares against; defaults to
+            ``projection_inputs.remaining_months``.
+            :func:`calculate_payoff_by_date` passes its UN-widened
+            ``request.remaining_months``.
+
+    Returns:
+        ``None`` if ``target_date`` is in the past.  ``Decimal("0.00")``
+        when no extra is required (the baseline -- contractual or
+        committed-plan -- schedule already pays off by ``target_date``,
+        or the loan is already paid off).  Otherwise the binary-searched
+        extra-monthly payment, rounded to cents.
+    """
+    if gate_months is None:
+        gate_months = projection_inputs.remaining_months
+
+    baseline = project_forward(
+        projection_inputs,
+        monthly_override=monthly_override,
+        extra_monthly=Decimal("0.00"),
+    )
+    if not baseline:
+        return Decimal("0.00")
+
+    if baseline[-1].payment_date <= target_date:
+        return Decimal("0.00")
+
+    # Months until target_date from the first payment; the inclusive
+    # ``+ 1`` keeps the legacy gates firing for the same inputs.
+    target_months = months_between(
+        projection_inputs.starting_date, target_date,
+    ) + 1
+
+    if target_months <= 0:
+        return None  # Target date is in the past.
+
+    if target_months >= gate_months:
+        return Decimal("0.00")
+
+    return _search_extra_for_payoff(
+        projection_inputs,
+        target_date,
+        projection_inputs.starting_balance,
+        monthly_override=monthly_override,
+    )
+
+
 def calculate_payoff_by_date(
     request: PayoffRequest,
 ) -> Decimal | None:
     """Calculate required extra monthly payment to pay off by target_date.
 
-    Reframed in terms of :func:`project_forward` (Phase 7 of the
-    amortization-engine split documented in
-    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
-    The function is a pure forward projection from a known starting
-    state (``current_principal`` at ``origination_date``), so it maps
-    naturally onto the projection primitive: one ``project_forward``
-    call establishes the standard payoff date, then a binary search
-    repeats the projection with successively larger ``extra_monthly``
-    values until the schedule pays off by ``target_date``.  External
-    behavior is preserved bit-for-bit; the projected-payments
-    follow-up (OPT-1 / F-N) is explicitly out of scope here per
-    design decision D-F.
+    The raw (no committed plan) answer: derives the contractual payment
+    and a shared :class:`ProjectionInputs` from the request's loan
+    facts, then delegates the baseline projection, gates, and binary
+    search to :func:`required_extra_for_projection` (whose
+    ``monthly_override`` mode is the F-27 committed-plan path used by
+    ``loan_resolver.target_date_outlook``).
 
     Args:
         request: A :class:`PayoffRequest` bundling the loan's current
@@ -858,13 +931,9 @@ def calculate_payoff_by_date(
             distinction and the ``term_months`` loop-cap widening).
 
     Returns:
-        ``None`` if ``target_date`` is in the past (no extra payment
-        can change history).  ``Decimal("0.00")`` when no extra is
-        required because the standard schedule already pays off by
-        ``target_date`` (or the loan is already paid off).
-        Otherwise, the binary-searched Decimal extra-monthly payment
-        rounded to cents that achieves payoff at or before
-        ``target_date``.
+        :func:`required_extra_for_projection`'s contract: ``None`` for
+        a past target, ``Decimal("0.00")`` when no extra is needed,
+        otherwise the binary-searched extra rounded to cents.
     """
     if request.current_principal <= 0 or request.remaining_months <= 0:
         return Decimal("0.00")
@@ -910,10 +979,8 @@ def calculate_payoff_by_date(
         request.origination_date, request.payment_day,
     )
 
-    # All projections in this function share one starting state; only
-    # ``extra_monthly`` varies between the standard run and each binary-
-    # search iteration.  Building ``ProjectionInputs`` once guarantees
-    # they cannot diverge in their shared inputs.
+    # One shared starting state for the baseline run and every search
+    # iteration -- they cannot diverge in their shared inputs.
     projection_inputs = ProjectionInputs(
         starting_balance=request.current_principal,
         starting_date=starting_date,
@@ -924,33 +991,10 @@ def calculate_payoff_by_date(
         rate_changes_remaining=request.rate_changes,
     )
 
-    # Standard projection: no extra.  The contractual payment alone
-    # determines the standard payoff date.
-    standard = project_forward(
-        projection_inputs, monthly_override=None, extra_monthly=Decimal("0.00"),
-    )
-    if not standard:
-        return Decimal("0.00")
-
-    standard_payoff = standard[-1].payment_date
-    if standard_payoff <= request.target_date:
-        return Decimal("0.00")
-
-    # Calculate how many months until target_date from ``starting_date``.
-    # The inclusive ``+ 1`` matches the legacy convention so the "target
-    # in the past" / "target later than remaining_months" gates fire for
-    # the same inputs as before.
-    target_months = months_between(starting_date, request.target_date) + 1
-
-    if target_months <= 0:
-        return None  # Target date is in the past.
-
-    if target_months >= request.remaining_months:
-        return Decimal("0.00")
-
-    # Binary search for the required extra payment, sharing the one
-    # ``projection_inputs`` so every iteration projects from the same
-    # starting state and only ``extra_monthly`` varies.
-    return _search_extra_for_payoff(
-        projection_inputs, request.target_date, request.current_principal,
+    # ``gate_months`` is the UN-widened ``request.remaining_months``
+    # (``projection_months`` above may be loop-cap-widened).
+    return required_extra_for_projection(
+        projection_inputs,
+        request.target_date,
+        gate_months=request.remaining_months,
     )

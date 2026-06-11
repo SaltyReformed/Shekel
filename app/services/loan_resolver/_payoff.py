@@ -19,6 +19,7 @@ from app.services.amortization_engine import (
     ProjectionInputs,
     RateChangeRecord,
     project_forward,
+    required_extra_for_projection,
 )
 from app.services.rate_period_engine import monthly_due_date, period_for_date
 from app.utils.money import round_money
@@ -473,4 +474,87 @@ def compute_payoff_scenarios(
         total_interest_accelerated=round_money(
             total_interest_accelerated_full
         ),
+    )
+
+
+@dataclass(frozen=True)
+class TargetDateOutlook:
+    """The target-date calculator's committed-plan answer (F-27).
+
+    One :func:`_build_forward_inputs` setup drives BOTH figures, so the
+    plan's payoff date and the additional-extra search rest on the same
+    replay-derived starting state and override map -- they cannot
+    diverge the way two independently-built projections could.
+
+    Attributes:
+        committed_payoff_date: When the user's current plan (projected
+            recurring payments within their horizon, contractual
+            beyond) retires the loan.  ``None`` when the loan is
+            already paid off (empty committed slice).
+        required_extra: The extra monthly payment needed ON TOP of the
+            committed plan to retire the loan by the target date,
+            applied to non-override months (the same convention the
+            payoff calculator's accelerated scenario uses).  ``None``
+            when the target date is in the past; ``Decimal("0.00")``
+            when the plan already hits the target.
+    """
+
+    committed_payoff_date: date | None
+    required_extra: Decimal | None
+
+
+def target_date_outlook(
+    *,
+    loan_inputs: LoanInputs,
+    target_date: date,
+    as_of: date,
+) -> TargetDateOutlook:
+    """Answer "when does my plan pay off, and what extra hits my target?".
+
+    The committed-plan half of the F-27 fix: the target-date payoff
+    calculator used to binary-search the required extra against the
+    CONTRACTUAL schedule only, telling a user already paying $500/mo
+    over contractual that they need the full extra again.  This
+    composer-level producer honors the user's projected recurring
+    payments exactly the way :func:`compute_payoff_scenarios`'s
+    committed/accelerated scenarios do -- same replay, same
+    planned-outlay override map, same in-window convention -- and
+    delegates the search to
+    :func:`amortization_engine.required_extra_for_projection`.
+
+    Args:
+        loan_inputs: The loan's loaded :class:`LoanInputs` bundle
+            (``anchor_events`` must be non-empty, the Commit-12
+            invariant).
+        target_date: The user's desired payoff date.
+        as_of: Evaluation date (the replay/projection boundary);
+            typically ``date.today()`` from the route.
+
+    Returns:
+        A :class:`TargetDateOutlook`; see its attribute docs for the
+        ``None`` / ``0.00`` semantics.
+
+    Raises:
+        ValueError: When ``loan_inputs.anchor_events`` is empty (via
+            ``._periods._select_latest_anchor``).
+    """
+    prep = _build_forward_inputs(loan_inputs, as_of)
+
+    committed_forward = project_forward(
+        prep.projection_inputs,
+        monthly_override=prep.monthly_override,
+        extra_monthly=ZERO_MONEY,
+    )
+    committed_payoff_date = (
+        committed_forward[-1].payment_date if committed_forward else None
+    )
+
+    required_extra = required_extra_for_projection(
+        prep.projection_inputs,
+        target_date,
+        monthly_override=prep.monthly_override,
+    )
+    return TargetDateOutlook(
+        committed_payoff_date=committed_payoff_date,
+        required_extra=required_extra,
     )

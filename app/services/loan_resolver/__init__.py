@@ -87,7 +87,12 @@ The resolver collapses both onto a single derivation:
   Commit 16 owns the trueup write path via ``anchor_service``.
 """
 
-from ._payoff import PayoffScenarios, compute_payoff_scenarios
+from ._payoff import (
+    PayoffScenarios,
+    TargetDateOutlook,
+    compute_payoff_scenarios,
+    target_date_outlook,
+)
 from ._periods import LoanInputs
 from ._state import (
     LoanState,
@@ -99,7 +104,9 @@ __all__ = [
     "LoanInputs",
     "LoanState",
     "PayoffScenarios",
+    "TargetDateOutlook",
     "compute_monthly_payment_baseline",
     "compute_payoff_scenarios",
     "resolve_loan",
+    "target_date_outlook",
 ]

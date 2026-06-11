@@ -50,7 +50,51 @@
         data-accelerated='{{ chart_accelerated|tojson }}'></canvas>
 {% endif %}
 {% elif mode == "target_date" %}
-{% if required_extra is none %}
+{% if has_payments is defined and has_payments and outlook is not none %}
+{# F-27 reframe: the user has a recurring payment plan, so the headline
+   answers relative to THAT plan (committed scenario, same machinery as
+   the extra-payment tab); the raw no-plan figure stays as a secondary
+   line below.  Route guarantees outlook is set whenever has_payments. #}
+{% if outlook.required_extra is none %}
+<div class="alert alert-warning">
+  Target date is not achievable -- it may be in the past or too soon.
+</div>
+{% elif outlook.required_extra == 0 %}
+<div class="alert alert-success">
+  Your current payment plan already pays this loan off by the target date
+  {%- if outlook.committed_payoff_date %}
+  ({{ outlook.committed_payoff_date.strftime('%b %Y') }})
+  {%- endif %}.
+</div>
+{% else %}
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="text-muted small">Add on Top of Your Current Plan</div>
+    <div class="fs-5 fw-bold font-mono text-accent">
+      ${{ "{:,.2f}".format(outlook.required_extra) }}/mo
+    </div>
+  </div>
+  {% if outlook.committed_payoff_date %}
+  <div class="col-md-6">
+    <div class="text-muted small">Current Plan Pays Off</div>
+    <div class="fw-bold">
+      {{ outlook.committed_payoff_date.strftime('%b %Y') }}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% if required_extra is not none and required_extra > 0 %}
+<div class="text-muted small mt-2">
+  Without your recurring plan you would need
+  <span class="font-mono">${{ "{:,.2f}".format(required_extra) }}</span>/mo
+  extra over the contractual payment
+  {%- if total_monthly %}
+  (<span class="font-mono">${{ "{:,.2f}".format(total_monthly) }}</span> total)
+  {%- endif %}.
+</div>
+{% endif %}
+{% endif %}
+{% elif required_extra is none %}
 <div class="alert alert-warning">
   Target date is not achievable -- it may be in the past or too soon.
 </div>

@@ -17,6 +17,7 @@ from app.services.amortization_engine import (
     calculate_payoff_by_date,
     calculate_remaining_months,
     project_forward,
+    required_extra_for_projection,
 )
 
 
@@ -180,6 +181,102 @@ class TestPayoffByDate:
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
             )
+        )
+        assert result == Decimal("0.00")
+
+
+class TestRequiredExtraForProjection:
+    """The override-aware payoff search (F-27, "fix + reframe").
+
+    ``required_extra_for_projection`` is the factored-out core of
+    ``calculate_payoff_by_date`` plus an optional planned-outlay
+    ``monthly_override``: the baseline run and every binary-search
+    iteration honor the user's committed plan, so the returned extra is
+    the amount needed ON TOP of that plan (override months suppress the
+    searched extra, the composer's regression-prevention property).
+    """
+
+    TARGET = date(2041, 1, 1)
+
+    def _inputs(self):
+        """The $200k / 6.5% / 360-month state the C7-4 locks also use."""
+        contractual = calculate_monthly_payment(
+            Decimal("200000"), Decimal("0.065"), 360,
+        )
+        return ProjectionInputs(
+            starting_balance=Decimal("200000"),
+            starting_date=date(2026, 2, 1),
+            annual_rate=Decimal("0.065"),
+            remaining_months=360,
+            payment_day=1,
+            contractual_payment=contractual,
+        )
+
+    def _plan_override(self, inputs, months, extra):
+        """(year, month) -> contractual + extra for the first ``months``."""
+        override = {}
+        year, month = inputs.starting_date.year, inputs.starting_date.month
+        for _ in range(months):
+            override[(year, month)] = inputs.contractual_payment + extra
+            month += 1
+            if month == 13:
+                year, month = year + 1, 1
+        return override
+
+    def test_no_override_matches_calculate_payoff_by_date(self):
+        """Refactor lock: the core reproduces the wrapped function.
+
+        Same loan facts as ``test_achievable_target``'s regression lock
+        ($478.08), proving the extraction is behavior-preserving for
+        the raw (no-plan) path.
+        """
+        result = required_extra_for_projection(self._inputs(), self.TARGET)
+        assert result == Decimal("478.08")
+
+    def test_committed_plan_reduces_required_extra(self):
+        """A $500/mo plan lowers the extra needed to hit the target.
+
+        24 override months at contractual + $500 model a recurring
+        transfer template over its ~2-year projection horizon.  The
+        F-27 acceptance scenario: a user already paying extra must NOT
+        be told they need the full $478.08 again.  Correctness is
+        pinned by projecting the plan + found extra (payoff at or
+        before target) and minimality by two cents less failing (the
+        search converges to a one-cent bracket).
+        """
+        inputs = self._inputs()
+        override = self._plan_override(inputs, 24, Decimal("500"))
+
+        plan_extra = required_extra_for_projection(
+            inputs, self.TARGET, monthly_override=override,
+        )
+        raw_extra = required_extra_for_projection(inputs, self.TARGET)
+        assert plan_extra < raw_extra
+
+        achieved = project_forward(
+            inputs, monthly_override=override, extra_monthly=plan_extra,
+        )
+        assert achieved[-1].payment_date <= self.TARGET
+
+        under = project_forward(
+            inputs,
+            monthly_override=override,
+            extra_monthly=plan_extra - Decimal("0.02"),
+        )
+        assert under[-1].payment_date > self.TARGET
+
+    def test_plan_already_hits_target_returns_zero(self):
+        """A plan that retires the loan by the target needs no extra.
+
+        Overriding every month at contractual + $2000 pays the loan off
+        well before 2041, so the override-aware BASELINE run (not the
+        search) returns the 0.00 "already achieved" answer -- the
+        committed-plan analogue of ``test_target_after_standard_payoff``.
+        """
+        inputs = self._inputs()
+        override = self._plan_override(inputs, 360, Decimal("2000"))
+        result = required_extra_for_projection(
+            inputs, self.TARGET, monthly_override=override,
         )
         assert result == Decimal("0.00")
 

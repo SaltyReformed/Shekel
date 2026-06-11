@@ -1586,6 +1586,44 @@ class TestLoanDashboardRegression:
         html = resp.data.decode()
         # Should contain a dollar amount for the required extra payment.
         assert "$" in html or "extra" in html.lower()
+        # No recurring plan exists, so the raw single-number display
+        # renders -- not the plan-aware reframe.
+        assert "Required Extra Monthly Payment" in html
+        assert "Current Plan" not in html
+
+    def test_payoff_target_date_with_plan_shows_reframed_answer(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A recurring plan switches the target-date result to the reframe.
+
+        F-27 ("fix + reframe, show both"): with a projected transfer
+        paying the loan, the headline is the extra needed ON TOP of the
+        plan (plan months suppress the searched extra, the committed-
+        scenario convention) alongside the plan's own payoff date; the
+        raw no-plan figure stays as the secondary line.  Without the
+        fix, the route discarded ``ctx.loan.payments`` and showed only
+        the overstated raw number.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        # Projected (future) transfer well above the ~$1,580 contractual
+        # P&I, so the plan demonstrably contributes extra principal.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("2500.00"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "target_date", "target_date": "2040-06-01"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # The plan-aware headline and the plan payoff date render...
+        assert "Add on Top of Your Current Plan" in html
+        assert "Current Plan Pays Off" in html
+        # ...and the raw figure stays as the secondary line.
+        assert "Without your recurring plan" in html
 
     def test_payoff_zero_extra_payment_shows_standard_metrics(
         self, auth_client, seed_user, db, seed_periods,
