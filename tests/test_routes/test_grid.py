@@ -3260,10 +3260,17 @@ class TestTooltipContent:
 
     @staticmethod
     def _extract_txn_titles(html):
-        """Extract title attribute values from txn-cell divs."""
+        """Extract title attribute values from the grid's transaction cells.
+
+        The C3 rebuild (2026-06-11, docs/design/grid_audit.md "Rebuild
+        decisions") moved the tooltip from the old ``div.txn-cell``
+        wrapper onto the chip's ``span.txn-open`` click target; the
+        tooltip text itself is unchanged, so every assertion in this
+        class still checks the same content.
+        """
         import re
         return re.findall(
-            r'<div class="txn-cell"[^>]*title="([^"]*)"', html,
+            r'<span class="txn-open"[^>]*title="([^"]*)"', html,
         )
 
     def test_tooltip_contains_full_amount_with_cents(

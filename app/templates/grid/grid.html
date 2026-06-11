@@ -2,7 +2,7 @@
 {% block title %}Budget Grid -- Shekel{% endblock %}
 
 {% block content %}
-{% from "grid/_grid_row_macros.html" import render_row_cells %}
+{% from "grid/_grid_row_macros.html" import render_row_cells, mstart %}
 {# --- Scenario Controls (Phase 7) --- #}
 <div class="d-none" id="scenario-controls-slot">{# Phase 7: Scenario controls will go here. This row will contain: (1) a scenario selector dropdown, (2) a "Compare" mode toggle button, and (3) when compare mode is active, a second scenario selector for the comparison target. This row is separate from period navigation to avoid crowding the header. #}</div>
 {# --- Anchor Balance Display --- #}
@@ -97,12 +97,39 @@
   <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">
     <caption class="visually-hidden">Budget grid showing income and expenses by pay period</caption>
     <thead class="table-dark">
+      {# Month band -- the C3 "Month Spine" (rebuild decision 1):
+         one <th> per calendar month spanning its periods, so the eye
+         gets month landmarks across a wide window.  Pure display
+         grouping over the period start dates. #}
+      <tr class="month-band-row">
+        <th class="sticky-col month-band-corner" aria-hidden="true"></th>
+        {% set mb = namespace(label=none, span=0, first=true) %}
+        {% for period in periods %}
+          {% set lbl = period.start_date.strftime('%b')|upper
+             ~ ('' if period.start_date.year == today.year else " '" ~ period.start_date.strftime('%y')) %}
+          {% if lbl != mb.label %}
+            {% if mb.label is not none %}
+        <th scope="colgroup" colspan="{{ mb.span }}"
+            class="month-band{{ '' if mb.first else ' mstart' }}">{{ mb.label }}</th>
+              {% set mb.first = false %}
+            {% endif %}
+            {% set mb.label = lbl %}
+            {% set mb.span = 1 %}
+          {% else %}
+            {% set mb.span = mb.span + 1 %}
+          {% endif %}
+          {% if loop.last %}
+        <th scope="colgroup" colspan="{{ mb.span }}"
+            class="month-band{{ '' if mb.first else ' mstart' }}">{{ mb.label }}</th>
+          {% endif %}
+        {% endfor %}
+      </tr>
       <tr>
         <th scope="col" class="row-label-col sticky-col">Item</th>
         {% set current_year = today.year %}
         {% for period in periods %}
         <th scope="col" class="text-center period-header
-            {{ 'current-period' if period.id == current_period.id else '' }}">
+            {{ 'current-period' if period.id == current_period.id else '' }}{{ mstart(periods, loop.index0) }}">
           {% if period.start_date.year == current_year %}
           <div class="fw-bold">{{ period.start_date.strftime('%-m/%-d') }}</div>
           {% else %}
@@ -150,7 +177,8 @@
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
-                             entry_sums, TXN_TYPE_INCOME, account, today) }}
+                             entry_sums, TXN_TYPE_INCOME, account, today,
+                             current_period_id=current_period.id) }}
       {% endfor %}
 
       {# --- Total Income Subtotal (server-side Decimal) --- #}
@@ -158,7 +186,7 @@
         <th class="sticky-col row-label fw-bold">Total Income</th>
         {% for period in periods %}
           {% set val = subtotals[period.id].income %}
-          <td class="text-end font-mono fw-bold">
+          <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
             {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
           </td>
         {% endfor %}
@@ -189,7 +217,8 @@
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
-                             entry_sums, TXN_TYPE_EXPENSE, account, today) }}
+                             entry_sums, TXN_TYPE_EXPENSE, account, today,
+                             current_period_id=current_period.id) }}
       {% endfor %}
 
       {# --- Total Expenses Subtotal (server-side Decimal) --- #}
@@ -197,7 +226,7 @@
         <th class="sticky-col row-label fw-bold">Total Expenses</th>
         {% for period in periods %}
           {% set val = subtotals[period.id].expense %}
-          <td class="text-end font-mono fw-bold">
+          <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
             {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
           </td>
         {% endfor %}
@@ -208,7 +237,7 @@
         <th class="sticky-col row-label fw-bold">Net Cash Flow</th>
         {% for period in periods %}
           {% set net = subtotals[period.id].net %}
-          <td class="text-end font-mono fw-bold {{ 'balance-negative' if net < 0 else '' }}">
+          <td class="text-end font-mono fw-bold {{ 'balance-negative' if net < 0 else '' }}{{ mstart(periods, loop.index0) }}">
             {% if net %}
               {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
               ${{ "{:,.0f}".format(net) }}
