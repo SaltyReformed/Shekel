@@ -2011,7 +2011,26 @@ soft-delete callable; design discussion warranted.
   that plan (and Q-1 of the architectural plan
   `docs/plans/2026-05-21-amortization-engine-split-replay-projection.md`);
   Commit 7 is a behavior-preserving refactor only.
-- **Status:** not addressed; **PAUSED for UX reconsideration (2026-06-09).**
+- **Status:** **RESOLVED (2026-06-11)** -- developer selected "fix + reframe,
+  show both" from the Reconsideration note's option space (deep-hunt Batch AJ;
+  register: `docs/audits/pylint-cleanup/deep-quality-hunt.md`).  The engine
+  core was factored out as `required_extra_for_projection` (override-aware
+  baseline + search; `calculate_payoff_by_date` delegates, C7 locks green),
+  a new `loan_resolver.target_date_outlook` answers from the SAME
+  replay/override prep the committed scenario uses (plan payoff date +
+  additional extra on top of the plan), and the target-date partial leads
+  with the plan-aware answer while keeping the raw no-plan figure as a
+  secondary line.  In-window convention (overrides span the recurrence
+  horizon; contractual beyond) -- the same convention the extra-payment
+  tab's committed scenario already ships.  Nuance surfaced during testing:
+  when a plan's window contribution is SMALLER than what the raw extra
+  would have added over those months, the per-month top-up is legitimately
+  HIGHER than the raw figure (override months suppress the searched extra,
+  squeezing it into fewer months); both numbers render, so the display
+  stays honest either way.  The history below is retained for the record.
+
+  *(Superseded original status:)* not addressed; **PAUSED for UX
+  reconsideration (2026-06-09).**
   The refactor onto `project_forward` was intentionally a pure structural
   migration; introducing `monthly_override` for projected payments here is a
   separate user-facing behavior change.  A 2026-06-09 implementation attempt
