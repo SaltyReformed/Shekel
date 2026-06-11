@@ -452,7 +452,7 @@ class TestPayoffByDateProjectForward:
         """
         engine_path = (
             Path(__file__).resolve().parent.parent.parent
-            / "app" / "services" / "amortization_engine.py"
+            / "app" / "services" / "amortization_engine" / "_payoff.py"
         )
         source = engine_path.read_text(encoding="utf-8")
         marker = "def calculate_payoff_by_date("
@@ -1348,15 +1348,15 @@ class TestProjectForward:
         rounding surface inside the new primitive.
         """
         engine_source = Path(
-            "app/services/amortization_engine.py"
+            "app/services/amortization_engine/_projection.py"
         ).read_text(encoding="utf-8")
         # Slice out the project_forward body for the assertion.  The
         # body ends at the next top-level ``def`` or ``class`` after
-        # ``project_forward`` -- the ``PayoffRequest`` dataclass, which
-        # the payoff-by-date param-object refactor placed between
-        # ``project_forward`` and ``calculate_payoff_by_date``.  Taking
-        # the min of both markers keeps the slice correct regardless of
-        # what construct comes next.
+        # ``project_forward``, or at end-of-file -- since the package
+        # split, ``project_forward`` is the last definition in
+        # ``_projection.py`` (the payoff layer lives in ``_payoff.py``).
+        # Taking the min of both markers keeps the slice correct
+        # regardless of what construct comes next.
         marker = "def project_forward("
         start = engine_source.index(marker)
         next_def = engine_source.find("\ndef ", start + len(marker))
