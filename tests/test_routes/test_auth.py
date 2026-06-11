@@ -1644,6 +1644,51 @@ class TestMfaDisable:
             assert config.backup_codes is None
             assert config.confirmed_at is None
 
+    def test_mfa_disable_clears_pending_material(
+        self, app, auth_client, seed_user, monkeypatch
+    ):
+        """A successful disable also scrubs pending-setup ciphertext.
+
+        Normal flows cannot leave pending material on an enabled row
+        (/mfa/setup is blocked while enabled; /mfa/confirm clears
+        pending on every exit), but the disable must still scrub it --
+        defense in depth via the clear_mfa_material rule shared with
+        scripts/reset_mfa.py, so no encrypted secret of any kind
+        survives a disable at rest.
+        """
+        with app.app_context():
+            _, mfa_config = self._enable_mfa(seed_user["user"].id)
+            mfa_config.pending_secret_encrypted = (
+                mfa_service.encrypt_secret("ORSXG5A2ORSXG5A2")
+            )
+            mfa_config.pending_secret_expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=15)
+            )
+            db.session.commit()
+            monkeypatch.setattr(
+                mfa_service, "verify_totp_code",
+                lambda mc, c: TotpVerificationResult.ACCEPTED,
+            )
+
+            response = auth_client.post("/mfa/disable", data={
+                "current_password": "testpass",
+                "totp_code": "123456",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config.is_enabled is False
+            assert config.totp_secret_encrypted is None
+            assert config.backup_codes is None
+            assert config.confirmed_at is None
+            assert config.last_totp_timestep is None
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None
+
     def test_mfa_disable_wrong_password(self, app, auth_client, seed_user):
         """POST /mfa/disable with wrong password shows error."""
         with app.app_context():

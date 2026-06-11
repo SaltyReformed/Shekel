@@ -5,10 +5,13 @@ Emergency script to disable MFA for a user when backup codes are
 exhausted and the TOTP device is lost.  Requires direct database access.
 
 The reset clears ALL stored MFA material -- the encrypted TOTP secret,
-the hashed backup codes, the confirmation timestamp, and the
-replay-prevention step boundary -- even when ``is_enabled`` is already
-``False`` but residual material lingers on the row.  An emergency
-reset must leave no decryptable secret at rest.
+the hashed backup codes, the confirmation timestamp, the
+replay-prevention step boundary, and any pending setup ciphertext --
+even when ``is_enabled`` is already ``False`` but residual material
+lingers on the row.  An emergency reset must leave no decryptable
+secret at rest.  The field set is owned by
+``mfa_service.clear_mfa_material`` / ``has_mfa_material``, shared with
+the app's ``/mfa/disable`` route so the two paths cannot drift.
 
 Usage:
     python scripts/reset_mfa.py <user_email>
@@ -31,13 +34,17 @@ def reset_mfa(email: str | None) -> None:
     """Disable MFA and clear all stored MFA material for the user.
 
     Clears the encrypted TOTP secret, hashed backup codes, confirmation
-    timestamp, and replay-prevention step boundary.  The clear also
-    runs when ``is_enabled`` is already ``False`` but residual material
-    remains (an orphaned secret from a manual DB intervention or an
-    interrupted disable flow): leaving an encrypted TOTP secret at rest
-    after a reset would silently revive the old secret if the row were
-    ever re-enabled, and keeps secret material alive past the moment
-    the operator believes it was destroyed.
+    timestamp, replay-prevention step boundary, and any pending setup
+    ciphertext via the ``mfa_service.clear_mfa_material`` rule shared
+    with the app's ``/mfa/disable`` route.  The clear also runs when
+    ``is_enabled`` is already ``False`` but residual material remains
+    (an orphaned secret from a manual DB intervention, an interrupted
+    disable flow, or an abandoned ``/mfa/setup`` whose encrypted
+    pending secret would otherwise sit at rest indefinitely): leaving
+    an encrypted secret at rest after a reset would silently revive
+    the old secret if the row were ever re-enabled, and keeps secret
+    material alive past the moment the operator believes it was
+    destroyed.
 
     Args:
         email: The email address of the user to reset.  ``None`` and
@@ -54,6 +61,7 @@ def reset_mfa(email: str | None) -> None:
     # pylint: disable=import-outside-toplevel
     from app.extensions import db
     from app.models.user import MfaConfig, User
+    from app.services import mfa_service
     from app.utils.log_events import AUTH, log_event
     # pylint: enable=import-outside-toplevel
 
@@ -66,30 +74,22 @@ def reset_mfa(email: str | None) -> None:
     # "Nothing to clear" means no row at all, or a row already in the
     # fully-reset state.  Checking every clearable column (not just
     # ``is_enabled``) is deliberate: a disabled row can still carry an
-    # orphaned encrypted secret, and the reset must remove it.
+    # orphaned encrypted secret or an abandoned pending-setup
+    # ciphertext, and the reset must remove both.  The field set lives
+    # in mfa_service so this check and the clear below cannot disagree.
     nothing_to_clear = mfa_config is None or (
         not mfa_config.is_enabled
-        and mfa_config.totp_secret_encrypted is None
-        and mfa_config.backup_codes is None
-        and mfa_config.confirmed_at is None
-        and mfa_config.last_totp_timestep is None
+        and not mfa_service.has_mfa_material(mfa_config)
     )
     if nothing_to_clear:
         print(f"MFA is not enabled for {email}.")
         return
 
-    # Clear all MFA fields.  ``last_totp_timestep`` is reset alongside
-    # the secret because the value records the highest step consumed
-    # against the cleared secret -- carrying it forward to a re-
-    # enrollment under a fresh secret could lock the user out if their
-    # new device is set to a clock that produces codes for an earlier
-    # step.  See commit C-09 of the 2026-04-15 security remediation
-    # plan for the column's contract.
-    mfa_config.totp_secret_encrypted = None
-    mfa_config.is_enabled = False
-    mfa_config.backup_codes = None
-    mfa_config.confirmed_at = None
-    mfa_config.last_totp_timestep = None
+    # Clear all MFA material + disable, via the rule shared with the
+    # /mfa/disable route (see clear_mfa_material's docstring for the
+    # per-field rationale, including the C-09 last_totp_timestep
+    # contract).
+    mfa_service.clear_mfa_material(mfa_config)
     db.session.commit()
 
     # Audit trail for the reset action.

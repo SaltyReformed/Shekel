@@ -522,9 +522,13 @@ def mfa_disable():
 def mfa_disable_confirm():
     """Process MFA disable after verifying password and TOTP code.
 
-    Clears the TOTP secret, backup codes, the recorded replay-prevention
-    step, and sets is_enabled to False.  The TOTP step is verified
-    through :func:`mfa_service.verify_totp_code` with replay prevention
+    Clears every piece of stored MFA material -- the TOTP secret,
+    backup codes, the recorded replay-prevention step, and any pending
+    setup ciphertext -- and sets is_enabled to False, via the
+    :func:`mfa_service.clear_mfa_material` rule shared with
+    ``scripts/reset_mfa.py`` so the route and the emergency CLI cannot
+    drift on the field set.  The TOTP step is verified through
+    :func:`mfa_service.verify_totp_code` with replay prevention
     enforced -- an attacker who has captured the user's password and a
     recently-used TOTP code cannot use that code to disable MFA, the
     same defence that ``/mfa/verify`` provides at login.
@@ -573,17 +577,11 @@ def mfa_disable_confirm():
         flash("Invalid authentication code.", "danger")
         return redirect(url_for("auth.mfa_disable"))
 
-    # Clear all MFA fields.  ``last_totp_timestep`` is reset to NULL
-    # so that a re-enrollment under a fresh secret does not inherit
-    # the step boundary recorded against the now-cleared secret -- the
-    # two values are unrelated and a stale boundary on the new secret
-    # would be a UX bug (every new code might be rejected as a replay
-    # of the old secret's last step).
-    mfa_config.totp_secret_encrypted = None
-    mfa_config.is_enabled = False
-    mfa_config.backup_codes = None
-    mfa_config.confirmed_at = None
-    mfa_config.last_totp_timestep = None
+    # Clear all MFA material + disable, via the rule shared with the
+    # emergency reset CLI (see clear_mfa_material's docstring for the
+    # per-field rationale, including the last_totp_timestep reset and
+    # the pending-setup ciphertext).
+    mfa_service.clear_mfa_material(mfa_config)
     # Stamp the security-event columns in the same transaction as
     # the MFA-clear so the banner the user sees on next page load
     # is anchored to the same moment the mfa_configs row was

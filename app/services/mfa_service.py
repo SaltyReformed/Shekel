@@ -411,3 +411,83 @@ def verify_backup_code(code: str, hashed_codes: list[str]) -> int:
         if bcrypt.checkpw(code.encode("utf-8"), hashed.encode("utf-8")):
             return idx
     return -1
+
+
+# Every MfaConfig column that holds MFA material -- secret ciphertexts,
+# backup-code hashes, and the timestamps/counters recorded against them.
+# The single definition of "MFA material" shared by clear_mfa_material
+# and has_mfa_material so the clear and the residue check can never
+# disagree on the field set (the historical app-vs-script drift left an
+# orphaned totp_secret_encrypted behind exactly because two hand-rolled
+# copies of this list diverged).  ``is_enabled`` is deliberately NOT
+# material: it is workflow state, handled separately by the clear and
+# checked separately by callers.
+_MFA_MATERIAL_FIELDS = (
+    "totp_secret_encrypted",
+    "backup_codes",
+    "confirmed_at",
+    "last_totp_timestep",
+    "pending_secret_encrypted",
+    "pending_secret_expires_at",
+)
+
+
+def clear_mfa_material(mfa_config: MfaConfig) -> None:
+    """Disable MFA and clear every piece of stored MFA material.
+
+    The single clear rule shared by the app's ``/mfa/disable`` route
+    and the emergency ``scripts/reset_mfa.py`` CLI, so the two paths
+    cannot drift on which fields a disable must scrub.  Sets
+    ``is_enabled`` to ``False`` and nulls every
+    :data:`_MFA_MATERIAL_FIELDS` column:
+
+    * ``totp_secret_encrypted`` / ``backup_codes`` -- the credentials
+      themselves; no decryptable or verifiable secret may remain at
+      rest after a disable.
+    * ``confirmed_at`` -- the enrolment timestamp of the now-cleared
+      secret.
+    * ``last_totp_timestep`` -- records the highest step consumed
+      against the cleared secret; carrying it forward to a
+      re-enrolment under a fresh secret could reject every new code
+      as a replay of the old secret's last step (commit C-09).
+    * ``pending_secret_encrypted`` / ``pending_secret_expires_at`` --
+      an in-flight or abandoned ``/mfa/setup`` ciphertext.  The
+      expiry only gates promotion at ``/mfa/confirm``; without this
+      clear the encrypted pending secret would survive at rest until
+      the next setup overwrites it.
+
+    Mutates the row in place and does NOT commit -- the clear joins
+    the caller's transaction so it lands atomically with the caller's
+    own bookkeeping (the route's security-event stamp, the script's
+    standalone commit).
+
+    Args:
+        mfa_config: The user's MfaConfig row to scrub.
+    """
+    for field in _MFA_MATERIAL_FIELDS:
+        setattr(mfa_config, field, None)
+    mfa_config.is_enabled = False
+
+
+def has_mfa_material(mfa_config: MfaConfig) -> bool:
+    """Report whether any clearable MFA material remains on the row.
+
+    The residue-detection companion to :func:`clear_mfa_material`,
+    reading the same :data:`_MFA_MATERIAL_FIELDS` set.  Used by
+    ``scripts/reset_mfa.py`` to decide whether a row that is already
+    ``is_enabled=False`` still carries material an emergency reset
+    must scrub (an orphaned secret from a manual DB intervention, or
+    a pending ciphertext from an abandoned setup).  ``is_enabled``
+    itself is workflow state, not material -- callers check it
+    separately.
+
+    Args:
+        mfa_config: The user's MfaConfig row to inspect.
+
+    Returns:
+        True when at least one material field is non-NULL.
+    """
+    return any(
+        getattr(mfa_config, field) is not None
+        for field in _MFA_MATERIAL_FIELDS
+    )
