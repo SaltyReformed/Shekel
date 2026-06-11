@@ -180,7 +180,7 @@ def _load_debt_accounts(user_id):
     return debt_accounts, has_arm
 
 
-def _first_validation_message(exc):
+def _schema_first_validation_message(exc):
     """Return the first user-facing message from a ``ValidationError``.
 
     ``DebtStrategyCalculateSchema`` raises Marshmallow's standard
@@ -191,7 +191,11 @@ def _first_validation_message(exc):
     ``_schema`` key first (for the ``custom`` + missing
     ``custom_order`` case which is the most common user mistake),
     then the per-field messages in alphabetical order so two
-    test runs see the same response.
+    test runs see the same response.  The name carries that policy
+    deliberately: ``app/routes/auth/_helpers.py`` has a same-purpose
+    ``_first_validation_message`` with DIFFERENT semantics
+    (depth-first insertion order), and the distinct names keep a
+    grep-driven refactor from conflating the two.
 
     The fallback "Invalid input" handles a future schema change
     that produces an empty ``messages`` dict (Marshmallow itself
@@ -359,7 +363,7 @@ def _parse_calculate_form(form):
     try:
         data = _calculate_schema.load(form)
     except ValidationError as exc:
-        raise _ResultsError(_first_validation_message(exc)) from exc
+        raise _ResultsError(_schema_first_validation_message(exc)) from exc
 
     extra_monthly: Decimal = data["extra_monthly"]
     strategy: str = data["strategy"]
