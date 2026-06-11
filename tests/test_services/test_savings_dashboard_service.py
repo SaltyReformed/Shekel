@@ -1122,6 +1122,64 @@ class TestDebtSummary:
             )
             assert result["debt_summary"] is None
 
+    def test_narrow_producer_matches_full_dashboard(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """#82: compute_debt_summary equals the full build's debt_summary.
+
+        The equivalence contract behind the narrow producer: with a loan
+        account, a salary profile, AND the seed user's non-loan accounts
+        present, the loan-only projection run must produce exactly the
+        dict the full ``compute_dashboard_data`` build emits -- every
+        money figure (total_debt, total_monthly_payments,
+        weighted_avg_rate, projected_debt_free_date) AND the three DTI
+        keys, since both route through the shared
+        ``_debt_summary_with_dti``.  The salary makes the DTI leg
+        non-vacuous: $78,000 / 26 = $3,000 gross biweekly -> $6,500
+        gross monthly, so ``gross_monthly_income`` / ``dti_ratio`` /
+        ``dti_label`` are live Decimals on both sides, not None == None.
+        Dict equality (not per-key spot checks) so a future key added to
+        one path but not the other fails here.
+        """
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            db.session.add(SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="Equivalence Salary",
+                annual_salary=Decimal("78000.00"),
+                state_code="NC",
+            ))
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+
+            full = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )["debt_summary"]
+            narrow = savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
+            )
+            assert full is not None
+            # The DTI leg is live, not the vacuous None == None.
+            assert full["gross_monthly_income"] == Decimal("6500.00")
+            assert narrow == full
+
+    def test_narrow_producer_none_when_no_loans(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """#82: the narrow producer's no-loan early return yields None.
+
+        Mirrors ``test_debt_summary_none_when_no_loans`` for the narrow
+        path: with no LoanParams rows the producer returns ``None``
+        before any per-account projection or breakdown computation runs
+        (the same ``None`` the full build surfaces as ``debt_summary``).
+        """
+        with app.app_context():
+            assert savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
+            ) is None
+
     def test_debt_summary_single_loan(
         self, app, db, seed_user, seed_periods,
     ):
@@ -1786,12 +1844,15 @@ class TestDTIRaiseAware:
         Checks two regression guards on
         ``app/services/savings_dashboard_service.py``:
 
-        1. ``compute_dashboard_data`` reads
+        1. The shared DTI applier ``_debt_summary_with_dti`` (the single
+           home of the debt/DTI rule behind both
+           ``compute_dashboard_data`` and the narrow #82
+           ``compute_debt_summary``) reads
            ``current_breakdown.earnings.gross_biweekly`` (the engine-derived
-           value introduced by Commit 26) and does NOT subscript
-           ``params`` with the ``"salary_gross_biweekly"`` key (the
-           off-engine value still used by the investment-projection
-           path -- F-20 follow-up).
+           value introduced by Commit 26), and NONE of the three
+           functions subscripts ``params`` with the
+           ``"salary_gross_biweekly"`` key (the off-engine value still
+           used by the investment-projection path -- F-20 follow-up).
         2. No bare ``Decimal("26") / Decimal("12")`` literal remains
            anywhere in the file: the biweekly-to-monthly factor lives
            in ``app/utils/money.py`` as
@@ -1818,48 +1879,57 @@ class TestDTIRaiseAware:
         )
 
         # Guard 1a: positive lock -- the engine breakdown attribute is
-        # read in compute_dashboard_data.
-        source = inspect.getsource(svc.compute_dashboard_data)
+        # read in the shared DTI applier (the #82 refactor moved the
+        # expression out of compute_dashboard_data into the single
+        # helper both entry points route through).
+        source = inspect.getsource(_orchestrator._debt_summary_with_dti)
         assert "current_breakdown.earnings.gross_biweekly" in source, (
             "DTI block must read gross_biweekly from the paycheck "
             "engine breakdown (MED-06 / F-032)."
         )
 
-        # Guard 1b: negative lock -- compute_dashboard_data must not read
-        # the off-engine ``salary_gross_biweekly`` for DTI, by either the
-        # legacy dict subscript ``params["salary_gross_biweekly"]`` or the
-        # current dataclass attribute ``params.salary_gross_biweekly``
-        # (``params`` became the frozen ``_AccountParams`` in the
-        # type-precision quality pass; the attribute form is the access a
-        # regression would now use).
+        # Guard 1b: negative lock -- neither entry point nor the shared
+        # DTI applier may read the off-engine ``salary_gross_biweekly``,
+        # by either the legacy dict subscript
+        # ``params["salary_gross_biweekly"]`` or the current dataclass
+        # attribute ``params.salary_gross_biweekly`` (``params`` became
+        # the frozen ``_AccountParams`` in the type-precision quality
+        # pass; the attribute form is the access a regression would now
+        # use).  ``compute_debt_summary`` is scanned too so the narrow
+        # #82 path cannot regress independently.
+        dti_fn_names = {
+            "compute_dashboard_data",
+            "compute_debt_summary",
+            "_debt_summary_with_dti",
+        }
         tree = ast.parse(inspect.getsource(_orchestrator))
-        target_fn = None
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.FunctionDef)
-                    and node.name == "compute_dashboard_data"):
-                target_fn = node
-                break
-        assert target_fn is not None, (
-            "compute_dashboard_data not found in module source"
+        target_fns = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name in dti_fn_names
+        ]
+        assert len(target_fns) == len(dti_fn_names), (
+            "expected DTI functions not all found in module source"
         )
-        for node in ast.walk(target_fn):
-            reads_off_engine = (
-                isinstance(node, ast.Subscript)
-                and isinstance(node.value, ast.Name)
-                and node.value.id == "params"
-                and isinstance(node.slice, ast.Constant)
-                and node.slice.value == "salary_gross_biweekly"
-            ) or (
-                isinstance(node, ast.Attribute)
-                and isinstance(node.value, ast.Name)
-                and node.value.id == "params"
-                and node.attr == "salary_gross_biweekly"
-            )
-            if reads_off_engine:
-                raise AssertionError(
-                    "compute_dashboard_data must not read the off-engine "
-                    "salary_gross_biweekly value for DTI (MED-06 / F-032)."
+        for target_fn in target_fns:
+            for node in ast.walk(target_fn):
+                reads_off_engine = (
+                    isinstance(node, ast.Subscript)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "params"
+                    and isinstance(node.slice, ast.Constant)
+                    and node.slice.value == "salary_gross_biweekly"
+                ) or (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "params"
+                    and node.attr == "salary_gross_biweekly"
                 )
+                if reads_off_engine:
+                    raise AssertionError(
+                        f"{target_fn.name} must not read the off-engine "
+                        "salary_gross_biweekly value for DTI "
+                        "(MED-06 / F-032)."
+                    )
 
         # Guard 2: package-wide -- no bare 26/12 literal in any
         # sub-module.  Reads every .py file in the package directory so

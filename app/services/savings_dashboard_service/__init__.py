@@ -36,15 +36,18 @@ Module map:
 * :mod:`app.services.savings_dashboard_service._display` -- account
   grouping for the template.
 * :mod:`app.services.savings_dashboard_service._orchestrator` --
-  ``compute_dashboard_data``, the public entry point.
+  ``compute_dashboard_data`` (the full-page entry point) and
+  ``compute_debt_summary`` (the narrow debt-card producer behind
+  ``dashboard_service._get_debt_summary``; deep-hunt #82).
 """
 
-# Re-export the public entry point so consumers that
+# Re-export the public entry points so consumers that
 # ``from app.services import savings_dashboard_service`` (notably
 # ``app/routes/savings.py`` and ``dashboard_service``) resolve
-# ``compute_dashboard_data`` without an edit.
+# them without an edit.
 from app.services.savings_dashboard_service._orchestrator import (
     compute_dashboard_data,
+    compute_debt_summary,
 )
 
-__all__ = ["compute_dashboard_data"]
+__all__ = ["compute_dashboard_data", "compute_debt_summary"]

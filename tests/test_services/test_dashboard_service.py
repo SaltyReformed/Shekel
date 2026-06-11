@@ -984,14 +984,15 @@ class TestDebtSummary:
         (ValueError, KeyError, AttributeError) and returned None, which
         silently blanked the debt panel and was indistinguishable from the
         legitimate no-debt None.  With the broad except removed, a genuine
-        programming bug inside compute_dashboard_data must surface, not
-        vanish.  Patching the producer to raise KeyError proves the masking
-        is gone: under the old code this returned None and the test would
-        fail; now it raises.
+        programming bug inside the producer must surface, not vanish.
+        Patching the producer (``compute_debt_summary``, the narrow #82
+        entry point the wrapper now calls) to raise KeyError proves the
+        masking is gone: under the old code this returned None and the
+        test would fail; now it raises.
         """
         with app.app_context():
             with patch(
-                "app.services.savings_dashboard_service.compute_dashboard_data",
+                "app.services.savings_dashboard_service.compute_debt_summary",
                 side_effect=KeyError("simulated computation bug"),
             ):
                 with pytest.raises(KeyError):
