@@ -651,7 +651,7 @@ def apply_raises(base_salary, raises, as_of):
         raises,
         key=lambda r: (
             r.effective_year,
-            r.effective_month or 0,
+            r.effective_month,
             # Flat raises sort ahead of percentage within one effective
             # date so the documented flat-before-percentage order holds
             # regardless of DB row order (M-01 / deep-hunt #12).  A raise
