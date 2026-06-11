@@ -82,13 +82,18 @@ class TestCalculateMonthlyEscrow:
         assert result == Decimal("0.00")
 
     def test_negative_annual_amount(self):
-        """Component with negative annual amount is accepted without validation.
+        """Negative annual amount passes through sign-agnostically.
 
-        The source does not guard against negative annual_amount values.
-        This means calculate_monthly_escrow silently returns a negative result.
-        Expected: Decimal("-100.00") for annual_amount=-1200.
-        # BUG: negative annual_amount is accepted without validation --
-        # consider adding a guard in the service.
+        Pins the service-layer contract: the calculator divides
+        whatever amount it is handed, so a negative component yields a
+        negative monthly figure (-1200 / 12 = -100.00).  This is NOT a
+        reachable production state: the boundary rejects negative
+        amounts twice -- ``EscrowComponentSchema.annual_amount``
+        requires ``Range(min=0)`` (validation/loans.py) and the DB
+        enforces ``ck_escrow_components_nonneg_annual_amount``
+        (``annual_amount >= 0``, models/loan_features.py).
+        Sign-guarding is the boundary's job; the service stays a pure
+        function of its inputs.
         """
         components = [_comp("Refund", "-1200")]
         result = calculate_monthly_escrow(components)

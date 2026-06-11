@@ -2704,3 +2704,102 @@ class TestLoanProjectedBalanceDispatcher:
                 seed_user["user"].id, today.year,
             )
             assert "debt_progress" in ye_result
+
+
+class TestInvestmentHorizons:
+    """DH-#35 follow-up: pin the investment-branch 3/6/12 horizon mapping.
+
+    The ``79181a4`` DRY collapse routed
+    ``_projections._investment_horizons`` through the shared
+    ``period_projections.project_balance_horizons`` with equivalence
+    verified by code analysis only -- the investment branch had no test
+    (the register's own caveat).  These tests close that gap: a
+    hand-built growth projection (real :class:`ProjectedBalance` rows,
+    so the adapter's ``pb.period_id`` / ``pb.end_balance`` reads are
+    pinned against the engine's actual row type) must surface at the
+    biweekly horizon offsets 6 / 13 / 26 from the current period
+    (~3 / 6 / 12 months at 26 periods per year).
+    """
+
+    @staticmethod
+    def _period(period_id, period_index):
+        """Synthetic PayPeriod stand-in (id + period_index reads only)."""
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        return SimpleNamespace(id=period_id, period_index=period_index)
+
+    @staticmethod
+    def _row(period_id, end_balance):
+        """Real ProjectedBalance row with only the read fields varying."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.growth_engine import ProjectedBalance
+        return ProjectedBalance(
+            period_id=period_id,
+            start_balance=Decimal("0.00"),
+            growth=Decimal("0.00"),
+            contribution=Decimal("0.00"),
+            employer_contribution=Decimal("0.00"),
+            end_balance=end_balance,
+            ytd_contributions=Decimal("0.00"),
+            contribution_limit_remaining=Decimal("0.00"),
+        )
+
+    def test_pins_three_six_twelve_month_balances(self):
+        """All three horizons present -> exact end balances surfaced.
+
+        Current period_index = 10, so the horizon targets are the
+        periods at indices 16 / 23 / 36 (offsets 6 / 13 / 26).  The
+        projection's end balances there are 1100.00 / 1250.00 /
+        1600.00; the current period's own row (1000.00) must NOT
+        appear -- offset 0 is not a horizon.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._projections import (
+            _investment_horizons,
+        )
+        current = self._period(100, 10)
+        all_periods = [
+            current,
+            self._period(116, 16),
+            self._period(123, 23),
+            self._period(136, 36),
+        ]
+        projection = [
+            self._row(100, Decimal("1000.00")),
+            self._row(116, Decimal("1100.00")),
+            self._row(123, Decimal("1250.00")),
+            self._row(136, Decimal("1600.00")),
+        ]
+        assert _investment_horizons(projection, all_periods, current) == {
+            "3 months": Decimal("1100.00"),
+            "6 months": Decimal("1250.00"),
+            "1 year": Decimal("1600.00"),
+        }
+
+    def test_omits_horizons_beyond_the_projection(self):
+        """A horizon with no projected row is omitted, not zeroed.
+
+        The 1-year target period (index 36) exists in ``all_periods``
+        but the projection ends at index 23, so only the 3- and
+        6-month labels appear -- the omission contract the dashboard
+        template relies on (it renders only the horizons present).
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._projections import (
+            _investment_horizons,
+        )
+        current = self._period(100, 10)
+        all_periods = [
+            current,
+            self._period(116, 16),
+            self._period(123, 23),
+            self._period(136, 36),
+        ]
+        projection = [
+            self._row(116, Decimal("1100.00")),
+            self._row(123, Decimal("1250.00")),
+        ]
+        assert _investment_horizons(projection, all_periods, current) == {
+            "3 months": Decimal("1100.00"),
+            "6 months": Decimal("1250.00"),
+        }
