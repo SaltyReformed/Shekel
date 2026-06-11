@@ -67,8 +67,8 @@ for `app/services` / `app/routes` / test-assertion changes.
 | Screen / workstream | Status |
 | ------------------- | ------ |
 | Foundation (design language, skill, dashboard audit) | DONE -- merged via PR #29 |
-| Steel Ink theme (app-wide token swap) | BUILT -- on `feat/grid-rebuild` |
-| **Grid** (first rebuild target) | BUILT, pending developer acceptance -- branch `feat/grid-rebuild` pushed (9 commits, full suite green). All 6 Loop B phases + audit fix-list items 1-5 done; decisions in `grid_audit.md` |
+| Steel Ink theme (app-wide token swap) | MERGED to `dev` via PR #31 (2026-06-11) |
+| **Grid** (first rebuild target) | MERGED to `dev` via PR #31 (2026-06-11, CI green). All 6 Loop B phases + audit fix-list items 1-5 done; decisions in `grid_audit.md`. Ships to prod with the next `dev` -> `main` PR |
 | **Dashboard** (second target) | NEXT -- follow the "Dashboard playbook" below; audit exists (`dashboard_card_audit.md`); leading direction: the "E2" horizon strip + alert line from the grid's Loop A rounds |
 | Remaining screens | PROVISIONAL ORDER from the original plan (confirm per screen at each start): accounts, savings, salary, analytics, retirement, investment, loan, settings. The app-wide navbar/IA rework is its own area. Screens the original list omits (recurring, transfers, obligations, companion, calendar) slot in per developer call. |
 
