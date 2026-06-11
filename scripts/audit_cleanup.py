@@ -26,11 +26,22 @@ import logging
 import os
 import sys
 
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
 # Ensure the project root is on sys.path so 'app' is importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Pylint: wrong-import-position -- the sys.path bootstrap above must run
+# first so ``scripts`` resolves when invoked as
+# ``python scripts/audit_cleanup.py`` (sys.path[0] is scripts/, not the
+# repo root, in that mode).
+# pylint: disable=wrong-import-position
+from scripts._script_lib import run_in_app_context
+# pylint: enable=wrong-import-position
 
-def parse_args(argv=None):
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
 
     Args:
@@ -59,7 +70,7 @@ def parse_args(argv=None):
     return args
 
 
-def execute_cleanup(db_session, days, dry_run=False):
+def execute_cleanup(db_session: Session, days: int, dry_run: bool = False) -> int:
     """Run the audit log cleanup against an existing database session.
 
     This is the core logic, separated from app creation so it can be
@@ -68,12 +79,26 @@ def execute_cleanup(db_session, days, dry_run=False):
     Args:
         db_session: A SQLAlchemy session (e.g., ``db.session``).
         days: Number of days to retain.  Rows older than this are deleted.
+            Must be at least 1 -- zero or negative values are rejected
+            before any DB work because they would delete the entire
+            audit log (a negative interval shifts the cutoff into the
+            future, matching every row).  Same bound parse_args
+            enforces at the CLI.
         dry_run: If True, only count rows without deleting.
 
     Returns:
         The number of rows deleted (or that would be deleted in dry-run mode).
+
+    Raises:
+        ValueError: If ``days`` is less than 1.
     """
-    from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+    if days < 1:
+        raise ValueError(
+            f"days must be at least 1 (got {days}): a zero or negative "
+            "retention period would delete the entire audit log -- "
+            "now() - make_interval(days => negative) is a FUTURE cutoff "
+            "that matches every row."
+        )
 
     logger = logging.getLogger(__name__)
 
@@ -111,7 +136,7 @@ def execute_cleanup(db_session, days, dry_run=False):
     return count
 
 
-def run_cleanup(days, dry_run=False):
+def run_cleanup(days: int, dry_run: bool = False) -> int:
     """Create the app and execute the audit log cleanup.
 
     Convenience wrapper for CLI use.  Tests should call
@@ -119,20 +144,23 @@ def run_cleanup(days, dry_run=False):
 
     Args:
         days: Number of days to retain. Rows older than this are deleted.
+            Must be at least 1 (see ``execute_cleanup``).
         dry_run: If True, only count rows without deleting.
 
     Returns:
         The number of rows deleted (or that would be deleted in dry-run mode).
     """
-    from app import create_app  # pylint: disable=import-outside-toplevel
-    from app.extensions import db  # pylint: disable=import-outside-toplevel
-
-    app = create_app()
-    with app.app_context():
-        return execute_cleanup(db.session, days, dry_run=dry_run)
+    return run_in_app_context(
+        lambda session: execute_cleanup(session, days, dry_run=dry_run)
+    )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Parse the CLI arguments, run the cleanup, and print the result."""
     args = parse_args()
     deleted = run_cleanup(args.days, dry_run=args.dry_run)
     print(f"{'Would delete' if args.dry_run else 'Deleted'}: {deleted} rows")
+
+
+if __name__ == "__main__":
+    main()

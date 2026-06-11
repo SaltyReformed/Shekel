@@ -48,7 +48,11 @@ os.environ.pop("DATABASE_URL_APP", None)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# sys.path manipulation above must precede the local imports below.
+# Pylint: wrong-import-position -- the DATABASE_URL_APP pop and the
+# sys.path bootstrap above must run before these imports: the app config
+# reads the environment at import time, and ``app`` only resolves once
+# the repo root is on sys.path (sys.path[0] is scripts/ when invoked as
+# ``python scripts/init_database.py``).
 # pylint: disable=wrong-import-position
 from alembic import command
 from alembic.config import Config
@@ -56,6 +60,7 @@ from alembic.config import Config
 from app import create_app
 from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
+# pylint: enable=wrong-import-position
 
 
 def is_fresh_database():

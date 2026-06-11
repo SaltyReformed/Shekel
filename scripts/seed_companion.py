@@ -20,11 +20,17 @@ import sys
 # Add project root to path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Pylint: wrong-import-position -- the sys.path bootstrap above must run
+# before these imports so ``app`` resolves when invoked as
+# ``python scripts/seed_companion.py`` (sys.path[0] is scripts/, not the
+# repo root, in that mode).
+# pylint: disable=wrong-import-position
 from app import create_app, ref_cache
 from app.enums import RoleEnum
 from app.extensions import db
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+# pylint: enable=wrong-import-position
 
 MIN_PASSWORD_LENGTH = 12
 

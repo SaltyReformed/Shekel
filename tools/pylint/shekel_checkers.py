@@ -76,7 +76,11 @@ _RATIONALE_MARKER = "Pylint:"
 # Matches an inline ``# pylint: disable=<rules>`` directive inside a comment token
 # and captures the comma-separated rule list.  ``enable=`` and ``disable-next=``
 # are intentionally not matched: the codebase uses plain ``disable=`` only.
-_DISABLE_RE = re.compile(r"#\s*pylint:\s*disable=([\w,\-]+)")
+# ``#.*?`` (not ``#\s*``) so a directive behind prefix text in the same
+# comment -- the historical ``# noqa: E402  pylint: disable=...`` combined
+# form -- cannot evade the rationale gate: pylint honors the directive
+# anywhere in the comment, so the checker must see everything pylint sees.
+_DISABLE_RE = re.compile(r"#.*?pylint:\s*disable=([\w,\-]+)")
 
 
 def _is_decimal_call(node: nodes.Call) -> bool:

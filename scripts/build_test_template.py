@@ -132,7 +132,10 @@ os.environ.pop("DATABASE_URL_APP", None)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# sys.path manipulation above must precede the local imports below.
+# Pylint: wrong-import-position -- the environment setup (TEST_DATABASE_URL,
+# SECRET_KEY, the DATABASE_URL_APP pop) and the sys.path bootstrap above
+# must run before these imports: the app config reads the environment at
+# import time, and ``app`` only resolves once the repo root is on sys.path.
 # pylint: disable=wrong-import-position
 import psycopg2
 from psycopg2 import sql

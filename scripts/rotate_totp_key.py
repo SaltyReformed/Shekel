@@ -52,8 +52,20 @@ import logging
 import os
 import sys
 
-# Ensure the project root is on sys.path so 'app' is importable.
+from cryptography.fernet import Fernet, InvalidToken
+
+# Ensure the project root is on sys.path so 'app' and 'scripts' are
+# importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Pylint: wrong-import-position -- this import must follow the sys.path
+# bootstrap above; 'scripts' is only importable once the project root
+# is on the path.
+from scripts._script_lib import (  # pylint: disable=wrong-import-position
+    confirm_gate,
+    parse_confirm_args,
+    run_in_app_context,
+)
 
 
 # Per-row outcome sentinels.  Returned by ``_rotate_one_config`` and
@@ -98,10 +110,6 @@ def _rotate_one_config(config, primary_only, multi, logger) -> str:
     Returns:
         One of the ``_OUTCOME_*`` sentinel strings.
     """
-    # Local imports keep the module importable before the app is
-    # initialised (matches scripts/rotate_sessions.py convention).
-    from cryptography.fernet import InvalidToken  # pylint: disable=import-outside-toplevel
-
     ciphertext = config.totp_secret_encrypted
 
     # Idempotency probe: does the ciphertext already decrypt under
@@ -173,12 +181,13 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
         - Emits a structured log event ``totp_key_rotated`` at
           ``WARNING`` level with the three counts.
     """
-    # Local imports keep this module importable even when the app
-    # package has not yet been initialized (matches the convention used
-    # in scripts/rotate_sessions.py and scripts/audit_cleanup.py).
+    # Pylint: import-outside-toplevel -- importing anything under
+    # ``app`` executes ``app.config``, which reads ``os.environ`` at
+    # import time; deferring to call time keeps this module import
+    # side-effect-free (``--help`` and a missing ``--confirm`` never
+    # load app config) and preserves run_in_app_context's pre-import
+    # DATABASE_URL override contract.
     # pylint: disable=import-outside-toplevel
-    from cryptography.fernet import Fernet
-
     from app.models.user import MfaConfig
     from app.services import mfa_service
     from app.utils.log_events import AUTH, log_event
@@ -240,30 +249,21 @@ def run_rotation() -> tuple[int, int, int]:
         The ``(rotated, already_current, skipped)`` triple from
         ``execute_rotation``.
     """
-    # Local imports so the module is importable even when create_app
-    # would fail (e.g. config validation in a test that has not yet
-    # patched the environment).
-    # pylint: disable=import-outside-toplevel
-    from app import create_app
-    from app.extensions import db
-    # pylint: enable=import-outside-toplevel
-
-    app = create_app()
-    with app.app_context():
-        return execute_rotation(db.session)
+    return run_in_app_context(execute_rotation)
 
 
-def parse_args(argv=None):
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
 
     Args:
-        argv (list[str] | None): Argument list (defaults to
-            ``sys.argv[1:]`` when ``None``).
+        argv: Argument list (defaults to ``sys.argv[1:]`` when
+            ``None``).
 
     Returns:
         argparse.Namespace with ``confirm`` (bool).
     """
-    parser = argparse.ArgumentParser(
+    return parse_confirm_args(
+        argv,
         description=(
             "Re-wrap every auth.mfa_configs ciphertext under the "
             "current TOTP_ENCRYPTION_KEY primary key.  Run during a "
@@ -272,25 +272,19 @@ def parse_args(argv=None):
             "to TOTP_ENCRYPTION_KEY_OLD.  See "
             "docs/runbook_secrets.md."
         ),
-    )
-    parser.add_argument(
-        "--confirm",
-        action="store_true",
-        help=(
+        acknowledgment=(
             "Acknowledge that the script will mutate every MFA "
-            "configuration row.  Required: the script refuses to run "
-            "without this flag."
+            "configuration row."
         ),
     )
-    return parser.parse_args(argv)
 
 
-def main(argv=None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """CLI entry point.
 
     Args:
-        argv (list[str] | None): Argument list (defaults to
-            ``sys.argv[1:]`` when ``None``).
+        argv: Argument list (defaults to ``sys.argv[1:]`` when
+            ``None``).
 
     Returns:
         Process exit code:
@@ -302,14 +296,9 @@ def main(argv=None) -> int:
             operator must reconcile the row before pruning
             ``TOTP_ENCRYPTION_KEY_OLD``.
     """
-    args = parse_args(argv)
-    if not args.confirm:
-        print(
-            "Refusing to run without --confirm.  Re-run as:\n"
-            "    python scripts/rotate_totp_key.py --confirm",
-            file=sys.stderr,
-        )
-        return 1
+    refusal = confirm_gate(parse_args(argv), "rotate_totp_key.py")
+    if refusal is not None:
+        return refusal
     rotated, already_current, skipped = run_rotation()
     print(
         f"Rotated {rotated}; already current {already_current}; "

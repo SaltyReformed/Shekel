@@ -49,6 +49,11 @@ _SEED_SECRET_ENV_VARS: tuple[str, ...] = (
 # Add project root to path.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Pylint: wrong-import-position -- the sys.path bootstrap above must run
+# before these imports so ``app`` resolves when invoked as
+# ``python scripts/seed_user.py`` (sys.path[0] is scripts/, not the repo
+# root, in that mode).
+# pylint: disable=wrong-import-position
 from app import create_app
 from app.extensions import db
 from app.models.user import User, UserSettings
@@ -58,6 +63,7 @@ from app.models.category import Category
 from app.models.ref import AccountType
 from app.services import account_service
 from app.services.auth_service import hash_password, DEFAULT_CATEGORIES
+# pylint: enable=wrong-import-position
 
 
 def seed_user():

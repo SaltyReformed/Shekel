@@ -18,9 +18,15 @@ from decimal import Decimal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import create_app
+# Pylint: wrong-import-position -- the sys.path bootstrap above must run
+# before these imports so ``app`` resolves when invoked as
+# ``python scripts/seed_tax_brackets.py`` (sys.path[0] is scripts/, not
+# the repo root, in that mode).
+# pylint: disable=wrong-import-position
+from app import create_app, ref_cache
+from app.enums import TaxTypeEnum
 from app.extensions import db
-from app.models.ref import FilingStatus, TaxType
+from app.models.ref import FilingStatus
 from app.models.tax_config import (
     FicaConfig,
     StateTaxConfig,
@@ -33,6 +39,7 @@ from app.services.auth_service import (
     DEFAULT_FICA,
     DEFAULT_STATE_TAX,
 )
+# pylint: enable=wrong-import-position
 
 
 def seed_tax_brackets():
@@ -131,9 +138,6 @@ def _seed_fica_for_user(user):
 
 def _seed_state_tax_for_user(user):
     """Seed default state tax configuration."""
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
-
     flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
 
     for tax_year, data in DEFAULT_STATE_TAX.items():
