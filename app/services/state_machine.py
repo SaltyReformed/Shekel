@@ -5,8 +5,8 @@ Defines the legal status transitions for ``ref.statuses`` rows and the
 ``verify_transition`` helper that every state-changing code path must
 call before mutating ``status_id`` on a Transaction or Transfer.
 
-Workflow per CLAUDE.md
-----------------------
+Transaction workflow per CLAUDE.md
+----------------------------------
 
   projected -> done | received | credit | cancelled
   done | received -> settled
@@ -15,6 +15,28 @@ Workflow per CLAUDE.md
   credit -> projected (unmark credit)
   cancelled -> projected (reactivate cancelled item)
   settled -> settled (terminal -- archived rows cannot be mutated)
+
+Transfer workflow
+-----------------
+
+Transfers speak a smaller status vocabulary, so they get their own
+transition map rather than sharing the transaction one:
+
+  projected -> done | cancelled
+  done -> projected (revert mistakes) | settled
+  cancelled -> projected (reactivate)
+  settled -> settled (terminal)
+
+Credit is excluded because the credit/auto-payback workflow is
+expense-only (``mark_as_credit`` refuses transfers outright); a
+transfer pushed into Credit would be balance-excluded on both
+accounts with no compensating payback -- it would silently vanish
+from both projections.  Received is excluded because it is a display
+convention for regular income transactions; the transfer service
+settles both shadows with Done (see ``_mark_done_shadow``).  Before
+the split, the shared map let a crafted PATCH (the shadow path or
+the direct transfer PATCH -- both schemas accept any integer
+``status_id``) move a transfer into either state.
 
 Identity transitions (for example projected -> projected, done -> done)
 are always legal so an idempotent re-submission of a state-changing
@@ -74,7 +96,7 @@ from app.exceptions import ValidationError
 logger = logging.getLogger(__name__)
 
 
-def _build_transitions():
+def _build_transitions(context):
     """Return the transitions dict keyed by ``ref.statuses.id`` integers.
 
     Lazily computed (see module docstring) -- ``ref_cache`` must be
@@ -83,10 +105,26 @@ def _build_transitions():
     a 500 if the helper is somehow called before ``create_app()``
     finishes wiring up reference data.
 
+    The two maps are written out explicitly rather than deriving one
+    from the other: each is a statement of policy, and a future edit
+    to the transaction workflow must not silently leak into the
+    transfer workflow (or vice versa).
+
+    Args:
+        context: ``"transaction"`` or ``"transfer"`` -- selects which
+            entity's transition map to build (the module docstring
+            documents both workflows).
+
     Returns:
-        dict mapping the integer PK of each StatusEnum member to the
-        set of integer PKs reachable from it.  Identity transitions
-        are included so idempotent re-submits succeed.
+        dict mapping the integer PK of each StatusEnum member legal
+        for *context* to the set of integer PKs reachable from it.
+        Identity transitions are included so idempotent re-submits
+        succeed.
+
+    Raises:
+        ValueError: If *context* is not a recognised entity label --
+            a programming error at the call site, surfaced loudly
+            rather than silently falling back to either map.
     """
     projected = ref_cache.status_id(StatusEnum.PROJECTED)
     done = ref_cache.status_id(StatusEnum.DONE)
@@ -95,30 +133,47 @@ def _build_transitions():
     cancelled = ref_cache.status_id(StatusEnum.CANCELLED)
     settled = ref_cache.status_id(StatusEnum.SETTLED)
 
-    return {
-        # Projected can move to any active workflow state and absorbs
-        # idempotent re-submission via the projected -> projected entry.
-        projected: {projected, done, received, credit, cancelled},
-        # Paid expenses can be archived (settled), reverted, or re-marked.
-        done: {done, projected, settled},
-        # Received income mirrors the Paid expense transitions.
-        received: {received, projected, settled},
-        # Credit can only revert to Projected -- both revert paths
-        # (the dedicated unmark_credit workflow and the PATCH status
-        # edit) delete the auto-generated payback row through the
-        # shared credit_workflow cleanup helper.  No direct -> Done
-        # jump.
-        credit: {credit, projected},
-        # Cancelled rows can be reactivated to Projected.  No direct
-        # transitions to Done / Received -- the user must reproject
-        # first so the audit trail records both the reactivation and
-        # the subsequent settle.
-        cancelled: {cancelled, projected},
-        # Terminal: a Settled row must not be mutated.  Identity is
-        # included so an idempotent resubmit of "settle this row" on
-        # an already-settled row does not raise.
-        settled: {settled},
-    }
+    if context == "transaction":
+        return {
+            # Projected can move to any active workflow state and absorbs
+            # idempotent re-submission via the projected -> projected entry.
+            projected: {projected, done, received, credit, cancelled},
+            # Paid expenses can be archived (settled), reverted, or re-marked.
+            done: {done, projected, settled},
+            # Received income mirrors the Paid expense transitions.
+            received: {received, projected, settled},
+            # Credit can only revert to Projected -- both revert paths
+            # (the dedicated unmark_credit workflow and the PATCH status
+            # edit) delete the auto-generated payback row through the
+            # shared credit_workflow cleanup helper.  No direct -> Done
+            # jump.
+            credit: {credit, projected},
+            # Cancelled rows can be reactivated to Projected.  No direct
+            # transitions to Done / Received -- the user must reproject
+            # first so the audit trail records both the reactivation and
+            # the subsequent settle.
+            cancelled: {cancelled, projected},
+            # Terminal: a Settled row must not be mutated.  Identity is
+            # included so an idempotent resubmit of "settle this row" on
+            # an already-settled row does not raise.
+            settled: {settled},
+        }
+    if context == "transfer":
+        return {
+            # No Credit (the credit workflow is expense-only and refuses
+            # transfers) and no Received (a display convention for
+            # regular income rows; transfers settle with Done) -- see
+            # the module docstring's transfer workflow section.
+            projected: {projected, done, cancelled},
+            done: {done, projected, settled},
+            cancelled: {cancelled, projected},
+            # Terminal, as for transactions.
+            settled: {settled},
+        }
+    raise ValueError(
+        f"Unknown state-machine context {context!r}; "
+        "use 'transaction' or 'transfer'."
+    )
 
 
 def verify_transition(current_status_id, new_status_id, context="transaction"):
@@ -130,34 +185,39 @@ def verify_transition(current_status_id, new_status_id, context="transaction"):
             ``Status.id``).  Typically ``txn.status_id`` or
             ``xfer.status_id``.
         new_status_id: Integer PK of the proposed status.
-        context: Short human-readable label embedded in the
-            exception message ("transaction" or "transfer") so the
-            route layer can surface a precise 400 to the user.
+        context: The entity being transitioned -- ``"transaction"``
+            or ``"transfer"``.  Selects that entity's transition map
+            (transfers exclude Credit and Received; see the module
+            docstring) and labels the exception message so the route
+            layer can surface a precise 400 to the user.
 
     Raises:
         ValidationError: The new state is not in the set of legal
             successors for the current state, OR the current state
-            is not a recognised StatusEnum member (defensive check
-            against a corrupt row that holds a non-enum status_id).
-            Successful return (no exception) signals that the caller
-            may proceed to mutate ``status_id``.  Identity transitions
+            is not a legal status for *context* (defensive check
+            against a corrupt row -- a non-enum ``status_id`` or,
+            for a transfer, a transaction-only status).  Successful
+            return (no exception) signals that the caller may
+            proceed to mutate ``status_id``.  Identity transitions
             return without raising so idempotent re-submission is
             always safe.
+        ValueError: If *context* is not a recognised entity label
+            (programming error at the call site).
     """
-    transitions = _build_transitions()
+    transitions = _build_transitions(context)
     if current_status_id not in transitions:
-        # The row's current status is not a recognised StatusEnum
-        # member.  Refuse the transition rather than silently
+        # The row's current status is not a legal state for this
+        # entity.  Refuse the transition rather than silently
         # accepting it -- a corrupt row should fail loudly so the
         # operator can investigate the source of the bad ID.
         logger.error(
             "Refusing %s status transition: current_status_id=%s "
-            "is not a recognised StatusEnum member.",
-            context, current_status_id,
+            "is not a legal %s status.",
+            context, current_status_id, context,
         )
         raise ValidationError(
             f"Invalid {context} status transition: current status "
-            f"{current_status_id} is not a recognised status."
+            f"{current_status_id} is not a recognised {context} status."
         )
 
     allowed = transitions[current_status_id]

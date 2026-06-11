@@ -887,6 +887,112 @@ class TestTransferInstance:
             )
             assert all(s.estimated_amount == Decimal("200.00") for s in shadows)
 
+    def test_update_transfer_to_credit_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH status_id=Credit on a transfer is refused with 400.
+
+        Credit is a transaction-only status: the credit/auto-payback
+        workflow refuses transfers, so a Credit transfer would be
+        balance-excluded on both accounts with no compensating payback
+        -- it would silently vanish from both projections.  The
+        transfer-specific transition map closes the hole the shared
+        map left open (``TransferUpdateSchema.status_id`` accepts any
+        integer).
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            credit_id = (
+                db.session.query(Status).filter_by(name="Credit").one().id
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"status_id": str(credit_id)},
+            )
+
+            assert response.status_code == 400
+            assert "Invalid transfer status transition" in response.data.decode()
+
+            # Parent and both shadows untouched -- still Projected.
+            db.session.refresh(xfer)
+            assert xfer.status.name == "Projected"
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            assert all(s.status.name == "Projected" for s in shadows)
+
+    def test_update_transfer_to_received_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH status_id=Received on a transfer is refused with 400.
+
+        Received is a display convention for regular income rows; the
+        transfer service settles both shadows with Done.  Same
+        transfer-map hole as the Credit case.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            received_id = (
+                db.session.query(Status).filter_by(name="Received").one().id
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"status_id": str(received_id)},
+            )
+
+            assert response.status_code == 400
+            db.session.refresh(xfer)
+            assert xfer.status.name == "Projected"
+
+    def test_shadow_patch_to_credit_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCHing a transfer SHADOW to Credit is refused with 400.
+
+        The shadow PATCH path forwards any submitted ``status_id`` to
+        ``transfer_service.update_transfer``; before the transfer map
+        split this set the parent and BOTH shadows to Credit, silently
+        removing the whole transfer from both accounts' projections
+        with no payback compensation (the mark-credit routes block
+        shadows, but this generic path did not).
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            credit_id = (
+                db.session.query(Status).filter_by(name="Credit").one().id
+            )
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .first()
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{shadow.id}",
+                data={"status_id": str(credit_id)},
+            )
+
+            assert response.status_code == 400
+            assert "Invalid transfer status transition" in response.data.decode()
+
+            # Parent and both shadows untouched -- still Projected.
+            db.session.refresh(xfer)
+            assert xfer.status.name == "Projected"
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert all(s.status.name == "Projected" for s in shadows)
+
     def test_delete_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transfers/instance/<id> hard-deletes an ad-hoc transfer."""
         with app.app_context():
