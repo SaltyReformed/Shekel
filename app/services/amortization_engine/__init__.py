@@ -19,8 +19,11 @@ shape as the ``loan_resolver`` package) so existing imports from
 ``app.services.amortization_engine`` keep working unchanged:
 
 * :mod:`._projection` -- the value records, the standard payment
-  formula, the date helpers, the ARM recast, and
-  :func:`project_forward` itself.
+  formula, the date helpers, and :func:`project_forward` itself.
+  Per-month rate and contractual P&I come from the projection's
+  :class:`PeriodTerms` schedule (mapped from the rate-period engine's
+  periods), so projected rows pay the same single-source-of-truth
+  figures the loan card displays.
 * :mod:`._payoff` -- the payoff-by-date question layer
   (:class:`PayoffRequest`, :func:`required_extra_for_projection`,
   :func:`calculate_payoff_by_date`) built on the primitives.
@@ -35,6 +38,7 @@ from ._projection import (
     AmortizationRow,
     AmortizationSummary,
     PaymentRecord,
+    PeriodTerms,
     ProjectionInputs,
     RateChangeRecord,
     advance_to_next_payment_date,
@@ -48,6 +52,7 @@ __all__ = [
     "AmortizationSummary",
     "PaymentRecord",
     "PayoffRequest",
+    "PeriodTerms",
     "ProjectionInputs",
     "RateChangeRecord",
     "advance_to_next_payment_date",

@@ -923,11 +923,151 @@ def test_arm_second_period_uses_recorded_recast_held_constant():
     assert state_early.monthly_payment == Decimal("2500.00")
     assert state_early.monthly_payment == state_late.monthly_payment
 
+    # DH-#25: the SCHEDULE rows agree with the card.  Every projected
+    # second-period row pays the recorded $2,500.00 at 7% -- this was
+    # the uncovered assertion that let the card ($2,500.00) and the
+    # schedule ($2,582.13, re-amortized) silently diverge (DH-#1);
+    # proven to fail against the pre-SSOT engine.  The final row is
+    # exempt (it absorbs the closing residue), as are rows past the
+    # third boundary (2036-01-01, a later derived recast).
+    second_period_rows = [
+        row for row in state_early.schedule
+        if date(2031, 1, 1) <= row.payment_date < date(2036, 1, 1)
+        and not row.is_confirmed
+    ]
+    assert second_period_rows, "schedule must cover the second period"
+    for row in second_period_rows:
+        assert row.payment == Decimal("2500.00"), (
+            f"{row.payment_date}: schedule pays {row.payment}, card "
+            f"shows the recorded 2500.00"
+        )
+        assert row.interest_rate == Decimal("0.07")
+    # And the pre-recast projected rows pay the ORIGINATION period's
+    # P&I (the engine fills the no-payments gap at period-true terms,
+    # not the as_of period's).
+    first_period_rows = [
+        row for row in state_early.schedule
+        if row.payment_date < date(2031, 1, 1) and not row.is_confirmed
+    ]
+    assert first_period_rows
+    for row in first_period_rows:
+        assert row.payment == Decimal("2398.20")
+
     # The origination period is unaffected: still the contractual P&I.
     state_p0 = resolve_loan(
         LoanInputs(params, [anchor], None, feed), date(2028, 1, 1),
     )
     assert state_p0.monthly_payment == Decimal("2398.20")
+
+
+def test_future_recorded_recast_notice_honored_in_schedule():
+    """DH-#1 state A: an advance adjustment notice governs forward rows.
+
+    ARM lenders send the rate-adjustment notice 60-120 days BEFORE the
+    new payment takes effect, stating the exact new P&I -- entering it
+    in advance is the natural ``add_rate_change`` workflow (the route
+    accepts any post-origination ``effective_date``).  The schedule's
+    rows past the future recast must pay the recorded figure, while the
+    card (today, pre-recast) keeps the current period's P&I.  The
+    pre-SSOT engine re-amortized $2,622.20 here from its own balance.
+
+    Setup: the 5/5 ARM at $400k/6%/360 from 2026-01-01; a true-up
+    anchor 2030-11-01 at $372,000; notice recorded for 2031-01-01 ->
+    7% with monthly_pi $2,500.00; as_of 2030-11-15 (recast in the
+    future).
+    """
+    params = _arm_400k_params()
+    anchor = FakeAnchorEvent(
+        anchor_date=date(2030, 11, 1),
+        anchor_balance=Decimal("372000.00"),
+        created_at=datetime(2030, 11, 1, tzinfo=timezone.utc),
+    )
+    feed = _rate_feed(params, [
+        RateChangeRecord(
+            effective_date=date(2031, 1, 1),
+            interest_rate=Decimal("0.07"),
+            monthly_pi=Decimal("2500.00"),
+        ),
+    ])
+    state = resolve_loan(
+        LoanInputs(params, [anchor], None, feed), date(2030, 11, 15),
+    )
+
+    # Card today: still the origination period's contractual P&I.
+    assert state.monthly_payment == Decimal("2398.20")
+
+    # Forward rows past the recast pay the notice's recorded figure
+    # (final residue-absorbing row exempt).
+    post_recast = [
+        row for row in state.schedule
+        if row.payment_date >= date(2031, 1, 1)
+    ]
+    assert post_recast, "schedule must reach the recast"
+    for row in post_recast[:-1]:
+        assert row.payment == Decimal("2500.00"), (
+            f"{row.payment_date}: paid {row.payment}, the notice "
+            f"recorded 2500.00"
+        )
+    # The pre-recast forward row keeps the current contractual.
+    pre_recast = [
+        row for row in state.schedule
+        if row.payment_date < date(2031, 1, 1) and not row.is_confirmed
+    ]
+    assert pre_recast
+    assert all(r.payment == Decimal("2398.20") for r in pre_recast)
+
+
+def test_stale_anchor_derived_recast_schedule_matches_card():
+    """DH-#1 state C: card == schedule for a DERIVED recast, stale anchor.
+
+    With no recorded ``monthly_pi``, both the card and the schedule
+    must read the rate-period engine's derived level payment.  Under
+    the pre-SSOT engine the projection started at the origination
+    anchor with the as_of period's payment and re-amortized at the
+    boundary from its own walked balance -- card $2,630.76 vs schedule
+    $2,517.60.  Now the schedule's post-recast rows equal the card by
+    construction.
+
+    Setup: the 5/5 ARM at $400k/6%/360 anchored at origination (the
+    exact anchor ``create_params`` writes for every new loan), rate
+    change 2031-01-01 -> 7% with NO recorded P&I, no confirmed
+    payments, as_of 2032-06-01.
+    """
+    params = _arm_400k_params()
+    anchor = _origination_anchor(params)
+    feed = _rate_feed(params, [
+        RateChangeRecord(
+            effective_date=date(2031, 1, 1),
+            interest_rate=Decimal("0.07"),
+            monthly_pi=None,
+        ),
+    ])
+    state = resolve_loan(
+        LoanInputs(params, [anchor], None, feed), date(2032, 6, 1),
+    )
+
+    # Hand arithmetic: the derived second-period P&I amortizes the
+    # CONTRACTUAL balance at the boundary over the remaining 300
+    # months at 7% -- the value period_for_date gives the card.
+    assert state.monthly_payment == Decimal("2630.76")
+
+    post_recast = [
+        row for row in state.schedule
+        if row.payment_date >= date(2031, 1, 1)
+    ]
+    assert post_recast
+    for row in post_recast[:-1]:
+        assert row.payment == state.monthly_payment, (
+            f"{row.payment_date}: schedule pays {row.payment}, card "
+            f"shows {state.monthly_payment}"
+        )
+    # Pre-recast forward-fill rows pay the origination period's P&I.
+    pre_recast = [
+        row for row in state.schedule
+        if row.payment_date < date(2031, 1, 1) and not row.is_confirmed
+    ]
+    assert pre_recast
+    assert all(r.payment == Decimal("2398.20") for r in pre_recast)
 
 
 # -- C6-8 -- resolver chokepoint: no direct generate_schedule reference -----

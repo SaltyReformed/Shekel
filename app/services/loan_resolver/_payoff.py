@@ -17,7 +17,6 @@ from app.services.amortization_engine import (
     AmortizationRow,
     PaymentRecord,
     ProjectionInputs,
-    RateChangeRecord,
     project_forward,
     required_extra_for_projection,
 )
@@ -29,6 +28,7 @@ from ._periods import (
     LoanInputs,
     _replay_from_anchor,
     _resolve_periods,
+    _terms_from_periods,
 )
 
 
@@ -42,7 +42,6 @@ class PayoffScenarios:  # pylint: disable=too-many-instance-attributes
     the four summary metrics are the one cohesive contract the Payoff
     Calculator's chart and summary card both read, flat.  Splitting it
     would fragment that contract for no design gain (same rationale as
-    :class:`PayoffRequest` and
     :class:`~app.services.amortization_engine.AmortizationRow`).
 
     Frozen because the composer returns a snapshot the caller renders;
@@ -55,8 +54,9 @@ class PayoffScenarios:  # pylint: disable=too-many-instance-attributes
 
     All three forward slices start from the same
     ``(starting_balance, starting_date, remaining_months,
-    applicable_rate)`` tuple produced by a single
-    :func:`rate_period_engine.replay_schedule` call; they differ only in
+    terms_schedule)`` state produced by a single
+    :func:`rate_period_engine.replay_schedule` call plus the loan's
+    rate-period terms feed; they differ only in
     ``monthly_override`` and ``extra_monthly``.  Chart rendering is
     ``history_rows + <slice>_forward``; the prefix is byte-identical
     across slices because replay returns the same row list.
@@ -185,41 +185,6 @@ def _build_monthly_override(
     return override
 
 
-def _remaining_rate_changes(
-    rate_changes: list[RateChangeRecord] | None,
-    next_pay_date: date,
-) -> list[RateChangeRecord]:
-    """Filter ``rate_changes`` to entries effective at or after ``next_pay_date``.
-
-    ``project_forward``'s ARM behavior only needs rate transitions
-    that fire within its window.  Replay consumes the pre-window
-    transitions internally to compute ``applicable_rate_as_of``,
-    which is then the projection's starting rate, so passing
-    already-consumed transitions to projection would be wasted work
-    (and a future-defensive guard against double-applying a
-    transition at the replay/projection boundary).
-
-    Args:
-        rate_changes: Optional full rate-change history (possibly
-            unsorted).  ``None`` or empty is treated as "no remaining
-            transitions."
-        next_pay_date: First payment_date of the forward projection
-            (replay's ``next_pay_date``).  Entries strictly before
-            this date are dropped.
-
-    Returns:
-        A list of :class:`RateChangeRecord` whose ``effective_date``
-        is at or after ``next_pay_date``.  Empty list when no entry
-        qualifies.
-    """
-    if not rate_changes:
-        return []
-    return [
-        change for change in rate_changes
-        if change.effective_date >= next_pay_date
-    ]
-
-
 @dataclass(frozen=True)
 class _ProjectionPrep:
     """The replay-derived inputs the payoff composer builds its result from.
@@ -234,7 +199,8 @@ class _ProjectionPrep:
     Attributes:
         projection_inputs: The shared :class:`ProjectionInputs` all three
             forward slices project from -- same starting balance, date,
-            remaining months, rate, and SSOT contractual P&I.
+            remaining months, and rate-period terms feed (each month's
+            SSOT rate and contractual P&I).
         history_rows: The confirmed-payment history slice (origination or
             latest anchor through ``as_of``), each row's ``extra_payment``
             surfaced against the SSOT contractual payment.
@@ -315,23 +281,20 @@ def _build_forward_inputs(
         for row in replay.rows
     ]
 
-    # Rate-change remainders (transitions effective at or after
-    # ``next_pay_date``) feed the projection so ARM behavior stays
-    # consistent; replay has already consumed the pre-window transitions
-    # into its starting rate.
+    # The projection's terms feed is the loan's FULL rate-period set
+    # (past periods included), so every forward month -- including the
+    # gap months of a stale anchor whose ``next_pay_date`` lags
+    # ``as_of`` -- is governed by its true period's rate AND level P&I.
+    # The rate-period engine stays the single producer of those figures
+    # (recorded recast or schedule-derived), which is what makes the
+    # projected rows and the loan card agree at every date, not just at
+    # ``as_of`` (DH-#1).
     projection_inputs = ProjectionInputs(
         starting_balance=replay.balance_as_of,
         starting_date=replay.next_pay_date,
-        annual_rate=period_for_date(periods, replay.next_pay_date).annual_rate,
         remaining_months=replay.remaining_months_as_of,
         payment_day=loan_inputs.loan_params.payment_day,
-        contractual_payment=contractual,
-        rate_changes_remaining=(
-            _remaining_rate_changes(
-                loan_inputs.rate_changes, replay.next_pay_date,
-            )
-            or None
-        ),
+        terms_schedule=_terms_from_periods(periods),
     )
     return _ProjectionPrep(
         projection_inputs=projection_inputs,
@@ -381,14 +344,13 @@ def compute_payoff_scenarios(
     4. Replay produces ``history_rows``, ``balance_as_of``,
        ``next_pay_date``, ``remaining_months_as_of``, and the
        ``current_period`` (its rate and level P&I).
-    5. Three forward projections share that starting state.  Their
-       contractual P&I is the current rate period's level payment
-       (:func:`period_for_date`), the same value the loan card reads,
-       so the schedule's projected P&I matches
-       ``LoanState.monthly_payment`` by construction.
-       Rate-change remainders (transitions effective at or after
-       ``next_pay_date``) are passed to all three so ARM behavior is
-       consistent across the trio.
+    5. Three forward projections share that starting state.  Each
+       month's contractual P&I and rate come from the loan's full
+       rate-period terms feed -- the same figures the loan card reads
+       via :func:`period_for_date` -- so the schedule's projected P&I
+       matches ``LoanState.monthly_payment`` by construction in every
+       period, recorded recasts included (DH-#1), and ARM behavior is
+       identical across the trio.
     6. Summary metrics derive from the same forward slices --
        ``months_saved`` is a length diff, ``interest_saved`` is a
        row-sum diff.
@@ -400,9 +362,9 @@ def compute_payoff_scenarios(
             (the Commit-12 invariant); an empty list raises a
             ValueError via ``._periods._select_latest_anchor``.  The
             composer separates confirmed-pre-as_of payments (replay)
-            from everything else (override) internally; replay consumes
-            pre-``next_pay_date`` rate transitions and the composer
-            slices the remainder for projection.
+            from everything else (override) internally; the full
+            rate-period terms feed governs the forward slices month by
+            month.
         extra_monthly: Additional principal payment applied to every
             non-override month in the accelerated scenario.  ``0``
             collapses the accelerated slice to the committed slice

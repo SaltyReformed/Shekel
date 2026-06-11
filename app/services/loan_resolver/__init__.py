@@ -93,7 +93,7 @@ from ._payoff import (
     compute_payoff_scenarios,
     target_date_outlook,
 )
-from ._periods import LoanInputs
+from ._periods import LoanInputs, engine_terms
 from ._state import (
     LoanState,
     compute_monthly_payment_baseline,
@@ -107,6 +107,7 @@ __all__ = [
     "TargetDateOutlook",
     "compute_monthly_payment_baseline",
     "compute_payoff_scenarios",
+    "engine_terms",
     "resolve_loan",
     "target_date_outlook",
 ]

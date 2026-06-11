@@ -292,8 +292,7 @@ class _ProjectionState:
 
     Bundles the values that evolve together as :func:`project_balance`
     walks period by period, so the loop and its helper share one cohesive
-    state object instead of parallel locals.  Mirrors
-    ``amortization_engine._ProjectionState``.
+    state object instead of parallel locals.
 
     Attributes:
         current_balance: Running balance after the latest applied period.

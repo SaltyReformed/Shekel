@@ -279,9 +279,10 @@ def _rate_at_date(
 
     The most recent rate change with ``effective_date <= target_date``,
     falling back to ``base_rate`` (the loan's original
-    ``interest_rate``) when none qualifies.  Mirrors
-    :func:`amortization_engine._find_applicable_rate` but operates on
-    the unsorted public :class:`RateChangeRecord` list.
+    ``interest_rate``) when none qualifies.  Operates on the unsorted
+    public :class:`RateChangeRecord` list; :func:`period_for_date` (and
+    the projection engine's terms lookup that mirrors it) apply the
+    same latest-at-or-before rule to the built periods.
 
     Args:
         rate_changes: Optional :class:`RateChangeRecord` list (unsorted).

@@ -2,10 +2,20 @@
 
 The forward half of the amortization engine: the value records
 (:class:`PaymentRecord`, :class:`RateChangeRecord`,
-:class:`AmortizationRow`, :class:`AmortizationSummary`,
-:class:`ProjectionInputs`), the standard payment formula, the date
-helpers, the ARM recast, and :func:`project_forward` itself.  Pure
-functions, no database access -- operates only on values passed in.
+:class:`PeriodTerms`, :class:`AmortizationRow`,
+:class:`AmortizationSummary`, :class:`ProjectionInputs`), the standard
+payment formula, the date helpers, and :func:`project_forward` itself.
+Pure functions, no database access -- operates only on values passed in.
+
+Per-month rate AND contractual P&I come from the projection's
+``terms_schedule`` (:class:`PeriodTerms` entries, mapped 1:1 from the
+rate-period engine's :class:`~app.services.rate_period_engine.RatePeriod`
+set by the loan resolver), so the schedule's projected rows read the
+SAME single source of truth the loan card displays -- a recorded recast
+(``RateHistory.monthly_pi``) or the schedule-derived level payment.
+The projection never re-amortizes a payment from its own what-if
+balance (DH-#1: that re-derivation made the schedule diverge from the
+card for any recast the replay had not yet consumed).
 
 The payoff question layer (:mod:`._payoff`) consumes these primitives;
 both are re-exported flat from the package ``__init__`` so consumers
@@ -13,15 +23,12 @@ keep importing from ``app.services.amortization_engine`` unchanged.
 """
 
 import calendar
-import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 from app.utils.dates import months_between
 from app.utils.money import MONTHS_PER_YEAR, round_money
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -81,14 +88,16 @@ class PaymentRecord:
 class RateChangeRecord:
     """A historical or scheduled rate change applied to an ARM loan.
 
-    Used to replay known rate adjustments through the amortization
-    schedule so projections reflect the loan's actual rate history
-    rather than assuming a fixed rate for the entire term.
+    The transport record for a loan's rate history (one per
+    ``RateHistory`` row): the rate-period engine consumes the list to
+    place period boundaries and resolve each period's rate and recorded
+    P&I (:func:`~app.services.rate_period_engine.build_rate_periods`),
+    and the resulting periods feed projections as
+    :class:`PeriodTerms`.  The projection itself no longer reads rate
+    changes directly.
 
     Attributes:
-        effective_date: The date the new rate takes effect.  Matched
-            to schedule months by finding the most recent entry with
-            effective_date <= payment_date.
+        effective_date: The date the new rate takes effect.
         interest_rate: The new annual interest rate as a Decimal
             (e.g., Decimal("0.065") for 6.5%).  Must be >= 0.
         monthly_pi: Optional recorded recast P&I (principal + interest,
@@ -254,75 +263,120 @@ def advance_to_next_payment_date(
     )
 
 
-def _build_rate_change_list(
-    rate_changes: list[RateChangeRecord],
-    origination_date: date | None,
-) -> list[tuple[date, Decimal]]:
-    """Build a sorted, deduplicated list of (effective_date, rate) tuples.
+@dataclass(frozen=True)
+class PeriodTerms:
+    """The contractual terms governing one fixed-rate span of a projection.
 
-    Pre-origination entries are filtered.  When multiple entries share
-    the same effective_date, the last one (after stable sort) wins --
-    this is deterministic but likely a data entry error, so a warning
-    is logged.
+    The projection-side mirror of
+    :class:`app.services.rate_period_engine.RatePeriod`: the rate-period
+    engine is the single producer of each period's rate AND level P&I
+    (the recorded recast when the user supplied one, else the
+    schedule-derived amortization), and the loan resolver maps every
+    ``RatePeriod`` onto one ``PeriodTerms`` -- so :func:`project_forward`
+    pays exactly the figures the loan card displays and the two cannot
+    diverge (DH-#1).  Defined here rather than imported from the
+    rate-period engine because that module already imports this package
+    (the dependency points producer -> primitives).
 
-    Args:
-        rate_changes: Non-empty list of RateChangeRecord instances.
-        origination_date: Loan origination date.  Entries before this
-            date are excluded.  If None, no filtering is applied.
-
-    Returns:
-        List of (effective_date, interest_rate) sorted by effective_date.
+    Attributes:
+        start_date: First calendar day this entry's rate/payment govern.
+            The entry governing a payment date is the LATEST one with
+            ``start_date <= payment_date``; a date before every entry is
+            governed by the first (mirroring
+            :func:`~app.services.rate_period_engine.period_for_date`).
+        annual_rate: Annual interest rate for the span (a decimal
+            fraction, e.g. ``Decimal("0.06")``).  Must be >= 0.
+        monthly_pi: Level P&I (principal + interest, no escrow) held
+            constant for the span.  Must be >= 0 (zero only for the
+            degenerate already-paid-off span).
     """
-    sorted_changes = sorted(rate_changes, key=lambda r: r.effective_date)
 
-    # Filter pre-origination entries.
-    if origination_date is not None:
-        sorted_changes = [
-            r for r in sorted_changes
-            if r.effective_date >= origination_date
-        ]
+    start_date: date
+    annual_rate: Decimal
+    monthly_pi: Decimal
 
-    # Deduplicate by effective_date (last entry wins).
-    seen_dates: dict[date, Decimal] = {}
-    for record in sorted_changes:
-        if record.effective_date in seen_dates:
-            logger.warning(
-                "Multiple rate changes on %s: overriding %.5f with %.5f",
-                record.effective_date,
-                seen_dates[record.effective_date],
-                record.interest_rate,
+    def __post_init__(self):
+        """Validate terms fields at construction time.
+
+        Catches invalid data immediately rather than producing wrong
+        results deep in the projection loop.
+
+        Raises:
+            TypeError: If ``start_date`` is not a date or either money
+                field is not a Decimal.
+            ValueError: If ``annual_rate`` or ``monthly_pi`` is negative.
+        """
+        if not isinstance(self.start_date, date):
+            raise TypeError(
+                f"start_date must be a date, "
+                f"got {type(self.start_date).__name__}"
             )
-        seen_dates[record.effective_date] = record.interest_rate
+        if not isinstance(self.annual_rate, Decimal):
+            raise TypeError(
+                f"annual_rate must be a Decimal, "
+                f"got {type(self.annual_rate).__name__}"
+            )
+        if self.annual_rate < 0:
+            raise ValueError(
+                f"annual_rate must be >= 0, got {self.annual_rate}"
+            )
+        if not isinstance(self.monthly_pi, Decimal):
+            raise TypeError(
+                f"monthly_pi must be a Decimal, "
+                f"got {type(self.monthly_pi).__name__}"
+            )
+        if self.monthly_pi < 0:
+            raise ValueError(
+                f"monthly_pi must be >= 0, got {self.monthly_pi}"
+            )
 
-    return sorted(seen_dates.items(), key=lambda x: x[0])
 
-
-def _find_applicable_rate(
+def _governing_terms(
+    sorted_terms: list[PeriodTerms],
     payment_date: date,
-    rate_schedule: list[tuple[date, Decimal]],
-    base_rate: Decimal,
-) -> Decimal:
-    """Find the applicable annual rate for a given payment date.
+) -> PeriodTerms:
+    """Return the terms entry governing ``payment_date``.
 
-    Scans the rate_schedule for the most recent entry with
-    effective_date <= payment_date.  Falls back to base_rate if
-    no entry qualifies.
+    The latest entry with ``start_date <= payment_date``; the first
+    entry when ``payment_date`` precedes them all.  Mirrors
+    :func:`app.services.rate_period_engine.period_for_date` so the
+    projection selects terms exactly the way the loan card does.
 
     Args:
+        sorted_terms: Non-empty list of :class:`PeriodTerms` in
+            ``start_date`` order.
         payment_date: The payment date for the current schedule month.
-        rate_schedule: Sorted list of (effective_date, rate) tuples.
-        base_rate: The loan's original annual rate (fallback).
 
     Returns:
-        The applicable annual interest rate as a Decimal.
+        The governing :class:`PeriodTerms`.
     """
-    applicable_rate = base_rate
-    for effective_date, rate in rate_schedule:
-        if effective_date <= payment_date:
-            applicable_rate = rate
+    chosen = sorted_terms[0]
+    for terms in sorted_terms:
+        if terms.start_date <= payment_date:
+            chosen = terms
         else:
             break
-    return applicable_rate
+    return chosen
+
+
+def _period_interest(balance: Decimal, annual_rate: Decimal) -> Decimal:
+    """Return one month's interest on ``balance`` at ``annual_rate``.
+
+    ``round_money(balance * rate / 12)``, with a zero-rate guard --
+    the same per-month accrual shape the replay applies in
+    :func:`app.services.rate_period_engine._replay_payment_row`, so
+    the projected and replayed sides of a schedule accrue identically.
+
+    Args:
+        balance: Outstanding balance before this month's payment.
+        annual_rate: The governing terms entry's annual rate (>= 0).
+
+    Returns:
+        The month's interest, quantized to cents.
+    """
+    if annual_rate <= 0:
+        return Decimal("0.00")
+    return round_money(balance * (annual_rate / MONTHS_PER_YEAR))
 
 
 @dataclass(frozen=True)
@@ -345,30 +399,41 @@ class ProjectionInputs:
             (typically the replay's ``next_pay_date``).  Subsequent
             dates advance one month at a time, the day clamped to each
             month's length.
-        annual_rate: Starting annual interest rate as a Decimal (e.g.
-            ``Decimal("0.06")`` for 6%).  ARM transitions in
-            ``rate_changes_remaining`` override it mid-projection.
-        remaining_months: Maximum number of months to project; also the
-            input to ARM re-amortization at rate changes.  ``<= 0``
+        remaining_months: Maximum number of months to project.  ``<= 0``
             yields an empty projection.
         payment_day: Day-of-month payments are due, clamped to each
             month's max days (e.g. day 31 in February).
-        contractual_payment: Contractual P&I, frozen at projection
-            start.  The per-month payment when no override exists and
-            the baseline for ARM rate-change re-amortization.
-        rate_changes_remaining: Optional ARM rate transitions whose
-            ``effective_date`` is at or after ``starting_date``.
-            ``None`` or empty leaves the rate fixed at ``annual_rate``
-            for the full projection.
+        terms_schedule: Non-empty :class:`PeriodTerms` list -- the
+            single source of each month's rate AND contractual P&I
+            (see :func:`_governing_terms` for the selection rule).
+            The resolver maps the loan's full
+            :class:`~app.services.rate_period_engine.RatePeriod` set
+            here, past periods included, so a ``starting_date`` behind
+            ``as_of`` (a stale anchor) is still governed by its true
+            period; entries need not be pre-sorted.
     """
 
     starting_balance: Decimal
     starting_date: date
-    annual_rate: Decimal
     remaining_months: int
     payment_day: int
-    contractual_payment: Decimal
-    rate_changes_remaining: list[RateChangeRecord] | None = None
+    terms_schedule: list[PeriodTerms]
+
+    def __post_init__(self):
+        """Reject an empty terms schedule at construction time.
+
+        A projection with no terms has no payment or rate to apply --
+        a caller bug that must surface loudly here, not as a wrong
+        schedule downstream.
+
+        Raises:
+            ValueError: If ``terms_schedule`` is empty.
+        """
+        if not self.terms_schedule:
+            raise ValueError(
+                "terms_schedule must contain at least one PeriodTerms "
+                "entry -- a projection has no payment or rate without one."
+            )
 
 
 def _apply_override_payment(
@@ -422,7 +487,8 @@ def _apply_contractual_payment(
     Args:
         balance: Outstanding balance before this month's payment.
         interest: Period interest already computed for this month.
-        monthly_payment: Current contractual P&I (post any ARM recast).
+        monthly_payment: The month's contractual P&I (the governing
+            terms entry's ``monthly_pi``).
         extra_monthly: Requested additional principal for the month.
         is_last_month: True on the loop's final scheduled month, which
             forces the remaining balance to be absorbed.
@@ -454,62 +520,6 @@ def _apply_contractual_payment(
     return principal_portion, monthly_payment, extra, new_balance
 
 
-@dataclass
-class _ProjectionState:
-    """Mutable per-month state carried through the projection loop.
-
-    Bundles the four values that evolve together as a forward
-    amortization walks month by month, so the loop body and its helpers
-    share one cohesive state object instead of parallel locals.
-
-    Attributes:
-        balance: Outstanding principal after the latest applied payment.
-        monthly_payment: Current contractual P&I (recast on ARM changes).
-        annual_rate: Current annual rate (changes at ARM transitions).
-        monthly_rate: ``annual_rate / 12`` (cached to avoid recomputing).
-    """
-
-    balance: Decimal
-    monthly_payment: Decimal
-    annual_rate: Decimal
-    monthly_rate: Decimal
-
-
-def _recast_for_rate_change(
-    state: _ProjectionState,
-    pay_date: date,
-    rate_schedule: list[tuple[date, Decimal]],
-    months_left: int,
-) -> None:
-    """Apply any ARM rate change effective at ``pay_date`` to ``state``.
-
-    When the most-recent applicable rate differs from the state's
-    current rate, updates the state's annual and monthly rates and
-    re-amortizes the contractual ``monthly_payment`` over the remaining
-    balance and ``months_left`` months at the new rate.  A no-op when no
-    rate change applies (the fallback is the state's current rate, so an
-    empty or fully-consumed schedule leaves the state untouched).
-
-    Args:
-        state: The loop's mutable projection state; updated in place.
-        pay_date: The payment date of the current schedule month.
-        rate_schedule: Sorted ``(effective_date, rate)`` tuples.
-        months_left: Months remaining (including this one), the term for
-            the re-amortization formula.
-    """
-    period_rate = _find_applicable_rate(
-        pay_date, rate_schedule, state.annual_rate,
-    )
-    if period_rate != state.annual_rate:
-        state.annual_rate = period_rate
-        state.monthly_rate = (
-            period_rate / MONTHS_PER_YEAR if period_rate > 0 else Decimal("0")
-        )
-        state.monthly_payment = calculate_monthly_payment(
-            state.balance, period_rate, months_left,
-        )
-
-
 def project_forward(
     inputs: ProjectionInputs,
     *,
@@ -525,7 +535,8 @@ def project_forward(
     module's original ``replay_confirmed_history`` primitive).
     ``project_forward`` has no concept of history and cannot rewrite
     it -- its inputs describe a state at ``starting_date`` and a set of
-    forward-only parameters (override, extra, rate changes).
+    forward-only parameters (override, extra, the rate/P&I terms
+    schedule).
 
     Two payment paths run per month:
 
@@ -541,38 +552,36 @@ def project_forward(
         at the remaining balance (the row absorbs the residue and the
         balance closes at zero).
       - **Contractual + extra.**  When no override exists for the
-        month, the payment is ``contractual_payment + extra_monthly``.
-        Extra is clamped so it cannot push the balance below zero.
-        The final scheduled month absorbs whatever residue remains
-        after the contractual P&I split, regardless of extra.
+        month, the payment is the governing terms entry's
+        ``monthly_pi`` plus ``extra_monthly``.  Extra is clamped so it
+        cannot push the balance below zero.  The final scheduled month
+        absorbs whatever residue remains after the contractual P&I
+        split, regardless of extra.
 
-    ARM behavior: when ``rate_changes_remaining`` is non-empty and the
-    applicable rate changes for the current month, ``monthly_payment``
-    is re-amortized
-    over the remaining balance and remaining months at the new rate.
-    ``rate_changes_remaining`` is expected to contain only rate
-    changes whose ``effective_date`` is at or after ``starting_date``
-    (the caller -- typically the scenario composer -- filters out
-    rate changes already consumed by replay).  No origination-based
-    filter is applied here because projection has no origination date
-    concept; entries with duplicate ``effective_date`` are
-    deduplicated with a warning, matching
-    ``_build_rate_change_list``'s behavior.
+    ARM behavior: each month's rate and contractual P&I come from the
+    governing ``terms_schedule`` entry (:func:`_governing_terms`), so
+    the payment recasts exactly where the rate-period engine says it
+    does and TO the value the rate-period engine says -- the recorded
+    recast (``RateHistory.monthly_pi``) when the user supplied one,
+    else the schedule-derived level payment.  The projection NEVER
+    re-amortizes a payment from its own what-if balance: the
+    contractual P&I is a property of the loan's rate-period structure,
+    not of the balance path (the E-02 invariant -- the same reason a
+    balance true-up does not move the displayed payment), and the
+    prior balance-reactive re-derivation is what let the schedule
+    diverge from the loan card (DH-#1).
 
     Every row carries ``is_confirmed=False`` because projection rows
-    are not facts about the recorded past.  When
-    ``rate_changes_remaining`` is non-empty, ``interest_rate`` is the
-    applicable rate for the row; otherwise it is ``None`` so
-    consumers that do not render the rate column see the field
-    absent.
+    are not facts about the recorded past, and ``interest_rate`` is
+    the governing entry's rate (the replay stamps its rows the same
+    way, so schedule consumers see the rate populated consistently).
 
     Args:
         inputs: A :class:`ProjectionInputs` bundling the starting state
-            (balance, date) and the forward-only terms (annual rate,
-            remaining months, payment day, contractual P&I, optional ARM
-            rate changes) that stay constant across a related set of
-            projections.  See :class:`ProjectionInputs` for per-field
-            semantics.
+            (balance, date) and the forward-only terms (remaining
+            months, payment day, the rate/P&I terms schedule) that stay
+            constant across a related set of projections.  See
+            :class:`ProjectionInputs` for per-field semantics.
         monthly_override: Optional ``(year, month) -> Decimal`` map.
             Each entry replaces the contractual payment for that month
             and suppresses ``extra_monthly`` for that month.  ``None``
@@ -592,32 +601,24 @@ def project_forward(
         ``inputs.remaining_months <= 0``.
 
     Raises:
-        Nothing.  ``RateChangeRecord`` and ``PaymentRecord`` field
-        validation happens at dataclass construction in the caller;
-        this function trusts its inputs (per CLAUDE.md "Trust
-        internal code and framework guarantees").
+        Nothing.  ``PeriodTerms`` field validation and the non-empty
+        ``terms_schedule`` guard happen at dataclass construction in
+        the caller (:class:`ProjectionInputs` raises ``ValueError`` on
+        an empty feed); this function trusts its inputs (per CLAUDE.md
+        "Trust internal code and framework guarantees").
     """
     if inputs.starting_balance <= 0 or inputs.remaining_months <= 0:
         return []
 
     overrides = {} if monthly_override is None else monthly_override
-    # No origination filter: projection has no origination concept.
-    rate_schedule = (
-        _build_rate_change_list(inputs.rate_changes_remaining, None)
-        if inputs.rate_changes_remaining
-        else []
+    # One sort up front; _governing_terms scans in start-date order.
+    terms_schedule = sorted(
+        inputs.terms_schedule, key=lambda terms: terms.start_date,
     )
 
     # Defensive: coerce to Decimal even if the caller passes a value
     # whose representation could yield float-like surprises.
-    state = _ProjectionState(
-        balance=Decimal(str(inputs.starting_balance)),
-        monthly_payment=inputs.contractual_payment,
-        annual_rate=inputs.annual_rate,
-        monthly_rate=(
-            inputs.annual_rate / MONTHS_PER_YEAR if inputs.annual_rate > 0 else Decimal("0")
-        ),
-    )
+    balance = Decimal(str(inputs.starting_balance))
 
     # First payment date: the starting month with the day clamped to
     # that month's length.  Subsequent dates advance via _advance_month.
@@ -634,18 +635,14 @@ def project_forward(
     rows: list[AmortizationRow] = []
 
     for month_num in range(1, inputs.remaining_months + 1):
-        if state.balance <= 0:
+        if balance <= 0:
             break
 
-        # ARM rate adjustment: re-amortize over the remaining balance
-        # and months at the new rate when the applicable rate changes.
-        if rate_schedule:
-            _recast_for_rate_change(
-                state, pay_date, rate_schedule,
-                inputs.remaining_months - month_num + 1,
-            )
-
-        interest = round_money(state.balance * state.monthly_rate)
+        # Rate AND contractual P&I from the governing terms -- the
+        # rate-period engine's figures, never re-derived from the
+        # projection's own balance (DH-#1 / E-02).
+        terms = _governing_terms(terms_schedule, pay_date)
+        interest = _period_interest(balance, terms.annual_rate)
         month_key = (pay_date.year, pay_date.month)
 
         if month_key in overrides:
@@ -653,9 +650,9 @@ def project_forward(
             # the month; extra_monthly is NOT added (override months must
             # never carry extra -- the plan's regression-prevention
             # property).
-            principal_portion, actual_payment, state.balance = (
+            principal_portion, actual_payment, balance = (
                 _apply_override_payment(
-                    state.balance, interest, overrides[month_key],
+                    balance, interest, overrides[month_key],
                 )
             )
             extra = Decimal("0.00")
@@ -663,9 +660,9 @@ def project_forward(
             # No override: contractual + extra path.  extra_monthly is
             # applied here and only here; the final scheduled month
             # absorbs the residue regardless of extra.
-            principal_portion, actual_payment, extra, state.balance = (
+            principal_portion, actual_payment, extra, balance = (
                 _apply_contractual_payment(
-                    state.balance, interest, state.monthly_payment,
+                    balance, interest, terms.monthly_pi,
                     extra_monthly, month_num == inputs.remaining_months,
                 )
             )
@@ -677,14 +674,12 @@ def project_forward(
             principal=round_money(principal_portion),
             interest=interest,
             extra_payment=round_money(extra),
-            remaining_balance=state.balance,
+            remaining_balance=balance,
             is_confirmed=False,
-            # Rate column only when ARM data is present; else None so
-            # consumers that do not render it see the field absent.
-            interest_rate=state.annual_rate if rate_schedule else None,
+            interest_rate=terms.annual_rate,
         ))
 
-        if state.balance <= 0:
+        if balance <= 0:
             break
 
         # Advance to the next month's payment date (day re-clamped from

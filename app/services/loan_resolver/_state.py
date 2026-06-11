@@ -59,8 +59,9 @@ class LoanState:
             debt-strategy accrual, payoff/refinance calculators) reads
             this instead of the stored column.
         schedule: Full amortization schedule, with confirmed rows
-            reflecting actual paid amounts and projected rows using
-            the engine's contractual / re-amortized projections.
+            reflecting actual paid amounts and projected rows paying
+            each month's rate-period level P&I (recorded recast or
+            schedule-derived -- the same figures this card displays).
             Generated once via the amortization engine; consumers
             read it without recomputing.
         payoff_date: Last ``payment_date`` in ``schedule`` (the

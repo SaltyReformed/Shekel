@@ -3115,6 +3115,7 @@ class TestAmortizationSchedule:
         # projection over the full term replicates the legacy
         # surface's output exactly.
         from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
+            PeriodTerms,
             ProjectionInputs,
             advance_to_next_payment_date,
             calculate_monthly_payment,
@@ -3143,10 +3144,13 @@ class TestAmortizationSchedule:
             ProjectionInputs(
                 starting_balance=principal,
                 starting_date=starting_date,
-                annual_rate=rate,
                 remaining_months=term,
                 payment_day=1,
-                contractual_payment=contractual,
+                terms_schedule=[PeriodTerms(
+                    start_date=starting_date,
+                    annual_rate=rate,
+                    monthly_pi=contractual,
+                )],
             ),
         )
         expected_interest = sum(

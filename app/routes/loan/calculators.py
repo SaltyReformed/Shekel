@@ -146,10 +146,12 @@ def _payoff_target_date_result(params, account_id, ctx, data):
 
     * The RAW required extra -- the engine's binary search against the
       contractual schedule alone, anchored at the resolver-derived
-      current balance and the loan card's contractual P&I (so the
-      rendered ``total_monthly = monthly_payment + required_extra`` is
-      internally consistent, D-2 closure).  For a user with no
-      recurring payment plan this is the only number.
+      current balance with the loan's rate-period terms feed
+      (``loan_resolver.engine_terms``), whose governing entry today IS
+      the loan card's P&I -- so the rendered ``total_monthly =
+      monthly_payment + required_extra`` is internally consistent (D-2
+      closure, now structural).  For a user with no recurring payment
+      plan this is the only number.
     * The PLAN-AWARE outlook -- when the loan has payments,
       :func:`loan_resolver.target_date_outlook` answers from the same
       replay-derived state the payoff calculator's committed scenario
@@ -187,15 +189,13 @@ def _payoff_target_date_result(params, account_id, ctx, data):
     required_extra = amortization_engine.calculate_payoff_by_date(
         amortization_engine.PayoffRequest(
             current_principal=state.current_balance,
-            annual_rate=ctx.current_rate,
             remaining_months=remaining_months,
             target_date=target_date,
             origination_date=date.today().replace(day=1),
             payment_day=params.payment_day,
-            original_principal=ctx.original_for_engine,
-            term_months=params.term_months,
-            rate_changes=ctx.loan.rate_changes,
-            contractual_payment=monthly_payment,
+            terms_schedule=loan_resolver.engine_terms(
+                params, ctx.loan.rate_changes,
+            ),
         )
     )
 
@@ -295,11 +295,15 @@ def _project_refinance(refi_principal, refi_rate, refi_term, payment_day):
         amortization_engine.ProjectionInputs(
             starting_balance=refi_principal,
             starting_date=starting_date,
-            annual_rate=refi_rate,
             remaining_months=refi_term,
             payment_day=payment_day,
-            contractual_payment=refi_monthly,
-            rate_changes_remaining=None,
+            # A refinance is one fixed-rate span: a single terms entry
+            # carries the new rate and its derived level payment.
+            terms_schedule=[amortization_engine.PeriodTerms(
+                start_date=starting_date,
+                annual_rate=refi_rate,
+                monthly_pi=refi_monthly,
+            )],
         ),
         monthly_override=None,
         extra_monthly=Decimal("0.00"),
