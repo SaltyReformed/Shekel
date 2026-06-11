@@ -19,6 +19,23 @@ Last updated: 2026-06-11.
 The prior `docs/ui_ux_audit.md` / `ui_ux_remediation_plan.md` are historical reference only,
 NOT this overhaul's backlog.
 
+## Provenance
+
+The overhaul began as a proof-step plan ("Fable 5 UI/UX Overhaul - Proof Step: Diagnose and
+Rebuild the Dashboard") authored in the original planning session that produced PR #29. That
+plan was never committed -- it lived only in that session -- which is how this ledger came to
+be created later. Its still-live content is folded in below (the dashboard playbook, the
+provisional rollout order, the navbar/IA area). Superseded by events since it was written:
+
+- The first rebuild target moved from the dashboard to the GRID (developer call, 2026-06-10);
+  the grid rebuild is complete on `feat/grid-rebuild`.
+- The browser loop uses `tests/manual/shoot.py` (the repo's Python Playwright), not the Node
+  Playwright MCP the plan specified -- there is no Node on this machine (`visual_loop.md`).
+- Its "Gate B" stack decision was settled during the grid direction rounds: Bootstrap 5 +
+  tokens + HTMX stays; the Svelte 5 grid island is the recorded upgrade path.
+- The `app.css` tokens consolidation (its Step 2a) landed with the Steel Ink theme commit;
+  the design brief + shekel-design skill (its Step 2b) landed in PR #29.
+
 ## Process per screen
 
 1. **Audit** (shekel-design skill Step 1): per-surface diagnosis + the developer's lived
@@ -52,8 +69,35 @@ for `app/services` / `app/routes` / test-assertion changes.
 | Foundation (design language, skill, dashboard audit) | DONE -- merged via PR #29 |
 | Steel Ink theme (app-wide token swap) | BUILT -- on `feat/grid-rebuild` |
 | **Grid** (first rebuild target) | BUILT, pending developer acceptance -- branch `feat/grid-rebuild` pushed (9 commits, full suite green). All 6 Loop B phases + audit fix-list items 1-5 done; decisions in `grid_audit.md` |
-| **Dashboard** (second target) | NEXT -- audit exists (`dashboard_card_audit.md`); leading direction: the "E2" horizon strip + alert line from the grid's Loop A rounds; includes data fixes (mis-wired spending card, hardcoded alert links, balance caption mismatch, and the `_get_balance_info` staleness-days inconsistency found 2026-06-10) |
-| Remaining screens (recurring, accounts, salary, transfers, obligations, retirement, analytics, settings, companion, calendar) | UNSEQUENCED -- ordered per developer call after the dashboard; each starts at Process step 1 |
+| **Dashboard** (second target) | NEXT -- follow the "Dashboard playbook" below; audit exists (`dashboard_card_audit.md`); leading direction: the "E2" horizon strip + alert line from the grid's Loop A rounds |
+| Remaining screens | PROVISIONAL ORDER from the original plan (confirm per screen at each start): accounts, savings, salary, analytics, retirement, investment, loan, settings. The app-wide navbar/IA rework is its own area. Screens the original list omits (recurring, transfers, obligations, companion, calendar) slot in per developer call. |
+
+## Dashboard playbook (carried from the original proof-step plan)
+
+The dashboard is NOT a safe reskin: some cards show wrong information and the correct ones are
+unhelpful (developer's verdict), so the work crosses into `dashboard_service.py`. Steps:
+
+1. **Diagnosis** -- already done: `dashboard_card_audit.md` (per card: intended vs actually
+   rendered vs divergence vs keep/fix/remove verdict). Re-verify line references against
+   current code before acting; the audit predates the grid rebuild.
+2. **Gate A (developer): per-card keep / fix / remove**, decided from the audit BEFORE any
+   code. Do not fix data for a card slated for removal.
+3. **Data-correctness fixes** (Opus scope; committed with tests regardless of which visual
+   direction later wins -- bug fixes are direction-independent): root causes in
+   `dashboard_service.py` / the partials. Known seeds: the Spending Comparison card's
+   `hx-get` to `dashboard.bills_section` with `hx-swap="none"` (fetches and discards), the
+   alert links hardcoded to `/`, the balance figure vs "as of" caption mismatch, and the
+   `_get_balance_info` hardcoded `staleness_days = 14` that can disagree with
+   `settings.anchor_staleness_days` (verified 2026-06-10, missed by the audit). New or
+   changed assertions only after the developer hand-confirms corrected values (rule 5),
+   arithmetic shown in comments. Targeted suites:
+   `tests/test_services/test_dashboard_service.py`, `tests/test_routes/test_dashboard.py`,
+   `tests/test_routes/test_dashboard_entries.py`; then the full suite.
+4. **UX/IA pass** for surviving cards: what the user is trying to do on the dashboard, what
+   each card should show, what to consolidate, reorder, or drop.
+5. **Loop A directions** (2-3, scratch mockups in /tmp) honoring the existing HTMX refresh
+   contracts (`dashboardRefresh from:body`, `balanceChanged from:body`), then the
+   direction gate, then Loop B -- same process as the grid.
 
 ## Small follow-ups (not screen-sized)
 
