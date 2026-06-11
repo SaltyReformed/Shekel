@@ -10,7 +10,13 @@ from datetime import date
 from decimal import Decimal
 
 from app.utils.dates import months_between
-from app.utils.money import MONTHS_PER_YEAR, round_money
+from app.utils.money import (
+    CENTS,
+    MONTHS_PER_YEAR,
+    ZERO,
+    round_money,
+    round_money_floor,
+)
 
 
 @dataclass(frozen=True)
@@ -19,11 +25,13 @@ class EscrowComponentDisplay:
 
     Carries both the stored annual amount and the derived per-period
     monthly amount so the Jinja template renders without inline
-    arithmetic.  The monthly amount is rounded once, here, with the
-    project default ROUND_HALF_UP -- the previous template-resident
+    arithmetic -- the previous template-resident
     ``comp.annual_amount|float / 12`` introduced a binary-float cast
     on a Decimal before the divide, masking precision drift behind
-    the formatter.
+    the formatter.  The monthly amounts are cent-allocated across the
+    component set (largest remainder, deep-hunt #17) so the rendered
+    rows sum exactly to :func:`calculate_monthly_escrow`'s
+    sum-then-round total -- see :func:`_allocate_monthly_amounts`.
 
     ``inflation_rate`` is the storage-domain decimal fraction (e.g.
     ``Decimal("0.03")`` for 3 %); ``inflation_rate_pct`` is the same
@@ -40,14 +48,57 @@ class EscrowComponentDisplay:
     inflation_rate_pct: Decimal | None
 
 
+def _allocate_monthly_amounts(annuals: list[Decimal]) -> list[Decimal]:
+    """Cent-allocate the monthly escrow total across components (#17).
+
+    Largest-remainder allocation: each component starts from its
+    floored ``annual / 12`` and the leftover cents -- the difference
+    between the sum of floors and the sum-then-rounded total -- go to
+    the components with the largest fractional remainders (ties broken
+    by input order; Python's sort is stable).  The result is per-row
+    display values that each lie within one cent of the exact
+    ``annual / 12`` AND sum exactly to the same total
+    :func:`calculate_monthly_escrow` computes without ``as_of_date``
+    -- so the escrow tab's rows always add up to its badge.  The
+    aggregate's own sum-then-round rule (the E-26 boundary rounding
+    feeding the loan payment) is untouched; only the per-row display
+    split changes.
+
+    Args:
+        annuals: Full-precision annual amounts of the ACTIVE
+            components, in display order.
+
+    Returns:
+        The per-component monthly display amounts, same order, summing
+        to ``round_money(sum(annual / 12))``.
+    """
+    exacts = [annual / MONTHS_PER_YEAR for annual in annuals]
+    total = round_money(sum(exacts, ZERO))
+    bases = [round_money_floor(exact) for exact in exacts]
+    remainder_cents = int((total - sum(bases, ZERO)) / CENTS)
+    by_remainder = sorted(
+        range(len(exacts)),
+        key=lambda i: exacts[i] - bases[i],
+        reverse=True,
+    )
+    monthlies = list(bases)
+    for i in by_remainder[:remainder_cents]:
+        monthlies[i] += CENTS
+    return monthlies
+
+
 def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
     """Build display DTOs for the escrow components list (MED-04 / E-16).
 
     Filters inactive components (mirroring
-    :func:`calculate_monthly_escrow`'s gate) and computes the per-
-    component monthly amount as ``annual / 12`` rounded HALF_UP so
-    every row's monthly value matches the rule the aggregate
-    ``calculate_monthly_escrow`` uses.
+    :func:`calculate_monthly_escrow`'s gate) and cent-allocates the
+    aggregate monthly total across the rows via
+    :func:`_allocate_monthly_amounts`, so each row's monthly value is
+    within one cent of its exact ``annual / 12`` and the rows sum
+    exactly to the badge total ``calculate_monthly_escrow`` renders
+    beside them (deep-hunt #17 -- per-row HALF_UP rounding made two
+    $100/yr components display 8.33 + 8.33 = 16.66 against a 16.67
+    badge).
 
     Args:
         components: Iterable of escrow components with ``.id``,
@@ -58,12 +109,14 @@ def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
         List of :class:`EscrowComponentDisplay` ordered as ``components``.
         Inactive components are skipped.
     """
+    active = [
+        comp for comp in components
+        if not (hasattr(comp, "is_active") and not comp.is_active)
+    ]
+    annuals = [Decimal(str(comp.annual_amount)) for comp in active]
+    monthlies = _allocate_monthly_amounts(annuals)
     rows: list[EscrowComponentDisplay] = []
-    for comp in components:
-        if hasattr(comp, "is_active") and not comp.is_active:
-            continue
-        annual = Decimal(str(comp.annual_amount))
-        monthly = round_money(annual / MONTHS_PER_YEAR)
+    for comp, annual, monthly in zip(active, annuals, monthlies):
         if getattr(comp, "inflation_rate", None) is not None:
             inflation = Decimal(str(comp.inflation_rate))
             inflation_pct = inflation * Decimal("100")
@@ -141,42 +194,3 @@ def calculate_total_payment(
     """
     escrow = calculate_monthly_escrow(components, as_of_date)
     return round_money(monthly_pi + escrow)
-
-
-def project_annual_escrow(
-    components: list,
-    years_forward: int,
-    base_year: int,
-) -> list[tuple[int, Decimal]]:
-    """Project escrow totals per year with per-component inflation.
-
-    Args:
-        components: Escrow components with .annual_amount, .is_active,
-                    and optionally .inflation_rate.
-        years_forward: Number of years to project.
-        base_year: The starting year for projections.
-
-    Returns:
-        List of (year, annual_amount) tuples.
-    """
-    results = []
-
-    for year_offset in range(years_forward):
-        year = base_year + year_offset
-        annual_total = Decimal("0.00")
-
-        for comp in components:
-            if hasattr(comp, "is_active") and not comp.is_active:
-                continue
-
-            annual = Decimal(str(comp.annual_amount))
-
-            if hasattr(comp, "inflation_rate") and comp.inflation_rate and year_offset > 0:
-                rate = Decimal(str(comp.inflation_rate))
-                annual = annual * (1 + rate) ** year_offset
-
-            annual_total += round_money(annual)
-
-        results.append((year, round_money(annual_total)))
-
-    return results

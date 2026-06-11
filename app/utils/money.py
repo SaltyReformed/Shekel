@@ -10,12 +10,14 @@ in the app implies. Python's Decimal default of ``ROUND_HALF_EVEN``
 boundaries and must never be reached implicitly through a bare
 ``.quantize(Decimal("0.01"))``.
 
-This module exposes two rounding helpers and the project's pay-period /
+This module exposes three rounding helpers and the project's pay-period /
 month conversion factors. ``round_money`` is the default boundary
 rounding. ``round_money_ceiling`` is the explicitly-named sanctioned
 variant for the savings-goal monthly contribution case, where under-
-funding by a fraction of a cent must never round down -- naming the
-exception at the call site makes the deviation auditable.
+funding by a fraction of a cent must never round down. ``round_money_floor``
+is the sanctioned variant for largest-remainder cent allocation, where a
+set of display rows must sum exactly to their already-rounded total --
+naming each exception at the call site makes the deviation auditable.
 
 Both helpers reject ``float`` input with ``TypeError``. Construction of a
 Decimal from a float (``Decimal(0.1)``) re-introduces the float
@@ -32,7 +34,7 @@ set of cross-service financial constants. Per E-24 / HIGH-05 the factor
 is defined exactly once here; any future 26/12 inlining is a regression
 of D6-05.
 """
-from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 
 CENTS = Decimal("0.01")
 ZERO = Decimal("0")
@@ -101,6 +103,40 @@ def round_money_ceiling(value: Decimal) -> Decimal:
             f"round_money_ceiling expects Decimal, got {type(value).__name__}: {value!r}"
         )
     return value.quantize(CENTS, rounding=ROUND_CEILING)
+
+
+def round_money_floor(value: Decimal) -> Decimal:
+    """Round a monetary Decimal down to cents using ``ROUND_FLOOR``.
+
+    Sanctioned variant for largest-remainder cent allocation (the
+    escrow display rows, deep-hunt #17): each row starts from its
+    floored value and the leftover cents -- the difference between the
+    sum of floors and the sum-then-rounded total -- are handed out to
+    the rows with the largest fractional remainders, so the rendered
+    rows always add up to the stated total without changing the total
+    itself. Naming the variant at the call site makes the deviation
+    from default ``round_money`` explicit and auditable; callers must
+    never reach a non-default rounding mode implicitly.
+
+    Args:
+        value: a Decimal in full precision. ``float`` is rejected for
+            the same reason as ``round_money``.
+
+    Returns:
+        ``value`` quantized to ``Decimal("0.01")`` with
+        ``rounding=ROUND_FLOOR``. ``Decimal("2.349")`` becomes
+        ``Decimal("2.34")``; a negative ``Decimal("-2.341")`` becomes
+        ``Decimal("-2.35")`` (floor moves toward negative infinity).
+
+    Raises:
+        TypeError: if ``value`` is not a ``Decimal``. Specifically
+            rejects ``float``.
+    """
+    if not isinstance(value, Decimal):
+        raise TypeError(
+            f"round_money_floor expects Decimal, got {type(value).__name__}: {value!r}"
+        )
+    return value.quantize(CENTS, rounding=ROUND_FLOOR)
 
 
 def percent_complete(total: Decimal, target: Decimal) -> Decimal:

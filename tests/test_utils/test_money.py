@@ -26,7 +26,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.utils.money import round_money, round_money_ceiling
+from app.utils.money import round_money, round_money_ceiling, round_money_floor
 
 
 class TestRoundMoney:
@@ -116,3 +116,44 @@ class TestRoundMoneyCeiling:
         """
         with pytest.raises(TypeError, match="round_money_ceiling expects Decimal"):
             round_money_ceiling(2.34)
+
+
+class TestRoundMoneyFloor:
+    """Hand-computed pins for the sanctioned ``round_money_floor`` variant.
+
+    The largest-remainder cent-allocation base (escrow display rows,
+    deep-hunt #17): every row starts from its floor so the leftover
+    cents can be distributed without any row overshooting its exact
+    value by more than a cent.
+    """
+
+    def test_round_money_floor_rounds_down(self):
+        """2.349 -> 2.34 under ROUND_FLOOR.
+
+        Floor drops any fractional cent, even .009 -- the allocation
+        hands the dropped cents back explicitly, never implicitly.
+        """
+        assert round_money_floor(Decimal("2.349")) == Decimal("2.34")
+
+    def test_round_money_floor_exact(self):
+        """2.340 -> 2.34 (exact two-place input is idempotent)."""
+        assert round_money_floor(Decimal("2.340")) == Decimal("2.34")
+
+    def test_round_money_floor_negative_goes_down(self):
+        """-2.341 -> -2.35: floor moves toward negative infinity.
+
+        Distinguishes ROUND_FLOOR from truncation (ROUND_DOWN would
+        give -2.34); pinned so the allocation's remainder arithmetic
+        (exact - base >= 0) holds for negative amounts too.
+        """
+        assert round_money_floor(Decimal("-2.341")) == Decimal("-2.35")
+
+    def test_round_money_floor_rejects_float(self):
+        """round_money_floor(2.34) raises TypeError.
+
+        Same Decimal-only contract as ``round_money``; documented
+        per-variant so a future caller cannot assume one helper is
+        looser than the other.
+        """
+        with pytest.raises(TypeError, match="round_money_floor expects Decimal"):
+            round_money_floor(2.34)
