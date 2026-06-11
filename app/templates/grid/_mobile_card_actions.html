@@ -25,11 +25,19 @@
        ``htmx:configRequest`` handler in ``app/static/js/app.js`` which
        injects ``X-CSRFToken`` on every HTMX request -- matching the
        existing button pattern in ``_transaction_full_edit.html:91``.
-     - **Edit Amount** -- ``hx-get`` the inline quick-edit endpoint.
-       Suppressed when ``can_edit=False`` (companion path in Commit 13).
      - **Open Full** -- triggers the existing bottom-sheet popover via
        the ``txn-expand-btn`` + ``data-txn-id`` delegated handler in
-       ``grid_edit.js:482``.  Suppressed when ``can_edit=False``.
+       ``grid_edit.js``.  Suppressed when ``can_edit=False``.  Since
+       the C3 rebuild (decision 2, docs/design/grid_audit.md) the
+       sheet IS the anchored action card with the Estimated / Actual
+       inputs at the top, so it covers amount editing directly.
+
+   The old **Edit Amount** button was removed during the C3 rebuild
+   (audit item C2): its ``hx-target="#txn-cell-<id>"`` pointed into
+   the CSS-hidden desktop table, so on mobile the quick-edit form
+   swapped into an element the user could never see -- a confirmed
+   dead control (verified live 2026-06-11) made redundant by the
+   action card's amount fields one tap away behind Open Full.
 
    Context (* required):
      txn *               -- a Transaction object.
@@ -82,14 +90,6 @@
   {% endif %}
 
   {% if can_edit %}
-    <button type="button" class="btn btn-outline-secondary btn-sm flex-fill btn-touch-44"
-            hx-get="{{ url_for('transactions.get_quick_edit', txn_id=txn.id) }}"
-            hx-target="#txn-cell-{{ txn.id }}"
-            hx-swap="innerHTML"
-            aria-label="Edit amount for {{ txn.name }}">
-      <i class="bi bi-pencil"></i> Edit Amount
-    </button>
-
     <button type="button"
             class="btn btn-outline-secondary btn-sm flex-fill txn-expand-btn btn-touch-44"
             data-txn-id="{{ txn.id }}"

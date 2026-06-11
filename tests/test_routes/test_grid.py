@@ -5175,8 +5175,13 @@ class TestMobileCardActionBar:
     ``<li>``, wrapped together in
     ``<div class="mobile-card-wrapper">``.  A delegated tap handler in
     ``app/static/js/mobile_grid.js`` toggles the Bootstrap collapse so
-    the user sees ``[Mark Paid]``, ``[Edit Amount]``, and
-    ``[Open Full]`` directly under the tapped card.
+    the user sees ``[Mark Paid]`` and ``[Open Full]`` directly under
+    the tapped card.  (The original ``[Edit Amount]`` button was
+    removed in the C3 rebuild, audit item C2: its swap target
+    ``#txn-cell-<id>`` lives inside the CSS-hidden desktop table, so
+    the form it loaded was never visible on mobile -- confirmed dead
+    live on 2026-06-11 -- and the Open Full action card now carries
+    the amount inputs directly.)
 
     These tests pin down the structural contract the JS handler and
     the action-bar route consumers depend on:
@@ -5189,10 +5194,10 @@ class TestMobileCardActionBar:
         mark-done path) do not (mark_done would reject them via the
         state machine, so omitting the affordance is the honest UX).
       - ``can_edit=False`` (the companion contract per R-7 / D-B of
-        the v3 plan) drops the owner-only ``[Edit Amount]`` and
-        ``[Open Full]`` buttons while keeping ``[Mark Paid]``
-        (companions are allowed to mark paid per the existing
-        entries-blueprint precedent).
+        the v3 plan) drops the owner-only ``[Open Full]`` button while
+        keeping ``[Mark Paid]`` (companions are allowed to mark paid
+        per the existing entries-blueprint precedent); ``Edit Amount``
+        stays asserted absent for every render path.
       - The Mark Paid form posts to ``transactions.mark_done`` with
         the swap target set to the row's ``#txn-cell-<id>``.
     """
@@ -5397,15 +5402,17 @@ class TestMobileCardActionBar:
     def test_action_bar_excludes_edit_when_can_edit_false(
         self, app, seed_user, seed_periods_today,
     ):
-        """C7-5: ``can_edit=False`` (companion) drops ``[Edit Amount]`` and
-        ``[Open Full]`` but keeps ``[Mark Paid]``.
+        """C7-5: ``can_edit=False`` (companion) drops ``[Open Full]``
+        but keeps ``[Mark Paid]``.
 
         The companion role can mark transactions paid (entries
-        blueprint precedent) but cannot open the desktop full-edit
-        form or the inline quick-edit popover.  The action bar
-        partial's ``{% if can_edit %}`` guard is the only thing
-        between the companion render path and the owner-only
-        affordances.
+        blueprint precedent) but cannot open the full-edit action
+        card.  The action bar partial's ``{% if can_edit %}`` guard is
+        the only thing between the companion render path and the
+        owner-only affordance.  ``Edit Amount`` is asserted absent
+        here too -- it was removed for every render path in the C3
+        rebuild (audit item C2, dead target in the hidden desktop
+        table), so its absence is now unconditional.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
