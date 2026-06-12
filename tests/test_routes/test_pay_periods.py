@@ -113,10 +113,11 @@ class TestPayPeriodGenerate:
 
     def test_generate_offset_start_rejected_422(self, app, bare_auth_client, bare_user):
         """A second batch whose start predates the existing schedule returns
-        422 with the forward-only error and creates nothing (DH-#39)."""
+        422 with the forward-only error and creates nothing (DH-#39, bound
+        tightened to the latest END date by fix I)."""
         with app.app_context():
             user_id = bare_user["user"].id
-            # First schedule: Jun 1 biweekly x5 -> latest payday Jul 27.
+            # First schedule: Jun 1 biweekly x5 -> last period Jul 27 - Aug 9.
             bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-06-01", "num_periods": "5",
                 "cadence_days": "14",
@@ -125,14 +126,17 @@ class TestPayPeriodGenerate:
                 user_id=user_id,
             ).count() == 5
 
-            # Offset second batch starting Jun 8 lands among the existing
-            # periods -- rejected before anything is written.
+            # Offset second batch starting Jun 8 lands within the existing
+            # coverage -- rejected before anything is written.
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-06-08", "num_periods": "5",
                 "cadence_days": "14",
             })
             assert resp.status_code == 422
-            assert b"must start after your latest existing payday" in resp.data
+            # Message now names the latest existing END date as the bound
+            # (fix I): the guard compares against period coverage, not the
+            # latest start date.
+            assert b"must start after your latest existing period ends" in resp.data
             # Nothing created -- still exactly the original 5.
             assert db.session.query(PayPeriod).filter_by(
                 user_id=user_id,

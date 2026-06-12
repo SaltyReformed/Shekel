@@ -23,6 +23,50 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
+def _reject_overlapping_batch(existing_periods, new_starts):
+    """Reject a batch whose earliest new payday overlaps existing coverage.
+
+    Forward-only invariant (DH-#39): new periods are appended with the
+    highest ``period_index`` values, so their start dates MUST fall after
+    every existing period's COVERAGE, not merely after the latest existing
+    start.  Otherwise ``period_index`` order stops matching calendar
+    order, and the balance engine -- which walks periods by index and
+    trusts that order to be chronological
+    (``balance_resolver.balance_as_of_date``, ``balances_for``) -- skips
+    the out-of-order period and silently drops its transactions from
+    as-of balances.  A start date that lands ON or WITHIN any existing
+    period's ``[start_date, end_date]`` span also produces overlapping
+    date ranges (two periods covering one day) and a nondeterministic
+    ``get_current_period``.
+
+    The bound is therefore the latest existing ``end_date``: the new batch
+    must start strictly after the day the current schedule's coverage
+    ends.  This is a user mistake or a schedule change that needs a
+    dedicated realign flow, not a silent reshuffle, so reject the whole
+    batch loudly before writing anything.
+
+    Args:
+        existing_periods: List of ``(start_date, end_date)`` rows for the
+            user's existing periods (empty for a first-time schedule).
+        new_starts: The de-duplicated start dates this batch would create.
+
+    Raises:
+        ValidationError: When the earliest new start falls on or before
+            the latest existing ``end_date``.
+    """
+    if not (existing_periods and new_starts):
+        return
+    latest_end = max(row[1] for row in existing_periods)
+    if min(new_starts) <= latest_end:
+        raise ValidationError(
+            "New pay periods must start after your latest existing "
+            f"period ends ({latest_end.isoformat()}). The requested "
+            "start date would create periods that overlap or predate "
+            "your current schedule; choose a later start date to "
+            "extend your schedule forward."
+        )
+
+
 def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
     """Generate a series of pay periods for a user.
 
@@ -57,12 +101,12 @@ def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
     )
     next_index = 0 if max_index is None else max_index + 1
 
-    existing_starts = set(
-        row[0]
-        for row in db.session.query(PayPeriod.start_date)
+    existing_periods = (
+        db.session.query(PayPeriod.start_date, PayPeriod.end_date)
         .filter_by(user_id=user_id)
         .all()
     )
+    existing_starts = {row[0] for row in existing_periods}
 
     # Determine which paydays this batch would create -- every requested
     # start that is not already an existing period.  An exact-match re-run
@@ -75,28 +119,7 @@ def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
             new_starts.append(current_start)
         current_start += timedelta(days=cadence_days)
 
-    # Forward-only invariant (DH-#39): new periods are appended with the
-    # highest ``period_index`` values, so their start dates MUST fall after
-    # every existing payday.  Otherwise ``period_index`` order stops
-    # matching calendar order, and the balance engine -- which walks
-    # periods by index and trusts that order to be chronological
-    # (``balance_resolver.balance_as_of_date``, ``balances_for``) -- skips
-    # the out-of-order period and silently drops its transactions from
-    # as-of balances.  A start date that lands among existing periods also
-    # produces overlapping date ranges (two periods covering one day).
-    # That is a user mistake or a schedule change that needs a dedicated
-    # realign flow, not a silent reshuffle, so reject the whole batch
-    # loudly before writing anything.
-    if existing_starts and new_starts:
-        latest_existing = max(existing_starts)
-        if min(new_starts) <= latest_existing:
-            raise ValidationError(
-                "New pay periods must start after your latest existing "
-                f"payday ({latest_existing.isoformat()}). The requested "
-                "start date would create periods that overlap or predate "
-                "your current schedule; choose a later start date to "
-                "extend your schedule forward."
-            )
+    _reject_overlapping_batch(existing_periods, new_starts)
 
     created = []
     assigned_index = next_index  # Highest existing index + 1; gap-free.
