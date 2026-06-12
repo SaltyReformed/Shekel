@@ -70,7 +70,7 @@ for `app/services` / `app/routes` / test-assertion changes.
 | Foundation (design language, skill, dashboard audit) | DONE -- merged via PR #29 |
 | Steel Ink theme (app-wide token swap) | MERGED to `dev` via PR #31 (2026-06-11) |
 | **Grid** (first rebuild target) | MERGED to `dev` via PR #31 (2026-06-11, CI green). All 6 Loop B phases + audit fix-list items 1-5 done; decisions in `grid_audit.md`. Ships to prod with the next `dev` -> `main` PR |
-| **Dashboard** (second target) | IN PROGRESS -- playbook steps 1-3 DONE 2026-06-12. Step 1: audit re-verified ("Re-verification (2026-06-12)" in `dashboard_card_audit.md`). Step 2: Gate A locked ("Rebuild decisions": keep+fix cards 1-6, REMOVE Spending Comparison, as-of-today balance headline, transfers excluded from spending / included in runway). Step 3: data-correctness pass COMMITTED to dev (`308b49f` pay-period guard, `0ef7ba6` dashboard; full suite 6063, pylint 10.00/10; all fixes live-verified). NEXT: step 4 UX/IA pass, then step 5 Loop A directions -- leading candidate: the "E2" horizon strip + alert line from the grid's Loop A rounds |
+| **Dashboard** (second target) | IN PROGRESS -- playbook steps 1-3 DONE 2026-06-12. Step 1: audit re-verified ("Re-verification (2026-06-12)" in `dashboard_card_audit.md`). Step 2: Gate A locked ("Rebuild decisions": keep+fix cards 1-6, REMOVE Spending Comparison, as-of-today balance headline, transfers excluded from spending / included in runway). Step 3: data-correctness pass COMMITTED to dev (`308b49f` pay-period guard, `0ef7ba6` dashboard; full suite 6063, pylint 10.00/10; all fixes live-verified). Step 4: UX/IA pass DONE, Gate B LOCKED 2026-06-12 ("UX/IA pass (step 4)" section in `dashboard_card_audit.md`): B1-B7 all approved -- pulse strip consolidating Balance + Payday + Alerts + the E2 horizon; bills still-due totals on the REMAINING basis with transfer shadows INCLUDED; position tier; copy/consistency fold-ins. Developer framing recorded: the dashboard is "a quick easy to read health check"; bills must get denser; grid-as-homepage stays the fallback. NEXT: step 5 Loop A directions (scratch mockups in /tmp), then the direction gate, then Loop B |
 | Remaining screens | PROVISIONAL ORDER from the original plan (confirm per screen at each start): accounts, savings, salary, analytics, retirement, investment, loan, settings. The app-wide navbar/IA rework is its own area. Screens the original list omits (recurring, transfers, obligations, companion, calendar) slot in per developer call. |
 
 ## Dashboard playbook (carried from the original proof-step plan)
@@ -97,8 +97,8 @@ unhelpful (developer's verdict), so the work crosses into `dashboard_service.py`
 4. **UX/IA pass** for surviving cards: what the user is trying to do on the dashboard, what
    each card should show, what to consolidate, reorder, or drop.
 5. **Loop A directions** (2-3, scratch mockups in /tmp) honoring the existing HTMX refresh
-   contracts (`dashboardRefresh from:body`, `balanceChanged from:body`), then the
-   direction gate, then Loop B -- same process as the grid.
+   contract (`balanceChanged from:body`; the old `dashboardRefresh` event was deleted in the
+   step 3 data pass), then the direction gate, then Loop B -- same process as the grid.
 
 ## Small follow-ups (not screen-sized)
 

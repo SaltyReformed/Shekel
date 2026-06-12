@@ -357,3 +357,225 @@ forward into the UX/IA pass or later work:
 - Negative balances render "$-1,234.56" in the savings caption (shared currency-macro
   candidate).
 - Savings goal 1:1-vs-allocation design question (deferred; spans /savings).
+
+## UX/IA pass (step 4) -- Gate B, locked 2026-06-12
+
+Step 4 of the dashboard playbook: content architecture for the six surviving cards -- what each
+surface shows, grouping, order, links, and the refresh contract. Loop A (step 5) owns the visual
+form; nothing here picks a layout style. Grounded in: the post-data-pass code (dev `4ee2f9e`)
+read in full; live authenticated shots of the dev dashboard (desktop and mobile, both themes);
+the grid's locked vocabulary (`grid_audit.md` rebuild decisions); a cross-screen sweep of which
+screen answers which money question; and a four-lens adversarial review of this proposal
+(design-language fidelity, completeness, technical feasibility, scope discipline).
+
+### Gate B rulings (developer, 2026-06-12)
+
+B1 approved. B2 approved. B3 approved. B4a: REMAINING basis (entry-tracked rows contribute
+remaining-after-entries, floored at zero). B4b: INCLUDE transfer-out shadows in the still-due
+totals. B5 approved. B6 approved. B7 approved in full after a plain-language walkthrough (all
+four sub-items: account-name-driven copy with a neutral no-account empty state; balance caption
+consolidation with all three lines' information kept; the shared currency macro with -$1,234.56
+negatives; Enter/Space activation on the click-to-edit balance). These are locked product
+decisions; do not revisit without a new developer ruling.
+
+Developer framing recorded with the ruling (Loop A must honor this): the dashboard in its
+current state has never been useful -- largely the now-fixed broken data, partly because the
+information was not helpful. The Upcoming Bills card was too big and did not provide enough
+information to make budgetary decisions. Transactional edits happen on /grid. The developer
+considered removing the dashboard entirely and making the grid the homepage (the original
+design). The dashboard's purpose, in their words: "a quick easy to read health check of my
+finances." Implications for Loop A: the pulse strip and the still-due totals are the
+health-check bet; the bills list should get materially denser than today (compact,
+information-rich rows, not a tall sparse list); and the grid-as-homepage question stays open
+as the fallback if the rebuilt dashboard does not earn daily use.
+
+### The screen's job
+
+The product exists so one person can answer: do I have enough money, what is due before my next
+paycheck, and where is my projection heading (design language, Purpose). Those are product
+questions, and the grid is where they are RESOLVED. The dashboard is the read-only summary
+surface that answers them at a glance and routes to the screen that resolves each. Two of the
+three get no summary answer today: "due before my next paycheck" has a list but no number
+anywhere on the screen, and "where is it heading" is answered only by exception (the
+negative-projection alert), so "nothing is wrong" is indistinguishable from "nobody computed
+it."
+
+### What the live shots show (dev data, 2026-06-12)
+
+- The NOW answer (the as-of-today balance) renders in row 2 on desktop and below sixteen bill
+  rows (~2,000 px down) on mobile. The page's largest visual mass sits above its most important
+  figure.
+- Desktop row 1 order is accidental: Alerts has no order class (defaults to 0) while Bills
+  carries `order-lg-1`, so Alerts renders first and the comment at `dashboard.html:31-36`
+  describes the opposite. The left column is mostly dead gap below the short Alerts card.
+- Mobile bills-first IS deliberate (the mobile v3 plan, Commit 22 sub-problem 1); B1 below
+  proposes superseding it, disclosed as such.
+- The six cards have two tempos but are laid out as peers: Balance, Bills, and Alerts move with
+  every transaction; Payday moves daily (days-until) and on salary or pay-period edits (all
+  full navigations); Savings and Debt move per paycheck or slower and duplicate /savings, which
+  renders the same producers with more detail.
+- Savings spends a half-width card on one progress bar; Debt renders alone with empty page
+  background to its right; neither links anywhere in its populated state.
+- Alerts never refresh (no wiring) while the Balance card refreshes live on `balanceChanged`,
+  and the low-balance alert message embeds a dollar figure, so the card and the alert beside it
+  can quote two different balances until a full reload.
+
+### The organizing idea: the pulse timeline
+
+The high-tempo surfaces read as a timeline: NOW (balance as of today, runway) -> BETWEEN NOW
+AND PAYDAY (bills still due) -> PAYDAY (in N days, net) -> HORIZON (projected period-end
+balances ahead, with an alert line for anything wrong). This is the E2 "horizon strip plus
+alert line" carried from the grid's Loop A (the leading candidate recorded in `grid_audit.md`
+rebuild decisions item 7 and the overhaul plan; the E2 mockup itself was deliberately
+disposable, so the concept is re-derived here from the dashboard's own needs). The slow
+surfaces (Savings, Debt) form a standing-position tier below the bills.
+
+### One question per surface
+
+| Surface | Question | Figure that answers it |
+| ------- | -------- | ---------------------- |
+| Balance + runway | Do I have enough money right now? | $ as of today, ~N days runway |
+| Upcoming bills | What must still be paid this period (and next)? | still-due totals (NEW, B4) |
+| Next payday | When is relief, and how big? | days until, net $ |
+| Alerts | Is anything wrong ahead? | the alert line, danger first |
+| Horizon (NEW, B3) | Where is the projection heading? | next N period-end balances |
+| Savings goals | Am I on track on my goals? | % progress per goal |
+| Debt | Where does my debt stand? | total debt, monthly payments, DTI, debt-free date |
+
+### Proposed rulings (Gate B)
+
+**B1 -- page structure and order, both viewports: pulse strip, then Bills, then position
+tier.** One source order, no order classes (the desktop accident disappears structurally). On
+mobile this supersedes the deliberate bills-first ruling from the mobile v3 plan (Commit 22):
+the strip is one short band, so bills remain immediately below it instead of pushing the NOW
+answer ~2,000 px down. The "Open Grid" header button stays as the global route to the working
+surface (B5's period links do not replace it). RECOMMEND: yes.
+
+**B2 -- consolidate Balance, Payday, and Alerts into one pulse-strip surface** with a single
+HTMX region refreshing on `balanceChanged from:body`. Content carried over in full:
+
+- Balance slot: the as-of-today figure (click-to-edit anchor affordance retained, including
+  the `revert=dashboard` cancel path); account name; "as of today" caption; the Gate A-locked
+  "last updated <date>" secondary line; the runway line including its "N/A" zero-spend state.
+- Payday slot: days-until, date, projected net; the "Set up salary" and "No upcoming pay
+  periods" fallbacks. No populated-state CTA (payday resolves nothing; adding a link would be
+  speculative).
+- Alert line: keeps the app alert anatomy (severity icon + message + per-type link), danger
+  first, compact; all-clear collapses to one quiet line. Live refresh closes the stale-alert
+  window noted above.
+- Degraded-state composition: each slot renders its own fallback line independently (the
+  no-scenario branch renders all fallbacks at once today and keeps doing so inside the strip);
+  "No balance data available" stays the balance slot's no-scenario state.
+
+Refresh cost, stated deliberately: the data pass narrowed the `balanceChanged` producers
+(fix H) so partials did not recompute figures they do not render. The strip RENDERS alerts,
+payday, and the horizon, so its producer legitimately recomputes them: one full anchor-forward
+`balances_for` walk plus one `calculate_paycheck` per event -- the same work one page load
+already does. Request fan-out per event is unchanged (two: strip + bills). The strip producer
+and endpoint are NEW code (Opus scope). Alternative: keep three separate cards, reordered.
+RECOMMEND: consolidate.
+
+**B3 -- horizon element (content ruling only): the strip shows the next N projected period-end
+balances**, so "where is it heading" is answered affirmatively, not only by exception. Negative
+period-ends use `--shekel-danger` paired with a non-color signal; tabular numerals. N = 6
+(about one quarter at biweekly periods) recommended; fewer render when fewer exist; Loop A may
+tune N between 4 and 8 for density. Numeric run vs sparkline is a Loop A direction-gate choice
+(Chart.js is already vendored app-wide, so neither option adds a dependency). The walk shares
+B2's producer cost. Alternative: no horizon, alerts only (rejected by this proposal: it leaves
+the heading question exception-only). RECOMMEND: yes, content as stated.
+
+**B4 -- the Bills card gets hero figures: per-period "still due" totals** (card headline = the
+current period's total; each group header carries its period's total). Computed in the producer
+from the already-loaded rows; no new queries. Two financial-semantics sub-rulings, explicit per
+the transfer-decision precedent:
+
+- B4a, basis for entry-tracked rows: (i) REMAINING basis -- a tracked row contributes
+  `entry_remaining` floored at zero (its recorded entries have already left the as-of-today
+  balance in the same strip, so balance minus still-due composes without double counting);
+  caption "still due". (ii) ESTIMATED basis -- rows contribute the full `estimated_amount`,
+  matching the row's displayed dual amount; the caption must then read "budgeted", not "still
+  due" (principle 2). RECOMMEND: (i) remaining basis.
+- B4b, transfer shadows: whether the listed transfer-out rows count toward the totals. The
+  Gate A transfer ruling classifies spending figures (exclude) and runway outflow (include); a
+  still-due total is an obligation / checking-depletion figure, and the list it sums already
+  discloses transfers with an icon. RECOMMEND: include, disclosed as today.
+- Zero states: a current period with no remaining bills shows the all-clear line with $0.00
+  while next-period bills render; the card's "No upcoming bills" empty state stays for the
+  both-periods-clear case.
+- Row contents unchanged: status icons (past-due, due-soon, transfer), category sub-line, due
+  date (desktop-only as today), entry dual amount + tooltip, the "budget" base label. The new
+  totals carry a basis label in the UI (the E-21 disclosure pattern).
+
+**B5 -- bills navigation: group headers link to the grid at that period** (`grid.index?offset=0`
+and `?offset=1`, the link vocabulary the negative-projection alert already uses). Per-row links
+are NOT proposed: every row in a group would resolve to the same URL as its header, and no
+recorded need exists (revisit only if mobile wants whole-row tap targets). The dashboard stays
+read-only: no transaction-status mutation; the anchor true-up affordance is the sanctioned
+exception. RECOMMEND: header links yes, row links no.
+
+**B6 -- position tier: Savings and Debt share a compact bottom row** (both KEEP per Gate A).
+Kept per-goal figures: name, $current / $target, progress bar with its ARIA attributes,
+percent, account-name caption. Kept debt figures: Total Debt, Monthly Payments, DTI ratio +
+badge, Debt-Free Date. Card titles link to `savings.dashboard` in the populated state (today
+neither card links anywhere when populated; the grounding is the screen's routing job, not
+principle 4, which only constrains CTAs that exist). No live refresh, deliberately: no
+`balanceChanged` emitter reachable without leaving the dashboard moves these figures (the only
+on-dashboard mutation, the anchor true-up, touches neither), and off-dashboard changes return
+via full navigation. The tier degrades when debt is absent (savings widens; no empty debt
+card). Shared dti-badge and currency macros land in Loop B. RECOMMEND: yes.
+
+**B7 -- copy and consistency fold-ins** (decided here; built in Loop B; service-side copy is
+Opus scope):
+
+- The no-account empty state gets neutral wording (no account exists to name); alert messages
+  and the balance card become account-name-driven, replacing hardcoded "checking" (the
+  `has_default_account` misnomer family).
+- Balance caption stack, named fates: account name KEPT (may merge onto one line with "as of
+  today"); "as of today" KEPT (wording may sharpen); "last updated <date>" KEPT (Gate A-locked
+  staleness affordance).
+- A shared currency macro renders negatives as -$1,234.56 (today: $-1,234.56) and replaces the
+  per-template `"{:,.2f}".format` duplication at every dashboard money site.
+- Enter/Space activate the click-to-edit balance (the `role="button"` keyboard gap).
+- The mobile over-budget bill-row truncation ("Kayla'..." at 390 px) moves to the Loop A/B fix
+  list (visual-form work, not content).
+
+RECOMMEND: yes.
+
+### Refresh contract (the deliberate wiring story)
+
+| Region | Trigger | Producer |
+| ------ | ------- | -------- |
+| Pulse strip (balance, payday, alerts, horizon) | `balanceChanged from:body` | new narrow strip producer (Opus scope) |
+| Bills | `balanceChanged from:body` | `compute_bills_section` (exists) |
+| Position tier (savings, debt) | page load only | /savings producers (exist) |
+
+### Loop B engineering notes (recorded now so the build does not rediscover them)
+
+- The strip endpoint must resolve alert links via `_resolve_alert_links` (today
+  `dashboard.page` is the only resolving route).
+- The anchor-edit flow couples to the strip at three points: `_anchor_revert_url` maps
+  "dashboard" to `dashboard.balance_section`, whose markup must match the strip's balance
+  slot; the PATCH success response renders the grid display cell and relies on an enclosing
+  `balanceChanged` listener whose swap target must contain the editor; and the success
+  response's OOB snippet targets `id="anchor-as-of"`, which the strip must keep (or the
+  mapping must change in the same pass).
+- `balance_as_of_date` builds its own all-period override map internally; the strip producer
+  runs that walk and `balances_for` roughly twice per refresh unless the signature grows a
+  shared-overrides path. Acceptable at current scale; note for the producer's design.
+
+### Noted, not ruled (developer awareness)
+
+- Payday divergence: an `is_override` edit on the next paycheck transaction changes the grid's
+  figure but not the dashboard's payday net, which recomputes from the salary profile.
+  Pre-existing, unchanged by this pass. Options if it should close: read the stored paycheck
+  transaction for the next period, or accept profile-derived as the dashboard's definition.
+- Bill due dates stay desktop-only (`d-none d-md-inline`), as today.
+
+### Explicitly out of scope
+
+- New decision-support figures from the cross-screen sweep (savings burn rate, contribution
+  headroom, cross-account rollups, and similar): new features, not this rebuild.
+- The savings goal 1:1-vs-allocation question (deferred at Gate A; spans /savings).
+- The nullable `low_balance_threshold` column: re-deferred to migration work (not UX/IA).
+- The MFA nag: app-wide chrome from `base.html`, untouched (its partial merely lives in the
+  dashboard template directory).
