@@ -22,6 +22,7 @@ env/
 # a local .env.dev for any reason does not accidentally commit it.
 .env
 .env.dev
+.flaskenv
 
 # Cosign key material.  The PUBLIC key (deploy/cosign.pub) is
 # committed -- verifiers need it.  Every other cosign key file is a

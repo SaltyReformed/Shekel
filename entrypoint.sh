@@ -240,9 +240,11 @@ PGPASSWORD="${DB_PASSWORD}" psql \
 echo "Role ready."
 
 # ── 3. Initialize database (fresh) or run migrations (existing) ─
-# init_database.py pops DATABASE_URL_APP from os.environ at startup
-# so it always runs as the owner role (DATABASE_URL).  Migrations
-# need DDL privileges; the app role has DML only.
+# init_database.py blanks DATABASE_URL_APP in its own process env at
+# startup (empty-as-unset per the config resolver; robust against
+# load_dotenv re-population) so it always runs as the owner role
+# (DATABASE_URL).  Migrations need DDL privileges; the app role has
+# DML only.
 echo "Initializing database..."
 python scripts/init_database.py
 

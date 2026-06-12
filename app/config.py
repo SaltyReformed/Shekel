@@ -336,10 +336,13 @@ def _runtime_database_uri(default: str | None = None) -> str | None:
 
     The runtime app prefers ``DATABASE_URL_APP`` whenever it is set,
     falling back to ``DATABASE_URL`` otherwise.  Deployment scripts
-    (``scripts/init_database.py``, ``scripts/seed_*.py``, etc.) pop
-    ``DATABASE_URL_APP`` from ``os.environ`` at startup so they
-    always run as the owner role -- see the file-level docstring of
-    ``scripts/init_database.py`` for the rationale.
+    (``scripts/init_database.py``, ``scripts/build_test_template.py``)
+    override ``DATABASE_URL_APP`` to the empty string at startup --
+    empty-as-unset per the resolver below -- so they always run as
+    the owner role even when a ``.env`` line would re-populate a
+    popped key via this module's ``load_dotenv()``.  See the
+    file-level docstring of ``scripts/init_database.py`` for the
+    rationale.
 
     Args:
         default: Fallback URI used when neither ``DATABASE_URL_APP``
@@ -465,7 +468,8 @@ class ProdConfig(BaseConfig):
     # Prefers DATABASE_URL_APP (least-privilege ``shekel_app`` role)
     # when set, falling back to DATABASE_URL (owner ``shekel_user``).
     # ``__init__`` below rejects a missing URI; deployment scripts
-    # pop DATABASE_URL_APP before ``create_app`` to force themselves
+    # blank DATABASE_URL_APP before ``create_app`` (empty-as-unset,
+    # dotenv-proof) to force themselves
     # onto the owner role.  See ``_runtime_database_uri`` and
     # ``scripts/init_database.py`` for the full policy.
     SQLALCHEMY_DATABASE_URI = _runtime_database_uri()

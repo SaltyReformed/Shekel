@@ -6,22 +6,16 @@
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
 #
 # End users pulling pre-built images from GHCR do not need this file.
+#
+# This override changes ONLY the image source (local build instead of
+# the GHCR pull).  Networks, hardening, healthchecks, and resource
+# caps all flow through from the base file unchanged.  A previous
+# revision also attached the app to a shared ``monitoring`` network
+# for a Promtail-era log pipeline; the deployed collector (Grafana
+# Alloy) discovers containers over the Docker socket and needs no
+# shared network, so that coupling was removed (parity audit
+# 2026-06-12, finding M06 in docs/audits/dev-prod-parity/findings.md).
 
 services:
   app:
     build: .
-    # Override networks: must include both backend (inherited base file
-    # uses this for DB/Nginx communication) and monitoring (for the
-    # Loki/Grafana/Promtail stack on self-hosted deployments).
-    # Docker Compose replaces list-type keys, so both must be listed.
-    networks:
-      - backend
-      - monitoring
-
-networks:
-  # Monitoring network: shared with the Loki/Grafana/Promtail stack.
-  # Uses an explicit name so both stacks reference the same network.
-  # Docker Compose creates it automatically if it does not exist.
-  monitoring:
-    name: monitoring
-    driver: bridge

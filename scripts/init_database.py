@@ -24,11 +24,11 @@ Database role policy:
     This script is part of the deployment pipeline -- not the
     application's request-time path -- so it always runs as the
     owner role (``DATABASE_URL``), never as the least-privilege app
-    role (``DATABASE_URL_APP``).  ``DATABASE_URL_APP`` is removed
-    from ``os.environ`` at the top of the file before
-    ``create_app()`` reads it; this scopes the override to this
-    process only and does not affect the Gunicorn process that
-    ``entrypoint.sh`` exec's afterwards.
+    role (``DATABASE_URL_APP``).  ``DATABASE_URL_APP`` is overridden
+    to the empty string (= unset, per the config resolver's contract)
+    at the top of the file before ``create_app()`` reads it; this
+    scopes the override to this process only and does not affect the
+    Gunicorn process that ``entrypoint.sh`` exec's afterwards.
 
 Usage:
     python scripts/init_database.py
@@ -41,14 +41,24 @@ import sys
 # ``DATABASE_URL_APP`` over ``DATABASE_URL`` when both are set, which
 # is correct for the runtime app (least privilege) but wrong for
 # this script (needs DDL: CREATE TABLE, CREATE TRIGGER, ...).
-# os.environ.pop is process-local -- the parent shell's env is
-# untouched, so ``exec gunicorn`` after this script still sees
-# DATABASE_URL_APP and runs as the app role.
-os.environ.pop("DATABASE_URL_APP", None)
+#
+# Empty string rather than ``os.environ.pop``: config.py runs
+# ``load_dotenv()`` at import time (override=False), which re-inserts
+# a ``DATABASE_URL_APP`` line from a repo-local or bind-mounted
+# ``.env`` into an absent key -- silently defeating a pop-based
+# override (and, inside the dev container, pointing this script at a
+# localhost DB that does not exist there).  An existing-but-empty key
+# survives load_dotenv, and the config resolver documents
+# empty-as-unset: it falls through to DATABASE_URL (covered by
+# ``test_empty_database_url_app_falls_through``).  The assignment is
+# process-local -- the parent shell's env is untouched, so ``exec
+# gunicorn`` after this script still sees the real DATABASE_URL_APP
+# and runs as the app role.
+os.environ["DATABASE_URL_APP"] = ""
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Pylint: wrong-import-position -- the DATABASE_URL_APP pop and the
+# Pylint: wrong-import-position -- the DATABASE_URL_APP override and the
 # sys.path bootstrap above must run before these imports: the app config
 # reads the environment at import time, and ``app`` only resolves once
 # the repo root is on sys.path (sys.path[0] is scripts/ when invoked as

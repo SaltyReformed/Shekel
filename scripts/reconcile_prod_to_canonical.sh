@@ -200,7 +200,11 @@ log "Step 6: shared Nginx vhost"
 # repo->host sync can clobber load-bearing config.  Snapshot first,
 # diff second, copy third.
 nginx_snap=/opt/docker/nginx/.reconcile-snapshot-$(date +%Y%m%d-%H%M%S)
-mkdir -p "$nginx_snap"
+# 0700: snapshot dirs hold pre-reconcile copies of live config; keep
+# them owner-only so residue can never widen the exposure of whatever
+# it captured (parity audit 2026-06-12, finding M08 -- the 2026-05-14
+# run left a world-readable rendered config embedding a credential).
+install -d -m 0700 "$nginx_snap"
 cp "$SHARED_NGINX_CONF_D/shekel.conf"    "$nginx_snap/shekel.conf.pre-reconcile" 2>/dev/null || true
 cp /opt/docker/nginx/nginx.conf          "$nginx_snap/nginx.conf.pre-reconcile"
 echo "nginx snapshot saved to $nginx_snap/"
@@ -232,7 +236,8 @@ fi
 log "Step 7: compose files"
 # Snapshot the old files for rollback before overwriting.
 snap_dir=$PROD_ROOT/.reconcile-snapshot-$(date +%Y%m%d-%H%M%S)
-mkdir -p "$snap_dir"
+# 0700 for the same M08 rationale as the nginx snapshot above.
+install -d -m 0700 "$snap_dir"
 cp "$PROD_ROOT/docker-compose.yml" "$snap_dir/docker-compose.yml.pre-reconcile"
 cp "$PROD_ROOT/docker-compose.override.yml" "$snap_dir/docker-compose.override.yml.pre-reconcile"
 echo "snapshot saved to $snap_dir/"
@@ -240,9 +245,15 @@ echo "snapshot saved to $snap_dir/"
 cp -v "$REPO_ROOT/docker-compose.yml" "$PROD_ROOT/docker-compose.yml"
 cp -v "$REPO_ROOT/deploy/docker-compose.prod.yml" "$PROD_ROOT/docker-compose.override.yml"
 
-# Validate the merged config before exiting.
+# Validate the merged config before exiting.  The rendered merge
+# INTERPOLATES .env values -- any credential that is not yet a docker
+# secret (e.g. SHEKEL_REDIS_PASSWORD inside the redis ACL command and
+# the app's RATELIMIT_STORAGE_URI default) appears in cleartext -- so
+# the file must be owner-only from the moment it exists (umask first,
+# then chmod is belt-and-braces; finding M08).
 log "Validation: docker compose config (merged)"
-(cd "$PROD_ROOT" && docker compose config) > "$snap_dir/merged-config.yml"
+(umask 077 && cd "$PROD_ROOT" && docker compose config > "$snap_dir/merged-config.yml")
+chmod 0600 "$snap_dir/merged-config.yml"
 echo "merged config rendered to $snap_dir/merged-config.yml"
 
 # Sanity-spot key fields.

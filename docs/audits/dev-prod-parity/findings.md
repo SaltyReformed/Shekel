@@ -44,35 +44,36 @@ references to that run.
 
 | ID | Sev | Finding | Status |
 |---|---|---|---|
-| D07 | high | Dev app container permanently `unhealthy`: inherits the image `HEALTHCHECK` probing `:8000` (Dockerfile:128-129) while the dev command runs Flask on `:5000`; no healthcheck override in `docker-compose.dev.yml`. | [ ] open |
-| D09 | high | Dev app publishes `"5000:5000"` = all interfaces, with `FLASK_DEBUG=1`: the Werkzeug debugger answers from any LAN device, bypassing the LAN allowlist the operator-private `shekel-dev` vhost enforces at nginx. Fix: publish `127.0.0.1:5000` + `172.32.0.1:5000` (the second keeps the dev vhost path working). | [ ] open |
-| D04 | high | No Redis in dev: `RATELIMIT_STORAGE_URI` falls back to `memory://` (app/config.py:229), so the prod rate-limit path (fail-closed Redis, ACL user, `~LIMITS*` key pattern, outage = 500s) is never executed before prod. Fix: add a redis service to `docker-compose.dev.yml` mirroring prod's command/ACL shape with a committed dev password, loopback-bound, + `RATELIMIT_STORAGE_URI` in `.env`. | [ ] open |
-| D03 | high | Host `flask run` connects as the **owner** role (`DATABASE_URL` = `shekel_user`; repo `.env` has no `DATABASE_URL_APP`), while prod runs as least-privilege `shekel_app` (entrypoint.sh:373; app/config.py:362-373 prefers `DATABASE_URL_APP`). A new table missing GRANTs works in dev, 500s in prod (seen once post-clone). Containerized dev app does NOT have this gap. Fix: provision `shekel_app` in the dev DB (`scripts/init_db_role.sql`) + add `DATABASE_URL_APP` to `.env`. | [ ] open |
+| D07 | high | Dev app container permanently `unhealthy`: inherits the image `HEALTHCHECK` probing `:8000` (Dockerfile:128-129) while the dev command runs Flask on `:5000`; no healthcheck override in `docker-compose.dev.yml`. | [x] fixed 2026-06-12: healthcheck override probes `:5000/health`; container reports healthy for the first time |
+| D09 | high | Dev app publishes `"5000:5000"` = all interfaces, with `FLASK_DEBUG=1`: the Werkzeug debugger answers from any LAN device, bypassing the LAN allowlist the operator-private `shekel-dev` vhost enforces at nginx. Fix: publish `127.0.0.1:5000` + `172.32.0.1:5000` (the second keeps the dev vhost path working). | [x] fixed 2026-06-12: scoped binds live; LAN probe refused; container-visible client IP unchanged (172.24.0.1), so saved Playwright sessions survive strong session protection |
+| D04 | high | No Redis in dev: `RATELIMIT_STORAGE_URI` falls back to `memory://` (app/config.py:229), so the prod rate-limit path (fail-closed Redis, ACL user, `~LIMITS*` key pattern, outage = 500s) is never executed before prod. Fix: add a redis service to `docker-compose.dev.yml` mirroring prod's command/ACL shape with a committed dev password, loopback-bound. | [x] fixed 2026-06-12: `shekel-dev-redis` mirrors prod ACL/flags; container app uses a hardcoded compose URI; host `flask run` gets its URI from the gitignored `.flaskenv` (NOT `.env` -- see the note below the table); LIMITS keys confirmed landing in Redis |
+| D03 | high | Host `flask run` connects as the **owner** role, while prod runs as least-privilege `shekel_app` (entrypoint.sh:373; app/config.py:362-373 prefers `DATABASE_URL_APP`). A new table missing GRANTs works in dev, 500s in prod (seen once post-clone). Containerized dev app does NOT have this gap. | [x] resolved 2026-06-12 with a REVISED design: host `flask run` intentionally STAYS owner-role (documented divergence) because any dotenv `DATABASE_URL_APP` is also loaded by the Flask CLI and would make `flask db upgrade` run DDL as the DML-only role; the least-privilege parity path is the containerized dev app. Plus a real defect fixed: `scripts/init_database.py` / `scripts/build_test_template.py` popped `DATABASE_URL_APP` to force the owner role, but `config.py`'s `load_dotenv()` re-inserts a `.env` value into the popped key, silently defeating the override -- both now set the key to `""` (documented empty-as-unset, survives dotenv) |
 | M01 | high | Prod app computed dates in UTC (no `TZ` env) vs Eastern on the dev host; 78 naive `date.today()`/`datetime.now()` call sites. See decision log. | [x] **fixed 2026-06-12**: `TZ: America/New_York` pinned in `deploy/docker-compose.prod.yml` + host override + `docker-compose.dev.yml`, containers recreated |
-| D08 | med | Zero container hardening on dev vs prod's `cap_drop: [ALL]`, `no-new-privileges`, `read_only` rootfs + tmpfs, pinned non-root users. `read_only` is the bug-hiding one: code writing outside `/tmp`/state works in dev, crashes prod. Fix: harden the dev **app** service only (source bind mount stays rw, so live reload survives); leave dev/test DBs alone. | [ ] open |
+| D08 | med | Zero container hardening on dev vs prod's `cap_drop: [ALL]`, `no-new-privileges`, `read_only` rootfs + tmpfs, pinned non-root users. `read_only` is the bug-hiding one: code writing outside `/tmp`/state works in dev, crashes prod. Fix: harden the dev **app** service only (source bind mount stays rw, so live reload survives); leave dev/test DBs alone. | [x] fixed 2026-06-12: app service runs read_only + cap_drop ALL + no-new-privileges + /tmp tmpfs; boots healthy under it |
 | D17 | med | Host `flask run` skips the entrypoint pipeline, including the audit-trigger count gate (entrypoint.sh:338-344) that refuses to boot when triggers are missing -- a trigger-dropping migration passes host dev, then blocks prod boot. Mitigation: boot the containerized dev app once after migration work (it runs the full pipeline), or a dev preflight script. | [ ] open |
 | D01 | med | Gunicorn (multi-worker, request limits, 120s timeouts, `FORWARDED_ALLOW_IPS` trust) only ever runs in prod; both dev workflows use the Flask dev server. Habit: `docker compose -f docker-compose.yml -f docker-compose.build.yml up` before PRs touching request handling. | [ ] open (habit, not config) |
 | D05 | med | No forwarded-header processing in dev (no gunicorn config, no ProxyFix by design): `remote_addr` is the proxy hop, not the client, for anything keyed on it (rate-limiter key, audit IP logging). Documented caveat; keep tunnel/nginx out of dev. | [ ] documented here, no config change planned |
-| D15 | low | Dev compose pins postgres by tag only (`postgres:18-alpine`, lines 28/69) vs prod's tag+digest. Same digest today by pull timing only. Fix: pin the prod digest in dev, bump both in the same commit. | [ ] open |
-| D18 | low | Dev `pgdata` volume is compose-managed: `docker compose -p shekel-dev down -v` would delete it, and it frequently holds a prod clone. Fix: `external: true` like prod's. Backups stay prod-only (dev data is a disposable clone by policy). | [ ] open |
-| D10 | low | No resource limits on dev containers (prod caps every service). Mostly keep divergent (test-db + `pytest -n 12` need headroom); optionally mirror the 1G memory cap on the dev app only so runaway memory surfaces locally. | [ ] optional |
+| D15 | low | Dev compose pins postgres by tag only vs prod's tag+digest. Same digest today by pull timing only. Fix: pin the prod digest in dev, bump both in the same commit. | [x] fixed 2026-06-12: both dev DB services pin the prod digest (96d56f7f) |
+| D18 | low | Dev `pgdata` volume is compose-managed: `docker compose -p shekel-dev down -v` would delete it, and it frequently holds a prod clone. Fix: `external: true` like prod's. Backups stay prod-only (dev data is a disposable clone by policy). | [x] fixed 2026-06-12: `external: true` + `name: shekel-dev_pgdata`; existing data reused (855 txns verified post-recreate) |
+| D10 | low | No resource limits on dev containers (prod caps every service). Mostly keep divergent (test-db + `pytest -n 12` need headroom); optionally mirror the 1G memory cap on the dev app only so runaway memory surfaces locally. | [ ] optional, not taken |
 
 ## B. Repo-vs-host drift -- restore repo as canon
 
 | ID | Sev | Finding | Status |
 |---|---|---|---|
-| D14 | med | Host `/opt/docker/shekel/docker-compose.yml` carries 5 hunks the repo lacks: newer postgres digest `96d56f7f...` (what actually runs; repo still pins `54451ecb...` at docker-compose.yml:39) + WUD `wud.tag.include` labels on db/redis/app/nginx (redis label deliberately fences off Redis 8). Until backported, any repo->host sync rolls back the DB image and strips update monitoring. | [ ] open |
-| M07 | low | `deploy/nginx-shared/nginx.conf` differs from host in 3 comment-only hunks (zero directive changes); `conf.d/shekel.conf` byte-identical. The REPO copy is the newer one (comments polished in-repo 2026-05-14 after the host install), so the sync direction here is repo->host -- the opposite of the historical drift the deploy.md rule warns about. Confirm with `git log deploy/nginx-shared/nginx.conf` before syncing. | [ ] open |
-| -- | -- | `deploy/docker-compose.prod.yml` vs host override: **byte-identical** (the must-match rule holds; preserved by the M01 edit, applied to both copies). | n/a |
+| D14 | med | Host `/opt/docker/shekel/docker-compose.yml` carried 5 hunks the repo lacked: newer postgres digest `96d56f7f...` (what actually runs) + WUD `wud.tag.include` labels on db/redis/app/nginx (redis label deliberately fences off Redis 8). Until backported, any repo->host sync would roll back the DB image and strip update monitoring. | [x] repo side done 2026-06-12 (all 5 hunks backported + stale 18.3/16-alpine comments fixed); [ ] host copy sync pending operator consent (comment-only delta after backport; no container recreates) |
+| M07 | low | `deploy/nginx-shared/nginx.conf` differs from host in 3 comment-only hunks (zero directive changes); `conf.d/shekel.conf` byte-identical. The REPO copy is the newer one, so the sync direction is repo->host. | [ ] host sync pending operator consent |
+| -- | -- | `deploy/docker-compose.prod.yml` vs host override: byte-identical through the M01 edit; the 2026-06-12 D13/D25 comment fixes landed repo-side first, so the host override is 3 comment hunks behind until the pending sync. | [ ] host sync pending operator consent |
 
 ## C. Housekeeping (repo + host)
 
 | ID | Sev | Finding | Status |
 |---|---|---|---|
-| M08/D12/D13 | med | Host-side secrets hygiene items at `/opt/docker/shekel` (residue files from the May secrets migration, one permissions/docs mismatch, and the redis password's visibility surface). Specifics deliberately kept out of this public doc: see the local ops note `/opt/docker/shekel/PARITY-NOTES.md`. | [ ] open |
-| D26 | low | Orphaned pre-rename volumes `shekel_pgdata`, `shekel_applogs`, `shekel_static_files` (project `shekel`, March 2026) mounted by nothing. Verify contents stale, then remove. | [ ] open |
-| D25 | low | Stale docs: base compose db comment says `postgres:16-alpine` (image is 18); `deploy/README.md` layout table says the override joins "the homelab network" (it joins `shekel-frontend`). | [ ] open |
-| M06 | low | Stale repo artifacts describing the dead pre-container pipeline: `cloudflared/config.yml` (systemd-install template), `monitoring/` promtail docs (prod uses Alloy), `docker-compose.build.yml`'s monitoring-network coupling. Refresh or delete. | [ ] open |
+| M08/D12/D13 | med | Host-side secrets hygiene items at `/opt/docker/shekel` (residue files from the May secrets migration, one permissions/docs mismatch, and the redis password's visibility surface). Specifics deliberately kept out of this public doc: see the local ops note `/opt/docker/shekel/PARITY-NOTES.md`. | [x] root cause fixed 2026-06-12: `scripts/reconcile_prod_to_canonical.sh` now creates 0700 snapshot dirs and renders the merged config 0600 under umask 077; D13 runbook comments amended to the deployed posture. [ ] residue deletion + credential rotation pending operator consent |
+| D26 | low | Orphaned pre-rename volumes `shekel_pgdata`, `shekel_applogs`, `shekel_static_files` (project `shekel`, March 2026) mounted by nothing. Verify contents stale, then remove. | [ ] pending operator consent |
+| D25 | low | Stale docs: base compose db comment says `postgres:16-alpine` (image is 18); `deploy/README.md` layout table says the override joins "the homelab network" (it joins `shekel-frontend`). | [x] fixed 2026-06-12 (both, plus the matching 16-alpine comments in the prod override) |
+| M06 | low | Stale repo artifacts describing the dead pre-container pipeline: `cloudflared/config.yml` (systemd-install template), `monitoring/` promtail docs (prod uses Alloy), `docker-compose.build.yml`'s monitoring-network coupling. Refresh or delete. | [x] fixed 2026-06-12: cloudflared header rewritten for the containerized topology, monitoring/README.md rewritten for the Alloy pipeline (promtail-config.yml deleted), build override reduced to the build key |
+| M09 | med | **Discovered during M06 rework:** `scripts/audit_cleanup.py` (the `system.audit_log` retention job, `AUDIT_RETENTION_DAYS`) is scheduled NOWHERE on the deployment host -- no crontab, no systemd timer references it. The old monitoring README prescribed a cron entry that was never installed; prod's audit log grows unbounded. Needs an operator decision: systemd timer (host convention) vs cron. | [ ] open -- needs operator decision |
 | D22 | info | Surprise but harmless: **Flask serves `/static/` in prod too** -- shared nginx has no static location (proxies everything to the app), the bundled nginx is profile-disabled, so the entrypoint's static-volume copy (entrypoint.sh:347-352) is dead code in shared mode. Cache headers are correct either way (content-hash `v=` + 1-year immutable from the app's own hook). Candidate cleanup: remove the dead copy + volume in shared mode. | [ ] candidate |
 
 ## D. Intentional divergences -- keep these
@@ -97,20 +98,45 @@ references to that run.
 
 ## Parity plan
 
-1. [ ] **Dev compose PR**: D07 healthcheck (probe `:5000/health`), D09 scoped
-   port binds, D04 redis service + `RATELIMIT_STORAGE_URI`, D08 app-service
-   hardening, D15 postgres digest pin, D18 `external: true` pgdata; plus
-   D03 `.env` `DATABASE_URL_APP` + `shekel_app` provisioning in the dev DB.
-2. [ ] **Repo backport + reconcile** (D14 + M07): fold the 5 host compose
-   hunks into the repo (D14: postgres digest + WUD labels), then re-sync
-   host from repo (`scripts/reconcile_prod_to_canonical.sh`) -- which also
-   carries the repo's newer nginx.conf comments to the host (M07).
-3. [ ] **Host hygiene** (M08/D12/D13, D26): per `/opt/docker/shekel/PARITY-NOTES.md`.
+1. [x] **Dev compose changes** (2026-06-12): D07 healthcheck, D09 scoped
+   port binds, D04 redis service, D08 app-service hardening, D15 postgres
+   digest pin, D18 `external: true` pgdata -- applied and verified live
+   (all four dev containers healthy, LAN probe refused, LIMITS keys in
+   Redis, client IP unchanged at 172.24.0.1 so saved sessions survive,
+   855-transaction clone intact).  D03 took the revised owner-role design
+   (see its register row).
+2. [x] **Repo backport** (D14 repo side, 2026-06-12). [ ] Host sync of the
+   three files (base compose, override, nginx.conf -- all comment-only
+   deltas now) pending operator consent; use targeted `cp` + `cmp`, NOT
+   the full reconcile script (its .env-rewrite and snapshot steps are for
+   the original migration, and rerunning them recreates residue).
+3. [ ] **Host hygiene** (M08 residue deletion + rotation, D26 volumes):
+   pending operator consent; commands in `/opt/docker/shekel/PARITY-NOTES.md`.
+   Root-cause script fix landed (see M08 row).
 4. [x] **Timezone** (M01): done 2026-06-12, see decision log.
-5. [ ] **Doc fixes** (D25, M06) -- fold into whichever PR touches those files,
-   or a small standalone docs commit.
+5. [x] **Doc fixes** (D25, M06): done 2026-06-12.
+
+New since the original plan: M09 (audit-log retention job unscheduled)
+needs an operator decision.
 
 Optional posture change discussed: make the **containerized dev app** the
-primary daily workflow (it closes D03/D17 automatically and keeps live
-reload via the bind mount), demoting host `flask run` to fallback. Not
-yet decided.
+primary daily workflow (with D03/D17 it is now the full-parity path and
+keeps live reload via the bind mount), demoting host `flask run` to
+fallback. Not yet decided.
+
+## Dev workflow notes (post-parity)
+
+- `docker compose -f docker-compose.dev.yml up -d` now also starts
+  `shekel-dev-redis`; host `flask run` reads its rate-limit URI from the
+  gitignored `.flaskenv` (Flask-CLI-only -- pytest and the deployment
+  scripts never see it; putting it in `.env` breaks
+  tests/test_config.py's documented env assumptions via config.py's
+  `load_dotenv()`).
+- Rate limits in dev are now real: Redis counters survive the reloader,
+  so the global default (`200/hour; 30/min` per client IP, with all
+  host-originated traffic sharing the bridge-gateway IP bucket) can 429
+  an aggressive automated crawl.  `/health` and `/static/` are exempt.
+  That is prod behavior; throttle the crawl, not the limit.
+- The dev app rootfs is read-only: app code that writes outside `/tmp`,
+  the source tree, or its mounts now fails in dev exactly as it would
+  in prod.

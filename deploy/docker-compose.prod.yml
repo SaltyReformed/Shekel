@@ -176,7 +176,7 @@
 #
 #     # Generate the self-signed cert.  Requires sudo because
 #     # the key file must be chowned to the postgres user (uid 70
-#     # in postgres:16-alpine) for postgres to accept it.
+#     # in postgres:18-alpine) for postgres to accept it.
 #     sudo ./scripts/generate_pg_cert.sh
 #
 #     # The script writes deploy/postgres/server.crt (mode 0644)
@@ -240,19 +240,35 @@
 # secrets -- see ``docs/runbook_secrets.md`` "Migrating to Docker
 # secrets" for the end-to-end procedure):
 #
-#     # Create the secrets directory with restrictive permissions.
-#     sudo install -d -m 0700 -o root -g root /opt/docker/shekel/secrets
+#     # Create the secrets directory with restrictive permissions,
+#     # OWNED BY THE OPERATING USER (the uid that runs ``docker
+#     # compose``), not root -- the deployed reality on the homelab
+#     # host is josh:josh 0700.
+#     install -d -m 0700 /opt/docker/shekel/secrets
 #
-#     # Write each secret value with mode 0600.  ``printf`` (no
-#     # trailing newline) is preferred so the file content matches
-#     # the exact secret bytes; the entrypoint loader strips a
-#     # trailing newline if ``echo`` was used by mistake but
-#     # printf-style is the documented form.
-#     sudo printf '%s' '<SECRET_KEY-value>'        > /opt/docker/shekel/secrets/secret_key
-#     sudo printf '%s' '<POSTGRES_PASSWORD-value>' > /opt/docker/shekel/secrets/postgres_password
-#     sudo printf '%s' '<APP_ROLE_PASSWORD-value>' > /opt/docker/shekel/secrets/app_role_password
-#     sudo printf '%s' '<TOTP_ENCRYPTION_KEY-value>' > /opt/docker/shekel/secrets/totp_encryption_key
-#     sudo chmod 0600 /opt/docker/shekel/secrets/*
+#     # Write each secret value.  ``printf`` (no trailing newline) is
+#     # preferred so the file content matches the exact secret bytes;
+#     # the entrypoint loader strips a trailing newline if ``echo``
+#     # was used by mistake but printf-style is the documented form.
+#     printf '%s' '<SECRET_KEY-value>'        > /opt/docker/shekel/secrets/secret_key
+#     printf '%s' '<POSTGRES_PASSWORD-value>' > /opt/docker/shekel/secrets/postgres_password
+#     printf '%s' '<APP_ROLE_PASSWORD-value>' > /opt/docker/shekel/secrets/app_role_password
+#     printf '%s' '<TOTP_ENCRYPTION_KEY-value>' > /opt/docker/shekel/secrets/totp_encryption_key
+#
+#     # File modes: compose v2 (non-Swarm) IGNORES the uid:/gid:/mode:
+#     # fields on the secret references below -- the container sees the
+#     # HOST file's ownership and mode (see .claude/rules/deploy.md).
+#     # The app-consumed secrets are read by uid 1000 (the ``shekel``
+#     # user), which matches the operating user's uid, so 0600 works:
+#     chmod 0600 /opt/docker/shekel/secrets/secret_key \
+#                /opt/docker/shekel/secrets/app_role_password \
+#                /opt/docker/shekel/secrets/totp_encryption_key
+#     # postgres_password is read by the DB container as uid 70
+#     # (postgres), which cannot read a josh-owned 0600 file.  Either
+#     # chown it to 70 with mode 0600, or leave it 0644 and rely on
+#     # the 0700 directory for containment -- the deployed posture is
+#     # the latter:
+#     chmod 0644 /opt/docker/shekel/secrets/postgres_password
 #
 #     # Replace the real values in /opt/docker/shekel/.env with
 #     # placeholder strings so the base file's ${VAR:?...}
@@ -281,7 +297,7 @@
 services:
   # ── PostgreSQL with TLS enabled (Commit C-37 / F-154) ───────────
   # Layer ``ssl=on`` plus the cert/key file directives onto the base
-  # ``postgres:16-alpine`` service.  Compose performs additive merges
+  # ``postgres:18-alpine`` service.  Compose performs additive merges
   # for ``volumes`` (the named ``shekel-prod-pgdata`` mount declared
   # in the base file is preserved), and ``command`` is unset on the
   # base service so the override below is the only command Postgres

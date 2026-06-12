@@ -32,9 +32,10 @@ deploy/
 │                                       above).
 └── docker-compose.prod.yml             Compose override that selects
                                         shared mode (joins the app to
-                                        the homelab network and parks
-                                        the bundled nginx in the
-                                        "disabled" profile).
+                                        the dedicated shekel-frontend
+                                        bridge and parks the bundled
+                                        nginx in the "disabled"
+                                        profile).
 ```
 
 ## Bundled Mode (default)
