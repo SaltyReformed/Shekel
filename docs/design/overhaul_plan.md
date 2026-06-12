@@ -13,6 +13,7 @@ Last updated: 2026-06-11.
 | Design language, principles, hard constraints, committed Steel Ink theme | `fable5-design-language.md` |
 | Per-screen diagnosis + locked rebuild decisions | `<screen>_audit.md` (grid, dashboard so far) |
 | The screenshot-driven design process (Loop A mockups, Loop B real app) | `visual_loop.md` |
+| CSS architecture: app.css split plan + theme-selector feasibility (assessed 2026-06-11, decisions pending) | `css_architecture_audit.md` |
 | This roadmap and status ledger | `overhaul_plan.md` |
 | Project-wide phase status (all workstreams, not just UI) | `../progress.md` |
 
@@ -101,6 +102,12 @@ unhelpful (developer's verdict), so the work crosses into `dashboard_service.py`
 
 ## Small follow-ups (not screen-sized)
 
+- CSS architecture (`css_architecture_audit.md`, assessed 2026-06-11, decisions pending):
+  split app.css into 7 files (do BEFORE the dashboard rebuild so that work lands in
+  `dashboard.css`); per-user theme preference in settings (Scope A small / Scope B palette
+  selector gated); plus surfaced defects -- chart_theme.js JSON-clone strips function
+  options (variance chart tooltips dead, CONFIRMED), stale chart dataset colors on theme
+  toggle, asset cache-busting gap.
 - A5 (grid audit): quick-create has no name field for ad-hoc rows -- Opus scope
   (create schema/route).
 - D1/D2 (grid audit, noted-not-prioritized): period-nav simplification; friendlier
