@@ -334,3 +334,26 @@ Cross-cutting decisions, same day:
   the dashboard (explicit scope grant).
 - **Refresh wiring:** the phantom `dashboardRefresh` listeners and the dead `dashboard.js`
   are deleted; the bills section listens to `balanceChanged from:body`.
+
+## Status after the data pass (2026-06-12)
+
+The Gate A data-correctness pass SHIPPED to `dev` (commits `308b49f` pay-period guard,
+`0ef7ba6` dashboard; full suite 6063 passed, pylint 10.00/10; every fix live-verified against
+the dev app, including the anchor-editor cancel/Escape/409 paths and the mobile bill-row
+overflow). Read the defect descriptions in the sections above as HISTORICAL: everything in
+the re-verification section is fixed except the items explicitly deferred, which carry
+forward into the UX/IA pass or later work:
+
+- Caption wording on the Balance card: "as of today" is accurate under the app's reservation
+  semantics (it equals the grid's current-period figure), but the UX pass may sharpen the
+  phrasing.
+- Row 1 order-class regression (Alerts before Bills on desktop) -- the rebuild redoes the
+  layout anyway.
+- The balance display's `role="button"` with no Enter handler (Loop B interaction work).
+- `has_default_account` misnomer + checking-specific copy on a possibly non-checking account.
+- Nullable `low_balance_threshold` column (needs a migration; unreachable via the app UI).
+- `dti_label` badge-class mapping duplicated between `_debt_summary.html` and
+  `savings/dashboard.html` (candidate for a shared macro during the visual rebuild).
+- Negative balances render "$-1,234.56" in the savings caption (shared currency-macro
+  candidate).
+- Savings goal 1:1-vs-allocation design question (deferred; spans /savings).
