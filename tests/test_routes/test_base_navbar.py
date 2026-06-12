@@ -12,6 +12,7 @@ Markup-only -- the actual drag/tap/animation behaviour is covered by
 manual Playwright verification in ``tests/manual/``.
 """
 
+import json
 import re
 
 
@@ -156,3 +157,47 @@ class TestRightSideControlsPreserved:
         assert toggle_pos > body_start, (
             "theme-toggle does not render inside offcanvas-body"
         )
+
+
+# ── HTMX response-handling config ───────────────────────────────────
+
+class TestHtmxConfig:
+    """The htmx-config meta tag's responseHandling contract."""
+
+    def test_409_swaps_before_4xx_catchall(self, auth_client):
+        """409 conflict bodies swap; the other 4xx stay non-swapping.
+
+        htmx's default responseHandling never swaps 4xx bodies, which
+        made the optimistic-lock conflict partials (C-18: conflict
+        entry list, transaction cell, mobile card, transfer cell) dead
+        UI -- the server rendered them at 409 and the client silently
+        discarded them.  The meta override REPLACES the whole config
+        key and entries match in order, so this pins all the
+        load-bearing properties at once: the 409 entry exists and
+        swaps, it precedes the ``[45]..`` catch-all that would
+        otherwise shadow it, and the restated defaults (204 no-swap,
+        2xx/3xx swap, 4xx/5xx error-no-swap) surround it.  422 stays
+        non-swapping deliberately: those bodies are raw
+        ``str(errors)`` / JSON, and the carry-forward modal's
+        ``htmx:responseError`` handler relies on 4xx not swapping.
+        """
+        resp = auth_client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        match = re.search(
+            r'<meta name="htmx-config" content=\'([^\']+)\'>', html,
+        )
+        assert match is not None, "htmx-config meta tag not found"
+        config = json.loads(match.group(1))
+
+        handling = config["responseHandling"]
+        codes = [entry["code"] for entry in handling]
+        # The 409 swap entry must precede the 4xx/5xx catch-all, or
+        # first-match-wins shadows it.
+        assert codes.index("409") < codes.index("[45].."), codes
+        assert {"code": "409", "swap": True} in handling
+        # Restated defaults -- the meta override replaces the whole key.
+        assert {"code": "204", "swap": False} in handling
+        assert {"code": "[23]..", "swap": True} in handling
+        assert {"code": "[45]..", "swap": False, "error": True} in handling

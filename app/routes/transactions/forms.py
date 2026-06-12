@@ -21,10 +21,10 @@ from app.models.account import Account
 from app.services import pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
+from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
     _get_owned_transaction,
-    _render_cell,
     _resolve_owned_fks,
 )
 
@@ -37,7 +37,7 @@ def get_cell(txn_id):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-    return _render_cell(txn)
+    return render_transaction_cell(txn)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/quick-edit", methods=["GET"])

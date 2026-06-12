@@ -20,7 +20,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.routes.transactions._helpers import _render_cell
+from app.routes._render_helpers import render_transaction_cell
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
 from app.exceptions import NotFoundError, ValidationError
@@ -183,7 +183,7 @@ def _entry_mutation_response(txn: Transaction, host: str) -> ResponseReturnValue
     response = _render_entry_list(txn, host=host)
     is_owner = txn.pay_period.user_id == current_user.id
     if host == "" and is_owner:
-        response += _render_cell(txn, wrap_div=True, wrap_oob=True)
+        response += render_transaction_cell(txn, wrap_div=True, wrap_oob=True)
     return response, 200, {"HX-Trigger": "balanceChanged"}
 
 

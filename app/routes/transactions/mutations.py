@@ -35,12 +35,12 @@ from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
 from app.utils.balance_predicates import is_credit
 from app.routes.transactions._bp import transactions_bp
+from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
     _get_owned_transaction,
     _mark_done_schema,
     _mark_done_success_response,
-    _render_cell,
     _RenderTarget,
     _stale_transaction_response,
     _update_schema,
@@ -168,7 +168,7 @@ def _apply_shadow_update(txn, txn_id, data):
         "user_id=%d updated shadow transaction %d (transfer %d)",
         current_user.id, txn_id, txn.transfer_id,
     )
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
@@ -338,7 +338,7 @@ def _apply_regular_update(txn, txn_id, data):
     # its new period; an in-place edit only needs the balance rows
     # recomputed.  ``gridRefresh`` reloads the page (app.js); the
     # returned cell still swaps first, which is harmless before reload.
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {
         "HX-Trigger": "gridRefresh" if period_changed else "balanceChanged",
     }
@@ -425,7 +425,7 @@ def update_transaction(txn_id):
             "(submitted=%d, current=%d)",
             txn_id, submitted_version, txn.version_id,
         )
-        return _render_cell(txn, conflict=True), 409
+        return render_transaction_cell(txn, conflict=True), 409
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
@@ -542,7 +542,7 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
         db.session.rollback()
         return str(exc), 400
     db.session.refresh(txn)
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -735,7 +735,7 @@ def mark_credit(txn_id):
         return _credit_payback_idempotent_response(exc, txn_id)
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -773,7 +773,7 @@ def unmark_credit(txn_id):
         # offending status so the user understands why.
         db.session.rollback()
         return str(exc), 400
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -815,7 +815,7 @@ def _cancel_shadow(txn, txn_id, cancelled_id):
         db.session.rollback()
         return str(exc), 400
     db.session.refresh(txn)
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -862,5 +862,5 @@ def cancel_transaction(txn_id):
         return _stale_transaction_response(txn_id)
     logger.info("user_id=%d cancelled transaction %d", current_user.id, txn_id)
 
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}

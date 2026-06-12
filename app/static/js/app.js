@@ -126,9 +126,33 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
     }, { once: true });
   }
 
-  // Close the full-edit popover if the swap target is outside it.
-  if (typeof activePopover !== 'undefined' && activePopover && !activePopover.contains(el)) {
-    closeFullEdit();
+  // Close the full-edit popover when a CARD-INITIATED action swaps
+  // content outside the card: the card's status buttons and Save target
+  // the grid cell (#txn-cell-<id>), and landing that swap is the
+  // designed save-and-close moment.  The predicate needs BOTH legs:
+  //   - issuer inside the card: the balanceChanged chrome refreshes
+  //     (tfoot balance row, subtotal tbodies) fire after EVERY entry
+  //     mutation from elements outside the card, and the old
+  //     target-only check made them slam the card shut while the user
+  //     was still adding purchases.
+  //   - the settled element outside the card: entry CRUD swaps the
+  //     list inside the card and must keep it open.  event.target (the
+  //     element this per-settled-element dispatch fired on) is the
+  //     attached NEW node; detail.target is unreliable here because an
+  //     outerHTML swap leaves it pointing at the DETACHED old node,
+  //     where a containment test reads as "outside" (verified in a
+  //     live-browser harness).
+  // An entry-CRUD form is detached by its own outerHTML swap before
+  // this handler runs, so contains(issuer) is false there too -- also
+  // a keep-open, which is correct.  When the issuer is unknown
+  // (requestConfig absent), keep the card open rather than guessing.
+  if (typeof activePopover !== 'undefined' && activePopover) {
+    var requestConfig = event.detail.requestConfig;
+    var issuer = requestConfig && requestConfig.elt;
+    if (issuer && activePopover.contains(issuer)
+        && !activePopover.contains(event.target)) {
+      closeFullEdit();
+    }
   }
 
   // Re-initialize Bootstrap popovers/tooltips in swapped content.

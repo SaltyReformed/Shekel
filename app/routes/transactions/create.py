@@ -21,11 +21,11 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.utils.auth_helpers import require_owner
+from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
     _create_schema,
     _inline_create_schema,
-    _render_cell,
     _resolve_owned_fks,
 )
 
@@ -103,7 +103,7 @@ def create_inline():
 
     # Return the cell wrapped in a div with a unique ID, matching
     # the pattern used in grid.html for existing transactions.
-    response = _render_cell(txn, wrap_div=True)
+    response = render_transaction_cell(txn, wrap_div=True)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 
@@ -150,5 +150,5 @@ def create_transaction():
         current_user.id, txn.name, txn.id,
     )
 
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 201, {"HX-Trigger": "balanceChanged"}

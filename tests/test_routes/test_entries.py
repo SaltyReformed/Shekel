@@ -1117,6 +1117,29 @@ class TestEntryMutationSurfaces:
             assert f'id="entry-list-tp-{txn.id}"' in html
             assert f'id="entry-list-{txn.id}"' not in html
 
+    def test_full_edit_lazy_entry_list_swaps_outerhtml(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The popover's lazy entries container replaces itself outerHTML.
+
+        The list_entries response's ROOT element is another div with
+        this same ``entry-list-<id>`` id; the default innerHTML swap
+        nested two identically-id'd elements until the first CRUD swap
+        collapsed them -- invalid HTML, and any other
+        ``#entry-list-<id>`` resolution (CRUD targets, OOB fragments)
+        bound ambiguously in the interim.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            start = html.index('hx-trigger="load"')
+            tag = html[start:html.index(">", start)]
+            assert 'hx-swap="outerHTML"' in tag
+            assert f'id="entry-list-{txn.id}"' in tag
+
     def test_companion_never_receives_oob_cell(
         self, app, auth_client, seed_user, seed_periods,
         seed_companion,
