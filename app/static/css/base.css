@@ -1,0 +1,312 @@
+/* Shekel base styles -- app-wide chrome present on every page via
+   base.html: themed Bootstrap component skins, document typography,
+   accessibility (skip link, focus rings), HTMX loading states, toasts,
+   breadcrumbs, the navbar offcanvas drawer, and the onboarding banner.
+   Bootstrap 5 handles most layout; custom CSS is a last resort.
+
+   Load-order contract (see base.html): after bootstrap.min.css and
+   theme-steel-ink.css.  Within this file, the dark .table skin must
+   precede .table-dark (equal specificity; markup carries both classes). */
+
+/* =============================================
+   THEMED BOOTSTRAP COMPONENT SKINS (Dark Mode)
+   ============================================= */
+[data-bs-theme="dark"] .navbar {
+  background-color: var(--shekel-page-bg) !important;
+  border-bottom: 1px solid var(--shekel-border-subtle);
+}
+
+[data-bs-theme="dark"] .navbar-brand {
+  color: var(--shekel-accent) !important;
+}
+
+[data-bs-theme="dark"] .card {
+  background-color: var(--shekel-surface);
+  border-color: var(--shekel-border-subtle);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+[data-bs-theme="dark"] .card-header {
+  background-color: var(--shekel-surface-raised);
+  border-bottom-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="dark"] .table {
+  --bs-table-bg: var(--shekel-surface);
+  --bs-table-border-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="dark"] .table-dark {
+  --bs-table-bg: var(--shekel-header-bg);
+  --bs-table-border-color: var(--shekel-border-strong);
+  --bs-table-color: var(--shekel-header-text);
+}
+
+[data-bs-theme="dark"] .modal-content {
+  background-color: var(--shekel-surface);
+  border-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="dark"] .modal-header {
+  border-bottom-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="dark"] .modal-footer {
+  border-top-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="dark"] .form-control,
+[data-bs-theme="dark"] .form-select {
+  background-color: var(--shekel-page-bg);
+  border-color: var(--shekel-border-subtle);
+  color: var(--shekel-text-primary);
+}
+
+[data-bs-theme="dark"] .btn-outline-primary {
+  --bs-btn-color: var(--shekel-accent);
+  --bs-btn-border-color: var(--shekel-accent);
+  --bs-btn-hover-bg: var(--shekel-accent);
+  --bs-btn-hover-border-color: var(--shekel-accent);
+  --bs-btn-hover-color: #fff;
+}
+
+[data-bs-theme="dark"] .btn-primary {
+  --bs-btn-bg: var(--shekel-accent);
+  --bs-btn-border-color: var(--shekel-accent);
+  --bs-btn-hover-bg: var(--shekel-accent-hover);
+  --bs-btn-hover-border-color: var(--shekel-accent-hover);
+  --bs-btn-color: #fff;
+}
+
+[data-bs-theme="dark"] .list-group-item {
+  background-color: var(--shekel-surface);
+  border-color: var(--shekel-border-subtle);
+  color: var(--shekel-text-primary);
+}
+
+/* =============================================
+   THEMED BOOTSTRAP COMPONENT SKINS (Light Mode)
+   ============================================= */
+[data-bs-theme="light"] .navbar {
+  background-color: var(--shekel-header-bg) !important;
+  border-bottom: 1px solid var(--shekel-border-strong);
+}
+
+[data-bs-theme="light"] .navbar-brand {
+  /* Brand sits on the dark header even in light mode, so it uses the
+     lighter accent tint for contrast. */
+  color: var(--shekel-accent-light) !important;
+}
+
+[data-bs-theme="light"] .btn-primary {
+  --bs-btn-bg: var(--shekel-accent);
+  --bs-btn-border-color: var(--shekel-accent);
+  --bs-btn-hover-bg: var(--shekel-accent-hover);
+  --bs-btn-hover-border-color: var(--shekel-accent-hover);
+}
+
+[data-bs-theme="light"] .btn-outline-primary {
+  --bs-btn-color: var(--shekel-accent);
+  --bs-btn-border-color: var(--shekel-accent);
+  --bs-btn-hover-bg: var(--shekel-accent);
+  --bs-btn-hover-border-color: var(--shekel-accent);
+  --bs-btn-hover-color: #fff;
+}
+
+/* =============================================
+   THEME TOGGLE
+   ============================================= */
+#theme-toggle {
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+}
+
+/* =============================================
+   TYPOGRAPHY
+   ============================================= */
+/* Default body font-family.  Replaces an inline body
+   ``style="font-family: ..."`` in base.html (C-02 inline-style
+   migration, audit finding F-036). */
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Logo images preserve aspect ratio when only ``height`` is set.
+   Bootstrap's reboot does not constrain plain ``<img>`` width, but
+   making the intent explicit prevents future Bootstrap updates from
+   regressing the logo size. */
+.logo-img {
+  width: auto;
+}
+
+/* =============================================
+   NEGATIVE BALANCE WARNING
+   ============================================= */
+.text-danger.fw-bold {
+  animation: pulse-warning 2s ease-in-out infinite;
+}
+
+@keyframes pulse-warning {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* =============================================
+   SKIP LINK (Accessibility)
+   ============================================= */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  padding: 0.5rem 1rem;
+  background: var(--shekel-accent);
+  color: #fff;
+  border-radius: 0 0 0.375rem 0.375rem;
+  text-decoration: none;
+  font-weight: 600;
+}
+.skip-link:focus {
+  top: 0;
+}
+
+/* =============================================
+   FOCUS RING CONTRAST (Accessibility)
+   ============================================= */
+:focus-visible {
+  outline: 2px solid var(--shekel-accent);
+  outline-offset: 2px;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--shekel-accent);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.form-control:focus-visible,
+.form-select:focus-visible {
+  outline: 2px solid var(--shekel-accent);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
+.nav-link:focus-visible {
+  outline: 2px solid var(--shekel-accent);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+/* =============================================
+   HTMX LOADING STATES
+   ============================================= */
+td.htmx-loading {
+  position: relative;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+td.htmx-loading::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border: 2px solid var(--shekel-accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* HTMX request indicators (e.g. the analytics tab spinner, the
+   debt-strategy refresh spinner).  These rules normally ship inside
+   HTMX as an inline <style> block injected at startup, but the app's
+   Content-Security-Policy sets `style-src 'self'` with no
+   'unsafe-inline' and no nonce (see app/__init__.py), so that injected
+   stylesheet is blocked.  Without these rules every .htmx-indicator
+   stays at full opacity permanently -- the "stuck" spinner.  HTMX is
+   told not to re-inject its own copy via the htmx-config meta tag in
+   base.html. */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+
+.htmx-request .htmx-indicator {
+  opacity: 1;
+}
+
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+/* =============================================
+   TOAST NOTIFICATIONS
+   ============================================= */
+.toast-container {
+  z-index: 11000;
+}
+
+/* =============================================
+   BREADCRUMB STYLING
+   ============================================= */
+.breadcrumb {
+  font-size: 0.85rem;
+  margin-bottom: 0;
+  padding: 0.25rem 0;
+}
+
+@media (max-width: 359.98px) {
+  /* Tighter breadcrumbs on very small screens */
+  .breadcrumb {
+    font-size: 0.75rem;
+  }
+}
+
+/* =============================================
+   NAVBAR OFFCANVAS DRAWER
+   ============================================= */
+@media (max-width: 767.98px) {
+  /* Navbar offcanvas drawer (mobile-first v3 commit 23 / D-H).  The
+     navbar-toggler at < md opens #mainOffcanvas as a left-slide drawer;
+     at >= md Bootstrap's .navbar-expand-md .offcanvas overrides render
+     the drawer inline as a regular navbar (header hidden, body flex
+     row), so the desktop nav is unchanged.  Width 280px: Bootstrap's
+     default 400px is too wide on a 375px viewport (leaves only 75px
+     visible for the dismiss-on-tap backdrop).  nav-link min-height
+     44px matches the WCAG 2.5.5 / Apple HIG touch-target floor that
+     #mobile-grid .nav-pills enforces in grid.css. */
+  .offcanvas-start {
+    width: 280px;
+  }
+
+  .offcanvas-body .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+}
+
+/* =============================================
+   WELCOME BANNER
+   ============================================= */
+.welcome-banner {
+  border-left: 4px solid var(--shekel-accent);
+}
+
+.welcome-checklist .bi {
+  font-size: 1.1rem;
+}

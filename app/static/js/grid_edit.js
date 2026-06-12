@@ -193,7 +193,7 @@ function positionPopover(cell) {
  * assignment wipes any children we added beforehand.  Touch listeners use
  * { passive: true } to match the project convention (mobile_grid.js swipe
  * handlers; see v3 plan R-8); they do not need preventDefault() because
- * touch-action: none on the handle (see app.css) already stops the
+ * touch-action: none on the handle (see grid.css) already stops the
  * browser from claiming the gesture for vertical scroll.
  *
  * Dismiss threshold is 30 % of the sheet's rendered height -- below that,

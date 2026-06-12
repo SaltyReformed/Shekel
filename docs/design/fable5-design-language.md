@@ -55,10 +55,11 @@ is out of bounds regardless of how it looks.
 - **Stack:** Bootstrap 5 + the design-token layer + HTMX + vanilla JS. No frontend framework, no
   SPA, unless the stack ROI gate explicitly decides otherwise.
 - **Content Security Policy** (`app/__init__.py`, `_CSP_DIRECTIVES`): `script-src 'self'`,
-  `style-src 'self'`. No inline `<style>` and no inline `<script>`. All CSS lives in
-  `app/static/css/app.css` (or another linked stylesheet); all JS lives under `app/static/js/` and
-  is loaded with `<script src>`. Pass data to JS via `data-*` attributes read with
-  `element.dataset`.
+  `style-src 'self'`. No inline `<style>` and no inline `<script>`. All CSS lives under
+  `app/static/css/` in the file matching its concern (theme tokens / base / components /
+  per-screen / utilities; layout and load-order contract in `css_architecture_audit.md`); all JS
+  lives under `app/static/js/` and is loaded with `<script src>`. Pass data to JS via `data-*`
+  attributes read with `element.dataset`.
 - **Templates display, never compute.** All money math happens in the service or route with
   `Decimal` and is passed in. `float()` appears only at a serialization boundary (Chart.js JSON),
   never in a calculation.
@@ -67,15 +68,16 @@ is out of bounds regardless of how it looks.
 - **Security and forms:** CSRF token on every form; HTMX mutations use POST; HTMX responses are
   partial templates (prefixed `_`) with an explicit `hx-target`; never `|safe` on user data; 404 for
   both "not found" and "not yours."
-- **CSS hygiene:** Bootstrap utility classes first, custom CSS in `app.css` only as a last resort,
-  no `!important` in new rules.
+- **CSS hygiene:** Bootstrap utility classes first, custom CSS (in the matching file under
+  `app/static/css/`) only as a last resort, no `!important` in new rules.
 - **Both themes.** Every screen must render correctly in light and dark, driven by `data-bs-theme`.
   Use tokens, never hardcoded hex, so a theme is a single block of variable values.
 
 ## Design tokens
 
-The token vocabulary already exists in `app/static/css/app.css` as CSS custom properties defined
-per `[data-bs-theme="dark"]` and `[data-bs-theme="light"]` block. New work references these
+The token vocabulary lives in `app/static/css/theme-steel-ink.css` as CSS custom properties
+defined per `[data-bs-theme="dark"]` and `[data-bs-theme="light"]` block (one file per palette;
+Steel Ink is the app default and currently the only palette). New work references these
 variables; it does not introduce new raw hex. The Step 2a refactor consolidates the remaining
 inlined hex onto these names.
 
@@ -110,8 +112,8 @@ Chosen through the Loop A theme exploration on the rebuilt grid canvas (matrix T
 U1-U3, merges M1-M2; the developer selected M1). Steel Ink pairs an achromatic carbon base with
 the Steel Blue signature accent: the accent is the only non-money chroma on screen, so the money
 state colors carry the contrast ("the number is the hero," applied to color). Dark mode is the
-first-class theme; light mode is an e-ink paper derivation. These values replace the per-theme
-blocks in `app/static/css/app.css` during Loop B phase 1 and apply app-wide, not just to the grid.
+first-class theme; light mode is an e-ink paper derivation. These values landed app-wide in Loop B
+phase 1 and now live in `app/static/css/theme-steel-ink.css`.
 
 | Token | Dark | Light |
 | ----- | ---- | ----- |

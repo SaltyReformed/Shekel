@@ -50,7 +50,8 @@ For building the chosen direction into the real grid.
    ```
    It prompts for the password (typed silently) and writes
    `tests/manual/.dev_session_state.json` (gitignored).
-4. Edit the real templates (`app/templates/grid/`) and `app/static/css/app.css`. Honor the hard
+4. Edit the real templates (`app/templates/grid/`) and the matching stylesheet under
+   `app/static/css/` (`grid.css` for the grid; layout in `css_architecture_audit.md`). Honor the hard
    constraints: no inline `<style>`/`<script>` (CSP), tokens not raw hex, both themes via
    `data-bs-theme`, money computed in services not templates.
 5. Shoot the running grid:

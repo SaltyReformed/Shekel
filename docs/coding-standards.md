@@ -252,8 +252,11 @@ and the canonical table list lives in `app/audit_infrastructure.py:AUDITED_TABLE
 ## CSS
 
 - **Bootstrap 5 only.** No additional frameworks, preprocessors, or CSS-in-JS.
-- **Utility classes before custom CSS.** Custom styles in `app/static/css/app.css` as a last
-  resort.
+- **Utility classes before custom CSS.** Custom styles under `app/static/css/` as a last resort,
+  in the file matching the concern: `theme-steel-ink.css` (design tokens only), `base.css`
+  (app-wide chrome), `components.css` (cross-screen widgets), `grid.css` / `dashboard.css` /
+  `analytics.css` (per-screen), `utilities.css` (single-class utilities; must stay the last
+  `<link>`). Load order and cascade constraints: `docs/design/css_architecture_audit.md`.
 - **Descriptive class names.** `.pay-period-header` not `.red-text`.
 - **No `!important`.** Fix selector specificity instead.
 - **Maintain responsive behavior.** Test at Bootstrap `md` and `sm` breakpoints.

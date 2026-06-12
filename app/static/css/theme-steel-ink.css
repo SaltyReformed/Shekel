@@ -1,0 +1,97 @@
+/* Shekel theme: "Steel Ink" (decided 2026-06-11, see
+   docs/design/fable5-design-language.md) -- achromatic carbon base with
+   the Steel Blue signature accent as the only non-money chroma; dark mode
+   is the first-class theme, light mode is an e-ink paper derivation.
+
+   This file is the swappable palette layer: ONLY design-token values
+   (CSS custom properties + the Bootstrap --bs-* variables they retune),
+   one block per mode.  Steel Ink is the app default and currently the
+   only palette; when additional palettes land, each gets its own
+   theme-<name>.css keyed by a data-shekel-theme attribute, with Steel
+   Ink remaining the default.
+
+   Load-order contract (see base.html): after bootstrap.min.css (these
+   blocks override Bootstrap's own --bs-* declarations at equal
+   specificity, so they must come later) and on EVERY page -- roughly 50
+   var(--shekel-*) consumers across the other stylesheets have no
+   fallback and fail silently if a token is missing. */
+
+/* =============================================
+   STEEL INK COLOR SYSTEM (Dark Mode)
+   ============================================= */
+[data-bs-theme="dark"] {
+  --bs-body-bg: #0D0E11;
+  --bs-body-color: #ECEEF1;
+  --bs-primary: #4A9ECC;
+  --bs-primary-rgb: 74, 158, 204;
+  --bs-link-color: #4A9ECC;
+  --bs-link-hover-color: #6BB8E0;
+  --bs-border-color: #242832;
+  --bs-tertiary-bg: #14161A;
+  --bs-secondary-bg: #1B1E24;
+  --shekel-page-bg: #0D0E11;
+  --shekel-surface: #14161A;
+  --shekel-surface-raised: #1B1E24;
+  --shekel-accent: #4A9ECC;
+  --shekel-accent-hover: #2878A8;
+  --shekel-accent-light: #6BB8E0;
+  --shekel-accent-rgb: 74, 158, 204;
+  --shekel-text-primary: #ECEEF1;
+  --shekel-text-secondary: #ADB3BD;
+  --shekel-text-muted: #757C88;
+  --shekel-border-strong: #3A3F4A;
+  --shekel-border-subtle: #242832;
+  --shekel-sticky-bg: #101216;
+  --shekel-header-bg: #1E2128;
+  --shekel-header-text: #F0F1F3;
+  --shekel-row-hover: #23262E;
+  --shekel-done: #3FB950;
+  --shekel-credit: #D29922;
+  --shekel-danger: #F85149;
+  --shekel-section-income-bg: #142219;
+  --shekel-section-income-text: #4CC368;
+  --shekel-section-expense-bg: #271619;
+  --shekel-section-expense-text: #E5697E;
+  --shekel-group-header-bg: #191C22;
+  --shekel-summary-bg: #101216;
+}
+
+/* Light mode variables -- e-ink paper derivation of Steel Ink.  The
+   accent deepens to #2878A8 for contrast on the paper background; the
+   navbar/header intentionally stays dark in light mode. */
+[data-bs-theme="light"] {
+  --bs-body-bg: #EFEDE8;
+  --bs-body-color: #1B1D22;
+  --bs-primary: #2878A8;
+  --bs-primary-rgb: 40, 120, 168;
+  --bs-link-color: #2878A8;
+  --bs-link-hover-color: #1C5E86;
+  --bs-border-color: #DDDAD2;
+  --bs-tertiary-bg: #FBFAF7;
+  --bs-secondary-bg: #EDEBE5;
+  --shekel-page-bg: #EFEDE8;
+  --shekel-surface: #FBFAF7;
+  --shekel-surface-raised: #EDEBE5;
+  --shekel-accent: #2878A8;
+  --shekel-accent-hover: #1C5E86;
+  --shekel-accent-light: #4A9ECC;
+  --shekel-accent-rgb: 40, 120, 168;
+  --shekel-text-primary: #1B1D22;
+  --shekel-text-secondary: #4A4E57;
+  --shekel-text-muted: #6E737D;
+  --shekel-border-strong: #C8C5BD;
+  --shekel-border-subtle: #DDDAD2;
+  --shekel-sticky-bg: #EAE8E1;
+  --shekel-header-bg: #22242A;
+  --shekel-header-text: #F0F1F3;
+  --shekel-row-hover: #E6E3DC;
+  --shekel-done: #1A7F37;
+  --shekel-credit: #9A6700;
+  --shekel-danger: #CF222E;
+  --shekel-section-income-bg: #DCEBDD;
+  --shekel-section-income-text: #185C2C;
+  --shekel-section-expense-bg: #F3DCDF;
+  --shekel-section-expense-text: #8E2336;
+  --shekel-group-header-bg: #F0EEE8;
+  --shekel-summary-bg: #ECEAE3;
+}

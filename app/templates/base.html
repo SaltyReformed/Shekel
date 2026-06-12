@@ -10,7 +10,7 @@
   {# HTMX reads its config from this meta tag at startup.  includeIndicatorStyles
      is disabled because the CSP (style-src 'self', no 'unsafe-inline'/nonce)
      blocks the inline <style> block HTMX would otherwise inject; the
-     .htmx-indicator rules live in css/app.css instead.
+     .htmx-indicator rules live in css/base.css instead.
 
      responseHandling: htmx's default never swaps 4xx bodies, which made
      the optimistic-lock conflict UX (C-18) dead UI -- every ``409`` body
@@ -45,8 +45,19 @@
   <link rel="apple-touch-icon" sizes="167x167" href="{{ url_for('static', filename='img/icon-167.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/icon-192.png') }}">
 
-  <!-- App CSS -->
-  <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
+  {# App CSS -- ORDER IS LOAD-BEARING (docs/design/css_architecture_audit.md):
+     the Steel Ink token file must follow bootstrap.min.css (it overrides
+     Bootstrap's --bs-* variables at equal specificity) and load on every
+     page (the other sheets' var(--shekel-*) consumers have no fallbacks);
+     utilities.css must stay LAST (its single-class utilities replaced
+     inline styles and win equal-specificity ties only by source order). #}
+  <link href="{{ url_for('static', filename='css/theme-steel-ink.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/base.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/components.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/grid.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/dashboard.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/analytics.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/utilities.css') }}" rel="stylesheet">
 </head>
 
 <body>

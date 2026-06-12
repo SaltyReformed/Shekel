@@ -14,8 +14,9 @@ implementation:
         and stretches width / height to 100 %),
       * ``.modal-content`` border-radius is 0 (Bootstrap removes
         the rounded corners for the fullscreen variant),
-      * ``.modal-footer`` carries the custom rule from app.css
-        lines 919-933: ``position: sticky``, ``bottom: 0`` (so the
+      * ``.modal-footer`` carries the custom
+        ``.modal-fullscreen-sm-down .modal-footer`` rule from
+        grid.css: ``position: sticky``, ``bottom: 0`` (so the
         Save button stays parked at the bottom of the modal's
         scroll area above the iOS on-screen keyboard).
       * the modal's estimated_amount input carries
@@ -288,7 +289,8 @@ def verify_mobile_dialog_fills_viewport(
 def verify_mobile_footer_is_sticky(
     page: Page, results: list[CheckResult],
 ) -> None:
-    """The custom rule at app.css:919-933 sets the modal-footer to
+    """The ``.modal-fullscreen-sm-down .modal-footer`` rule in
+    app/static/css/grid.css sets the modal-footer to
     ``position: sticky; bottom: 0`` at < 576 px so the Save button
     stays reachable above the iOS on-screen keyboard."""
     page.goto(f"{DEV_BASE_URL}/grid", wait_until="domcontentloaded")
@@ -336,7 +338,7 @@ def verify_mobile_footer_is_sticky(
         else (_ for _ in ()).throw(
             AssertionError(
                 f"modal-footer border-top-style={border_top!r}, "
-                f"expected 'solid' (full rule from app.css applied)"
+                f"expected 'solid' (full rule from grid.css applied)"
             ),
         ),
     )

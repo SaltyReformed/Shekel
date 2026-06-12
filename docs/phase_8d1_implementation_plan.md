@@ -1366,7 +1366,7 @@ volumes:
 - [ ] `docker compose ps` shows all services as `healthy`
 - [ ] App is reachable via Nginx at `http://localhost/` (or configured `NGINX_PORT`)
 - [ ] `/health` returns 200 via Nginx
-- [ ] Static files served by Nginx (verify with `curl -I http://localhost/static/css/app.css` -- response has `Server: nginx` header, no `X-Request-Id`)
+- [ ] Static files served by Nginx (verify with `curl -I http://localhost/static/css/base.css` -- response has `Server: nginx` header, no `X-Request-Id`)
 - [ ] App not directly reachable from host (no port mapping on app service)
 - [ ] `docker compose -f docker-compose.dev.yml up db` starts only the database
 - [ ] `docker compose -f docker-compose.dev.yml up` starts db + app with Flask dev server
@@ -1411,7 +1411,7 @@ docker run --rm shekel-build-test gunicorn --version
 docker run --rm shekel-build-test python -c "exec(open('gunicorn.conf.py').read()); print('Config OK')"
 
 # 5. Verify static files are present in the image.
-docker run --rm shekel-build-test ls app/static/css/app.css
+docker run --rm shekel-build-test ls app/static/css/base.css
 
 # 6. Clean up.
 cd /
@@ -1440,7 +1440,7 @@ curl -sI http://localhost/ | grep -iE "content-security-policy|x-frame-options|x
 #   Content-Security-Policy: default-src 'self'; ...
 
 # 2. Check headers on a static file response (served by Nginx directly).
-curl -sI http://localhost/static/css/app.css | grep -iE "content-security-policy|x-frame-options|x-content-type|cache-control|server"
+curl -sI http://localhost/static/css/base.css | grep -iE "content-security-policy|x-frame-options|x-content-type|cache-control|server"
 
 # Expected: Only X-Content-Type-Options and Cache-Control (set by Nginx).
 # No CSP, no X-Frame-Options (those are Flask-only, on proxied responses).
@@ -1498,13 +1498,13 @@ All manual steps are performed after `docker compose up -d` completes with all s
 | 2 | Health endpoint via Nginx | `curl -s http://localhost/health` | `{"status": "healthy", "database": "connected"}` | 1, 5 |
 | 3 | Health endpoint direct (inside network) | `docker exec shekel-app python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read().decode())"` | `{"status": "healthy", "database": "connected"}` | 1, 3 |
 | 4 | App reachable via Nginx | `curl -sI http://localhost/` | 200 or 302 (redirect to login) | 5 |
-| 5 | Static CSS via Nginx | `curl -sI http://localhost/static/css/app.css` | 200, `Server: nginx`, `Cache-Control: public, immutable` | 4, 5 |
+| 5 | Static CSS via Nginx | `curl -sI http://localhost/static/css/base.css` | 200, `Server: nginx`, `Cache-Control: public, immutable` | 4, 5 |
 | 6 | Static JS via Nginx | `curl -sI http://localhost/static/js/app.js` | 200, `Server: nginx` | 4, 5 |
-| 7 | No X-Request-Id on static | `curl -sI http://localhost/static/css/app.css \| grep X-Request-Id` | No output (header absent) | 4 |
+| 7 | No X-Request-Id on static | `curl -sI http://localhost/static/css/base.css \| grep X-Request-Id` | No output (header absent) | 4 |
 | 8 | X-Request-Id on proxied | `curl -sI http://localhost/` | `X-Request-Id: <uuid>` present | 1 |
 | 9 | CSP header once only | `curl -sI http://localhost/ \| grep -c Content-Security-Policy` | `1` (not 2) | 6 |
 | 10 | X-Frame-Options once only | `curl -sI http://localhost/ \| grep -c X-Frame-Options` | `1` | 6 |
-| 11 | X-Content-Type-Options on static | `curl -sI http://localhost/static/css/app.css \| grep X-Content-Type` | `X-Content-Type-Options: nosniff` | 4 |
+| 11 | X-Content-Type-Options on static | `curl -sI http://localhost/static/css/base.css \| grep X-Content-Type` | `X-Content-Type-Options: nosniff` | 4 |
 | 12 | Gzip on HTML | `curl -sI -H "Accept-Encoding: gzip" http://localhost/ \| grep Content-Encoding` | `Content-Encoding: gzip` (if response > 1024 bytes) | 4 |
 | 13 | Request size limit | `curl -s -o /dev/null -w "%{http_code}" -X POST -d "$(python -c "print('x'*6000000)")" http://localhost/login` | `413` | 4 |
 | 14 | JSON logs in stdout | `docker compose logs app --tail 5` | JSON-formatted log lines | 2 |

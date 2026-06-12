@@ -35,8 +35,9 @@ Read these in order before touching any UI:
    `docs/design/dashboard_card_audit.md`. If no audit exists for the screen, produce one first
    using the same structure: per surface, what it should show, what the code actually produces, the
    divergence, and a keep / fix / remove verdict.
-3. `app/static/css/app.css` -- confirm the current design-token names so you reference variables,
-   never raw hex.
+3. `app/static/css/theme-steel-ink.css` -- confirm the current design-token names so you reference
+   variables, never raw hex. The stylesheet layout (7 files, load order, cascade constraints) is
+   recorded in `docs/design/css_architecture_audit.md`.
 
 Do not proceed to design work until you can state the screen's job and its one-question-per-card
 breakdown.
@@ -50,8 +51,10 @@ before and after you build:
 
 - **Stack:** Bootstrap 5 + design tokens + HTMX + vanilla JS. No framework, no SPA, unless the
   stack ROI gate has explicitly decided otherwise.
-- **CSP:** no inline `<style>` and no inline `<script>`. CSS goes in `app/static/css/app.css`; JS
-  goes under `app/static/js/` loaded with `<script src>`; data passes via `data-*` read with
+- **CSP:** no inline `<style>` and no inline `<script>`. CSS goes under `app/static/css/` in the
+  file matching its concern (theme tokens / base / components / per-screen / utilities -- layout
+  and load-order contract in `docs/design/css_architecture_audit.md`); JS goes under
+  `app/static/js/` loaded with `<script src>`; data passes via `data-*` read with
   `element.dataset`. (`app/__init__.py` sets `script-src 'self'`, `style-src 'self'`.)
 - **Templates display, never compute.** `float()` only at a Chart.js serialization boundary.
 - **Reference tables by id or enum, never by `.name` string** in Python or Jinja.

@@ -149,7 +149,8 @@ in /tmp per the visual loop; the mockups are disposable and this section is the 
 ## Hard constraints (unchanged, from the design language)
 
 Bootstrap 5 plus the design tokens plus HTMX plus vanilla JS; CSP forbids inline `<style>` and
-`<script>` in app templates (CSS in `app.css`, JS under `static/js/`, data via `data-*`); templates
+`<script>` in app templates (CSS under `static/css/` in the file matching the concern, JS under
+`static/js/`, data via `data-*`); templates
 display, money is computed in services with `Decimal`; reference tables by id or enum, never by name
 string; CSRF on every form, POST mutations, `_` partials with an explicit `hx-target`; both themes
 via `data-bs-theme`, tokens not raw hex; tabular numerals for money.

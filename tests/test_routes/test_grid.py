@@ -5812,7 +5812,7 @@ class TestMobileCardActionBar:
         the mobile-first v3 plan hard-rule 7.
 
         The 44 px floor now travels via the ``.btn-touch-44`` utility
-        class defined in ``app/static/css/app.css`` inside the
+        class defined in ``app/static/css/grid.css`` inside the
         ``@media (max-width: 767.98px)`` block.  A regression that
         re-introduced an inline ``style="..."`` would silently shrink
         the buttons; this lock catches the regression at the source.
