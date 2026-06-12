@@ -40,9 +40,13 @@
       <div class="card-header">
         <h6 class="mb-0"><i class="bi bi-receipt"></i> Upcoming Bills</h6>
       </div>
+      {# Live refresh listens to ``balanceChanged`` -- the real event
+         every transaction / transfer / entry / mark-done / true-up
+         fires (the old ``dashboardRefresh`` trigger had zero emitters
+         after mark_paid was removed, so the card never refreshed). #}
       <div class="card-body" id="bills-section"
            hx-get="{{ url_for('dashboard.bills_section') }}"
-           hx-trigger="dashboardRefresh from:body"
+           hx-trigger="balanceChanged from:body"
            hx-swap="innerHTML">
         {% include "dashboard/_upcoming_bills.html" %}
       </div>
@@ -69,7 +73,7 @@
       </div>
       <div class="card-body" id="balance-section"
            hx-get="{{ url_for('dashboard.balance_section') }}"
-           hx-trigger="balanceChanged from:body, dashboardRefresh from:body"
+           hx-trigger="balanceChanged from:body"
            hx-swap="innerHTML">
         {% include "dashboard/_balance_runway.html" %}
       </div>
@@ -97,9 +101,9 @@
   </div>
 </div>
 
-{# Row 3: Debt + Spending #}
+{# Row 3: Debt #}
+{% if debt_summary %}
 <div class="row g-3 mb-3">
-  {% if debt_summary %}
   <div class="col-md-6">
     <div class="card">
       <div class="card-header">
@@ -110,25 +114,8 @@
       </div>
     </div>
   </div>
-  {% endif %}
-  <div class="col-md-6">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-arrow-left-right"></i> Spending Comparison</h6>
-      </div>
-      <div class="card-body"
-           hx-get="{{ url_for('dashboard.bills_section') }}"
-           hx-trigger="dashboardRefresh from:body"
-           hx-swap="none">
-        {% include "dashboard/_spending_comparison.html" %}
-      </div>
-    </div>
-  </div>
 </div>
+{% endif %}
 
 {% endif %}
-{% endblock %}
-
-{% block scripts %}
-<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 {% endblock %}

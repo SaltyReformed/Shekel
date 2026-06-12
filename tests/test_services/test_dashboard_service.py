@@ -23,6 +23,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import dashboard_service
 from app.services import account_service
+from app.services import transfer_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -117,10 +118,27 @@ class TestDashboardEmpty:
             )
             assert result["upcoming_bills"] == []
             assert result["payday_info"]["days_until"] is None
-            assert result["spending_comparison"]["direction"] is None
+            # Spending comparison removed (audit fix A); the key is gone.
+            assert "spending_comparison" not in result
 
 
 # ── Upcoming Bills Tests ────────────────────────────────────────────
+
+
+def _flatten_bills(groups):
+    """Flatten the grouped upcoming-bills structure into a single bill list.
+
+    ``_get_upcoming_bills`` now returns a list of per-period group dicts
+    (each ``{period_id, period_start_date, period_end_date, bills}``).
+    The group order is period order (current period first, then next),
+    and within a group the bills keep their due_date-then-name sort, so
+    concatenating the groups' ``bills`` lists in order reproduces the flat
+    sequence these content/order assertions check.
+    """
+    flat = []
+    for group in groups:
+        flat.extend(group["bills"])
+    return flat
 
 
 class TestUpcomingBills:
@@ -139,18 +157,23 @@ class TestUpcomingBills:
                      due_date=date(2026, 1, 3))
             db.session.commit()
 
-            bills = dashboard_service._get_upcoming_bills(
+            groups = dashboard_service._get_upcoming_bills(
                 seed_user["account"].id,
                 seed_user["scenario"].id,
                 seed_periods[0],
                 seed_periods[1],
             )
+            bills = _flatten_bills(groups)
             assert len(bills) == 2
             names = [b["name"] for b in bills]
             assert "Paid" not in names
 
     def test_upcoming_bills_two_periods(self, app, seed_user, seed_periods, db):
-        """Bills from both current and next period included."""
+        """Bills from both current and next period included as two groups.
+
+        With one bill in each of the two periods, the grouped result has
+        two groups (one per period) of one bill each, in period order.
+        """
         with app.app_context():
             _add_txn(db.session, seed_user, seed_periods[0], "Bill P0", "100.00",
                      due_date=date(2026, 1, 5))
@@ -158,16 +181,21 @@ class TestUpcomingBills:
                      due_date=date(2026, 1, 20))
             db.session.commit()
 
-            bills = dashboard_service._get_upcoming_bills(
+            groups = dashboard_service._get_upcoming_bills(
                 seed_user["account"].id,
                 seed_user["scenario"].id,
                 seed_periods[0],
                 seed_periods[1],
             )
-            assert len(bills) == 2
+            assert len(groups) == 2
+            assert groups[0]["period_id"] == seed_periods[0].id
+            assert groups[1]["period_id"] == seed_periods[1].id
+            assert [b["name"] for b in groups[0]["bills"]] == ["Bill P0"]
+            assert [b["name"] for b in groups[1]["bills"]] == ["Bill P1"]
+            assert len(_flatten_bills(groups)) == 2
 
     def test_upcoming_bills_sorted_by_due_date(self, app, seed_user, seed_periods, db):
-        """Bills sorted by due_date ascending."""
+        """Bills sorted by due_date ascending within a period group."""
         with app.app_context():
             _add_txn(db.session, seed_user, seed_periods[0], "Late", "100.00",
                      due_date=date(2026, 1, 15))
@@ -177,13 +205,15 @@ class TestUpcomingBills:
                      due_date=date(2026, 1, 10))
             db.session.commit()
 
-            bills = dashboard_service._get_upcoming_bills(
+            groups = dashboard_service._get_upcoming_bills(
                 seed_user["account"].id,
                 seed_user["scenario"].id,
                 seed_periods[0],
                 seed_periods[1],
             )
-            names = [b["name"] for b in bills]
+            # All three are in seed_periods[0], so one group, sorted.
+            assert len(groups) == 1
+            names = [b["name"] for b in groups[0]["bills"]]
             assert names == ["Early", "Mid", "Late"]
 
     def test_upcoming_bills_excludes_income(self, app, seed_user, seed_periods, db):
@@ -195,12 +225,13 @@ class TestUpcomingBills:
                      is_income=True, due_date=date(2026, 1, 2))
             db.session.commit()
 
-            bills = dashboard_service._get_upcoming_bills(
+            groups = dashboard_service._get_upcoming_bills(
                 seed_user["account"].id,
                 seed_user["scenario"].id,
                 seed_periods[0],
                 seed_periods[1],
             )
+            bills = _flatten_bills(groups)
             assert len(bills) == 1
             assert bills[0]["name"] == "Expense"
 
@@ -213,17 +244,18 @@ class TestUpcomingBills:
                      due_date=date(2026, 1, 6), is_deleted=True)
             db.session.commit()
 
-            bills = dashboard_service._get_upcoming_bills(
+            groups = dashboard_service._get_upcoming_bills(
                 seed_user["account"].id,
                 seed_user["scenario"].id,
                 seed_periods[0],
                 seed_periods[1],
             )
+            bills = _flatten_bills(groups)
             assert len(bills) == 1
             assert bills[0]["name"] == "Active"
 
     def test_upcoming_bills_null_due_date_sorted(self, app, seed_user, seed_periods, db):
-        """Bills without due_date sort by period start_date."""
+        """Bills without due_date sort by period start_date within the group."""
         with app.app_context():
             _add_txn(db.session, seed_user, seed_periods[0], "NoDue", "100.00",
                      due_date=None)
@@ -231,12 +263,13 @@ class TestUpcomingBills:
                      due_date=date(2026, 1, 3))
             db.session.commit()
 
-            bills = dashboard_service._get_upcoming_bills(
+            groups = dashboard_service._get_upcoming_bills(
                 seed_user["account"].id,
                 seed_user["scenario"].id,
                 seed_periods[0],
                 seed_periods[1],
             )
+            bills = _flatten_bills(groups)
             # NoDue uses period.start_date (Jan 2) as sort key,
             # HasDue uses due_date (Jan 3).
             assert bills[0]["name"] == "NoDue"
@@ -250,12 +283,13 @@ class TestUpcomingBills:
                      due_date=future_date)
             db.session.commit()
 
-            bills = dashboard_service._get_upcoming_bills(
+            groups = dashboard_service._get_upcoming_bills(
                 seed_user["account"].id,
                 seed_user["scenario"].id,
                 seed_periods[0],
                 seed_periods[1],
             )
+            bills = _flatten_bills(groups)
             assert len(bills) == 1
             assert bills[0]["days_until_due"] == 5
 
@@ -502,7 +536,25 @@ class TestBillRowSingleBase:
 
 
 class TestAlerts:
-    """Tests for the alerts section."""
+    """Tests for the alerts section.
+
+    ``_compute_alerts`` now takes a ``_PeriodProjection`` bundle plus the
+    as-of-today ``current_balance`` (fix B/D).  ``_HIGH_BALANCE`` is passed
+    where a test wants to isolate the stale / negative alerts: it is well
+    above the default $500 low-balance threshold, so the low-balance alert
+    never fires and pollutes the count.
+    """
+
+    _HIGH_BALANCE = Decimal("5000.00")
+
+    @staticmethod
+    def _projection(balance_results, current_period, all_periods):
+        """Build the _PeriodProjection bundle the alert helper now takes."""
+        return dashboard_service._PeriodProjection(
+            balance_results=balance_results,
+            current_period=current_period,
+            all_periods=all_periods,
+        )
 
     def test_alert_stale_anchor(self, app, seed_user, seed_periods, db):
         """Stale anchor alert when last update > staleness threshold.
@@ -526,13 +578,20 @@ class TestAlerts:
             settings = seed_user["settings"]
             # staleness_days defaults to 14.
             alerts = dashboard_service._compute_alerts(
-                account, settings, {}, seed_periods[0], seed_periods,
+                account, settings,
+                self._projection({}, seed_periods[0], seed_periods),
+                self._HIGH_BALANCE,
             )
             stale = [a for a in alerts if a["type"] == "stale_anchor"]
             assert len(stale) == 1
             assert stale[0]["severity"] == "warning"
             # days_ago=20 may show 19 or 20 depending on time-of-day.
             assert "days" in stale[0]["message"]
+            # Structured link routes to the anchor-update flow for this
+            # account (fix D); the route maps the kind to a URL.
+            assert stale[0]["link"] == {
+                "kind": "anchor_update", "account_id": account.id,
+            }
 
     def test_alert_no_stale_anchor(self, app, seed_user, seed_periods, db):
         """No stale anchor alert when recently updated."""
@@ -544,7 +603,9 @@ class TestAlerts:
             db.session.commit()
 
             alerts = dashboard_service._compute_alerts(
-                account, seed_user["settings"], {}, seed_periods[0], seed_periods,
+                account, seed_user["settings"],
+                self._projection({}, seed_periods[0], seed_periods),
+                self._HIGH_BALANCE,
             )
             stale = [a for a in alerts if a["type"] == "stale_anchor"]
             assert len(stale) == 0
@@ -586,7 +647,8 @@ class TestAlerts:
 
             alerts = dashboard_service._compute_alerts(
                 seed_user["account"], seed_user["settings"],
-                balance_results, seed_periods[0], seed_periods,
+                self._projection(balance_results, seed_periods[0], seed_periods),
+                self._HIGH_BALANCE,
             )
             neg = [a for a in alerts if a["type"] == "negative_balance"]
             assert len(neg) == 1, (
@@ -594,6 +656,13 @@ class TestAlerts:
                 f"{[a['message'] for a in alerts]}"
             )
             assert neg[0]["severity"] == "danger"
+            # The link names the offending period by its offset from the
+            # current period (fix D).  current = index 0, offending = index 6,
+            # so offset = 6 - 0 = 6.
+            offset = seed_periods[6].period_index - seed_periods[0].period_index
+            assert neg[0]["link"] == {
+                "kind": "negative_projection", "offset": offset,
+            }
 
     def test_alert_no_anchor_history(self, app, db, seed_user, seed_periods):
         """No anchor history -> stale anchor alert.
@@ -614,10 +683,68 @@ class TestAlerts:
 
             alerts = dashboard_service._compute_alerts(
                 account, seed_user["settings"],
-                {}, seed_periods[0], seed_periods,
+                self._projection({}, seed_periods[0], seed_periods),
+                self._HIGH_BALANCE,
             )
             stale = [a for a in alerts if a["type"] == "stale_anchor"]
             assert len(stale) == 1
+            assert stale[0]["message"] == "Your checking balance has never been set."
+
+    def test_alert_low_balance_uses_as_of_today(self, app, seed_user, seed_periods, db):
+        """Low-balance alert reads the as-of-today balance, not end-of-period.
+
+        Fix B/D ripple: the alert quotes the same as-of-today figure the
+        card displays, so the two can never disagree.  A fresh anchor keeps
+        the stale alert quiet; a $250 as-of-today balance is below the
+        default $500 threshold but >= 0, so the alert is a WARNING quoting
+        $250.00.
+        """
+        with app.app_context():
+            _add_anchor_history(
+                db.session, seed_user["account"],
+                seed_periods[0], "1000.00", days_ago=1,
+            )
+            db.session.commit()
+
+            alerts = dashboard_service._compute_alerts(
+                seed_user["account"], seed_user["settings"],
+                self._projection({}, seed_periods[0], seed_periods),
+                Decimal("250.00"),
+            )
+            low = [a for a in alerts if a["type"] == "low_balance"]
+            assert len(low) == 1
+            assert low[0]["severity"] == "warning"
+            assert "$250.00" in low[0]["message"]
+            assert low[0]["link"] == {"kind": "low_balance"}
+
+    def test_alert_negative_current_balance_is_danger(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A negative as-of-today balance raises a DANGER alert.
+
+        Fix D severity inversion: pre-fix an already-negative current
+        balance produced only the low-balance WARNING (never a danger).
+        A -$100 as-of-today balance is below the $500 threshold AND below
+        zero, so the alert is a DANGER quoting -$100.00.
+        """
+        with app.app_context():
+            _add_anchor_history(
+                db.session, seed_user["account"],
+                seed_periods[0], "1000.00", days_ago=1,
+            )
+            db.session.commit()
+
+            alerts = dashboard_service._compute_alerts(
+                seed_user["account"], seed_user["settings"],
+                self._projection({}, seed_periods[0], seed_periods),
+                Decimal("-100.00"),
+            )
+            low = [a for a in alerts if a["type"] == "low_balance"]
+            assert len(low) == 1
+            assert low[0]["severity"] == "danger"
+            # The money format places the sign after the dollar sign
+            # (``$-100.00``), matching the app's other money displays.
+            assert "$-100.00" in low[0]["message"]
 
     @patch("app.services.dashboard_service.date")
     def test_alerts_sorted_by_severity(
@@ -637,14 +764,20 @@ class TestAlerts:
 
         with app.app_context():
             # Positive balances everywhere except the first future
-            # period (index 6), which is negative -> danger alert.
+            # period (index 6), which is negative -> danger alert
+            # (negative projection).
             balance_results = {p.id: Decimal("100.00") for p in seed_periods}
             balance_results[seed_periods[6].id] = Decimal("-100.00")
 
-            # No anchor history is seeded -> stale anchor warning.
+            # A fresh anchor (the factory's NOW row) keeps the stale alert
+            # quiet; a $250 as-of-today balance is below the $500 default
+            # threshold but >= 0, so the low-balance WARNING fires.  The
+            # set is therefore one danger + one warning, which is what the
+            # sort order is being checked against.
             alerts = dashboard_service._compute_alerts(
                 seed_user["account"], seed_user["settings"],
-                balance_results, seed_periods[0], seed_periods,
+                self._projection(balance_results, seed_periods[0], seed_periods),
+                Decimal("250.00"),
             )
             severities = [a["severity"] for a in alerts]
             assert "danger" in severities, (
@@ -672,7 +805,8 @@ class TestAlerts:
             balance_results = {p.id: Decimal("5000.00") for p in seed_periods}
             alerts = dashboard_service._compute_alerts(
                 seed_user["account"], seed_user["settings"],
-                balance_results, seed_periods[0], seed_periods,
+                self._projection(balance_results, seed_periods[0], seed_periods),
+                self._HIGH_BALANCE,
             )
             # Should have no stale, no negative, no low balance.
             assert len(alerts) == 0
@@ -682,30 +816,47 @@ class TestAlerts:
 
 
 class TestBalanceInfo:
-    """Tests for balance and cash runway section."""
+    """Tests for balance and cash runway section.
 
-    def test_cash_runway_zero_spending(self, app, seed_user, seed_periods):
+    Fix B: the headline ``current_balance`` is now the as-of-today
+    balance from ``balance_resolver.balance_as_of_date`` (no longer the
+    passed-in end-of-period map; ``_get_balance_info`` dropped that
+    parameter).  These tests patch ``balance_as_of_date`` to inject a
+    known balance, isolating the runway / headline plumbing from the
+    resolver's own (separately tested) projection arithmetic.  The
+    cross-page equality lock (``test_cross_page_balance_equality``)
+    covers the real resolver value end to end.
+    """
+
+    @patch("app.services.dashboard_service.balance_resolver.balance_as_of_date")
+    def test_cash_runway_zero_spending(
+        self, mock_balance, app, seed_user, seed_periods,
+    ):
         """Zero spending -> runway_days=None (not infinity)."""
+        mock_balance.return_value = Decimal("3000.00")
         with app.app_context():
-            balance = {seed_periods[0].id: Decimal("3000.00")}
             result = dashboard_service._get_balance_info(
                 seed_user["account"], seed_user["scenario"].id,
-                seed_periods[0], balance,
+                seed_periods[0],
             )
             assert result["cash_runway_days"] is None
 
-    def test_cash_runway_negative_balance(self, app, seed_user, seed_periods):
+    @patch("app.services.dashboard_service.balance_resolver.balance_as_of_date")
+    def test_cash_runway_negative_balance(
+        self, mock_balance, app, seed_user, seed_periods,
+    ):
         """Negative balance -> runway_days=0."""
+        mock_balance.return_value = Decimal("-500.00")
         with app.app_context():
-            balance = {seed_periods[0].id: Decimal("-500.00")}
             result = dashboard_service._get_balance_info(
                 seed_user["account"], seed_user["scenario"].id,
-                seed_periods[0], balance,
+                seed_periods[0],
             )
             assert result["cash_runway_days"] == 0
 
+    @patch("app.services.dashboard_service.balance_resolver.balance_as_of_date")
     def test_cash_runway_excludes_other_scenario_expenses(
-        self, app, seed_user, seed_periods, db,
+        self, mock_balance, app, seed_user, seed_periods, db,
     ):
         """deep-quality-hunt #44: cash runway counts only baseline-scenario
         settled expenses; a settled expense in another scenario on the
@@ -713,13 +864,14 @@ class TestBalanceInfo:
 
         No shipping code creates a non-baseline scenario yet (multi-
         scenario is Phase 3), but the cash-runway query must scope by
-        scenario like its two sibling dashboard queries so a Phase-3
-        what-if scenario cannot inflate the baseline daily-spend average.
-        Put a recent settled expense ONLY in a second (non-baseline)
-        scenario and assert the baseline runway stays None (zero baseline
+        scenario like its sibling dashboard query so a Phase-3 what-if
+        scenario cannot inflate the baseline daily-spend average.  Put a
+        recent settled expense ONLY in a second (non-baseline) scenario
+        and assert the baseline runway stays None (zero baseline
         spending).  Without the scenario filter the $900 would be counted
         and runway would be a finite number instead.
         """
+        mock_balance.return_value = Decimal("3000.00")
         with app.app_context():
             other_scenario = Scenario(
                 user_id=seed_user["user"].id,
@@ -736,23 +888,398 @@ class TestBalanceInfo:
                 scenario_id=other_scenario.id,
             )
 
-            balance = {seed_periods[0].id: Decimal("3000.00")}
             result = dashboard_service._get_balance_info(
                 seed_user["account"], seed_user["scenario"].id,
-                seed_periods[0], balance,
+                seed_periods[0],
             )
             assert result["cash_runway_days"] is None
 
-    def test_balance_from_calculator(self, app, seed_user, seed_periods, db):
-        """Current balance comes from balance calculator results."""
+    @patch("app.services.dashboard_service.balance_resolver.balance_as_of_date")
+    def test_balance_is_as_of_today(
+        self, mock_balance, app, seed_user, seed_periods,
+    ):
+        """The headline current_balance is the as-of-today resolver value.
+
+        Fix B: the card headline now comes from
+        ``balance_resolver.balance_as_of_date(account, scenario_id,
+        today)`` -- the same producer the calendar uses -- not the
+        end-of-current-period map it read before.  The mocked value flows
+        through verbatim as ``current_balance``.
+        """
+        mock_balance.return_value = Decimal("2500.00")
         with app.app_context():
-            expected = Decimal("2500.00")
-            balance = {seed_periods[0].id: expected}
             result = dashboard_service._get_balance_info(
                 seed_user["account"], seed_user["scenario"].id,
-                seed_periods[0], balance,
+                seed_periods[0],
             )
-            assert result["current_balance"] == expected
+            assert result["current_balance"] == Decimal("2500.00")
+            mock_balance.assert_called_once_with(
+                seed_user["account"], seed_user["scenario"].id, date.today(),
+            )
+
+
+class TestCashRunwayWindow:
+    """Cash-runway 30-day window, boundary inclusion, and transfer outflow.
+
+    Fix C / audit Card 3: runway divides settled outflow over the last 30
+    calendar days (today and the 29 days before it, inclusive) by 30 to
+    get a genuine daily average, and -- per the locked Gate A transfer
+    decision -- a settled transfer-out shadow on checking IS counted as
+    runway outflow (a sweep to savings genuinely drains checking).
+
+    These tests patch ``balance_as_of_date`` to inject a known balance so
+    the assertions isolate the runway arithmetic from the resolver's own
+    projection.
+    """
+
+    @patch("app.services.dashboard_service.balance_resolver.balance_as_of_date")
+    def test_runway_hand_computed_value(
+        self, mock_balance, app, seed_user, seed_periods, db,
+    ):
+        """A hand-computed runway: $3,000 balance, $600 spent over 30 days.
+
+        Three settled expenses with due dates inside the window
+        (today, today-10, today-29) summing to
+        200 + 250 + 150 = $600.00.
+
+        Hand arithmetic:
+          daily_avg = total_spending / 30 = 600.00 / 30 = 20.00 per day
+          runway    = balance / daily_avg = 3000.00 / 20.00 = 150 days
+        """
+        mock_balance.return_value = Decimal("3000.00")
+        with app.app_context():
+            today = date.today()
+            _add_txn(
+                db.session, seed_user, seed_periods[0],
+                "Settled today", "200.00",
+                status_enum=StatusEnum.DONE, due_date=today,
+            )
+            _add_txn(
+                db.session, seed_user, seed_periods[0],
+                "Settled 10 days ago", "250.00",
+                status_enum=StatusEnum.DONE,
+                due_date=today - timedelta(days=10),
+            )
+            _add_txn(
+                db.session, seed_user, seed_periods[0],
+                "Settled 29 days ago", "150.00",
+                status_enum=StatusEnum.DONE,
+                due_date=today - timedelta(days=29),
+            )
+
+            result = dashboard_service._get_balance_info(
+                seed_user["account"], seed_user["scenario"].id,
+                seed_periods[0],
+            )
+            # 3000.00 / (600.00 / 30) = 3000.00 / 20.00 = 150.
+            assert result["cash_runway_days"] == 150
+
+    @patch("app.services.dashboard_service.balance_resolver.balance_as_of_date")
+    def test_runway_excludes_expense_due_30_days_ago(
+        self, mock_balance, app, seed_user, seed_periods, db,
+    ):
+        """An expense due exactly today-30 falls OUTSIDE the window.
+
+        The window starts at today-29 (today and the 29 days before it,
+        inclusive = 30 days), so today-30 is one day too old.  With it as
+        the ONLY settled expense, the window sees zero spending and runway
+        is None (no spending -> no finite runway), proving the boundary
+        excludes it.
+        """
+        mock_balance.return_value = Decimal("3000.00")
+        with app.app_context():
+            _add_txn(
+                db.session, seed_user, seed_periods[0],
+                "Just outside window", "600.00",
+                status_enum=StatusEnum.DONE,
+                due_date=date.today() - timedelta(days=30),
+            )
+
+            result = dashboard_service._get_balance_info(
+                seed_user["account"], seed_user["scenario"].id,
+                seed_periods[0],
+            )
+            assert result["cash_runway_days"] is None
+
+    @patch("app.services.dashboard_service.balance_resolver.balance_as_of_date")
+    def test_runway_includes_expense_due_29_days_ago(
+        self, mock_balance, app, seed_user, seed_periods, db,
+    ):
+        """An expense due exactly today-29 falls INSIDE the window.
+
+        today-29 is the first day of the window, so a $600 expense there
+        IS counted.
+
+        Hand arithmetic:
+          daily_avg = 600.00 / 30 = 20.00 per day
+          runway    = 3000.00 / 20.00 = 150 days
+        """
+        mock_balance.return_value = Decimal("3000.00")
+        with app.app_context():
+            _add_txn(
+                db.session, seed_user, seed_periods[0],
+                "On window edge", "600.00",
+                status_enum=StatusEnum.DONE,
+                due_date=date.today() - timedelta(days=29),
+            )
+
+            result = dashboard_service._get_balance_info(
+                seed_user["account"], seed_user["scenario"].id,
+                seed_periods[0],
+            )
+            # 3000.00 / (600.00 / 30) = 150.
+            assert result["cash_runway_days"] == 150
+
+    @patch("app.services.dashboard_service.balance_resolver.balance_as_of_date")
+    def test_runway_includes_settled_transfer_out_shadow(
+        self, mock_balance, app, seed_user, seed_periods, db,
+    ):
+        """A settled transfer-out shadow on checking IS counted as outflow.
+
+        Locked Gate A decision: runway measures how fast checking
+        depletes, and a settled sweep from checking to savings genuinely
+        drains checking, so the transfer's expense shadow counts even
+        though it is excluded from any "spending" figure.
+
+        Build a REAL settled transfer through the transfer service (so the
+        expense/income shadow pair is genuine, never hand-created) from
+        checking to a savings account, $600, due inside the window.  The
+        expense shadow lands on checking with the settled (Paid) status.
+
+        Hand arithmetic (the shadow is the sole outflow):
+          daily_avg = 600.00 / 30 = 20.00 per day
+          runway    = 3000.00 / 20.00 = 150 days
+        """
+        mock_balance.return_value = Decimal("3000.00")
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Sweep Target",
+                    anchor_balance=Decimal("0.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
+            )
+            db.session.add(savings)
+            db.session.flush()
+
+            done_status_id = ref_cache.status_id(StatusEnum.DONE)
+            transfer_service.create_transfer(
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("600.00"),
+                    status_id=done_status_id,
+                    category_id=None,
+                    due_date=date.today() - timedelta(days=5),
+                ),
+            )
+            db.session.flush()
+
+            result = dashboard_service._get_balance_info(
+                seed_user["account"], seed_user["scenario"].id,
+                seed_periods[0],
+            )
+            # The transfer-out shadow is the only outflow:
+            # 3000.00 / (600.00 / 30) = 150.  A non-None finite runway
+            # proves the settled transfer shadow was counted.
+            assert result["cash_runway_days"] == 150
+
+
+class TestNarrowProducers:
+    """Direct tests for the narrow partial producers (fix H).
+
+    ``compute_bills_section`` / ``compute_balance_section`` back the live
+    ``balanceChanged`` refresh, replacing the full ``compute_dashboard_data``
+    build on the refresh path.  These tests pin both their empty-state
+    contracts (asserted against ``_resolve_section_context``'s exact
+    None-cascade) and the keys the partials actually read.
+    """
+
+    # ── compute_bills_section ──────────────────────────────────────
+
+    def test_bills_section_no_account_returns_empty_list(
+        self, app, seed_user, db,
+    ):
+        """No resolvable account -> ``{"upcoming_bills": []}``.
+
+        ``_resolve_section_context`` returns ``(None, None, None)`` when no
+        active account exists, so the producer short-circuits to an empty
+        bill list (the partial renders the empty state).
+        """
+        with app.app_context():
+            # Query a fresh instance to mutate: the fixture's ``account``
+            # reference is not write-through in this session.
+            account = db.session.get(Account, seed_user["account"].id)
+            account.is_active = False
+            db.session.flush()
+
+            result = dashboard_service.compute_bills_section(
+                seed_user["user"].id,
+            )
+            assert result == {"upcoming_bills": []}
+
+    def test_bills_section_no_scenario_returns_empty_list(
+        self, app, seed_user, db,
+    ):
+        """No baseline scenario -> ``{"upcoming_bills": []}``.
+
+        ``get_baseline_scenario`` returns None, so the producer's
+        ``scenario is None`` guard fires before any bill query.
+        """
+        with app.app_context():
+            # Drop the baseline flag on a fresh instance (the fixture's
+            # ``scenario`` reference is not write-through in this session).
+            scenario = db.session.get(Scenario, seed_user["scenario"].id)
+            scenario.is_baseline = False
+            db.session.flush()
+
+            result = dashboard_service.compute_bills_section(
+                seed_user["user"].id,
+            )
+            assert result == {"upcoming_bills": []}
+
+    def test_bills_section_no_current_period_returns_empty_list(
+        self, app, seed_user,
+    ):
+        """No period contains today -> ``{"upcoming_bills": []}``.
+
+        ``seed_user`` (no ``seed_periods``) has only the 2024 bootstrap
+        period, so ``get_current_period`` returns None and the producer's
+        ``current_period is None`` guard fires.
+        """
+        with app.app_context():
+            result = dashboard_service.compute_bills_section(
+                seed_user["user"].id,
+            )
+            assert result == {"upcoming_bills": []}
+
+    def test_bills_section_happy_path_keys_match_partial(
+        self, app, seed_user, seed_periods_today, db,
+    ):
+        """Happy path: returned groups carry the keys the partial reads.
+
+        ``_upcoming_bills.html`` iterates each group's
+        ``period_start_date`` / ``period_end_date`` / ``bills``, and
+        ``_bill_row.html`` reads each bill's ``name`` and ``amount``.  One
+        projected expense in the current period must surface in exactly one
+        group with those keys populated.
+        """
+        with app.app_context():
+            current = next(
+                p for p in seed_periods_today
+                if p.start_date <= date.today() <= p.end_date
+            )
+            _add_txn(
+                db.session, seed_user, current,
+                "Electric Bill", "120.00",
+                status_enum=StatusEnum.PROJECTED, due_date=date.today(),
+            )
+
+            result = dashboard_service.compute_bills_section(
+                seed_user["user"].id,
+            )
+            # Single returned key, no stale current_period (L3).
+            assert set(result.keys()) == {"upcoming_bills"}
+            groups = result["upcoming_bills"]
+            assert len(groups) == 1
+            group = groups[0]
+            assert group["period_start_date"] == current.start_date
+            assert group["period_end_date"] == current.end_date
+            bill_names = {b["name"] for b in group["bills"]}
+            assert "Electric Bill" in bill_names
+            electric = next(
+                b for b in group["bills"] if b["name"] == "Electric Bill"
+            )
+            assert electric["amount"] == Decimal("120.00")
+
+    # ── compute_balance_section ────────────────────────────────────
+
+    def test_balance_section_no_account_returns_none(
+        self, app, seed_user, db,
+    ):
+        """No resolvable account -> ``{"balance_info": None}``.
+
+        ``_resolve_section_context`` returns account None, so the
+        producer's ``account is None`` guard yields a None balance_info
+        (the partial renders "No balance data available").
+        """
+        with app.app_context():
+            account = db.session.get(Account, seed_user["account"].id)
+            account.is_active = False
+            db.session.flush()
+
+            result = dashboard_service.compute_balance_section(
+                seed_user["user"].id,
+            )
+            assert result == {"balance_info": None}
+
+    def test_balance_section_no_scenario_returns_none(
+        self, app, seed_user, db,
+    ):
+        """No baseline scenario -> ``{"balance_info": None}``.
+
+        The producer guards on ``account is None or scenario is None``;
+        with no baseline scenario the second clause fires.
+        """
+        with app.app_context():
+            scenario = db.session.get(Scenario, seed_user["scenario"].id)
+            scenario.is_baseline = False
+            db.session.flush()
+
+            result = dashboard_service.compute_balance_section(
+                seed_user["user"].id,
+            )
+            assert result == {"balance_info": None}
+
+    def test_balance_section_no_current_period_uses_raw_anchor(
+        self, app, seed_user,
+    ):
+        """No current period -> balance_info from the raw anchor, not None.
+
+        Unlike bills, ``compute_balance_section`` guards ONLY on account /
+        scenario, not current period: with account + scenario present but
+        no period containing today, ``_get_balance_info`` cannot project to
+        today, so it falls back to the raw ``current_anchor_balance`` and
+        still returns a populated dict (``_resolve_section_context`` exact
+        shape).  ``seed_user``'s account was seeded at $1,000.00.
+        """
+        with app.app_context():
+            result = dashboard_service.compute_balance_section(
+                seed_user["user"].id,
+            )
+            balance_info = result["balance_info"]
+            assert balance_info is not None
+            assert balance_info["current_balance"] == Decimal("1000.00")
+
+    def test_balance_section_happy_path_keys_match_partial(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Happy path: balance_info carries the keys the partial reads.
+
+        ``_balance_runway.html`` reads ``account_id``, ``account_name``,
+        ``current_balance``, ``cash_runway_days``, and
+        ``last_true_up_date``.  All must be present.
+        """
+        with app.app_context():
+            result = dashboard_service.compute_balance_section(
+                seed_user["user"].id,
+            )
+            balance_info = result["balance_info"]
+            assert balance_info is not None
+            assert set(balance_info.keys()) >= {
+                "account_id", "account_name", "current_balance",
+                "cash_runway_days", "last_true_up_date",
+            }
+            assert balance_info["account_id"] == seed_user["account"].id
+            assert balance_info["account_name"] == seed_user["account"].name
 
 
 # ── Payday Info Tests ───────────────────────────────────────────────
@@ -804,6 +1331,113 @@ class TestPaydayInfo:
             assert result["days_until"] is None
             assert result["next_amount"] is None
             assert result["next_date"] is None
+
+    def test_net_pay_applies_calibration_override(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Dashboard net pay matches the grid's CALIBRATED stored paycheck.
+
+        Fix E / audit Card 4: ``_get_net_pay_for_period`` now passes the
+        salary calibration override to ``calculate_paycheck`` exactly as
+        the recurrence engine does, so the dashboard's "projected net pay"
+        equals the grid's stored income for the same period.  This test
+        proves both legs:
+
+        (1) the dashboard value equals the recurrence engine's
+            ``_get_transaction_amount`` (the producer that writes the
+            grid's stored income), and
+        (2) it differs from the UN-calibrated paycheck (so the test would
+            fail if calibration were silently dropped again).
+
+        The calibration here forces high effective tax rates (50% federal,
+        10% state, capped FICA), which materially lowers net pay relative
+        to the engine's bracket/FICA computation -- guaranteeing leg (2)
+        is a real difference, not numeric noise.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.calibration_override import CalibrationOverride
+        from app.models.recurrence_rule import RecurrenceRule
+        from app.models.ref import FilingStatus, RecurrencePattern
+        from app.models.salary_profile import SalaryProfile
+        from app.models.transaction_template import TransactionTemplate
+        from app.services import paycheck_calculator, recurrence_engine
+        from app.services.tax_config_service import load_tax_configs_for_year
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            every_period = (
+                db.session.query(RecurrencePattern)
+                .filter_by(name="Every Period").one()
+            )
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=every_period.id,
+            )
+            db.session.add(rule)
+            db.session.flush()
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                recurrence_rule_id=rule.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                name="Paycheck",
+                default_amount=Decimal("2000.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                template_id=template.id,
+                name="Calibrated Job",
+                annual_salary=Decimal("75000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            db.session.flush()
+
+            calibration = CalibrationOverride(
+                salary_profile_id=profile.id,
+                actual_gross_pay=Decimal("2884.62"),
+                actual_federal_tax=Decimal("1442.31"),
+                actual_state_tax=Decimal("288.46"),
+                actual_social_security=Decimal("178.85"),
+                actual_medicare=Decimal("41.83"),
+                effective_federal_rate=Decimal("0.5000000000"),
+                effective_state_rate=Decimal("0.1000000000"),
+                effective_ss_rate=Decimal("0.0620000000"),
+                effective_medicare_rate=Decimal("0.0145000000"),
+                pay_stub_date=date(2026, 1, 2),
+                is_active=True,
+            )
+            db.session.add(calibration)
+            db.session.commit()
+
+            period = seed_periods[1]
+            all_periods = seed_periods
+
+            dashboard_net = dashboard_service._get_net_pay_for_period(
+                seed_user["user"].id, period, all_periods,
+            )
+
+            # Leg 1: equals the grid's stored-income producer.
+            db.session.refresh(profile)
+            grid_net = recurrence_engine._get_transaction_amount(
+                template, profile, period, all_periods,
+            )
+            assert dashboard_net == grid_net
+
+            # Leg 2: differs from the un-calibrated paycheck.
+            tax_configs = load_tax_configs_for_year(
+                seed_user["user"].id, profile, period.start_date.year,
+            )
+            uncalibrated_net = paycheck_calculator.calculate_paycheck(
+                profile, period, all_periods, tax_configs,
+            ).earnings.net_pay
+            assert dashboard_net != uncalibrated_net
 
 
 # ── Savings Goals Tests ─────────────────────────────────────────────
@@ -892,8 +1526,152 @@ class TestSavingsGoals:
             db.session.commit()
 
             goals = dashboard_service._get_savings_goals(seed_user["user"].id)
-            # Null target treated as zero -> pct_complete=0.
+            # Income-relative goal with no salary: resolved target is 0,
+            # so percent_complete clamps to 0 (no crash, no $0.00 / 0%
+            # from an unresolved NULL target).
             assert goals[0]["pct_complete"] == Decimal("0")
+
+
+class TestSavingsGoalsAgreement:
+    """The dashboard card and /savings report the same numbers per goal.
+
+    Fix F / audit Card 5: ``_get_savings_goals`` delegates to the narrow
+    ``savings_dashboard_service.compute_goal_progress`` producer, built
+    from the SAME internals /savings uses (resolved target + resolver
+    balance).  These tests assert agreement on the same goal for both a
+    fixed-target goal and an income-relative goal.
+    """
+
+    @staticmethod
+    def _savings_goal_datum(user_id, account_id):
+        """Return the /savings ``goal_data`` entry for the goal on account_id."""
+        # pylint: disable=import-outside-toplevel
+        from app.services import savings_dashboard_service
+        data = savings_dashboard_service.compute_dashboard_data(user_id)
+        matches = [
+            gd for gd in data["goal_data"]
+            if gd["goal"].account_id == account_id
+        ]
+        assert len(matches) == 1, (
+            f"/savings surfaced {len(matches)} goal entries for "
+            f"account_id={account_id}; expected exactly one"
+        )
+        return matches[0]
+
+    def test_fixed_goal_agrees_with_savings(self, app, seed_user, seed_periods, db):
+        """Fixed-target goal: dashboard card == /savings on target and percent.
+
+        A $2,500 savings account against a $10,000 fixed target.  Both
+        surfaces resolve the target to $10,000 and the balance to $2,500
+        (the entries-aware resolver balance, which equals the anchor for
+        an account with no transactions), so progress is
+        2500 / 10000 * 100 = 25.00% on both.
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Fixed Goal Account",
+                    anchor_balance=Decimal("2500.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
+            )
+            db.session.add(acct)
+            db.session.flush()
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=acct.id,
+                name="Emergency Fund",
+                target_amount=Decimal("10000.00"),
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            dash = dashboard_service._get_savings_goals(seed_user["user"].id)
+            dash_entry = next(d for d in dash if d["account_id"] == acct.id)
+            sav = self._savings_goal_datum(seed_user["user"].id, acct.id)
+
+            # Same target, same balance basis, same percent on both screens.
+            assert dash_entry["target_amount"] == sav["resolved_target"]
+            assert dash_entry["current_balance"] == sav["current_balance"]
+            assert dash_entry["pct_complete"] == sav["progress_pct"]
+            # And the hand-computed value: 2500 / 10000 * 100 = 25.00.
+            assert dash_entry["pct_complete"] == Decimal("25.00")
+            assert dash_entry["target_amount"] == Decimal("10000.00")
+
+    def test_income_relative_goal_agrees_with_savings(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Income-relative goal: dashboard card == /savings (resolved target).
+
+        With a salary profile, an income-relative goal's target is
+        resolved from net biweekly pay * multiplier on BOTH surfaces, so
+        the dashboard no longer renders ``$0.00 / 0%`` (the audit's Card 5
+        bug) and the two screens agree to the cent.  The exact resolved
+        target depends on the engine's net pay; the test asserts both
+        screens produce the SAME positive figures rather than a baked-in
+        dollar amount.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import GoalModeEnum, IncomeUnitEnum
+        from app.models.ref import FilingStatus
+        from app.models.salary_profile import SalaryProfile
+
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="Income Goal Salary",
+                annual_salary=Decimal("75000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Income Goal Account",
+                    anchor_balance=Decimal("4000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
+            )
+            db.session.add(acct)
+            db.session.flush()
+
+            ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+            paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=acct.id,
+                name="3 Paychecks",
+                goal_mode_id=ir_id,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("3.00"),
+                target_amount=None,
+            )
+            db.session.add(goal)
+            db.session.commit()
+
+            dash = dashboard_service._get_savings_goals(seed_user["user"].id)
+            dash_entry = next(d for d in dash if d["account_id"] == acct.id)
+            sav = self._savings_goal_datum(seed_user["user"].id, acct.id)
+
+            # The NULL target now resolves to a positive dollar figure on
+            # the dashboard (the Card 5 fix), matching /savings exactly.
+            assert dash_entry["target_amount"] == sav["resolved_target"]
+            assert dash_entry["target_amount"] > Decimal("0.00")
+            assert dash_entry["current_balance"] == sav["current_balance"]
+            assert dash_entry["pct_complete"] == sav["progress_pct"]
 
 
 # ── Debt Summary Tests ──────────────────────────────────────────────
@@ -999,132 +1777,6 @@ class TestDebtSummary:
                     dashboard_service._get_debt_summary(seed_user["user"].id)
 
 
-# ── Spending Comparison Tests ───────────────────────────────────────
-
-
-class TestSpendingComparison:
-    """Tests for the spending comparison section."""
-
-    def test_spending_comparison_higher(self, app, seed_user, seed_periods, db):
-        """Current > prior -> delta positive, direction='higher'."""
-        with app.app_context():
-            p0 = seed_periods[0]
-            p1 = seed_periods[1]
-            _add_txn(db.session, seed_user, p0, "Prior", "600.00",
-                     status_enum=StatusEnum.DONE, actual_amount="600.00",
-                     due_date=date(2026, 1, 5))
-            _add_txn(db.session, seed_user, p1, "Current", "800.00",
-                     status_enum=StatusEnum.DONE, actual_amount="800.00",
-                     due_date=date(2026, 1, 20))
-            db.session.commit()
-
-            result = dashboard_service._get_spending_comparison(
-                seed_user["account"].id,
-                seed_user["scenario"].id,
-                p1,
-                seed_periods,
-            )
-            assert result["current_total"] == Decimal("800.00")
-            assert result["prior_total"] == Decimal("600.00")
-            assert result["delta"] == Decimal("200.00")
-            assert result["direction"] == "higher"
-
-    def test_spending_comparison_lower(self, app, seed_user, seed_periods, db):
-        """Current < prior -> delta negative, direction='lower'."""
-        with app.app_context():
-            p0 = seed_periods[0]
-            p1 = seed_periods[1]
-            _add_txn(db.session, seed_user, p0, "Prior", "600.00",
-                     status_enum=StatusEnum.DONE, actual_amount="600.00",
-                     due_date=date(2026, 1, 5))
-            _add_txn(db.session, seed_user, p1, "Current", "400.00",
-                     status_enum=StatusEnum.DONE, actual_amount="400.00",
-                     due_date=date(2026, 1, 20))
-            db.session.commit()
-
-            result = dashboard_service._get_spending_comparison(
-                seed_user["account"].id,
-                seed_user["scenario"].id,
-                p1,
-                seed_periods,
-            )
-            assert result["delta"] == Decimal("-200.00")
-            assert result["direction"] == "lower"
-
-    def test_spending_comparison_same(self, app, seed_user, seed_periods, db):
-        """Same spending -> delta=0, direction='same'."""
-        with app.app_context():
-            p0 = seed_periods[0]
-            p1 = seed_periods[1]
-            _add_txn(db.session, seed_user, p0, "Prior", "500.00",
-                     status_enum=StatusEnum.DONE, actual_amount="500.00",
-                     due_date=date(2026, 1, 5))
-            _add_txn(db.session, seed_user, p1, "Current", "500.00",
-                     status_enum=StatusEnum.DONE, actual_amount="500.00",
-                     due_date=date(2026, 1, 20))
-            db.session.commit()
-
-            result = dashboard_service._get_spending_comparison(
-                seed_user["account"].id,
-                seed_user["scenario"].id,
-                p1,
-                seed_periods,
-            )
-            assert result["delta"] == Decimal("0")
-            assert result["direction"] == "same"
-
-    def test_spending_comparison_no_prior(self, app, seed_user, seed_periods, db):
-        """First period -> prior_total=None, delta=None."""
-        with app.app_context():
-            result = dashboard_service._get_spending_comparison(
-                seed_user["account"].id,
-                seed_user["scenario"].id,
-                seed_periods[0],
-                [seed_periods[0]],  # Only one period, no prior.
-            )
-            assert result["prior_total"] is None
-            assert result["delta"] is None
-            assert result["direction"] is None
-
-    def test_spending_comparison_zero_prior(self, app, seed_user, seed_periods, db):
-        """Zero prior spending -> delta_pct=None (div by zero guard)."""
-        with app.app_context():
-            p1 = seed_periods[1]
-            _add_txn(db.session, seed_user, p1, "Current", "500.00",
-                     status_enum=StatusEnum.DONE, actual_amount="500.00",
-                     due_date=date(2026, 1, 20))
-            db.session.commit()
-
-            result = dashboard_service._get_spending_comparison(
-                seed_user["account"].id,
-                seed_user["scenario"].id,
-                p1,
-                seed_periods,
-            )
-            assert result["prior_total"] == Decimal("0")
-            assert result["delta_pct"] is None
-
-    def test_spending_comparison_only_paid(self, app, seed_user, seed_periods, db):
-        """Only settled expenses counted; projected excluded."""
-        with app.app_context():
-            p1 = seed_periods[1]
-            _add_txn(db.session, seed_user, p1, "Paid", "500.00",
-                     status_enum=StatusEnum.DONE, actual_amount="500.00",
-                     due_date=date(2026, 1, 20))
-            _add_txn(db.session, seed_user, p1, "Projected", "999.00",
-                     status_enum=StatusEnum.PROJECTED,
-                     due_date=date(2026, 1, 21))
-            db.session.commit()
-
-            result = dashboard_service._get_spending_comparison(
-                seed_user["account"].id,
-                seed_user["scenario"].id,
-                p1,
-                seed_periods,
-            )
-            assert result["current_total"] == Decimal("500.00")
-
-
 # ── Integration Tests ───────────────────────────────────────────────
 
 
@@ -1141,6 +1793,6 @@ class TestFullDashboard:
             assert isinstance(result["upcoming_bills"], list)
             assert isinstance(result["alerts"], list)
             assert isinstance(result["savings_goals"], list)
-            assert isinstance(result["spending_comparison"], dict)
-            assert "current_total" in result["spending_comparison"]
+            # Spending comparison removed (audit fix A): the key is gone.
+            assert "spending_comparison" not in result
             assert result["payday_info"] is not None

@@ -26,7 +26,7 @@ The outcomes returned by the service are otherwise byte-equivalent.
 import logging
 from decimal import Decimal
 
-from flask import jsonify, render_template, request
+from flask import jsonify, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -200,18 +200,54 @@ def inline_anchor_display(account_id):
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
 
 
-def _anchor_conflict_response(account: Account) -> tuple[str, int]:
+def _normalize_revert_context(raw_revert: str | None) -> str | None:
+    """Allowlist-validate the raw ``revert`` token to a canonical value.
+
+    The anchor editor is opened from more than one surface, and the
+    opener names its surface via the ``revert`` query token.  Only the
+    ``dashboard`` surface is recognized today; every other value (unset,
+    unknown, an attacker's probe) collapses to ``None`` so the grid's
+    default revert target is used.  Centralizing the allowlist here means
+    the token is validated against the ``dashboard`` literal in exactly
+    one place -- :func:`_anchor_revert_url` (the Cancel / Escape target),
+    the edit form's ``hx-patch`` round-trip token, and the conflict
+    cell's retry opener all consume this normalized value rather than
+    re-checking the raw string -- so the token is never interpolated
+    unvalidated into a URL or template.
+
+    Args:
+        raw_revert: The ``revert`` query token as received, or ``None``.
+
+    Returns:
+        ``"dashboard"`` when the token names the dashboard surface;
+        otherwise ``None`` (the grid default).
+    """
+    return "dashboard" if raw_revert == "dashboard" else None
+
+
+def _anchor_conflict_response(
+    account: Account, revert_context: str | None = None,
+) -> tuple[str, int]:
     """Render the grid anchor-edit cell in conflict mode (HTTP 409).
 
     Shared by ``true_up``'s pre-flush version-mismatch guard and its
     post-service ``StaleDataError`` outcome so the C-17 / F-009
     optimistic-lock conflict UX is identical for the stale-form and the
     truly-concurrent cases.
+
+    ``revert_context`` carries the surface that opened the editor (the
+    normalized token from :func:`_normalize_revert_context`) through the
+    409 so the conflict cell's retry opener re-opens ``anchor_form`` with
+    the same ``revert`` token.  Without it, a conflict raised from the
+    dashboard balance card would strand the card on the grid display cell
+    (the editor's retry would reopen with no ``revert``).  ``None`` (the
+    grid default) keeps the conflict cell byte-for-byte unchanged.
     """
     return (
         render_template(
             "grid/_anchor_edit.html",
             account=account, editing=False, conflict=True,
+            revert_context=revert_context,
         ),
         409,
     )
@@ -241,6 +277,12 @@ def true_up(account_id):
     if account is None:
         return "Account not found", 404
 
+    # The opener (dashboard balance card or grid cell) threads its surface
+    # on the PATCH query so a 409 conflict response can re-render the
+    # conflict cell with the correct retry-reopen target.  Normalized
+    # against the allowlist so the token is never interpolated unvalidated.
+    revert_context = _normalize_revert_context(request.args.get("revert"))
+
     errors = _anchor_schema.validate(request.form)
     if errors:
         return jsonify(errors=errors), 400
@@ -255,7 +297,7 @@ def true_up(account_id):
             "(submitted=%d, current=%d)",
             account_id, submitted_version, account.version_id,
         )
-        return _anchor_conflict_response(account)
+        return _anchor_conflict_response(account, revert_context)
 
     # Find the current pay period and set it as the anchor period.
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -279,7 +321,7 @@ def true_up(account_id):
 
     if outcome is AnchorTrueUpOutcome.STALE_CONFLICT:
         account = db.session.get(Account, account_id)
-        return _anchor_conflict_response(account)
+        return _anchor_conflict_response(account, revert_context)
 
     # DUPLICATE_SAME_DAY and COMMITTED share the success response (the
     # updated cell + an OOB "as of" snippet + the HX-Trigger that
@@ -311,19 +353,67 @@ def true_up(account_id):
     return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
 
 
+def _anchor_revert_url(account_id, revert_context):
+    """Resolve the URL the anchor editor reverts to on Cancel / Escape.
+
+    The anchor editor (``grid/_anchor_edit.html``) is opened from more
+    than one surface, and Cancel / Escape must restore whichever surface
+    opened it -- not always the grid display cell.  This maps the
+    normalized surface token (from :func:`_normalize_revert_context`) to
+    the GET endpoint that re-renders the opener.  ``None`` falls back to
+    the grid's ``anchor_display`` so the grid path is byte-for-byte
+    unchanged (it passes no ``revert``).
+
+    Locked contexts:
+
+    * ``dashboard`` -- the dashboard balance card re-renders via
+      ``dashboard.balance_section`` (restores the account name, caption,
+      and runway the grid display cell lacks; the audit's cancel-path
+      stranding fix).
+    * default / grid -- ``accounts.anchor_display`` (the grid cell).
+
+    Args:
+        account_id: The account whose editor is being reverted.
+        revert_context: The normalized surface token, or ``None``.
+
+    Returns:
+        The revert URL string.
+    """
+    if revert_context == "dashboard":
+        return url_for("dashboard.balance_section")
+    return url_for("accounts.anchor_display", account_id=account_id)
+
+
 @accounts_bp.route("/accounts/<int:account_id>/anchor-form", methods=["GET"])
 @login_required
 @require_owner
 def anchor_form(account_id):
-    """HTMX partial: return the inline edit form for the anchor balance."""
+    """HTMX partial: return the inline edit form for the anchor balance.
+
+    Accepts an optional ``revert`` query parameter naming the surface
+    that opened the editor (e.g. ``dashboard``), so Cancel and Escape
+    restore that surface rather than always swapping in the grid display
+    cell.  See :func:`_anchor_revert_url` for the mapping; an unset value
+    keeps the grid's default revert target.
+
+    The normalized token is also passed to the template as
+    ``revert_context`` so the edit form's ``hx-patch`` carries the surface
+    through the mutation round-trip: a 409 conflict response can then
+    re-render the conflict cell with the same retry-reopen target rather
+    than stranding the dashboard card on the grid display cell.
+    """
     account = get_or_404(Account, account_id)
     if account is None:
         return "Not found", 404
 
+    revert_context = _normalize_revert_context(request.args.get("revert"))
+    revert_url = _anchor_revert_url(account_id, revert_context)
     return render_template(
         "grid/_anchor_edit.html",
         account=account,
         editing=True,
+        revert_url=revert_url,
+        revert_context=revert_context,
     )
 
 

@@ -14,7 +14,6 @@ Covers:
   - Service-level: bill dict entry fields are populated correctly.
   - Service-level: remaining balance and over-budget flag.
   - Regression: dashboard loads with mixed tracked/plain bills.
-  - Regression: mark-paid response suppresses progress display.
 """
 
 from datetime import date
@@ -29,6 +28,19 @@ from app.services import dashboard_service, pay_period_service
 
 
 # -- Helpers ---------------------------------------------------------
+
+
+def _all_bills(data):
+    """Flatten ``compute_dashboard_data``'s grouped upcoming-bills list.
+
+    ``upcoming_bills`` is now a list of per-period group dicts (audit fix
+    G); concatenating each group's ``bills`` yields the flat list these
+    bill-content assertions iterate.
+    """
+    flat = []
+    for group in data["upcoming_bills"]:
+        flat.extend(group["bills"])
+    return flat
 
 
 def _current_period_for(user_id, seed_periods_today):
@@ -311,7 +323,7 @@ class TestDashboardServiceEntryFields:
             data = dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            bills = data["upcoming_bills"]
+            bills = _all_bills(data)
             bill = next((b for b in bills if b["id"] == txn.id), None)
             assert bill is not None
             assert bill["is_tracked"] is True
@@ -336,7 +348,7 @@ class TestDashboardServiceEntryFields:
             data = dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            bills = data["upcoming_bills"]
+            bills = _all_bills(data)
             bill = next((b for b in bills if b["id"] == txn.id), None)
             assert bill is not None
             assert bill["is_tracked"] is True
@@ -360,7 +372,7 @@ class TestDashboardServiceEntryFields:
             data = dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            bills = data["upcoming_bills"]
+            bills = _all_bills(data)
             bill = next((b for b in bills if b["id"] == txn.id), None)
             assert bill is not None
             assert bill["is_tracked"] is False
@@ -387,7 +399,7 @@ class TestDashboardServiceEntryFields:
             data = dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            bills = data["upcoming_bills"]
+            bills = _all_bills(data)
             bill = next((b for b in bills if b["id"] == txn.id), None)
             assert bill is not None
             assert bill["entry_total"] == Decimal("550.00")
@@ -413,7 +425,7 @@ class TestDashboardServiceEntryFields:
             data = dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            bills = data["upcoming_bills"]
+            bills = _all_bills(data)
             bill = next((b for b in bills if b["id"] == txn.id), None)
             assert bill is not None
             assert bill["entry_total"] == Decimal("500.00")

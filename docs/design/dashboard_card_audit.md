@@ -5,7 +5,9 @@ rebuild proof. This is the Step 3 artifact of the overhaul plan: one row per car
 it should show, what the code actually produces, the divergence if any, and a usefulness verdict
 that feeds the per-card keep / fix / remove gate.
 
-Last evaluated: 2026-06-10.
+Last evaluated: 2026-06-10. Re-verified against current code 2026-06-12 (see the
+"Re-verification (2026-06-12)" section at the end; read it together with the card sections --
+two audit claims were overturned and new defects were found).
 
 ## Method and scope
 
@@ -165,3 +167,170 @@ and `dashboard.balance_section` (re-renders `_balance_runway.html`). There is **
 - **Money formatting is duplicated in templates.** Every card hand-formats with
   `"{:,.2f}".format(...)`. Acceptable today, but a shared currency macro would reduce drift as the
   surface is rebuilt. Out of scope for the data fixes; consider it during the visual rebuild.
+
+## Re-verification (2026-06-12)
+
+Every claim above was re-checked against current code (dev HEAD 091f4de) by a nine-agent
+verification workflow plus a completeness critic, ahead of Gate A. Templates, route, and
+dashboard.js are byte-identical since 2026-05-25 (commit 5860fa6); only
+`dashboard_service.py` changed since the audit (0e27664 debt producer, d11f3e1 per-year tax
+configs). Findings below use current line numbers.
+
+### Corrections to the audit
+
+1. **`dashboardRefresh` is a phantom event -- the audit's "live refresh works correctly" for
+   Card 1 was wrong even at audit time.** The event has three listeners (`dashboard.html:45`,
+   `:72`, `:121`) and ZERO emitters anywhere in `app/`. Its only emitter ever was the retired
+   `dashboard.mark_paid` route, deleted in 5860fa6 on 2026-05-25, before this audit was
+   written. Consequence: the Bills card never live-refreshes; the only live refresh on the
+   page is the Balance card via its second trigger `balanceChanged from:body`. The Spending
+   Comparison wiring is therefore triple-broken (dead event + wrong endpoint + `hx-swap=
+   "none"`).
+2. **Dashboard mark-paid is already resolved as REMOVE, not pending a decision.** The button
+   was removed in e079a4e and the route + schema caller + 13 tests in 5860fa6 (both
+   2026-05-25, "Q-1 of the mobile-first v3 plan resolved as REMOVE"). A bill row today offers
+   zero actions (`_bill_row.html` has no a/button/form/hx-post). Residue remains: permanently
+   false `bill.is_paid` branches in `_bill_row.html` (:5, :10, :12-13, :24, :39), the no-op
+   `dashboard.js`, and four stale mark-paid comments/docstrings.
+3. **Card 6 claim is stale (behavior equivalent).** `_get_debt_summary` now calls the narrow
+   `savings_dashboard_service.compute_debt_summary(user_id)` (`dashboard_service.py:600`,
+   commit 0e27664), not `compute_dashboard_data()["debt_summary"]`. Equivalence was
+   dict-equality tested; both paths share `_debt_summary_with_dti`. Verdict unchanged.
+
+### Seeds confirmed at current line numbers
+
+- Spending Comparison misdirect: `dashboard.html:119-122`.
+- Alert links: all four append sites hardcode `"link": "/"` (`dashboard_service.py:331`,
+  `:342`, `:359`, `:375`), and "/" IS the dashboard -- the link is circular. Root cause is
+  structural: the service is Flask-free, so the type-to-URL mapping belongs in the route or
+  template.
+- Balance figure vs caption: the headline is the projected END-of-current-period balance
+  (`dashboard_service.py:403-408`, via the `balance_resolver.balances_for` end-balance map)
+  while the caption is the anchor true-up timestamp (`:410`, `:425`;
+  `_balance_runway.html:13-16`). An as-of-today producer exists
+  (`balance_resolver.balance_as_of_date`, used by the calendar) but the dashboard does not
+  call it.
+- Staleness hardcode: `dashboard_service.py:411` `staleness_days = 14` (its "caller can
+  override" comment is false) vs the settings-driven `:322`. Refinement: the flag it feeds,
+  `anchor_is_stale`, has ZERO consumers (no template, JS, or test reads it), so the
+  split-brain is latent dead output, not a rendered contradiction.
+
+### New findings (not in the original audit)
+
+High severity:
+
+- **Card 5: income-relative goals render "$0.00" target and a permanent 0%.** For that goal
+  mode `target_amount` is NULL by design; `dashboard_service.py:556` does
+  `goal.target_amount or _ZERO` without calling `resolve_goal_target`, while /savings
+  resolves it correctly (`savings_dashboard_service/_goals.py:105-111`). The agreement
+  comment at `_goals.py:121-125` is false for this whole goal mode.
+- **Card 7 / Card 3: settled transfer-out shadows count as spending.**
+  `_sum_settled_expenses` (`dashboard_service.py:667-680`) has no `transfer_id` exclusion, so
+  a settled checking-to-savings transfer inflates "This Period" spending, can flip the
+  delta/direction, and pollutes cash runway (`:452-466`, same inclusion). Whether transfers
+  count as spending or runway outflow is a product decision; today it is implicit and
+  undisclosed.
+
+Medium severity:
+
+- **Card 4: payday net pay ignores the salary calibration override.**
+  `dashboard_service.py:531-534` calls `calculate_paycheck` without `calibration=`, while the
+  recurrence engine (`recurrence_engine.py:767-772`), the salary breakdown view, and the
+  regenerate helper all pass it. A calibrated user's dashboard disagrees with the grid's
+  stored paycheck for the same period.
+- **Card 3: anchor-editor cancel strands the card on a grid partial.** Cancel/Escape in the
+  swapped-in anchor form GETs `accounts.anchor_display`, which renders the GRID display cell:
+  raw whole-dollar anchor, grid styling, no account name/caption/runway, until full reload.
+- **Card 5: balance-basis disagreement with /savings.** Dashboard uses the raw stored
+  `current_anchor_balance` (`dashboard_service.py:555`); /savings routes the goal account
+  through `balance_resolver.balances_for` (entries-aware, current-period).
+- **Card 5: goal-to-account 1:1 is convention only.** The only unique constraint is
+  `(user_id, account_id, name)`; nothing prevents N goals on one account, and there is no
+  per-goal earmarking, so two goals on one account each count the full balance (double
+  counting) on every progress surface. The codebase knows how to enforce 1:1
+  (`loan_params`/`investment_params` use `unique=True`); this table deliberately does not.
+- **Out of dashboard scope -- pay-period overlap guard hole.** `generate_pay_periods`'s
+  forward-only guard compares START dates only (`pay_period_service.py:90-92`), so a batch
+  starting within the final existing period is accepted, creating overlapping periods and a
+  nondeterministic `get_current_period` (unordered `.first()`). This is the only reachable
+  condition under which the bills and payday cards disagree about "next period" (Card 4's
+  boundary worry is otherwise unreachable on generator-produced schedules).
+- **Both partial endpoints run the full `compute_dashboard_data` to render one partial**
+  (`routes/dashboard.py:45`, `:64`) -- including the deliberately-deferred heavy debt import
+  chain -- and `balance_section` is on the live `balanceChanged` path.
+
+Low severity (recorded for the fix list): dead `is_paid` branches and mark-paid residue
+(see correction 2); `|abs` on money in `_bill_row.html:35` and on the delta in
+`_spending_comparison.html`; an already-negative CURRENT balance produces only the
+low-balance warning, never the danger alert (`dashboard_service.py:348-349` skips the current
+period); a NULL `low_balance_threshold` 500s the dashboard via `Decimal("None")`
+(unreachable through the app UI; root cause the nullable column `user.py:255`); the "as of"
+caption uses the raw TIMESTAMPTZ day without UTC normalization (unlike
+`balance_resolver.py:241`) and omits the year; runway divides a 31-day inclusive window by
+30 and silently excludes NULL-due-date expenses; `_sum_settled_expenses` returns int 0 for
+an empty period despite its `-> Decimal` annotation; `has_default_account` is a misnomer
+(the resolver falls through to ANY active account, so the checking-specific copy at
+`dashboard.html:16-17` and `dashboard_service.py:329` can mislabel); the debt partial's
+"No debt accounts" else-branch is unreachable (double gate), so a debt-free user gets no
+card at all; the dti_label badge-class mapping is duplicated with
+`savings/dashboard.html:79-85`; negative balances render as "$-1,234.56" in the savings
+caption; the balance display's `role="button" tabindex="0"` has no Enter handler.
+
+Developer-reported, root-caused and FIXED 2026-06-12: bill rows overflowed the card edge on
+mobile (long names pushed the amount cell out of the card). Root cause: `_bill_row.html`'s
+name column carried `min-width-0`, a class defined NOWHERE (Bootstrap 5 ships no such
+utility), so the flex child kept `min-width: auto` and could never shrink to let
+`.text-truncate` work. Fixed by swapping in the repo's existing `flex-1-min-0` utility
+(`utilities.css`); verified by screenshot in both themes and both viewports (mobile names
+now truncate with an ellipsis, desktop unchanged).
+
+### Verified refresh-event map (for the rebuild's wiring decisions)
+
+The app's full server event vocabulary is exactly three events: `balanceChanged` (13 fire
+sites: transaction/transfer/entry CRUD, mark-done, anchor true-up), `gridRefresh` (10 fire
+sites; listeners full-page reload), and `mobileCardSettled`. The natural rewire is
+`#bills-section` listening to `balanceChanged` (every firer changes what bills displays);
+Spending Comparison needs a real endpoint or removal; the phantom `dashboardRefresh`
+listeners and the dead `dashboard.js` should be deleted. Cards with no refresh wiring at
+all: Alerts, Payday, Savings, Debt.
+
+Paths checked and found clean: the no-scenario empty-dashboard branch, both non-HX request
+guards, companion access (404 per the not-yours rule), the MFA nag (app-wide via
+`base.html`, not dashboard-scoped; 10 tests), and every out-of-card link target.
+
+Live confirmation (2026-06-12, authenticated Playwright shot of the dev dashboard): the
+income-relative goal bug renders exactly as predicted ("Emergency Fund -- $4,875.26 / $0.00
+-- 0%"), and the negative-projection alert shows the circular "View details" link. The shot
+also exposed a finding no static pass caught: **Row 1 renders Alerts BEFORE Bills on
+desktop**, contradicting the layout comment at `dashboard.html:31-36`. The comment assumes
+Alerts keeps an implicit `order-lg-2` by source position, but elements without an order
+class default to order 0, which beats the Bills column's `order-lg-1` at the lg breakpoint.
+Net effect: Bills is first on mobile (`order-first`) but second on desktop -- the opposite
+of the comment's stated intent. Low severity (the rebuild redoes the layout), recorded so
+the Loop A directions know the current desktop order is accidental.
+
+## Rebuild decisions (Gate A, locked 2026-06-12)
+
+The developer ruled per card from the re-verified audit above. These are locked product
+decisions; do not revisit without a new developer ruling.
+
+| # | Card | Decision |
+| - | ---- | -------- |
+| 1 | Upcoming Bills | Keep + fix: disclose/group the two periods shown; rewire refresh to `balanceChanged`; strip the mark-paid residue |
+| 2 | Alerts | Keep + fix: per-type destinations mapped in the route/template layer (the service stays Flask-free): stale or never-set anchor goes to the anchor flow, negative projection to the grid at the offending period, low balance to the grid |
+| 3 | Balance + Runway | Keep + fix: the headline becomes the as-of-today balance via `balance_resolver.balance_as_of_date`; the anchor true-up date becomes a secondary line; runway starts from today's balance; fix the cancel-path stranding; staleness is owned by the Alerts card via settings, so the dead `anchor_is_stale` flag and its hardcoded 14 are deleted |
+| 4 | Next Payday | Keep + fix: pass the salary calibration override so the figure matches the grid's stored paycheck |
+| 5 | Savings Goals | Keep + fix: reuse the /savings producers (resolved target + resolver balance) so both screens agree; the 1:1-vs-allocation design question is DEFERRED (it spans /savings) |
+| 6 | Debt Summary | Keep; cleanups only (unreachable else-branch, badge-mapping duplication noted) |
+| 7 | Spending Comparison | REMOVE: card, partial, service producer, and wiring; period-over-period spending trend is analytics territory |
+
+Cross-cutting decisions, same day:
+
+- **Transfer semantics:** settled transfer shadows are EXCLUDED from any spending /
+  consumption figure and INCLUDED in cash-runway outflow (runway measures checking
+  depletion; a sweep to savings genuinely drains checking).
+- **Pay-period overlap guard:** fixing the start-date-only guard hole in
+  `generate_pay_periods` is approved for the same data-fix phase, although it lives outside
+  the dashboard (explicit scope grant).
+- **Refresh wiring:** the phantom `dashboardRefresh` listeners and the dead `dashboard.js`
+  are deleted; the bills section listens to `balanceChanged from:body`.

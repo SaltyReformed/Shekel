@@ -1,5 +1,9 @@
-{# Debt summary section partial. #}
-{% if debt_summary %}
+{# Debt summary section partial.
+
+   No ``{% else %}`` empty-state branch: the only include site
+   (dashboard.html Row 3) is already wrapped in ``{% if debt_summary %}``,
+   so a debt-free user never reaches this partial -- the inner else was
+   unreachable (audit fix J). #}
 <div class="d-flex justify-content-between mb-2">
   <span class="text-muted">Total Debt</span>
   <span class="font-mono fw-bold">${{ "{:,.2f}".format(debt_summary.total_debt) }}</span>
@@ -24,7 +28,4 @@
   <span class="text-muted">Debt-Free Date</span>
   <span>{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span>
 </div>
-{% endif %}
-{% else %}
-<p class="text-muted mb-0">No debt accounts</p>
 {% endif %}

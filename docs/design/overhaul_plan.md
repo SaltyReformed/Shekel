@@ -4,7 +4,7 @@ The roadmap and durable status record for the full UI/UX overhaul (visual rebuil
 UX/workflow/IA + functionality -- NOT a reskin). This document answers "what is the plan,
 what is done, what is next"; it deliberately contains no design content of its own.
 
-Last updated: 2026-06-11.
+Last updated: 2026-06-12.
 
 ## Where things live
 
@@ -70,7 +70,7 @@ for `app/services` / `app/routes` / test-assertion changes.
 | Foundation (design language, skill, dashboard audit) | DONE -- merged via PR #29 |
 | Steel Ink theme (app-wide token swap) | MERGED to `dev` via PR #31 (2026-06-11) |
 | **Grid** (first rebuild target) | MERGED to `dev` via PR #31 (2026-06-11, CI green). All 6 Loop B phases + audit fix-list items 1-5 done; decisions in `grid_audit.md`. Ships to prod with the next `dev` -> `main` PR |
-| **Dashboard** (second target) | NEXT -- follow the "Dashboard playbook" below; audit exists (`dashboard_card_audit.md`); leading direction: the "E2" horizon strip + alert line from the grid's Loop A rounds |
+| **Dashboard** (second target) | IN PROGRESS -- playbook steps 1-2 DONE 2026-06-12: audit re-verified against current code (nine-agent workflow; "Re-verification (2026-06-12)" section of `dashboard_card_audit.md`) and Gate A locked ("Rebuild decisions" section: keep+fix cards 1-6, REMOVE Spending Comparison, as-of-today balance headline, transfers excluded from spending / included in runway, period-guard fix approved). Step 3 data-correctness fixes underway. Leading direction for Loop A: the "E2" horizon strip + alert line from the grid's Loop A rounds |
 | Remaining screens | PROVISIONAL ORDER from the original plan (confirm per screen at each start): accounts, savings, salary, analytics, retirement, investment, loan, settings. The app-wide navbar/IA rework is its own area. Screens the original list omits (recurring, transfers, obligations, companion, calendar) slot in per developer call. |
 
 ## Dashboard playbook (carried from the original proof-step plan)

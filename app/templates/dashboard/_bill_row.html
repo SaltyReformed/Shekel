@@ -1,17 +1,17 @@
-{# Single bill row -- included by `_upcoming_bills.html` in a loop
-   and re-rendered by the `dashboard.bills_section` HTMX partial on a
-   ``dashboardRefresh`` event. #}
+{# Single bill row -- included by `_upcoming_bills.html` in a loop and
+   re-rendered by the `dashboard.bills_section` HTMX partial on a
+   ``balanceChanged`` event. #}
 {% set show_progress = (
-     not bill.is_paid|default(false)
-     and bill.is_tracked|default(false)
+     bill.is_tracked|default(false)
      and bill.entry_total is not none
 ) %}
-<div class="bill-row d-flex justify-content-between align-items-center py-2 px-2 border-bottom
-            {% if bill.is_paid|default(false) %}bill-row--paid{% endif %}">
-  <div class="d-flex align-items-center gap-2 flex-grow-1 min-width-0">
-    {% if bill.is_paid|default(false) %}
-    <i class="bi bi-check-circle-fill text-success"></i>
-    {% elif bill.is_transfer %}
+<div class="bill-row d-flex justify-content-between align-items-center py-2 px-2 border-bottom">
+  {# flex-1-min-0 (utilities.css): without min-width:0 a flex child's
+     content-derived minimum lets a long bill name push the amount cell
+     past the card edge on mobile; with it, the name truncates and the
+     amounts stay inside the card. #}
+  <div class="d-flex align-items-center gap-2 flex-1-min-0">
+    {% if bill.is_transfer %}
     <i class="bi bi-arrow-left-right text-muted"></i>
     {% elif bill.days_until_due is not none and bill.days_until_due < 0 %}
     <i class="bi bi-exclamation-circle-fill text-danger" title="Past due"></i>
@@ -21,9 +21,7 @@
     <i class="bi bi-circle text-muted"></i>
     {% endif %}
     <div class="text-truncate">
-      <span class="{% if bill.is_paid|default(false) %}text-decoration-line-through text-muted{% endif %}">
-        {{ bill.name }}
-      </span>
+      <span>{{ bill.name }}</span>
       {% if bill.category_group %}
       <small class="text-muted d-block">{{ bill.category_group }}{% if bill.category_item %}: {{ bill.category_item }}{% endif %}</small>
       {% endif %}
@@ -32,11 +30,11 @@
   <div class="d-flex align-items-center gap-2 flex-shrink-0">
     {% if show_progress %}
     <span class="font-mono{% if bill.entry_over_budget %} text-danger fw-semibold{% endif %}"
-          title="${{ '{:,.2f}'.format(bill.entry_total) }} of ${{ '{:,.2f}'.format(bill.amount) }} budget -- {% if bill.entry_over_budget %}${{ '{:,.2f}'.format((bill.entry_remaining|abs)) }} over{% else %}${{ '{:,.2f}'.format(bill.entry_remaining) }} remaining{% endif %} -- {{ bill.entry_count }} entr{{ 'ies' if bill.entry_count != 1 else 'y' }}">
+          title="${{ '{:,.2f}'.format(bill.entry_total) }} of ${{ '{:,.2f}'.format(bill.amount) }} budget -- {% if bill.entry_over_budget %}${{ '{:,.2f}'.format(bill.entry_over_budget_amount) }} over{% else %}${{ '{:,.2f}'.format(bill.entry_remaining) }} remaining{% endif %} -- {{ bill.entry_count }} entr{{ 'ies' if bill.entry_count != 1 else 'y' }}">
       ${{ "{:,.2f}".format(bill.entry_total) }} / ${{ "{:,.2f}".format(bill.amount) }}
     </span>
     {% else %}
-    <span class="font-mono {% if bill.is_paid|default(false) %}text-muted text-decoration-line-through{% endif %}">
+    <span class="font-mono">
       ${{ "{:,.2f}".format(bill.amount) }}
     </span>
     {% endif %}

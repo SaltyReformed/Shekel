@@ -121,7 +121,11 @@ class TestDashboardRendering:
             assert b"Upcoming Bills" in resp.data
 
     def test_dashboard_all_sections_present(self, app, auth_client, seed_full_user_data_today):
-        """Dashboard with rich data contains all 7 sections."""
+        """Dashboard with rich data contains the surviving sections.
+
+        Spending Comparison was removed (audit fix A), so the dashboard
+        no longer carries that heading.
+        """
         with app.app_context():
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
@@ -131,7 +135,8 @@ class TestDashboardRendering:
             assert b"Balance" in html
             assert b"Next Payday" in html
             assert b"Savings Goals" in html
-            assert b"Spending Comparison" in html
+            # Spending Comparison removed (fix A): the heading is gone.
+            assert b"Spending Comparison" not in html
 
     def test_dashboard_has_grid_link(self, app, auth_client, seed_user, seed_periods_today):
         """Dashboard has an 'Open Grid' link."""
@@ -202,6 +207,69 @@ class TestBillsDisplay:
             )
             assert bills_resp.status_code == 200
             assert "Already Paid" not in bills_resp.data.decode()
+
+    def test_bills_section_renders_both_period_headers(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """M3 / Card 1: both period date-range headers appear when bills span two periods.
+
+        The audit's Card 1 fix groups upcoming bills by pay period so each
+        date-range header actually describes the rows beneath it (a flat
+        list under a current-period-only header silently mislabeled
+        next-period bills).  With one projected bill in the current period
+        and one in the next, the ``/dashboard/bills`` partial must render
+        BOTH period headers -- proving the grouping end-to-end.
+
+        ``_upcoming_bills.html`` formats each header as
+        ``period_start_date.strftime('%b %-d')`` followed by the end date;
+        this asserts both periods' start-date labels are present (they
+        differ by 14 days, so the two header strings are distinct).
+        """
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            nxt = pay_period_service.get_next_period(current)
+            assert nxt is not None, (
+                "seed_periods_today must provide a next period"
+            )
+            _add_txn(
+                db.session, seed_user, current,
+                "Current Period Bill", "100.00",
+                due_date=current.start_date,
+            )
+            _add_txn(
+                db.session, seed_user, nxt,
+                "Next Period Bill", "200.00",
+                due_date=nxt.start_date,
+            )
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/dashboard/bills", headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Both bills present, each under its own period header.
+            assert "Current Period Bill" in html
+            assert "Next Period Bill" in html
+            # The two period headers (start-date labels rendered exactly as
+            # the template does).  They are 14 days apart, so distinct.
+            current_header = current.start_date.strftime("%b %-d")
+            next_header = nxt.start_date.strftime("%b %-d")
+            assert current_header != next_header, (
+                "the two period start labels must differ for this lock to "
+                "mean anything"
+            )
+            assert current_header in html, (
+                f"current period header {current_header!r} missing -- the "
+                "Card 1 grouping regressed"
+            )
+            assert next_header in html, (
+                f"next period header {next_header!r} missing -- next-period "
+                "bills are again mislabeled under the current header"
+            )
 
     def test_dashboard_bills_sorted(self, app, auth_client, seed_user, seed_periods_today, db):
         """Bills sorted by due_date ascending."""
@@ -274,8 +342,19 @@ class TestAlerts:
     """Tests for dashboard alerts."""
 
     def test_dashboard_stale_anchor_alert(self, app, auth_client, seed_user, seed_periods_today, db):
-        """Stale anchor (>14 days) shows alert on dashboard."""
+        """Stale anchor (>14 days) shows the stale-balance alert on dashboard.
+
+        The factory writes an origination history row at NOW, so the
+        20-days-ago row must be made the LATEST (delete the origination
+        row) for the anchor to read as stale -- otherwise the assertion is
+        vacuous ("days" also appears in the payday/runway copy).  Asserts
+        the exact stale-balance phrasing so it cannot pass on unrelated
+        text.
+        """
         with app.app_context():
+            db.session.query(AccountAnchorHistory).filter_by(
+                account_id=seed_user["account"].id,
+            ).delete()
             _add_anchor_history(
                 db.session, seed_user["account"],
                 seed_periods_today[0], "1000.00", days_ago=20,
@@ -284,7 +363,41 @@ class TestAlerts:
 
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
-            assert b"updated" in resp.data or b"days" in resp.data
+            assert b"hasn&#39;t been updated in" in resp.data
+
+    def test_stale_anchor_alert_links_to_anchor_flow(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """The stale-anchor alert's 'View details' link resolves to a real URL.
+
+        Fix D: the service emits a structured ``link`` ({kind,
+        account_id}); ``dashboard.page`` maps it to the checking-detail
+        page (the anchor-update flow).  This locks the route-layer
+        resolution end to end -- the link is no longer the circular "/".
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            account_id = account.id
+            # The account factory writes an origination history row at NOW;
+            # clear it so the 20-days-ago row is the LATEST and the anchor
+            # actually reads as stale (the resolver is latest-wins).
+            db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            ).delete()
+            _add_anchor_history(
+                db.session, account,
+                seed_periods_today[0], "1000.00", days_ago=20,
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The alert links to the checking-detail page for this account
+            # (the anchor-update flow), not the circular site root.
+            assert f'href="/accounts/{account_id}/checking"' in html
+            # And the circular "/" link is gone.
+            assert '<a href="/" class="d-block mt-1"' not in html
 
     def test_dashboard_no_alerts(self, app, auth_client, seed_user, seed_periods_today, db):
         """Fresh anchor -> no alert indicators."""
@@ -305,7 +418,11 @@ class TestAlerts:
 
 
 class TestOtherSections:
-    """Tests for savings goals, payday, and spending comparison sections."""
+    """Tests for savings goals and payday sections.
+
+    (The spending-comparison card was removed in audit fix A; its
+    dedicated route test was removed with it.)
+    """
 
     def test_dashboard_savings_goals(self, app, auth_client, seed_full_user_data_today, db):
         """Active savings goal visible on dashboard."""
@@ -313,37 +430,6 @@ class TestOtherSections:
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             assert b"Emergency Fund" in resp.data
-
-    def test_dashboard_spending_comparison(self, app, auth_client, seed_user, seed_periods_today, db):
-        """Spending comparison amounts visible when periods have data."""
-        with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
-            if cur is None:
-                cur = seed_periods_today[0]
-            # Find prior period.
-            all_p = pay_period_service.get_all_periods(seed_user["user"].id)
-            prior = None
-            for p in reversed(all_p):
-                if p.period_index < cur.period_index:
-                    prior = p
-                    break
-
-            if prior:
-                _add_txn(db.session, seed_user, prior,
-                         "Prior Expense", "600.00",
-                         status_enum=StatusEnum.DONE,
-                         actual_amount="600.00",
-                         due_date=prior.start_date)
-            _add_txn(db.session, seed_user, cur,
-                     "Current Expense", "800.00",
-                     status_enum=StatusEnum.DONE,
-                     actual_amount="800.00",
-                     due_date=cur.start_date)
-            db.session.commit()
-
-            resp = auth_client.get("/dashboard")
-            assert resp.status_code == 200
-            assert b"800.00" in resp.data
 
     def test_dashboard_payday_info(self, app, auth_client, seed_user, seed_periods_today):
         """Payday section shows days until next pay when periods exist."""

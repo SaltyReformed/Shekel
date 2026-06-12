@@ -24,7 +24,10 @@ from app.services.savings_dashboard_service._data import (
 from app.services.savings_dashboard_service._display import (
     _group_accounts_by_category,
 )
-from app.services.savings_dashboard_service._goals import _compute_goal_progress
+from app.services.savings_dashboard_service._goals import (
+    _compute_goal_progress,
+    _load_active_goals,
+)
 from app.services.savings_dashboard_service._metrics import (
     _apply_dti_metrics,
     _compute_avg_monthly_expenses,
@@ -163,6 +166,66 @@ def compute_debt_summary(user_id: int) -> dict | None:
     )
 
 
+def compute_goal_progress(user_id: int) -> list[dict]:
+    """Compute only the savings-goal progress for the budget dashboard card.
+
+    The narrow producer behind ``dashboard_service._get_savings_goals``,
+    mirroring :func:`compute_debt_summary`'s pattern.  Identical figures
+    to ``compute_dashboard_data(user_id)["goal_data"]`` by construction:
+    it runs the same loaders, the same per-account projection dispatch
+    (restricted to the accounts that back an active goal -- per-account
+    projections are independent, so the restriction cannot change any
+    projected figure), and the same canonical net-biweekly-pay producer,
+    then routes through the shared :func:`_compute_goal_progress`.  What
+    it skips is the dashboard-only work: every non-goal account's
+    projection, the emergency-fund metrics, the debt summary, account
+    grouping, and the archived-account list.
+
+    Closes the budget dashboard's two goal defects (dashboard_card_audit
+    Card 5): income-relative goals (``target_amount`` NULL by design) now
+    resolve their target via ``resolve_goal_target`` instead of rendering
+    ``$0.00 / 0%``, and the balance basis is the entries-aware resolver
+    balance (``account_data[...]["current_balance"]``) rather than the
+    raw stored ``current_anchor_balance``.  So this card and the /savings
+    page report the same numbers for the same goal.
+
+    Args:
+        user_id: Integer ID of the current user.
+
+    Returns:
+        A list of per-goal progress dicts (see
+        :func:`_compute_goal_progress`), one per active goal; empty when
+        the user has no active goals.
+    """
+    core = _load_dashboard_core_data(user_id)
+
+    active_goals = _load_active_goals(user_id)
+    if not active_goals:
+        return []
+
+    params = _load_account_params(user_id, core.accounts)
+    goal_account_ids = {goal.account_id for goal in active_goals}
+    goal_accounts = [
+        acct for acct in core.accounts if acct.id in goal_account_ids
+    ]
+
+    ctx = _build_projection_context(core, params)
+    account_data = _compute_account_projections(goal_accounts, ctx)
+
+    current_breakdown = _get_current_paycheck_breakdown(
+        user_id, core.all_periods, core.current_period,
+    )
+    net_biweekly_pay = (
+        current_breakdown.earnings.net_pay if current_breakdown is not None
+        else Decimal("0.00")
+    )
+
+    return _compute_goal_progress(
+        user_id, account_data, core.all_periods, net_biweekly_pay,
+        active_goals,
+    )
+
+
 def compute_dashboard_data(user_id):
     """Compute all data needed by the savings dashboard template.
 
@@ -210,6 +273,7 @@ def compute_dashboard_data(user_id):
     # ── Savings goals ───────────────────────────────────────────
     goal_data = _compute_goal_progress(
         user_id, account_data, core.all_periods, net_biweekly_pay,
+        _load_active_goals(user_id),
     )
 
     # ── Emergency fund metrics ──────────────────────────────────

@@ -16,10 +16,6 @@
   background-color: var(--shekel-row-hover);
 }
 
-.bill-row--paid {
-  opacity: 0.6;
-}
-
 .balance-display {
   font-size: 1.75rem;
   font-weight: 700;
