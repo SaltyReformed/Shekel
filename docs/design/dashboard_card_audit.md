@@ -579,3 +579,199 @@ RECOMMEND: yes.
 - The nullable `low_balance_threshold` column: re-deferred to migration work (not UX/IA).
 - The MFA nag: app-wide chrome from `base.html`, untouched (its partial merely lives in the
   dashboard template directory).
+
+## Data-value pass (Gate B amendments, locked 2026-06-12)
+
+Triggered by the developer's Loop A round-1 ruling, before any direction was picked: the three
+round-1 directions read "about the same" (all dense ledgers -- an anchoring artifact), the
+payday figures were called out as near-useless (salaried, constant paycheck; every period
+boundary IS a payday), and the full bills list was questioned. The developer asked for a
+data-value analysis before more mockups. These amendments supersede the matching parts of
+B2/B3/B4 above and Gate A card 3's runway wording; everything else in Gate B stands. The two
+values the developer tracks most: STILL DUE and PROJECTED END BALANCE.
+
+Verified financial fact the new model rests on (`balance_resolver.py:787-`, read in full):
+`balance_as_of_date` uses reservation semantics -- mid-period it returns the anchor rolled
+forward plus the WHOLE current period's projected net (only entries dated after `as_of` are
+excluded from the entry-aware reduction). The dashboard headline is therefore, to within
+entry-timing noise, the CURRENT period's projected end balance, and headline + still-due is
+approximately the cash physically in checking. The "as of today" caption was the defect, not
+the figure.
+
+The dashboard tells one story in one unit (projected end balance) along one axis (time):
+
+- **Tier 1, health check:** hero = this period's projected end balance (same producer; caption
+  reframed, e.g. "projected through Jun 17"; click-to-edit anchor + "last updated" line kept;
+  one-line "next paycheck <date>" caption). Beside it, the still-due-this-period total (B4a
+  remaining basis and B4b transfer inclusion unchanged). The projected end-balance CHART
+  (supersedes B3's numeric mini-strip): 13 periods / ~6 months (the developer's normal grid
+  timeframe -- "short range enough to be fairly accurate but far enough out to catch big
+  expenses"), zero line emphasized, `low_balance_threshold` drawable as a faint line, negatives
+  in danger color paired with a marker. Trough stat as the chart caption ("lowest point: $X on
+  <date>"), scanned over the SAME full horizon the negative-projection alert walks: the trough
+  is the minimum, the alert is the first negative; both labeled, the dates may differ. The
+  chart's FIRST point coincides with the hero by construction (same producer family); round 1's
+  mockup data violated this, the build must not. Alert line unchanged.
+- **Tier 2, act soon:** "Due soon" REPLACES the full two-period list: the current period's
+  unpaid rows only (its overdue rows included; unpaid rows in PRIOR periods stay out of scope
+  exactly as they are for the current card -- expanding to them would be a new product
+  decision). Row anatomy unchanged (B4). The next period's TOTAL survives as a one-line stat
+  with its grid link ("Next period: $X still due"); its rows live on the grid.
+- **Tier 3, position:** unchanged (B6).
+
+Removed (explicit removals per principle 3):
+
+- **Cash runway** -- superseded by the chart + still-due in the developer's period-based model
+  (runway was a calendar heuristic over the last 30 days of settled spend). Amends Gate A
+  card 3's "runway starts from today's balance."
+- **The payday card** -- the days-until hero and projected net pay are both dropped (salaried;
+  constant paycheck; "nice to have but I wouldn't miss it"). Survives only as the one-line
+  "next paycheck <date>" caption. This also moots the earlier "Noted, not ruled" payday
+  `is_override` divergence: the net figure no longer renders on the dashboard.
+- **The full two-period bills list** (see Tier 2; both period totals survive).
+
+Rulings (developer, 2026-06-12): chart horizon ~6 months / 13 periods; due soon = overdue +
+rest of current period; runway dropped; payday = one-line caption only; design language
+Differentiation section re-scoped same day (the quiet-dense-ledger aesthetic belongs to the
+GRID; other screens use the presentation that serves the glance, charts first; the principles
+bind everywhere).
+
+Build notes: the chart is Chart.js (already vendored; theme via the `chart_theme.js` factory;
+data passed via `data-*`, floats only at the serialization boundary); the Gate B refresh
+contract carries over (one pulse region on `balanceChanged`, the chart re-rendered from the
+swapped data attributes).
+
+Also considered and left off (the developer saw the option space): net worth rollup and
+emergency-fund coverage months (/savings owns both), the /obligations committed-outflow rollup,
+spending trends (analytics, per Gate A), an over-budget-envelope callout (revisit if the
+due-soon list hides it).
+
+## Loop A direction gate (2026-06-12)
+
+Round 2 ran chart-forward directions D "Chart Hero" / E "Cockpit" / F "Focus Column" on the
+amended content model. Developer rulings:
+
+- **Direction: D "Chart Hero" chosen** -- one leading panel (stat band: end-of-period hero,
+  still due, lowest point ahead; the 6-month chart filling the panel), Due Soon and Position
+  below. The panel is the single `balanceChanged` refresh region.
+- **The alert banner is DROPPED.** The conditions it carried move into the panel itself:
+  negative projection and low balance are shown by the chart (danger dip + dashed threshold
+  line) and the trough stat; the trough stat's date links to the grid at that period
+  (replacing the negative-projection "View details" link); anchor staleness moves into the
+  "last updated" caption, which turns warning-colored with an icon when older than
+  `settings.anchor_staleness_days` (the figure stays the click-to-edit anchor affordance, so
+  the stale state sits on the control that fixes it). With no remaining consumer,
+  `_compute_alerts` and the route-layer link mapping retire in Loop B (dead code once the
+  banner is gone). The never-set-anchor and no-scenario degraded states keep their slot
+  fallbacks from B2.
+- **Position tier must be revamped, dropped, or replaced**: the savings/debt cards are
+  "replicas of cards on /savings" that do not let a quick glance answer "am I good / on
+  track." Verified before round 3 (rule 3): the /savings producers already compute the
+  verdict -- `calculate_trajectory` returns `pace` (ahead / on_track / behind),
+  `projected_completion_date`, and `required_monthly` per goal (`savings_goal_service.py:284-`,
+  surfaced via `_goals.py:_build_goal_datum`), and debt carries `dti_label` + the debt-free
+  date. Round 3 mocks verdict-first treatments (verdict rows / verdict chips / dropped) for
+  the developer to pick; pace colors: ahead and on_track use `--shekel-done`, behind uses
+  `--shekel-credit` (proportionate urgency: danger stays reserved for negative balance).
+- **Round 3 ruling (developer, 2026-06-12): position becomes CHARTS, not text** -- "the
+  dashboard should have less text and more visualizations; I can always click through to get
+  the details." Round 4 mocks the position tier as two mini trajectory charts in the main
+  chart's visual language: the savings goal as a projection line rising to a dashed target
+  line (target-date marker shows pace as a visible gap; verdict pill + one caption line), and
+  debt as the amortization payoff curve falling to zero at the debt-free date. Both are
+  grounded in existing engines (`calculate_trajectory` arithmetic; the loan amortization walk
+  that already produces the debt-free date) -- new narrow producers are Loop B Opus scope.
+- **Round 4 ruling (developer, 2026-06-12): L (trajectories band -- main chart, then savings +
+  debt mini charts, then Due Soon full width) is the favorite so far.** Developer then asked
+  for a deliberate divergence round: three mockups "more radical than anything previously" to
+  surface fresh ideas before locking. Round 5 paradigms: M full-bleed chart canvas with
+  floating glass panels; N everything-on-one-time-axis (bills as events on the road, savings/
+  debt as progress tracks); O bento tile grid. Same locked content model in all three.
+- **Round 5 ruling (developer, 2026-06-12): fuse them.** M Terminal "best looking" BUT overlays
+  must not cover chart information; N's one-time-axis concept is liked BUT overdue +
+  due-before-next-paycheck events cluster at the left of a 6-month axis; O's color-as-meaning
+  is liked. Round 6 fusion ("Terminal Road"): full-bleed canvas with a reserved SKY zone (the
+  chart plots only in the lower band, so panels can never cover data); the current period gets
+  a second time scale -- a full-width zoomed "street" band under the main road, joined by a
+  visible magnification bracket, where overdue/due-soon events sit day-by-day; semantic tints
+  (danger fill below the zero line and on the trough chip, amber for behind-pace/due-soon,
+  red for overdue). Variants differ only in where bill DETAILS live: P street events only,
+  Q street + compact two-column list, R street + due-soon glass panel in the sky.
+
+## Rebuild decisions (Loop A COMPLETE, locked 2026-06-12)
+
+**Direction: Q "Terminal Road"** (round 6), chosen by the developer after six mockup rounds
+(A-C ledger forms; D-F chart-forward, D chosen; G-J verdict tiers; K-L trajectory charts, L
+favored; M-O radical divergence; P-R fusion, Q chosen). The mockups were disposable per the
+visual loop; this section is the durable anatomy Loop B builds.
+
+### Page anatomy (top to bottom)
+
+1. **Canvas** (full-bleed band under the standard navbar; the mockup's brand line is replaced
+   by the real navbar; the page h1/breadcrumb folds into the sky):
+   - **Sky** (reserved top zone; the chart NEVER plots into it): the hero "end of this
+     period" figure (click-to-edit anchor affordance with Enter/Space activation and the
+     `revert=dashboard` cancel path; the three recorded anchor-edit coupling points apply);
+     captions "projected through <period end> -- <account name>" and "last updated <date> --
+     next paycheck <date>" (the last-updated fragment turns `--shekel-credit` with an icon
+     when older than `settings.anchor_staleness_days` or never set); two chips: "Still due
+     this period" (neutral) and "Lowest point ahead" (danger-tinted when negative; its date
+     links to `grid.index?offset=N`); the "Open Grid" button.
+   - **Chart band**: the 13-period projected end-balance line (Chart.js through the
+     `chart_theme.js` factory; data via `data-*`; floats only at the serialization boundary);
+     solid zero line; dashed `low_balance_threshold` line in `--shekel-credit`; the
+     below-zero pocket filled `--shekel-danger`; negative points get danger dots + a value
+     label; period ticks with date labels along the bottom axis.
+2. **Bracket + street**: a visible magnification trapezoid from the current-period sliver of
+   the main axis down to a full-width **street band** (faint accent wash): a day-by-day axis
+   spanning the current period; dated unpaid rows as events (overdue in `--shekel-danger`
+   with name + amount + "overdue"/"over budget" caption; upcoming in `--shekel-credit`);
+   TODAY as a dashed accent marker; the period-end station on the right carrying the SAME
+   figure as the hero (the reservation-semantics identity drawn); undated rows on an
+   "anytime this period" shelf. MOBILE RULE: the street does not scale below ~760 px; it
+   collapses and the due-soon list (item 3) is the mobile representation.
+3. **Due-soon list** (compact; two columns desktop, one mobile): the current period's unpaid
+   rows, row anatomy unchanged from Gate B (status icons, category sub-line, due date, entry
+   dual amount + tooltip, base label); header carries the still-due total; the next-period
+   total line with its grid link closes the section.
+4. **Tracks** (savings goals + debt, the position tier): metro-track rows -- name + pace
+   pill (`behind` = `--shekel-credit`; `on_track`/`ahead`/`healthy` = `--shekel-done`), a
+   rail with progress fill and a you-are-here marker, a target-date tick in
+   `--shekel-credit` where a target date exists, destination on the right (target amount or
+   $0, plus arrival: projected completion date / debt-free date). Savings basis:
+   `progress_pct` + `calculate_trajectory` outputs (pace, projected_completion_date,
+   required_monthly -- the latter available as secondary detail). Debt basis: the marker
+   position uses principal paid vs original principal IF per-loan original amounts exist
+   (verify in Loop B); otherwise the rail renders WITHOUT a positional marker (no faked
+   position) and carries the balance label only. Track titles link to `savings.dashboard`.
+
+### Refresh contract
+
+One **pulse region** = canvas + bracket + street + due-soon list (all derive from the same
+transaction state): `hx-trigger="balanceChanged from:body"`, served by one new narrow
+producer + endpoint; the chart re-renders from the swapped `data-*` via the chart_theme
+factory. **Tracks**: page-load only (deliberate; rationale recorded at B6). Fan-out per
+event: ONE request (down from two).
+
+### Retirements (all previously ruled; executed in Loop B)
+
+The alerts banner with `_compute_alerts` + the route link mapping; cash runway; the payday
+card and its producer (only the next-paycheck DATE survives, inside the hero caption); the
+two-period bills list (next-period TOTAL survives); the old `compute_balance_section` /
+`compute_bills_section` pairing collapses into the pulse producer.
+
+### Loop B phases (gated; full suite per phase; Opus for services/routes/tests, Fable for
+templates/CSS/JS)
+
+- **B-1 (Opus): producers + tests, additive only.** New pulse producer (hero figures,
+  staleness flag, next-paycheck date, 13-point chart series + threshold, full-horizon trough
+  with grid offset, still-due totals on the locked bases, due-soon rows split dated/undated
+  with day offsets) and tracks producer (goal reshape incl. trajectory fields; debt summary +
+  honest principal-paid fraction or None). Old producers stay so the live page keeps working.
+  Test the hero == first-chart-point identity in the no-post-dated-entries case.
+- **B-2 (Fable): templates + CSS + JS** against the new producers (canvas, street SVG/JS,
+  tracks, list; currency + dti macros; Enter/Space handler).
+- **B-3 (Opus): route swap, pulse endpoint, retirements** (incl. deleting the retired
+  producers' tests -- sanctioned removals, not test-gaming), anchor-edit coupling updates.
+- **B-4: live verification** (authenticated Playwright, both themes/viewports, mutation
+  paths incl. anchor edit cancel/Escape/409) and developer acceptance with real data.

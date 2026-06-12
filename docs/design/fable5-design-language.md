@@ -5,7 +5,7 @@ first and is checked against it afterward. The companion `shekel-design` skill
 (`.claude/skills/shekel-design/`) loads this document so the constraints reload in every design
 session and screen 1 stays coherent with screen 50.
 
-Last evaluated: 2026-06-11.
+Last evaluated: 2026-06-12.
 
 ## Purpose
 
@@ -161,12 +161,18 @@ precisely to let the state colors carry maximum contrast.
 
 ## Differentiation
 
-Shekel is not a generic SaaS dashboard and should not look like one. Its distinguishing idea is the
-**pay-period ledger**: money is organized by paycheck, projected forward, and presented with the
-precision of a spreadsheet that grew a real interface. The visual language leans into that, a
-quiet, dense, trustworthy ledger, rather than chasing the rounded-card, big-illustration look of
-consumer budgeting apps. The Steel Blue palette and tabular figures are the signature; the rebuild
-sharpens them rather than replacing them.
+Shekel's distinguishing idea is the **pay-period ledger**: money is organized by paycheck,
+projected forward, and presented with precision. The "quiet, dense, trustworthy ledger" aesthetic
+is the GRID's identity -- that screen grew out of the developer's long-lived spreadsheet workflow
+and keeps its spreadsheet soul. It is not an app-wide prescription. (Amended 2026-06-12: the
+earlier app-wide wording described the app's then-current state, not the destination; the
+developer's intent is a total overhaul.) Other screens use whatever presentation serves their job
+best -- charts first where a trend IS the answer (the dashboard's projected end-balance chart is
+the canonical example) -- while staying calm and precise: no confetti, no manufactured urgency,
+no decoration that outranks a number. The Steel Blue palette, the design tokens, and tabular
+figures remain the signature everywhere, and the principles above (the number is the hero, a
+figure and its caption never disagree, tabular money, both themes) bind every screen regardless
+of form.
 
 ## How a screen uses this document
 
