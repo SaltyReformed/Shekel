@@ -9,6 +9,7 @@ import re
 import sys
 
 from datetime import date as _real_date, datetime as _real_datetime
+from decimal import Decimal
 
 
 def select_option_values(html: str, select_key: str) -> list[str]:
@@ -362,3 +363,265 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     )
     db.session.add(event)
     return event
+
+
+def create_loan_account(
+    seed_user, db_session, name="Test Loan",
+    principal=None, rate=None, term=24,
+    origination_date=None, payment_day=1,
+):
+    """Create a loan account with LoanParams, origination event, and rate.
+
+    The single shared loan-account builder for service tests (the
+    savings-dashboard, debt-summary, debt-principal-progress, and
+    dashboard-pulse suites all need a resolvable loan).  Routes the
+    account through the canonical ``account_service.create_account``
+    factory (so it gets its origination ``AccountAnchorHistory`` row),
+    inserts a ``LoanParams`` row, then seeds the origination
+    ``LoanAnchorEvent`` and ``RateHistory`` the loan resolver requires --
+    so a caller never has to repeat that four-step dance (DRY; the
+    per-suite ``_create_small_loan`` copies were a duplicate-code finding).
+
+    Commits before returning so the loan is fully resolvable.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        name: The account name.
+        principal: The original principal (and the account anchor); both
+            ``original_principal`` and ``current_principal`` are seeded
+            to it.  Defaults to ``Decimal("1000.00")``.
+        rate: The origination annual rate as a Decimal fraction.  Defaults
+            to ``Decimal("0.05000")`` (5%).
+        term: The loan term in months (default 24).
+        origination_date: The loan origination date (default
+            ``date(2026, 1, 1)``).
+        payment_day: The day-of-month payment day (default 1).
+
+    Returns:
+        The created loan :class:`~app.models.account.Account`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above; these pull the models/services
+    # package, which must not load at tests/_test_helpers import time.
+    from app.models.loan_params import LoanParams
+    from app.models.ref import AccountType
+    from app.services import account_service
+
+    if principal is None:
+        principal = Decimal("1000.00")
+    if rate is None:
+        rate = Decimal("0.05000")
+    if origination_date is None:
+        origination_date = _real_date(2026, 1, 1)
+
+    loan_type = (
+        db_session.query(AccountType).filter_by(name="Auto Loan").one()
+    )
+    account = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=loan_type.id,
+            name=name,
+            anchor_balance=principal,
+        ),
+    )
+    db_session.add(account)
+    db_session.flush()
+
+    params = LoanParams(
+        account_id=account.id,
+        original_principal=principal,
+        current_principal=principal,
+        term_months=term,
+        origination_date=origination_date,
+        payment_day=payment_day,
+    )
+    db_session.add(params)
+    db_session.flush()
+    insert_origination_rate(params, rate)
+    insert_origination_event(params)
+    db_session.commit()
+    return account
+
+
+def create_savings_account(
+    seed_user, db_session, name, anchor_balance, anchor_period_id=None,
+):
+    """Create a Savings account via the canonical factory (flushed, uncommitted).
+
+    The shared liquid-account builder for goal-track / savings tests, so
+    the stereotyped ``AccountSpec`` + ``create_account`` + ``flush`` block
+    is not copied per suite (a duplicate-code finding).  The caller
+    commits with its own goal/transaction inserts.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        name: The account name.
+        anchor_balance: The opening anchor balance (Decimal).
+        anchor_period_id: Optional anchor period id (defaults to the
+            factory's resolution when omitted).
+
+    Returns:
+        The created Savings :class:`~app.models.account.Account`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.models.ref import AccountType
+    from app.services import account_service
+
+    savings_type = (
+        db_session.query(AccountType).filter_by(name="Savings").one()
+    )
+    spec_kwargs = {
+        "user_id": seed_user["user"].id,
+        "account_type_id": savings_type.id,
+        "name": name,
+        "anchor_balance": anchor_balance,
+    }
+    if anchor_period_id is not None:
+        spec_kwargs["anchor_period_id"] = anchor_period_id
+    account = account_service.create_account(
+        account_service.AccountSpec(**spec_kwargs),
+    )
+    db_session.add(account)
+    db_session.flush()
+    return account
+
+
+def make_salary_profile(
+    seed_user, db_session, name="Test Salary",
+    annual_salary=None, state_code="NC",
+):
+    """Build and add an active SalaryProfile for the seed user (uncommitted).
+
+    The shared salary-profile builder so the stereotyped
+    ``FilingStatus`` lookup + ``SalaryProfile`` construction block is not
+    copied per suite (a duplicate-code finding).  The caller commits.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        name: The profile name.
+        annual_salary: The annual salary (Decimal); defaults to
+            ``Decimal("75000.00")``.
+        state_code: The state code (default ``"NC"``).
+
+    Returns:
+        The added :class:`~app.models.salary_profile.SalaryProfile`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.models.ref import FilingStatus
+    from app.models.salary_profile import SalaryProfile
+
+    if annual_salary is None:
+        annual_salary = Decimal("75000.00")
+    filing = db_session.query(FilingStatus).first()
+    profile = SalaryProfile(
+        user_id=seed_user["user"].id,
+        scenario_id=seed_user["scenario"].id,
+        filing_status_id=filing.id,
+        name=name,
+        annual_salary=annual_salary,
+        state_code=state_code,
+    )
+    db_session.add(profile)
+    return profile
+
+
+def create_envelope_txn(seed_user, db_session, period, name, estimated):
+    """Create an entry-tracked (is_envelope) projected expense (flushed).
+
+    Builds a minimal Every-Period envelope template plus a Projected
+    expense instance in ``period`` on the seed user's account, so the
+    stereotyped template + instance construction is not copied per suite
+    (a duplicate-code finding).  The caller attaches entries via
+    :func:`add_entry` and commits.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        period: The :class:`~app.models.pay_period.PayPeriod` to place the
+            instance in.
+        name: The template / transaction name.
+        estimated: The envelope's estimated (budget) amount (Decimal).
+
+    Returns:
+        The created :class:`~app.models.transaction.Transaction` (flushed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app import ref_cache
+    from app.enums import StatusEnum, TxnTypeEnum
+    from app.models.recurrence_rule import RecurrenceRule
+    from app.models.ref import RecurrencePattern
+    from app.models.transaction import Transaction
+    from app.models.transaction_template import TransactionTemplate
+
+    every_period = (
+        db_session.query(RecurrencePattern)
+        .filter_by(name="Every Period").one()
+    )
+    rule = RecurrenceRule(
+        user_id=seed_user["user"].id,
+        pattern_id=every_period.id,
+    )
+    db_session.add(rule)
+    db_session.flush()
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"]["Groceries"].id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=expense_type_id,
+        name=name,
+        default_amount=estimated,
+        is_envelope=True,
+    )
+    db_session.add(template)
+    db_session.flush()
+    txn = Transaction(
+        account_id=seed_user["account"].id,
+        pay_period_id=period.id,
+        scenario_id=seed_user["scenario"].id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name=name,
+        category_id=seed_user["categories"]["Groceries"].id,
+        transaction_type_id=expense_type_id,
+        estimated_amount=estimated,
+        template_id=template.id,
+    )
+    db_session.add(txn)
+    db_session.flush()
+    return txn
+
+
+def add_entry(db_session, seed_user, txn, amount, entry_date):
+    """Attach one debit :class:`TransactionEntry` of ``amount`` to ``txn``.
+
+    The shared single-debit-entry builder so the stereotyped entry
+    construction is not copied per suite (a duplicate-code finding).
+    Flushes; the caller commits.
+
+    Args:
+        db_session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (supplies ``user_id``).
+        txn: The parent :class:`~app.models.transaction.Transaction`.
+        amount: The entry amount (Decimal).
+        entry_date: The entry's ``entry_date``.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.models.transaction_entry import TransactionEntry
+
+    db_session.add(TransactionEntry(
+        transaction_id=txn.id,
+        user_id=seed_user["user"].id,
+        amount=amount,
+        description="purchase",
+        entry_date=entry_date,
+    ))
+    db_session.flush()

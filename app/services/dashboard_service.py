@@ -211,18 +211,54 @@ def _get_upcoming_bills(
     ordered_periods = [current_period]
     if next_period is not None:
         ordered_periods.append(next_period)
-    period_ids = [p.id for p in ordered_periods]
+
+    txns = _query_unpaid_expense_rows(
+        account_id, scenario_id, [p.id for p in ordered_periods],
+    )
+
+    return _group_bills_by_period(txns, ordered_periods)
+
+
+def _query_unpaid_expense_rows(
+    account_id: int,
+    scenario_id: int,
+    period_ids: list[int],
+) -> list[Transaction]:
+    """Load the unpaid (Projected) expense rows for a set of periods.
+
+    The single query the bills surfaces share -- the grouped two-period
+    bill list (:func:`_get_upcoming_bills`), the still-due totals, and the
+    due-soon list (:func:`compute_pulse_section`) -- so the row set,
+    eager-loads, and the Projected / expense / not-deleted filter are
+    defined exactly once rather than copied per producer (DRY).
+
+    Transfer-out shadows ARE included: they are expense-typed
+    transactions, so they satisfy the expense filter and are obligations
+    that still draw down checking (the Gate B4b ruling).  Income shadows
+    are not (they are income-typed).
+
+    selectinload(entries) + joinedload(template) avoid N+1 lookups when a
+    consumer checks ``is_envelope`` or iterates entries for the
+    entries-aware still-due / progress computation.  The Projected filter
+    routes through the centralized ``is_projected_clause`` (D6-09 /
+    MED-02) so every SQL filter over Projected shares one definition with
+    the Python ``is_projected`` predicate.
+
+    Args:
+        account_id: The account whose rows to load.
+        scenario_id: The scenario the rows belong to.
+        period_ids: The pay period ids to load rows for.  An empty list
+            yields an empty result.
+
+    Returns:
+        The matching :class:`Transaction` rows, with ``category``,
+        ``pay_period``, ``template``, and ``entries`` eager-loaded.
+    """
+    if not period_ids:
+        return []
 
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-
-    # selectinload(entries) + joinedload(template) avoid N+1 lookups
-    # when the template checks is_envelope and the helper below
-    # iterates entries for progress computation.
-    # The Projected filter routes through the centralized
-    # ``is_projected_clause`` (D6-09 / MED-02) so every SQL filter
-    # over Projected shares one definition with the Python
-    # ``is_projected`` predicate.
-    txns = (
+    return (
         db.session.query(Transaction)
         .options(
             joinedload(Transaction.category),
@@ -240,8 +276,6 @@ def _get_upcoming_bills(
         )
         .all()
     )
-
-    return _group_bills_by_period(txns, ordered_periods)
 
 
 def _group_bills_by_period(

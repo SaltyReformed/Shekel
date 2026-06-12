@@ -740,10 +740,16 @@ visual loop; this section is the durable anatomy Loop B builds.
    `--shekel-credit` where a target date exists, destination on the right (target amount or
    $0, plus arrival: projected completion date / debt-free date). Savings basis:
    `progress_pct` + `calculate_trajectory` outputs (pace, projected_completion_date,
-   required_monthly -- the latter available as secondary detail). Debt basis: the marker
-   position uses principal paid vs original principal IF per-loan original amounts exist
-   (verify in Loop B); otherwise the rail renders WITHOUT a positional marker (no faked
-   position) and carries the balance label only. Track titles link to `savings.dashboard`.
+   required_monthly -- the latter available as secondary detail). Debt basis (B-1 verified
+   `LoanParams.original_principal` exists, non-null, CHECK > 0; loan-set fork ruled by the
+   developer 2026-06-12): the marker uses ALL LOANS EVER ORIGINATED -- paid-off loans stay in
+   both numerator and denominator (a paid-off loan contributes 0 to the remaining-balance
+   sum), so the fraction is MONOTONIC, reaches 1.0 at full payoff and stays there, and never
+   jumps backward on a single loan's payoff. None (rail renders without a marker) only when
+   the user has no loans at all. Reachable meaning of "all": non-archived loan accounts with
+   a LoanParams row (archived accounts are filtered upstream by the projection pipeline).
+   The displayed balance label stays active-loans-only (position on the journey vs what
+   remains are different questions). Track titles link to `savings.dashboard`.
 
 ### Refresh contract
 
