@@ -9,6 +9,7 @@ from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, Status, TransactionType
 from app.models.savings_goal import SavingsGoal
+from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User
@@ -443,25 +444,33 @@ class TestDataConsistency:
     """Tests for DC-* data consistency checks."""
 
     def test_clean_database_passes(self, app, db, seed_user, seed_periods):
-        """All consistency checks pass on a properly seeded database."""
+        """All consistency checks pass on a properly seeded database.
+
+        DC-02 through DC-09: DC-01 was removed 2026-06-11 (settling
+        without a manual actual is a designed legal state -- see the
+        ``check_data_consistency`` docstring); the remaining IDs keep
+        their historical numbers.
+        """
         results = check_data_consistency(db.session)
-        assert len(results) == 9
-        # On a clean seed, DC-01 through DC-09 should all pass.
-        for r in results:
-            if not r.passed:
-                # Allow DC-01 to pass (no done transactions in seed).
-                # Allow DC-03 to pass (no typed accounts in seed).
-                pass
+        assert len(results) == 8
         # Critical checks must pass on clean data.
         critical_results = [r for r in results if r.severity == "critical"]
         assert all(r.passed for r in critical_results), (
             f"Critical failures: {[r.check_id for r in critical_results if not r.passed]}"
         )
 
-    def test_dc01_detects_done_without_actual(
+    def test_settled_without_actual_is_not_flagged(
         self, app, db, seed_user, seed_periods
     ):
-        """DC-01 flags a transaction with status 'done' but no actual_amount."""
+        """A Paid transaction with no actual_amount passes every check.
+
+        Pins the DC-01 removal: marking a row paid without typing an
+        actual is the designed workflow (``MarkDoneSchema`` leaves the
+        column untouched; ``effective_amount`` falls back to the
+        estimate), so no consistency check may flag it.  Before the
+        removal this exact row failed DC-01 as critical, turning every
+        backup verification red on routine data.
+        """
         status_done = db.session.query(Status).filter_by(name="Paid").one()
         txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
@@ -479,9 +488,9 @@ class TestDataConsistency:
         db.session.flush()
 
         results = check_data_consistency(db.session)
-        dc01 = next(r for r in results if r.check_id == "DC-01")
-        assert not dc01.passed
-        assert dc01.detail_count == 1  # 1 done txn without actual_amount
+        assert all(r.passed for r in results), (
+            f"Failures: {[r.check_id for r in results if not r.passed]}"
+        )
 
     def test_dc02_detects_self_transfer(self, app, db, seed_user, seed_periods):
         """DC-02: Transfers where from_account equals to_account.
@@ -558,6 +567,132 @@ class TestDataConsistency:
         assert not dc05.passed
         assert dc05.detail_count == 1  # 1 active template on inactive account
 
+    def _template_with_generated_row(self, seed_user, seed_periods):
+        """Create a template plus its rule-generated (non-override) row.
+
+        Returns:
+            tuple: (template, generated Transaction).
+        """
+        txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+        status_projected = db.session.query(Status).filter_by(name="Projected").one()
+        category = list(seed_user["categories"].values())[0]
+
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=category.id,
+            transaction_type_id=txn_type.id,
+            name="DC06 Template",
+            default_amount=Decimal("100.00"),
+            is_active=True,
+        )
+        db.session.add(template)
+        db.session.flush()
+
+        generated = Transaction(
+            template_id=template.id,
+            pay_period_id=seed_periods[0].id,
+            scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
+            status_id=status_projected.id,
+            name="DC06 Template",
+            category_id=category.id,
+            transaction_type_id=txn_type.id,
+            estimated_amount=Decimal("100.00"),
+            is_override=False,
+        )
+        db.session.add(generated)
+        db.session.flush()
+        return template, generated
+
+    def test_dc06_allows_override_sibling(self, app, db, seed_user, seed_periods):
+        """An override sibling next to the generated row is NOT a duplicate.
+
+        Mirrors the schema's own uniqueness contract: the partial unique
+        index ``idx_transactions_template_period_scenario`` applies only
+        WHERE ``is_override = FALSE``, precisely so a carried-forward
+        unpaid item (flagged ``is_override = TRUE``) can legally coexist
+        with the rule-generated row for its target period.  Before the
+        2026-06-11 recalibration DC-06 ignored the override predicate
+        and flagged this legal pair as critical.
+        """
+        template, generated = self._template_with_generated_row(
+            seed_user, seed_periods,
+        )
+
+        override_sibling = Transaction(
+            template_id=template.id,
+            pay_period_id=generated.pay_period_id,
+            scenario_id=generated.scenario_id,
+            account_id=generated.account_id,
+            status_id=generated.status_id,
+            name="DC06 Template (carried forward)",
+            category_id=generated.category_id,
+            transaction_type_id=generated.transaction_type_id,
+            estimated_amount=Decimal("100.00"),
+            is_override=True,
+        )
+        db.session.add(override_sibling)
+        db.session.flush()
+
+        results = check_data_consistency(db.session)
+        dc06 = next(r for r in results if r.check_id == "DC-06")
+        assert dc06.passed
+
+    def test_dc06_detects_true_duplicate(self, app, db, seed_user, seed_periods):
+        """Two NON-override rows for one template/period/scenario are flagged.
+
+        The partial unique index blocks this at the DB tier, so (like
+        the DC-02 test) the index is dropped to stage the corruption the
+        check exists to catch -- a partial restore or manual SQL is the
+        real-world source.  The staged rows are removed before the index
+        is recreated (CREATE UNIQUE INDEX validates existing rows).
+        """
+        template, generated = self._template_with_generated_row(
+            seed_user, seed_periods,
+        )
+
+        db.session.execute(db.text(
+            "DROP INDEX budget.idx_transactions_template_period_scenario"
+        ))
+        try:
+            db.session.execute(db.text("""
+                INSERT INTO budget.transactions
+                    (template_id, pay_period_id, scenario_id, account_id,
+                     status_id, name, category_id, transaction_type_id,
+                     estimated_amount, is_override, is_deleted)
+                VALUES (:tid, :pid, :sid, :aid, :stid, 'DC06 True Dup',
+                        :cid, :ttid, 100.00, FALSE, FALSE)
+            """), {
+                "tid": template.id,
+                "pid": generated.pay_period_id,
+                "sid": generated.scenario_id,
+                "aid": generated.account_id,
+                "stid": generated.status_id,
+                "cid": generated.category_id,
+                "ttid": generated.transaction_type_id,
+            })
+            db.session.flush()
+
+            results = check_data_consistency(db.session)
+            dc06 = next(r for r in results if r.check_id == "DC-06")
+            assert not dc06.passed
+            assert dc06.detail_count == 1
+            assert dc06.details[0]["cnt"] == 2
+        finally:
+            # Remove the staged duplicate first -- recreating the
+            # unique index validates existing rows.
+            db.session.execute(db.text(
+                "DELETE FROM budget.transactions WHERE name = 'DC06 True Dup'"
+            ))
+            db.session.execute(db.text("""
+                CREATE UNIQUE INDEX idx_transactions_template_period_scenario
+                ON budget.transactions (template_id, pay_period_id, scenario_id)
+                WHERE template_id IS NOT NULL
+                  AND is_deleted = FALSE
+                  AND is_override = FALSE
+            """))
+
     def test_dc07_detects_user_without_settings(self, app, db):
         """DC-07 detects a user without a user_settings row."""
         # Create a user without settings by bypassing the normal seed.
@@ -579,7 +714,7 @@ class TestDataConsistency:
         )
 
     def test_dc08_detects_user_without_baseline(self, app, db, seed_user):
-        """DC-08 detects a user without a baseline scenario."""
+        """DC-08 detects an owner-role user without a baseline scenario."""
         # Remove the baseline flag from the seed scenario.
         seed_user["scenario"].is_baseline = False
         db.session.flush()
@@ -588,6 +723,29 @@ class TestDataConsistency:
         dc08 = next(r for r in results if r.check_id == "DC-08")
         assert not dc08.passed
         assert dc08.detail_count == 1  # 1 user without baseline scenario
+
+    def test_dc08_ignores_companion_users(
+        self, app, db, seed_user, seed_companion
+    ):
+        """A companion with no scenario is NOT flagged by DC-08.
+
+        Companions view the linked owner's data and own no budget rows
+        of their own (no accounts, periods, or scenarios) by design --
+        "no baseline scenario" is their correct steady state.  Before
+        the 2026-06-11 recalibration DC-08 flagged every companion as a
+        critical failure on every prod run.
+        """
+        # Precondition: the companion really has no scenarios.
+        scenario_count = (
+            db.session.query(Scenario)
+            .filter_by(user_id=seed_companion["user"].id)
+            .count()
+        )
+        assert scenario_count == 0
+
+        results = check_data_consistency(db.session)
+        dc08 = next(r for r in results if r.check_id == "DC-08")
+        assert dc08.passed
 
     def test_dc09_detects_cross_user_deduction_target(
         self, app, db, seed_user
@@ -730,5 +888,6 @@ class TestRunAllChecks:
             f"{[(r.check_id, r.description, r.detail_count) for r in critical_failures]}"
         )
         # Total check count should cover all 4 categories:
-        # 13 FK + 6 OR + 5 BA + 9 DC = 33 checks.
-        assert len(results) == 33
+        # 13 FK + 6 OR + 5 BA + 8 DC = 32 checks (DC-01 removed
+        # 2026-06-11 -- estimated-only settles are a legal state).
+        assert len(results) == 32

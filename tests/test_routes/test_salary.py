@@ -921,6 +921,56 @@ class TestDeductions:
             assert deduction.amount == Decimal("350.00")
             assert deduction.deductions_per_year == 24
 
+    def test_update_deduction_clears_target_account_and_cap(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Empty submits clear the nullable target-account link and cap.
+
+        The edit form's "-- None --" option posts ``target_account_id=""``
+        and an emptied cap input posts ``annual_cap=""``; both are
+        allow_none, so the schema pre_load now loads them as explicit
+        None (it used to DROP the keys, making them unclearable) and
+        the route's setattr loop nulls the columns.  A cleared cap
+        means uncapped: the paycheck calculator's clamp is
+        ``is not None``-guarded, so the deduction reverts to its raw
+        amount.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="401k Linked",
+                amount=Decimal("200.00"),
+                annual_cap=Decimal("23500.00"),
+                target_account_id=seed_user["account"].id,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/deductions/{deduction.id}/edit",
+                data={
+                    "name": "401k Linked",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                    "target_account_id": "",
+                    "annual_cap": "",
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            db.session.refresh(deduction)
+            assert deduction.target_account_id is None
+            assert deduction.annual_cap is None
+
     def test_update_deduction_percentage_conversion(
         self, app, auth_client, seed_user, seed_periods
     ):

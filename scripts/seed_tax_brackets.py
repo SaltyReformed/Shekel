@@ -14,17 +14,21 @@ Usage:
 
 import os
 import sys
-from decimal import Decimal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import create_app
+# Pylint: wrong-import-position -- the sys.path bootstrap above must run
+# before these imports so ``app`` resolves when invoked as
+# ``python scripts/seed_tax_brackets.py`` (sys.path[0] is scripts/, not
+# the repo root, in that mode).
+# pylint: disable=wrong-import-position
+from app import create_app, ref_cache
+from app.enums import TaxTypeEnum
 from app.extensions import db
-from app.models.ref import FilingStatus, TaxType
+from app.models.ref import FilingStatus
 from app.models.tax_config import (
     FicaConfig,
     StateTaxConfig,
-    TaxBracket,
     TaxBracketSet,
 )
 from app.models.user import User
@@ -32,7 +36,11 @@ from app.services.auth_service import (
     DEFAULT_FEDERAL_BRACKETS,
     DEFAULT_FICA,
     DEFAULT_STATE_TAX,
+    build_state_tax_config,
+    build_tax_bracket_set,
+    build_tax_brackets,
 )
+# pylint: enable=wrong-import-position
 
 
 def seed_tax_brackets():
@@ -69,7 +77,13 @@ def seed_tax_brackets():
 
 
 def _seed_brackets_for_user(user, filing_statuses, tax_year, bracket_data):
-    """Seed federal brackets for a user and year."""
+    """Seed federal brackets for a user and year.
+
+    Row construction is shared with the sign-up path via the
+    ``auth_service.build_tax_*`` builders; this script owns only the
+    repair-tool policy around them (per-row skip-if-exists + progress
+    prints).
+    """
     for status_name, data in bracket_data.items():
         fs = filing_statuses.get(status_name)
         if not fs:
@@ -85,28 +99,13 @@ def _seed_brackets_for_user(user, filing_statuses, tax_year, bracket_data):
             print(f"  ~ {tax_year} {status_name} brackets already exist, skipping.")
             continue
 
-        bracket_set = TaxBracketSet(
-            user_id=user.id,
-            filing_status_id=fs.id,
-            tax_year=tax_year,
-            standard_deduction=data["standard_deduction"],
-            child_credit_amount=data.get("child_credit_amount", Decimal("0")),
-            other_dependent_credit_amount=data.get(
-                "other_dependent_credit_amount", Decimal("0")
-            ),
-            description=f"{tax_year} Federal - {status_name.replace('_', ' ').title()}",
+        bracket_set = build_tax_bracket_set(
+            user.id, fs.id, tax_year, status_name, data,
         )
         db.session.add(bracket_set)
         db.session.flush()
 
-        for idx, (min_inc, max_inc, rate) in enumerate(data["brackets"]):
-            bracket = TaxBracket(
-                bracket_set_id=bracket_set.id,
-                min_income=Decimal(str(min_inc)),
-                max_income=Decimal(str(max_inc)) if max_inc else None,
-                rate=rate,
-                sort_order=idx,
-            )
+        for bracket in build_tax_brackets(bracket_set.id, data["brackets"]):
             db.session.add(bracket)
 
         print(f"  + {tax_year} {status_name}: {len(data['brackets'])} brackets")
@@ -131,9 +130,6 @@ def _seed_fica_for_user(user):
 
 def _seed_state_tax_for_user(user):
     """Seed default state tax configuration."""
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
-
     flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
 
     for tax_year, data in DEFAULT_STATE_TAX.items():
@@ -147,15 +143,9 @@ def _seed_state_tax_for_user(user):
             print(f"  ~ {tax_year} {state_code} state tax config already exists, skipping.")
             continue
 
-        state_config = StateTaxConfig(
-            user_id=user.id,
-            tax_type_id=flat_type_id,
-            tax_year=tax_year,
-            state_code=state_code,
-            flat_rate=data["flat_rate"],
-            standard_deduction=data.get("standard_deduction"),
-        )
-        db.session.add(state_config)
+        db.session.add(build_state_tax_config(
+            user.id, flat_type_id, tax_year, data,
+        ))
         print(f"  + {tax_year} {state_code} state tax config (flat {data['flat_rate']})")
 
 

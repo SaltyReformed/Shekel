@@ -11,8 +11,9 @@ End-to-end coverage for the two findings closed by commit C-09 of the
 
   * F-142 (Low): no structured log event for replay detection.  Closed
     by emitting ``totp_replay_rejected`` from
-    ``app/routes/auth.py:mfa_verify`` and ``mfa_disable_confirm`` when
-    ``verify_totp_code`` returns ``REPLAY``.
+    ``app/routes/auth/mfa.py:mfa_verify`` and ``mfa_disable_confirm``
+    (via the shared ``_helpers`` verifier) when ``verify_totp_code``
+    returns ``REPLAY``.
 
 The unit-level coverage in ``tests/test_services/test_mfa_service.py``
 exercises the verifier in isolation.  This file exercises the route

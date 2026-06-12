@@ -5,7 +5,7 @@ first and is checked against it afterward. The companion `shekel-design` skill
 (`.claude/skills/shekel-design/`) loads this document so the constraints reload in every design
 session and screen 1 stays coherent with screen 50.
 
-Last evaluated: 2026-06-10.
+Last evaluated: 2026-06-11.
 
 ## Purpose
 
@@ -55,10 +55,11 @@ is out of bounds regardless of how it looks.
 - **Stack:** Bootstrap 5 + the design-token layer + HTMX + vanilla JS. No frontend framework, no
   SPA, unless the stack ROI gate explicitly decides otherwise.
 - **Content Security Policy** (`app/__init__.py`, `_CSP_DIRECTIVES`): `script-src 'self'`,
-  `style-src 'self'`. No inline `<style>` and no inline `<script>`. All CSS lives in
-  `app/static/css/app.css` (or another linked stylesheet); all JS lives under `app/static/js/` and
-  is loaded with `<script src>`. Pass data to JS via `data-*` attributes read with
-  `element.dataset`.
+  `style-src 'self'`. No inline `<style>` and no inline `<script>`. All CSS lives under
+  `app/static/css/` in the file matching its concern (theme tokens / base / components /
+  per-screen / utilities; layout and load-order contract in `css_architecture_audit.md`); all JS
+  lives under `app/static/js/` and is loaded with `<script src>`. Pass data to JS via `data-*`
+  attributes read with `element.dataset`.
 - **Templates display, never compute.** All money math happens in the service or route with
   `Decimal` and is passed in. `float()` appears only at a serialization boundary (Chart.js JSON),
   never in a calculation.
@@ -67,15 +68,16 @@ is out of bounds regardless of how it looks.
 - **Security and forms:** CSRF token on every form; HTMX mutations use POST; HTMX responses are
   partial templates (prefixed `_`) with an explicit `hx-target`; never `|safe` on user data; 404 for
   both "not found" and "not yours."
-- **CSS hygiene:** Bootstrap utility classes first, custom CSS in `app.css` only as a last resort,
-  no `!important` in new rules.
+- **CSS hygiene:** Bootstrap utility classes first, custom CSS (in the matching file under
+  `app/static/css/`) only as a last resort, no `!important` in new rules.
 - **Both themes.** Every screen must render correctly in light and dark, driven by `data-bs-theme`.
   Use tokens, never hardcoded hex, so a theme is a single block of variable values.
 
 ## Design tokens
 
-The token vocabulary already exists in `app/static/css/app.css` as CSS custom properties defined
-per `[data-bs-theme="dark"]` and `[data-bs-theme="light"]` block. New work references these
+The token vocabulary lives in `app/static/css/theme-steel-ink.css` as CSS custom properties
+defined per `[data-bs-theme="dark"]` and `[data-bs-theme="light"]` block (one file per palette;
+Steel Ink is the app default and currently the only palette). New work references these
 variables; it does not introduce new raw hex. The Step 2a refactor consolidates the remaining
 inlined hex onto these names.
 
@@ -103,6 +105,49 @@ inlined hex onto these names.
 Semantic mapping for money state: positive / settled uses `--shekel-done`, negative / over-budget
 uses `--shekel-danger`, credit uses `--shekel-credit`. These already match the grid; the rebuild
 keeps them consistent so a color means the same thing on every screen.
+
+### Committed theme: Steel Ink (decided 2026-06-11)
+
+Chosen through the Loop A theme exploration on the rebuilt grid canvas (matrix T1-T4, wildcards
+U1-U3, merges M1-M2; the developer selected M1). Steel Ink pairs an achromatic carbon base with
+the Steel Blue signature accent: the accent is the only non-money chroma on screen, so the money
+state colors carry the contrast ("the number is the hero," applied to color). Dark mode is the
+first-class theme; light mode is an e-ink paper derivation. These values landed app-wide in Loop B
+phase 1 and now live in `app/static/css/theme-steel-ink.css`.
+
+| Token | Dark | Light |
+| ----- | ---- | ----- |
+| `--shekel-page-bg` (new; page behind surfaces) | `#0D0E11` | `#EFEDE8` |
+| `--shekel-surface` | `#14161A` | `#FBFAF7` |
+| `--shekel-surface-raised` | `#1B1E24` | `#EDEBE5` |
+| `--shekel-header-bg` | `#1E2128` | `#22242A` |
+| `--shekel-header-text` (new; header stays dark in light mode) | `#F0F1F3` | `#F0F1F3` |
+| `--shekel-sticky-bg` | `#101216` | `#EAE8E1` |
+| `--shekel-row-hover` | `#23262E` | `#E6E3DC` |
+| `--shekel-group-header-bg` | `#191C22` | `#F0EEE8` |
+| `--shekel-summary-bg` | `#101216` | `#ECEAE3` |
+| `--shekel-border-strong` | `#3A3F4A` | `#C8C5BD` |
+| `--shekel-border-subtle` | `#242832` | `#DDDAD2` |
+| `--shekel-text-primary` | `#ECEEF1` | `#1B1D22` |
+| `--shekel-text-secondary` | `#ADB3BD` | `#4A4E57` |
+| `--shekel-text-muted` | `#757C88` | `#6E737D` |
+| `--shekel-accent` | `#4A9ECC` | `#2878A8` |
+| `--shekel-accent-hover` | `#2878A8` | `#1C5E86` |
+| `--shekel-accent-light` | `#6BB8E0` | `#4A9ECC` |
+| `--shekel-accent-rgb` | `74, 158, 204` | `40, 120, 168` |
+| `--shekel-done` | `#3FB950` | `#1A7F37` |
+| `--shekel-credit` | `#D29922` | `#9A6700` |
+| `--shekel-danger` | `#F85149` | `#CF222E` |
+| `--shekel-section-income-bg` | `#142219` | `#DCEBDD` |
+| `--shekel-section-income-text` | `#4CC368` | `#185C2C` |
+| `--shekel-section-expense-bg` | `#271619` | `#F3DCDF` |
+| `--shekel-section-expense-text` | `#E5697E` | `#8E2336` |
+
+Notes: the accent now differs between modes (`#4A9ECC` dark, `#2878A8` light) for contrast on the
+paper background, so accent tints should use `color-mix` with `--shekel-accent` (or the per-theme
+`--shekel-accent-rgb`) rather than hardcoded rgba values. The state trio is the vivid set; the
+soft Tokyo Night trio (M2) was considered and rejected because the achromatic base exists
+precisely to let the state colors carry maximum contrast.
 
 ## Accessibility
 

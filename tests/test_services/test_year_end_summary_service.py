@@ -633,10 +633,13 @@ class TestMortgageInterest:
             amortization_engine.ProjectionInputs(
                 starting_balance=params.original_principal,
                 starting_date=starting_date,
-                annual_rate=annual_rate,
                 remaining_months=params.term_months,
                 payment_day=params.payment_day,
-                contractual_payment=contractual,
+                terms_schedule=[amortization_engine.PeriodTerms(
+                    start_date=starting_date,
+                    annual_rate=annual_rate,
+                    monthly_pi=contractual,
+                )],
             ),
         )
         expected_interest = sum(
@@ -726,10 +729,13 @@ class TestMortgageInterest:
             amortization_engine.ProjectionInputs(
                 starting_balance=params.original_principal,
                 starting_date=starting_date,
-                annual_rate=annual_rate,
                 remaining_months=params.term_months,
                 payment_day=params.payment_day,
-                contractual_payment=contractual,
+                terms_schedule=[amortization_engine.PeriodTerms(
+                    start_date=starting_date,
+                    annual_rate=annual_rate,
+                    monthly_pi=contractual,
+                )],
             ),
         )
         expected = sum(

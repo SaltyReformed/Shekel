@@ -131,3 +131,21 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA system
     GRANT SELECT, INSERT ON TABLES TO shekel_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA system
     GRANT USAGE ON SEQUENCES TO shekel_app;
+
+-- Direct grant on the audit table when it ALREADY exists.  A database
+-- restored from a dump taken with --no-privileges (the prod->dev clone
+-- procedure) arrives with alembic_version at head, so the rebuild
+-- migration's own conditional GRANT never re-runs and every write 500s
+-- inside system.audit_trigger_func() with "permission denied for table
+-- audit_log" (hit 2026-06-11).  This block makes any clone self-heal at
+-- the next app start; it is an idempotent no-op when the migration's
+-- grant is already in place, and a no-op on a fresh database where the
+-- table does not exist yet (the migration grants it on creation).
+DO $$
+BEGIN
+    IF to_regclass('system.audit_log') IS NOT NULL THEN
+        GRANT SELECT, INSERT ON system.audit_log TO shekel_app;
+        GRANT USAGE ON ALL SEQUENCES IN SCHEMA system TO shekel_app;
+    END IF;
+END
+$$;

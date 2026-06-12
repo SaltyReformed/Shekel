@@ -1,11 +1,13 @@
 /**
- * grid_edit.js -- Two-tier editing for the Shekel budget grid.
+ * grid_edit.js -- Grid editing via the anchored action card.
  *
- * Tier 1: Quick edit -- single inline amount input inside the cell.
- * Tier 2: Full edit -- floating popover with all fields, anchored to the cell.
- *
- * Supports both editing existing transactions and creating new ones
- * from empty cells. Create-mode forms have data-mode="create".
+ * C3 rebuild (decision 2, docs/design/grid_audit.md): clicking a
+ * transaction cell's amount (.txn-open) opens ONE anchored card --
+ * the full-edit partial in #txn-popover -- carrying the status
+ * actions, the inline amount edit, the purchases section, and the
+ * rare deep-edit fields behind a "More options" collapse.  The old
+ * tier-1 inline quick-edit remains only for the empty-cell
+ * quick-create path (data-mode="create" forms).
  */
 
 var activePopover = null;
@@ -63,19 +65,24 @@ function applyDesktopPlacement(popover, cell) {
     } else if (popoverHeight <= spaceAbove) {
         // Does not fit below but does fit above -- flip over the cell.
         topPos = cellRect.top - popoverHeight;
+    } else if (spaceBelow >= spaceAbove) {
+        // Fits neither side.  Anchor to whichever side has more room;
+        // the clamp below keeps it on-screen and the CSS max-height
+        // makes the overflow scroll internally rather than disappear
+        // behind the viewport edge.
+        topPos = cellRect.bottom;
     } else {
-        // Fits neither side.  Anchor to whichever side has more room and
-        // clamp to the viewport; CSS max-height makes the overflow scroll
-        // internally rather than disappear behind the viewport edge.
-        if (spaceBelow >= spaceAbove) {
-            topPos = cellRect.bottom;
-        } else {
-            topPos = cellRect.top - popoverHeight;
-        }
-        var maxTop = viewportH - popoverHeight - POPOVER_VIEWPORT_MARGIN;
-        if (topPos > maxTop) topPos = maxTop;
-        if (topPos < POPOVER_VIEWPORT_MARGIN) topPos = POPOVER_VIEWPORT_MARGIN;
+        topPos = cellRect.top - popoverHeight;
     }
+
+    // Clamp EVERY placement into the viewport, not just the fits-neither
+    // case: an off-screen anchor cell (e.g. a palette action on a row
+    // scrolled out of view) produces a cellRect outside the viewport, and
+    // the fits-below/fits-above branches would otherwise position the
+    // card invisibly off-screen.
+    var maxTop = viewportH - popoverHeight - POPOVER_VIEWPORT_MARGIN;
+    if (topPos > maxTop) topPos = maxTop;
+    if (topPos < POPOVER_VIEWPORT_MARGIN) topPos = POPOVER_VIEWPORT_MARGIN;
 
     var leftPos = cellRect.left;
     if (leftPos + popoverWidth > viewportW - POPOVER_VIEWPORT_MARGIN) {
@@ -122,6 +129,12 @@ function attachPopoverResizeHandling() {
     }
 
     window.addEventListener('resize', repositionActivePopover);
+    // The card is position:fixed, so PAGE scroll detaches it from its
+    // anchor cell (the historical "popover in the wrong place" bug --
+    // only the grid wrapper's own scroll was handled).  Re-anchor on
+    // every window scroll; the rect is re-read each pass so the card
+    // tracks the cell.
+    window.addEventListener('scroll', repositionActivePopover, { passive: true });
 }
 
 /**
@@ -180,7 +193,7 @@ function positionPopover(cell) {
  * assignment wipes any children we added beforehand.  Touch listeners use
  * { passive: true } to match the project convention (mobile_grid.js swipe
  * handlers; see v3 plan R-8); they do not need preventDefault() because
- * touch-action: none on the handle (see app.css) already stops the
+ * touch-action: none on the handle (see grid.css) already stops the
  * browser from claiming the gesture for vertical scroll.
  *
  * Dismiss threshold is 30 % of the sheet's rendered height -- below that,
@@ -418,6 +431,7 @@ function closeFullEdit() {
         activePopoverResizeObserver = null;
     }
     window.removeEventListener('resize', repositionActivePopover);
+    window.removeEventListener('scroll', repositionActivePopover);
 
     var popover = document.getElementById('txn-popover');
     if (popover) {
@@ -520,6 +534,20 @@ function revertQuickEditForm(quickForm) {
 
 // --- Keyboard handlers for quick edit/create and full edit ---
 document.addEventListener('keydown', function(e) {
+    // Enter on a Tab-focused cell amount opens the action card --
+    // .txn-open carries role="button" + tabindex="0", and without this
+    // handler the role is a lie for keyboard users.  Space is NOT
+    // bound here: per the keyboard model (rebuild decision 3) Space
+    // always means "mark paid" (app.js grid navigation).  The
+    // defaultPrevented guard skips this when app.js's cell cursor has
+    // already opened the same cell, so the card is not opened twice.
+    if (e.key === 'Enter' && !e.defaultPrevented
+        && e.target.matches && e.target.matches('.txn-open[data-txn-id]')) {
+        e.preventDefault();
+        openFullEdit(parseInt(e.target.dataset.txnId), e.target);
+        return;
+    }
+
     // F2 in quick edit/create → open full edit/create popover.
     if (e.key === 'F2') {
         const quickInput = document.activeElement;
@@ -573,6 +601,15 @@ document.addEventListener('keydown', function(e) {
 
 // --- Delegated click handlers (CSP-compliant, replaces inline onclick) ---
 document.addEventListener('click', function(e) {
+    // Open the anchored action card from a transaction cell's amount.
+    // The .paybtn sibling never matches this selector, so the one-click
+    // mark-paid and the card open cannot collide.
+    var openTarget = e.target.closest('.txn-open[data-txn-id]');
+    if (openTarget) {
+        openFullEdit(parseInt(openTarget.dataset.txnId), openTarget);
+        return;
+    }
+
     // Open full edit popover (expand button in quick-edit mode)
     var editBtn = e.target.closest('.txn-expand-btn[data-txn-id]');
     if (editBtn) {

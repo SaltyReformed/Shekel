@@ -107,9 +107,15 @@ class TestPaydayWorkflowRegression:
                                     seed_periods_today):
         """Marking an income transaction as done sets its status to
         'received' (not 'done'), returns the badge-done indicator, and
-        triggers gridRefresh.
+        triggers balanceChanged.
 
         Covers Step 3: the user confirms their paycheck was deposited.
+
+        The regular (non-transfer) desktop mark_done path now fires
+        ``balanceChanged`` -- a targeted swap of the settled cell plus
+        the self-refreshing balance row and summary subtotal rows --
+        instead of the old full-page ``gridRefresh`` reload (grid
+        rebuild Phase 6, audit item C3).
         """
         with app.app_context():
             projected = (
@@ -143,8 +149,9 @@ class TestPaydayWorkflowRegression:
             db.session.refresh(txn)
             assert txn.status.name == "Received"
 
-            # HX-Trigger verified in transactions.py mark_done.
-            assert response.headers.get("HX-Trigger") == "gridRefresh"
+            # HX-Trigger is now balanceChanged (targeted swap) on the
+            # regular desktop mark_done path (grid rebuild Phase 6, C3).
+            assert response.headers.get("HX-Trigger") == "balanceChanged"
 
             # Response HTML: _transaction_cell.html renders badge-done
             # for both 'done' and 'received' statuses.
@@ -258,9 +265,15 @@ class TestPaydayWorkflowRegression:
     def test_mark_expense_done(self, app, auth_client, seed_user,
                                seed_periods_today):
         """Marking an expense as done sets its status to 'done', returns
-        the badge-done indicator, and triggers gridRefresh.
+        the badge-done indicator, and triggers balanceChanged.
 
         Covers Step 5: the user confirms a bill was paid from checking.
+
+        The regular (non-transfer) desktop mark_done path now fires
+        ``balanceChanged`` -- a targeted swap of the settled cell plus
+        the self-refreshing balance row and summary subtotal rows --
+        instead of the old full-page ``gridRefresh`` reload (grid
+        rebuild Phase 6, audit item C3).
         """
         with app.app_context():
             projected = (
@@ -294,7 +307,9 @@ class TestPaydayWorkflowRegression:
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
 
-            assert response.headers.get("HX-Trigger") == "gridRefresh"
+            # HX-Trigger is now balanceChanged (targeted swap) on the
+            # regular desktop mark_done path (grid rebuild Phase 6, C3).
+            assert response.headers.get("HX-Trigger") == "balanceChanged"
             assert b"badge-done" in response.data
 
     # -- C-0-5 -------------------------------------------------------

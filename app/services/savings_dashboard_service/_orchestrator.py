@@ -1,13 +1,19 @@
 """
 Shekel Budget App -- Savings Dashboard: orchestrator.
 
-The public entry point ``compute_dashboard_data`` -- it loads the core
+Two public entry points.  ``compute_dashboard_data`` loads the core
 data, runs the per-account projections, computes goal progress, the
 emergency-fund metrics, and the debt summary / DTI, and assembles the
-render-template context dict.  No Flask imports.
+render-template context dict.  ``compute_debt_summary`` is the narrow
+producer behind the budget dashboard's debt card (deep-hunt #82): the
+same loaders, projection dispatch, and debt/DTI rule, restricted to
+the loan accounts the debt summary reads.  No Flask imports.
 """
 
+from __future__ import annotations
+
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.services import savings_goal_service
 from app.services.savings_dashboard_service._data import (
@@ -30,6 +36,131 @@ from app.services.savings_dashboard_service._projections import (
     _compute_account_projections,
 )
 from app.services.savings_dashboard_service._types import _ProjectionContext
+
+if TYPE_CHECKING:
+    from app.services.paycheck_calculator import PaycheckBreakdown
+    from app.services.savings_dashboard_service._types import (
+        _AccountParams,
+        _DashboardCoreData,
+    )
+
+
+def _build_projection_context(
+    core: _DashboardCoreData, params: _AccountParams,
+) -> _ProjectionContext:
+    """Assemble the request-scoped projection context from loaded data.
+
+    One definition of the core-data -> context mapping (notably the
+    baseline-scenario ``None`` fallback) shared by both public entry
+    points so the full dashboard build and the narrow debt producer
+    cannot project against different inputs.
+
+    Args:
+        core: The :class:`_DashboardCoreData` from
+            :func:`_load_dashboard_core_data`.
+        params: The :class:`_AccountParams` from
+            :func:`_load_account_params`.
+
+    Returns:
+        The :class:`_ProjectionContext` the projection dispatch reads.
+    """
+    # scenario_id is request-scoped (off the baseline scenario), not an
+    # account-type parameter, so it rides on the context, not in params.
+    return _ProjectionContext(
+        all_transactions=core.all_transactions,
+        all_shadow_income=core.all_shadow_income,
+        all_periods=core.all_periods,
+        current_period=core.current_period,
+        params=params,
+        scenario_id=core.scenario.id if core.scenario else None,
+    )
+
+
+def _debt_summary_with_dti(
+    account_data: list[dict],
+    escrow_map: dict[int, list],
+    current_breakdown: PaycheckBreakdown | None,
+) -> dict | None:
+    """Compute the debt summary and apply the DTI metrics to it.
+
+    The single home for the debt-card rule, shared by the full
+    dashboard build and the narrow :func:`compute_debt_summary`
+    producer so the /savings page and the budget dashboard's debt card
+    cannot drift onto different figures.
+
+    Args:
+        account_data: Per-account dicts from
+            ``_compute_account_projections`` (any mix -- the debt
+            summary reads only the entries carrying ``loan_params``).
+        escrow_map: account_id -> list of EscrowComponent (PITI).
+        current_breakdown: The engine ``PaycheckBreakdown`` for the
+            current period, or ``None`` with no salary configured.
+
+    Returns:
+        The debt-summary dict with the DTI keys applied, or ``None``
+        when no loan accounts with params exist.
+    """
+    debt_summary = _compute_debt_summary(account_data, escrow_map)
+    if debt_summary is not None:
+        # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine
+        # output for the current period (``calculate_paycheck`` ->
+        # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
+        # ``annual_salary / pay_periods`` recompute the DTI block read
+        # pre-Commit-26.  ``_apply_dti_metrics`` performs the
+        # biweekly -> monthly normalization on this engine-derived input.
+        gross_biweekly = (
+            current_breakdown.earnings.gross_biweekly if current_breakdown is not None
+            else Decimal("0.00")
+        )
+        _apply_dti_metrics(debt_summary, gross_biweekly)
+    return debt_summary
+
+
+def compute_debt_summary(user_id: int) -> dict | None:
+    """Compute only the debt summary + DTI for the budget dashboard card.
+
+    The narrow producer behind ``dashboard_service._get_debt_summary``
+    (deep-hunt #82's efficiency/SRP half).  Identical figures to
+    ``compute_dashboard_data(user_id)["debt_summary"]`` by construction:
+    it runs the same loaders and the same per-account projection
+    dispatch -- restricted to the accounts the debt summary reads (those
+    with a ``LoanParams`` row; per-account projections are independent,
+    so the restriction cannot change any projected figure) -- and routes
+    through the shared :func:`_debt_summary_with_dti`.  What it skips is
+    the dashboard-only work: every non-loan account's projection, goal
+    progress, the emergency-fund metrics, account grouping, and the
+    archived-account list.
+
+    Args:
+        user_id: Integer ID of the current user.
+
+    Returns:
+        The debt-summary dict with the DTI keys applied, or ``None``
+        when the user has no loan accounts with params (the early
+        return mirrors ``_compute_debt_summary``'s no-loan ``None``
+        inside the full build, and additionally skips the per-account
+        projections and the breakdown's paycheck-engine call;
+        ``_load_account_params``'s gross-biweekly engine call has
+        already run by then -- the deliberate price of sharing the
+        loaders verbatim).
+    """
+    core = _load_dashboard_core_data(user_id)
+    params = _load_account_params(user_id, core.accounts)
+    loan_accounts = [
+        acct for acct in core.accounts if acct.id in params.loan_params_map
+    ]
+    if not loan_accounts:
+        return None
+
+    ctx = _build_projection_context(core, params)
+    account_data = _compute_account_projections(loan_accounts, ctx)
+
+    current_breakdown = _get_current_paycheck_breakdown(
+        user_id, core.all_periods, core.current_period,
+    )
+    return _debt_summary_with_dti(
+        account_data, params.escrow_map, current_breakdown,
+    )
 
 
 def compute_dashboard_data(user_id):
@@ -54,16 +185,7 @@ def compute_dashboard_data(user_id):
     params = _load_account_params(user_id, core.accounts)
 
     # ── Compute per-account projections ─────────────────────────
-    # scenario_id is request-scoped (off the baseline scenario), not an
-    # account-type parameter, so it rides on the context, not in params.
-    ctx = _ProjectionContext(
-        all_transactions=core.all_transactions,
-        all_shadow_income=core.all_shadow_income,
-        all_periods=core.all_periods,
-        current_period=core.current_period,
-        params=params,
-        scenario_id=core.scenario.id if core.scenario else None,
-    )
+    ctx = _build_projection_context(core, params)
     account_data = _compute_account_projections(core.accounts, ctx)
 
     # ── Canonical paycheck breakdown (MED-06 / F-032) ──────────
@@ -108,21 +230,9 @@ def compute_dashboard_data(user_id):
     ]
 
     # ── Debt summary and DTI ───────────────────────────────────
-    debt_summary = _compute_debt_summary(
-        account_data, params.escrow_map,
+    debt_summary = _debt_summary_with_dti(
+        account_data, params.escrow_map, current_breakdown,
     )
-    if debt_summary is not None:
-        # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine
-        # output for the current period (``calculate_paycheck`` ->
-        # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
-        # ``annual_salary / pay_periods`` recompute the DTI block read
-        # pre-Commit-26.  ``_apply_dti_metrics`` performs the
-        # biweekly -> monthly normalization on this engine-derived input.
-        gross_biweekly = (
-            current_breakdown.earnings.gross_biweekly if current_breakdown is not None
-            else Decimal("0.00")
-        )
-        _apply_dti_metrics(debt_summary, gross_biweekly)
 
     return {
         "account_data": account_data,

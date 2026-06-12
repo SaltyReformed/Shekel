@@ -580,7 +580,6 @@ class TestDockerignoreCoverage:
         # Dev-only scripts (host-side or build-time)
         "scripts/audit/",
         "scripts/hooks/",
-        "scripts/benchmark_triggers.py",
         "scripts/vendor_google_fonts.py",
         "scripts/backup.sh",
         "scripts/restore.sh",
@@ -634,7 +633,9 @@ class TestDockerignoreCoverage:
         "scripts/rotate_sessions.py",
         "scripts/rotate_totp_key.py",
         "scripts/seed_companion.py",
-        "scripts/repair_orphaned_transfers.py",
+        # Shared CLI helpers the runtime scripts above import; excluding
+        # it would break every docker exec script at import time.
+        "scripts/_script_lib.py",
         "alembic.ini",
         "entrypoint.sh",
         "gunicorn.conf.py",

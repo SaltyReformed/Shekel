@@ -9,7 +9,10 @@ from marshmallow import (
     validate,
 )
 
-from app.schemas.validation._helpers import BaseSchema
+from app.schemas.validation._helpers import (
+    BaseSchema,
+    _normalize_empty_inputs,
+)
 
 
 class EntryCreateSchema(BaseSchema):
@@ -21,8 +24,8 @@ class EntryCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     amount = fields.Decimal(
         required=True, places=2, as_string=True,
@@ -47,8 +50,8 @@ class EntryUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     amount = fields.Decimal(
         places=2, as_string=True,

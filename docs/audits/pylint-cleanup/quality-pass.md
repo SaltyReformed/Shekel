@@ -425,6 +425,8 @@ recommendation to **verify-then-apply** (confirm the claim against the code firs
   endpoint exists (it is `salary.list_profiles`). werkzeug BuildError (500) on the no-deduction-linked
   `{% else %}` branch. Introduced by `b994539` (unrelated to the cleanup); not caught by tests (that
   account/profile combination is unhit). **VERIFIED.** One-line fix; out of scope for this pass.
+  **RESOLVED (status-sync 2026-06-11):** live code at that line already calls
+  `url_for('salary.list_profiles')` -- fixed in a later commit; no action remains.
 
 ### Proposed fix-batches (the 22 MEDIUM; financial-core first)
 

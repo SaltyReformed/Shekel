@@ -1111,6 +1111,59 @@ class TestInflationAdjustment:
         )
         assert result[0].amount == expected
 
+    def test_inflated_percentage_rounds_once_at_return(self):
+        """E-26(a): full precision through pct x inflation, ONE rounding.
+
+        gross 1000.49, 5% deduction, 3% inflation, 1 year:
+          exact: 1000.49 * 0.05 = 50.0245; * 1.03 = 51.525235
+          -> round once HALF_UP -> 51.53.
+        The pre-ratification double-quantize gave 51.52 (50.0245 ->
+        50.02 first, then 50.02 * 1.03 = 51.5206 -> 51.52) -- the
+        intermediate quantize ate the half-cent the full-precision
+        product carries.  Ratified 2026-06-11 ("quantize once at
+        return"); this pin fails under a restored double-quantize.
+        """
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2025, 1, 1),
+            deductions=[
+                FakeDeduction(name="401k", amount="0.05",
+                              calc_method="percentage",
+                              inflation_enabled=True, inflation_rate="0.03",
+                              inflation_effective_month=1),
+            ],
+        )
+        period = FakePeriod(start_date=date(2026, 6, 1), period_id=1)
+        result = _calculate_deductions(
+            _DeductionContext(
+                profile, period, [period], Decimal("1000.49"), False,
+            ),
+            _timing_id("pre_tax"),
+        )
+        assert result[0].amount == Decimal("51.53")
+
+    def test_flat_four_decimal_amount_rounds_to_cents(self):
+        """E-26(a): a 4dp flat amount rounds once at the line boundary.
+
+        The column is Numeric(12, 4), so a flat deduction can carry
+        sub-cent precision (schema places=4).  Pre-ratification the raw
+        4dp value flowed UNQUANTIZED into the taxable/net math while
+        the line displayed at 2dp -- a sub-cent display-vs-math
+        divergence.  500.1234 -> 500.12 (HALF_UP): the displayed line
+        now equals the amount actually subtracted.
+        """
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2025, 1, 1),
+            deductions=[FakeDeduction(name="HSA", amount="500.1234")],
+        )
+        period = FakePeriod(start_date=date(2026, 6, 1), period_id=1)
+        result = _calculate_deductions(
+            _DeductionContext(
+                profile, period, [period], Decimal("2307.69"), False,
+            ),
+            _timing_id("pre_tax"),
+        )
+        assert result[0].amount == Decimal("500.12")
+
     def test_before_effective_month_reduces_years(self):
         """period_month < eff_month → years - 1."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2024, 1, 1))

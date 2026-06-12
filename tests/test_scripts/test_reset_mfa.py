@@ -1,6 +1,8 @@
 """Tests for the MFA reset CLI script."""
 
 import logging
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.extensions import db
@@ -102,11 +104,16 @@ class TestResetMfa:
             assert mfa_count_after == mfa_count_before
 
     def test_reset_partial_mfa_state(self, app, db, seed_user, capsys):
-        """reset_mfa() handles a disabled MfaConfig with an orphaned TOTP secret.
+        """reset_mfa() clears an orphaned TOTP secret on a disabled config.
 
-        When is_enabled=False but totp_secret_encrypted still has data,
-        the function checks is_enabled first and prints 'MFA is not enabled'
-        without clearing the orphaned secret.
+        A row can carry is_enabled=False with leftover
+        totp_secret_encrypted bytes (a manual DB intervention or an
+        interrupted disable flow).  The reset must clear the orphan
+        rather than returning early on the is_enabled check: a
+        lingering encrypted secret outlives the moment the operator
+        believes it was destroyed, and would silently revive if the
+        row were ever re-enabled.  (Historically the script returned
+        early here and left the orphan in place; that was a bug.)
         """
         with app.app_context():
             # Create an MfaConfig with is_enabled=False but leftover secret.
@@ -123,22 +130,99 @@ class TestResetMfa:
             reset_mfa(seed_user["user"].email)
 
             captured = capsys.readouterr()
-            assert "MFA is not enabled" in captured.out
+            assert "MFA has been disabled" in captured.out
 
-            # Reload and check final state.
+            # Reload and check final state: every MFA field cleared,
+            # including the previously-orphaned encrypted secret.
             config = (
                 db.session.query(MfaConfig)
                 .filter_by(user_id=seed_user["user"].id)
                 .first()
             )
             assert config.is_enabled is False
-            # BUG: The orphaned totp_secret_encrypted is NOT cleared because
-            # the function returns early when is_enabled is False.  For
-            # security, the reset script should clear leftover secrets even
-            # when MFA is technically disabled.
-            assert config.totp_secret_encrypted is not None
+            assert config.totp_secret_encrypted is None
             assert config.backup_codes is None
             assert config.confirmed_at is None
+            assert config.last_totp_timestep is None
+
+    def test_reset_clears_abandoned_pending_setup(self, app, db, seed_user, capsys):
+        """reset_mfa() scrubs a pending-setup ciphertext on a disabled row.
+
+        An abandoned /mfa/setup leaves ONLY pending_secret_encrypted +
+        pending_secret_expires_at behind (never enabled, nothing else
+        set).  The expiry only gates promotion at /mfa/confirm -- the
+        encrypted pending secret itself sits at rest indefinitely until
+        the next setup overwrites it.  The reset's own contract ("no
+        decryptable secret at rest") requires clearing it; historically
+        the residue check ignored the pending fields and took the
+        "MFA is not enabled" early exit, leaving the ciphertext behind.
+        """
+        with app.app_context():
+            mfa_config = MfaConfig(
+                user_id=seed_user["user"].id,
+                is_enabled=False,
+                pending_secret_encrypted=mfa_service.encrypt_secret(
+                    "ORSXG5A2ORSXG5A2"
+                ),
+                pending_secret_expires_at=(
+                    datetime.now(timezone.utc) + timedelta(minutes=15)
+                ),
+            )
+            db.session.add(mfa_config)
+            db.session.commit()
+
+            reset_mfa(seed_user["user"].email)
+
+            captured = capsys.readouterr()
+            assert "MFA has been disabled" in captured.out
+
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None
+            assert config.is_enabled is False
+
+    def test_reset_clears_pending_alongside_active_material(
+        self, app, db, seed_user, capsys
+    ):
+        """reset_mfa() on an enabled row clears pending fields too.
+
+        Pending material cannot coexist with an enabled row through
+        normal flows, but a manual DB intervention can produce the
+        combination -- the emergency reset must scrub every field
+        regardless (the clear_mfa_material shared rule).
+        """
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+            config = (
+                db.session.query(MfaConfig)
+                .filter_by(user_id=seed_user["user"].id)
+                .first()
+            )
+            config.pending_secret_encrypted = mfa_service.encrypt_secret(
+                "ORSXG5A2ORSXG5A2"
+            )
+            config.pending_secret_expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=15)
+            )
+            db.session.commit()
+
+            reset_mfa(seed_user["user"].email)
+
+            captured = capsys.readouterr()
+            assert "MFA has been disabled" in captured.out
+
+            db.session.refresh(config)
+            assert config.is_enabled is False
+            assert config.totp_secret_encrypted is None
+            assert config.backup_codes is None
+            assert config.confirmed_at is None
+            assert config.last_totp_timestep is None
+            assert config.pending_secret_encrypted is None
+            assert config.pending_secret_expires_at is None
 
     def test_reset_mfa_idempotent(self, app, db, seed_user, capsys):
         """Calling reset_mfa() twice does not crash on the second call."""

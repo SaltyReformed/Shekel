@@ -1,6 +1,12 @@
-{# Full edit popover -- renders inside #txn-popover container.
-   Contains all editable fields and quick status action buttons.
-   Form submits via HTMX PATCH targeting the original cell by ID.
+{# Anchored action card -- renders inside the #txn-popover container
+   (rebuild decision 2, docs/design/grid_audit.md): ONE card replaces
+   the old three-tier edit system.  Layout, top to bottom: header +
+   context line, the frequent status actions, the inline amount edit,
+   the purchases section for envelope rows, and the rare deep-edit
+   fields (status / period / notes / due date / flags) folded behind a
+   "More options" collapse -- the full-edit surface remains, one click
+   away inside the same card.  Form submits via HTMX PATCH targeting
+   the original cell by ID.
 
    Expected context: txn, statuses.
 
@@ -9,11 +15,13 @@
    disabled so they neither accept nor submit a value (matching the route
    guard #26 -- a disabled input is omitted from the POST, so a notes-only
    save still succeeds).  The Status dropdown and Notes stay editable; set
-   Status to Projected to unlock the amounts.
+   Status to Projected to unlock the amounts.  Because the unlock lives in
+   the Status dropdown, the More section renders pre-expanded on locked
+   rows.
 #}
 {% set locked = txn.status and txn.status.is_immutable %}
 <div class="txn-full-edit-content">
-  <div class="d-flex justify-content-between align-items-center mb-2">
+  <div class="d-flex justify-content-between align-items-center">
     <small class="fw-semibold text-truncate mw-px-200" title="{{ txn.name }}">
       {{ txn.name }}
     </small>
@@ -21,149 +29,17 @@
             data-action="close-popover"></button>
   </div>
 
-  <form hx-patch="{{ url_for('transactions.update_transaction', txn_id=txn.id) }}"
-        hx-target="#txn-cell-{{ txn.id }}"
-        hx-swap="innerHTML"
-        hx-disabled-elt="find button[type=submit]">
+  {# Context line: where and what this row is, so an action taken from
+     the card cannot land on the wrong period. #}
+  <div class="txn-card-meta mb-2">
+    {% if txn.category %}{{ txn.category.display_name }} &middot; {% endif
+    %}{{ txn.pay_period.label }}{% if txn.status %} &middot;
+    {{ txn.status.name }}{% endif %}{% if txn.due_date %} &middot;
+    Due {{ txn.due_date.strftime('%-m/%-d') }}{% endif %}
+  </div>
 
-    {# Optimistic-locking pin: handler compares against
-       txn.version_id and short-circuits with 409 when the form is
-       stale (commit C-18 / F-010). #}
-    <input type="hidden" name="version_id" value="{{ txn.version_id }}">
-
-    {# Finalised-row notice (#26): the amounts below are locked until the
-       row is reverted to Projected via the Status dropdown. #}
-    {% if locked %}
-    <div class="alert alert-secondary py-1 px-2 mb-2 small" role="status">
-      <i class="bi bi-lock-fill"></i> This transaction is finalised. Set
-      <strong>Status</strong> to Projected to edit the amounts.
-    </div>
-    {% endif %}
-
-    {# Estimated amount #}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Estimated</label>
-      <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
-             value="{{ txn.estimated_amount }}"
-             class="form-control form-control-sm"
-             placeholder="Estimated amount"
-             {{ 'disabled' if locked else '' }}>
-    </div>
-
-    {# Actual amount #}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Actual</label>
-      <input type="number" step="0.01" inputmode="decimal" name="actual_amount"
-             value="{{ txn.actual_amount if txn.actual_amount is not none else '' }}"
-             class="form-control form-control-sm"
-             placeholder="Actual amount"
-             {{ 'disabled' if locked else '' }}>
-    </div>
-
-    {# Status selector #}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Status</label>
-      <select name="status_id" class="form-select form-select-sm">
-        {% for s in statuses %}
-        <option value="{{ s.id }}" {{ 'selected' if txn.status_id == s.id else '' }}>
-          {{ s.name }}
-        </option>
-        {% endfor %}
-      </select>
-    </div>
-
-    {# Pay period selector -- move this transaction to a different period.
-       The PATCH handler re-verifies ownership of the submitted id (F-029)
-       and flags template-generated rows as overrides when the period
-       changes so the recurrence engine does not regenerate over the
-       moved row.  Not rendered for transfer shadows: those edit through
-       transfers/_transfer_full_edit.html instead. #}
-    {% if periods %}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Pay Period</label>
-      <select name="pay_period_id" class="form-select form-select-sm"
-              {{ 'disabled' if locked else '' }}>
-        {% for p in periods %}
-        <option value="{{ p.id }}" {{ 'selected' if txn.pay_period_id == p.id else '' }}>
-          {{ p.label }}
-        </option>
-        {% endfor %}
-      </select>
-    </div>
-    {% endif %}
-
-    {# Notes #}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Notes</label>
-      <input type="text" name="notes"
-             value="{{ txn.notes or '' }}"
-             class="form-control form-control-sm"
-             placeholder="Notes">
-    </div>
-
-    {# Due Date -- always rendered (empty when unset) so a user can add a
-       due date to a transaction or transfer that lacks one.  An untouched
-       empty field submits "" which TransactionUpdateSchema.strip_empty_strings
-       drops, so saving another field cannot clobber an existing due date. #}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Due Date</label>
-      <input type="date" name="due_date"
-             value="{{ txn.due_date.isoformat() if txn.due_date is not none else '' }}"
-             class="form-control form-control-sm"
-             {{ 'disabled' if locked else '' }}>
-    </div>
-
-    {# Ad-hoc tracking / visibility flags.  Only ad-hoc rows
-       (template_id IS NULL) carry their own flags; template-generated
-       rows inherit them from the template, so the controls are hidden
-       for those.  Each checkbox is followed by a hidden "false" input so
-       an explicit value is always submitted: werkzeug's MultiDict keeps
-       the FIRST value, so a checked box yields "true" (checkbox first)
-       and an unchecked box yields only the hidden "false".  This lets
-       TransactionUpdateSchema apply the flag without a load_default that
-       would otherwise let a quick-edit silently clear it. #}
-    {% if txn.template_id is none %}
-    {% if txn.is_expense %}
-    <div class="form-check mb-2">
-      <input type="checkbox" class="form-check-input" id="is_envelope"
-             name="is_envelope" value="true"
-             {{ 'checked' if txn.is_envelope else '' }}>
-      <input type="hidden" name="is_envelope" value="false">
-      <label class="form-check-label small" for="is_envelope">
-        Track individual purchases
-      </label>
-    </div>
-    {% endif %}
-    <div class="form-check mb-2">
-      <input type="checkbox" class="form-check-input" id="companion_visible"
-             name="companion_visible" value="true"
-             {{ 'checked' if txn.companion_visible else '' }}>
-      <input type="hidden" name="companion_visible" value="false">
-      <label class="form-check-label small" for="companion_visible">
-        Visible to companion
-      </label>
-    </div>
-    {% endif %}
-
-    {# Save / Cancel buttons -- wrapped in .popover-action-footer so the
-       primary form-submit actions stay pinned above the iOS on-screen
-       keyboard on mobile.  The sticky rule lives inside the < 768 px
-       @media block in app.css; desktop is unaffected. #}
-    <div class="popover-action-footer">
-      <div class="d-flex gap-1 mb-2">
-        <button type="submit" class="btn btn-sm btn-primary flex-grow-1">
-          <i class="bi bi-check"></i> Save
-        </button>
-        <button type="button" class="btn btn-sm btn-outline-secondary"
-                data-action="close-popover">
-          <i class="bi bi-x"></i> Cancel
-        </button>
-      </div>
-    </div>
-  </form>
-
-  {# Quick status actions -- these also target the cell by ID #}
-  <div class="d-flex gap-1 flex-wrap">
+  {# Frequent status actions first -- these target the cell by ID #}
+  <div class="d-flex gap-1 flex-wrap mb-2">
     {% if txn.is_expense and txn.status_id != STATUS_DONE %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
@@ -214,13 +90,182 @@
     {% endif %}
   </div>
 
-  {# Entry tracking section -- lazy-loaded for tracked transactions #}
+  <form hx-patch="{{ url_for('transactions.update_transaction', txn_id=txn.id) }}"
+        hx-target="#txn-cell-{{ txn.id }}"
+        hx-swap="innerHTML"
+        hx-disabled-elt="find button[type=submit]">
+
+    {# Optimistic-locking pin: handler compares against
+       txn.version_id and short-circuits with 409 when the form is
+       stale (commit C-18 / F-010). #}
+    <input type="hidden" name="version_id" value="{{ txn.version_id }}">
+
+    {# Finalised-row notice (#26): the amounts below are locked until the
+       row is reverted to Projected via the Status dropdown. #}
+    {% if locked %}
+    <div class="alert alert-secondary py-1 px-2 mb-2 small" role="status">
+      <i class="bi bi-lock-fill"></i> This transaction is finalised. Set
+      <strong>Status</strong> to Projected to edit the amounts.
+    </div>
+    {% endif %}
+
+    {# Amounts side by side -- the everyday edit stays one glance tall #}
+    <div class="row g-1 mb-2">
+      <div class="col">
+        <label class="form-label mb-0 small">Estimated</label>
+        <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
+               value="{{ txn.estimated_amount }}"
+               class="form-control form-control-sm"
+               placeholder="Estimated amount"
+               {{ 'disabled' if locked else '' }}>
+      </div>
+      <div class="col">
+        <label class="form-label mb-0 small">Actual</label>
+        <input type="number" step="0.01" inputmode="decimal" name="actual_amount"
+               value="{{ txn.actual_amount if txn.actual_amount is not none else '' }}"
+               class="form-control form-control-sm"
+               placeholder="Actual amount"
+               {{ 'disabled' if locked else '' }}>
+      </div>
+    </div>
+
+    {# Deep-edit fields fold behind "More options" (rebuild decision 2:
+       the full-edit surface remains for rare deep edits).  Collapsed
+       inputs still submit -- Bootstrap collapse only hides them -- so
+       Save always sends the complete form.  Locked rows render the
+       section pre-expanded because the Status dropdown inside it is
+       the documented unlock path. #}
+    <button class="btn btn-sm btn-link p-0 mb-2 txn-card-more-toggle"
+            type="button" data-bs-toggle="collapse"
+            data-bs-target="#txn-card-more-{{ txn.id }}"
+            aria-expanded="{{ 'true' if locked else 'false' }}"
+            aria-controls="txn-card-more-{{ txn.id }}">
+      More options <i class="bi bi-chevron-down"></i>
+    </button>
+
+    <div class="collapse{{ ' show' if locked else '' }}" id="txn-card-more-{{ txn.id }}">
+      {# Status selector #}
+      <div class="mb-2">
+        <label class="form-label mb-0 small">Status</label>
+        <select name="status_id" class="form-select form-select-sm">
+          {% for s in statuses %}
+          <option value="{{ s.id }}" {{ 'selected' if txn.status_id == s.id else '' }}>
+            {{ s.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      {# Pay period selector -- move this transaction to a different period.
+         The PATCH handler re-verifies ownership of the submitted id (F-029)
+         and flags template-generated rows as overrides when the period
+         changes so the recurrence engine does not regenerate over the
+         moved row.  Not rendered for transfer shadows: those edit through
+         transfers/_transfer_full_edit.html instead. #}
+      {% if periods %}
+      <div class="mb-2">
+        <label class="form-label mb-0 small">Pay Period</label>
+        <select name="pay_period_id" class="form-select form-select-sm"
+                {{ 'disabled' if locked else '' }}>
+          {% for p in periods %}
+          <option value="{{ p.id }}" {{ 'selected' if txn.pay_period_id == p.id else '' }}>
+            {{ p.label }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+
+      {# Notes #}
+      <div class="mb-2">
+        <label class="form-label mb-0 small">Notes</label>
+        <input type="text" name="notes"
+               value="{{ txn.notes or '' }}"
+               class="form-control form-control-sm"
+               placeholder="Notes">
+      </div>
+
+      {# Due Date -- always rendered, pre-filled with the stored value, so a
+         user can add, change, or CLEAR a due date.  An empty submit loads as
+         an explicit None (TransactionUpdateSchema strip_empty_strings maps
+         "" to None for nullable fields) and clears the column; an existing
+         due date is never clobbered by a save that leaves the pre-filled
+         value untouched. #}
+      <div class="mb-2">
+        <label class="form-label mb-0 small">Due Date</label>
+        <input type="date" name="due_date"
+               value="{{ txn.due_date.isoformat() if txn.due_date is not none else '' }}"
+               class="form-control form-control-sm"
+               {{ 'disabled' if locked else '' }}>
+      </div>
+
+      {# Ad-hoc tracking / visibility flags.  Only ad-hoc rows
+         (template_id IS NULL) carry their own flags; template-generated
+         rows inherit them from the template, so the controls are hidden
+         for those.  Each checkbox is followed by a hidden "false" input so
+         an explicit value is always submitted: werkzeug's MultiDict keeps
+         the FIRST value, so a checked box yields "true" (checkbox first)
+         and an unchecked box yields only the hidden "false".  This lets
+         TransactionUpdateSchema apply the flag without a load_default that
+         would otherwise let a quick-edit silently clear it. #}
+      {% if txn.template_id is none %}
+      {% if txn.is_expense %}
+      <div class="form-check mb-2">
+        <input type="checkbox" class="form-check-input" id="is_envelope"
+               name="is_envelope" value="true"
+               {{ 'checked' if txn.is_envelope else '' }}>
+        <input type="hidden" name="is_envelope" value="false">
+        <label class="form-check-label small" for="is_envelope">
+          Track individual purchases
+        </label>
+      </div>
+      {% endif %}
+      <div class="form-check mb-2">
+        <input type="checkbox" class="form-check-input" id="companion_visible"
+               name="companion_visible" value="true"
+               {{ 'checked' if txn.companion_visible else '' }}>
+        <input type="hidden" name="companion_visible" value="false">
+        <label class="form-check-label small" for="companion_visible">
+          Visible to companion
+        </label>
+      </div>
+      {% endif %}
+    </div>
+
+    {# Save / Cancel buttons -- wrapped in .popover-action-footer so the
+       primary form-submit actions stay pinned above the iOS on-screen
+       keyboard on mobile.  The sticky rule lives inside the < 768 px
+       @media block in grid.css; desktop is unaffected. #}
+    <div class="popover-action-footer">
+      <div class="d-flex gap-1 mb-2">
+        <button type="submit" class="btn btn-sm btn-primary flex-grow-1">
+          <i class="bi bi-check"></i> Save
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                data-action="close-popover">
+          <i class="bi bi-x"></i> Cancel
+        </button>
+      </div>
+    </div>
+  </form>
+
+  {# Entry tracking section -- lazy-loaded for tracked transactions.
+     The entries partial carries the add-purchase form, so envelope
+     rows log purchases directly from the card.
+
+     hx-swap="outerHTML" is load-bearing: the response's ROOT element is
+     another div with this same id (grid/_transaction_entries.html), so
+     the default innerHTML swap would NEST two identically-id'd elements
+     until the first CRUD swap collapsed them -- invalid HTML, and any
+     other #entry-list-<id> resolution (CRUD targets, future OOB) would
+     bind ambiguously in the interim. #}
   {% if txn.tracks_purchases %}
   <hr class="my-2">
   <div class="small fw-semibold mb-1">Purchases</div>
   <div hx-get="{{ url_for('entries.list_entries', txn_id=txn.id) }}"
        hx-trigger="load"
        hx-target="this"
+       hx-swap="outerHTML"
        id="entry-list-{{ txn.id }}">
     <span class="spinner-border spinner-border-sm" role="status"></span>
     <span class="small text-muted">Loading entries...</span>

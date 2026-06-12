@@ -301,6 +301,10 @@ EVT_CREDIT_UNMARKED = _register(
     "credit_unmarked", BUSINESS,
     "Credit-marked transaction reverted to Projected; payback deleted.",
 )
+EVT_PAYBACK_DELETED_WITH_SOURCE = _register(
+    "payback_deleted_with_source", BUSINESS,
+    "Live CC Payback deleted because its source transaction was deleted.",
+)
 
 
 # ── Business events: per-entry credit workflow ─────────────────────

@@ -21,6 +21,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
 from app.models.category import Category
+from app.routes._render_helpers import render_transaction_cell
 from app.schemas.validation import (
     MarkDoneSchema,
     TransactionUpdateSchema,
@@ -66,35 +67,13 @@ class _RenderTarget:
     ``card_prefix`` and the ``can_edit`` flag) so :func:`mark_done` and
     its helpers thread one value instead of three parallel arguments.
     The desktop grid and full-edit popover omit these, so the default
-    (empty ``render_mode``) resolves to the cell + ``gridRefresh`` path.
+    (empty ``render_mode``) resolves to the cell + ``balanceChanged``
+    targeted-swap path.
     """
 
     render_mode: str
     card_prefix: str
     can_edit: bool
-
-
-def _render_cell(txn, **extra):
-    """Render the transaction cell template with entry_sums context.
-
-    Wraps render_template so every HTMX cell response includes the
-    entry_sums dict needed for the progress indicator on tracked
-    transactions.
-
-    Args:
-        txn: The Transaction object to render.
-        **extra: Additional keyword arguments forwarded to render_template
-            (e.g. wrap_div=True, conflict=True).
-
-    Returns:
-        Rendered HTML string.
-    """
-    return render_template(
-        "grid/_transaction_cell.html",
-        txn=txn,
-        entry_sums=build_entry_sums_dict([txn]),
-        **extra,
-    )
 
 
 def _render_mobile_card(txn, *, card_prefix, can_edit):
@@ -141,7 +120,7 @@ def _render_mobile_card(txn, *, card_prefix, can_edit):
     # unexpected empty result degrades to the desktop cell rather than
     # raising IndexError.
     if not row_keys:
-        return _render_cell(txn)
+        return render_transaction_cell(txn)
     return render_template(
         "grid/_mobile_card_single.html",
         rk=row_keys[0],
@@ -167,8 +146,20 @@ def _mark_done_success_response(txn, target):
         the companion page has no summary blocks so only the card
         updates.
       * otherwise (desktop grid / full-edit popover): the desktop cell +
-        ``HX-Trigger: gridRefresh`` -- the existing reload-driven path,
-        unchanged.
+        ``HX-Trigger: balanceChanged`` -- a targeted swap, no reload.
+        The freshly settled cell swaps in place (``hx-target`` is the
+        cell), and ``balanceChanged from:body`` drives the self-refresh
+        on the sticky ``<tfoot>`` balance row (grid/_balance_row.html)
+        and the two summary subtotal ``<tbody>`` sections
+        (grid/_subtotal_rows.html), so the daily desktop mark-paid feels
+        instant.  This is the REGULAR (non-transfer) mark_done path only:
+        the helper is reached solely from :func:`_mark_done_regular`.
+        The transfer-shadow path (:func:`_mark_done_shadow`) deliberately
+        keeps ``gridRefresh`` because the sibling shadow cell on the
+        other leg also changes and only a full reload re-renders it
+        today; ``mark_credit`` / ``cancel_transaction`` / ``unmark_credit``
+        likewise keep ``gridRefresh`` because they add or remove grid
+        rows, which an in-place cell swap cannot express.
 
     Args:
         txn: The settled Transaction.
@@ -188,7 +179,7 @@ def _mark_done_success_response(txn, target):
             200,
             {"HX-Trigger": "mobileCardSettled"},
         )
-    return _render_cell(txn), 200, {"HX-Trigger": "gridRefresh"}
+    return render_transaction_cell(txn), 200, {"HX-Trigger": "balanceChanged"}
 
 
 def _credit_payback_idempotent_response(exc, txn_id):
@@ -214,7 +205,7 @@ def _credit_payback_idempotent_response(exc, txn_id):
     if refreshed is None:
         return "Not found", 404
     return (
-        _render_cell(refreshed),
+        render_transaction_cell(refreshed),
         200,
         {"HX-Trigger": "gridRefresh"},
     )
@@ -270,7 +261,7 @@ def _stale_transaction_response(txn_id, target=None):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-    return _render_cell(txn, conflict=True), 409
+    return render_transaction_cell(txn, conflict=True), 409
 
 
 def _get_owned_transaction(txn_id):

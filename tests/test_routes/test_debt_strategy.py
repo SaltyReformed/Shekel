@@ -371,7 +371,7 @@ class TestDebtStrategyValidation:
     checks.  The schema's per-field messages -- e.g.
     ``"Must be greater than or equal to 0..."`` for a negative
     ``extra_monthly`` -- are surfaced to the user via
-    ``_first_validation_message``.  The route still wraps the
+    ``_schema_first_validation_message``.  The route still wraps the
     error in the legacy ``_results.html`` partial so the HTTP
     response stays at 200 with an inline banner; only the message
     text changed.

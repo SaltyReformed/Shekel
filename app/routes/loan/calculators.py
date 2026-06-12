@@ -138,20 +138,36 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     )
 
 
-def _payoff_target_date_result(params, ctx, data):
+def _payoff_target_date_result(params, account_id, ctx, data):
     """Render the target-date payoff scenario partial.
 
-    Computes the extra monthly payment required to retire the loan by
-    the user's target date via the engine's binary search.  The search
-    anchors at the resolver-derived current balance and the contractual
-    P&I the loan card displays (so the rendered
-    ``total_monthly = monthly_payment + required_extra`` is internally
-    consistent, D-2 closure).  ``calculate_remaining_months`` supplies
-    the raw origination-to-today month count the binary search needs and
-    that the resolver does not expose on :class:`LoanState`.
+    Computes two answers (F-27, developer-selected "fix + reframe,
+    show both" 2026-06-11):
+
+    * The RAW required extra -- the engine's binary search against the
+      contractual schedule alone, anchored at the resolver-derived
+      current balance with the loan's rate-period terms feed
+      (``loan_resolver.engine_terms``), whose governing entry today IS
+      the loan card's P&I -- so the rendered ``total_monthly =
+      monthly_payment + required_extra`` is internally consistent (D-2
+      closure, now structural).  For a user with no recurring payment
+      plan this is the only number.
+    * The PLAN-AWARE outlook -- when the loan has payments,
+      :func:`loan_resolver.target_date_outlook` answers from the same
+      replay-derived state the payoff calculator's committed scenario
+      uses: when the current plan pays off, and what extra is needed
+      ON TOP of that plan to hit the target.  Without it, a user
+      already paying $500/mo over contractual was told they need the
+      full extra again (the F-27 overstatement).
+
+    ``calculate_remaining_months`` supplies the raw origination-to-today
+    month count the raw search needs and that the resolver does not
+    expose on :class:`LoanState`.
 
     Args:
         params: ORM :class:`LoanParams` instance.
+        account_id: Debt account id (anchor-event load for the
+            plan-aware outlook).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
 
@@ -173,17 +189,29 @@ def _payoff_target_date_result(params, ctx, data):
     required_extra = amortization_engine.calculate_payoff_by_date(
         amortization_engine.PayoffRequest(
             current_principal=state.current_balance,
-            annual_rate=ctx.current_rate,
             remaining_months=remaining_months,
             target_date=target_date,
             origination_date=date.today().replace(day=1),
             payment_day=params.payment_day,
-            original_principal=ctx.original_for_engine,
-            term_months=params.term_months,
-            rate_changes=ctx.loan.rate_changes,
-            contractual_payment=monthly_payment,
+            terms_schedule=loan_resolver.engine_terms(
+                params, ctx.loan.rate_changes,
+            ),
         )
     )
+
+    has_payments = len(ctx.loan.payments) > 0
+    outlook = None
+    if has_payments:
+        outlook = loan_resolver.target_date_outlook(
+            loan_inputs=loan_resolver.LoanInputs(
+                loan_params=params,
+                anchor_events=_load_anchor_events(account_id),
+                payments=ctx.loan.payments,
+                rate_changes=ctx.loan.rate_changes,
+            ),
+            target_date=target_date,
+            as_of=date.today(),
+        )
 
     total_monthly = (
         round_money(monthly_payment + required_extra)
@@ -196,6 +224,8 @@ def _payoff_target_date_result(params, ctx, data):
         required_extra=required_extra,
         monthly_payment=monthly_payment,
         total_monthly=total_monthly,
+        has_payments=has_payments,
+        outlook=outlook,
     )
 
 
@@ -227,7 +257,7 @@ def payoff_calculate(account_id):
     if mode == "extra_payment":
         return _payoff_extra_payment_result(params, account_id, ctx, data)
     if mode == "target_date":
-        return _payoff_target_date_result(params, ctx, data)
+        return _payoff_target_date_result(params, account_id, ctx, data)
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",
@@ -265,11 +295,15 @@ def _project_refinance(refi_principal, refi_rate, refi_term, payment_day):
         amortization_engine.ProjectionInputs(
             starting_balance=refi_principal,
             starting_date=starting_date,
-            annual_rate=refi_rate,
             remaining_months=refi_term,
             payment_day=payment_day,
-            contractual_payment=refi_monthly,
-            rate_changes_remaining=None,
+            # A refinance is one fixed-rate span: a single terms entry
+            # carries the new rate and its derived level payment.
+            terms_schedule=[amortization_engine.PeriodTerms(
+                start_date=starting_date,
+                annual_rate=refi_rate,
+                monthly_pi=refi_monthly,
+            )],
         ),
         monthly_override=None,
         extra_monthly=Decimal("0.00"),

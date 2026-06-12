@@ -923,11 +923,151 @@ def test_arm_second_period_uses_recorded_recast_held_constant():
     assert state_early.monthly_payment == Decimal("2500.00")
     assert state_early.monthly_payment == state_late.monthly_payment
 
+    # DH-#25: the SCHEDULE rows agree with the card.  Every projected
+    # second-period row pays the recorded $2,500.00 at 7% -- this was
+    # the uncovered assertion that let the card ($2,500.00) and the
+    # schedule ($2,582.13, re-amortized) silently diverge (DH-#1);
+    # proven to fail against the pre-SSOT engine.  The final row is
+    # exempt (it absorbs the closing residue), as are rows past the
+    # third boundary (2036-01-01, a later derived recast).
+    second_period_rows = [
+        row for row in state_early.schedule
+        if date(2031, 1, 1) <= row.payment_date < date(2036, 1, 1)
+        and not row.is_confirmed
+    ]
+    assert second_period_rows, "schedule must cover the second period"
+    for row in second_period_rows:
+        assert row.payment == Decimal("2500.00"), (
+            f"{row.payment_date}: schedule pays {row.payment}, card "
+            f"shows the recorded 2500.00"
+        )
+        assert row.interest_rate == Decimal("0.07")
+    # And the pre-recast projected rows pay the ORIGINATION period's
+    # P&I (the engine fills the no-payments gap at period-true terms,
+    # not the as_of period's).
+    first_period_rows = [
+        row for row in state_early.schedule
+        if row.payment_date < date(2031, 1, 1) and not row.is_confirmed
+    ]
+    assert first_period_rows
+    for row in first_period_rows:
+        assert row.payment == Decimal("2398.20")
+
     # The origination period is unaffected: still the contractual P&I.
     state_p0 = resolve_loan(
         LoanInputs(params, [anchor], None, feed), date(2028, 1, 1),
     )
     assert state_p0.monthly_payment == Decimal("2398.20")
+
+
+def test_future_recorded_recast_notice_honored_in_schedule():
+    """DH-#1 state A: an advance adjustment notice governs forward rows.
+
+    ARM lenders send the rate-adjustment notice 60-120 days BEFORE the
+    new payment takes effect, stating the exact new P&I -- entering it
+    in advance is the natural ``add_rate_change`` workflow (the route
+    accepts any post-origination ``effective_date``).  The schedule's
+    rows past the future recast must pay the recorded figure, while the
+    card (today, pre-recast) keeps the current period's P&I.  The
+    pre-SSOT engine re-amortized $2,622.20 here from its own balance.
+
+    Setup: the 5/5 ARM at $400k/6%/360 from 2026-01-01; a true-up
+    anchor 2030-11-01 at $372,000; notice recorded for 2031-01-01 ->
+    7% with monthly_pi $2,500.00; as_of 2030-11-15 (recast in the
+    future).
+    """
+    params = _arm_400k_params()
+    anchor = FakeAnchorEvent(
+        anchor_date=date(2030, 11, 1),
+        anchor_balance=Decimal("372000.00"),
+        created_at=datetime(2030, 11, 1, tzinfo=timezone.utc),
+    )
+    feed = _rate_feed(params, [
+        RateChangeRecord(
+            effective_date=date(2031, 1, 1),
+            interest_rate=Decimal("0.07"),
+            monthly_pi=Decimal("2500.00"),
+        ),
+    ])
+    state = resolve_loan(
+        LoanInputs(params, [anchor], None, feed), date(2030, 11, 15),
+    )
+
+    # Card today: still the origination period's contractual P&I.
+    assert state.monthly_payment == Decimal("2398.20")
+
+    # Forward rows past the recast pay the notice's recorded figure
+    # (final residue-absorbing row exempt).
+    post_recast = [
+        row for row in state.schedule
+        if row.payment_date >= date(2031, 1, 1)
+    ]
+    assert post_recast, "schedule must reach the recast"
+    for row in post_recast[:-1]:
+        assert row.payment == Decimal("2500.00"), (
+            f"{row.payment_date}: paid {row.payment}, the notice "
+            f"recorded 2500.00"
+        )
+    # The pre-recast forward row keeps the current contractual.
+    pre_recast = [
+        row for row in state.schedule
+        if row.payment_date < date(2031, 1, 1) and not row.is_confirmed
+    ]
+    assert pre_recast
+    assert all(r.payment == Decimal("2398.20") for r in pre_recast)
+
+
+def test_stale_anchor_derived_recast_schedule_matches_card():
+    """DH-#1 state C: card == schedule for a DERIVED recast, stale anchor.
+
+    With no recorded ``monthly_pi``, both the card and the schedule
+    must read the rate-period engine's derived level payment.  Under
+    the pre-SSOT engine the projection started at the origination
+    anchor with the as_of period's payment and re-amortized at the
+    boundary from its own walked balance -- card $2,630.76 vs schedule
+    $2,517.60.  Now the schedule's post-recast rows equal the card by
+    construction.
+
+    Setup: the 5/5 ARM at $400k/6%/360 anchored at origination (the
+    exact anchor ``create_params`` writes for every new loan), rate
+    change 2031-01-01 -> 7% with NO recorded P&I, no confirmed
+    payments, as_of 2032-06-01.
+    """
+    params = _arm_400k_params()
+    anchor = _origination_anchor(params)
+    feed = _rate_feed(params, [
+        RateChangeRecord(
+            effective_date=date(2031, 1, 1),
+            interest_rate=Decimal("0.07"),
+            monthly_pi=None,
+        ),
+    ])
+    state = resolve_loan(
+        LoanInputs(params, [anchor], None, feed), date(2032, 6, 1),
+    )
+
+    # Hand arithmetic: the derived second-period P&I amortizes the
+    # CONTRACTUAL balance at the boundary over the remaining 300
+    # months at 7% -- the value period_for_date gives the card.
+    assert state.monthly_payment == Decimal("2630.76")
+
+    post_recast = [
+        row for row in state.schedule
+        if row.payment_date >= date(2031, 1, 1)
+    ]
+    assert post_recast
+    for row in post_recast[:-1]:
+        assert row.payment == state.monthly_payment, (
+            f"{row.payment_date}: schedule pays {row.payment}, card "
+            f"shows {state.monthly_payment}"
+        )
+    # Pre-recast forward-fill rows pay the origination period's P&I.
+    pre_recast = [
+        row for row in state.schedule
+        if row.payment_date < date(2031, 1, 1) and not row.is_confirmed
+    ]
+    assert pre_recast
+    assert all(r.payment == Decimal("2398.20") for r in pre_recast)
 
 
 # -- C6-8 -- resolver chokepoint: no direct generate_schedule reference -----
@@ -1833,3 +1973,151 @@ class TestComputePayoffScenarios:
             if row.payment_date == date(2026, 7, 1)
         )
         assert jul_accelerated.extra_payment == Decimal("500.00")
+
+
+# -- F-27 -- target-date outlook honors the committed plan ------------------
+
+
+class TestTargetDateOutlook:
+    """``target_date_outlook`` (F-27, "fix + reframe").
+
+    The target-date calculator's committed-plan producer: one
+    ``_build_forward_inputs`` setup drives the plan's payoff date AND
+    the additional-extra search, both honoring the same planned-outlay
+    override map ``compute_payoff_scenarios`` uses -- so a user already
+    paying extra through a recurring template is no longer told they
+    need the full raw extra again.
+    """
+
+    AS_OF = date(2026, 6, 15)
+
+    def _fixed_300k(self):
+        """$300k / 6% / 360 months from 2026-01-01, origination anchor."""
+        params = FakeLoanParams(
+            origination_date=date(2026, 1, 1),
+            term_months=360,
+            original_principal=Decimal("300000.00"),
+            interest_rate=Decimal("0.06"),
+            payment_day=1,
+        )
+        return params, _origination_anchor(params)
+
+    def _projected_plan(self, monthly_amount, months, start):
+        """``months`` projected monthly payments of ``monthly_amount``."""
+        return [
+            PaymentRecord(
+                payment_date=add_months(start, offset),
+                amount=monthly_amount,
+                is_confirmed=False,
+            )
+            for offset in range(months)
+        ]
+
+    def test_committed_payoff_date_matches_composer(self):
+        """The outlook's plan payoff date equals the composer's.
+
+        Both produce the committed scenario from the same prep, so the
+        target-date tab's "Current Plan Pays Off" figure and the
+        extra-payment tab's committed series can never disagree.
+        """
+        params, anchor = self._fixed_300k()
+        # Contractual P&I for $300k/6%/360 is $1,798.65; the plan pays
+        # $2,298.65 (+$500) for 24 projected months.
+        plan = self._projected_plan(
+            Decimal("2298.65"), 24, date(2026, 7, 1),
+        )
+        loan_inputs = LoanInputs(params, [anchor], plan, _rate_feed(params))
+
+        outlook = loan_resolver.target_date_outlook(
+            loan_inputs=loan_inputs,
+            target_date=date(2046, 1, 1),
+            as_of=self.AS_OF,
+        )
+        scenarios = compute_payoff_scenarios(
+            loan_inputs=loan_inputs,
+            extra_monthly=Decimal("0.00"),
+            as_of=self.AS_OF,
+        )
+        assert outlook.committed_payoff_date == (
+            scenarios.payoff_date_committed
+        )
+
+    def test_plan_lowers_required_extra_vs_raw(self):
+        """F-27 acceptance: a rich plan lowers the per-month top-up.
+
+        The raw answer (no plan) and the plan-aware answer target the
+        same date from the same replay state.  Override months suppress
+        the searched extra (the composer convention), so the plan-aware
+        figure drops below the raw one exactly when the plan's window
+        contribution exceeds what the raw extra would have added over
+        those months: here $800/mo x 24 = $19,200 against a raw extra
+        of ~$733/mo x 24 = ~$17,590.  (A LEANER plan can legitimately
+        yield a HIGHER per-month top-up -- the extra is then squeezed
+        into fewer, later months; the correctness/minimality pins below
+        hold either way.)
+        """
+        params, anchor = self._fixed_300k()
+        # Contractual $1,798.65 + $800 for 24 projected months.
+        plan = self._projected_plan(
+            Decimal("2598.65"), 24, date(2026, 7, 1),
+        )
+        target = date(2041, 1, 1)
+        loan_inputs_plan = LoanInputs(
+            params, [anchor], plan, _rate_feed(params),
+        )
+        loan_inputs_raw = LoanInputs(params, [anchor], None, _rate_feed(params))
+
+        with_plan = loan_resolver.target_date_outlook(
+            loan_inputs=loan_inputs_plan, target_date=target, as_of=self.AS_OF,
+        )
+        without_plan = loan_resolver.target_date_outlook(
+            loan_inputs=loan_inputs_raw, target_date=target, as_of=self.AS_OF,
+        )
+        assert with_plan.required_extra is not None
+        assert without_plan.required_extra is not None
+        assert with_plan.required_extra < without_plan.required_extra
+
+        # Correctness: the committed plan plus the found extra pays off
+        # by the target date (the composer's accelerated scenario applies
+        # extra to non-override months exactly as the search did).
+        accelerated = compute_payoff_scenarios(
+            loan_inputs=loan_inputs_plan,
+            extra_monthly=with_plan.required_extra,
+            as_of=self.AS_OF,
+        )
+        assert accelerated.payoff_date_accelerated <= target
+
+        # Minimality within the search's one-cent convergence: two
+        # cents less must miss the target.
+        under = compute_payoff_scenarios(
+            loan_inputs=loan_inputs_plan,
+            extra_monthly=with_plan.required_extra - Decimal("0.02"),
+            as_of=self.AS_OF,
+        )
+        assert under.payoff_date_accelerated > target
+
+    def test_no_payments_outlook_equals_raw_semantics(self):
+        """With no plan, the outlook degrades to the raw answer shape.
+
+        The committed slice IS the original slice when no override
+        months exist, so the payoff date is the contractual payoff and
+        the required extra matches the no-plan search.
+        """
+        params, anchor = self._fixed_300k()
+        loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
+
+        outlook = loan_resolver.target_date_outlook(
+            loan_inputs=loan_inputs,
+            target_date=date(2041, 1, 1),
+            as_of=self.AS_OF,
+        )
+        scenarios = compute_payoff_scenarios(
+            loan_inputs=loan_inputs,
+            extra_monthly=Decimal("0.00"),
+            as_of=self.AS_OF,
+        )
+        assert outlook.committed_payoff_date == (
+            scenarios.payoff_date_committed
+        )
+        assert outlook.required_extra is not None
+        assert outlook.required_extra > Decimal("0.00")

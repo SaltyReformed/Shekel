@@ -446,8 +446,121 @@ DEFAULT_STATE_TAX = {
 }
 
 
+def build_tax_bracket_set(
+    user_id: int,
+    filing_status_id: int,
+    tax_year: int,
+    status_name: str,
+    data: dict[str, object],
+) -> TaxBracketSet:
+    """Build (not add) a TaxBracketSet row from a DEFAULT_FEDERAL_BRACKETS entry.
+
+    The single dict-to-row mapping shared by the sign-up path
+    (:func:`_seed_tax_data_for_user`) and the per-user repair script
+    ``scripts/seed_tax_brackets.py``, so the two cannot drift on which
+    keys feed which columns (they had already diverged on fallback
+    semantics for the credit fields before this extraction).  Keys are
+    indexed directly -- a missing key is a defect in the defaults dict
+    and must fail loud, not silently seed a zero credit.
+
+    Args:
+        user_id: The owning user's ID.
+        filing_status_id: PK of the ``ref.filing_statuses`` row.
+        tax_year: The bracket set's tax year.
+        status_name: The filing-status key (e.g. ``"married_joint"``),
+            used only for the display description.
+        data: One filing status's entry from
+            :data:`DEFAULT_FEDERAL_BRACKETS` (standard_deduction,
+            credit amounts, brackets).
+
+    Returns:
+        An un-added TaxBracketSet; the caller owns session.add/flush.
+    """
+    return TaxBracketSet(
+        user_id=user_id,
+        filing_status_id=filing_status_id,
+        tax_year=tax_year,
+        standard_deduction=data["standard_deduction"],
+        child_credit_amount=data["child_credit_amount"],
+        other_dependent_credit_amount=data["other_dependent_credit_amount"],
+        description=f"{tax_year} Federal - {status_name.replace('_', ' ').title()}",
+    )
+
+
+def build_tax_brackets(
+    bracket_set_id: int,
+    brackets: list[tuple[int, int | None, Decimal]],
+) -> list[TaxBracket]:
+    """Build (not add) the TaxBracket rows for one bracket set.
+
+    Shared with ``scripts/seed_tax_brackets.py`` (see
+    :func:`build_tax_bracket_set` for the rationale).  ``sort_order``
+    is the tuple's position in the defaults list.
+
+    Args:
+        bracket_set_id: PK of the already-flushed parent TaxBracketSet.
+        brackets: The ``"brackets"`` list from a
+            :data:`DEFAULT_FEDERAL_BRACKETS` entry --
+            ``(min_income, max_income_or_None, rate)`` tuples.
+
+    Returns:
+        Un-added TaxBracket rows; the caller owns session.add.
+    """
+    return [
+        TaxBracket(
+            bracket_set_id=bracket_set_id,
+            min_income=Decimal(str(min_inc)),
+            max_income=Decimal(str(max_inc)) if max_inc else None,
+            rate=rate,
+            sort_order=idx,
+        )
+        for idx, (min_inc, max_inc, rate) in enumerate(brackets)
+    ]
+
+
+def build_state_tax_config(
+    user_id: int,
+    tax_type_id: int,
+    tax_year: int,
+    data: dict[str, object],
+) -> StateTaxConfig:
+    """Build (not add) a StateTaxConfig row from a DEFAULT_STATE_TAX entry.
+
+    Shared with ``scripts/seed_tax_brackets.py`` (see
+    :func:`build_tax_bracket_set` for the rationale).
+    ``standard_deduction`` uses ``.get`` deliberately: a state entry
+    without a standard deduction is a legal shape (the column is
+    nullable), unlike the always-present federal keys.
+
+    Args:
+        user_id: The owning user's ID.
+        tax_type_id: PK of the ``ref.tax_types`` row (FLAT).
+        tax_year: The config's tax year.
+        data: One year's entry from :data:`DEFAULT_STATE_TAX`.
+
+    Returns:
+        An un-added StateTaxConfig; the caller owns session.add.
+    """
+    return StateTaxConfig(
+        user_id=user_id,
+        tax_type_id=tax_type_id,
+        tax_year=tax_year,
+        state_code=data["state_code"],
+        flat_rate=data["flat_rate"],
+        standard_deduction=data.get("standard_deduction"),
+    )
+
+
 def _seed_tax_data_for_user(user_id):
-    """Create default federal brackets, FICA, and state tax for a new user."""
+    """Create default federal brackets, FICA, and state tax for a new user.
+
+    Fresh-user path: no existence checks (a brand-new user has no tax
+    rows).  The per-row construction is shared with the idempotent
+    repair script ``scripts/seed_tax_brackets.py`` via the
+    ``build_tax_*`` helpers above; ``FicaConfig`` needs no builder --
+    its ``**data`` spread maps the defaults dict to columns directly
+    at both sites with no field list to drift.
+    """
     filing_statuses = {
         fs.name: fs for fs in db.session.query(FilingStatus).all()
     }
@@ -457,26 +570,14 @@ def _seed_tax_data_for_user(user_id):
             fs = filing_statuses.get(status_name)
             if not fs:
                 continue
-            bracket_set = TaxBracketSet(
-                user_id=user_id,
-                filing_status_id=fs.id,
-                tax_year=tax_year,
-                standard_deduction=data["standard_deduction"],
-                child_credit_amount=data["child_credit_amount"],
-                other_dependent_credit_amount=data["other_dependent_credit_amount"],
-                description=f"{tax_year} Federal - {status_name.replace('_', ' ').title()}",
+            bracket_set = build_tax_bracket_set(
+                user_id, fs.id, tax_year, status_name, data,
             )
             db.session.add(bracket_set)
             db.session.flush()
 
-            for idx, (min_inc, max_inc, rate) in enumerate(data["brackets"]):
-                db.session.add(TaxBracket(
-                    bracket_set_id=bracket_set.id,
-                    min_income=Decimal(str(min_inc)),
-                    max_income=Decimal(str(max_inc)) if max_inc else None,
-                    rate=rate,
-                    sort_order=idx,
-                ))
+            for bracket in build_tax_brackets(bracket_set.id, data["brackets"]):
+                db.session.add(bracket)
 
     for tax_year, data in DEFAULT_FICA.items():
         db.session.add(FicaConfig(user_id=user_id, tax_year=tax_year, **data))
@@ -484,13 +585,8 @@ def _seed_tax_data_for_user(user_id):
     flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
     if flat_type_id:
         for tax_year, data in DEFAULT_STATE_TAX.items():
-            db.session.add(StateTaxConfig(
-                user_id=user_id,
-                tax_type_id=flat_type_id,
-                tax_year=tax_year,
-                state_code=data["state_code"],
-                flat_rate=data["flat_rate"],
-                standard_deduction=data.get("standard_deduction"),
+            db.session.add(build_state_tax_config(
+                user_id, flat_type_id, tax_year, data,
             ))
 
 

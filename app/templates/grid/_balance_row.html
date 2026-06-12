@@ -6,21 +6,52 @@
    Total Income, Total Expenses, and Net Cash Flow are now inline
    subtotal rows in the <tbody> (added in Tasks 13-14).
 
-   Expected context: periods, balances, account, num_periods, start_offset, low_balance_threshold.
+   The stale-anchor warning banner is kept current via an out-of-band
+   swap of the #stale-anchor-warning wrapper -- emitted ONLY on the
+   HTMX response (oob=true), never on the initial page-load include
+   (grid.html already renders the wrapper there; an OOB swap on the
+   include would have no target to swap into).  This is how a desktop
+   mark-done that creates the stale-anchor condition surfaces the banner
+   without the old full page reload.
+
+   PARSER CONSTRAINT (load-bearing): the OOB <div> below MUST stay
+   encapsulated in a <template> element.  htmx parses every partial
+   response inside a <template> wrapper; per the HTML5 tree-construction
+   spec a bare non-table element at the top level flips the parser from
+   the "in template" to the "in body" insertion mode, where the
+   following <tfoot>/<tr>/<td> start tags are silently DROPPED -- the
+   balance row swaps in as loose unstyled text and, because the
+   replacement carries no hx-trigger, the refresh cycle dies until the
+   next full page load.  htmx's swap pipeline scans nested <template>
+   elements for hx-swap-oob content and removes the wrapper, so the
+   encapsulated banner still swaps out-of-band while the <tfoot> stays
+   the first top-level element and parses intact.  Do not "simplify"
+   the wrapper away; tests/test_routes/test_grid.py pins this shape.
+
+   Expected context: periods, balances, account, num_periods,
+   start_offset, low_balance_threshold, stale_anchor_warning, oob.
 #}
+{% if oob %}
+<template>
+  <div id="stale-anchor-warning" hx-swap-oob="true">
+    {% include "grid/_stale_anchor_warning.html" %}
+  </div>
+</template>
+{% endif %}
 <tfoot id="grid-summary"
        hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
        hx-trigger="balanceChanged from:body"
        hx-swap="outerHTML"
        aria-live="polite"
        aria-atomic="true">
+  {% from "grid/_grid_row_macros.html" import mstart %}
   <tr class="balance-row-summary fw-bold">
     <td class="sticky-col">
       <i class="bi bi-bank"></i> Projected End Balance
     </td>
     {% for period in periods %}
       {% set bal = balances.get(period.id) %}
-      <td class="text-end font-mono {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
+      <td class="text-end font-mono{{ mstart(periods, loop.index0) }} {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
         {% if bal is not none %}
           {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true" title="Negative balance"></i> {% elif bal < low_balance_threshold %}<i class="bi bi-exclamation-circle" aria-hidden="true" title="Low balance"></i> {% endif %}
           ${{ "{:,.0f}".format(bal) }}

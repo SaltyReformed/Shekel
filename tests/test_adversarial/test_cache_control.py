@@ -13,7 +13,17 @@ after-request hook in ``app/__init__.py``.  Browser back-button
 behavior itself cannot be exercised by Flask's test client; that
 requires a manual verification pass against a real browser (covered
 by the runbook's manual checklist).
+
+The static-side counterpart is also pinned here: content-versioned
+static URLs (the ``v=`` parameter from ``_register_static_versioning``)
+must receive a long-lived immutable lifetime, while unversioned or
+hash-mismatched requests keep conditional caching, and neither may
+ever carry no-store.
 """
+
+from flask import url_for
+
+from app.routes.static_pass import static_file_version
 
 
 def test_logged_out_pages_have_no_store(auth_client, client):
@@ -42,14 +52,13 @@ def test_logged_out_pages_have_no_store(auth_client, client):
 
 
 def test_static_assets_excluded_from_no_store(client):
-    """Static assets must remain cacheable.  In production nginx
-    serves /static/ before Flask and sets its own ``Cache-Control:
-    public, immutable``; in dev/test Flask's built-in static handler
-    is used and the after-request hook explicitly skips
-    ``request.endpoint == 'static'``.  This test exercises the dev/
-    test path -- a regression here means the nginx no-double-header
-    invariant is violated and the production behaviour will diverge
-    from dev.
+    """Static assets must remain cacheable.  Who serves them depends
+    on the deploy mode: the bundled stack's nginx serves /static/
+    itself with ``Cache-Control: public, immutable``, while the
+    shared-mode stack (the actual production host) proxies /static/
+    through to Flask's static handler -- so the after-request hook's
+    ``request.endpoint == 'static'`` opt-out exercised here IS the
+    production static behaviour in shared mode, not just a dev path.
 
     Vendor assets are content-versioned via VERSIONS.txt; aggressive
     caching is correct and required for performance."""
@@ -86,6 +95,77 @@ def test_static_asset_path_resolves(client):
         )
 
 
+def test_url_for_static_appends_content_hash(app):
+    """Every ``url_for('static', ...)`` URL carries the file's content
+    hash as ``v=``, so the URL changes exactly when the bytes change.
+
+    This is the cache-busting mechanism from
+    docs/design/css_architecture_audit.md: without it, the bundled
+    deploy's 7-day ``immutable`` nginx caching can serve stale CSS/JS
+    after an edit.  The expected value is recomputed independently via
+    ``static_file_version`` so the assertion pins hook and helper to
+    the same hash.
+    """
+    with app.test_request_context():
+        url = url_for("static", filename="css/base.css")
+    version = static_file_version(app.static_folder, "css/base.css")
+    assert version is not None
+    assert url == f"/static/css/base.css?v={version}"
+
+
+def test_versioned_static_gets_long_lived_immutable_cache(client, app):
+    """A static request whose ``v=`` matches the file's current hash
+    is served with a year-long public immutable lifetime.
+
+    Safe because the URL is content-addressed: changed bytes change
+    the hash, so this cached entry can never be served against a page
+    referencing newer content.  31536000 s = 365 days, the
+    conventional ceiling for immutable assets
+    (``_VERSIONED_STATIC_MAX_AGE_SECONDS`` in app/__init__.py).
+    """
+    version = static_file_version(app.static_folder, "css/base.css")
+    resp = client.get(f"/static/css/base.css?v={version}")
+    assert resp.status_code == 200
+    cache_control = resp.headers.get("Cache-Control", "")
+    assert "public" in cache_control
+    assert "max-age=31536000" in cache_control
+    assert "immutable" in cache_control
+    assert "no-store" not in cache_control
+
+
+def test_mismatched_version_param_keeps_conditional_caching(client):
+    """A stale or forged ``v=`` must NOT receive the immutable
+    lifetime -- the hook verifies the hash against the file first.
+
+    Without this check, an attacker-distributed (or simply outdated)
+    link could pin wrong bytes in a shared cache for a year.  The
+    response still serves the asset, just with Flask's default
+    conditional caching (``no-cache`` + ETag revalidation), and never
+    with no-store.
+    """
+    resp = client.get("/static/css/base.css?v=000000000000")
+    assert resp.status_code == 200
+    cache_control = resp.headers.get("Cache-Control", "")
+    assert "immutable" not in cache_control
+    assert "no-store" not in cache_control
+    # Positively pin the conditional-caching claim: Flask's default
+    # static semantics are Cache-Control: no-cache plus an ETag, so a
+    # future SEND_FILE_MAX_AGE_DEFAULT change cannot silently grant
+    # mismatched-version requests a long lifetime.
+    assert "no-cache" in cache_control
+    assert resp.headers.get("ETag")
+
+
+def test_rendered_page_links_versioned_stylesheets(client):
+    """The login page's stylesheet links carry ``v=`` hashes
+    end-to-end, proving the url_defaults hook fires during template
+    rendering (not just in a bare test_request_context)."""
+    html = client.get("/login").data.decode("utf-8")
+    assert "/static/css/theme-steel-ink.css?v=" in html
+    assert "/static/css/base.css?v=" in html
+    assert "/static/js/app.js?v=" in html
+
+
 def test_remember_me_cookie_flags_after_login(client, app, db, seed_user):
     """When a user logs in with ``remember=true``, the
     ``remember_token`` cookie sent in the response must carry
@@ -119,8 +199,9 @@ def test_remember_me_cookie_flags_after_login(client, app, db, seed_user):
             app.config["REMEMBER_COOKIE_HTTPONLY"] = True
             app.config["REMEMBER_COOKIE_SAMESITE"] = "Lax"
             # Form posts ``remember=on`` (HTML checkbox standard);
-            # the auth route at app/routes/auth.py:87 explicitly
-            # checks for the literal string "on".
+            # ``LoginSchema.remember`` (app/schemas/validation/auth.py)
+            # accepts "on" in its truthy set (C-26 moved the check
+            # from the route into the schema).
             resp = client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",

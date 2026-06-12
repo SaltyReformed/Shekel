@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from app.services.amortization_engine import (
     PaymentRecord,
+    PeriodTerms,
     RateChangeRecord,
 )
 from app.services.rate_period_engine import (
@@ -159,6 +160,57 @@ def _resolve_periods(loan_params, rate_changes):
         rate_changes=rate_changes,
         recorded_period_pi=_recorded_pi_from(rate_changes),
     )
+
+
+def _terms_from_periods(periods: list[RatePeriod]) -> list[PeriodTerms]:
+    """Map the loan's rate periods onto the projection engine's terms feed.
+
+    One :class:`~app.services.amortization_engine.PeriodTerms` per
+    :class:`~app.services.rate_period_engine.RatePeriod`, carrying the
+    period's start date, rate, and level P&I verbatim -- the rate-period
+    engine stays the single producer of those figures and
+    ``project_forward`` consumes them unchanged, so the schedule's
+    projected rows and the loan card cannot diverge (DH-#1).  The full
+    period set is mapped, past periods included: a projection whose
+    ``starting_date`` lags ``as_of`` (a stale anchor with no confirmed
+    payments) is still governed month by month by its true periods.
+
+    Args:
+        periods: The ordered :class:`RatePeriod` list from
+            :func:`_resolve_periods`.
+
+    Returns:
+        The corresponding :class:`PeriodTerms` list, in the same order.
+    """
+    return [
+        PeriodTerms(
+            start_date=period.start_date,
+            annual_rate=period.annual_rate,
+            monthly_pi=period.period_pi,
+        )
+        for period in periods
+    ]
+
+
+def engine_terms(loan_params, rate_changes) -> list[PeriodTerms]:
+    """Build the projection engine's terms schedule for a loan.
+
+    Public entry point for callers OUTSIDE the resolver that drive the
+    amortization engine directly (the loan route's raw target-date
+    :class:`~app.services.amortization_engine.PayoffRequest`), so their
+    projections read the same rate-period figures the resolver and the
+    loan card do.  Resolver-internal callers map their already-built
+    period list via :func:`_terms_from_periods` instead.
+
+    Args:
+        loan_params: The loan's :class:`LoanParams`-shaped object.
+        rate_changes: Optional :class:`RateChangeRecord` feed (must
+            contain the origination row, per :func:`_origination_rate`).
+
+    Returns:
+        The loan's full :class:`PeriodTerms` schedule.
+    """
+    return _terms_from_periods(_resolve_periods(loan_params, rate_changes))
 
 
 @dataclass(frozen=True)

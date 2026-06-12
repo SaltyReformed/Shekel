@@ -36,102 +36,107 @@ function renderPayoffChart(canvasId) {
 
   if (labels.length === 0 || original.length === 0) return;
 
-  var datasets = [];
+  // Config factory: dataset colors resolve inside so a theme toggle
+  // rebuilds them against the active theme (ShekelChart.create
+  // re-invokes it).
+  ShekelChart.create(canvasId, function() {
+    var datasets = [];
 
-  // Original: always present as reference baseline.
-  datasets.push({
-    label: 'Original Schedule',
-    data: original,
-    borderColor: ShekelChart.getColor(7),
-    borderDash: [5, 5],
-    borderWidth: 1.5,
-    fill: false,
-    tension: 0.3,
-    pointRadius: 0,
-  });
-
-  // Committed: present when real payments exist.
-  if (committed.length > 0) {
+    // Original: always present as reference baseline.
     datasets.push({
-      label: 'Current Plan',
-      data: committed,
-      borderColor: ShekelChart.getColor(0),
-      backgroundColor: ShekelChart.getColor(0) + '1A',
-      borderWidth: 2.5,
-      fill: true,
-      tension: 0.3,
-      pointRadius: 0,
-    });
-  }
-
-  // Floor: confirmed payments only (when different from committed).
-  if (floor.length > 0 && committed.length > 0) {
-    datasets.push({
-      label: 'Confirmed Only',
-      data: floor,
-      borderColor: ShekelChart.getColor(4),
-      borderDash: [3, 3],
+      label: 'Original Schedule',
+      data: original,
+      borderColor: ShekelChart.getColor(7),
+      borderDash: [5, 5],
       borderWidth: 1.5,
       fill: false,
       tension: 0.3,
       pointRadius: 0,
     });
-  }
 
-  // Accelerated: with extra payments (payoff calculator results).
-  if (accelerated.length > 0) {
-    datasets.push({
-      label: 'With Extra Payments',
-      data: accelerated,
-      borderColor: ShekelChart.getColor(2),
-      borderDash: [8, 4],
-      borderWidth: 2,
-      fill: false,
-      tension: 0.3,
-      pointRadius: 0,
-    });
-  }
+    // Committed: present when real payments exist.
+    if (committed.length > 0) {
+      datasets.push({
+        label: 'Current Plan',
+        data: committed,
+        borderColor: ShekelChart.getColor(0),
+        backgroundColor: ShekelChart.getColor(0) + '1A',
+        borderWidth: 2.5,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+      });
+    }
 
-  ShekelChart.create(canvasId, {
-    type: 'line',
-    data: {
-      labels: labels,
-      datasets: datasets,
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      interaction: {
-        mode: 'index',
-        intersect: false,
+    // Floor: confirmed payments only (when different from committed).
+    if (floor.length > 0 && committed.length > 0) {
+      datasets.push({
+        label: 'Confirmed Only',
+        data: floor,
+        borderColor: ShekelChart.getColor(4),
+        borderDash: [3, 3],
+        borderWidth: 1.5,
+        fill: false,
+        tension: 0.3,
+        pointRadius: 0,
+      });
+    }
+
+    // Accelerated: with extra payments (payoff calculator results).
+    if (accelerated.length > 0) {
+      datasets.push({
+        label: 'With Extra Payments',
+        data: accelerated,
+        borderColor: ShekelChart.getColor(2),
+        borderDash: [8, 4],
+        borderWidth: 2,
+        fill: false,
+        tension: 0.3,
+        pointRadius: 0,
+      });
+    }
+
+    return {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: datasets,
       },
-      scales: {
-        x: {
-          display: true,
-          ticks: { maxTicksLimit: 12 },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        interaction: {
+          mode: 'index',
+          intersect: false,
         },
-        y: {
-          display: true,
-          ticks: {
-            callback: function(value) {
-              return '$' + value.toLocaleString();
+        scales: {
+          x: {
+            display: true,
+            ticks: { maxTicksLimit: 12 },
+          },
+          y: {
+            display: true,
+            ticks: {
+              callback: function(value) {
+                return '$' + value.toLocaleString();
+              },
+            },
+          },
+        },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                return context.dataset.label + ': $' + context.parsed.y.toLocaleString(undefined, {
+                  minimumFractionDigits: 0,
+                  maximumFractionDigits: 0,
+                });
+              },
             },
           },
         },
       },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: function(context) {
-              return context.dataset.label + ': $' + context.parsed.y.toLocaleString(undefined, {
-                minimumFractionDigits: 0,
-                maximumFractionDigits: 0,
-              });
-            },
-          },
-        },
-      },
-    },
+    };
   });
 }
 

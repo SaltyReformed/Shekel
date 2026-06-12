@@ -841,24 +841,32 @@ def _raw_deduction_amount(ded, gross_biweekly, period, profile, pct_id):
     """Per-period deduction amount before any annual-cap clamp.
 
     Applies the flat-vs-percentage calc method and the optional inflation
-    escalation.  Pulled out of the line-building loop so the annual-cap
-    cumulative reproduces, for prior periods, the exact amount the loop
-    applies to the current one.
+    escalation at FULL Decimal precision, then rounds ONCE at return --
+    the E-26(a) rule (intermediates stay full-precision; the line amount
+    is the boundary, ratified 2026-06-11).  The pre-ratification shape
+    quantized the percentage product BEFORE the inflation multiply and
+    again after (a true intermediate quantize, off by up to a cent on
+    inflated percentage deductions), and returned flat amounts
+    UNQUANTIZED at the column's 4-decimal precision (so the displayed
+    2dp line could disagree with the net-pay math by sub-cents).  The
+    single boundary rounding fixes both: what the user sees per line is
+    exactly what the paycheck subtracts and what the annual-cap
+    cumulative sums.
+
+    Pulled out of the line-building loop so the annual-cap cumulative
+    reproduces, for prior periods, the exact amount the loop applies to
+    the current one.
     """
     amount = Decimal(str(ded.amount))
     if ded.calc_method_id == pct_id:
-        amount = (gross_biweekly * amount).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        amount = gross_biweekly * amount
     if ded.inflation_enabled and ded.inflation_rate:
         inflation_rate = Decimal(str(ded.inflation_rate))
         eff_month = ded.inflation_effective_month or 1
         years = _inflation_years(period, profile, eff_month)
         if years > 0:
-            amount = (amount * (1 + inflation_rate) ** years).quantize(
-                TWO_PLACES, rounding=ROUND_HALF_UP
-            )
-    return amount
+            amount = amount * (1 + inflation_rate) ** years
+    return round_money(amount)
 
 
 def _cumulative_deduction_before(ded, ctx, pct_id):

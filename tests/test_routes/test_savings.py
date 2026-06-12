@@ -694,6 +694,30 @@ class TestGoalUpdate:
             assert goal.name == "Updated Fund"
             assert goal.target_amount == Decimal("20000.00")
 
+    def test_update_goal_clears_target_date(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """An emptied target_date input clears the stored date.
+
+        The nullable-field clear rule: ``target_date`` is allow_none
+        on the update schema, so the empty submit loads as an explicit
+        None (it used to be DROPPED, making the date unclearable from
+        the UI) and the route's setattr loop nulls the column -- the
+        goal reverts to no-deadline pacing.
+        """
+        with app.app_context():
+            acct = _create_savings_account(seed_user)
+            goal = _create_goal(seed_user, acct)
+            assert goal.target_date == date(2027, 6, 1)
+
+            resp = auth_client.post(f"/savings/goals/{goal.id}", data={
+                "target_date": "",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            db.session.refresh(goal)
+            assert goal.target_date is None
+
     def test_update_goal_validation_error(self, app, auth_client, seed_user):
         """POST /savings/goals/<id> with invalid data shows error."""
         with app.app_context():

@@ -28,6 +28,22 @@ from pathlib import Path
 
 import pytest
 
+from app.models.account import Account
+from app.models.category import Category
+from app.models.pay_period import PayPeriod
+from app.models.scenario import Scenario
+from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.user import User, UserSettings
+from app.services.auth_service import (
+    DEFAULT_CATEGORIES,
+    DEFAULT_FEDERAL_BRACKETS,
+    DEFAULT_FICA,
+    DEFAULT_STATE_TAX,
+)
+# Aliased so the module-level name cannot shadow the ``seed_user``
+# pytest fixture from conftest.py.
+from scripts.seed_user import seed_user as run_seed_user
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SEED_USER_SCRIPT = REPO_ROOT / "scripts" / "seed_user.py"
@@ -333,3 +349,104 @@ class TestSeedUserSubprocessScrub:
         if existing is not None:
             _db.session.delete(existing)
             _db.session.commit()
+
+
+class TestSeedUserProvisioning:
+    """DB-level tests for the register_user delegation.
+
+    The script historically hand-copied the provisioning sequence and
+    had drifted from the service (it never seeded tax data).  These
+    pin the delegated contract: a seeded user gets the identical shape
+    a /register user gets, and a re-run takes the idempotent skip.
+    """
+
+    @staticmethod
+    def _set_seed_env(monkeypatch, email="seeded@shekel.local"):
+        """Point the script's env inputs at a test identity."""
+        monkeypatch.setenv("SEED_USER_EMAIL", email)
+        monkeypatch.setenv("SEED_USER_PASSWORD", "a-strong-seed-pass-1")
+        monkeypatch.setenv("SEED_USER_DISPLAY_NAME", "Seeded User")
+
+    def test_seed_creates_full_registration_shape(self, app, db, monkeypatch):
+        """One seed run provisions the complete /register shape.
+
+        Tax configuration is the load-bearing assertion: the
+        hand-copied version never created it (the drift this
+        delegation fixes); the bracket-set count is derived from the
+        shared defaults dict so a future tax-year addition does not
+        break the pin.
+        """
+        with app.app_context():
+            self._set_seed_env(monkeypatch)
+            user = run_seed_user()
+
+            assert user.email == "seeded@shekel.local"
+            assert (
+                db.session.query(UserSettings)
+                .filter_by(user_id=user.id).count() == 1
+            )
+
+            periods = (
+                db.session.query(PayPeriod).filter_by(user_id=user.id).all()
+            )
+            assert len(periods) == 1
+            assert periods[0].period_index == 0
+
+            account = (
+                db.session.query(Account).filter_by(user_id=user.id).one()
+            )
+            assert account.name == "Checking"
+            assert account.current_anchor_period_id == periods[0].id
+
+            scenario = (
+                db.session.query(Scenario).filter_by(user_id=user.id).one()
+            )
+            assert scenario.is_baseline is True
+
+            assert (
+                db.session.query(Category)
+                .filter_by(user_id=user.id).count()
+                == len(DEFAULT_CATEGORIES)
+            )
+
+            # Tax configuration: one bracket set per (year, status) in
+            # the shared defaults, one FICA row and one state row per
+            # year.
+            expected_sets = sum(
+                len(year_data)
+                for year_data in DEFAULT_FEDERAL_BRACKETS.values()
+            )
+            assert (
+                db.session.query(TaxBracketSet)
+                .filter_by(user_id=user.id).count() == expected_sets
+            )
+            assert (
+                db.session.query(FicaConfig)
+                .filter_by(user_id=user.id).count() == len(DEFAULT_FICA)
+            )
+            assert (
+                db.session.query(StateTaxConfig)
+                .filter_by(user_id=user.id).count() == len(DEFAULT_STATE_TAX)
+            )
+
+    def test_seed_rerun_is_idempotent_skip(self, app, db, monkeypatch, capsys):
+        """A second run returns the existing user and creates nothing.
+
+        Container restarts re-run the seed step; the already-exists
+        path must skip (via register_user's own uniqueness check, the
+        single authority) rather than duplicate or crash.
+        """
+        with app.app_context():
+            self._set_seed_env(monkeypatch)
+            first = run_seed_user()
+            first_id = first.id
+            capsys.readouterr()
+
+            second = run_seed_user()
+
+            assert second.id == first_id
+            assert "already exists" in capsys.readouterr().out
+            assert (
+                db.session.query(User)
+                .filter_by(email="seeded@shekel.local").count() == 1
+            )

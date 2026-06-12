@@ -1,23 +1,10 @@
 """Tests for the Commit 12 / d3d25212504b migration backfill (E-18).
 
-The migration creates ``budget.loan_anchor_events`` then seeds it
-for every existing loan account so the Commit 13 resolver
-reproduces today's displayed principal on first read.  Two row
-classes are materialised:
-
-  * ``origination`` -- one per loan, with ``(origination_date,
-    original_principal)`` from the immutable :class:`LoanParams`
-    fields.  Every loan carries exactly one.
-
-  * ``user_trueup`` -- inserted ONLY when the stored
-    ``current_principal`` diverges from a from-origination
-    confirmed-payment replay through the amortization engine.
-    ARM loans always diverge in practice (the replay uses the
-    current rate as a proxy for absent historical rate data), so
-    they always get a trueup.  Fixed-rate loans only diverge when
-    the operator manually edited ``current_principal`` via the
-    dashboard form, so they sometimes get a trueup and sometimes
-    do not.
+The migration creates ``budget.loan_anchor_events`` then seeds an
+``origination`` event for every existing loan account -- one per
+loan, with ``(origination_date, original_principal)`` from the
+immutable :class:`LoanParams` fields -- so the Commit 13 resolver
+reproduces today's displayed principal on first read.
 
 The migration is already at HEAD when these tests run (the
 template builder upgraded it), so existing rows show the post-
@@ -28,16 +15,19 @@ deterministic mapping from ``LoanParams`` shape to event rows.
 Test cases pinned to the plan (Commit 12 section E):
 
   * C12-2: every existing loan has an origination event.
-  * C12-3: stored != replay produces a user_trueup row.
-  * C12-4: stored == replay produces NO user_trueup row.
   * C12-6: downgrade drops table + ref values cleanly.
 
-Audit dependency note: this test calls the migration's own
-``_replay_from_origination`` helper, which is intentionally local
-to the migration file (Commit 13 has not landed yet, so the loan
-resolver does not exist).  Once the resolver lands, future
-backfill code should delegate to it; for Commit 12 the in-migration
-helper is the only available reference for the divergence check.
+The C12-3/C12-4 ``user_trueup`` divergence tests (a trueup row
+inserted iff stored ``current_principal`` differed from a from-
+origination confirmed-payment replay) were REMOVED 2026-06-11
+(developer-ratified): DH-#56's migration (``b7d2f4a619c5``) dropped
+the ``loan_params.interest_rate`` column the trueup backfill's
+``_LOAN_ENUMERATION_SQL`` reads, so the helper cannot run against
+the post-drop schema these tests use, and no live code shares its
+logic to retarget at (the divergence check exists only inside the
+historical migration).  The one-time backfill ran correctly
+in-chain -- every base->head template build still executes it --
+which is the coverage that remains.
 """
 # pylint: disable=redefined-outer-name
 from __future__ import annotations
@@ -50,14 +40,12 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import LoanAnchorSourceEnum, StatusEnum
+from app.enums import LoanAnchorSourceEnum
 from app.extensions import db as _db
-from app.models.account import Account
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.services import account_service
-from app.services.transfer_service import TransferSpec, create_transfer
 from tests._test_helpers import insert_origination_rate
 
 
@@ -94,11 +82,6 @@ _M_LOAN_BACKFILL = _load_migration(
 def _origination_id():
     """Return the ``origination`` source row's integer PK."""
     return ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.ORIGINATION)
-
-
-def _trueup_id():
-    """Return the ``user_trueup`` source row's integer PK."""
-    return ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.USER_TRUEUP)
 
 
 def _create_loan_account(seed_user, db_session, *,
@@ -172,15 +155,6 @@ def _run_origination_backfill():
     """
     _db.session.execute(_db.text(_M_LOAN_BACKFILL._BACKFILL_ORIGINATION_SQL))
     _db.session.commit()
-
-
-def _run_trueup_backfill():
-    """Execute the migration's conditional trueup backfill."""
-    inserted = _M_LOAN_BACKFILL._backfill_trueup_events(
-        _db.session.connection(),
-    )
-    _db.session.commit()
-    return inserted
 
 
 # ---------------------------------------------------------------------------
@@ -288,214 +262,6 @@ class TestOriginationBackfill:
                 )
                 assert rows[0].anchor_date == params.origination_date
                 assert rows[0].anchor_balance == params.original_principal
-
-
-# ---------------------------------------------------------------------------
-# C12-3 / C12-4: conditional trueup backfill
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skip(
-    reason=(
-        "DH-#56 retired by-design: these exercise the Commit-12 trueup "
-        "backfill helper (_backfill_trueup_events), whose "
-        "_LOAN_ENUMERATION_SQL reads budget.loan_params.interest_rate -- a "
-        "column DH-#56's migration (b7d2f4a619c5) dropped.  That backfill "
-        "is a ONE-TIME historical migration: it runs correctly IN-CHAIN "
-        "(at d3d25212504b, before the drop -- verified by the full "
-        "base->head template build) but cannot be invoked against the "
-        "post-drop schema these tests use (raises UndefinedColumn).  No "
-        "single SQL satisfies both the in-chain state (interest_rate "
-        "exists, no origination rate_history rows yet) and the post-drop "
-        "state (column gone, origination rows present), so the helper is "
-        "not re-sourceable; restoring this coverage would require a "
-        "developer decision to rewrite the historical migration."
-    )
-)
-class TestTrueupBackfill:
-    """C12-3/4: trueup row inserted iff stored diverges from replay.
-
-    Skipped post-DH-#56 -- see the class decorator.  The trueup-backfill
-    logic still ran correctly at its point in the migration chain; only
-    the direct out-of-chain invocation these tests use is no longer
-    possible once ``loan_params.interest_rate`` is dropped.
-    """
-
-    def test_no_trueup_for_fixed_rate_with_consistent_stored(
-        self, app, db, seed_user,
-    ):
-        """C12-4: fixed-rate, stored == original (no payments) -> no trueup.
-
-        Arithmetic: a fresh fixed-rate loan at origination with
-        ``current_principal == original_principal == 200000.00`` and
-        no confirmed payments.  ``_replay_from_origination`` returns
-        ``original_principal`` (empty payments -> no schedule walk
-        needed) and the divergence check yields stored == replay,
-        so no user_trueup row is added.
-        """
-        with app.app_context():
-            account, _ = _create_loan_account(
-                seed_user, _db.session,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("200000.00"),
-                is_arm=False,
-            )
-            _drop_anchor_events_for_account(account.id)
-            _run_origination_backfill()
-
-            inserted = _run_trueup_backfill()
-
-            trueups = (
-                _db.session.query(LoanAnchorEvent)
-                .filter_by(
-                    account_id=account.id,
-                    source_id=_trueup_id(),
-                )
-                .all()
-            )
-            assert trueups == []
-            # And the returned list should not mention this account.
-            assert not any(aid == account.id for aid, _ in inserted)
-
-    def test_trueup_for_fixed_rate_with_manual_edit(
-        self, app, db, seed_user,
-    ):
-        """C12-3: fixed-rate, stored != original (no payments) -> trueup.
-
-        Arithmetic: the operator manually edited
-        ``current_principal`` from 200000 to 195000 through the
-        dashboard form before this migration ran.  No payments have
-        been settled.  ``_replay_from_origination`` returns 200000
-        (empty payments).  Stored 195000 != replay 200000, so a
-        trueup row is added at (today, 195000).
-        """
-        with app.app_context():
-            account, params = _create_loan_account(
-                seed_user, _db.session,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("195000.00"),
-                is_arm=False,
-            )
-            _drop_anchor_events_for_account(account.id)
-            _run_origination_backfill()
-
-            inserted = _run_trueup_backfill()
-
-            trueups = (
-                _db.session.query(LoanAnchorEvent)
-                .filter_by(
-                    account_id=account.id,
-                    source_id=_trueup_id(),
-                )
-                .all()
-            )
-            assert len(trueups) == 1
-            assert trueups[0].anchor_date == date.today()
-            assert trueups[0].anchor_balance == params.current_principal
-            assert (account.id, "fixed_divergence") in inserted
-
-    def test_trueup_always_inserted_for_arm(self, app, db, seed_user):
-        """C12-3 (ARM facet): ARMs always receive a trueup.
-
-        Arithmetic: an ARM loan with stored 199611.64 and original
-        200000.00, no payments.  Even though the replay-from-
-        origination would yield 200000 (no payments), the stored
-        value 199611.64 differs from it, so the trueup fires.  This
-        is the expected behaviour for ARMs at the migration cutover:
-        their stored principal is the user-verified value and must
-        be preserved across the Commit 15 resolver cutover so the
-        dashboard does not snap back to the from-origination
-        balance.
-        """
-        with app.app_context():
-            account, params = _create_loan_account(
-                seed_user, _db.session,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("199611.64"),
-                is_arm=True,
-            )
-            _drop_anchor_events_for_account(account.id)
-            _run_origination_backfill()
-
-            inserted = _run_trueup_backfill()
-
-            trueups = (
-                _db.session.query(LoanAnchorEvent)
-                .filter_by(
-                    account_id=account.id,
-                    source_id=_trueup_id(),
-                )
-                .all()
-            )
-            assert len(trueups) == 1
-            assert trueups[0].anchor_date == date.today()
-            assert trueups[0].anchor_balance == params.current_principal
-            assert (account.id, "arm") in inserted
-
-    def test_no_trueup_when_arm_stored_matches_replay(
-        self, app, db, seed_user,
-    ):
-        """An ARM loan whose stored == original (no payments) gets no trueup.
-
-        The divergence rule applies to ARMs uniformly: when the
-        replay yields the same balance as stored (rare, but
-        possible for a brand-new ARM at origination), the
-        origination event alone suffices.  Edge-case lock so the
-        ARM-special-case branch never widens to "always insert a
-        trueup regardless" -- which would clutter the audit trail.
-        """
-        with app.app_context():
-            account, _ = _create_loan_account(
-                seed_user, _db.session,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("200000.00"),
-                is_arm=True,
-            )
-            _drop_anchor_events_for_account(account.id)
-            _run_origination_backfill()
-
-            inserted = _run_trueup_backfill()
-
-            trueups = (
-                _db.session.query(LoanAnchorEvent)
-                .filter_by(
-                    account_id=account.id,
-                    source_id=_trueup_id(),
-                )
-                .all()
-            )
-            assert trueups == []
-            assert not any(aid == account.id for aid, _ in inserted)
-
-    def test_trueup_backfill_is_idempotent(self, app, db, seed_user):
-        """Re-running the trueup backfill on the same day does not duplicate.
-
-        The unique functional index plus the migration's pre-INSERT
-        same-day check together ensure that a re-run with no state
-        change leaves the previously inserted row alone.
-        """
-        with app.app_context():
-            account, _ = _create_loan_account(
-                seed_user, _db.session,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("195000.00"),
-                is_arm=False,
-            )
-            _drop_anchor_events_for_account(account.id)
-            _run_origination_backfill()
-
-            _run_trueup_backfill()
-            _run_trueup_backfill()
-
-            count = (
-                _db.session.query(LoanAnchorEvent)
-                .filter_by(
-                    account_id=account.id,
-                    source_id=_trueup_id(),
-                )
-                .count()
-            )
-            assert count == 1
 
 
 # ---------------------------------------------------------------------------

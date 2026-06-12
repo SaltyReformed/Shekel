@@ -34,8 +34,19 @@ import os
 import sys
 from dataclasses import dataclass, field
 
-# Ensure the project root is on sys.path so 'app' is importable.
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+
+# Ensure the project root is on sys.path so 'app' and 'scripts' are importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Pylint: wrong-import-position -- this import must follow the sys.path
+# bootstrap above: the repo root is not on the path when the script is
+# invoked as ``python scripts/integrity_check.py``.
+from scripts._script_lib import (  # pylint: disable=wrong-import-position
+    run_in_app_context,
+    setup_script_logging,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,34 +77,51 @@ class CheckResult:
     details: list = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class CheckSpec:
+    """Declarative definition of one integrity check.
+
+    The identity fields mirror :class:`CheckResult`; ``sql`` is the
+    violation query. One spec is one row in a category's check catalog.
+
+    Attributes:
+        check_id: Identifier like 'FK-01', 'OR-03', 'BA-02', 'DC-05'.
+        category: One of 'referential', 'orphan', 'balance', 'consistency'.
+        severity: 'critical' or 'warning'.
+        description: Human-readable description of what is checked.
+        sql: SQL query that returns violating rows (empty = pass).
+    """
+
+    check_id: str
+    category: str
+    severity: str
+    description: str
+    sql: str
+
+
 # ── Helper ───────────────────────────────────────────────────────
 
 
-def _run_check(session, check_id, category, severity, description, sql):
+def _run_check(session, spec: CheckSpec) -> CheckResult:
     """Execute a single integrity check query and return a CheckResult.
 
     Args:
         session: SQLAlchemy session.
-        check_id: Check identifier (e.g., 'FK-01').
-        category: Check category name.
-        severity: 'critical' or 'warning'.
-        description: Human-readable check description.
-        sql: SQL query that returns violating rows (empty = pass).
+        spec: The check definition: identity fields plus the SQL query
+            whose result rows are the violations.
 
     Returns:
         CheckResult with pass/fail status and violation details.
     """
-    from sqlalchemy import text  # pylint: disable=import-outside-toplevel
-
-    result = session.execute(text(sql))
+    result = session.execute(text(spec.sql))
     rows = result.fetchall()
     columns = list(result.keys()) if rows else []
     details = [dict(zip(columns, row)) for row in rows]
     return CheckResult(
-        check_id=check_id,
-        category=category,
-        severity=severity,
-        description=description,
+        check_id=spec.check_id,
+        category=spec.category,
+        severity=spec.severity,
+        description=spec.description,
         passed=len(rows) == 0,
         detail_count=len(rows),
         details=details,
@@ -201,7 +229,7 @@ def check_referential_integrity(session):
         """),
     ]
     return [
-        _run_check(session, cid, "referential", "critical", desc, sql)
+        _run_check(session, CheckSpec(cid, "referential", "critical", desc, sql))
         for cid, desc, sql in checks
     ]
 
@@ -269,7 +297,7 @@ def check_orphaned_records(session):
         """),
     ]
     return [
-        _run_check(session, cid, "orphan", "warning", desc, sql)
+        _run_check(session, CheckSpec(cid, "orphan", "warning", desc, sql))
         for cid, desc, sql in checks
     ]
 
@@ -346,7 +374,7 @@ def check_balance_anomalies(session):
         """),
     ]
     return [
-        _run_check(session, cid, "balance", "warning", desc, sql)
+        _run_check(session, CheckSpec(cid, "balance", "warning", desc, sql))
         for cid, desc, sql in checks
     ]
 
@@ -363,40 +391,34 @@ def check_data_consistency(session):
         session: SQLAlchemy session.
 
     Returns:
-        List of CheckResult for checks DC-01 through DC-09.
-    """
-    from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+        List of CheckResult for checks DC-02 through DC-09.
 
+    Note:
+        DC-01 ("done/received transactions without actual_amount") was
+        removed 2026-06-11: settling without a manual actual is a
+        designed, documented state (``MarkDoneSchema`` deliberately
+        leaves the column untouched and ``Transaction.effective_amount``
+        falls back to ``estimated_amount``), so the check flagged
+        routine legal data on every prod run.  The remaining IDs keep
+        their historical numbers so past run logs stay comparable.
+    """
     results = []
 
-    # DC-01: Done/received transactions without actual_amount (critical).
-    results.append(_run_check(
-        session, "DC-01", "consistency", "critical",
-        "Transactions with status done/received but no actual_amount",
-        """
-        SELECT t.id, t.name, s.name AS status
-        FROM budget.transactions t
-        JOIN ref.statuses s ON t.status_id = s.id
-        WHERE s.name IN ('Paid', 'Received')
-          AND t.actual_amount IS NULL
-        """,
-    ))
-
     # DC-02: Transfers where from_account equals to_account (warning).
-    results.append(_run_check(
-        session, "DC-02", "consistency", "warning",
+    results.append(_run_check(session, CheckSpec(
+        "DC-02", "consistency", "warning",
         "Transfers where from_account equals to_account",
         """
         SELECT tr.id, tr.name, tr.from_account_id, tr.to_account_id
         FROM budget.transfers tr
         WHERE tr.from_account_id = tr.to_account_id
         """,
-    ))
+    )))
 
     # DC-03: Account type-specific params mismatch (warning).
     # Checks: interest-bearing accounts without interest_params.
-    results.append(_run_check(
-        session, "DC-03", "consistency", "warning",
+    results.append(_run_check(session, CheckSpec(
+        "DC-03", "consistency", "warning",
         "Typed accounts missing their type-specific params",
         """
         SELECT a.id, a.name, at.name AS type_name, atc.name AS category_name
@@ -408,12 +430,12 @@ def check_data_consistency(session):
         WHERE (at.name = 'HYSA' AND hp.id IS NULL)
            OR (at.has_amortization = TRUE AND lp.id IS NULL)
         """,
-    ))
+    )))
 
     # DC-04: Self-referential credit payback cycles (warning).
     # A chain longer than 1: A.credit_payback_for_id -> B.credit_payback_for_id -> C.
-    results.append(_run_check(
-        session, "DC-04", "consistency", "warning",
+    results.append(_run_check(session, CheckSpec(
+        "DC-04", "consistency", "warning",
         "Credit payback chains longer than 1 level",
         """
         SELECT t1.id AS txn_id, t1.credit_payback_for_id AS pays_back,
@@ -422,11 +444,11 @@ def check_data_consistency(session):
         JOIN budget.transactions t2 ON t1.credit_payback_for_id = t2.id
         WHERE t2.credit_payback_for_id IS NOT NULL
         """,
-    ))
+    )))
 
     # DC-05: Active templates for inactive accounts (warning).
-    results.append(_run_check(
-        session, "DC-05", "consistency", "warning",
+    results.append(_run_check(session, CheckSpec(
+        "DC-05", "consistency", "warning",
         "Active templates referencing inactive accounts",
         """
         SELECT tt.id, tt.name, tt.account_id, a.name AS account_name
@@ -435,25 +457,32 @@ def check_data_consistency(session):
         WHERE tt.is_active = TRUE
           AND a.is_active = FALSE
         """,
-    ))
+    )))
 
     # DC-06: Duplicate non-deleted transactions per template/period/scenario (critical).
-    results.append(_run_check(
-        session, "DC-06", "consistency", "critical",
+    # The predicate mirrors the schema's own uniqueness contract -- the
+    # partial unique index ``idx_transactions_template_period_scenario``
+    # is unique only WHERE ``is_override = FALSE``: an override sibling
+    # (a carried-forward unpaid item) legally coexists with the
+    # rule-generated row for its target period, so override rows must
+    # not count toward the duplicate group.
+    results.append(_run_check(session, CheckSpec(
+        "DC-06", "consistency", "critical",
         "Duplicate non-deleted transactions per template/period/scenario",
         """
         SELECT template_id, pay_period_id, scenario_id, COUNT(*) AS cnt
         FROM budget.transactions
         WHERE template_id IS NOT NULL
           AND is_deleted = FALSE
+          AND is_override = FALSE
         GROUP BY template_id, pay_period_id, scenario_id
         HAVING COUNT(*) > 1
         """,
-    ))
+    )))
 
     # DC-07: Users without user_settings (critical).
-    results.append(_run_check(
-        session, "DC-07", "consistency", "critical",
+    results.append(_run_check(session, CheckSpec(
+        "DC-07", "consistency", "critical",
         "Users without a user_settings row",
         """
         SELECT u.id, u.email
@@ -461,24 +490,30 @@ def check_data_consistency(session):
         LEFT JOIN auth.user_settings s ON u.id = s.user_id
         WHERE s.id IS NULL
         """,
-    ))
+    )))
 
     # DC-08: Users without a baseline scenario (critical).
-    results.append(_run_check(
-        session, "DC-08", "consistency", "critical",
+    # Companion-role users are excluded: a companion views the linked
+    # owner's data and owns no budget rows of their own (no accounts,
+    # no periods, no scenarios) by design, so "no baseline scenario"
+    # is their correct steady state, not a defect.
+    results.append(_run_check(session, CheckSpec(
+        "DC-08", "consistency", "critical",
         "Users without a baseline scenario",
         """
         SELECT u.id, u.email
         FROM auth.users u
+        JOIN ref.user_roles r ON u.role_id = r.id
         LEFT JOIN budget.scenarios s
           ON u.id = s.user_id AND s.is_baseline = TRUE
         WHERE s.id IS NULL
+          AND r.name != 'companion'
         """,
-    ))
+    )))
 
     # DC-09: Salary deduction target accounts belonging to a different user (warning).
-    results.append(_run_check(
-        session, "DC-09", "consistency", "warning",
+    results.append(_run_check(session, CheckSpec(
+        "DC-09", "consistency", "warning",
         "Salary deductions targeting another user's account",
         """
         SELECT pd.id, pd.name AS deduction_name,
@@ -489,7 +524,7 @@ def check_data_consistency(session):
         WHERE pd.target_account_id IS NOT NULL
           AND sp.user_id != a.user_id
         """,
-    ))
+    )))
 
     return results
 
@@ -536,7 +571,6 @@ def run_all_checks(session, categories=None, verbose=False):
                         "[PASS] %s: %s", result.check_id, result.description
                     )
             else:
-                level = "ERROR" if result.severity == "critical" else "WARNING"
                 logger.log(
                     logging.ERROR if result.severity == "critical" else logging.WARNING,
                     "[FAIL] %s: %s (%d violation(s))",
@@ -623,7 +657,11 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def run_cli(database_url=None, categories=None, verbose=False):
+def run_cli(
+    database_url: str | None = None,
+    categories: list[str] | None = None,
+    verbose: bool = False,
+) -> int:
     """CLI entry point: create app, run checks, print results, exit.
 
     If database_url is provided, it overrides the Flask config.
@@ -637,38 +675,36 @@ def run_cli(database_url=None, categories=None, verbose=False):
     Returns:
         Exit code (0, 1, 2, or 3).
     """
-    if database_url:
-        os.environ["DATABASE_URL"] = database_url
+    def _check_and_summarize(session) -> tuple[int, int]:
+        """Run the requested checks and return (critical, warning) counts."""
+        results = run_all_checks(session, categories, verbose)
+        return summarize_results(results)
 
     try:
-        from app import create_app  # pylint: disable=import-outside-toplevel
-        from app.extensions import db  # pylint: disable=import-outside-toplevel
-
-        app = create_app()
-        with app.app_context():
-            results = run_all_checks(db.session, categories, verbose)
-            critical, warnings = summarize_results(results)
-
-            if critical > 0:
-                return 1
-            if warnings > 0:
-                return 2
-            return 0
-    except Exception as exc:  # pylint: disable=broad-except
+        critical, warnings = run_in_app_context(
+            _check_and_summarize, database_url=database_url
+        )
+    # The exit-code-3 contract covers script errors: bad configuration
+    # (ValueError from create_app / config validation), a missing or
+    # broken app package (ImportError), Flask context problems
+    # (RuntimeError), filesystem/socket failures (OSError), and any
+    # database connection or query failure (SQLAlchemyError).
+    except (ImportError, OSError, RuntimeError, ValueError, SQLAlchemyError) as exc:
         logger.error("Integrity check failed: %s", exc)
         return 3
 
+    if critical > 0:
+        return 1
+    if warnings > 0:
+        return 2
+    return 0
+
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    setup_script_logging()
     args = parse_args()
-    code = run_cli(
+    sys.exit(run_cli(
         database_url=args.database_url,
         categories=[args.category] if args.category else None,
         verbose=args.verbose,
-    )
-    sys.exit(code)
+    ))

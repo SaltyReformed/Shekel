@@ -14,6 +14,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    _normalize_empty_inputs,
     _normalize_percent_fields,
 )
 
@@ -33,8 +34,8 @@ class PensionProfileCreateSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     salary_profile_id = fields.Integer(allow_none=True)
@@ -93,8 +94,8 @@ class PensionProfileUpdateSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     salary_profile_id = fields.Integer(allow_none=True)
@@ -131,8 +132,8 @@ class RetirementSettingsSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     safe_withdrawal_rate = fields.Decimal(
@@ -174,8 +175,8 @@ class RetirementGapQuerySchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     swr = fields.Decimal(

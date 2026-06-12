@@ -486,12 +486,18 @@ class TestCalculateInvestmentInputs:
         assert result.gross_biweekly == Decimal("3846.15")
 
     def test_negative_deduction_amount(self):
-        """Negative flat deduction amount is accepted without validation.
+        """Negative flat deduction amount passes through sign-agnostically.
 
-        The source does not guard against negative amounts. A negative
-        deduction effectively reduces the total periodic contribution.
-        # BUG: negative deduction amount is silently accepted -- consider
-        # adding a guard in the service.
+        Pins the service-layer contract: the service applies whatever
+        amount it is handed, so a negative flat deduction reduces the
+        periodic contribution arithmetically.  This is NOT a reachable
+        production state (plan.md P-3, triage-verified CLOSED
+        2026-06-09): the boundary rejects negative amounts twice --
+        ``DeductionCreateSchema.amount`` requires
+        ``Range(min=Decimal("0.0001"))`` (validation/salary.py) and the
+        DB enforces ``ck_paycheck_deductions_positive_amount``
+        (``amount > 0``).  Sign-guarding is the boundary's job; the
+        service stays a pure function of its inputs.
         """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),

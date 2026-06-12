@@ -19,10 +19,11 @@
 #   - scripts/seed_companion.py     Seed companion user (docker exec)
 #   - scripts/audit_cleanup.py  Audit log retention (docker exec)
 #   - scripts/integrity_check.py    Integrity sweep (docker exec)
-#   - scripts/repair_orphaned_transfers.py    Data repair (docker exec)
 #   - scripts/reset_mfa.py      Operator MFA reset (docker exec)
 #   - scripts/rotate_sessions.py    Session invalidation (docker exec)
 #   - scripts/rotate_totp_key.py    Key rotation (docker exec)
+#   - scripts/_script_lib.py    Shared CLI helpers the runtime scripts
+#                               above import (run_in_app_context etc.)
 #   - alembic.ini               Alembic config
 #   - entrypoint.sh             ENTRYPOINT
 #   - gunicorn.conf.py          gunicorn config
@@ -158,8 +159,6 @@ amortization-fix.patch
 #
 # scripts/audit/  Audit-time supporting modules (host-only).
 # scripts/hooks/  Git / claude-code hooks (host-only).
-# scripts/benchmark_triggers.py  Manual perf benchmark (dev-only;
-#                 acceptable to run via host venv).
 # scripts/vendor_google_fonts.py Vendoring step that runs at build
 #                 time on the host; fonts already shipped in
 #                 app/static/vendor/.
@@ -176,7 +175,6 @@ amortization-fix.patch
 #                 C-37.
 scripts/audit/
 scripts/hooks/
-scripts/benchmark_triggers.py
 scripts/vendor_google_fonts.py
 scripts/backup.sh
 scripts/backup_retention.sh

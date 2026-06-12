@@ -70,39 +70,46 @@ class TestAuditCleanup:
         deleted = execute_cleanup(db.session, days=365, dry_run=False)
         assert deleted == 3
 
-    def test_cleanup_with_zero_days_deletes_all(self, app, db):
-        """execute_cleanup(days=0) deletes all audit_log rows."""
+    def test_cleanup_with_zero_days_rejected(self, app, db):
+        """execute_cleanup(days=0) raises ValueError and deletes nothing.
+
+        days=0 makes the cutoff ``now()``, which matches every existing
+        row -- the destroy-the-entire-log hazard parse_args already
+        blocks at the CLI.  The programmatic path enforces the identical
+        ``days >= 1`` bound before any DB work.
+        """
         _insert_audit_row(days_ago=0)
         _insert_audit_row(days_ago=1)
         db.session.commit()
 
-        deleted = execute_cleanup(db.session, days=0, dry_run=False)
-        assert deleted == 2
-        assert _audit_count() == 0
+        with pytest.raises(ValueError, match="at least 1"):
+            execute_cleanup(db.session, days=0, dry_run=False)
+        # Nothing was deleted -- the guard fired before any DB work.
+        assert _audit_count() == 2
 
     def test_cleanup_with_empty_table(self, app, db):
         """execute_cleanup() on an empty audit_log table returns 0."""
         deleted = execute_cleanup(db.session, days=365, dry_run=False)
         assert deleted == 0
 
-    def test_cleanup_negative_days(self, app, db):
-        """execute_cleanup(days=-1) deletes ALL rows.
+    def test_cleanup_negative_days_rejected(self, app, db):
+        """execute_cleanup(days=-1) raises ValueError before any DB work.
 
-        # BUG: A negative days value creates a future cutoff in PostgreSQL:
-        # now() - make_interval(days => -1) = now() + 1 day.
-        # The WHERE clause becomes executed_at < (now + 1 day), which matches
-        # every existing row.  Negative days should be rejected or treated
-        # as zero to prevent accidental deletion of the entire audit log.
+        A negative days value creates a future cutoff in PostgreSQL:
+        ``now() - make_interval(days => -1)`` equals ``now() + 1 day``,
+        so ``executed_at < cutoff`` matches every existing row and
+        silently destroys the entire audit log.  The guard rejects
+        ``days < 1``, matching the parse_args CLI bound.
         """
         _insert_audit_row(days_ago=30)
         _insert_audit_row(days_ago=0)
         _insert_audit_row(days_ago=1)
         db.session.commit()
 
-        deleted = execute_cleanup(db.session, days=-1, dry_run=False)
-        # Negative days shifts the cutoff into the future, deleting everything.
-        assert deleted == 3
-        assert _audit_count() == 0
+        with pytest.raises(ValueError, match="at least 1"):
+            execute_cleanup(db.session, days=-1, dry_run=False)
+        # All three rows survive -- the guard fired before any DB work.
+        assert _audit_count() == 3
 
     def test_cleanup_does_not_affect_recent_records(self, app, db):
         """execute_cleanup(days=30) preserves records newer than 30 days.

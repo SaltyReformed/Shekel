@@ -2,12 +2,14 @@
 
 import os
 import re
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import bcrypt
 import pyotp
 import pytest
 
+from app.models.user import MfaConfig
 from app.services import mfa_service
 
 
@@ -944,3 +946,91 @@ class TestMultiFernetKeyHandling:
 
         with pytest.raises(ValueError):
             mfa_service._build_fernet_list()  # pylint: disable=protected-access
+
+
+class TestClearMfaMaterial:
+    """Tests for clear_mfa_material() and has_mfa_material().
+
+    The shared field-set rule consumed by the /mfa/disable route and
+    scripts/reset_mfa.py.  Both functions are pure in-place row
+    operations, so the tests construct in-memory MfaConfig instances
+    (no DB) mirroring the state-machine policy tests.
+    """
+
+    # One realistic value per material field.  The completeness test
+    # below pins this dict against the service's own field set so a
+    # future MfaConfig material column cannot be added to one without
+    # the other.
+    _MATERIAL_VALUES = {
+        "totp_secret_encrypted": b"encrypted-active-secret",
+        "backup_codes": ["$2b$12$hashA", "$2b$12$hashB"],
+        "confirmed_at": datetime(2026, 1, 5, tzinfo=timezone.utc),
+        "last_totp_timestep": 59_000_000,
+        "pending_secret_encrypted": b"encrypted-pending-secret",
+        "pending_secret_expires_at": datetime(2026, 6, 1, tzinfo=timezone.utc),
+    }
+
+    def _full_config(self):
+        """An enabled MfaConfig carrying every material field."""
+        return MfaConfig(user_id=1, is_enabled=True, **self._MATERIAL_VALUES)
+
+    def test_value_map_matches_service_field_set(self):
+        """The test's field/value map covers exactly the service's set.
+
+        Guards the guard: if _MFA_MATERIAL_FIELDS gains a column, this
+        fails until the tests exercise it too.
+        """
+        # Pylint: protected-access -- pinning the private field set is
+        # the point; a public re-export would be API surface for one test.
+        assert set(self._MATERIAL_VALUES) == set(
+            mfa_service._MFA_MATERIAL_FIELDS  # pylint: disable=protected-access
+        )
+
+    def test_clear_nulls_every_material_field_and_disables(self):
+        """clear_mfa_material() nulls all material and flips is_enabled.
+
+        The full-disable contract both consumers rely on: no
+        decryptable or verifiable secret material may remain at rest,
+        including an in-flight pending-setup ciphertext.
+        """
+        config = self._full_config()
+
+        mfa_service.clear_mfa_material(config)
+
+        assert config.is_enabled is False
+        for field in self._MATERIAL_VALUES:
+            assert getattr(config, field) is None, field
+
+    def test_has_mfa_material_false_on_clean_row(self):
+        """A fully-reset row reports no material."""
+        config = MfaConfig(user_id=1, is_enabled=False)
+        assert mfa_service.has_mfa_material(config) is False
+
+    def test_has_mfa_material_false_after_clear(self):
+        """clear_mfa_material() leaves the row reporting no material --
+        the two functions agree because they read one field set."""
+        config = self._full_config()
+        mfa_service.clear_mfa_material(config)
+        assert mfa_service.has_mfa_material(config) is False
+
+    @pytest.mark.parametrize("field", sorted(_MATERIAL_VALUES))
+    def test_has_mfa_material_true_for_each_single_field(self, field):
+        """Any single lingering material field is detected.
+
+        The pending_secret_encrypted case is the one the reset script
+        historically missed: an abandoned /mfa/setup leaves only the
+        pending ciphertext + expiry behind, and the residue check must
+        flag it so the emergency reset scrubs it.
+        """
+        config = MfaConfig(
+            user_id=1, is_enabled=False,
+            **{field: self._MATERIAL_VALUES[field]},
+        )
+        assert mfa_service.has_mfa_material(config) is True
+
+    def test_is_enabled_alone_is_not_material(self):
+        """is_enabled is workflow state, not material -- a row that is
+        (corruptly) enabled with no stored material reports False, and
+        callers must check the flag separately."""
+        config = MfaConfig(user_id=1, is_enabled=True)
+        assert mfa_service.has_mfa_material(config) is False

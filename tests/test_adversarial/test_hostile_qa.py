@@ -277,15 +277,19 @@ class TestStateMachineViolations:
             # actual_amount is NOT cleared by the PATCH.
             assert txn.actual_amount == Decimal("2800.00")
 
-    def test_credit_to_projected_reversion(
+    def test_credit_to_projected_reversion_deletes_payback(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Credit → projected reversion leaves orphaned payback.
+        """Credit -> projected reversion via PATCH deletes the payback.
 
         A transaction marked as credit (auto-generates payback) is
-        reverted to projected via PATCH. The payback transaction is
-        NOT deleted, creating an orphaned payback that inflates
-        projected expenses.
+        reverted to projected via PATCH.  The PATCH path shares
+        ``credit_workflow.delete_payback_on_credit_revert`` with
+        ``unmark_credit``, so the auto-generated payback is deleted
+        with the reversion -- the orphaned payback this test
+        previously pinned (which inflated the next period's projected
+        expenses) can no longer be created.  Behavior change ratified
+        2026-06-11 (deep-quality-hunt orphaned-payback candidate).
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, period_index=0)
@@ -311,19 +315,54 @@ class TestStateMachineViolations:
                 f"/transactions/{txn.id}",
                 data={"status_id": str(projected.id)},
             )
-            # Current behavior: no transition guard, reversion is allowed.
-            # Ideal: credit → projected should also delete the payback
-            # (like unmark_credit does) to prevent orphaned paybacks.
             assert resp.status_code == 200
 
             db.session.refresh(txn)
             assert txn.status.name == "Projected"
             assert txn.effective_amount == Decimal("100.00")
 
-            # BUG: the payback transaction is now orphaned.
+            # The payback is hard-deleted with the reversion, exactly
+            # like unmark_credit.
             orphan = db.session.get(Transaction, payback_id)
-            assert orphan is not None, \
-                "Payback still exists as orphan after credit→projected reversion"
+            assert orphan is None, \
+                "Payback must be deleted on credit->projected reversion"
+
+    def test_credit_identity_resubmit_keeps_payback(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """An idempotent Credit -> Credit PATCH keeps the payback.
+
+        The PATCH path's payback cleanup fires only when the row
+        actually LEAVES Credit status.  An identity re-submit (the
+        state machine admits Credit -> Credit for idempotent saves,
+        e.g. a notes edit from the popover that posts the unchanged
+        status) must not delete the auto-generated payback out from
+        under a still-credited transaction.
+        """
+        with app.app_context():
+            txn = _make_transaction(seed_user, seed_periods, period_index=0)
+            db.session.commit()
+
+            resp = auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            assert resp.status_code == 200
+
+            payback = db.session.query(Transaction).filter_by(
+                credit_payback_for_id=txn.id,
+            ).one()
+            payback_id = payback.id
+
+            # Re-submit the same Credit status (identity transition).
+            credit = db.session.query(Status).filter_by(name="Credit").one()
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": str(credit.id)},
+            )
+            assert resp.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status.name == "Credit"
+            # The payback survives the identity re-submit.
+            assert db.session.get(Transaction, payback_id) is not None
 
     def test_cancelled_to_done_direct(
         self, app, auth_client, seed_user, seed_periods,

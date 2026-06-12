@@ -1,9 +1,13 @@
 [MAIN]
-# Make the repo-local checker plugin importable. Anchored to the working
-# directory, which is the repo root for every pylint invocation in this project:
-# CI, the Claude Code hooks, pre-commit, and the /standards command all run
-# pylint from the root. init-hook runs before load-plugins for exactly this.
-init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint"))'
+# Make the repo-local checker plugin importable, and put the repo root itself
+# on sys.path so `app.*` resolves when linting scripts/ (each script mutates
+# sys.path at RUNTIME before importing app, which static analysis cannot see;
+# for app/ the root is already the linted package's parent, so this is a
+# no-op there). Anchored to the working directory, which is the repo root for
+# every pylint invocation in this project: CI, the Claude Code hooks,
+# pre-commit, and the /standards command all run pylint from the root.
+# init-hook runs before load-plugins for exactly this.
+init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint")); sys.path.insert(0, os.path.abspath("."))'
 # Load the docparams extension (param/return description enforcement) plus the
 # project's own checkers in tools/pylint/shekel_checkers.py:
 # shekel-decimal-from-float, shekel-refname-compare, shekel-bare-money-quantize,

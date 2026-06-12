@@ -33,13 +33,14 @@ from app.services import credit_workflow, transaction_service, transfer_service
 from app.services.state_machine import finalised_edit_rejection, verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
+from app.utils.balance_predicates import is_credit
 from app.routes.transactions._bp import transactions_bp
+from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
     _get_owned_transaction,
     _mark_done_schema,
     _mark_done_success_response,
-    _render_cell,
     _RenderTarget,
     _stale_transaction_response,
     _update_schema,
@@ -167,7 +168,7 @@ def _apply_shadow_update(txn, txn_id, data):
         "user_id=%d updated shadow transaction %d (transfer %d)",
         current_user.id, txn_id, txn.transfer_id,
     )
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
@@ -230,10 +231,13 @@ def _apply_regular_update(txn, txn_id, data):
 
     Validates any status change (:func:`_resolve_status_change`),
     enforces the expense-only purchase-tracking guard, writes the
-    submitted fields, flags template-generated rows as overridden when
-    the amount or period changed, and commits under the optimistic
-    lock.  A ``pay_period_id`` change relocates the row across the grid,
-    so it triggers a full ``gridRefresh`` instead of the in-place
+    submitted fields, deletes the auto-generated payback when the
+    change reverts a Credit row (mirroring ``unmark_credit`` via the
+    shared ``credit_workflow.delete_payback_on_credit_revert``), flags
+    template-generated rows as overridden when the amount or period
+    changed, and commits under the optimistic lock.  A
+    ``pay_period_id`` change relocates the row across the grid, so it
+    triggers a full ``gridRefresh`` instead of the in-place
     ``balanceChanged`` swap.
 
     Args:
@@ -282,6 +286,19 @@ def _apply_regular_update(txn, txn_id, data):
         "pay_period_id" in data and data["pay_period_id"] != txn.pay_period_id
     )
 
+    # Detect a Credit reversion before the setattr loop rewrites
+    # status_id.  A Credit row leaving Credit status (the state machine
+    # only admits Credit -> Projected besides identity) must delete its
+    # auto-generated payback exactly like unmark_credit -- otherwise the
+    # PATCH path orphans the payback and inflates the next period's
+    # projected expenses.  An identity re-submit (Credit -> Credit)
+    # keeps the payback.
+    reverts_credit = (
+        "status_id" in data
+        and is_credit(txn)
+        and data["status_id"] != ref_cache.status_id(StatusEnum.CREDIT)
+    )
+
     # Apply updates (regular transactions only).
     for field, value in data.items():
         setattr(txn, field, value)
@@ -295,6 +312,17 @@ def _apply_regular_update(txn, txn_id, data):
         txn.is_override = True
 
     try:
+        if reverts_credit:
+            # Inside the StaleDataError net deliberately: the payback
+            # lookup autoflushes the already-dirtied row (the
+            # version-pinned UPDATE), so a concurrent commit surfaces
+            # here as StaleDataError and must yield the 409 conflict
+            # cell, not a 500.  The helper does not commit -- the
+            # deletion joins this request's commit so the status flip
+            # and the payback removal land atomically.
+            credit_workflow.delete_payback_on_credit_revert(
+                txn, current_user.id,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -310,7 +338,7 @@ def _apply_regular_update(txn, txn_id, data):
     # its new period; an in-place edit only needs the balance rows
     # recomputed.  ``gridRefresh`` reloads the page (app.js); the
     # returned cell still swaps first, which is harmless before reload.
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {
         "HX-Trigger": "gridRefresh" if period_changed else "balanceChanged",
     }
@@ -397,7 +425,7 @@ def update_transaction(txn_id):
             "(submitted=%d, current=%d)",
             txn_id, submitted_version, txn.version_id,
         )
-        return _render_cell(txn, conflict=True), 409
+        return render_transaction_cell(txn, conflict=True), 409
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
@@ -416,6 +444,12 @@ def delete_transaction(txn_id):
     Shadow transactions cannot be directly deleted -- the user must
     delete the parent transfer instead.
 
+    A source with a live CC payback (transaction-level Credit or
+    entry-level credit) takes the payback down with it in the same
+    commit via ``credit_workflow.delete_payback_on_source_delete`` --
+    otherwise the ``SET NULL`` FK leaves the payback inflating the
+    next period with no offsetting credit row.
+
     Optimistic locking (commit C-18 / F-010): both the soft-delete
     UPDATE and the hard-delete DELETE are version-pinned by
     SQLAlchemy.  A concurrent commit that bumps the row's version
@@ -429,6 +463,12 @@ def delete_transaction(txn_id):
     # --- Transfer detection guard: block direct shadow deletion ---
     if txn.transfer_id is not None:
         return "Cannot delete a transfer shadow directly. Delete the parent transfer instead.", 400
+
+    # Delete the live payback (if any) before the source goes.  Runs
+    # for both branches below: a hard-deleted ad-hoc source would
+    # otherwise leave the payback with its link NULLed, a soft-deleted
+    # template row would leave it linked to an invisible source.
+    credit_workflow.delete_payback_on_source_delete(txn, current_user.id)
 
     if txn.template_id:
         # Template-linked: soft-delete so the recurrence engine knows.
@@ -502,7 +542,7 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
         db.session.rollback()
         return str(exc), 400
     db.session.refresh(txn)
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -695,7 +735,7 @@ def mark_credit(txn_id):
         return _credit_payback_idempotent_response(exc, txn_id)
     except (NotFoundError, ValidationError) as exc:
         return str(exc), 400
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -733,7 +773,7 @@ def unmark_credit(txn_id):
         # offending status so the user understands why.
         db.session.rollback()
         return str(exc), 400
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -775,7 +815,7 @@ def _cancel_shadow(txn, txn_id, cancelled_id):
         db.session.rollback()
         return str(exc), 400
     db.session.refresh(txn)
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
@@ -822,5 +862,5 @@ def cancel_transaction(txn_id):
         return _stale_transaction_response(txn_id)
     logger.info("user_id=%d cancelled transaction %d", current_user.id, txn_id)
 
-    response = _render_cell(txn)
+    response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}

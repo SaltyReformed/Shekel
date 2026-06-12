@@ -772,7 +772,7 @@ contribution, savings metrics, and count_periods_until all covered.
 
 ---
 
-### 2.11 `routes/auth.py` -- Priority P3 ✅
+### 2.11 `routes/auth/` (pre-split `routes/auth.py`) -- Priority P3 ✅
 
 **Status: Complete (7 tests).** All edge cases covered.
 

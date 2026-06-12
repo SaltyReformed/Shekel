@@ -10,8 +10,19 @@
   {# HTMX reads its config from this meta tag at startup.  includeIndicatorStyles
      is disabled because the CSP (style-src 'self', no 'unsafe-inline'/nonce)
      blocks the inline <style> block HTMX would otherwise inject; the
-     .htmx-indicator rules live in css/app.css instead. #}
-  <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+     .htmx-indicator rules live in css/base.css instead.
+
+     responseHandling: htmx's default never swaps 4xx bodies, which made
+     the optimistic-lock conflict UX (C-18) dead UI -- every ``409`` body
+     in the app is a DESIGNED conflict partial (entry list, transaction
+     cell, mobile card, transfer cell) built for the request's own
+     hx-target, so 409 swaps.  Entries are matched IN ORDER and the meta
+     override REPLACES the whole key, so the default 204 / 2xx / 4xx-5xx
+     entries are restated around it.  422 and the other 4xx stay
+     non-swapping deliberately: those bodies are raw strings or JSON
+     (str(errors), jsonify(...)), and the carry-forward modal's
+     htmx:responseError handler (app.js) relies on 4xx not swapping. #}
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true},{"code":"[45]..","swap":false,"error":true}]}'>
 
   {# Vendored front-end assets -- pinned in app/static/vendor/VERSIONS.txt.
      The CSP forbids external origins (audit F-037), so every CSS/JS/font
@@ -34,8 +45,19 @@
   <link rel="apple-touch-icon" sizes="167x167" href="{{ url_for('static', filename='img/icon-167.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/icon-192.png') }}">
 
-  <!-- App CSS -->
-  <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
+  {# App CSS -- ORDER IS LOAD-BEARING (docs/design/css_architecture_audit.md):
+     the Steel Ink token file must follow bootstrap.min.css (it overrides
+     Bootstrap's --bs-* variables at equal specificity) and load on every
+     page (the other sheets' var(--shekel-*) consumers have no fallbacks);
+     utilities.css must stay LAST (its single-class utilities replaced
+     inline styles and win equal-specificity ties only by source order). #}
+  <link href="{{ url_for('static', filename='css/theme-steel-ink.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/base.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/components.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/grid.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/dashboard.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/analytics.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/utilities.css') }}" rel="stylesheet">
 </head>
 
 <body>
@@ -306,6 +328,7 @@
   <!-- App JS -->
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
   <script src="{{ url_for('static', filename='js/grid_edit.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/command_palette.js') }}"></script>
   <script src="{{ url_for('static', filename='js/mobile_grid.js') }}"></script>
   <script src="{{ url_for('static', filename='js/progress_bar.js') }}"></script>
   <script src="{{ url_for('static', filename='js/categories.js') }}"></script>

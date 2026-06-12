@@ -32,8 +32,18 @@ import os
 import sys
 from datetime import datetime, timezone
 
-# Ensure the project root is on sys.path so 'app' is importable.
+# Ensure the project root is on sys.path so 'app' and 'scripts' are
+# importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Pylint: wrong-import-position -- this import must follow the sys.path
+# bootstrap above; 'scripts' is only importable once the project root
+# is on the path.
+from scripts._script_lib import (  # pylint: disable=wrong-import-position
+    confirm_gate,
+    parse_confirm_args,
+    run_in_app_context,
+)
 
 
 def execute_rotation(db_session) -> int:
@@ -57,10 +67,15 @@ def execute_rotation(db_session) -> int:
         - Emits a structured log event ``sessions_invalidated_global``
           at ``WARNING`` level with the row count.
     """
-    # Local imports keep this module importable even when the app
-    # package has not yet been initialized (matches the convention used
-    # in scripts/audit_cleanup.py).
+    # Pylint: import-outside-toplevel -- importing anything under
+    # ``app`` executes ``app.config``, which reads ``os.environ`` at
+    # import time; deferring to call time keeps this module import
+    # side-effect-free (``--help`` and a missing ``--confirm`` never
+    # load app config) and preserves run_in_app_context's pre-import
+    # DATABASE_URL override contract.
     from app.models.user import User  # pylint: disable=import-outside-toplevel
+    # Pylint: import-outside-toplevel -- same deferred app-import
+    # reason as the import directly above.
     from app.utils.log_events import (  # pylint: disable=import-outside-toplevel
         AUTH,
         log_event,
@@ -96,65 +111,45 @@ def run_rotation() -> int:
     Returns:
         The number of rows updated.
     """
-    # Local imports so the module is importable even when create_app
-    # would fail (e.g. config validation in a test that has not yet
-    # patched the environment).
-    from app import create_app  # pylint: disable=import-outside-toplevel
-    from app.extensions import db  # pylint: disable=import-outside-toplevel
-
-    app = create_app()
-    with app.app_context():
-        return execute_rotation(db.session)
+    return run_in_app_context(execute_rotation)
 
 
-def parse_args(argv=None):
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
 
     Args:
-        argv (list[str] | None): Argument list (defaults to
-            ``sys.argv[1:]`` when ``None``).
+        argv: Argument list (defaults to ``sys.argv[1:]`` when
+            ``None``).
 
     Returns:
         argparse.Namespace with ``confirm`` (bool).
     """
-    parser = argparse.ArgumentParser(
+    return parse_confirm_args(
+        argv,
         description=(
             "Force-invalidate every user session by bumping "
             "session_invalidated_at to now().  Run after rotating "
             "SECRET_KEY or after a git history rewrite that exposed "
             "a previously-leaked key."
         ),
+        acknowledgment="Acknowledge that every active user will be logged out.",
     )
-    parser.add_argument(
-        "--confirm",
-        action="store_true",
-        help=(
-            "Acknowledge that every active user will be logged out. "
-            "Required: the script refuses to run without this flag."
-        ),
-    )
-    return parser.parse_args(argv)
 
 
-def main(argv=None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """CLI entry point.
 
     Args:
-        argv (list[str] | None): Argument list (defaults to
-            ``sys.argv[1:]`` when ``None``).
+        argv: Argument list (defaults to ``sys.argv[1:]`` when
+            ``None``).
 
     Returns:
         Process exit code.  ``0`` on success, ``1`` when ``--confirm``
         was not supplied.
     """
-    args = parse_args(argv)
-    if not args.confirm:
-        print(
-            "Refusing to run without --confirm.  Re-run as:\n"
-            "    python scripts/rotate_sessions.py --confirm",
-            file=sys.stderr,
-        )
-        return 1
+    refusal = confirm_gate(parse_args(argv), "rotate_sessions.py")
+    if refusal is not None:
+        return refusal
     count = run_rotation()
     print(f"Invalidated {count} session(s).")
     return 0

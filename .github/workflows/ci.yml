@@ -120,6 +120,18 @@ jobs:
       - name: Lint with pylint
         run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale --output-format=colorized
 
+      # ── 5a. Lint scripts/ ────────────────────────────────────────
+      # Same layered gate for the operational CLI scripts.  scripts/
+      # reached 10.00/10 on 2026-06-11 (docs/audits/pylint-cleanup/
+      # plan.md Phase 5 step 5); without this step nothing in CI stops
+      # a merge from regressing it -- the per-edit hooks only cover
+      # local edits.  Linted as a separate invocation (per-tree floor):
+      # whether the COMBINED `pylint app/ scripts/` run should also
+      # gate cross-tree duplicate-code is a separate open decision in
+      # docs/audits/pylint-cleanup/deep-quality-hunt.md.
+      - name: Lint scripts with pylint
+        run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale --output-format=colorized
+
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
       # The checkers themselves are unit-tested (every "flags" case paired with a
       # "must-not-flag" case). tests/ are out of general pylint scope, but a
@@ -132,6 +144,18 @@ jobs:
         run: |
           pytest tools/pylint/tests -c /dev/null -q
           pylint tests/ --disable=all --enable=shekel-decimal-from-float --disable=unknown-option-value,bad-option-value --output-format=colorized
+
+      # ── 5c. Cross-tree duplicate-code (app/ + scripts/ combined) ─
+      # R0801 is computed over the linted set, so the per-tree runs in
+      # steps 5 and 5a can never see an app/-to-scripts/ copy -- the
+      # drift class behind the MFA-clear and seed-vs-register
+      # duplications consolidated on 2026-06-11.  This combined run
+      # enables ONLY duplicate-code; everything else is already
+      # enforced per tree.  Verified to detect the historical clusters
+      # (the pre-consolidation commit fails this exact invocation) and
+      # to pass on the consolidated tree.
+      - name: Cross-tree duplicate-code (pylint app/ + scripts/)
+        run: pylint app/ scripts/ --disable=all --enable=duplicate-code --disable=unknown-option-value,bad-option-value --output-format=colorized
 
       # ── 6. Build the per-pytest-session template database ───────
       # Builds ``shekel_test_template``: drops + recreates the

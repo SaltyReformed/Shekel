@@ -679,6 +679,40 @@ class TestTransferInstance:
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("250.00")
 
+    def test_update_transfer_clears_category(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The full-edit "-- None --" option (category_id="") clears it.
+
+        ``transfer_service.update_transfer`` was always built to clear
+        on ``category_id=None`` (the assignment sits outside the
+        ownership probe's not-None guard), but the schema's pre_load
+        used to DROP the empty submit so the None never arrived -- the
+        nullable-field clear defect.  The parent and BOTH shadows must
+        come back NULL (Transfer Invariant 3: shadow fields mirror the
+        parent).
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            assert xfer.category_id == seed_user["categories"]["Rent"].id
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"category_id": ""},
+            )
+
+            assert response.status_code == 200
+            db.session.refresh(xfer)
+            assert xfer.category_id is None
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            assert all(s.category_id is None for s in shadows)
+
     def test_update_transfer_due_date(
         self, app, auth_client, seed_user, seed_periods_today
     ):
@@ -703,14 +737,21 @@ class TestTransferInstance:
             assert len(shadows) == 2
             assert all(s.due_date == date(2026, 4, 22) for s in shadows)
 
-    def test_update_transfer_blank_due_date_does_not_clobber(
+    def test_update_transfer_blank_due_date_clears_it(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """A blank due_date on the edit form leaves an existing due date intact.
+        """A blank due_date on the edit form clears the stored due date.
 
-        The empty-string due_date is stripped by TransferUpdateSchema's
-        strip_empty_strings pre_load, so saving another field with an
-        untouched (empty) date input cannot null out the stored due date.
+        Retargeted with the nullable-field clear fix (developer-ratified
+        behavior change): the edit form pre-fills due_date with the
+        stored value, so an empty submit is the user's deliberate clear
+        -- TransferUpdateSchema now loads it as an explicit None and the
+        service nulls the parent and both shadows.  The old "blank does
+        not clobber" shield this test pinned also blocked legitimate
+        clears; the stale-form clobber it guarded against (a form
+        rendered before the date was set) is the C-18 ``version_id``
+        pin's job -- the real form ships the pin and a stale submit gets
+        a 409 before any field is applied.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -728,7 +769,14 @@ class TestTransferInstance:
             assert response.status_code == 200
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("300.00")
-            assert xfer.due_date == date(2026, 5, 1)
+            assert xfer.due_date is None
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            assert all(s.due_date is None for s in shadows)
 
     def test_mark_done(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/instance/<id>/mark-done sets status to done."""
@@ -838,6 +886,112 @@ class TestTransferInstance:
                 .all()
             )
             assert all(s.estimated_amount == Decimal("200.00") for s in shadows)
+
+    def test_update_transfer_to_credit_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH status_id=Credit on a transfer is refused with 400.
+
+        Credit is a transaction-only status: the credit/auto-payback
+        workflow refuses transfers, so a Credit transfer would be
+        balance-excluded on both accounts with no compensating payback
+        -- it would silently vanish from both projections.  The
+        transfer-specific transition map closes the hole the shared
+        map left open (``TransferUpdateSchema.status_id`` accepts any
+        integer).
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            credit_id = (
+                db.session.query(Status).filter_by(name="Credit").one().id
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"status_id": str(credit_id)},
+            )
+
+            assert response.status_code == 400
+            assert "Invalid transfer status transition" in response.data.decode()
+
+            # Parent and both shadows untouched -- still Projected.
+            db.session.refresh(xfer)
+            assert xfer.status.name == "Projected"
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(shadows) == 2
+            assert all(s.status.name == "Projected" for s in shadows)
+
+    def test_update_transfer_to_received_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH status_id=Received on a transfer is refused with 400.
+
+        Received is a display convention for regular income rows; the
+        transfer service settles both shadows with Done.  Same
+        transfer-map hole as the Credit case.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            received_id = (
+                db.session.query(Status).filter_by(name="Received").one().id
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"status_id": str(received_id)},
+            )
+
+            assert response.status_code == 400
+            db.session.refresh(xfer)
+            assert xfer.status.name == "Projected"
+
+    def test_shadow_patch_to_credit_rejected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCHing a transfer SHADOW to Credit is refused with 400.
+
+        The shadow PATCH path forwards any submitted ``status_id`` to
+        ``transfer_service.update_transfer``; before the transfer map
+        split this set the parent and BOTH shadows to Credit, silently
+        removing the whole transfer from both accounts' projections
+        with no payback compensation (the mark-credit routes block
+        shadows, but this generic path did not).
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            credit_id = (
+                db.session.query(Status).filter_by(name="Credit").one().id
+            )
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .first()
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{shadow.id}",
+                data={"status_id": str(credit_id)},
+            )
+
+            assert response.status_code == 400
+            assert "Invalid transfer status transition" in response.data.decode()
+
+            # Parent and both shadows untouched -- still Projected.
+            db.session.refresh(xfer)
+            assert xfer.status.name == "Projected"
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert all(s.status.name == "Projected" for s in shadows)
 
     def test_delete_ad_hoc_transfer(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transfers/instance/<id> hard-deletes an ad-hoc transfer."""

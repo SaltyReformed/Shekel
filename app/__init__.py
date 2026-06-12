@@ -16,6 +16,7 @@ from flask import Flask, render_template, request, session as flask_session
 
 from app.config import CONFIG_MAP
 from app.extensions import csrf, db, limiter, login_manager, migrate
+from app.routes.static_pass import static_file_version
 from app.utils.log_events import ACCESS, EVT_RATE_LIMIT_EXCEEDED, log_event
 from app.utils.logging_config import setup_logging
 from app.utils.session_helpers import (
@@ -168,6 +169,9 @@ def create_app(config_name=None):
 
     # --- Security Headers -------------------------------------------------
     _register_security_headers(app)
+
+    # --- Static asset URL versioning (cache busting) ----------------------
+    _register_static_versioning(app)
 
     # --- Create schemas & seed ref data (development convenience) --------
     # In production, schemas are managed by Alembic migrations and
@@ -810,19 +814,78 @@ def _register_security_headers(app):
         # the browser back button.  Audit finding F-019.
         #
         # Static assets are intentionally excluded -- they carry no
-        # session data, are versioned by content (vendor/), and need
-        # to be cacheable so the user does not re-fetch Bootstrap on
-        # every navigation.  In production nginx serves /static/
-        # before Flask sees the request and sets its own
-        # ``Cache-Control: public, immutable``; in dev/test Flask's
-        # built-in static handler is used and we must opt out here.
-        if request.endpoint != "static":
+        # session data and must stay cacheable so the user does not
+        # re-fetch Bootstrap on every navigation.  Who serves them
+        # depends on the deploy mode: the bundled stack's nginx serves
+        # /static/ itself (``expires 7d`` + ``immutable``) before Flask
+        # sees the request, while the shared-mode stack (the actual
+        # production host) proxies /static/ through to Flask's static
+        # handler, so the headers set here ARE production's static
+        # headers there.
+        #
+        # A static request whose ``v=`` parameter matches the file's
+        # current content hash (the parameter
+        # _register_static_versioning appends to every
+        # url_for('static') URL) is immutable by construction -- a
+        # changed file changes its URL -- so it gets a year-long
+        # public lifetime.  The hash is verified against the file
+        # first so a stale or forged ``v=`` cannot pin wrong bytes;
+        # unversioned or mismatched requests keep Flask's default
+        # conditional caching (no-cache + ETag revalidation).
+        if request.endpoint == "static":
+            requested_version = request.args.get("v")
+            filename = (request.view_args or {}).get("filename", "")
+            if requested_version and requested_version == static_file_version(
+                app.static_folder, filename
+            ):
+                response.headers["Cache-Control"] = (
+                    f"public, max-age={_VERSIONED_STATIC_MAX_AGE_SECONDS}, "
+                    "immutable"
+                )
+        else:
             response.headers["Cache-Control"] = (
                 "no-store, no-cache, must-revalidate"
             )
             # HTTP/1.0 fallback for caches that ignore Cache-Control.
             response.headers["Pragma"] = "no-cache"
         return response
+
+
+# Lifetime for content-versioned static responses: one year, the
+# conventional ceiling for immutable assets.  Safe at this length
+# because the ``v=`` content hash in the URL changes whenever the
+# file's bytes change, so a cached entry can never be served against
+# a page that references newer content.
+_VERSIONED_STATIC_MAX_AGE_SECONDS = 31536000
+
+
+def _register_static_versioning(app):
+    """Append a content-hash ``v=`` parameter to static asset URLs.
+
+    Every ``url_for('static', filename=...)`` URL the app emits (each
+    stylesheet, script, image, and font link in the templates) gains a
+    short content hash of the file's bytes:
+    ``/static/css/base.css?v=ab12cd34ef56``.  The URL changes exactly
+    when the content changes, which closes the cache-busting gap
+    recorded in ``docs/design/css_architecture_audit.md``: the bundled
+    deploy's nginx serves /static/ with a 7-day ``immutable`` lifetime,
+    and the shared deploy's after-request hook above grants
+    verified-versioned requests a year-long lifetime -- both safe only
+    when URLs are content-addressed.  A file that does not resolve
+    emits its URL unversioned, preserving the previous behavior.
+    """
+
+    @app.url_defaults
+    def add_static_version(endpoint: str, values: dict[str, object]) -> None:
+        """Inject ``v=<content hash>`` into static URL values."""
+        if endpoint != "static":
+            return
+        filename = values.get("filename")
+        if not isinstance(filename, str) or "v" in values:
+            return
+        version = static_file_version(app.static_folder, filename)
+        if version is not None:
+            values["v"] = version
 
 
 # Hardcoded allowlist of PostgreSQL schemas used by the application.

@@ -107,7 +107,7 @@ def add_raise(profile_id):
             logger.exception(
                 "user_id=%d failed to add raise to profile %d "
                 "(unexpected IntegrityError)",
-                current_user.id, profile_id,
+                user_id, profile_id,
             )
             flash("Failed to add raise. Please try again.", "danger")
             return redirect(url_for("salary.edit_profile", profile_id=profile_id))
@@ -358,7 +358,7 @@ def add_deduction(profile_id):
             logger.exception(
                 "user_id=%d failed to add deduction to profile %d "
                 "(unexpected IntegrityError)",
-                current_user.id, profile_id,
+                user_id, profile_id,
             )
             flash("Failed to add deduction. Please try again.", "danger")
             return redirect(url_for("salary.edit_profile", profile_id=profile_id))

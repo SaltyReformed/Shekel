@@ -9,7 +9,10 @@ from marshmallow import (
     ValidationError,
 )
 
-from app.schemas.validation._helpers import BaseSchema
+from app.schemas.validation._helpers import (
+    BaseSchema,
+    _normalize_empty_inputs,
+)
 
 
 def _reject_same_account_transfer(data):
@@ -36,8 +39,8 @@ class TransferTemplateCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     default_amount = fields.Decimal(
@@ -94,8 +97,8 @@ class TransferCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     from_account_id = fields.Integer(required=True)
     to_account_id = fields.Integer(required=True)
@@ -125,8 +128,8 @@ class TransferUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     amount = fields.Decimal(
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)

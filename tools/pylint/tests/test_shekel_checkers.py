@@ -397,3 +397,37 @@ class TestShekelDisableRationaleChecker(CheckerTestCase):
         module = astroid.parse("X = 1  # pylint: enable=too-many-arguments\n")
         with self.assertNoMessages():
             self.checker.process_module(module)
+
+    def test_flags_combined_noqa_disable_without_rationale(self) -> None:
+        """A ``# noqa: ...  pylint: disable=`` combined comment cannot evade the gate.
+
+        Pylint honors the directive anywhere in the comment, so the checker
+        must too: the historical combined trailing form used to slip past the
+        old ``#\\s*pylint:`` regex entirely, leaving an undocumented
+        suppression invisible to the rationale audit.
+        """
+        module = astroid.parse(
+            "import sys\n"
+            "sys.path.insert(0, '.')\n"
+            "import os  # noqa: E402  pylint: disable=wrong-import-position\n"
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-disable-rationale",
+                line=3,
+                args=("wrong-import-position", "in a comment immediately above"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.process_module(module)
+
+    def test_allows_combined_noqa_disable_with_rationale_above(self) -> None:
+        """The combined form passes once the standard rationale sits above it."""
+        module = astroid.parse(
+            "import sys\n"
+            "sys.path.insert(0, '.')\n"
+            "# Pylint: ``wrong-import-position`` -- the bootstrap must precede it.\n"
+            "import os  # noqa: E402  pylint: disable=wrong-import-position\n"
+        )
+        with self.assertNoMessages():
+            self.checker.process_module(module)

@@ -307,6 +307,104 @@ class TestCorruptCurrentStateRejected:
             assert "-1" in str(excinfo.value)
 
 
+# ── Transfer context: the smaller status vocabulary ─────────────────
+
+
+class TestTransferTransitions:
+    """Transfers get their own transition map: Credit is excluded (the
+    credit/auto-payback workflow is expense-only and refuses transfers,
+    so a Credit transfer would be balance-excluded on both accounts
+    with no compensating payback) and Received is excluded (a display
+    convention for regular income rows; transfers settle with Done).
+    Before the split the shared map let a crafted PATCH push a transfer
+    plus both shadows into either state."""
+
+    def test_projected_to_credit_rejected_for_transfer(self, app):
+        """The vanishing-transfer hole: projected -> credit must be refused."""
+        ids = _ids(app)
+        with app.app_context():
+            with pytest.raises(ValidationError) as excinfo:
+                verify_transition(
+                    ids["projected"], ids["credit"], context="transfer",
+                )
+            assert "transfer" in str(excinfo.value)
+
+    def test_projected_to_received_rejected_for_transfer(self, app):
+        """Received is a regular-income display convention, not a transfer state."""
+        ids = _ids(app)
+        with app.app_context():
+            with pytest.raises(ValidationError):
+                verify_transition(
+                    ids["projected"], ids["received"], context="transfer",
+                )
+
+    def test_projected_to_done_allowed_for_transfer(self, app):
+        """Mark a transfer done -- the normal settle path for both shadows."""
+        ids = _ids(app)
+        with app.app_context():
+            verify_transition(ids["projected"], ids["done"], context="transfer")
+
+    def test_projected_to_cancelled_allowed_for_transfer(self, app):
+        """Cancel a projected transfer."""
+        ids = _ids(app)
+        with app.app_context():
+            verify_transition(
+                ids["projected"], ids["cancelled"], context="transfer",
+            )
+
+    def test_done_to_settled_allowed_for_transfer(self, app):
+        """Archive a completed transfer."""
+        ids = _ids(app)
+        with app.app_context():
+            verify_transition(ids["done"], ids["settled"], context="transfer")
+
+    def test_done_to_projected_revert_allowed_for_transfer(self, app):
+        """Revert a mistakenly-marked transfer back to Projected."""
+        ids = _ids(app)
+        with app.app_context():
+            verify_transition(ids["done"], ids["projected"], context="transfer")
+
+    def test_cancelled_to_projected_allowed_for_transfer(self, app):
+        """Reactivate a cancelled transfer."""
+        ids = _ids(app)
+        with app.app_context():
+            verify_transition(
+                ids["cancelled"], ids["projected"], context="transfer",
+            )
+
+    def test_settled_terminal_for_transfer(self, app):
+        """Settled stays terminal in the transfer map too."""
+        ids = _ids(app)
+        with app.app_context():
+            verify_transition(ids["settled"], ids["settled"], context="transfer")
+            with pytest.raises(ValidationError):
+                verify_transition(
+                    ids["settled"], ids["projected"], context="transfer",
+                )
+
+    def test_credit_as_current_status_rejected_for_transfer(self, app):
+        """A transfer already sitting in Credit is corrupt for this entity;
+        the refusal message names the context so the operator knows the
+        status is transaction-only rather than entirely unknown."""
+        ids = _ids(app)
+        with app.app_context():
+            with pytest.raises(ValidationError) as excinfo:
+                verify_transition(
+                    ids["credit"], ids["projected"], context="transfer",
+                )
+            assert "transfer" in str(excinfo.value)
+
+    def test_unknown_context_raises_value_error(self, app):
+        """A typo'd context is a programming error -- fail loud, never
+        silently fall back to either entity's map."""
+        ids = _ids(app)
+        with app.app_context():
+            with pytest.raises(ValueError):
+                verify_transition(
+                    ids["projected"], ids["done"], context="transferr",
+                )
+
+
 # ── Context label propagates to the exception message ───────────────
 
 

@@ -157,16 +157,14 @@ class _RouteLoanContext:
     Composes rather than copies: ``loan`` is the service-loaded
     :class:`LoanContext` (the prepared payment / rate-change feeds, escrow,
     and rate history); ``state`` is the resolver output; and
-    ``original_for_engine`` / ``current_rate`` are the two route-derived
-    engine inputs the payoff / refinance calculators read.  Replaces the
-    former untyped dict so the dashboard and calculator consumers read typed
-    attributes (``ctx.state`` / ``ctx.loan.payments`` / ``ctx.current_rate``)
-    instead of string keys.
+    ``current_rate`` is the route-derived rate the refinance / payoff
+    calculators read.  Replaces the former untyped dict so the dashboard
+    and calculator consumers read typed attributes (``ctx.state`` /
+    ``ctx.loan.payments`` / ``ctx.current_rate``) instead of string keys.
     """
 
     state: LoanState
     loan: LoanContext
-    original_for_engine: Decimal | None
     current_rate: Decimal
 
 
@@ -239,12 +237,6 @@ def _load_loan_context(account, params) -> _RouteLoanContext:
             (prepared, escrow-subtracted, month-aligned), ``loan.rate_changes``
             (or None), ``loan.rate_history`` (RateHistory for display),
             ``loan.escrow_components`` (active), ``loan.monthly_escrow``.
-        original_for_engine: Decimal original principal, or None for
-            ARM.  Retained for the payoff calculator's
-            ``mode == "target_date"`` branch (a thin
-            :func:`amortization_engine.calculate_payoff_by_date` wrapper
-            internally on :func:`project_forward`); other chart paths now
-            route through :func:`loan_resolver.compute_payoff_scenarios`.
         current_rate: Decimal annual interest rate in effect today --
             ``state.current_rate`` (DH-#56), the loan's current rate used
             by the refinance / payoff calculators as the existing loan's
@@ -258,15 +250,9 @@ def _load_loan_context(account, params) -> _RouteLoanContext:
     """
     state, ctx = _resolve(account, params)
 
-    original_for_engine = (
-        None if params.is_arm
-        else Decimal(str(params.original_principal))
-    )
-
     return _RouteLoanContext(
         state=state,
         loan=ctx,
-        original_for_engine=original_for_engine,
         current_rate=state.current_rate,
     )
 

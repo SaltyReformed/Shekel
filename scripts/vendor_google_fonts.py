@@ -51,6 +51,15 @@ USER_AGENT = (
 # Subsets to keep.  Anything else is intentionally dropped.
 WANTED_SUBSETS = frozenset({"latin", "latin-ext"})
 
+# Each block in the upstream CSS is: a comment label naming the subset,
+# then ``@font-face { ... }``.
+_BLOCK_RE = re.compile(
+    r"/\*\s*([a-zA-Z\-]+)\s*\*/\s*(@font-face\s*\{[^}]*\})", re.DOTALL
+)
+_FONT_URL_RE = re.compile(r"url\(([^)]+)\)")
+_FAMILY_RE = re.compile(r"font-family:\s*'([^']+)'")
+_WEIGHT_RE = re.compile(r"font-weight:\s*(\d+)")
+
 
 def fetch_url(url: str) -> bytes:
     """Fetch ``url`` over HTTPS with a modern User-Agent.
@@ -70,51 +79,42 @@ def fetch_url(url: str) -> bytes:
         return response.read()
 
 
-def main() -> int:
-    """Refresh the vendored fonts. Returns a process exit code."""
-    out_dir = (
-        Path(__file__).resolve().parent.parent
-        / "app" / "static" / "vendor" / "fonts"
-    )
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _parse_font_blocks(
+    src: str,
+) -> tuple[dict[str, str], list[tuple[str, str, str, str]]] | None:
+    """Extract the wanted ``@font-face`` blocks and rewrite their URLs.
 
-    print(f"Fetching {FONTS_URL}")
-    try:
-        css_bytes = fetch_url(FONTS_URL)
-    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
-        print(f"ERROR: failed to fetch CSS: {exc}", file=sys.stderr)
-        return 1
-    src = css_bytes.decode("utf-8")
+    Args:
+        src: Raw upstream Google Fonts CSS text.
 
-    # Each block is: comment label naming the subset, then @font-face { ... }.
-    block_re = re.compile(
-        r"/\*\s*([a-zA-Z\-]+)\s*\*/\s*(@font-face\s*\{[^}]*\})", re.DOTALL
-    )
-    font_url_re = re.compile(r"url\(([^)]+)\)")
-    family_re = re.compile(r"font-family:\s*'([^']+)'")
-    weight_re = re.compile(r"font-weight:\s*(\d+)")
-
-    # Map remote URL -> deterministic local filename.  Google Fonts ships
-    # variable fonts; the same woff2 file backs every weight for a given
-    # subset, so we key by URL and emit one filename per (family, subset).
+    Returns:
+        A ``(url_to_local, rewritten_blocks)`` pair, or ``None`` after
+        printing to stderr when a block cannot be parsed or carries a
+        non-http source URL.  ``url_to_local`` maps each remote woff2
+        URL to a deterministic local filename -- Google Fonts ships
+        variable fonts, so the same woff2 file backs every weight for a
+        given (family, subset) and we key by URL.  ``rewritten_blocks``
+        holds ``(subset, family, weight, css_block)`` tuples with the
+        remote URL replaced by the local filename.
+    """
     url_to_local: dict[str, str] = {}
     rewritten_blocks: list[tuple[str, str, str, str]] = []
 
-    for match in block_re.finditer(src):
+    for match in _BLOCK_RE.finditer(src):
         subset = match.group(1).strip().lower()
         block = match.group(2)
         if subset not in WANTED_SUBSETS:
             continue
 
-        family_match = family_re.search(block)
-        weight_match = weight_re.search(block)
-        url_match = font_url_re.search(block)
+        family_match = _FAMILY_RE.search(block)
+        weight_match = _WEIGHT_RE.search(block)
+        url_match = _FONT_URL_RE.search(block)
         if not (family_match and weight_match and url_match):
             print(
                 f"ERROR: could not parse @font-face block: {block!r}",
                 file=sys.stderr,
             )
-            return 1
+            return None
 
         family = family_match.group(1).replace(" ", "").lower()
         weight = weight_match.group(1)
@@ -124,7 +124,7 @@ def main() -> int:
                 f"ERROR: unexpected non-http url: {remote_url!r}",
                 file=sys.stderr,
             )
-            return 1
+            return None
 
         if remote_url not in url_to_local:
             url_to_local[remote_url] = f"{family}-{subset}.woff2"
@@ -132,7 +132,21 @@ def main() -> int:
         rewritten = block.replace(remote_url, local_name)
         rewritten_blocks.append((subset, family, weight, rewritten))
 
-    # Download each unique woff2 once.
+    return url_to_local, rewritten_blocks
+
+
+def _download_woff2_files(url_to_local: dict[str, str], out_dir: Path) -> bool:
+    """Download each unique woff2 file once into ``out_dir``.
+
+    Args:
+        url_to_local: Remote woff2 URL -> local filename mapping from
+            :func:`_parse_font_blocks`.
+        out_dir: Destination directory (must already exist).
+
+    Returns:
+        True when every download succeeded; False after printing to
+        stderr on the first failure.
+    """
     for remote_url, local_name in url_to_local.items():
         target = out_dir / local_name
         print(f"Downloading {local_name}")
@@ -143,11 +157,24 @@ def main() -> int:
                 f"ERROR: failed to download {remote_url}: {exc}",
                 file=sys.stderr,
             )
-            return 1
+            return False
         target.write_bytes(data)
+    return True
 
-    # Emit the consolidated CSS.  Header is a frozen template so the
-    # output is deterministic and reviewable in PRs.
+
+def _write_fonts_css(
+    rewritten_blocks: list[tuple[str, str, str, str]], out_dir: Path
+) -> None:
+    """Emit the consolidated self-hosted CSS file.
+
+    The header is a frozen template so the output is deterministic and
+    reviewable in PRs.
+
+    Args:
+        rewritten_blocks: ``(subset, family, weight, css_block)`` tuples
+            from :func:`_parse_font_blocks`.
+        out_dir: Directory receiving ``fonts.css``.
+    """
     header = [
         "/* Self-hosted Google Fonts -- Inter, JetBrains Mono.",
         " * Subsets: latin, latin-ext only (English-language app).",
@@ -172,6 +199,32 @@ def main() -> int:
     (out_dir / "fonts.css").write_text(
         "\n".join(header + body), encoding="utf-8"
     )
+
+
+def main() -> int:
+    """Refresh the vendored fonts. Returns a process exit code."""
+    out_dir = (
+        Path(__file__).resolve().parent.parent
+        / "app" / "static" / "vendor" / "fonts"
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Fetching {FONTS_URL}")
+    try:
+        css_bytes = fetch_url(FONTS_URL)
+    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+        print(f"ERROR: failed to fetch CSS: {exc}", file=sys.stderr)
+        return 1
+
+    parsed = _parse_font_blocks(css_bytes.decode("utf-8"))
+    if parsed is None:
+        return 1
+    url_to_local, rewritten_blocks = parsed
+
+    if not _download_woff2_files(url_to_local, out_dir):
+        return 1
+
+    _write_fonts_css(rewritten_blocks, out_dir)
     print(
         f"\nWrote {out_dir / 'fonts.css'} "
         f"({len(rewritten_blocks)} blocks, {len(url_to_local)} woff2 files)"

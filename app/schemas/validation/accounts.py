@@ -15,6 +15,7 @@ from app import ref_cache
 from app.enums import AcctCategoryEnum, CompoundingFrequencyEnum
 from app.schemas.validation._helpers import (
     BaseSchema,
+    _normalize_empty_inputs,
     _normalize_percent_fields,
 )
 
@@ -56,8 +57,8 @@ class AccountCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
     account_type_id = fields.Integer(required=True)
@@ -76,8 +77,8 @@ class AccountUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     name = fields.String(validate=validate.Length(min=1, max=100))
     account_type_id = fields.Integer()
@@ -174,20 +175,20 @@ class AccountTypeUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation.
+        """Drop empty inputs; map empties on nullable fields to None.
 
         When *data* is a Werkzeug MultiDict (HTML form submission), take
         the last value for each key so the hidden-input + checkbox pattern
         resolves correctly: checked -> 'true' (last value wins), unchecked
-        -> 'false' (sole value from hidden input).
+        -> 'false' (sole value from hidden input).  The flattened dict
+        then goes through the shared empty-input rule so the nullable
+        ``max_term_months`` clears on an empty submit.
         """
         if hasattr(data, "getlist"):
-            return {
-                k: vs[-1]
-                for k in data
-                if (vs := data.getlist(k)) and vs[-1] != ""
+            data = {
+                k: vs[-1] for k in data if (vs := data.getlist(k))
             }
-        return {k: v for k, v in data.items() if v != ""}
+        return _normalize_empty_inputs(self, data)
 
     @validates_schema
     def validate_flag_combinations(self, data, **kwargs):
@@ -257,8 +258,8 @@ class InterestParamsCreateSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     # apy storage is a fraction; see class docstring.  ``places=5``
@@ -298,8 +299,8 @@ class InterestParamsUpdateSchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Strip empty strings, then convert percent fields to fractions."""
-        data = {k: v for k, v in data.items() if v != ""}
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
     apy = fields.Decimal(

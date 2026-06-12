@@ -7,6 +7,16 @@
  * Reads CSS custom properties for dark/light mode support, exposes
  * a ShekelChart.create() wrapper, and re-renders charts on theme toggle.
  *
+ * create() takes a config FACTORY (a function returning a fresh config
+ * object), not a prebuilt config: theme-dependent values such as
+ * ShekelChart.getColor(...) resolve against the data-bs-theme attribute
+ * at call time, so the factory runs once at creation and again on every
+ * theme toggle, keeping dataset colors in sync with the active theme.
+ * The factory's output is used directly (no clone), which also keeps
+ * function-valued options -- tooltip and tick callbacks -- intact; the
+ * previous object API JSON-cloned the config and silently stripped
+ * them (css_architecture_audit.md, finding 1).
+ *
  * @namespace ShekelChart
  */
 var ShekelChart = (function () {
@@ -88,13 +98,20 @@ var ShekelChart = (function () {
   }
 
   /**
-   * Build deep-merged options with theme defaults applied.
-   * @param {object} userConfig - User-provided Chart.js config.
-   * @returns {object} Merged config with theme defaults.
+   * Apply theme defaults to a freshly built Chart.js config.
+   *
+   * Mutates and returns the supplied config.  Safe because every
+   * config arriving here was just produced by a create() factory for
+   * this exact render -- there is no shared object to protect.  The
+   * config is deliberately NOT cloned: a JSON round-trip would
+   * silently strip function-valued options (tooltip and tick
+   * callbacks), which is the defect that motivated the factory API.
+   *
+   * @param {object} config - Freshly built Chart.js config (single use).
+   * @returns {object} The same config with theme defaults applied.
    */
-  function mergeThemeDefaults(userConfig) {
+  function mergeThemeDefaults(config) {
     var colors = getThemeColors();
-    var config = JSON.parse(JSON.stringify(userConfig));
 
     // Ensure options and nested objects exist.
     config.options = config.options || {};
@@ -103,11 +120,10 @@ var ShekelChart = (function () {
     config.options.plugins.legend.labels = config.options.plugins.legend.labels || {};
     config.options.plugins.tooltip = config.options.plugins.tooltip || {};
 
-    // Apply legend label color if not set.
-    if (!userConfig.options || !userConfig.options.plugins ||
-        !userConfig.options.plugins.legend ||
-        !userConfig.options.plugins.legend.labels ||
-        !userConfig.options.plugins.legend.labels.color) {
+    // Apply legend label color if the factory did not set one (the
+    // ensure-exists steps above only create empty objects, so a color
+    // present here can only have come from the factory).
+    if (!config.options.plugins.legend.labels.color) {
       config.options.plugins.legend.labels.color = colors.textColor;
     }
 
@@ -137,13 +153,32 @@ var ShekelChart = (function () {
 
   /**
    * Create a Chart.js chart with theme defaults merged in.
-   * Tracks the instance for re-rendering on theme change.
+   * Tracks the chart for re-rendering on theme change.
+   *
+   * Takes a config FACTORY, not a config object: theme-dependent
+   * values (ShekelChart.getColor(...) and friends) must resolve at
+   * render time, so the factory is invoked fresh here and again on
+   * every theme toggle.  A prebuilt object would bake the creating
+   * theme's colors into each re-render -- the stale-dataset-color
+   * defect this API closes.  The factory must return a NEW config
+   * object on every call (a literal in the function body does this
+   * naturally).
    *
    * @param {string} canvasId - The ID of the canvas element.
-   * @param {object} config - Chart.js configuration object.
+   * @param {function(): object} buildConfig - Returns a fresh Chart.js
+   *   config; called once now and once per theme change.
    * @returns {Chart|null} The Chart instance, or null if canvas not found.
    */
-  function create(canvasId, config) {
+  function create(canvasId, buildConfig) {
+    if (typeof buildConfig !== 'function') {
+      throw new TypeError(
+        'ShekelChart.create("' + canvasId + '") expects a config ' +
+        'factory function, got ' + typeof buildConfig + '. Wrap the ' +
+        'config literal in a function so theme colors re-resolve on ' +
+        'theme toggle.'
+      );
+    }
+
     var canvas = document.getElementById(canvasId);
     if (!canvas) return null;
 
@@ -151,14 +186,14 @@ var ShekelChart = (function () {
     destroyById(canvasId);
 
     applyGlobalDefaults();
-    var merged = mergeThemeDefaults(config);
-    var instance = new Chart(canvas, merged);
+    var instance = new Chart(canvas, mergeThemeDefaults(buildConfig()));
 
-    // Store a config factory for re-creation on theme change.
+    // Track the factory itself so rerenderAll() rebuilds the config
+    // with freshly resolved theme colors.
     trackedCharts.push({
       id: canvasId,
       instance: instance,
-      configFn: function () { return config; }
+      configFn: buildConfig
     });
 
     return instance;
@@ -200,9 +235,10 @@ var ShekelChart = (function () {
       var canvas = document.getElementById(entry.id);
       if (!canvas) continue;
 
-      // Get the original config and re-merge with new theme colors.
-      var originalConfig = entry.configFn();
-      var merged = mergeThemeDefaults(originalConfig);
+      // Rebuild the config from the factory so theme-dependent
+      // colors (getColor, getThemeColors) re-resolve against the
+      // now-active theme, then re-merge the global defaults.
+      var merged = mergeThemeDefaults(entry.configFn());
 
       // Destroy old instance and create new one.
       entry.instance.destroy();

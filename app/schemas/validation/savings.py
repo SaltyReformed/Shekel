@@ -16,7 +16,10 @@ from app.enums import (
     GoalModeEnum,
     IncomeUnitEnum,
 )
-from app.schemas.validation._helpers import BaseSchema
+from app.schemas.validation._helpers import (
+    BaseSchema,
+    _normalize_empty_inputs,
+)
 
 
 def _validate_goal_mode_consistency(data, goal_mode_id):
@@ -105,8 +108,8 @@ class SavingsGoalCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Remove empty-string form values so Marshmallow sees missing fields."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     account_id = fields.Integer(required=True)
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
@@ -161,8 +164,8 @@ class SavingsGoalUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Remove empty-string form values so Marshmallow sees missing fields."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     account_id = fields.Integer()
     name = fields.String(validate=validate.Length(min=1, max=100))

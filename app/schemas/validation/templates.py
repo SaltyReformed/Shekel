@@ -10,6 +10,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    _normalize_empty_inputs,
     _reject_envelope_on_income,
 )
 
@@ -29,13 +30,15 @@ class TemplateCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so Marshmallow treats them as missing.
+        """Drop empty inputs; map empties on nullable fields to None.
 
         HTML forms always submit every <input> element, even hidden ones,
         as empty strings.  Without this hook, those empty strings fail
-        OneOf / Integer validation on optional fields.
+        OneOf / Integer validation on optional fields.  The nullable
+        fields (``due_day_of_month``, ``end_date``) keep the key as an
+        explicit ``None`` so clearing them on update actually persists.
         """
-        return {k: v for k, v in data.items() if v != ""}
+        return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     default_amount = fields.Decimal(

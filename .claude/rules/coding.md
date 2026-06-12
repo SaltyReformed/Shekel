@@ -59,7 +59,8 @@ templates (prefixed `_`) with an explicit `hx-target`. Extend `base.html`.
 No inline scripts (CSP); all JS in `app/static/js/` via `<script src>`. Pass data
 via `data-*`, read with `element.dataset`. HTMX + vanilla JS only -- no frameworks.
 JS never computes monetary values. Bootstrap 5 utility classes before custom CSS
-(`app/static/css/app.css` as last resort); no `!important`.
+(under `app/static/css/`, in the file matching the concern -- layout and load order
+in `docs/design/css_architecture_audit.md`); no `!important`.
 
 ## Shell (scripts/)
 

@@ -23,6 +23,7 @@ from app.utils.log_events import (
     BUSINESS,
     EVT_CREDIT_MARKED,
     EVT_CREDIT_UNMARKED,
+    EVT_PAYBACK_DELETED_WITH_SOURCE,
     log_event,
 )
 
@@ -136,6 +137,101 @@ def get_active_payback(source_txn_id: int) -> Transaction | None:
         db.session.query(Transaction)
         .filter_by(credit_payback_for_id=source_txn_id, is_deleted=False)
         .first()
+    )
+
+
+def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
+    """Delete the live auto-generated payback for a reverted credit row.
+
+    The single cleanup rule for "a Credit transaction returned to
+    Projected": the live payback (if any) is hard-deleted and the
+    reversion is logged with ``EVT_CREDIT_UNMARKED``.  Shared by
+    :func:`unmark_credit` and the transaction PATCH route's
+    status-revert path so a credit reversion can never orphan its
+    payback regardless of which endpoint performed it.  A soft-deleted
+    prior payback stays in place for the audit trail (the
+    :func:`get_active_payback` contract).
+
+    The caller owns the status flip itself and must already have
+    verified ownership and the transition's legality; this helper does
+    not commit -- the deletion joins the caller's transaction so the
+    status change and the payback removal land atomically.
+
+    Args:
+        txn: The credit transaction being reverted to Projected.
+        user_id: The owning user's ID, recorded on the audit event.
+    """
+    payback = get_active_payback(txn.id)
+    deleted_payback_id = None
+    if payback:
+        deleted_payback_id = payback.id
+        db.session.delete(payback)
+
+    log_event(
+        logger, logging.INFO, EVT_CREDIT_UNMARKED, BUSINESS,
+        "Credit reverted to Projected; payback deleted",
+        user_id=user_id,
+        transaction_id=txn.id,
+        deleted_payback_id=deleted_payback_id,
+    )
+
+
+def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
+    """Delete the live auto-generated payback when its source is deleted.
+
+    The deletion-side sibling of :func:`delete_payback_on_credit_revert`:
+    where that helper cleans up after a Credit row returning to
+    Projected, this one cleans up after the source transaction being
+    deleted outright (soft or hard) -- the strongest possible withdrawal
+    of the credit assertion.  Without it the projected payback survives
+    its source (``credit_payback_for_id`` is ``ondelete="SET NULL"``)
+    and silently inflates the next period with no offsetting credit row.
+
+    Keyed on :func:`get_active_payback` rather than Credit status
+    because entry-level credit sources carry a live payback while their
+    own ``status_id`` is NOT Credit -- a status guard would miss them.
+    Entry links (``TransactionEntry.credit_payback_id``) are severed
+    before the delete: a template-linked source soft-deletes, so its
+    entries outlive it and must not point at a vanished payback.  A
+    payback can itself be marked Credit, so the helper recurses to take
+    the whole live chain down with the source.  No-op (and no log event)
+    when no live payback exists -- the common case for every ordinary
+    delete.  A soft-deleted prior payback stays in place for the audit
+    trail (the :func:`get_active_payback` contract).
+
+    This helper does not commit -- the deletions join the caller's
+    transaction so the source delete and the payback removal land
+    atomically.
+
+    Args:
+        txn: The source transaction about to be deleted.
+        user_id: The owning user's ID, recorded on the audit event.
+    """
+    payback = get_active_payback(txn.id)
+    if payback is None:
+        return
+
+    # Sever entry links before the delete.  On a hard-deleted ad-hoc
+    # source the entries cascade away anyway; on a soft-deleted
+    # template-linked source they survive as rows and must not keep a
+    # pointer to the deleted payback (mirrors sync_entry_payback's
+    # delete branch).
+    for entry in txn.entries:
+        if entry.credit_payback_id == payback.id:
+            entry.credit_payback_id = None
+
+    # The payback may itself be a credit source (a projected expense
+    # can be marked Credit); its own live payback dies with it under
+    # the same invariant.
+    delete_payback_on_source_delete(payback, user_id)
+    db.session.delete(payback)
+
+    log_event(
+        logger, logging.INFO, EVT_PAYBACK_DELETED_WITH_SOURCE, BUSINESS,
+        "Source transaction deleted; live payback deleted with it",
+        user_id=user_id,
+        transaction_id=txn.id,
+        deleted_payback_id=payback.id,
     )
 
 
@@ -340,21 +436,10 @@ def unmark_credit(transaction_id, user_id):
     # Revert the original transaction's status.
     txn.status_id = projected_id
 
-    # Delete the auto-generated payback transaction (the live one only --
-    # a soft-deleted prior payback stays in place for the audit trail).
-    payback = get_active_payback(txn.id)
-    deleted_payback_id = None
-    if payback:
-        deleted_payback_id = payback.id
-        db.session.delete(payback)
-
-    log_event(
-        logger, logging.INFO, EVT_CREDIT_UNMARKED, BUSINESS,
-        "Credit reverted to Projected; payback deleted",
-        user_id=user_id,
-        transaction_id=txn.id,
-        deleted_payback_id=deleted_payback_id,
-    )
+    # Delete the live payback + write the audit event.  Shared with the
+    # transaction PATCH route's status-revert path via the single
+    # cleanup helper so the two endpoints cannot disagree.
+    delete_payback_on_credit_revert(txn, user_id)
 
 
 def get_or_create_cc_category(user_id: int) -> Category:

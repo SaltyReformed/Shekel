@@ -260,6 +260,28 @@ class TestPensionCRUD:
         assert pension.name == "Updated Pension"
         assert pension.benefit_multiplier == Decimal("0.02000")
 
+    def test_update_pension_clears_salary_link(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The form's "-- None --" option (salary_profile_id="") unlinks.
+
+        The deep-hunt follow-up defect: the update schema's pre_load
+        used to DROP the empty string, so the setattr loop never saw
+        the key and the link could not be cleared from the UI.  The
+        empty submit on the allow_none FK now loads as an explicit
+        None and the route persists the unlink.
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        assert pension.salary_profile_id == profile.id
+
+        resp = auth_client.post(f"/retirement/pension/{pension.id}", data={
+            "salary_profile_id": "",
+        })
+        assert resp.status_code == 302
+        db.session.refresh(pension)
+        assert pension.salary_profile_id is None
+
     def test_create_pension_rejects_cross_user_salary_profile(
         self, auth_client, seed_user, seed_second_user, db, seed_periods_today,
     ):
@@ -493,6 +515,29 @@ class TestRetirementSettings:
         assert settings.safe_withdrawal_rate == Decimal("0.0400")
         assert settings.planned_retirement_date == date(2055, 1, 1)
         assert settings.estimated_retirement_tax_rate == Decimal("0.2000")
+
+    def test_update_settings_clears_planned_retirement_date(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An emptied date input clears the stored planned retirement date.
+
+        Same nullable-field clear rule as the pension salary unlink:
+        the empty submit on the allow_none date loads as an explicit
+        None instead of being dropped, so the settings setattr loop
+        nulls the column.
+        """
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id
+        ).first()
+        settings.planned_retirement_date = date(2055, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.post("/retirement/settings", data={
+            "planned_retirement_date": "",
+        })
+        assert resp.status_code == 302
+        db.session.refresh(settings)
+        assert settings.planned_retirement_date is None
 
     def test_update_settings_percent_normalized_by_schema(
         self, auth_client, seed_user, db, seed_periods_today,

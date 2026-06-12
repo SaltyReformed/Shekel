@@ -59,12 +59,15 @@
     applyProgressWidths(document);
   }
 
-  // HTMX-replaced fragments.  ``event.detail.target`` is the element
-  // that received the swap; fall back to ``elt`` (the source) and
-  // finally to the whole document for OOB swaps that may have
-  // populated multiple regions.
+  // HTMX-replaced fragments.  htmx fires one ``htmx:afterSwap`` per
+  // settled element -- including out-of-band fragments -- but the
+  // event's ``detail.target`` always points at the request's PRIMARY
+  // swap target.  ``event.target`` is the element each dispatch
+  // actually fired on, so it covers the primary target AND every OOB
+  // fragment (e.g. the entries-CRUD cell re-render, whose envelope
+  // progress bar would otherwise never get its width applied).
   document.body.addEventListener("htmx:afterSwap", function(event) {
     var detail = event && event.detail ? event.detail : {};
-    applyProgressWidths(detail.target || detail.elt || document);
+    applyProgressWidths(event.target || detail.target || detail.elt || document);
   });
 })();

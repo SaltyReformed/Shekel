@@ -37,93 +37,98 @@ function renderGrowthChart(canvasId) {
 
   if (labels.length === 0) return;
 
-  var datasets;
-  if (whatIfBalances && whatIfBalances.length > 0) {
-    // What-if mode: committed plan vs. hypothetical scenario.
-    datasets = [
-      {
-        label: 'Current Plan',
-        data: balances,
-        borderColor: ShekelChart.getColor(0),
-        backgroundColor: ShekelChart.getColor(0) + '1A',
-        fill: true,
-        tension: 0.3,
-        pointRadius: 0,
-        borderWidth: 2,
-      },
-      {
-        label: whatIfLabel,
-        data: whatIfBalances,
-        borderColor: ShekelChart.getColor(2),
-        borderDash: [5, 5],
-        fill: false,
-        tension: 0.3,
-        pointRadius: 0,
-        borderWidth: 2,
-      },
-    ];
-  } else {
-    // Standard mode: projected balance + contributions baseline.
-    datasets = [
-      {
-        label: 'Projected Balance',
-        data: balances,
-        borderColor: ShekelChart.getColor(0),
-        backgroundColor: ShekelChart.getColor(0) + '1A',
-        fill: true,
-        tension: 0.3,
-        pointRadius: 0,
-        borderWidth: 2,
-      },
-      {
-        label: 'Contributions Only',
-        data: contributions,
-        borderColor: ShekelChart.getColor(1),
-        borderDash: [5, 5],
-        fill: false,
-        tension: 0.3,
-        pointRadius: 0,
-        borderWidth: 1.5,
-      },
-    ];
-  }
+  // Config factory: dataset colors resolve inside so a theme toggle
+  // rebuilds them against the active theme (ShekelChart.create
+  // re-invokes it).
+  ShekelChart.create(canvasId, function () {
+    var datasets;
+    if (whatIfBalances && whatIfBalances.length > 0) {
+      // What-if mode: committed plan vs. hypothetical scenario.
+      datasets = [
+        {
+          label: 'Current Plan',
+          data: balances,
+          borderColor: ShekelChart.getColor(0),
+          backgroundColor: ShekelChart.getColor(0) + '1A',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+        },
+        {
+          label: whatIfLabel,
+          data: whatIfBalances,
+          borderColor: ShekelChart.getColor(2),
+          borderDash: [5, 5],
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+        },
+      ];
+    } else {
+      // Standard mode: projected balance + contributions baseline.
+      datasets = [
+        {
+          label: 'Projected Balance',
+          data: balances,
+          borderColor: ShekelChart.getColor(0),
+          backgroundColor: ShekelChart.getColor(0) + '1A',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+        },
+        {
+          label: 'Contributions Only',
+          data: contributions,
+          borderColor: ShekelChart.getColor(1),
+          borderDash: [5, 5],
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 1.5,
+        },
+      ];
+    }
 
-  ShekelChart.create(canvasId, {
-    type: 'line',
-    data: {
-      labels: labels,
-      datasets: datasets,
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: function (ctx) {
-              return ctx.dataset.label + ': $' + ctx.parsed.y.toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              });
+    return {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: datasets,
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                return ctx.dataset.label + ': $' + ctx.parsed.y.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                });
+              },
+            },
+          },
+          legend: { position: 'top' },
+        },
+        scales: {
+          x: {
+            ticks: { maxTicksLimit: 12 },
+          },
+          y: {
+            ticks: {
+              callback: function (v) {
+                return '$' + v.toLocaleString();
+              },
             },
           },
         },
-        legend: { position: 'top' },
       },
-      scales: {
-        x: {
-          ticks: { maxTicksLimit: 12 },
-        },
-        y: {
-          ticks: {
-            callback: function (v) {
-              return '$' + v.toLocaleString();
-            },
-          },
-        },
-      },
-    },
+    };
   });
 }
 

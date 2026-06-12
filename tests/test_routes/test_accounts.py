@@ -1071,6 +1071,38 @@ class TestAccountTypes:
             db.session.refresh(new_type)
             assert new_type.name == "rename_target"
 
+    def test_update_account_type_clears_max_term(self, app, auth_client, seed_user):
+        """An emptied max-term input clears the stored term limit.
+
+        The nullable-field clear rule: ``max_term_months`` is
+        allow_none on the update schema, so the empty submit loads as
+        an explicit None (it used to be DROPPED, making the limit
+        unremovable from the UI) and the route's setattr loop nulls
+        the column.  The loan route's term check is truthiness-guarded
+        (``if max_term:``), so a NULL limit means unlimited.
+        """
+        with app.app_context():
+            custom_type = AccountType(
+                name="capped_loan",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY),
+                has_amortization=True,
+                max_term_months=360,
+                user_id=seed_user["user"].id,
+            )
+            db.session.add(custom_type)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/types/{custom_type.id}",
+                data={"max_term_months": ""},
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"updated" in response.data
+            db.session.refresh(custom_type)
+            assert custom_type.max_term_months is None
+
     def test_delete_unused_account_type(self, app, auth_client, seed_user):
         """POST /accounts/types/<id>/delete removes a type the caller owns.
 

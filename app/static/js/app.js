@@ -126,13 +126,42 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
     }, { once: true });
   }
 
-  // Close the full-edit popover if the swap target is outside it.
-  if (typeof activePopover !== 'undefined' && activePopover && !activePopover.contains(el)) {
-    closeFullEdit();
+  // Close the full-edit popover when a CARD-INITIATED action swaps
+  // content outside the card: the card's status buttons and Save target
+  // the grid cell (#txn-cell-<id>), and landing that swap is the
+  // designed save-and-close moment.  The predicate needs BOTH legs:
+  //   - issuer inside the card: the balanceChanged chrome refreshes
+  //     (tfoot balance row, subtotal tbodies) fire after EVERY entry
+  //     mutation from elements outside the card, and the old
+  //     target-only check made them slam the card shut while the user
+  //     was still adding purchases.
+  //   - the settled element outside the card: entry CRUD swaps the
+  //     list inside the card and must keep it open.  event.target (the
+  //     element this per-settled-element dispatch fired on) is the
+  //     attached NEW node; detail.target is unreliable here because an
+  //     outerHTML swap leaves it pointing at the DETACHED old node,
+  //     where a containment test reads as "outside" (verified in a
+  //     live-browser harness).
+  // An entry-CRUD form is detached by its own outerHTML swap before
+  // this handler runs, so contains(issuer) is false there too -- also
+  // a keep-open, which is correct.  When the issuer is unknown
+  // (requestConfig absent), keep the card open rather than guessing.
+  if (typeof activePopover !== 'undefined' && activePopover) {
+    var requestConfig = event.detail.requestConfig;
+    var issuer = requestConfig && requestConfig.elt;
+    if (issuer && activePopover.contains(issuer)
+        && !activePopover.contains(event.target)) {
+      closeFullEdit();
+    }
   }
 
-  // Re-initialize Bootstrap popovers/tooltips in swapped content
-  var target = event.detail.target || event.detail.elt;
+  // Re-initialize Bootstrap popovers/tooltips in swapped content.
+  // event.target is the element each per-settled-element dispatch fired
+  // on (htmx fires one afterSwap per settled element, OOB fragments
+  // included); detail.target always names the request's PRIMARY swap
+  // target, which misses OOB fragments like the entries-CRUD cell
+  // re-render and would leave its tooltip badges uninitialized.
+  var target = event.target || event.detail.target || event.detail.elt;
   if (target) {
     target.querySelectorAll('[data-bs-toggle="popover"]').forEach(function(popEl) {
       if (!bootstrap.Popover.getInstance(popEl)) {
@@ -481,14 +510,30 @@ document.addEventListener('keydown', function(e) {
     });
   }
 
-  /** Return the number of data columns (excluding the sticky label column). */
+  /** Return the number of data columns (excluding the sticky label column).
+      The period header is the LAST thead row -- the C3 month band sits
+      above it with one th per month, so counting the first row would
+      undercount the columns. */
   function getColCount() {
     var table = getGridTable();
     if (!table) return 0;
-    var headerRow = table.querySelector('thead tr');
+    var headerRow = table.querySelector('thead tr:last-child');
     if (!headerRow) return 0;
     // Subtract 1 for the sticky label column
     return headerRow.children.length - 1;
+  }
+
+  /** Column index of the current pay period (0 = first data column),
+      so keyboard navigation starts where the daily loop happens. */
+  function currentPeriodCol() {
+    var table = getGridTable();
+    if (!table) return 0;
+    var headerRow = table.querySelector('thead tr:last-child');
+    if (!headerRow) return 0;
+    var cur = headerRow.querySelector('th.current-period');
+    if (!cur) return 0;
+    var idx = Array.prototype.indexOf.call(headerRow.children, cur) - 1;
+    return idx >= 0 ? idx : 0;
   }
 
   function clearFocus() {
@@ -496,7 +541,47 @@ document.addEventListener('keydown', function(e) {
     if (prev) prev.classList.remove('cell-focused');
   }
 
-  function setFocus(row, col) {
+  /** Declare the opaque sticky chrome as scroll padding right before a
+      scrollIntoView.  The grid scrolls inside .grid-wrapper, whose
+      scrollport edges are painted over by the two-row sticky thead, the
+      sticky tfoot balance row, and the sticky label column; without
+      scroll-padding, `block:'nearest'` treats a cell hidden UNDER that
+      chrome as already visible (no scroll at all) and aligns edge cells
+      flush beneath it.  Measured per call because the chrome is not a
+      constant: the thead grows when Carry Fwd buttons render and the
+      label column width varies by breakpoint.  The window gets the
+      sticky navbar's height for the rare page-scroll leg.  CSSOM
+      property setters are the CSP-sanctioned dynamic-styling pattern
+      (style-src 'self' allows them; inline style attributes are
+      blocked). */
+  function syncScrollPadding() {
+    var table = getGridTable();
+    if (!table) return;
+    var wrapper = table.closest('.grid-scroll-wrapper');
+    if (wrapper) {
+      var thead = table.querySelector('thead');
+      var tfoot = table.querySelector('tfoot');
+      // Measure the label column via its thead header: the first
+      // `tbody .sticky-col` is the INCOME section banner, whose
+      // colspan covers the whole table, and measuring it would set a
+      // table-wide scroll-padding-left (verified in a live-browser
+      // harness: 796px vs the header's 112px on the same table).
+      var label = table.querySelector('thead .row-label-col');
+      wrapper.style.scrollPaddingTop = (thead ? thead.offsetHeight : 0) + 'px';
+      wrapper.style.scrollPaddingBottom = (tfoot ? tfoot.offsetHeight : 0) + 'px';
+      wrapper.style.scrollPaddingLeft = (label ? label.offsetWidth : 0) + 'px';
+    }
+    var navbar = document.querySelector('.navbar.sticky-top');
+    document.documentElement.style.scrollPaddingTop =
+      (navbar ? navbar.offsetHeight : 0) + 'px';
+  }
+
+  /** Move the cell cursor.  skipReveal=true re-applies the highlight
+      without scrolling -- used by the afterSwap focus-restore while the
+      action card is open, where a wrapper scroll would close the card
+      (grid_edit.js arms a wrapper 'scroll' -> closeFullEdit listener
+      whenever the card is shown). */
+  function setFocus(row, col, skipReveal) {
     var rows = getDataRows();
     var colCount = getColCount();
     if (rows.length === 0 || colCount === 0) return;
@@ -513,7 +598,10 @@ document.addEventListener('keydown', function(e) {
     var td = rows[row].children[col + 1];
     if (td) {
       td.classList.add('cell-focused');
-      td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      if (!skipReveal) {
+        syncScrollPadding();
+        td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
     }
   }
 
@@ -542,11 +630,12 @@ document.addEventListener('keydown', function(e) {
     var colCount = getColCount();
     if (rows.length === 0 || colCount === 0) return;
 
-    // Initialize focus if not set
+    // Initialize focus if not set -- start in the current period's
+    // column, where the daily loop happens.
     if (focusedRow < 0) {
       if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', 'Home', 'End'].indexOf(e.key) !== -1) {
         e.preventDefault();
-        setFocus(0, 0);
+        setFocus(0, currentPeriodCol());
         return;
       }
       return;
@@ -602,10 +691,14 @@ document.addEventListener('keydown', function(e) {
         }
         break;
       case 'Enter':
+        // Enter opens the cell's edit surface: the anchored action
+        // card for a transaction (.txn-open), or quick-create on an
+        // empty cell (rebuild decision 3, docs/design/grid_audit.md).
         e.preventDefault();
         var cell = getFocusedCell();
         if (cell) {
-          var clickable = cell.querySelector('.txn-cell');
+          var clickable = cell.querySelector(
+            '.txn-open[data-txn-id], .txn-empty-cell');
           if (clickable) clickable.click();
         }
         break;
@@ -616,12 +709,44 @@ document.addEventListener('keydown', function(e) {
         focusedCol = -1;
         break;
       case ' ':
-        // Space: toggle status (click the cell to open edit form)
+        // Space marks the focused cell paid via its one-click check
+        // button -- the button only renders on projected cells, the
+        // exact precondition of the projected -> done transition, so
+        // Space on any other cell is a deliberate no-op.
         e.preventDefault();
         var spaceCell = getFocusedCell();
         if (spaceCell) {
-          var txnCell = spaceCell.querySelector('.txn-cell');
-          if (txnCell) txnCell.click();
+          var payBtn = spaceCell.querySelector('.paybtn');
+          if (payBtn) {
+            // Re-run setFocus on the cursor cell before mutating: the
+            // user may have scrolled the cursor out of view since
+            // selecting it, and a mark-paid must never happen with
+            // zero visible feedback.
+            setFocus(focusedRow, focusedCol);
+            payBtn.click();
+          }
+        }
+        break;
+      case 'c':
+      case 'C':
+        // C marks the focused cell credit.  The template stamps
+        // data-can-credit with the same predicate as the card's
+        // Credit button (expense, projected, not a transfer shadow,
+        // not an envelope), so this cannot fire where the button
+        // would not render.
+        var creditCell = getFocusedCell();
+        var creditable = creditCell
+          && creditCell.querySelector('.txn-open[data-can-credit]');
+        if (creditable) {
+          e.preventDefault();
+          // Same reveal-before-mutate rule as Space above.
+          setFocus(focusedRow, focusedCol);
+          htmx.ajax('POST',
+            '/transactions/' + creditable.dataset.txnId + '/mark-credit',
+            {
+              target: '#txn-cell-' + creditable.dataset.txnId,
+              swap: 'innerHTML',
+            });
         }
         break;
       case 'Home':
@@ -638,9 +763,16 @@ document.addEventListener('keydown', function(e) {
   // Restore focus after HTMX swaps
   document.body.addEventListener('htmx:afterSwap', function() {
     if (focusedRow >= 0 && focusedCol >= 0) {
-      // Re-apply focus after a short delay to allow DOM to settle
+      // Re-apply focus after a short delay to allow DOM to settle.
+      // Highlight-only while the action card is open: swaps fire
+      // INSIDE the open card (lazy entries load, entry CRUD), and a
+      // reveal scroll here would trip grid_edit.js's wrapper-scroll
+      // listener and close the card mid-interaction.  Mirrors the
+      // activePopover guard on the keydown handler above.
       setTimeout(function() {
-        setFocus(focusedRow, focusedCol);
+        var popoverOpen = typeof activePopover !== 'undefined'
+          && Boolean(activePopover);
+        setFocus(focusedRow, focusedCol, popoverOpen);
       }, 50);
     }
   });

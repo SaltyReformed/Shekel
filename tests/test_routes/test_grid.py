@@ -283,6 +283,108 @@ class TestBalanceRow:
             assert b"Projected End Balance" in resp.data
             assert b"Total Expenses" not in resp.data
 
+    def test_balance_row_oob_stale_anchor_banner_when_condition_holds(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A settled post-anchor txn makes the response carry the OOB banner.
+
+        The anchor sits at periods[0]; a Paid (settled) expense in a
+        later period (periods[2]) is the stale-anchor condition. The
+        balance-row response must surface the banner out-of-band -- the
+        ``#stale-anchor-warning`` wrapper with ``hx-swap-oob="true"`` and
+        the warning alert inside -- so a desktop mark-done that creates
+        the condition shows the banner without the old full page reload.
+        """
+        with app.app_context():
+            from app.models.ref import TransactionType  # pylint: disable=import-outside-toplevel
+            paid = db.session.query(Status).filter_by(name="Paid").one()
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            # periods[0] is the anchor; periods[2] is post-anchor.
+            post_anchor = seed_periods_today[2]
+            db.session.add(Transaction(
+                pay_period_id=post_anchor.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=paid.id,
+                name="Paid Rent",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("1200.00"),
+            ))
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/grid/balance-row?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # OOB wrapper present and carrying the alert.
+            assert 'id="stale-anchor-warning"' in html
+            assert 'hx-swap-oob="true"' in html
+            assert "alert-warning" in html
+            assert "marked as done in periods after your anchor" in html
+            # Still dismissible.
+            assert 'data-bs-dismiss="alert"' in html
+
+    def test_balance_row_oob_stale_anchor_wrapper_empty_when_no_condition(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """No settled post-anchor txn -> the OOB wrapper is empty (no alert).
+
+        The wrapper still ships (so a later refresh can fill or clear it),
+        but with no stale-anchor condition it carries no alert -- a
+        desktop refresh must not flash a spurious warning.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                f"/grid/balance-row?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # Wrapper ships for the OOB swap, but holds no alert.
+            assert 'id="stale-anchor-warning"' in html
+            assert 'hx-swap-oob="true"' in html
+            assert "alert-warning" not in html
+            assert "marked as done in periods after your anchor" not in html
+
+    def test_balance_row_oob_banner_is_template_encapsulated(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The OOB banner ships inside a <template> that closes before <tfoot>.
+
+        Load-bearing parser-safety shape: htmx parses every partial
+        inside a <template> wrapper, and per the HTML5 tree-construction
+        spec a BARE non-table element preceding the <tfoot> flips the
+        parser into the "in body" insertion mode, where the following
+        tfoot/tr/td start tags are silently dropped.  The balance row
+        then swaps in as loose unstyled text ("unformatted list") and,
+        because the replacement carries no hx-trigger, its balanceChanged
+        self-refresh dies for the rest of the session -- the
+        projected-end-balance freeze regression introduced by ca47a1d.
+        Encapsulating the banner in <template> keeps the <tfoot> the
+        first top-level element (parses intact) while htmx's nested-
+        template OOB scan still swaps the banner.  Presence checks alone
+        cannot catch this; the ORDER is the contract.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                f"/grid/balance-row?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            template_open = html.index("<template>")
+            banner = html.index('id="stale-anchor-warning"')
+            template_close = html.index("</template>")
+            tfoot = html.index("<tfoot")
+            # banner inside the template; template fully closed before
+            # the tfoot opens.
+            assert template_open < banner < template_close < tfoot
+
     def test_grid_periods_large_value(
         self, app, auth_client, seed_user, seed_periods, monkeypatch,
     ):
@@ -299,6 +401,235 @@ class TestBalanceRow:
             assert resp.status_code == 200
             assert b"Projected End Balance" in resp.data
             assert b"01/02" in resp.data
+
+
+class TestSubtotalRowsEndpoint:
+    """Tests for GET /grid/subtotal-rows HTMX partial.
+
+    The desktop grid splits its three summary rows (Total Income, Total
+    Expenses, Net Cash Flow) into two self-refreshing ``<tbody>``
+    sections (grid rebuild Phase 6, audit item C3).  Only the income
+    ``<tbody>`` fires this endpoint on ``balanceChanged from:body``; the
+    single response carries the income ``<tbody>`` (an outerHTML swap
+    replaces it in place) AND the expense ``<tbody>`` as an
+    ``hx-swap-oob`` fragment, so ONE GET refreshes both sections.
+    Mirrors the :class:`TestBalanceRow` style: auth required, the no-op
+    204 contracts, and hand-computed Decimal figures asserted in the
+    rendered rows.
+    """
+
+    def _seed_income_expense(self, seed_user, period_id, income, expense):
+        """Seed one projected income + one projected expense in a period.
+
+        Returns nothing; the caller asserts the rendered subtotals.  Uses
+        the Salary/Rent seed categories so the rows render under the
+        income and expense sections respectively.
+        """
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        income_type = (
+            db.session.query(TransactionType).filter_by(name="Income").one()
+        )
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        db.session.add_all([
+            Transaction(
+                pay_period_id=period_id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Paycheck",
+                category_id=seed_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=income,
+            ),
+            Transaction(
+                pay_period_id=period_id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Rent",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=expense,
+            ),
+        ])
+        db.session.commit()
+
+    def test_one_response_carries_both_sections(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A single GET returns BOTH the income and expense subtotal tbodies.
+
+        Income $2,000, expense $1,400 in the current period.  One GET (the
+        income tbody's self-refresh) must return both sections so a single
+        balanceChanged event refreshes the whole summary: the income
+        tbody (Total Income = $2,000) carries the self-refresh trigger and
+        an outerHTML swap, while the expense tbody (Total Expenses =
+        $1,400, Net Cash Flow = $2,000 - $1,400 = $600) rides along as an
+        hx-swap-oob fragment so it never needs its own GET.
+        """
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            self._seed_income_expense(
+                seed_user, current.id, Decimal("2000.00"), Decimal("1400.00"),
+            )
+
+            resp = auth_client.get(
+                f"/grid/subtotal-rows?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Income tbody: present, self-refreshing, $2,000.
+            assert 'id="grid-subtotals-income"' in html
+            assert "subtotal-row-income" in html
+            assert "Total Income" in html
+            assert "$2,000" in html
+            # Only the income tbody carries the self-refresh trigger -- it
+            # is the single GET; the expense tbody rides along OOB.
+            assert 'hx-trigger="balanceChanged from:body"' in html
+            assert html.count('hx-trigger="balanceChanged from:body"') == 1
+
+            # Expense tbody: present, OOB, $1,400 + $600 net.
+            assert 'id="grid-subtotals-expense"' in html
+            assert 'hx-swap-oob="true"' in html
+            assert "subtotal-row-expense" in html
+            assert "net-cash-flow-row" in html
+            assert "Total Expenses" in html
+            assert "Net Cash Flow" in html
+            # Expense = $1,400; Net = $2,000 - $1,400 = $600.
+            assert "$1,400" in html
+            assert "$600" in html
+
+    def test_refresh_url_carries_account_and_window(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The income tbody's self-refresh URL pins account_id + window.
+
+        So the next balanceChanged refresh fetches the same account and
+        the same periods / offset window, mirroring balance_row threading
+        account_id through its hx-get URL.  The section param is gone --
+        one GET returns both sections -- so it must NOT appear.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                f"/grid/subtotal-rows?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f"account_id={seed_user['account'].id}" in html
+            assert "periods=6" in html
+            assert "offset=0" in html
+            # The collapsed-to-one-GET endpoint no longer takes a section.
+            assert "section=" not in html
+
+    def test_aria_live_polite_on_both_tbodies(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Both self-refreshing tbodies announce updates politely (a11y).
+
+        The mirrored ``_balance_row.html`` tfoot carries
+        ``aria-live="polite"`` + ``aria-atomic="true"``; both summary
+        tbodies must too so a screen reader announces the refreshed
+        figures after a mark-done.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                f"/grid/subtotal-rows?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # Two tbodies, each with the polite/atomic pair.
+            assert html.count('aria-live="polite"') == 2
+            assert html.count('aria-atomic="true"') == 2
+
+    def test_no_current_period_returns_204(
+        self, app, auth_client, seed_user,
+    ):
+        """No generated periods (no current period) returns 204."""
+        with app.app_context():
+            resp = auth_client.get("/grid/subtotal-rows")
+            assert resp.status_code == 204
+            assert resp.data == b""
+
+    def test_no_baseline_scenario_returns_204(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """No baseline scenario returns 204, matching balance_row (F-099)."""
+        with app.app_context():
+            db.session.query(Scenario).filter_by(
+                user_id=seed_user["user"].id,
+            ).delete()
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/grid/subtotal-rows?periods=6&offset=0",
+            )
+            assert resp.status_code == 204
+            assert resp.data == b""
+
+    def test_other_users_account_id_does_not_leak_subtotals(
+        self, app, auth_client, seed_user, seed_periods_today,
+        seed_second_user,
+    ):
+        """A cross-user account_id never leaks the other account's subtotals.
+
+        The first user requests subtotals while passing the SECOND user's
+        account_id.  ``resolve_grid_account`` rejects the cross-user id
+        (it is not owned by the requester) and falls back to the
+        requester's own account, so a $9,999 income seeded against the
+        second user's account never appears in the response -- the
+        404-for-not-yours guarantee expressed as data isolation (the
+        endpoint scopes strictly to ``current_user``).  The first user's
+        own $2,000 income IS shown because the fallback lands on their
+        account.
+        """
+        with app.app_context():
+            projected = (
+                db.session.query(Status).filter_by(name="Projected").one()
+            )
+            income_type = (
+                db.session.query(TransactionType)
+                .filter_by(name="Income").one()
+            )
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            # First user's own income -- shown via the fallback.
+            self._seed_income_expense(
+                seed_user, current.id,
+                Decimal("2000.00"), Decimal("0.00"),
+            )
+            # Second user's income on the second user's account/period --
+            # must NOT leak into the first user's subtotal response.
+            db.session.add(Transaction(
+                pay_period_id=seed_second_user["account"].current_anchor_period_id,
+                scenario_id=seed_second_user["scenario"].id,
+                account_id=seed_second_user["account"].id,
+                status_id=projected.id,
+                name="Other Paycheck",
+                category_id=seed_second_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("9999.00"),
+            ))
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/grid/subtotal-rows?periods=6&offset=0"
+                f"&account_id={seed_second_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The second user's $9,999 income must not appear.
+            assert "$9,999" not in html
+            # The first user's own $2,000 income is shown via the fallback.
+            assert "$2,000" in html
 
 
 class TestTransactionCRUD:
@@ -584,6 +915,73 @@ class TestTransactionCRUD:
             ).first()
             assert payback is None
 
+    def test_hard_delete_credit_source_deletes_payback(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """DELETE on an ad-hoc Credit source removes the live payback too.
+
+        Without the delete-side cleanup the ``SET NULL`` FK keeps the
+        payback alive with its link nulled, silently inflating the next
+        period's projected expenses with no offsetting credit row.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            txn_id = txn.id
+            auth_client.post(f"/transactions/{txn_id}/mark-credit")
+            payback = db.session.query(Transaction).filter_by(
+                credit_payback_for_id=txn_id, is_deleted=False,
+            ).one()
+            payback_id = payback.id
+
+            response = auth_client.delete(f"/transactions/{txn_id}")
+            assert response.status_code == 200
+
+            # Source hard-deleted (ad-hoc) and the payback with it.
+            assert db.session.get(Transaction, txn_id) is None
+            assert db.session.get(Transaction, payback_id) is None
+
+    def test_soft_delete_credit_source_deletes_payback(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """DELETE on a template-linked Credit source removes the payback.
+
+        The source itself only soft-deletes (the recurrence engine needs
+        the row), but the payback is an ad-hoc projected expense that
+        must not survive its now-invisible source.
+        """
+        with app.app_context():
+            from app.models.transaction_template import TransactionTemplate
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                name="Template",
+                default_amount=Decimal("123.45"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            txn.template_id = template.id
+            db.session.commit()
+
+            auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            payback = db.session.query(Transaction).filter_by(
+                credit_payback_for_id=txn.id, is_deleted=False,
+            ).one()
+            payback_id = payback.id
+
+            response = auth_client.delete(f"/transactions/{txn.id}")
+            assert response.status_code == 200
+
+            # Source soft-deleted, payback hard-deleted.
+            db.session.refresh(txn)
+            assert txn.is_deleted is True
+            assert db.session.get(Transaction, payback_id) is None
+
     def test_create_transaction_full_form(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions with all fields creates a complete transaction."""
         with app.app_context():
@@ -653,6 +1051,47 @@ class TestTransactionCRUD:
             assert save_resp.status_code == 200
             db.session.refresh(txn)
             assert txn.due_date == date(2026, 2, 20)
+
+    def test_full_edit_clears_due_date(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Emptying the pre-filled due_date input clears the stored date.
+
+        The nullable-field clear rule: the schema pre_load maps the
+        empty submit on the allow_none ``due_date`` to an explicit
+        None (it used to DROP the key, making the date unclearable
+        from the UI); the non-transfer update path's setattr loop then
+        nulls the column.  The popover pre-fills the current value, so
+        an empty submit is always the user's deliberate clear.
+        """
+        with app.app_context():
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            auth_client.post("/transactions", data={
+                "name": "Clearable Due Date",
+                "estimated_amount": "75.00",
+                "pay_period_id": seed_periods_today[0].id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "transaction_type_id": expense_type.id,
+                "status_id": projected.id,
+                "account_id": str(seed_user["account"].id),
+                "due_date": "2026-02-20",
+            })
+            txn = db.session.query(Transaction).filter_by(
+                name="Clearable Due Date"
+            ).one()
+            assert txn.due_date == date(2026, 2, 20)
+
+            save_resp = auth_client.patch(f"/transactions/{txn.id}", data={
+                "due_date": "",
+                "version_id": txn.version_id,
+            })
+            assert save_resp.status_code == 200
+            db.session.refresh(txn)
+            assert txn.due_date is None
 
     def test_full_edit_period_selector_renders_and_moves_transaction(
         self, app, auth_client, seed_user, seed_periods_today
@@ -3260,10 +3699,17 @@ class TestTooltipContent:
 
     @staticmethod
     def _extract_txn_titles(html):
-        """Extract title attribute values from txn-cell divs."""
+        """Extract title attribute values from the grid's transaction cells.
+
+        The C3 rebuild (2026-06-11, docs/design/grid_audit.md "Rebuild
+        decisions") moved the tooltip from the old ``div.txn-cell``
+        wrapper onto the chip's ``span.txn-open`` click target; the
+        tooltip text itself is unchanged, so every assertion in this
+        class still checks the same content.
+        """
         import re
         return re.findall(
-            r'<div class="txn-cell"[^>]*title="([^"]*)"', html,
+            r'<span class="txn-open"[^>]*title="([^"]*)"', html,
         )
 
     def test_tooltip_contains_full_amount_with_cents(
@@ -4871,8 +5317,13 @@ class TestMobileCardActionBar:
     ``<li>``, wrapped together in
     ``<div class="mobile-card-wrapper">``.  A delegated tap handler in
     ``app/static/js/mobile_grid.js`` toggles the Bootstrap collapse so
-    the user sees ``[Mark Paid]``, ``[Edit Amount]``, and
-    ``[Open Full]`` directly under the tapped card.
+    the user sees ``[Mark Paid]`` and ``[Open Full]`` directly under
+    the tapped card.  (The original ``[Edit Amount]`` button was
+    removed in the C3 rebuild, audit item C2: its swap target
+    ``#txn-cell-<id>`` lives inside the CSS-hidden desktop table, so
+    the form it loaded was never visible on mobile -- confirmed dead
+    live on 2026-06-11 -- and the Open Full action card now carries
+    the amount inputs directly.)
 
     These tests pin down the structural contract the JS handler and
     the action-bar route consumers depend on:
@@ -4885,10 +5336,10 @@ class TestMobileCardActionBar:
         mark-done path) do not (mark_done would reject them via the
         state machine, so omitting the affordance is the honest UX).
       - ``can_edit=False`` (the companion contract per R-7 / D-B of
-        the v3 plan) drops the owner-only ``[Edit Amount]`` and
-        ``[Open Full]`` buttons while keeping ``[Mark Paid]``
-        (companions are allowed to mark paid per the existing
-        entries-blueprint precedent).
+        the v3 plan) drops the owner-only ``[Open Full]`` button while
+        keeping ``[Mark Paid]`` (companions are allowed to mark paid
+        per the existing entries-blueprint precedent); ``Edit Amount``
+        stays asserted absent for every render path.
       - The Mark Paid form posts to ``transactions.mark_done`` with
         the swap target set to the row's ``#txn-cell-<id>``.
     """
@@ -5093,15 +5544,17 @@ class TestMobileCardActionBar:
     def test_action_bar_excludes_edit_when_can_edit_false(
         self, app, seed_user, seed_periods_today,
     ):
-        """C7-5: ``can_edit=False`` (companion) drops ``[Edit Amount]`` and
-        ``[Open Full]`` but keeps ``[Mark Paid]``.
+        """C7-5: ``can_edit=False`` (companion) drops ``[Open Full]``
+        but keeps ``[Mark Paid]``.
 
         The companion role can mark transactions paid (entries
-        blueprint precedent) but cannot open the desktop full-edit
-        form or the inline quick-edit popover.  The action bar
-        partial's ``{% if can_edit %}`` guard is the only thing
-        between the companion render path and the owner-only
-        affordances.
+        blueprint precedent) but cannot open the full-edit action
+        card.  The action bar partial's ``{% if can_edit %}`` guard is
+        the only thing between the companion render path and the
+        owner-only affordance.  ``Edit Amount`` is asserted absent
+        here too -- it was removed for every render path in the C3
+        rebuild (audit item C2, dead target in the hidden desktop
+        table), so its absence is now unconditional.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
@@ -5359,7 +5812,7 @@ class TestMobileCardActionBar:
         the mobile-first v3 plan hard-rule 7.
 
         The 44 px floor now travels via the ``.btn-touch-44`` utility
-        class defined in ``app/static/css/app.css`` inside the
+        class defined in ``app/static/css/grid.css`` inside the
         ``@media (max-width: 767.98px)`` block.  A regression that
         re-introduced an inline ``style="..."`` would silently shrink
         the buttons; this lock catches the regression at the source.

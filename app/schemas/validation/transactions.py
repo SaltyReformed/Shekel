@@ -12,6 +12,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    _normalize_empty_inputs,
     _reject_envelope_on_income,
 )
 
@@ -34,8 +35,8 @@ class TransactionUpdateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     name = fields.String(validate=validate.Length(min=1, max=200))
     estimated_amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
@@ -125,8 +126,8 @@ class InlineTransactionCreateSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields don't fail validation."""
-        return {k: v for k, v in data.items() if v != ""}
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
 
     @validates_schema
     def validate_envelope_only_on_expense(self, data, **kwargs):
@@ -162,15 +163,20 @@ class MarkDoneSchema(BaseSchema):
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
-        """Drop empty-string values so optional fields stay missing.
+        """Drop empty inputs; map empties on nullable fields to None.
 
         HTML forms always submit every <input> element, including
         empty ones, as empty strings.  Without this hook, an
         unfilled ``actual_amount`` field would arrive as ``""`` and
         fail Decimal coercion -- defeating the point of replacing
-        the inline try/except.
+        the inline try/except.  Since ``actual_amount`` is
+        ``allow_none``, an empty input now loads as an explicit
+        ``None``, which the routes treat the same as an absent key:
+        leave the column untouched (their reads are
+        ``data.get``/``is not None``-guarded, so a ``None`` never
+        nullifies a previously recorded actual amount).
         """
-        return {k: v for k, v in data.items() if v != ""}
+        return _normalize_empty_inputs(self, data)
 
     actual_amount = fields.Decimal(
         places=2, as_string=True, allow_none=True,

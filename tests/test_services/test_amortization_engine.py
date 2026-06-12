@@ -11,13 +11,31 @@ import pytest
 from app.services.amortization_engine import (
     PaymentRecord,
     PayoffRequest,
+    PeriodTerms,
     ProjectionInputs,
     RateChangeRecord,
     calculate_monthly_payment,
     calculate_payoff_by_date,
     calculate_remaining_months,
     project_forward,
+    required_extra_for_projection,
 )
+
+
+def _terms(
+    start_date: date, annual_rate: Decimal, monthly_pi: Decimal,
+) -> list[PeriodTerms]:
+    """Single fixed-rate terms feed for a projection.
+
+    The SSOT analogue of the old ``(annual_rate, contractual_payment)``
+    scalar pair: one :class:`PeriodTerms` entry governing every month.
+    Tests that exercise a recast pass a multi-entry list instead.
+    """
+    return [PeriodTerms(
+        start_date=start_date,
+        annual_rate=annual_rate,
+        monthly_pi=monthly_pi,
+    )]
 
 
 class TestCalculateMonthlyPayment:
@@ -85,14 +103,19 @@ class TestPayoffByDate:
         (hi - lo <= 0.01). Verified below by proving $478.08
         achieves the target and $478.07 does not.
         """
+        contractual = calculate_monthly_payment(
+            Decimal("200000"), Decimal("0.065"), 360,
+        )
         result = calculate_payoff_by_date(
             PayoffRequest(
                 current_principal=Decimal("200000"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 target_date=date(2041, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"), contractual,
+                ),
             )
         )
         assert result == Decimal("478.08"), (
@@ -103,18 +126,16 @@ class TestPayoffByDate:
         # at or before the target.  The same engine primitive
         # ``calculate_payoff_by_date`` uses internally, so the cross-
         # check stays consistent with the binary search.
-        contractual = calculate_monthly_payment(
-            Decimal("200000"), Decimal("0.065"), 360,
-        )
         starting_date = date(2026, 2, 1)  # origination + 1 month
         schedule_at = project_forward(
             ProjectionInputs(
                 starting_balance=Decimal("200000"),
                 starting_date=starting_date,
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 payment_day=1,
-                contractual_payment=contractual,
+                terms_schedule=_terms(
+                    starting_date, Decimal("0.065"), contractual,
+                ),
             ),
             extra_monthly=Decimal("478.08"),
         )
@@ -129,10 +150,11 @@ class TestPayoffByDate:
             ProjectionInputs(
                 starting_balance=Decimal("200000"),
                 starting_date=starting_date,
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 payment_day=1,
-                contractual_payment=contractual,
+                terms_schedule=_terms(
+                    starting_date, Decimal("0.065"), contractual,
+                ),
             ),
             extra_monthly=Decimal("478.07"),
         )
@@ -146,11 +168,16 @@ class TestPayoffByDate:
         result = calculate_payoff_by_date(
             PayoffRequest(
                 current_principal=Decimal("200000"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 target_date=date(2025, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"),
+                    calculate_monthly_payment(
+                        Decimal("200000"), Decimal("0.065"), 360,
+                    ),
+                ),
             )
         )
         assert result is None
@@ -160,11 +187,16 @@ class TestPayoffByDate:
         result = calculate_payoff_by_date(
             PayoffRequest(
                 current_principal=Decimal("200000"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 target_date=date(2060, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"),
+                    calculate_monthly_payment(
+                        Decimal("200000"), Decimal("0.065"), 360,
+                    ),
+                ),
             )
         )
         assert result == Decimal("0.00")
@@ -174,12 +206,114 @@ class TestPayoffByDate:
         result = calculate_payoff_by_date(
             PayoffRequest(
                 current_principal=Decimal("0"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 target_date=date(2040, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"),
+                    calculate_monthly_payment(
+                        Decimal("200000"), Decimal("0.065"), 360,
+                    ),
+                ),
             )
+        )
+        assert result == Decimal("0.00")
+
+
+class TestRequiredExtraForProjection:
+    """The override-aware payoff search (F-27, "fix + reframe").
+
+    ``required_extra_for_projection`` is the factored-out core of
+    ``calculate_payoff_by_date`` plus an optional planned-outlay
+    ``monthly_override``: the baseline run and every binary-search
+    iteration honor the user's committed plan, so the returned extra is
+    the amount needed ON TOP of that plan (override months suppress the
+    searched extra, the composer's regression-prevention property).
+    """
+
+    TARGET = date(2041, 1, 1)
+    CONTRACTUAL = calculate_monthly_payment(
+        Decimal("200000"), Decimal("0.065"), 360,
+    )
+
+    def _inputs(self):
+        """The $200k / 6.5% / 360-month state the C7-4 locks also use."""
+        return ProjectionInputs(
+            starting_balance=Decimal("200000"),
+            starting_date=date(2026, 2, 1),
+            remaining_months=360,
+            payment_day=1,
+            terms_schedule=_terms(
+                date(2026, 2, 1), Decimal("0.065"), self.CONTRACTUAL,
+            ),
+        )
+
+    def _plan_override(self, inputs, months, extra):
+        """(year, month) -> contractual + extra for the first ``months``."""
+        override = {}
+        year, month = inputs.starting_date.year, inputs.starting_date.month
+        for _ in range(months):
+            override[(year, month)] = self.CONTRACTUAL + extra
+            month += 1
+            if month == 13:
+                year, month = year + 1, 1
+        return override
+
+    def test_no_override_matches_calculate_payoff_by_date(self):
+        """Refactor lock: the core reproduces the wrapped function.
+
+        Same loan facts as ``test_achievable_target``'s regression lock
+        ($478.08), proving the extraction is behavior-preserving for
+        the raw (no-plan) path.
+        """
+        result = required_extra_for_projection(self._inputs(), self.TARGET)
+        assert result == Decimal("478.08")
+
+    def test_committed_plan_reduces_required_extra(self):
+        """A $500/mo plan lowers the extra needed to hit the target.
+
+        24 override months at contractual + $500 model a recurring
+        transfer template over its ~2-year projection horizon.  The
+        F-27 acceptance scenario: a user already paying extra must NOT
+        be told they need the full $478.08 again.  Correctness is
+        pinned by projecting the plan + found extra (payoff at or
+        before target) and minimality by two cents less failing (the
+        search converges to a one-cent bracket).
+        """
+        inputs = self._inputs()
+        override = self._plan_override(inputs, 24, Decimal("500"))
+
+        plan_extra = required_extra_for_projection(
+            inputs, self.TARGET, monthly_override=override,
+        )
+        raw_extra = required_extra_for_projection(inputs, self.TARGET)
+        assert plan_extra < raw_extra
+
+        achieved = project_forward(
+            inputs, monthly_override=override, extra_monthly=plan_extra,
+        )
+        assert achieved[-1].payment_date <= self.TARGET
+
+        under = project_forward(
+            inputs,
+            monthly_override=override,
+            extra_monthly=plan_extra - Decimal("0.02"),
+        )
+        assert under[-1].payment_date > self.TARGET
+
+    def test_plan_already_hits_target_returns_zero(self):
+        """A plan that retires the loan by the target needs no extra.
+
+        Overriding every month at contractual + $2000 pays the loan off
+        well before 2041, so the override-aware BASELINE run (not the
+        search) returns the 0.00 "already achieved" answer -- the
+        committed-plan analogue of ``test_target_after_standard_payoff``.
+        """
+        inputs = self._inputs()
+        override = self._plan_override(inputs, 360, Decimal("2000"))
+        result = required_extra_for_projection(
+            inputs, self.TARGET, monthly_override=override,
         )
         assert result == Decimal("0.00")
 
@@ -209,11 +343,16 @@ class TestPayoffByDateProjectForward:
         result = calculate_payoff_by_date(
             PayoffRequest(
                 current_principal=Decimal("200000"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 target_date=date(2025, 12, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"),
+                    calculate_monthly_payment(
+                        Decimal("200000"), Decimal("0.065"), 360,
+                    ),
+                ),
             )
         )
         assert result is None
@@ -228,11 +367,16 @@ class TestPayoffByDateProjectForward:
         result = calculate_payoff_by_date(
             PayoffRequest(
                 current_principal=Decimal("200000"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 target_date=date(2060, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"),
+                    calculate_monthly_payment(
+                        Decimal("200000"), Decimal("0.065"), 360,
+                    ),
+                ),
             )
         )
         assert result == Decimal("0.00")
@@ -248,11 +392,16 @@ class TestPayoffByDateProjectForward:
         result = calculate_payoff_by_date(
             PayoffRequest(
                 current_principal=Decimal("200000"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 target_date=date(2041, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"),
+                    calculate_monthly_payment(
+                        Decimal("200000"), Decimal("0.065"), 360,
+                    ),
+                ),
             )
         )
         assert result == Decimal("478.08"), (
@@ -262,16 +411,25 @@ class TestPayoffByDateProjectForward:
     @pytest.mark.parametrize("label,kwargs,expected", [
         # Pre-commit values captured from the legacy generate_schedule
         # implementation on 2026-05-22 before the project_forward
-        # migration.  Any drift here is a real regression.
+        # migration.  Any drift here is a real regression.  Each terms
+        # feed carries the contractual P&I the legacy implementation
+        # derived internally (amortizing the projection state -- or the
+        # original terms for the partial-paid case), so the pinned
+        # dollars are unchanged across the DH-#1 terms-schedule reshape.
         (
             "basic_30yr",
             dict(
                 current_principal=Decimal("200000"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=360,
                 target_date=date(2041, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"),
+                    calculate_monthly_payment(
+                        Decimal("200000"), Decimal("0.065"), 360,
+                    ),
+                ),
             ),
             Decimal("478.08"),
         ),
@@ -279,13 +437,18 @@ class TestPayoffByDateProjectForward:
             "partial_paid_with_original_terms",
             dict(
                 current_principal=Decimal("150000"),
-                annual_rate=Decimal("0.065"),
                 remaining_months=240,
                 target_date=date(2038, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
-                original_principal=Decimal("200000"),
-                term_months=360,
+                # The contractual P&I of the ORIGINAL terms -- the
+                # payment a partially-paid loan keeps for its life.
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.065"),
+                    calculate_monthly_payment(
+                        Decimal("200000"), Decimal("0.065"), 360,
+                    ),
+                ),
             ),
             Decimal("238.75"),
         ),
@@ -293,11 +456,16 @@ class TestPayoffByDateProjectForward:
             "15yr_target_5_percent",
             dict(
                 current_principal=Decimal("250000"),
-                annual_rate=Decimal("0.05"),
                 remaining_months=360,
                 target_date=date(2035, 6, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.05"),
+                    calculate_monthly_payment(
+                        Decimal("250000"), Decimal("0.05"), 360,
+                    ),
+                ),
             ),
             Decimal("1436.42"),
         ),
@@ -305,11 +473,16 @@ class TestPayoffByDateProjectForward:
             "short_horizon_payment_day_15",
             dict(
                 current_principal=Decimal("50000"),
-                annual_rate=Decimal("0.04"),
                 remaining_months=120,
                 target_date=date(2030, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=15,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.04"),
+                    calculate_monthly_payment(
+                        Decimal("50000"), Decimal("0.04"), 120,
+                    ),
+                ),
             ),
             Decimal("644.88"),
         ),
@@ -317,11 +490,16 @@ class TestPayoffByDateProjectForward:
             "large_loan_7_percent",
             dict(
                 current_principal=Decimal("500000"),
-                annual_rate=Decimal("0.07"),
                 remaining_months=360,
                 target_date=date(2045, 1, 1),
                 origination_date=date(2026, 1, 1),
                 payment_day=1,
+                terms_schedule=_terms(
+                    date(2026, 1, 1), Decimal("0.07"),
+                    calculate_monthly_payment(
+                        Decimal("500000"), Decimal("0.07"), 360,
+                    ),
+                ),
             ),
             Decimal("644.46"),
         ),
@@ -355,7 +533,7 @@ class TestPayoffByDateProjectForward:
         """
         engine_path = (
             Path(__file__).resolve().parent.parent.parent
-            / "app" / "services" / "amortization_engine.py"
+            / "app" / "services" / "amortization_engine" / "_payoff.py"
         )
         source = engine_path.read_text(encoding="utf-8")
         marker = "def calculate_payoff_by_date("
@@ -490,10 +668,9 @@ class TestAmortizationEngineRegression:
             ProjectionInputs(
                 starting_balance=principal,
                 starting_date=self.STARTING_DATE,
-                annual_rate=rate,
                 remaining_months=months,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=contractual,
+                terms_schedule=_terms(self.STARTING_DATE, rate, contractual),
             ),
             extra_monthly=extra_monthly,
         )
@@ -508,8 +685,14 @@ class TestAmortizationEngineRegression:
         target = date(2044, 1, 1)  # 20-year payoff target
         extra = calculate_payoff_by_date(
             PayoffRequest(
-                self.PRINCIPAL, self.RATE, self.MONTHS,
-                target, self.ORIGINATION, self.PAYMENT_DAY,
+                current_principal=self.PRINCIPAL,
+                remaining_months=self.MONTHS,
+                target_date=target,
+                origination_date=self.ORIGINATION,
+                payment_day=self.PAYMENT_DAY,
+                terms_schedule=_terms(
+                    self.ORIGINATION, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             )
         )
         assert extra is not None
@@ -782,6 +965,67 @@ class TestRateChangeRecordValidation:
         assert record.interest_rate == Decimal("0.07")
 
 
+class TestPeriodTermsValidation:
+    """Construction-time validation for PeriodTerms and the
+    ProjectionInputs empty-terms guard.
+
+    Mirrors TestPaymentRecordValidation: invalid data must fail loudly
+    at construction, not produce a silently wrong schedule.
+    """
+
+    def test_negative_rate_raises_value_error(self):
+        """Negative annual rate must be rejected."""
+        with pytest.raises(ValueError, match="annual_rate must be >= 0"):
+            PeriodTerms(
+                start_date=date(2026, 1, 1),
+                annual_rate=Decimal("-0.01"),
+                monthly_pi=Decimal("1500.00"),
+            )
+
+    def test_negative_pi_raises_value_error(self):
+        """Negative level payment must be rejected."""
+        with pytest.raises(ValueError, match="monthly_pi must be >= 0"):
+            PeriodTerms(
+                start_date=date(2026, 1, 1),
+                annual_rate=Decimal("0.06"),
+                monthly_pi=Decimal("-1.00"),
+            )
+
+    def test_float_pi_raises_type_error(self):
+        """Float P&I is a precision bug and must be rejected."""
+        with pytest.raises(TypeError, match="monthly_pi must be a Decimal"):
+            PeriodTerms(
+                start_date=date(2026, 1, 1),
+                annual_rate=Decimal("0.06"),
+                monthly_pi=1500.00,
+            )
+
+    def test_string_date_raises_type_error(self):
+        """String date must be rejected -- only date instances accepted."""
+        with pytest.raises(TypeError, match="start_date must be a date"):
+            PeriodTerms(
+                start_date="2026-01-01",
+                annual_rate=Decimal("0.06"),
+                monthly_pi=Decimal("1500.00"),
+            )
+
+    def test_empty_terms_schedule_rejected(self):
+        """ProjectionInputs refuses an empty terms feed at construction.
+
+        A projection with no terms has no payment or rate to apply;
+        the constructor fails loudly instead of producing an empty or
+        wrong schedule downstream.
+        """
+        with pytest.raises(ValueError, match="terms_schedule"):
+            ProjectionInputs(
+                starting_balance=Decimal("1000.00"),
+                starting_date=date(2026, 2, 1),
+                remaining_months=12,
+                payment_day=1,
+                terms_schedule=[],
+            )
+
+
 class TestProjectForward:
     """Tests for ``project_forward``.
 
@@ -840,10 +1084,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=self.PRINCIPAL,
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
         )
         assert len(rows) == self.TERM_MONTHS
@@ -884,10 +1129,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=self.PRINCIPAL,
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
             monthly_override={(2026, 6): Decimal("2000.00")},
         )
@@ -925,10 +1171,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=self.PRINCIPAL,
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
             extra_monthly=Decimal("500.00"),
         )
@@ -977,10 +1224,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=self.PRINCIPAL,
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
             monthly_override={(2026, 6): Decimal("2000.00")},
             extra_monthly=Decimal("500.00"),
@@ -1018,10 +1266,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=self.PRINCIPAL,
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
             monthly_override={(2026, 2): Decimal("50.00")},
         )
@@ -1039,35 +1288,52 @@ class TestProjectForward:
     # ── C2-6: ARM rate change during projection ───────────────────
 
     def test_arm_rate_change_during_projection(self):
-        """C2-6: when ``rate_changes_remaining`` has an entry whose
-        ``effective_date`` is reached during the projection, the
-        engine re-amortizes the remaining balance over remaining
-        months at the new rate.
+        """C2-6: a second ``terms_schedule`` entry recasts the rate AND
+        payment from its ``start_date`` -- to the entry's SSOT values.
 
-        Setup: 30 yr / $300,000 / starts at 6%; rate change at
-        2027-02-01 to 7.5%.  Hand arithmetic at month 13 (Feb 2027):
+        Retargeted for the DH-#1 terms-schedule reshape (developer
+        ratified "full SSOT", 2026-06-11): the engine no longer
+        re-amortizes from its own balance at a rate boundary; it pays
+        the governing entry's ``monthly_pi`` verbatim (the rate-period
+        engine's derived-or-recorded figure, the same one the loan
+        card shows).
+
+        Setup: 30 yr / $300,000 / starts at 6%; recast at 2027-02-01
+        to 7.5% with the schedule-derived level payment.  Hand
+        arithmetic at month 13 (Feb 2027):
           balance entering Feb 2027 (post-Jan 2027) = $296,316.00
           new monthly_rate = 0.075 / 12 = 0.00625
           interest = 296316.00 * 0.00625 = 1851.97500 -> $1,851.98
-        Existing engine ARM behavior is preserved by construction
-        (project_forward shares the rate-change handler shape with
-        generate_schedule).
+          level payment M(296316.00, 0.075, 348) = $2,091.16
+        (Identical to the pre-reshape re-amortized value here, because
+        a no-override/no-extra projection's balance at the boundary IS
+        the scheduled balance -- the reshape changes behavior only when
+        a what-if balance path diverges from the schedule.)
         """
         contractual = calculate_monthly_payment(
             self.PRINCIPAL, self.RATE, self.TERM_MONTHS,
         )
+        recast_pi = calculate_monthly_payment(
+            Decimal("296316.00"), Decimal("0.075"), 348,
+        )
+        # Hand-anchored: the derived recast level payment.
+        assert recast_pi == Decimal("2091.16")
         rows = project_forward(
             ProjectionInputs(
                 starting_balance=self.PRINCIPAL,
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=contractual,
-                rate_changes_remaining=[
-                    RateChangeRecord(
-                        effective_date=date(2027, 2, 1),
-                        interest_rate=Decimal("0.075"),
+                terms_schedule=[
+                    PeriodTerms(
+                        start_date=self.STARTING_DATE,
+                        annual_rate=self.RATE,
+                        monthly_pi=contractual,
+                    ),
+                    PeriodTerms(
+                        start_date=date(2027, 2, 1),
+                        annual_rate=Decimal("0.075"),
+                        monthly_pi=recast_pi,
                     ),
                 ],
             ),
@@ -1079,14 +1345,63 @@ class TestProjectForward:
         feb_2027 = rows[12]
         assert jan_2027.payment_date == date(2027, 1, 1)
         assert jan_2027.interest_rate == Decimal("0.06")
+        assert jan_2027.payment == self.CONTRACTUAL_PAYMENT
         assert feb_2027.payment_date == date(2027, 2, 1)
         assert feb_2027.interest_rate == Decimal("0.075")
         # interest at the new rate: 296316.00 * 0.075/12.
         assert feb_2027.interest == Decimal("1851.98")
-        # Re-amortized payment is strictly greater than the base
-        # 6% contractual ($1798.65); the engine recomputes
-        # monthly_payment at the rate-change boundary.
-        assert feb_2027.payment > self.CONTRACTUAL_PAYMENT
+        # The payment IS the second entry's SSOT level payment.
+        assert feb_2027.payment == recast_pi
+
+    def test_recorded_recast_pi_paid_verbatim(self):
+        """DH-#1 engine pin: a recorded recast P&I is paid VERBATIM.
+
+        The user's lender stated the post-recast payment on the
+        adjustment notice ($2,500.00, recorded as
+        ``RateHistory.monthly_pi`` and carried into the terms entry).
+        Every post-recast row must pay exactly that figure -- the loan
+        card shows it, so a schedule that re-derives a different
+        payment contradicts the card (the original DH-#1 divergence:
+        the pre-reshape engine re-amortized $2,582.13 here).
+        Revert-proof: restoring balance-reactive re-amortization fails
+        the equality.
+        """
+        contractual = calculate_monthly_payment(
+            self.PRINCIPAL, self.RATE, self.TERM_MONTHS,
+        )
+        recorded = Decimal("2500.00")
+        rows = project_forward(
+            ProjectionInputs(
+                starting_balance=self.PRINCIPAL,
+                starting_date=self.STARTING_DATE,
+                remaining_months=self.TERM_MONTHS,
+                payment_day=self.PAYMENT_DAY,
+                terms_schedule=[
+                    PeriodTerms(
+                        start_date=self.STARTING_DATE,
+                        annual_rate=self.RATE,
+                        monthly_pi=contractual,
+                    ),
+                    PeriodTerms(
+                        start_date=date(2027, 2, 1),
+                        annual_rate=Decimal("0.075"),
+                        monthly_pi=recorded,
+                    ),
+                ],
+            ),
+        )
+        post_recast = [
+            r for r in rows if r.payment_date >= date(2027, 2, 1)
+        ]
+        assert post_recast, "projection must reach the recast"
+        # Every post-recast row except the residue-absorbing final one
+        # pays the recorded figure exactly.
+        for row in post_recast[:-1]:
+            assert row.payment == recorded, (
+                f"{row.payment_date}: paid {row.payment}, recorded "
+                f"recast is {recorded}"
+            )
+            assert row.interest_rate == Decimal("0.075")
 
     # ── C2-7: overpayment cap on the final row ────────────────────
 
@@ -1111,10 +1426,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=Decimal("1000.00"),
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
             extra_monthly=Decimal("500.00"),
         )
@@ -1136,10 +1452,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=Decimal("0.00"),
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
         )
         assert rows == []
@@ -1148,10 +1465,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=Decimal("-10.00"),
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=self.TERM_MONTHS,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
         )
         assert rows == []
@@ -1166,10 +1484,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=self.PRINCIPAL,
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=0,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
         )
         assert rows == []
@@ -1178,10 +1497,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=self.PRINCIPAL,
                 starting_date=self.STARTING_DATE,
-                annual_rate=self.RATE,
                 remaining_months=-3,
                 payment_day=self.PAYMENT_DAY,
-                contractual_payment=self.CONTRACTUAL_PAYMENT,
+                terms_schedule=_terms(
+                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
+                ),
             ),
         )
         assert rows == []
@@ -1222,10 +1542,11 @@ class TestProjectForward:
             ProjectionInputs(
                 starting_balance=starting,
                 starting_date=date(2026, 5, 30),
-                annual_rate=self.RATE,
                 remaining_months=remaining,
                 payment_day=payment_day,
-                contractual_payment=contractual,
+                terms_schedule=_terms(
+                    date(2026, 5, 30), self.RATE, contractual,
+                ),
             ),
             extra_monthly=extra,
         )
@@ -1251,15 +1572,15 @@ class TestProjectForward:
         rounding surface inside the new primitive.
         """
         engine_source = Path(
-            "app/services/amortization_engine.py"
+            "app/services/amortization_engine/_projection.py"
         ).read_text(encoding="utf-8")
         # Slice out the project_forward body for the assertion.  The
         # body ends at the next top-level ``def`` or ``class`` after
-        # ``project_forward`` -- the ``PayoffRequest`` dataclass, which
-        # the payoff-by-date param-object refactor placed between
-        # ``project_forward`` and ``calculate_payoff_by_date``.  Taking
-        # the min of both markers keeps the slice correct regardless of
-        # what construct comes next.
+        # ``project_forward``, or at end-of-file -- since the package
+        # split, ``project_forward`` is the last definition in
+        # ``_projection.py`` (the payoff layer lives in ``_payoff.py``).
+        # Taking the min of both markers keeps the slice correct
+        # regardless of what construct comes next.
         marker = "def project_forward("
         start = engine_source.index(marker)
         next_def = engine_source.find("\ndef ", start + len(marker))

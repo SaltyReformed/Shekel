@@ -9,13 +9,18 @@
 > gate. Verify every finding against the code before applying. The auto-loaded
 > `.claude/rules/pylint-cleanup.md` carries the short form.
 
-**Status: Phases 0-2 DONE; Phase 3 IN PROGRESS. As of 2026-06-07 (session 3) app/ is 9.96/10 with
-ZERO `duplicate-code` (R0801) clusters, zero `useless-suppression`, zero E/F, zero
-`shekel-disable-rationale` (W9903 = every disable is standard-compliant), and -- as of `c3d05de` --
-ZERO visible design smells (the last one, `schemas/validation.py` `too-many-lines`, was cleared by
-the package split). 55 visible messages, all Phase-4 mechanical or documented Phase-1 keeps (50
-line-too-long, 5 unused-argument in `app/__init__` error handlers). 70 inline disables. Full suite
-5778 passed.**
+**Status: ALL PHASES DONE -- `app/` LOCKED at 10.00/10 with ZERO messages (CI `--fail-under=10` +
+`scripts/hooks/ENFORCE_PYLINT_FLOOR` enforce the floor; see the Phase 5 status block), and Phase 5
+step 5 (`scripts/`) COMPLETED 2026-06-11: `pylint scripts/` 10.00/10 with ZERO messages (from the
+5.22/10 corrected baseline; see the Phase 5 step-5 completion block for the register). P-1 and P-3
+under "Problems surfaced" are both RESOLVED (see their status lines). Subsequent quality work is
+tracked in `deep-quality-hunt.md` (register exhausted through Batch AK, plus the 2026-06-11
+closeout fixes recorded on their own rows: credit-reversion payback delete, #82 narrow producer,
+the `_first_validation_message` rename, and the trueup-test disposal) and `quality-pass.md`
+(fix-batches B1-B7 complete).**
+
+*(The paragraphs below are the historical session narratives from the Phase-3 era, kept as the
+decision log; their "remaining" claims are superseded by the status line above.)*
 
 **This session (the `schemas/validation.py` package split -- COMPLETE):** the 2937-line monolith
 genuinely split (decision #5) into `app/schemas/validation/` -- `_helpers` (shared base/validators/
@@ -59,15 +64,18 @@ Full suite 5778 throughout.
    **Result: W9903 -> 0; every disable in `app/` is now decomposed away or documented to the standard.**
 
 **Remaining (broader pylint-10 effort, beyond the undisposed-disable workstream):**
-- **Wire `shekel-disable-rationale` as a hard gate** now that W9903 = 0 (CI `--fail-on`, the per-edit
-  hook hard-block tier, `/standards`) -- the lock-in for the standard.
-- **`auth.py` package split** (decision #5; deferred from Tier-2 functions-first) -- the module
-  `too-many-lines` disable's tracked follow-up; its own dedicated, quality-passed sub-task.
+- ~~**Wire `shekel-disable-rationale` as a hard gate**~~ **DONE** -- the Phase 5 lock-in put it in
+  CI's `--fail-on` list (see the Phase 5 status block; `.github/workflows/ci.yml`).
+- ~~**`auth.py` package split** (decision #5; deferred from Tier-2 functions-first) -- the module
+  `too-many-lines` disable's tracked follow-up; its own dedicated, quality-passed sub-task.~~
+  **DONE (`0aceb6c`, 2026-06-11)** -- split into `app/routes/auth/` (`_bp` / `_helpers` /
+  `credentials` / `mfa` / `session_security`), the waiver removed; see the Progress Log row.
 - ~~**`schemas/validation.py` module split** (decision #5) -- the SOLE remaining *visible* design
   smell.~~ **DONE (`c3d05de` + `8cda673`)** -- split into the `app/schemas/validation/` package, file
   to 10.00/10. Was the last visible design smell; app/ now has ZERO.
-- **Phase 4 mechanical** (50 line-too-long remaining + the 5 `__init__` error-handler unused-argument)
-  and **Phase 5** (CI 10/10 lock-in, then `scripts/`).
+- ~~**Phase 4 mechanical** (50 line-too-long remaining + the 5 `__init__` error-handler unused-argument)
+  and **Phase 5** (CI 10/10 lock-in)~~ **DONE** (see the Phase 4 / Phase 5 status blocks) -- only
+  Phase 5 step 5 (`scripts/`, 5.22/10) remains.
 
 The PRIOR `account_service`, `carry_forward_service`, and `transfer_service.create/update` smell items
 recorded below are DONE (`53809b5`/`4f7737e`/`36a4fbb`) -- the older "4 remaining" headline they
@@ -179,7 +187,15 @@ replaced block (left untyped to match the sibling untyped response helpers). Ind
 behavior_equivalent=yes (byte-verified), all ACCEPT, 0 REFINE, 0 REVERT-OVERREACH; two deferred tracker
 notes (a coordinated `flask.typing.ResponseReturnValue` typing pass for entries' private-helper cluster;
 the 7-line ownership preamble shared by update_entry/toggle_cleared/delete_entry -- a separate DRY
-refactor). 0 disables (83); 0 new R0801; visible 109->108; smell items 20->19 (14 8-symbol + 5
+refactor) -- **both deferred notes DONE 2026-06-11**: the private-helper cluster is typed
+(`ResponseReturnValue` for the heterogeneous response tails -- entries.py is its first use, the
+concrete-union idiom of `categories.py:38` stays preferred for narrow shapes; `dict[str, Any]` per
+the `_recurrence_form_helpers` idiom), and the 3-site preamble is the single security-critical
+`_accessible_txn_and_entry(txn_id, entry_id) -> tuple[Transaction, TransactionEntry] | None`
+(one definition of the parameter-confusion guard + the 404-for-both rule; create/list correctly
+excluded -- no entry id). Behavior-identical (same checks, order, 404 bodies); 222 entries-adjacent
+tests passed; independent quality-pass ACCEPT, 0 REVERT-OVERREACH.
+0 disables (83); 0 new R0801; visible 109->108; smell items 20->19 (14 8-symbol + 5
 instance-attr); score 9.92 held; full suite 5770 passed. Before it,
 **`app/routes/accounts/anchor.py` DONE** (`ab16669`), cleared `true_up`'s
 `too-many-return-statements` (7/6) by merging the two success returns (DUPLICATE_SAME_DAY + COMMITTED
@@ -622,7 +638,7 @@ Measured at the state below. Reproduce with the [Verification](#verification-com
 | **`app/` score** | **9.68/10** |
 | Visible messages (`app/`) | **423** |
 | Inline `# pylint: disable=` directives (`app/`) | **74**, across 28 files |
-| `scripts/` score (out of scope until app/ is done) | 9.27/10 |
+| `scripts/` score (out of scope until app/ is done) | 9.27/10 (STALE -- measured 5.22/10 on 2026-06-09, re-confirmed 2026-06-11; **10.00/10 since 2026-06-11**, see the Phase 5 step-5 completion block) |
 
 ### Visible message breakdown (the 423)
 
@@ -2084,6 +2100,33 @@ direct unit tests for the three new `_commit_helpers` functions (`handle_db_erro
 `handle_unique_violation`, `regenerate_commit_or_report`), which are currently covered only
 transitively by the 124 salary route tests (incl. the C-23 collision + double-submit cases).
 
+**Both follow-ups DISPOSED 2026-06-11:**
+- **(a) evaluated -> KEEP inline (the forced-abstraction test failed).** The two add-blocks share
+  only ~15 executable lines; everything that varies is per-family domain text (constraint name,
+  duplicate-log message -- the deduction's interpolates the attempted name -- info-flash copy,
+  failure copy) plus the responder. The expected-collision arm flashes INFO + returns the HTMX
+  `_respond_after_*_change(profile)` responder, which `UniqueViolationContext` structurally cannot
+  express (it carries a `RedirectTarget` and flashes WARNING); extending it with a flash-category
+  field plus a response-callable alternative would make the shared helper a two-ways-to-do-one-
+  thing param bag (the ratified anti-pattern), and a new third orchestrator + fourth context
+  dataclass in `_commit_helpers` would serve exactly 2 co-located sites. The discrimination
+  knowledge (`is_unique_violation`) is already centralized and the generic-DB arm already delegates
+  to `handle_db_error`; the duplication left is presentation text, not knowledge. The module
+  docstring (`app/routes/salary/items.py:1-16`) already records the deliberate parallel-families
+  decision. One consistency fix landed with the evaluation: both add-`IntegrityError` arms now log
+  the pre-captured `user_id` instead of re-reading `current_user.id` after the rollback (matching
+  the capture comment + the `SQLAlchemyError` arms; removes a redundant post-rollback lazy
+  refresh). 124 salary route tests passed; independent quality-pass ACCEPT.
+- **(b) DONE -- `tests/test_routes/test_commit_helpers.py` (9 tests).** Direct contracts for all
+  three: `handle_db_error` (rollback-spy + ERROR/`exc_info` log + danger flash + redirect),
+  `handle_unique_violation` (matched -> rollback + INFO + warning flash + redirect; unmatched ->
+  `None` with the session deliberately untouched -- both arms rollback-spied), and the full
+  `regenerate_commit_or_report` routing matrix (clean / stale-from-regenerate / matched-collision /
+  unmatched-falls-through / no-`on_integrity` / generic `SQLAlchemyError`), with forged
+  `orig.diag.constraint_name` IntegrityErrors exercising the real `is_unique_violation`
+  discrimination. Independent quality-pass ACCEPT (rubric G: hand-written literals, no
+  code-under-test-derived assertions).
+
 ---
 
 ## Phase 5 -- Lock it in (CI), then scripts/
@@ -2119,8 +2162,66 @@ decision #4):
    config-level disable masks no genuinely-broken import).
 4. **Full suite (step 4):** `./scripts/test.sh` -> 5867 passed.
 
-**Step 5 (`scripts/`, baseline 9.27/10) is NOT started** -- a separate later effort with its own
-register if needed. The lock-in above applies to `app/` only.
+~~**Step 5 (`scripts/`, baseline 9.27/10) is NOT started** -- a separate later effort with its own
+register if needed. The lock-in above applies to `app/` only.~~
+
+**Baseline correction (2026-06-11):** the 9.27/10 is stale -- `pylint scripts/` measures **5.22/10**
+(first caught by the 2026-06-09 deep-hunt triage sweep, re-confirmed today). Use 5.22 as the step-5
+starting point.
+
+**Step 5 DONE (2026-06-11): `pylint scripts/` 10.00/10, ZERO messages; the full
+`--fail-on=E,F,<4 shekel checkers>` gate exits 0 for BOTH `app/` and `scripts/`; full suite 5985
+passed / 0 skipped.** The register, in order:
+
+1. **Root cause of the 79 `import-error`s (5.22 -> 8.96 in one config line):** pylint's static
+   analysis never executes the scripts' runtime `sys.path.insert` bootstrap, and linting
+   `scripts/` puts only `scripts/` itself on the path (for `app/` the linted package's parent IS
+   the repo root, which is why `app/` never saw this). Fixed in `.pylintrc`'s `init-hook` -- the
+   repo root joins `sys.path` alongside `tools/pylint` (a no-op for `app/` linting, verified
+   10.00/10 unchanged).
+2. **Shared CLI library `scripts/_script_lib.py` (the R0801 root fix):** `run_in_app_context`
+   (owns the `--database-url` env override + the deferred app import -- the app config reads
+   `os.environ` at import time, verified `app/config.py:114` -- + `create_app` + app-context
+   execution of a session-taking runner), `setup_script_logging`, `parse_confirm_args` +
+   `confirm_gate` (the destructive-script `--confirm` skeleton; per-script exit-code contracts
+   NOT flattened). All four cross-file `duplicate-code` clusters dissolved at the root; 0 R0801
+   remain.
+3. **Per-file cleanup (4 parallel agents, disjoint file sets), highlights:** the
+   threading-imported-classes-as-args anti-pattern removed at root (was the source of the
+   invalid-name/too-many-args/unused-argument cluster); `integrity_check`'s `except Exception`
+   narrowed to the verified `(ImportError, OSError, RuntimeError, ValueError, SQLAlchemyError)`
+   (also FIXES the documented exit-3-on-connection-failure contract -- `OperationalError` is a
+   `SQLAlchemyError`, not an `OSError`, so a connection failure previously escaped as a
+   traceback); `benchmark_triggers`' 35-local/83-statement monolith decomposed;
+   `vendor_google_fonts` decomposed; every surviving disable carries the standard `Pylint:`
+   rationale or was deleted; `wrong-import-position` standardized to one block-scoped
+   disable/enable pair + rationale per bootstrap block; vestigial `# noqa` tags dropped (no
+   flake8 anywhere in the project).
+4. **Two pinned `# BUG`s in `tests/test_scripts/` VERIFIED REAL and FIXED at the root (rule-5
+   contract changes, developer-ratified):** (a) `audit_cleanup.execute_cleanup` accepted
+   `days <= 0`, producing a FUTURE cutoff that deleted the ENTIRE audit log from the programmatic
+   entry point (the CLI already rejected it); now raises `ValueError` before any DB work --
+   revert-proven (the old behavior really deleted all rows). (b) `reset_mfa` early-returned on
+   `not is_enabled`, leaving an orphaned `totp_secret_encrypted` (+ backup codes/confirmed_at/
+   last_totp_timestep) at rest after a "reset"; the early-return predicate is now
+   "nothing to clear" and any residual material triggers the full clear + audit event --
+   revert-proven.
+5. **W9903 checker gap closed (`tools/pylint/shekel_checkers.py`):** the combined
+   `# noqa: E402  pylint: disable=...` trailing form evaded `_DISABLE_RE` (the regex required
+   `#` immediately before `pylint:`), so 8 undocumented suppressions were invisible to the
+   rationale gate while pylint still honored them. Regex tightened to `#.*?pylint:` (+2 unit
+   tests, 38 total); repo-wide scan confirmed the 8 evaders were the only instances, all
+   converted to the standard form.
+6. **Four one-shot scripts DELETED (developer-ratified 2026-06-11)** instead of polished:
+   `repair_orphaned_transfers.py` (self-described one-time repair for a long-fixed bug;
+   `integrity_check` owns orphan detection), `backfill_transfer_due_dates.py` (its own docstring:
+   migration `48e2c7ee593d` performs the backfill automatically on deploy -- the script was the
+   redundant manual twin), `scan_destroyed_received_history.py` (CRIT-05 forensic scan; the
+   guard landed, assessment done, audit log unchanged if ever needed), `benchmark_triggers.py`
+   (one-time perf investigation, decision long made). Their 2 test files went with them
+   (suite 6004 -> 5985); `.dockerignore` + the `test_seed_credential_hygiene` pins updated, and
+   `scripts/_script_lib.py` ADDED to the runtime-essential pin list (the shipped docker-exec
+   scripts now import it at runtime).
 
 ---
 
@@ -2258,7 +2359,16 @@ CLAUDE.md rules 3, 4, 6, 8.
   intended financial behavior of the threshold. Rule 3 (ambiguous financial logic): ask.
 - **Recommendation:** developer confirms whether the period-P&I-only behavior is correct (then fix
   the caller docstring) or whether `payments` was meant to tighten the threshold (then it is a
-  calculation bug to fix). Status: OPEN, reported 2026-06-04.
+  calculation bug to fix). Status: ~~OPEN, reported 2026-06-04~~ **RESOLVED (verified 2026-06-11).**
+  The period-P&I-only behavior was ratified as the design by the rate-period SSOT work (PR #19 +
+  DH-#56 + deep-hunt Batch AK): the monthly P&I is a property of the loan's contractual rate-period
+  structure, independent of the running balance, so a `payments`-tightened threshold is not needed
+  -- "the contractual P&I is a property of the rate-period structure, not the balance path"
+  (deep-quality-hunt.md Batch AK). The contradictory docstring is gone: `compute_contractual_pi`
+  now documents `payments`/`anchor_events` as "accepted for caller compatibility only and ... not
+  read" (`app/services/loan_payment_service.py:347-348`), matching
+  `compute_monthly_payment_baseline`'s body and its documented `unused-argument` rationale
+  (`app/services/loan_resolver/_state.py:104-106` + `:124-128`).
 
 ### P-2 -- account-dropdown query orders inconsistently across form routes
 
@@ -2294,7 +2404,17 @@ CLAUDE.md rules 3, 4, 6, 8.
   out of scope for the lint cleanup; rule 4 -- reported).
 - **Recommendation:** developer decides whether to add a `ValidationError` guard (then update the
   test's asserted behavior + drop the `# BUG` comment) or to document the behavior as intended.
-  Status: OPEN, reported 2026-06-06.
+  Status: ~~OPEN, reported 2026-06-06~~ **CLOSED (triage 2026-06-09; residue cleared 2026-06-11).**
+  The 2026-06-09 deep-hunt triage verified the production path is doubly guarded -- the schema
+  requires `Range(min=Decimal("0.0001"))` (`app/schemas/validation/salary.py:243-248`) and the DB
+  enforces `ck_paycheck_deductions_positive_amount` (`amount > 0`,
+  `app/models/paycheck_deduction.py:49`) -- so a negative deduction cannot reach the service from
+  production (deep-quality-hunt.md "PLAN-P3 is CLOSED"). The now-false `# BUG` test comment was
+  rewritten 2026-06-11 to document the service's sign-agnostic contract + the boundary guards
+  (`tests/test_services/test_investment_projection.py::test_negative_deduction_amount`); the
+  identical false-`# BUG` residue in `test_escrow_calculator.py::test_negative_annual_amount` was
+  cleared the same way (its guards: `app/schemas/validation/loans.py:221-224` `Range(min=0)` +
+  `ck_escrow_components_nonneg_annual_amount`, `app/models/loan_features.py:128-131`).
 
 ## Progress Log
 
@@ -2380,3 +2500,6 @@ Each row MUST cite a commit SHA and a re-measured number you actually ran.
 | 2026-06-09 | `0eaf91f` | 4 | **Phase-4 mechanical residue cleared (line-too-long + unused-argument).** (Session-start baseline 9.97/10, 39 visible -- the `8cda673` 55->39 reduction in between was the deep-hunt/other batches, tracked in `deep-quality-hunt.md`.) Cleared 38 of 39 at the root, no noqa/disables: 5 error-handler `e`->`_e` (`__init__`); `jinja_globals` 46 ID-globals -> declarative `_REF_ID_GLOBALS` table + loop; 10 model `CheckConstraint` one-liners wrapped; `auth` import + 3 logger calls + 1 ternary wrapped. The 39th (`salary/profiles.py:344` update_profile logger) DEFERRED to `db24f34` -- wrapping it surfaces a format-masked R0801 in the salary except-fallback, and `profiles.py` ships with `_commit_helpers` (interdependent). Score rounds to 10.00 (the lone remaining convention message is score-invisible at app/'s statement count) but is NOT clean: 1 visible. | 10.00/10 (1 msg) | 1 |
 | 2026-06-09 | `db24f34` | 4 | **Salary error-handling DRY extraction (+ the deferred `profiles.py:344` wrap) -- app/ reaches a clean 10.00/10, ZERO messages.** Extracted `DbErrorContext`/`handle_db_error` (generic DB-error fallback -- the un-extracted companion to `handle_stale_conflict`) + `UniqueViolationContext`/`handle_unique_violation` (F-051/F-052/C-23 collision UX) + the `regenerate_commit_or_report` orchestrator into `_commit_helpers.py`; routed all 10 `except SQLAlchemyError` fallback sites + the 5 `regenerate_and_commit_or_stale` salary users through them (no hand-written try/except left). Resolves the R0801 the `:344` wrap surfaced. **Trust-but-verify catch:** the extraction introduced a rollback-ordering bug (the 5 inline-except sites built `DbErrorContext` reading the expired `current_user.id` after the failed flush, before `handle_db_error`'s rollback -> `PendingRollbackError`) that `test_create_profile_double_submit` caught; fixed by capturing `user_id` on the clean session up front (orchestrator sites already safe -- contexts built pre-flush). Behaviour-preserving (one log-text nuance: dropped the "(unexpected IntegrityError)" suffix; the `logger.exception` traceback still identifies the class). **Full suite 5867 passed.** | 10.00/10 | 0 |
 | 2026-06-09 | `c6f83a1` | 5 | **LOCK-IN (app/).** CI (`ci.yml`) + pre-commit (`.pre-commit-config.yaml`) pylint `--fail-under=9.0` -> `--fail-under=10`; created `scripts/hooks/ENFORCE_PYLINT_FLOOR` (Stop hook WARN -> HARD-BLOCK on a non-clean `pylint app/`). Verified: `--fail-under=10` returns exit 16 on a sub-10 score (genuinely gates); the exact CI command exits 0; `pylint app/ --score=no` empty; `--enable=import-error` clean. No app/ code change. `scripts/` (9.27, step 5) remains. | 10.00/10 | 0 |
+| 2026-06-11 | `6eab545` + `33de78e` | -- | **Deferred small follow-ups cleared (post-lock-in quality batch).** `6eab545` (test-only): direct `_commit_helpers` contracts (9 tests, Phase-4 follow-up (b) -- rollback-spied, forged `orig.diag.constraint_name` discrimination, full `regenerate_commit_or_report` routing matrix); `TestInvestmentHorizons` closes the DH-#35 no-coverage caveat; the two false-`# BUG` test docstrings (P-3 class) rewritten against the verified double boundary guards. `33de78e`: the two deferred `6e3c32d` entries.py notes DONE (typed private-helper cluster incl. the first `flask.typing.ResponseReturnValue` use; the 3-site ownership preamble -> single security-critical `_accessible_txn_and_entry`); salary `add_*` IntegrityError arms log the pre-captured `user_id` (post-rollback lazy-refresh removed). Phase-4 follow-up (a) evaluated -> **KEEP inline** (forced-abstraction test failed; see the Phase-4 disposition block). P-1 verified RESOLVED in code (rate-period SSOT; docstrings consistent) and P-3 CLOSED (boundary-guarded) -- status lines updated with citations. Independent quality-pass: ACCEPT, 0 REVERT-OVERREACH. `pylint app/` 10.00/10, full `--fail-on` gate exit 0. **Full suite 6001 passed / 5 skipped.** | 10.00/10 | 0 |
+| 2026-06-11 | `0aceb6c` | -- | **`auth.py` package split (decision #5) -- the last tracked module split DONE.** The 1358-line monolith + its `too-many-lines` waiver became `app/routes/auth/` (`_bp` cycle-break / `_helpers` shared constants + cross-module security helpers / `credentials` / `mfa` co-located / `session_security`), the salary/accounts precedent; `__init__` re-exports `auth_bp`, all 14 endpoints/methods/URLs verified identical via a `create_app` URL-map diff. Byte-identical move AST-verified (19/21 functions + all 3 constants identical; 4 helpers docstring-refs-only). The ONE change: the split exposed the reauth<->mfa_disable_confirm byte-identical key-failure block to R0801 (cross-file only -- the monolith masked it); root-fixed by extracting `_helpers._totp_accepted_or_key_failure` + `_MFA_KEY_FAILURE_MESSAGE` (joined flash text proven identical at both sites, control flow + exception tuple + ACCEPTED-commit timing equivalent; `mfa_verify`'s distinct clear-pending variant untouched), NOT by a disable. All 5 rate limits intact; waiver deleted, no new module needs one (largest `mfa.py` 612 lines); the only package disable is `mfa_verify`'s pre-existing documented tm-return. 1 test import repointed + 9 stale prose path refs updated. Independent quality-pass: ACCEPT, 0 REVERT-OVERREACH (contingent REFINE -- stale prose refs -- cleared in-commit; noted: the F-142 replay event now logs under `app.routes.auth._helpers`, external dashboards should filter by `event`, not logger name). `pylint app/` 10.00/10, full `--fail-on` gate TRUE exit 0 (unpiped); 293 auth tests; **full suite 6001 passed / 5 skipped.** | 10.00/10 | 0 |
+| 2026-06-11 | (this commit) | 5 | **Phase 5 step 5 -- `scripts/` to 10.00/10, ZERO messages (from the corrected 5.22/10 baseline); plan.md COMPLETE.** Root fix first: `.pylintrc` `init-hook` adds the repo root to `sys.path` (pylint cannot see the scripts' runtime bootstrap; cleared all 79 `import-error`s, 5.22 -> 8.96, `app/` unaffected). Then the remaining 111 messages at the root across 13 files (4 parallel agents, disjoint sets): new shared `scripts/_script_lib.py` (`run_in_app_context` / `setup_script_logging` / `parse_confirm_args` / `confirm_gate`) dissolves all 4 cross-file R0801 clusters; class-threading anti-pattern removed; `integrity_check` broad-except narrowed (fixing the exit-3-on-connection-failure contract); every disable rationale'd to standard or deleted; vestigial `# noqa` dropped (no flake8). Two pinned test `# BUG`s verified REAL + fixed (rule 5, ratified): `audit_cleanup` negative-days total-audit-log deletion -> `ValueError` guard; `reset_mfa` orphaned `totp_secret_encrypted` -> full-clear predicate; both revert-proven. W9903 checker regex tightened so the combined `# noqa ... pylint: disable` form can no longer evade the rationale gate (+2 checker tests, 38 pass). Four one-shot scripts DELETED (developer-ratified): repair_orphaned_transfers / backfill_transfer_due_dates (migration `48e2c7ee593d` owns it) / scan_destroyed_received_history / benchmark_triggers, with their 2 test files; `.dockerignore` + hygiene pins updated, `_script_lib.py` pinned runtime-essential. Full `--fail-on` gate exit 0 for app/ AND scripts/. **Full suite 5985 passed / 0 skipped.** | 10.00/10 (app/ AND scripts/) | 0 |
