@@ -14,13 +14,29 @@
    mark-done that creates the stale-anchor condition surfaces the banner
    without the old full page reload.
 
+   PARSER CONSTRAINT (load-bearing): the OOB <div> below MUST stay
+   encapsulated in a <template> element.  htmx parses every partial
+   response inside a <template> wrapper; per the HTML5 tree-construction
+   spec a bare non-table element at the top level flips the parser from
+   the "in template" to the "in body" insertion mode, where the
+   following <tfoot>/<tr>/<td> start tags are silently DROPPED -- the
+   balance row swaps in as loose unstyled text and, because the
+   replacement carries no hx-trigger, the refresh cycle dies until the
+   next full page load.  htmx's swap pipeline scans nested <template>
+   elements for hx-swap-oob content and removes the wrapper, so the
+   encapsulated banner still swaps out-of-band while the <tfoot> stays
+   the first top-level element and parses intact.  Do not "simplify"
+   the wrapper away; tests/test_routes/test_grid.py pins this shape.
+
    Expected context: periods, balances, account, num_periods,
    start_offset, low_balance_threshold, stale_anchor_warning, oob.
 #}
 {% if oob %}
-<div id="stale-anchor-warning" hx-swap-oob="true">
-  {% include "grid/_stale_anchor_warning.html" %}
-</div>
+<template>
+  <div id="stale-anchor-warning" hx-swap-oob="true">
+    {% include "grid/_stale_anchor_warning.html" %}
+  </div>
+</template>
 {% endif %}
 <tfoot id="grid-summary"
        hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"

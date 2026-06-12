@@ -65,19 +65,24 @@ function applyDesktopPlacement(popover, cell) {
     } else if (popoverHeight <= spaceAbove) {
         // Does not fit below but does fit above -- flip over the cell.
         topPos = cellRect.top - popoverHeight;
+    } else if (spaceBelow >= spaceAbove) {
+        // Fits neither side.  Anchor to whichever side has more room;
+        // the clamp below keeps it on-screen and the CSS max-height
+        // makes the overflow scroll internally rather than disappear
+        // behind the viewport edge.
+        topPos = cellRect.bottom;
     } else {
-        // Fits neither side.  Anchor to whichever side has more room and
-        // clamp to the viewport; CSS max-height makes the overflow scroll
-        // internally rather than disappear behind the viewport edge.
-        if (spaceBelow >= spaceAbove) {
-            topPos = cellRect.bottom;
-        } else {
-            topPos = cellRect.top - popoverHeight;
-        }
-        var maxTop = viewportH - popoverHeight - POPOVER_VIEWPORT_MARGIN;
-        if (topPos > maxTop) topPos = maxTop;
-        if (topPos < POPOVER_VIEWPORT_MARGIN) topPos = POPOVER_VIEWPORT_MARGIN;
+        topPos = cellRect.top - popoverHeight;
     }
+
+    // Clamp EVERY placement into the viewport, not just the fits-neither
+    // case: an off-screen anchor cell (e.g. a palette action on a row
+    // scrolled out of view) produces a cellRect outside the viewport, and
+    // the fits-below/fits-above branches would otherwise position the
+    // card invisibly off-screen.
+    var maxTop = viewportH - popoverHeight - POPOVER_VIEWPORT_MARGIN;
+    if (topPos > maxTop) topPos = maxTop;
+    if (topPos < POPOVER_VIEWPORT_MARGIN) topPos = POPOVER_VIEWPORT_MARGIN;
 
     var leftPos = cellRect.left;
     if (leftPos + popoverWidth > viewportW - POPOVER_VIEWPORT_MARGIN) {

@@ -351,6 +351,40 @@ class TestBalanceRow:
             assert "alert-warning" not in html
             assert "marked as done in periods after your anchor" not in html
 
+    def test_balance_row_oob_banner_is_template_encapsulated(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The OOB banner ships inside a <template> that closes before <tfoot>.
+
+        Load-bearing parser-safety shape: htmx parses every partial
+        inside a <template> wrapper, and per the HTML5 tree-construction
+        spec a BARE non-table element preceding the <tfoot> flips the
+        parser into the "in body" insertion mode, where the following
+        tfoot/tr/td start tags are silently dropped.  The balance row
+        then swaps in as loose unstyled text ("unformatted list") and,
+        because the replacement carries no hx-trigger, its balanceChanged
+        self-refresh dies for the rest of the session -- the
+        projected-end-balance freeze regression introduced by ca47a1d.
+        Encapsulating the banner in <template> keeps the <tfoot> the
+        first top-level element (parses intact) while htmx's nested-
+        template OOB scan still swaps the banner.  Presence checks alone
+        cannot catch this; the ORDER is the contract.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                f"/grid/balance-row?periods=6&offset=0"
+                f"&account_id={seed_user['account'].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            template_open = html.index("<template>")
+            banner = html.index('id="stale-anchor-warning"')
+            template_close = html.index("</template>")
+            tfoot = html.index("<tfoot")
+            # banner inside the template; template fully closed before
+            # the tfoot opens.
+            assert template_open < banner < template_close < tfoot
+
     def test_grid_periods_large_value(
         self, app, auth_client, seed_user, seed_periods, monkeypatch,
     ):

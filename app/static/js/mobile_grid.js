@@ -127,6 +127,26 @@
         _syncAriaExpanded(e.target, 'false');
     });
 
+    // Money-change parity for the This Period summary.  The summary
+    // self-refreshes on `mobileCardSettled from:body`, which only the
+    // mobile/companion Mark Paid path emits -- but entry adds/edits/
+    // deletes (from the inline card list OR the bottom-sheet popover)
+    // and anchor true-ups emit `balanceChanged`, leaving the mobile
+    // Net Cash Flow / Projected Balance stale until a full reload.
+    // Re-dispatch balanceChanged as mobileCardSettled on mobile
+    // viewports only: the summary element also exists (CSS-hidden) in
+    // the desktop DOM, and listening for balanceChanged directly would
+    // run the expensive balance recompute on every desktop action for
+    // a summary nobody can see.  A JS gate (not an hx-trigger event
+    // filter) because htmx filters compile via Function(), which the
+    // CSP blocks (script-src 'self', no unsafe-eval).  768 matches the
+    // app's mobile breakpoint (grid_edit.js bottom-sheet checks).
+    document.body.addEventListener('balanceChanged', function() {
+        if (window.innerWidth >= 768) return;
+        if (typeof htmx === 'undefined') return;
+        htmx.trigger(document.body, 'mobileCardSettled');
+    });
+
     // Jump-to-period <select> submit (Commit 10 of the mobile-first
     // v3 implementation).  The select sits inside the "This Period"
     // tab-pane (`#mobile-this-period`) and lists every visible

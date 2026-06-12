@@ -7,6 +7,7 @@ the transaction detail popover and the companion view.
 """
 
 import logging
+import re
 from datetime import date
 from typing import Any
 
@@ -19,6 +20,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.routes.transactions._helpers import _render_cell
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
 from app.exceptions import NotFoundError, ValidationError
@@ -45,6 +47,32 @@ _update_schema = EntryUpdateSchema()
 # ``__table_args__`` declaration on
 # ``app.models.transaction.Transaction``.
 _CREDIT_PAYBACK_UNIQUE_INDEX = "uq_transactions_credit_payback_unique"
+
+# Accepted shape of the ``host`` query param: a short lowercase id-prefix
+# token.  Today the only non-empty value the templates emit is ``tp``
+# (the inline mobile/companion card list); 16 chars is generous headroom
+# for future prefixes while keeping free-form input out of DOM ids.
+_HOST_TOKEN_RE = re.compile(r"[a-z0-9-]{1,16}")
+
+
+def _request_host() -> str:
+    """Read the validated ``host`` query param for this request.
+
+    Every entries-CRUD control in ``grid/_transaction_entries.html``
+    carries ``?host=<prefix>`` so the route's re-render reconstructs the
+    same entry-list root id the request's ``hx-target`` named: the
+    inline mobile/companion card list sends ``tp``, the desktop popover
+    sends the empty default.  A value outside the short-token shape
+    degrades to ``""`` (the popover surface) instead of echoing
+    free-form input into a DOM id.
+
+    Returns:
+        The validated host prefix segment, possibly ``""``.
+    """
+    host = request.args.get("host", "")
+    if host and _HOST_TOKEN_RE.fullmatch(host) is None:
+        return ""
+    return host
 
 
 def _entry_list_host_id(txn_id: int, host: str) -> str:
@@ -116,8 +144,51 @@ def _render_entry_list(
     )
 
 
+def _entry_mutation_response(txn: Transaction, host: str) -> ResponseReturnValue:
+    """Build the shared success response for an entries mutation.
+
+    The refreshed entry list for the requesting surface plus, on the
+    OWNER's desktop popover surface only, an out-of-band re-render of
+    the parent transaction's grid cell.  An entry mutation changes the
+    cell's "spent / budget" progress display, but the request's primary
+    swap only replaces the entry list inside the popover -- without the
+    OOB fragment the on-grid amount stays stale until an unrelated
+    action re-renders the cell.
+
+    Two gates on the fragment, both required:
+
+    * ``host == ""`` -- the inline card surfaces (``"tp"``: mobile grid
+      and companion page) have no ``#txn-cell-<id>`` element on the
+      companion page, so an unconditional fragment would raise
+      ``htmx:oobErrorNoTarget`` there.
+    * the requester OWNS the transaction -- ``host`` is
+      client-controlled, and these routes also admit companions (via
+      :func:`get_accessible_transaction`).  The desktop grid cell is an
+      owner-only surface whose markup includes ``txn.notes`` in
+      aria-label/title; a companion stripping the ``host`` param must
+      not receive it.
+
+    The ``balanceChanged`` trigger drives the existing self-refreshes:
+    the desktop tfoot balance row and subtotal tbodies, and (via the
+    viewport-gated re-dispatch in ``mobile_grid.js``) the mobile This
+    Period summary.
+
+    Args:
+        txn: The parent transaction, post-mutation and post-commit.
+        host: The validated host prefix from :func:`_request_host`.
+
+    Returns:
+        Flask response tuple ``(html, 200, headers)``.
+    """
+    response = _render_entry_list(txn, host=host)
+    is_owner = txn.pay_period.user_id == current_user.id
+    if host == "" and is_owner:
+        response += _render_cell(txn, wrap_div=True, wrap_oob=True)
+    return response, 200, {"HX-Trigger": "balanceChanged"}
+
+
 def _credit_payback_idempotent_response(
-    exc: IntegrityError, txn_id: int, log_context: str,
+    exc: IntegrityError, txn_id: int, log_context: str, host: str,
 ) -> ResponseReturnValue:
     """Translate a credit-payback unique-index violation into a 200.
 
@@ -141,6 +212,9 @@ def _credit_payback_idempotent_response(
         log_context: Short human-readable string describing the route
             (e.g. ``"create_entry txn_id=42"``) for the structured
             log line emitted on the idempotent-success path.
+        host: The validated host prefix from :func:`_request_host`,
+            forwarded so the idempotent-success body matches the
+            regular success response for the same surface.
 
     Returns:
         Flask response tuple suitable for direct return from the
@@ -161,14 +235,12 @@ def _credit_payback_idempotent_response(
     refreshed = get_accessible_transaction(txn_id)
     if refreshed is None:
         return "Not found", 404
-    return (
-        _render_entry_list(refreshed),
-        200,
-        {"HX-Trigger": "balanceChanged"},
-    )
+    return _entry_mutation_response(refreshed, host)
 
 
-def _stale_entry_response(txn: Transaction | None) -> ResponseReturnValue:
+def _stale_entry_response(
+    txn: Transaction | None, host: str,
+) -> ResponseReturnValue:
     """Roll back the session and render the entry list in conflict mode.
 
     Used by every entry-mutating PATCH/DELETE handler to convert a
@@ -183,6 +255,9 @@ def _stale_entry_response(txn: Transaction | None) -> ResponseReturnValue:
             rendered.  The transaction itself is reloaded as well
             so any sibling-level changes (e.g. a concurrent paid
             event) are reflected.
+        host: The validated host prefix from :func:`_request_host`,
+            so the conflict re-render reconstructs the same
+            entry-list root id the request's ``hx-target`` named.
 
     Returns:
         Flask response tuple ``(html, 409)``.
@@ -192,7 +267,7 @@ def _stale_entry_response(txn: Transaction | None) -> ResponseReturnValue:
     fresh_txn = db.session.get(Transaction, txn.id) if txn is not None else None
     if fresh_txn is None:
         return "Not found", 404
-    return _render_entry_list(fresh_txn, conflict=True), 409
+    return _render_entry_list(fresh_txn, conflict=True, host=host), 409
 
 
 def _accessible_txn_and_entry(
@@ -241,7 +316,9 @@ def list_entries(txn_id):
     if txn is None:
         return "Not found", 404
     editing_id = request.args.get("editing", type=int)
-    return _render_entry_list(txn, editing_id=editing_id)
+    return _render_entry_list(
+        txn, editing_id=editing_id, host=_request_host(),
+    )
 
 
 @entries_bp.route("/transactions/<int:txn_id>/entries", methods=["POST"])
@@ -252,11 +329,14 @@ def create_entry(txn_id):
     Validates input via EntryCreateSchema, delegates to
     entry_service.create_entry (which syncs CC payback and
     updates actual_amount if Paid), then commits atomically.
-    Returns the refreshed entry list with a balanceChanged trigger.
+    Returns the refreshed entry list with a balanceChanged trigger
+    (plus, on the desktop popover surface, the OOB grid-cell
+    re-render -- see :func:`_entry_mutation_response`).
     """
     txn = get_accessible_transaction(txn_id)
     if txn is None:
         return "Not found", 404
+    host = _request_host()
 
     errors = _create_schema.validate(request.form)
     if errors:
@@ -274,28 +354,29 @@ def create_entry(txn_id):
         # Defensive backstop for commit C-19: see
         # ``_credit_payback_idempotent_response`` docstring.
         return _credit_payback_idempotent_response(
-            exc, txn.id, f"create_entry txn_id={txn.id}",
+            exc, txn.id, f"create_entry txn_id={txn.id}", host,
         )
     except (NotFoundError, ValidationError) as exc:
         db.session.rollback()
         return str(exc), 400
 
-    response = _render_entry_list(txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return _entry_mutation_response(txn, host)
 
 
 def _execute_entry_update(
-    entry_id: int, txn: Transaction, data: dict[str, Any],
+    entry_id: int, txn: Transaction, data: dict[str, Any], host: str,
 ) -> ResponseReturnValue:
     """Run the entry update + commit, translating service outcomes to HTTP.
 
     ``StaleDataError`` at flush -> 409 conflict entry list; the C-19
     ``IntegrityError`` backstop -> the idempotent credit-payback response;
     ``NotFoundError`` / ``ValidationError`` -> 400.  On success, the
-    refreshed entry list + a ``balanceChanged`` HX-Trigger.  Extracted so
+    shared mutation response (refreshed entry list + OOB cell on the
+    popover surface + ``balanceChanged``).  Extracted so
     ``update_entry`` keeps only its ownership guards + form validation;
     this owns the service-call/commit/error-translation tail (the
-    ``transfers._execute_transfer_update`` precedent).
+    ``transfers._execute_transfer_update`` precedent).  ``host`` is the
+    validated surface prefix from :func:`_request_host`.
     """
     try:
         entry_service.update_entry(entry_id, current_user.id, **data)
@@ -304,19 +385,18 @@ def _execute_entry_update(
         logger.info(
             "Stale-data conflict on update_entry id=%d", entry_id,
         )
-        return _stale_entry_response(txn)
+        return _stale_entry_response(txn, host)
     except IntegrityError as exc:
         # Defensive backstop for commit C-19 -- see
         # ``_credit_payback_idempotent_response`` docstring.
         return _credit_payback_idempotent_response(
-            exc, txn.id, f"update_entry id={entry_id}",
+            exc, txn.id, f"update_entry id={entry_id}", host,
         )
     except (NotFoundError, ValidationError) as exc:
         db.session.rollback()
         return str(exc), 400
 
-    response = _render_entry_list(txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return _entry_mutation_response(txn, host)
 
 
 @entries_bp.route(
@@ -344,6 +424,7 @@ def update_entry(txn_id, entry_id):
     if target is None:
         return "Not found", 404
     txn, entry = target
+    host = _request_host()
 
     errors = _update_schema.validate(request.form)
     if errors:
@@ -359,9 +440,9 @@ def update_entry(txn_id, entry_id):
             "(submitted=%d, current=%d)",
             entry_id, submitted_version, entry.version_id,
         )
-        return _stale_entry_response(txn)
+        return _stale_entry_response(txn, host)
 
-    return _execute_entry_update(entry_id, txn, data)
+    return _execute_entry_update(entry_id, txn, data, host)
 
 
 @entries_bp.route(
@@ -391,6 +472,7 @@ def toggle_cleared(txn_id, entry_id):
     if target is None:
         return "Not found", 404
     txn, _entry = target
+    host = _request_host()
 
     try:
         entry_service.toggle_cleared(entry_id, current_user.id)
@@ -399,13 +481,12 @@ def toggle_cleared(txn_id, entry_id):
         logger.info(
             "Stale-data conflict on toggle_cleared id=%d", entry_id,
         )
-        return _stale_entry_response(txn)
+        return _stale_entry_response(txn, host)
     except NotFoundError as exc:
         db.session.rollback()
         return str(exc), 404
 
-    response = _render_entry_list(txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return _entry_mutation_response(txn, host)
 
 
 @entries_bp.route(
@@ -425,6 +506,7 @@ def delete_entry(txn_id, entry_id):
     if target is None:
         return "Not found", 404
     txn, _entry = target
+    host = _request_host()
 
     try:
         entry_service.delete_entry(entry_id, current_user.id)
@@ -433,18 +515,17 @@ def delete_entry(txn_id, entry_id):
         logger.info(
             "Stale-data conflict on delete_entry id=%d", entry_id,
         )
-        return _stale_entry_response(txn)
+        return _stale_entry_response(txn, host)
     except IntegrityError as exc:
         # Defensive backstop for commit C-19 -- ``delete_entry``
         # also calls ``sync_entry_payback``, so the same race window
         # exists if a future caller bypasses the row lock.  See
         # ``_credit_payback_idempotent_response`` docstring.
         return _credit_payback_idempotent_response(
-            exc, txn.id, f"delete_entry id={entry_id}",
+            exc, txn.id, f"delete_entry id={entry_id}", host,
         )
     except NotFoundError as exc:
         db.session.rollback()
         return str(exc), 404
 
-    response = _render_entry_list(txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+    return _entry_mutation_response(txn, host)

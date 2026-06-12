@@ -938,6 +938,222 @@ class TestToggleCleared:
             ).is_cleared is False
 
 
+# ---- Surface routing: host param + desktop OOB cell refresh -------------
+
+class TestEntryMutationSurfaces:
+    """The ``host`` query param and the desktop OOB grid-cell refresh.
+
+    Every entries-CRUD control in ``grid/_transaction_entries.html``
+    ships ``?host=<prefix>`` so the route's re-render reconstructs the
+    same entry-list root id the request's ``hx-target`` named (bare
+    ``entry-list-<id>`` for the desktop popover, ``entry-list-tp-<id>``
+    for the inline mobile/companion card list).  Desktop-popover
+    mutations additionally carry an out-of-band re-render of the parent
+    transaction's grid cell, because an entry mutation changes the
+    envelope's "spent / budget" progress display and the primary swap
+    only replaces the entry list inside the popover -- without the OOB
+    fragment the on-grid amount stays stale until a full page reload
+    (the 2026-06-11 grid-bug fix batch).
+    """
+
+    def test_create_carries_oob_cell_with_updated_progress(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A popover-surface create returns the OOB cell with new progress.
+
+        The envelope budget is $500 (seed_entry_template) and the new
+        entry is $50, so the re-rendered cell's progress display must
+        read ``50 / 500`` (entry total / estimated, ``{:,.0f}``).
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "50.00",
+                    "description": "Kroger",
+                    "entry_date": "2026-01-05",
+                },
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # Primary swap body: the popover's bare entry-list id.
+            assert f'id="entry-list-{txn.id}"' in html
+            # OOB fragment: the grid cell wrapper rides along...
+            assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
+            # ...carrying the refreshed spent/budget progress display.
+            assert "50 / 500" in html
+
+    def test_update_carries_oob_cell(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A popover-surface amount update returns the OOB cell.
+
+        $50 entry updated to $75 against the $500 budget -> the cell
+        progress must read ``75 / 500``.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"amount": "75.00"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
+            assert "75 / 500" in html
+
+    def test_delete_carries_oob_cell(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A popover-surface delete returns the OOB cell.
+
+        Deleting the only $50 entry leaves zero spent; with no entries
+        the cell drops the progress display and shows the estimated
+        amount (``500``) again.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.delete(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
+            assert "50 / 500" not in html
+
+    def test_toggle_cleared_carries_oob_cell(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A popover-surface reconciled toggle returns the OOB cell."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}/cleared",
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
+
+    def test_host_tp_reconstructs_inline_card_list_id(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """``?host=tp`` re-renders under the inline card's prefixed id.
+
+        The inline mobile/companion card list targets
+        ``#entry-list-tp-<id>``; the response must reconstruct that id
+        (and thread the host through its own CRUD controls) so the swap
+        lands on the element the request named, and it must NOT carry
+        the desktop OOB cell -- the companion page has no
+        ``#txn-cell-<id>`` element to swap into.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries?host=tp",
+                data={
+                    "amount": "50.00",
+                    "description": "Kroger",
+                    "entry_date": "2026-01-05",
+                },
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f'id="entry-list-tp-{txn.id}"' in html
+            assert f'id="entry-list-{txn.id}"' not in html
+            # CRUD controls inside the list re-carry the host.
+            assert "host=tp" in html
+            # No desktop OOB cell on the inline-card surface.
+            assert f'id="txn-cell-{txn.id}"' not in html
+
+    def test_invalid_host_degrades_to_popover_surface(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A host outside the short-token shape renders the bare surface.
+
+        Free-form input must not be echoed into a DOM id; the route
+        treats it as the popover surface (bare id + OOB cell).
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries?host=NOT%20a%20token!",
+                data={
+                    "amount": "50.00",
+                    "description": "Kroger",
+                    "entry_date": "2026-01-05",
+                },
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f'id="entry-list-{txn.id}"' in html
+            assert "NOT a token" not in html
+            assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
+
+    def test_list_entries_honors_host(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """GET list (edit/cancel buttons) reconstructs the prefixed id too."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            resp = auth_client.get(
+                f"/transactions/{txn.id}/entries?host=tp",
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert f'id="entry-list-tp-{txn.id}"' in html
+            assert f'id="entry-list-{txn.id}"' not in html
+
+    def test_companion_never_receives_oob_cell(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_companion,
+    ):
+        """A companion stripping ``host`` must not get the owner's cell.
+
+        The OOB fragment is the OWNER's desktop-grid cell, whose
+        aria-label/title markup includes ``txn.notes`` -- a field no
+        companion-reachable surface renders.  ``host`` is
+        client-controlled, so the gate must be ownership, not the
+        param: a companion request without ``host`` gets the entry
+        list only.
+        """
+        with app.app_context():
+            data = _create_visible_tracked_txn(seed_user, seed_periods)
+            txn = data["transaction"]
+            txn.notes = "owner-private-note"
+            db.session.commit()
+
+            comp = _login_companion(app)
+            resp = comp.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "45.00",
+                    "description": "Aldi",
+                    "entry_date": "2026-01-05",
+                },
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # Entry list still returned (the mutation itself is allowed)...
+            assert f'id="entry-list-{txn.id}"' in html
+            # ...but no owner-only OOB cell, and no notes leak.
+            assert f'id="txn-cell-{txn.id}"' not in html
+            assert "owner-private-note" not in html
+
+
 # ---- Entry / transaction ID mismatch ------------------------------------
 
 class TestEntryTransactionMismatch:

@@ -4,6 +4,16 @@
    Expected context: found.txn (or txn) -- a Transaction object.
    Optional:
      wrap_div -- if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
+     wrap_oob -- if true (requires wrap_div), the wrapper div also
+                 carries hx-swap-oob="true" so the cell rides along as
+                 an out-of-band fragment on a response whose primary
+                 swap targets something else.  Used by the entries CRUD
+                 routes: an envelope purchase changes the cell's
+                 "spent / budget" progress display, but the primary
+                 swap only replaces the entry list inside the popover.
+                 The wrapper is a plain <div>, so it parses safely at
+                 the top level of an htmx fragment (unlike bare
+                 table-section elements; see grid/_balance_row.html).
      conflict -- if true, surfaces a small warning indicator and an
                  aria/title hint that the row was changed by another
                  action.  Set by routes that catch a stale-form
@@ -37,7 +47,7 @@
    cell partial re-rendered plus a gridRefresh trigger. #}
 {% set chip_state = 'done' if (t.status and t.status.is_settled)
    else ('credit' if t.status_id == STATUS_CREDIT else 'projected') %}
-{% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}">{% endif %}
+{% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}"{% if wrap_oob is defined and wrap_oob %} hx-swap-oob="true"{% endif %}>{% endif %}
 <div class="txn-chip st-{{ chip_state }}{% if is_conflict %} text-warning{% endif %}">
   {# Clicking the amount opens the anchored action card (rebuild
      decision 2): grid_edit.js's delegated handler reads data-txn-id

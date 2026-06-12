@@ -131,8 +131,13 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
     closeFullEdit();
   }
 
-  // Re-initialize Bootstrap popovers/tooltips in swapped content
-  var target = event.detail.target || event.detail.elt;
+  // Re-initialize Bootstrap popovers/tooltips in swapped content.
+  // event.target is the element each per-settled-element dispatch fired
+  // on (htmx fires one afterSwap per settled element, OOB fragments
+  // included); detail.target always names the request's PRIMARY swap
+  // target, which misses OOB fragments like the entries-CRUD cell
+  // re-render and would leave its tooltip badges uninitialized.
+  var target = event.target || event.detail.target || event.detail.elt;
   if (target) {
     target.querySelectorAll('[data-bs-toggle="popover"]').forEach(function(popEl) {
       if (!bootstrap.Popover.getInstance(popEl)) {
@@ -512,7 +517,47 @@ document.addEventListener('keydown', function(e) {
     if (prev) prev.classList.remove('cell-focused');
   }
 
-  function setFocus(row, col) {
+  /** Declare the opaque sticky chrome as scroll padding right before a
+      scrollIntoView.  The grid scrolls inside .grid-wrapper, whose
+      scrollport edges are painted over by the two-row sticky thead, the
+      sticky tfoot balance row, and the sticky label column; without
+      scroll-padding, `block:'nearest'` treats a cell hidden UNDER that
+      chrome as already visible (no scroll at all) and aligns edge cells
+      flush beneath it.  Measured per call because the chrome is not a
+      constant: the thead grows when Carry Fwd buttons render and the
+      label column width varies by breakpoint.  The window gets the
+      sticky navbar's height for the rare page-scroll leg.  CSSOM
+      property setters are the CSP-sanctioned dynamic-styling pattern
+      (style-src 'self' allows them; inline style attributes are
+      blocked). */
+  function syncScrollPadding() {
+    var table = getGridTable();
+    if (!table) return;
+    var wrapper = table.closest('.grid-scroll-wrapper');
+    if (wrapper) {
+      var thead = table.querySelector('thead');
+      var tfoot = table.querySelector('tfoot');
+      // Measure the label column via its thead header: the first
+      // `tbody .sticky-col` is the INCOME section banner, whose
+      // colspan covers the whole table, and measuring it would set a
+      // table-wide scroll-padding-left (verified in a live-browser
+      // harness: 796px vs the header's 112px on the same table).
+      var label = table.querySelector('thead .row-label-col');
+      wrapper.style.scrollPaddingTop = (thead ? thead.offsetHeight : 0) + 'px';
+      wrapper.style.scrollPaddingBottom = (tfoot ? tfoot.offsetHeight : 0) + 'px';
+      wrapper.style.scrollPaddingLeft = (label ? label.offsetWidth : 0) + 'px';
+    }
+    var navbar = document.querySelector('.navbar.sticky-top');
+    document.documentElement.style.scrollPaddingTop =
+      (navbar ? navbar.offsetHeight : 0) + 'px';
+  }
+
+  /** Move the cell cursor.  skipReveal=true re-applies the highlight
+      without scrolling -- used by the afterSwap focus-restore while the
+      action card is open, where a wrapper scroll would close the card
+      (grid_edit.js arms a wrapper 'scroll' -> closeFullEdit listener
+      whenever the card is shown). */
+  function setFocus(row, col, skipReveal) {
     var rows = getDataRows();
     var colCount = getColCount();
     if (rows.length === 0 || colCount === 0) return;
@@ -529,7 +574,10 @@ document.addEventListener('keydown', function(e) {
     var td = rows[row].children[col + 1];
     if (td) {
       td.classList.add('cell-focused');
-      td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      if (!skipReveal) {
+        syncScrollPadding();
+        td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
     }
   }
 
@@ -645,7 +693,14 @@ document.addEventListener('keydown', function(e) {
         var spaceCell = getFocusedCell();
         if (spaceCell) {
           var payBtn = spaceCell.querySelector('.paybtn');
-          if (payBtn) payBtn.click();
+          if (payBtn) {
+            // Re-run setFocus on the cursor cell before mutating: the
+            // user may have scrolled the cursor out of view since
+            // selecting it, and a mark-paid must never happen with
+            // zero visible feedback.
+            setFocus(focusedRow, focusedCol);
+            payBtn.click();
+          }
         }
         break;
       case 'c':
@@ -660,6 +715,8 @@ document.addEventListener('keydown', function(e) {
           && creditCell.querySelector('.txn-open[data-can-credit]');
         if (creditable) {
           e.preventDefault();
+          // Same reveal-before-mutate rule as Space above.
+          setFocus(focusedRow, focusedCol);
           htmx.ajax('POST',
             '/transactions/' + creditable.dataset.txnId + '/mark-credit',
             {
@@ -682,9 +739,16 @@ document.addEventListener('keydown', function(e) {
   // Restore focus after HTMX swaps
   document.body.addEventListener('htmx:afterSwap', function() {
     if (focusedRow >= 0 && focusedCol >= 0) {
-      // Re-apply focus after a short delay to allow DOM to settle
+      // Re-apply focus after a short delay to allow DOM to settle.
+      // Highlight-only while the action card is open: swaps fire
+      // INSIDE the open card (lazy entries load, entry CRUD), and a
+      // reveal scroll here would trip grid_edit.js's wrapper-scroll
+      // listener and close the card mid-interaction.  Mirrors the
+      // activePopover guard on the keydown handler above.
       setTimeout(function() {
-        setFocus(focusedRow, focusedCol);
+        var popoverOpen = typeof activePopover !== 'undefined'
+          && Boolean(activePopover);
+        setFocus(focusedRow, focusedCol, popoverOpen);
       }, 50);
     }
   });
