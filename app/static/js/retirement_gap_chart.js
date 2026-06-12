@@ -29,61 +29,66 @@ function renderGapChart(canvasId) {
 
   if (preRetirement <= 0) return;
 
-  ShekelChart.create(canvasId, {
-    type: 'bar',
-    data: {
-      labels: ['Monthly Income'],
-      datasets: [
-        {
-          label: 'Pension',
-          data: [pension],
-          backgroundColor: ShekelChart.getColor(1),
-        },
-        {
-          label: 'Investment Income (SWR)',
-          data: [investment],
-          backgroundColor: ShekelChart.getColor(0),
-        },
-        {
-          label: 'Gap',
-          data: [remaining],
-          backgroundColor: remaining > 0 ? ShekelChart.getColor(6) : ShekelChart.getColor(1),
-        },
-      ],
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: true,
-      aspectRatio: 8,
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: function (ctx) {
-              return ctx.dataset.label + ': $' + ctx.parsed.x.toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              });
+  // Config factory: dataset colors resolve inside so a theme toggle
+  // rebuilds them against the active theme (ShekelChart.create
+  // re-invokes it).
+  ShekelChart.create(canvasId, function () {
+    return {
+      type: 'bar',
+      data: {
+        labels: ['Monthly Income'],
+        datasets: [
+          {
+            label: 'Pension',
+            data: [pension],
+            backgroundColor: ShekelChart.getColor(1),
+          },
+          {
+            label: 'Investment Income (SWR)',
+            data: [investment],
+            backgroundColor: ShekelChart.getColor(0),
+          },
+          {
+            label: 'Gap',
+            data: [remaining],
+            backgroundColor: remaining > 0 ? ShekelChart.getColor(6) : ShekelChart.getColor(1),
+          },
+        ],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: true,
+        aspectRatio: 8,
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                return ctx.dataset.label + ': $' + ctx.parsed.x.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                });
+              },
             },
           },
+          legend: { position: 'top' },
         },
-        legend: { position: 'top' },
-      },
-      scales: {
-        x: {
-          stacked: true,
-          ticks: {
-            callback: function (v) {
-              return '$' + v.toLocaleString();
+        scales: {
+          x: {
+            stacked: true,
+            ticks: {
+              callback: function (v) {
+                return '$' + v.toLocaleString();
+              },
             },
           },
-        },
-        y: {
-          stacked: true,
-          grid: { display: false },
+          y: {
+            stacked: true,
+            grid: { display: false },
+          },
         },
       },
-    },
+    };
   });
 }
 

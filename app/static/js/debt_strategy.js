@@ -92,66 +92,71 @@ function renderStrategyChart(canvasId) {
         return;
     }
 
-    // Build Chart.js datasets from the serialized data, assigning
-    // colors from the ShekelChart palette by index.
-    var datasets = [];
-    for (var i = 0; i < chartData.datasets.length; i++) {
-        var ds = chartData.datasets[i];
-        var color = ShekelChart.getColor(ds.colorIndex != null ? ds.colorIndex : i);
-        datasets.push({
-            label: ds.label,
-            data: ds.data,
-            borderColor: color,
-            backgroundColor: "transparent",
-            borderWidth: 2,
-            fill: false,
-            tension: 0.3,
-            pointRadius: 0
-        });
-    }
+    // Config factory: dataset colors resolve inside so a theme toggle
+    // rebuilds them against the active theme (ShekelChart.create
+    // re-invokes it).
+    ShekelChart.create(canvasId, function () {
+        // Build Chart.js datasets from the serialized data, assigning
+        // colors from the ShekelChart palette by index.
+        var datasets = [];
+        for (var i = 0; i < chartData.datasets.length; i++) {
+            var ds = chartData.datasets[i];
+            var color = ShekelChart.getColor(ds.colorIndex != null ? ds.colorIndex : i);
+            datasets.push({
+                label: ds.label,
+                data: ds.data,
+                borderColor: color,
+                backgroundColor: "transparent",
+                borderWidth: 2,
+                fill: false,
+                tension: 0.3,
+                pointRadius: 0
+            });
+        }
 
-    ShekelChart.create(canvasId, {
-        type: "line",
-        data: {
-            labels: chartData.labels,
-            datasets: datasets
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: {
-                mode: "index",
-                intersect: false
+        return {
+            type: "line",
+            data: {
+                labels: chartData.labels,
+                datasets: datasets
             },
-            scales: {
-                x: {
-                    display: true,
-                    ticks: { maxTicksLimit: 12 }
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: "index",
+                    intersect: false
                 },
-                y: {
-                    display: true,
-                    beginAtZero: true,
-                    ticks: {
-                        callback: function (value) {
-                            return "$" + value.toLocaleString();
+                scales: {
+                    x: {
+                        display: true,
+                        ticks: { maxTicksLimit: 12 }
+                    },
+                    y: {
+                        display: true,
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function (value) {
+                                return "$" + value.toLocaleString();
+                            }
                         }
                     }
-                }
-            },
-            plugins: {
-                tooltip: {
-                    callbacks: {
-                        label: function (context) {
-                            return context.dataset.label + ": $" +
-                                context.parsed.y.toLocaleString(undefined, {
-                                    minimumFractionDigits: 0,
-                                    maximumFractionDigits: 0
-                                });
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function (context) {
+                                return context.dataset.label + ": $" +
+                                    context.parsed.y.toLocaleString(undefined, {
+                                        minimumFractionDigits: 0,
+                                        maximumFractionDigits: 0
+                                    });
+                            }
                         }
                     }
                 }
             }
-        }
+        };
     });
 }
 

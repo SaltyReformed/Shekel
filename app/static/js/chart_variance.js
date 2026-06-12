@@ -5,8 +5,8 @@
  *
  * Renders a grouped bar chart comparing estimated and actual amounts
  * per category group.  Actual bars are color-coded: green when under
- * budget, red/coral when over budget.  Follows the pattern from
- * chart_budget.js.
+ * budget, red/coral when over budget.  Uses the ShekelChart.create()
+ * factory pattern from chart_theme.js.
  *
  * @param {string} canvasId - The canvas element ID.
  */
@@ -25,76 +25,80 @@ function renderVarianceChart(canvasId) {
 
   if (labels.length === 0) return;
 
-  // Color actual bars based on over/under budget.  This is a
-  // comparison (not arithmetic) on the server-computed values; per
-  // the coding standard JS monetary values are display-only.
-  var actualColors = actual.map(function(val, i) {
-    if (val > estimated[i]) {
-      return ShekelChart.getColor(6);  // Coral/danger for overspend.
-    }
-    return ShekelChart.getColor(1);  // Green for under budget.
-  });
+  // Config factory: colors resolve inside so a theme toggle rebuilds
+  // them against the active theme (ShekelChart.create re-invokes it).
+  ShekelChart.create(canvasId, function() {
+    // Color actual bars based on over/under budget.  This is a
+    // comparison (not arithmetic) on the server-computed values; per
+    // the coding standard JS monetary values are display-only.
+    var actualColors = actual.map(function(val, i) {
+      if (val > estimated[i]) {
+        return ShekelChart.getColor(6);  // Coral/danger for overspend.
+      }
+      return ShekelChart.getColor(1);  // Green for under budget.
+    });
 
-  ShekelChart.create(canvasId, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [
-        {
-          label: 'Estimated',
-          data: estimated,
-          backgroundColor: ShekelChart.getColor(7) + '99',
-          borderColor: ShekelChart.getColor(7),
-          borderWidth: 1,
-        },
-        {
-          label: 'Actual',
-          data: actual,
-          backgroundColor: actualColors.map(function(c) { return c + 'CC'; }),
-          borderColor: actualColors,
-          borderWidth: 1,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: function(context) {
-              return context.dataset.label + ': $' +
-                context.parsed.y.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                });
+    return {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'Estimated',
+            data: estimated,
+            backgroundColor: ShekelChart.getColor(7) + '99',
+            borderColor: ShekelChart.getColor(7),
+            borderWidth: 1,
+          },
+          {
+            label: 'Actual',
+            data: actual,
+            backgroundColor: actualColors.map(function(c) { return c + 'CC'; }),
+            borderColor: actualColors,
+            borderWidth: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                return context.dataset.label + ': $' +
+                  context.parsed.y.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  });
+              },
+              afterBody: function(items) {
+                var idx = items[0].dataIndex;
+                var diff = variance[idx];
+                var prefix = diff >= 0 ? '+$' : '-$';
+                return 'Variance: ' + prefix +
+                  Math.abs(diff).toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  });
+              },
             },
-            afterBody: function(items) {
-              var idx = items[0].dataIndex;
-              var diff = variance[idx];
-              var prefix = diff >= 0 ? '+$' : '-$';
-              return 'Variance: ' + prefix +
-                Math.abs(diff).toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                });
+          },
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+          },
+          y: {
+            ticks: {
+              callback: function(value) {
+                return '$' + value.toLocaleString();
+              },
             },
           },
         },
       },
-      scales: {
-        x: {
-          grid: { display: false },
-        },
-        y: {
-          ticks: {
-            callback: function(value) {
-              return '$' + value.toLocaleString();
-            },
-          },
-        },
-      },
-    },
+    };
   });
 }
 
