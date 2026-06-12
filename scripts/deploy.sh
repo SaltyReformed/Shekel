@@ -1,5 +1,15 @@
 #!/bin/bash
-# Shekel Budget App -- Production Deployment Script
+# Shekel Budget App -- SELF-HOSTED Source-Build Deployment Script
+#
+# SCOPE (polyglot audit 2026-06-12, OPS/SH-14): this script serves
+# self-hosted installs that BUILD FROM SOURCE (docker-compose.yml +
+# docker-compose.build.yml). It is NOT the maintainer's production
+# deploy path -- that is the digest-pinned, cosign-keyless-verified
+# /opt/docker/scripts/shekel-deploy.sh pipeline driving the hardened
+# stack at /opt/docker/shekel. Running this script on a host where
+# that canonical stack exists would replace the pinned, hardened
+# container with an unpinned locally-built one, so it now REFUSES to
+# run when /opt/docker/shekel exists (override: --force-self-hosted).
 #
 # Pulls the latest code from GitHub, builds the Docker image, restarts
 # the application container, verifies health, and rolls back to the
@@ -39,7 +49,10 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 NGINX_PORT="${NGINX_PORT:-80}"
 HEALTH_URL="http://localhost:${NGINX_PORT}/health"
-COMPOSE_FILES="-f docker-compose.yml -f docker-compose.build.yml"
+# Array, not a space-joined string: the callers expand it unquoted
+# otherwise -- the precise unquoted-expansion pattern the shell
+# standards ban (OPS/SH-19).
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.build.yml)
 
 # Image reference used by Cosign sign + verify steps.  Matches the
 # tag the local build produces (the COMPOSE_FILES merge tags the
@@ -69,6 +82,7 @@ COSIGN_REQUIRED="${COSIGN_REQUIRED:-false}"
 SKIP_PULL=false
 SKIP_BACKUP=false
 SKIP_COSIGN=false
+FORCE_SELF_HOSTED=false
 
 # ── Functions ────────────────────────────────────────────────────
 
@@ -100,6 +114,9 @@ Options:
     --skip-pull         Skip git pull (deploy from current working tree)
     --skip-backup       Skip pre-deploy database backup
     --skip-cosign       Skip Cosign sign + verify (use only in emergencies)
+    --require-cosign    Fail the deploy when cosign/keys are missing
+                        (equivalent to COSIGN_REQUIRED=true)
+    --force-self-hosted Run even though /opt/docker/shekel exists (see header)
     --health-timeout N  Seconds to wait for health check (default: 60)
     --health-interval N Seconds between health check retries (default: 5)
     --help              Show this help message
@@ -220,7 +237,7 @@ build_image() {
     log "INFO" "Building new Docker image..."
     cd "${DEPLOY_DIR}"
 
-    if ! docker compose ${COMPOSE_FILES} build app; then
+    if ! docker compose "${COMPOSE_FILES[@]}" build app; then
         log "ERROR" "Docker image build failed. The previous version is still running."
         exit 1
     fi
@@ -290,6 +307,8 @@ handle_cosign_skip() {
     log "WARNING" "${reason}; continuing without signature controls."
     log "WARNING" "Set COSIGN_REQUIRED=true in .env or pass --require-cosign"
     log "WARNING" "to promote this warning to an error in steady-state ops."
+    # (--require-cosign exists since the OPS/SH-18 fix; it simply sets
+    # COSIGN_REQUIRED=true for this run.)
     return 0
 }
 
@@ -386,7 +405,7 @@ restart_app() {
     # Recreate the app container with the new image.
     # --no-deps: only restart the app, not db or nginx.
     # The db and nginx containers remain running.
-    if ! docker compose ${COMPOSE_FILES} up -d --no-deps --force-recreate app; then
+    if ! docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate app; then
         log "ERROR" "Failed to restart app container."
         rollback
         exit 1
@@ -451,12 +470,12 @@ rollback() {
 
     # Stop the failed container.
     log "INFO" "Stopping failed container..."
-    docker compose ${COMPOSE_FILES} stop app 2>/dev/null || true
+    docker compose "${COMPOSE_FILES[@]}" stop app 2>/dev/null || true
 
     # Re-tag the previous image as the current compose image.
     # Get the compose image name (what docker compose build targets).
     local compose_image
-    compose_image=$(docker compose ${COMPOSE_FILES} images app --format json 2>/dev/null \
+    compose_image=$(docker compose "${COMPOSE_FILES[@]}" images app --format json 2>/dev/null \
         | python3 -c "import sys,json; data=json.load(sys.stdin); print(data[0].get('Repository','') if isinstance(data,list) else data.get('Repository',''))" 2>/dev/null || true)
 
     if [ -n "$compose_image" ]; then
@@ -467,7 +486,7 @@ rollback() {
     fi
 
     # Restart with the previous image.
-    docker compose ${COMPOSE_FILES} up -d --no-deps --force-recreate app
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate app
 
     # Verify the rollback succeeded.
     log "INFO" "Verifying rollback health..."
@@ -497,6 +516,17 @@ main() {
                 SKIP_COSIGN=true
                 shift
                 ;;
+            --require-cosign)
+                # Promote missing-cosign warnings to hard errors for this
+                # run (the option this script's own guidance recommended
+                # but never parsed -- OPS/SH-18).
+                COSIGN_REQUIRED=true
+                shift
+                ;;
+            --force-self-hosted)
+                FORCE_SELF_HOSTED=true
+                shift
+                ;;
             --health-timeout)
                 HEALTH_TIMEOUT="$2"
                 shift 2
@@ -519,6 +549,19 @@ main() {
 
     log "INFO" "=== Shekel Deployment Starting ==="
     log "INFO" "Deploy directory: ${DEPLOY_DIR}"
+
+    # Canonical-stack guard (OPS/SH-14): on the maintainer host the
+    # digest-pinned hardened stack lives at /opt/docker/shekel and is
+    # deployed by shekel-deploy; this source-build script targets the SAME
+    # compose project name and would silently swap the pinned container
+    # for an unpinned local build.
+    if [ -d /opt/docker/shekel ] && [ "${FORCE_SELF_HOSTED}" = false ]; then
+        log "ERROR" "Canonical production stack detected at /opt/docker/shekel."
+        log "ERROR" "Use the digest-pinned pipeline (shekel-deploy) to deploy there."
+        log "ERROR" "If you REALLY mean to run a source-build deploy on this host,"
+        log "ERROR" "rerun with --force-self-hosted."
+        exit 1
+    fi
 
     # Step 1: Check prerequisites.
     check_prerequisites

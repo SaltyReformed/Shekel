@@ -69,8 +69,13 @@ chmod 0700 "$PROD_ROOT/secrets"
 # ── 3. Migrate four secrets from .env to files ────────────────────
 log "Step 3: migrate secrets to files"
 extract_env_value() {
+    # Echo the key's value, or EMPTY when the line is absent -- never a
+    # non-zero status. Under set -e + pipefail a bare grep-miss here used
+    # to kill the whole script mid-run with no diagnostic, AFTER step 3
+    # had already migrated secrets (OPS/SH-12); required keys get their
+    # explicit die at the call sites instead.
     local key=$1
-    grep -E "^${key}=" "$PROD_ROOT/.env" | head -1 | cut -d= -f2-
+    grep -E "^${key}=" "$PROD_ROOT/.env" | head -1 | cut -d= -f2- || true
 }
 
 for pair in \
@@ -93,7 +98,9 @@ do
     # ``printf '%s'`` writes the exact bytes with no trailing newline.
     # The entrypoint's _load_secret helper strips a trailing newline
     # for forgiveness, but printf-style is the documented form.
-    printf '%s' "$value" > "$target"
+    # umask-first so the file is NEVER world-readable, even for the
+    # instant before chmod (OPS/SH-22).
+    ( umask 077; printf '%s' "$value" > "$target" )
     chmod 0600 "$target"
     echo "wrote $target ($(wc -c < "$target") bytes)"
 done
@@ -101,15 +108,22 @@ done
 # ── 4. Rewrite /opt/docker/shekel/.env ────────────────────────────
 log "Step 4: rewrite $PROD_ROOT/.env"
 
-# Snapshot the current digest pinned in /opt/docker/shekel/docker-compose.yml
-# so the new SHEKEL_IMAGE_DIGEST line matches what's already running --
-# we are NOT image-bumping as part of this reconciliation.
-current_digest=$(grep -oE 'sha256:[0-9a-f]{64}' "$PROD_ROOT/docker-compose.yml" | grep -A1 saltyreformed | head -1 || true)
+# Carry the current image digest forward unchanged -- we are NOT
+# image-bumping as part of this reconciliation. Post-C-36 the digest
+# lives in .env as SHEKEL_IMAGE_DIGEST (the canonical layout this script
+# itself installs); the grep fallback covers only the legacy layout
+# where the digest sat inline on the shekel image line. The original
+# primary pipeline here was dead logic -- grep -oE emits bare digests,
+# so the downstream `grep -A1 saltyreformed` could never match -- and
+# its fallback died under set -e BEFORE the crafted die() could run
+# when nothing matched (OPS/SH-11). NOTE the fallback greps the SHEKEL
+# image line specifically: a bare 'first sha256 in the file' would now
+# match the postgres digest pin.
+current_digest=$(extract_env_value SHEKEL_IMAGE_DIGEST)
 if [[ -z "$current_digest" ]]; then
-    # Fallback: parse `image:` line directly.
-    current_digest=$(grep -E 'image:.*saltyreformed/shekel' "$PROD_ROOT/docker-compose.yml" | grep -oE 'sha256:[0-9a-f]{64}' | head -1)
+    current_digest=$(grep -E 'image:.*saltyreformed/shekel' "$PROD_ROOT/docker-compose.yml" | grep -oE 'sha256:[0-9a-f]{64}' | head -1 || true)
 fi
-[[ -n "$current_digest" ]] || die "could not extract current image digest from $PROD_ROOT/docker-compose.yml"
+[[ -n "$current_digest" ]] || die "could not determine the image digest: no SHEKEL_IMAGE_DIGEST in $PROD_ROOT/.env and no inline digest on the shekel image line of $PROD_ROOT/docker-compose.yml"
 
 # Carry forward the values that should survive: SHEKEL_REDIS_PASSWORD,
 # SEED_USER_*, GUNICORN_WORKERS, NGINX_PORT, AUDIT_RETENTION_DAYS,
@@ -216,19 +230,26 @@ else
     echo "(operator: validate + reload nginx after step 7)"
 fi
 
-# Also sync the main nginx.conf if it differs -- but FAIL LOUDLY if
-# the host file contains directives the repo file does not (audit
-# B7 limit_req_zone, etc.).  Pure visual diff for the operator to
-# review before letting the sync proceed.
+# Also sync the main nginx.conf if it differs -- and FAIL LOUDLY (for
+# real now -- OPS/SH-13: the previous revision PROMISED this gate in a
+# comment while unconditionally cp-ing over the host file) when the host
+# file carries critical directives the repo copy lacks: that is host-only
+# hardening a sync would clobber, the exact drift mode the deploy rules
+# warn about. Back-port to the repo first, then re-run.
 if cmp -s "$REPO_ROOT/deploy/nginx-shared/nginx.conf" /opt/docker/nginx/nginx.conf; then
     echo "/opt/docker/nginx/nginx.conf already matches repo"
 else
     drift_dir=$nginx_snap/divergence
-    mkdir -p "$drift_dir"
+    install -d -m 0700 "$drift_dir"
     diff -u /opt/docker/nginx/nginx.conf "$REPO_ROOT/deploy/nginx-shared/nginx.conf" > "$drift_dir/nginx.conf.diff" || true
     echo "Drift between host and repo nginx.conf saved to $drift_dir/nginx.conf.diff"
-    echo "Critical directives that must NOT be lost in the sync:"
-    grep -nE "limit_req_zone|limit_conn_zone|client_body_timeout|client_header_timeout|send_timeout|client_max_body_size|set_real_ip_from" /opt/docker/nginx/nginx.conf || true
+    critical_re="limit_req_zone|limit_conn_zone|client_body_timeout|client_header_timeout|send_timeout|client_max_body_size|set_real_ip_from"
+    host_only_critical=$(grep -E "$critical_re" /opt/docker/nginx/nginx.conf | sort -u         | comm -23 - <(grep -E "$critical_re" "$REPO_ROOT/deploy/nginx-shared/nginx.conf" | sort -u) || true)
+    if [[ -n "$host_only_critical" ]]; then
+        echo "HOST-ONLY critical directives that the sync would clobber:"
+        printf '%s\n' "$host_only_critical"
+        die "host nginx.conf carries hardening the repo copy lacks; back-port to deploy/nginx-shared/nginx.conf first (diff at $drift_dir/nginx.conf.diff)"
+    fi
     cp -v "$REPO_ROOT/deploy/nginx-shared/nginx.conf" /opt/docker/nginx/nginx.conf
 fi
 

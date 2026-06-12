@@ -11,23 +11,38 @@
 #
 # Applies independently to both local and NAS directories.
 #
+# Safety rails (polyglot audit 2026-06-12, OPS/SH-05 + OPS/SH-16):
+#   * Deletion requires --force; without it every run is a dry-run. The
+#     house shell standard is confirm-or---force for destructive
+#     operations, and this script deletes the disaster-recovery story.
+#   * A keep-floor (RETENTION_MIN_KEEP, default 3) is enforced per
+#     directory: pruning never reduces a directory below the N newest
+#     backups, so a silently-dead backup producer can no longer let this
+#     script age every remaining file out to zero.
+#   * A staleness alarm: when the NEWEST backup in a directory is older
+#     than RETENTION_STALE_ALERT_DAYS (default 2), the run logs ERROR and
+#     exits 1 so cron/monitoring surfaces "backups stopped being made" --
+#     the classic retention failure mode.
+#
 # Usage:
 #     ./scripts/backup_retention.sh [OPTIONS]
 #
 # Options:
 #     --local-dir DIR     Local backup directory (default: /var/backups/shekel)
 #     --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
-#     --dry-run           Print what would be deleted without deleting
+#     --force             Actually delete files (default: dry-run)
+#     --dry-run           Explicit dry-run (the default; kept for cron clarity)
 #     --help              Show this help message
 #
 # Exit codes:
-#     0   Retention cleanup completed (missing directories produce warnings, not errors)
-#     1   Fatal error (bad arguments)
+#     0   Retention cleanup completed (missing directories produce warnings)
+#     1   Fatal error (bad arguments) OR staleness alarm tripped
 #
 # Cron example (daily at 2:30 AM, after backup at 2:00 AM):
-#     30 2 * * * /path/to/shekel/scripts/backup_retention.sh >> /var/log/shekel_backup.log 2>&1
+#     30 2 * * * /path/to/shekel/scripts/backup_retention.sh --force >> /var/log/shekel_backup.log 2>&1
 
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
 # All values can be overridden via environment variables.
@@ -40,14 +55,13 @@ RETENTION_DAILY_DAYS="${RETENTION_DAILY_DAYS:-7}"
 RETENTION_WEEKLY_WEEKS="${RETENTION_WEEKLY_WEEKS:-4}"
 RETENTION_MONTHLY_MONTHS="${RETENTION_MONTHLY_MONTHS:-6}"
 
-# ── Functions ────────────────────────────────────────────────────
+# Safety rails.
+RETENTION_MIN_KEEP="${RETENTION_MIN_KEEP:-3}"
+RETENTION_STALE_ALERT_DAYS="${RETENTION_STALE_ALERT_DAYS:-2}"
 
-log() {
-    # Structured log output: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
-    local level="$1"
-    shift
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
-}
+# Set when any processed directory's newest backup exceeds the staleness
+# threshold; drives the final exit code.
+STALE_ALARM=false
 
 usage() {
     cat <<EOF
@@ -60,18 +74,27 @@ Retention tiers:
     Weekly (Sunday): kept for ${RETENTION_WEEKLY_WEEKS} weeks
     Monthly (1st):   kept for ${RETENTION_MONTHLY_MONTHS} months
 
+Safety rails:
+    The ${RETENTION_MIN_KEEP} newest backups in a directory are never
+    deleted, and the run fails (exit 1) when the newest backup is older
+    than ${RETENTION_STALE_ALERT_DAYS} day(s) -- a stopped backup producer
+    must surface here, not as an empty directory months later.
+
 Options:
     --local-dir DIR     Local backup directory (default: /var/backups/shekel)
     --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
-    --dry-run           Print what would be deleted without deleting
+    --force             Actually delete files (default: dry-run)
+    --dry-run           Explicit dry-run (the default)
     --help              Show this help message
 
 Environment Variables:
-    BACKUP_LOCAL_DIR          Local backup directory
-    BACKUP_NAS_DIR            NAS backup directory
-    RETENTION_DAILY_DAYS      Days to keep daily backups (default: 7)
-    RETENTION_WEEKLY_WEEKS    Weeks to keep weekly/Sunday backups (default: 4)
-    RETENTION_MONTHLY_MONTHS  Months to keep monthly/1st backups (default: 6)
+    BACKUP_LOCAL_DIR            Local backup directory
+    BACKUP_NAS_DIR              NAS backup directory
+    RETENTION_DAILY_DAYS        Days to keep daily backups (default: 7)
+    RETENTION_WEEKLY_WEEKS      Weeks to keep weekly/Sunday backups (default: 4)
+    RETENTION_MONTHLY_MONTHS    Months to keep monthly/1st backups (default: 6)
+    RETENTION_MIN_KEEP          Newest backups never deleted (default: 3)
+    RETENTION_STALE_ALERT_DAYS  Newest-backup age that trips the alarm (default: 2)
 EOF
 }
 
@@ -110,8 +133,10 @@ days_old() {
 prune_directory() {
     # Apply retention policy to a single directory.
     local dir="$1"
-    local dry_run="$2"
+    local force="$2"
     local pruned=0
+    local total=0
+    local newest_age=""
 
     if [[ ! -d "${dir}" ]]; then
         log "WARNING" "Directory does not exist, skipping: ${dir}"
@@ -124,11 +149,17 @@ prune_directory() {
     local weekly_cutoff_days=$(( RETENTION_WEEKLY_WEEKS * 7 ))
     local monthly_cutoff_days=$(( RETENTION_MONTHLY_MONTHS * 30 ))
 
-    # Iterate over backup files in the directory.
-    # The glob matches both .sql.gz and .sql.gz.gpg files.
+    # Pass 1: classify. Files iterate in glob (lexicographic = chronological,
+    # the timestamp is in the name) order, so delete_candidates is oldest-first
+    # and the keep-floor rescue below can pop from the end (newest first).
+    local delete_candidates=()
+    local delete_ages=()
     for filepath in "${dir}"/shekel_backup_*.sql.gz*; do
         # Skip if glob matched nothing (no files).
         [[ -f "${filepath}" ]] || continue
+        # Never count or touch in-flight temp files from backup.sh.
+        [[ "${filepath}" == *.tmp ]] && continue
+        total=$((total + 1))
 
         local filename
         filename=$(basename "${filepath}")
@@ -136,6 +167,11 @@ prune_directory() {
         date_str=$(extract_date_from_filename "${filename}") || continue
         local age
         age=$(days_old "${date_str}") || continue
+
+        # Track the newest file's age for the staleness alarm.
+        if [[ -z "${newest_age}" || ${age} -lt ${newest_age} ]]; then
+            newest_age=${age}
+        fi
 
         local keep=false
 
@@ -158,29 +194,63 @@ prune_directory() {
         fi
 
         if [[ "${keep}" == false ]]; then
-            if [[ "${dry_run}" == true ]]; then
-                log "INFO" "[DRY RUN] Would delete: ${filename} (age: ${age}d)"
-            else
-                rm -f "${filepath}"
-                log "INFO" "Deleted: ${filename} (age: ${age}d)"
-            fi
-            pruned=$((pruned + 1))
+            delete_candidates+=("${filepath}")
+            delete_ages+=("${age}")
         fi
+    done
+
+    # Keep-floor (OPS/SH-05): never let pruning reduce the directory below
+    # the RETENTION_MIN_KEEP newest backups. Rescue candidates newest-first
+    # (from the end of the oldest-first candidate list).
+    local would_remain=$(( total - ${#delete_candidates[@]} ))
+    while [[ ${#delete_candidates[@]} -gt 0 && ${would_remain} -lt ${RETENTION_MIN_KEEP} ]]; do
+        local rescued_idx=$(( ${#delete_candidates[@]} - 1 ))
+        log "WARNING" "Keep-floor: retaining $(basename "${delete_candidates[${rescued_idx}]}") despite policy (directory would drop below ${RETENTION_MIN_KEEP} backups -- is the backup producer still running?)"
+        unset 'delete_candidates[rescued_idx]' 'delete_ages[rescued_idx]'
+        delete_candidates=("${delete_candidates[@]}")
+        delete_ages=("${delete_ages[@]}")
+        would_remain=$(( total - ${#delete_candidates[@]} ))
+    done
+
+    # Pass 2: delete (or report).
+    local i
+    for i in "${!delete_candidates[@]}"; do
+        local filepath="${delete_candidates[${i}]}"
+        local filename
+        filename=$(basename "${filepath}")
+        if [[ "${force}" == true ]]; then
+            rm -f "${filepath}"
+            log "INFO" "Deleted: ${filename} (age: ${delete_ages[${i}]}d)"
+        else
+            log "INFO" "[DRY RUN] Would delete: ${filename} (age: ${delete_ages[${i}]}d)"
+        fi
+        pruned=$((pruned + 1))
     done
 
     if [[ ${pruned} -eq 0 ]]; then
         log "INFO" "No files to prune in ${dir}"
     else
         local verb="Pruned"
-        [[ "${dry_run}" == true ]] && verb="Would prune"
-        log "INFO" "${verb} ${pruned} file(s) from ${dir}"
+        [[ "${force}" == false ]] && verb="Would prune"
+        log "INFO" "${verb} ${pruned} file(s) from ${dir} (${would_remain} remain)"
+    fi
+
+    # Staleness alarm (OPS/SH-05): a directory whose newest backup is older
+    # than the alert window means the producer has stopped; pruning while
+    # production is down is how retention deletes the last good backup.
+    if [[ -n "${newest_age}" && ${newest_age} -gt ${RETENTION_STALE_ALERT_DAYS} ]]; then
+        log "ERROR" "STALE BACKUPS in ${dir}: newest is ${newest_age}d old (threshold ${RETENTION_STALE_ALERT_DAYS}d). Is the backup job running?"
+        STALE_ALARM=true
+    elif [[ -z "${newest_age}" && ${total} -eq 0 ]]; then
+        log "ERROR" "NO BACKUPS in ${dir}. Is the backup job running?"
+        STALE_ALARM=true
     fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────
 
 main() {
-    local dry_run=false
+    local force=false
 
     # Parse command-line arguments.
     while [[ $# -gt 0 ]]; do
@@ -193,8 +263,12 @@ main() {
                 BACKUP_NAS_DIR="$2"
                 shift 2
                 ;;
+            --force)
+                force=true
+                shift
+                ;;
             --dry-run)
-                dry_run=true
+                force=false
                 shift
                 ;;
             --help)
@@ -209,12 +283,19 @@ main() {
         esac
     done
 
-    log "INFO" "Retention policy: daily=${RETENTION_DAILY_DAYS}d, weekly=${RETENTION_WEEKLY_WEEKS}w, monthly=${RETENTION_MONTHLY_MONTHS}m"
+    log "INFO" "Retention policy: daily=${RETENTION_DAILY_DAYS}d, weekly=${RETENTION_WEEKLY_WEEKS}w, monthly=${RETENTION_MONTHLY_MONTHS}m, min-keep=${RETENTION_MIN_KEEP}"
+    if [[ "${force}" == false ]]; then
+        log "INFO" "DRY RUN (no --force): nothing will be deleted"
+    fi
 
     # Process both directories independently.
-    prune_directory "${BACKUP_LOCAL_DIR}" "${dry_run}"
-    prune_directory "${BACKUP_NAS_DIR}" "${dry_run}"
+    prune_directory "${BACKUP_LOCAL_DIR}" "${force}"
+    prune_directory "${BACKUP_NAS_DIR}" "${force}"
 
+    if [[ "${STALE_ALARM}" == true ]]; then
+        log "ERROR" "Retention finished with a STALENESS ALARM (see above)"
+        exit 1
+    fi
     log "INFO" "Retention cleanup complete"
 }
 

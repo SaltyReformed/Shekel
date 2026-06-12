@@ -57,8 +57,11 @@ READINESS_TIMEOUT_SECONDS="${READINESS_TIMEOUT_SECONDS:-15}"
 # startup) and may contain values with unquoted spaces (display
 # names, comments) that the shell would mis-parse.  Extract only
 # the one line we need, value-after-first-=, single match.
-if [ -z "${TEST_DATABASE_URL:-}" ] && [ -f .env ]; then
-    _env_value="$(grep -E '^TEST_DATABASE_URL=' .env | head -n1 | cut -d= -f2-)"
+_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -z "${TEST_DATABASE_URL:-}" ] && [ -f "${_REPO_ROOT}/.env" ]; then
+    # Resolved via BASH_SOURCE, not the invoker's cwd, so a run from
+    # outside the repo root still finds the dotenv (OPS/SH-26).
+    _env_value="$(grep -E '^TEST_DATABASE_URL=' "${_REPO_ROOT}/.env" | head -n1 | cut -d= -f2-)"
     if [ -n "$_env_value" ]; then
         export TEST_DATABASE_URL="$_env_value"
     fi

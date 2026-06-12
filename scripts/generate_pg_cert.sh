@@ -39,7 +39,7 @@
 #     --help              Show this help message
 #
 # Exit codes:
-#     0   Cert and key generated (or already present and -f not set)
+#     0   Cert and key generated
 #     1   Fatal error (missing dependency, openssl failure, chown failure)
 #     2   Output already exists and --force was not passed
 #
@@ -301,8 +301,7 @@ generate_cert_and_key() {
         -subj "/CN=${CN}" \
         -addext "subjectAltName=DNS:${CN},DNS:db,DNS:shekel-prod-db,DNS:localhost" \
         -addext "keyUsage=digitalSignature,keyEncipherment" \
-        -addext "extendedKeyUsage=serverAuth" \
-        2>/dev/null
+        -addext "extendedKeyUsage=serverAuth"
 
     # File modes:
     #   server.crt: 0644 (world readable -- the cert is public).
@@ -314,7 +313,7 @@ generate_cert_and_key() {
     # Ownership:
     #   server.crt stays root-owned (read by all, written by no one).
     #   server.key must be owned by the user the postgres process
-    #               runs as (uid 70 in postgres:16-alpine) so the
+    #               runs as (uid 70 in postgres:18-alpine) so the
     #               in-container postgres can read it.  The bind
     #               mount preserves host ownership exactly.
     chown "${POSTGRES_UID}:${POSTGRES_GID}" "${key_path}"

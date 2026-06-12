@@ -593,8 +593,11 @@ class TestVerifyBackupScriptCredentialHygiene:
         )
         body = match.group(1)
         # Both DATABASE_URL constructions must reference db_password.
+        # The prod branch builds the URL with printf into a 0600 env-file
+        # (polyglot audit OPS/SH-08: the value must never ride docker's
+        # argv), so the shared variable appears as a printf argument.
         prod_branch_uses_var = re.search(
-            r"DATABASE_URL=postgresql://[^@\n]*\$\{db_password\}@",
+            r"DATABASE_URL=postgresql://[^\n]*\n?[^\n]*\$\{db_password\}",
             body,
         )
         dev_branch_uses_var = re.search(
@@ -1014,8 +1017,11 @@ class TestEntrypointLoaderSourceShape:
         assert loader_calls, "no _load_secret invocations found"
         # The validation block opens with a ``-z "${SECRET_KEY}"``
         # check.  Find the earliest one.
+        # ``:-`` tolerated: the nounset hardening (polyglot audit
+        # OPS/SH-23) references the variable as ${SECRET_KEY:-} so the
+        # crafted diagnostic fires instead of a bare unbound-variable.
         validation_match = re.search(
-            r'\[\s*-z\s+"\$\{SECRET_KEY\}"\s*\]',
+            r'\[\s*-z\s+"\$\{SECRET_KEY(?::-)?\}"\s*\]',
             entrypoint_text,
         )
         assert validation_match is not None, (

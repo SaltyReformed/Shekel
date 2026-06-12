@@ -12,17 +12,29 @@
 #     --local-dir DIR     Local backup directory (default: /var/backups/shekel)
 #     --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
 #     --no-nas            Skip NAS copy (local backup only)
-#     --encrypt           Force encryption (requires BACKUP_ENCRYPTION_PASSPHRASE)
+#     --encrypt           Require encryption: fail fast when
+#                         BACKUP_ENCRYPTION_PASSPHRASE is not set. (Encryption
+#                         itself is keyed on the passphrase being present --
+#                         with it set, backups are encrypted with or without
+#                         this flag; the flag turns "passphrase missing" from
+#                         a silent plaintext backup into a hard error.)
 #     --help              Show this help message
 #
 # Exit codes:
 #     0   Backup completed successfully (local backup always succeeds for exit 0)
 #     1   Fatal error (database unreachable, pg_dump failure, empty output)
 #
+# Partial-file discipline (polyglot audit 2026-06-12, OPS/SH-04): every
+# artifact is written to a .tmp path and renamed into place only after the
+# producing pipeline succeeded, and an EXIT trap removes stragglers -- so a
+# mid-stream pg_dump/gpg/cp failure can never leave a truncated file wearing
+# a valid backup name for retention/verification to mistake for a real one.
+#
 # Cron example (daily at 2:00 AM):
 #     0 2 * * * /path/to/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
 
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
 # All values can be overridden via environment variables.
@@ -42,14 +54,22 @@ PGDATABASE="${PGDATABASE:-shekel}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP_FILENAME="shekel_backup_${TIMESTAMP}.sql.gz"
 
-# ── Functions ────────────────────────────────────────────────────
-
-log() {
-    # Structured log output: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
-    local level="$1"
-    shift
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
+# Temp files pending rename; the EXIT trap sweeps whatever a failure left.
+# if-form (not `[[ ]] &&`) because errexit is ACTIVE inside an EXIT trap: a
+# falsy condition as the trap's last command would override the script's
+# real exit status with 1 -- the same errexit-semantics class this whole
+# family was audited for (caught by the Phase 2 test battery).
+_TMP_FILES=()
+_cleanup_tmp() {
+    local f
+    for f in "${_TMP_FILES[@]:-}"; do
+        if [[ -n "${f}" && -f "${f}" ]]; then
+            rm -f "${f}"
+        fi
+    done
+    return 0
 }
+trap _cleanup_tmp EXIT
 
 usage() {
     cat <<EOF
@@ -61,7 +81,8 @@ Options:
     --local-dir DIR     Local backup directory (default: /var/backups/shekel)
     --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
     --no-nas            Skip NAS copy (local only)
-    --encrypt           Force encryption (requires BACKUP_ENCRYPTION_PASSPHRASE)
+    --encrypt           Require encryption (fail fast without
+                        BACKUP_ENCRYPTION_PASSPHRASE; see header)
     --help              Show this help message
 
 Environment Variables:
@@ -75,28 +96,21 @@ EOF
 }
 
 check_prerequisites() {
-    # Verify docker is available.
-    if ! command -v docker &>/dev/null; then
-        log "ERROR" "docker command not found"
-        exit 1
-    fi
-
-    # Verify the database container is running.
-    if ! docker inspect --format='{{.State.Running}}' "${DB_CONTAINER}" 2>/dev/null | grep -q true; then
-        log "ERROR" "Database container '${DB_CONTAINER}' is not running"
-        exit 1
-    fi
-
+    require_db_container "${DB_CONTAINER}" || exit 1
     # Create local backup directory if it does not exist.
     mkdir -p "${BACKUP_LOCAL_DIR}"
 }
 
 create_backup() {
-    # Run pg_dump inside the database container, compress, and write to local dir.
+    # Run pg_dump inside the database container, compress, and write to local
+    # dir via temp-file + rename (see header).
     local local_path="${BACKUP_LOCAL_DIR}/${BACKUP_FILENAME}"
+    local tmp_path="${local_path}.tmp"
 
     log "INFO" "Starting backup: ${BACKUP_FILENAME}"
     log "INFO" "Database: ${PGDATABASE} | User: ${PGUSER} | Container: ${DB_CONTAINER}"
+
+    _TMP_FILES+=("${tmp_path}")
 
     # pg_dump flags:
     #   --clean:          include DROP statements before CREATE
@@ -105,35 +119,30 @@ create_backup() {
     #   --no-privileges:  omit GRANT/REVOKE (portable)
     #   --schema:         dump only application schemas (not pg_catalog, etc.)
     #
-    # Schemas dumped:
-    #   public  -- contains alembic_version (migration state)
-    #   ref     -- lookup/reference tables
-    #   auth    -- users, sessions, MFA
-    #   budget  -- pay periods, transactions, accounts, templates
-    #   salary  -- salary profiles, deductions, tax configs
-    #   system  -- audit_log
+    # The schema list is the shared SHEKEL_DUMP_SCHEMAS from _backup_lib.sh --
+    # the single source restore.sh and verify_backup.sh also read, so a new
+    # schema added there is automatically dumped here (OPS/SH-06).
     #
-    # Output is piped through gzip for compression.
-    docker exec "${DB_CONTAINER}" pg_dump \
+    # shellcheck disable=SC2046 # word splitting of the --schema flags is intended
+    if ! docker exec "${DB_CONTAINER}" pg_dump \
         -U "${PGUSER}" \
         -d "${PGDATABASE}" \
         --clean \
         --if-exists \
         --no-owner \
         --no-privileges \
-        --schema=public \
-        --schema=ref \
-        --schema=auth \
-        --schema=budget \
-        --schema=salary \
-        --schema=system \
-        | gzip > "${local_path}"
-
-    # Verify the file was created and is not empty.
-    if [[ ! -s "${local_path}" ]]; then
-        log "ERROR" "Backup file is empty or was not created: ${local_path}"
+        $(shekel_pg_dump_schema_flags) \
+        | gzip > "${tmp_path}"; then
+        log "ERROR" "pg_dump pipeline failed; partial file removed by trap"
         exit 1
     fi
+
+    # Verify the temp file is not empty before promoting it.
+    if [[ ! -s "${tmp_path}" ]]; then
+        log "ERROR" "Backup output is empty: ${tmp_path}"
+        exit 1
+    fi
+    mv "${tmp_path}" "${local_path}"
 
     local size
     size=$(du -h "${local_path}" | cut -f1)
@@ -148,14 +157,20 @@ encrypt_backup() {
 
     local local_path="${BACKUP_LOCAL_DIR}/${BACKUP_FILENAME}"
     local encrypted_path="${local_path}.gpg"
+    local tmp_path="${encrypted_path}.tmp"
 
     log "INFO" "Encrypting backup with AES-256..."
-    echo "${BACKUP_ENCRYPTION_PASSPHRASE}" | gpg --batch --yes --passphrase-fd 0 \
+    _TMP_FILES+=("${tmp_path}")
+    if ! echo "${BACKUP_ENCRYPTION_PASSPHRASE}" | gpg --batch --yes --passphrase-fd 0 \
         --symmetric --cipher-algo AES256 \
-        --output "${encrypted_path}" \
-        "${local_path}"
+        --output "${tmp_path}" \
+        "${local_path}"; then
+        log "ERROR" "GPG encryption failed; unencrypted backup retained at ${local_path}"
+        exit 1
+    fi
+    mv "${tmp_path}" "${encrypted_path}"
 
-    # Remove the unencrypted file.
+    # Remove the unencrypted file only after the encrypted one is in place.
     rm -f "${local_path}"
 
     # Update the filename to include .gpg extension.
@@ -165,9 +180,14 @@ encrypt_backup() {
 
 copy_to_nas() {
     # Copy the backup file to the NAS mount point.
-    # Returns 0 on success, 1 on failure (non-fatal -- local backup already exists).
+    # Returns 0 on success, 1 on failure (non-fatal -- local backup already
+    # exists). EXPLICIT failure handling throughout: this function is invoked
+    # in a `|| nas_status=1` context, which disables errexit for the whole
+    # body (audit OPS/SH-03 -- a partial `cp` previously fell through to the
+    # success log and the script exited 0 with a corrupt NAS copy).
     local local_path="${BACKUP_LOCAL_DIR}/${BACKUP_FILENAME}"
     local nas_path="${BACKUP_NAS_DIR}/${BACKUP_FILENAME}"
+    local nas_tmp="${nas_path}.tmp"
 
     # Check if NAS is mounted and accessible.
     if [[ ! -d "${BACKUP_NAS_DIR}" ]]; then
@@ -182,7 +202,25 @@ copy_to_nas() {
     fi
     rm -f "${BACKUP_NAS_DIR}/.backup_test"
 
-    cp "${local_path}" "${nas_path}"
+    _TMP_FILES+=("${nas_tmp}")
+    if ! cp "${local_path}" "${nas_tmp}"; then
+        log "WARNING" "NAS copy FAILED (disk full / IO error?); partial file removed"
+        rm -f "${nas_tmp}"
+        return 1
+    fi
+    # Byte-for-byte comparison: a touch-test proves writability, not that the
+    # full copy landed intact (NAS-full mid-copy truncates without an error
+    # from every filesystem/protocol combination).
+    if ! cmp -s "${local_path}" "${nas_tmp}"; then
+        log "WARNING" "NAS copy MISMATCH after write (truncated?); removed"
+        rm -f "${nas_tmp}"
+        return 1
+    fi
+    if ! mv "${nas_tmp}" "${nas_path}"; then
+        log "WARNING" "NAS rename failed; partial file removed"
+        rm -f "${nas_tmp}"
+        return 1
+    fi
     log "INFO" "NAS copy complete: ${nas_path}"
     return 0
 }

@@ -24,6 +24,7 @@
 #         >> /var/log/shekel_backup.log 2>&1
 
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
 
@@ -31,16 +32,12 @@ DB_CONTAINER="${DB_CONTAINER:-shekel-prod-db}"
 APP_CONTAINER="${APP_CONTAINER:-shekel-prod-app}"
 PGUSER="${PGUSER:-shekel_user}"
 PGDATABASE="${PGDATABASE:-shekel}"
-VERIFY_DB="${VERIFY_DB:-shekel_verify}"
+# Per-run suffix so two overlapping verification runs cannot drop each
+# other's temp database mid-restore (OPS/SH-27).
+VERIFY_DB="${VERIFY_DB:-shekel_verify_$$}"
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 
 # ── Functions ────────────────────────────────────────────────────
-
-log() {
-    local level="$1"
-    shift
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
-}
 
 usage() {
     cat <<EOF
@@ -115,15 +112,7 @@ get_db_password() {
 }
 
 check_prerequisites() {
-    if ! command -v docker &>/dev/null; then
-        log "ERROR" "docker command not found"
-        exit 1
-    fi
-
-    if ! docker inspect --format='{{.State.Running}}' "${DB_CONTAINER}" 2>/dev/null | grep -q true; then
-        log "ERROR" "Database container '${DB_CONTAINER}' is not running"
-        exit 1
-    fi
+    require_db_container "${DB_CONTAINER}" || exit 1
 }
 
 create_temp_database() {
@@ -136,13 +125,9 @@ create_temp_database() {
     docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d postgres --quiet -c \
         "CREATE DATABASE ${VERIFY_DB} OWNER ${PGUSER};"
 
-    # Create schemas.
+    # Create schemas (shared SHEKEL_APP_SCHEMAS list -- OPS/SH-06).
     docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${VERIFY_DB}" --quiet -c \
-        "CREATE SCHEMA IF NOT EXISTS ref;
-         CREATE SCHEMA IF NOT EXISTS auth;
-         CREATE SCHEMA IF NOT EXISTS budget;
-         CREATE SCHEMA IF NOT EXISTS salary;
-         CREATE SCHEMA IF NOT EXISTS system;"
+        "$(shekel_create_schema_sql)"
 
     log "INFO" "Temporary database created"
 }
@@ -151,20 +136,10 @@ restore_to_temp() {
     local backup_file="$1"
     log "INFO" "Restoring backup to temporary database..."
 
-    if [[ "${backup_file}" == *.gpg ]]; then
-        if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
-            log "ERROR" "Backup is encrypted but BACKUP_ENCRYPTION_PASSPHRASE is not set"
-            return 1
-        fi
-        echo "${BACKUP_ENCRYPTION_PASSPHRASE}" | gpg --batch --passphrase-fd 0 --quiet -d "${backup_file}" \
-            | gunzip \
-            | docker exec -i "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${VERIFY_DB}" \
-                --quiet --single-transaction --set ON_ERROR_STOP=1 --output /dev/null
-    else
-        gunzip -c "${backup_file}" \
-            | docker exec -i "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${VERIFY_DB}" \
-                --quiet --single-transaction --set ON_ERROR_STOP=1 --output /dev/null
-    fi
+    require_passphrase_for "${backup_file}" "${BACKUP_ENCRYPTION_PASSPHRASE}" || return 1
+    backup_stream "${backup_file}" \
+        | docker exec -i "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${VERIFY_DB}" \
+            --quiet --single-transaction --set ON_ERROR_STOP=1 --output /dev/null
 
     log "INFO" "Restore to temporary database complete"
 }
@@ -261,22 +236,32 @@ run_integrity_checks() {
 
     local exit_code=0
 
-    # Resolve POSTGRES_PASSWORD once, up front.  get_db_password()
-    # ``return 1``s when the container env channel does not expose a
-    # value, and ``set -e`` propagates that failure through the
-    # command substitution -- the script exits before either branch
-    # below runs.  This is the load-bearing replacement for the
-    # previous ``|| echo "shekel_pass"`` fallback (audit F-109).
+    # Resolve POSTGRES_PASSWORD once, up front, with EXPLICIT failure
+    # propagation: this function is invoked as `run_integrity_checks ||
+    # integrity_code=$?`, and bash disables errexit inside a function
+    # called in a || context -- so the previous comment's claim that
+    # "set -e propagates" was false and the F-109 hard-fail never fired;
+    # the script proceeded with an empty password (OPS/SH-07, verified
+    # during the audit). `|| return 1` does not depend on errexit.
     local db_password
-    db_password=$(get_db_password)
+    db_password=$(get_db_password) || return 1
 
     # Determine how to run the integrity check script.
     # If the app container exists, run inside it. Otherwise, run locally.
     if docker inspect "${APP_CONTAINER}" &>/dev/null; then
-        # Production: run inside the app container with overridden DATABASE_URL.
-        docker exec \
-            -e "DATABASE_URL=postgresql://${PGUSER}:${db_password}@db:5432/${VERIFY_DB}" \
+        # Production: run inside the app container with overridden
+        # DATABASE_URL, delivered via --env-file on a 0600 temp file so the
+        # credential never enters the docker CLI argv, where it would be
+        # world-readable via /proc/<pid>/cmdline for the duration of the
+        # integrity run (OPS/SH-08 -- the same channel the F-022 scrub and
+        # the docker-secrets migration exist to close).
+        local env_file
+        env_file=$(umask 077 && mktemp)
+        printf 'DATABASE_URL=postgresql://%s:%s@db:5432/%s\n' \
+            "${PGUSER}" "${db_password}" "${VERIFY_DB}" > "${env_file}"
+        docker exec --env-file "${env_file}" \
             "${APP_CONTAINER}" python scripts/integrity_check.py --verbose || exit_code=$?
+        rm -f "${env_file}"
     else
         # Development: run locally with the verify database URL.
         # The DB is exposed on localhost via docker-compose.dev.yml port mapping.
@@ -363,7 +348,11 @@ main() {
         log "INFO" "============================================================"
         # cleanup runs via trap
         exit 0
-    elif [[ ${integrity_code} -le 2 && ${sanity_failures} -eq 0 ]]; then
+    elif [[ ${integrity_code} -eq 2 && ${sanity_failures} -eq 0 ]]; then
+        # -eq, not -le: integrity_check.py's contract is 0=pass, 1=CRITICAL
+        # failures, 2=warnings only. The previous -le 2 mapped CRITICAL
+        # failures to PASS WITH WARNINGS / exit 2, so cron monitoring keyed
+        # on exit 1 never fired for a critically-broken backup (OPS/SH-02).
         log "WARNING" "  Status: PASS WITH WARNINGS"
         log "INFO" "============================================================"
         exit 2
