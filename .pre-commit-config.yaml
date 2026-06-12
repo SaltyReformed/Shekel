@@ -26,6 +26,39 @@ repos:
           - app/
           - --fail-under=10
           - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale
+      - id: pylint-scripts
+        name: pylint scripts/ (10.00/10 floor)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^scripts/.*\.py$
+        pass_filenames: false
+        # Mirrors ci.yml step 5a (added at the 2026-06-11 scripts/ lock-in).
+        # Before this hook existed, a commit touching only scripts/*.py ran
+        # zero local gates and failed only at PR time (polyglot audit
+        # 2026-06-12, CI/PC-01 + HOOK/SH-09).
+        args:
+          - scripts/
+          - --fail-under=10
+          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale
+      - id: pylint-cross-tree-duplicates
+        name: cross-tree duplicate-code (app/ + scripts/)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^(app|scripts)/.*\.py$
+        pass_filenames: false
+        # Mirrors ci.yml step 5c: only a COMBINED run can see an app/ <->
+        # scripts/ duplication cluster (each tree's own whole-package run is
+        # blind across the boundary). Detection verified on the
+        # pre-consolidation commit when the CI gate was added.
+        args:
+          - app/
+          - scripts/
+          - --disable=all
+          - --enable=duplicate-code
+          - --fail-on=duplicate-code
+          - --score=no
       - id: pylint-tests-decimals
         name: shekel-decimal-from-float on tests/
         entry: pylint

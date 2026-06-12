@@ -203,3 +203,4 @@ before locking a floor.
 | Date | Decision |
 |---|---|
 | 2026-06-12 | Comparison complete (web-verified + locally benchmarked). Stack above proposed; sqlfluff rejected with revisit trigger despite pacman availability (parse failure on psql-var syntax); hadolint adopted over docker build --check on head-to-head evidence; zizmor added (catches both workflow audit findings; actionlint catches neither). Operator sign-off pending. |
+| 2026-06-12 | **Operator APPROVED the full stack as proposed**, and the five-phase cleanup order (hooks -> backup/restore -> user-facing bugs -> DRY pass -> tool adoption + floors). Execution started same day. |
