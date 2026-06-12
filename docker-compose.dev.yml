@@ -11,18 +11,25 @@
 # production setup on the same machine.  The name: field below forces
 # a safe project name regardless of directory.
 #
-# Primary workflow (recommended):
-#   1. docker compose -f docker-compose.dev.yml up db redis
-#   2. flask run    (from host, connects to containerized Postgres;
-#      reads RATELIMIT_STORAGE_URI from .flaskenv, so the limiter is
+# Primary workflow (operator decision 2026-06-12, parity audit
+# docs/audits/dev-prod-parity/findings.md): the CONTAINERIZED app is
+# the daily dev server -- full production parity (same entrypoint
+# pipeline incl. the audit-trigger boot gate, least-privilege
+# shekel_app role, redis-backed fail-closed rate limiting, hardened
+# read-only rootfs) with live reload via the source bind mount:
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker logs -f shekel-dev-app
+#
+# Fallback (host flask run -- supported, intentionally NOT prod
+# parity: owner-role DB access, no entrypoint pipeline):
+#   1. docker compose -f docker-compose.dev.yml up -d db redis
+#   2. flask run    (connects to containerized Postgres; reads
+#      RATELIMIT_STORAGE_URI from .flaskenv, so the limiter is
 #      fail-closed against the redis service -- starting db alone
 #      would 500 every non-exempt request)
 #
-# Full stack (containerized dev app with live reload):
-#   docker compose -f docker-compose.dev.yml up
-#
-# Both workflows:
-#   docker compose -f docker-compose.dev.yml up db test-db redis
+# Test database only (scripts/test.sh manages its restarts):
+#   docker compose -f docker-compose.dev.yml up -d test-db
 
 name: shekel-dev
 

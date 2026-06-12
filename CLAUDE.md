@@ -92,7 +92,12 @@ A gate is a floor, not a ceiling: the judgment rules (2, 3, 6, 8, 10, 13) still 
 ## Common Commands
 
 ```bash
-# Dev server
+# Dev server (containerized -- the primary workflow since 2026-06-12;
+# full prod parity: entrypoint pipeline, shekel_app role, redis
+# rate limiting, hardened rootfs; live reload via the bind mount)
+docker compose -f docker-compose.dev.yml up -d && docker logs -f shekel-dev-app
+
+# Dev server fallback (host process; owner-role DB, no entrypoint gates)
 flask run
 
 # Tests -- full suite ~65 s at -n 12 (~5,500 tests); see Tests section

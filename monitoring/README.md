@@ -60,23 +60,30 @@ container is `shekel-prod-app`.
 
 `scripts/audit_cleanup.py` deletes `system.audit_log` rows older than
 `AUDIT_RETENTION_DAYS` (default 365). It is NOT run automatically by
-the app -- the operator must schedule it, e.g. a systemd timer or cron
-entry on the deployment host:
+the app -- the operator must schedule it. The deployed schedule is the
+`shekel-audit-cleanup.timer` systemd unit (reference copies in
+`/opt/docker/shekel/`, daily at 03:30, deliberately after the backup
+window so pruned rows are always in that night's snapshots), whose
+service runs:
 
-```cron
-# Daily at 3:00 AM -- delete audit rows older than the retention window.
-0 3 * * * docker exec shekel-prod-app python scripts/audit_cleanup.py
+```bash
+cd /opt/docker/shekel && docker compose run --rm --no-deps --pull never \
+    app python scripts/audit_cleanup.py
 ```
+
+`docker compose run` matters: the entrypoint loads the docker secrets
+and rebuilds the owner-role `DATABASE_URL` first. A bare
+`docker exec shekel-prod-app python scripts/...` does NOT work
+post-C-38 -- exec'd processes get the container's stored placeholder
+env, not the secret values the entrypoint loaded (and the
+least-privilege role deliberately cannot DELETE audit rows).
 
 To preview what would be deleted without actually deleting:
 
 ```bash
-docker exec shekel-prod-app python scripts/audit_cleanup.py --dry-run
+cd /opt/docker/shekel && docker compose run --rm --no-deps --pull never \
+    app python scripts/audit_cleanup.py --dry-run
 ```
-
-> Status note (2026-06-12): no such schedule exists yet on the
-> deployment host -- see finding M09 in
-> `docs/audits/dev-prod-parity/findings.md`.
 
 ## Troubleshooting
 

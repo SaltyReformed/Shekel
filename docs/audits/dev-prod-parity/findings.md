@@ -23,6 +23,10 @@ references to that run.
 |---|---|
 | 2026-06-12 | **M01 timezone: approved.** Pin `TZ: America/New_York` on both app services (prod override + dev compose) rather than app-level timezone config or staying UTC. Rationale: single-operator app; one env line; `tzdata` verified present in the image (setting `TZ` flips `datetime.now()` from UTC to Eastern in the running container). This also explains a long-observed quirk: with the app on UTC, "today" flipped to tomorrow at 8pm Eastern (7pm in winter), skewing date-defaulted entries and staleness flags in that window. |
 | 2026-06-12 | Parity plan steps 1-3 (below) reviewed by operator; implementation order TBD. |
+| 2026-06-12 | **Containerized dev app is the PRIMARY workflow** (operator decision): full prod parity (entrypoint pipeline, `shekel_app` role, redis limits, hardening) with live reload; host `flask run` demoted to documented fallback. CLAUDE.md and the dev compose header updated. |
+| 2026-06-12 | **D12 approved and implemented**: prod redis ACLs moved to a file-backed docker secret holding only a SHA-256 password hash; `SHEKEL_REDIS_PASSWORD` rotated in the same recreate. Residual accepted channel: the app container's env still carries the plaintext inside `RATELIMIT_STORAGE_URI` (closing it needs an entrypoint `_load_secret` extension = image change; revisit if/when wanted). |
+| 2026-06-12 | **D10 declined** (operator decision): no memory cap on the dev app container. |
+| 2026-06-12 | **M09 mechanism chosen**: systemd timer matching the `docker-backup.timer` convention, daily 03:30 (after the backup window so pruned rows are always in that night's snapshots), invoking the cleanup via `docker compose run` (a `docker exec` invocation gets placeholder env post-C-38 and cannot work -- verified). Requires the next image deploy to carry the `audit_cleanup.py` owner-role fix; `Persistent=true` self-heals until then. |
 
 ## Effective architecture
 
@@ -61,19 +65,19 @@ references to that run.
 
 | ID | Sev | Finding | Status |
 |---|---|---|---|
-| D14 | med | Host `/opt/docker/shekel/docker-compose.yml` carried 5 hunks the repo lacked: newer postgres digest `96d56f7f...` (what actually runs) + WUD `wud.tag.include` labels on db/redis/app/nginx (redis label deliberately fences off Redis 8). Until backported, any repo->host sync would roll back the DB image and strip update monitoring. | [x] repo side done 2026-06-12 (all 5 hunks backported + stale 18.3/16-alpine comments fixed); [ ] host copy sync pending operator consent (comment-only delta after backport; no container recreates) |
-| M07 | low | `deploy/nginx-shared/nginx.conf` differs from host in 3 comment-only hunks (zero directive changes); `conf.d/shekel.conf` byte-identical. The REPO copy is the newer one, so the sync direction is repo->host. | [ ] host sync pending operator consent |
-| -- | -- | `deploy/docker-compose.prod.yml` vs host override: byte-identical through the M01 edit; the 2026-06-12 D13/D25 comment fixes landed repo-side first, so the host override is 3 comment hunks behind until the pending sync. | [ ] host sync pending operator consent |
+| D14 | med | Host `/opt/docker/shekel/docker-compose.yml` carried 5 hunks the repo lacked: newer postgres digest `96d56f7f...` (what actually runs) + WUD `wud.tag.include` labels on db/redis/app/nginx (redis label deliberately fences off Redis 8). | [x] closed 2026-06-12: repo backport + host sync done; all three host copies byte-identical to repo; compose config hashes confirmed unchanged vs running containers (no recreates) |
+| M07 | low | `deploy/nginx-shared/nginx.conf` differed from host in 3 comment-only hunks; `conf.d/shekel.conf` byte-identical. Repo copy was the newer one. | [x] closed 2026-06-12: repo->host sync done; `nginx -t` clean |
+| -- | -- | `deploy/docker-compose.prod.yml` vs host override must-match rule. | [x] byte-identical as of 2026-06-12 (incl. the D12 redis ACL-secret override) |
 
 ## C. Housekeeping (repo + host)
 
 | ID | Sev | Finding | Status |
 |---|---|---|---|
-| M08/D12/D13 | med | Host-side secrets hygiene items at `/opt/docker/shekel` (residue files from the May secrets migration, one permissions/docs mismatch, and the redis password's visibility surface). Specifics deliberately kept out of this public doc: see the local ops note `/opt/docker/shekel/PARITY-NOTES.md`. | [x] root cause fixed 2026-06-12: `scripts/reconcile_prod_to_canonical.sh` now creates 0700 snapshot dirs and renders the merged config 0600 under umask 077; D13 runbook comments amended to the deployed posture. [ ] residue deletion + credential rotation pending operator consent |
-| D26 | low | Orphaned pre-rename volumes `shekel_pgdata`, `shekel_applogs`, `shekel_static_files` (project `shekel`, March 2026) mounted by nothing. Verify contents stale, then remove. | [ ] pending operator consent |
+| M08/D12/D13 | med | Host-side secrets hygiene items at `/opt/docker/shekel` (residue files from the May secrets migration, one permissions/docs mismatch, and the redis password's visibility surface). Specifics deliberately kept out of this public doc: see the local ops note `/opt/docker/shekel/PARITY-NOTES.md`. | [x] closed 2026-06-12: residue deleted (after verifying the live restic passphrase lives outside the stack dir and the bak-only keys were legacy or empty), `SHEKEL_REDIS_PASSWORD` rotated, redis ACLs moved to a hash-only file-backed docker secret (see decision log), reconcile script hardened at the root |
+| D26 | low | Orphaned pre-rename volumes `shekel_pgdata`, `shekel_applogs`, `shekel_static_files` (project `shekel`, March 2026) mounted by nothing. | [x] closed 2026-06-12: contents verified stale (pre-PG18 cluster superseded by the upgrade-day dump + a month of PG18 operation; one May 9 log file; empty static volume), all three removed |
 | D25 | low | Stale docs: base compose db comment says `postgres:16-alpine` (image is 18); `deploy/README.md` layout table says the override joins "the homelab network" (it joins `shekel-frontend`). | [x] fixed 2026-06-12 (both, plus the matching 16-alpine comments in the prod override) |
 | M06 | low | Stale repo artifacts describing the dead pre-container pipeline: `cloudflared/config.yml` (systemd-install template), `monitoring/` promtail docs (prod uses Alloy), `docker-compose.build.yml`'s monitoring-network coupling. Refresh or delete. | [x] fixed 2026-06-12: cloudflared header rewritten for the containerized topology, monitoring/README.md rewritten for the Alloy pipeline (promtail-config.yml deleted), build override reduced to the build key |
-| M09 | med | **Discovered during M06 rework:** `scripts/audit_cleanup.py` (the `system.audit_log` retention job, `AUDIT_RETENTION_DAYS`) is scheduled NOWHERE on the deployment host -- no crontab, no systemd timer references it. The old monitoring README prescribed a cron entry that was never installed; prod's audit log grows unbounded. Needs an operator decision: systemd timer (host convention) vs cron. | [ ] open -- needs operator decision |
+| M09 | med | **Discovered during M06 rework:** `scripts/audit_cleanup.py` (the `system.audit_log` retention job) was scheduled NOWHERE on the deployment host; prod's audit log grew unbounded. Two further defects surfaced implementing the fix: (a) the documented `docker exec` invocation has been broken since C-38 (exec'd processes get placeholder env, not entrypoint-loaded secrets); (b) the script lacked the owner-role override, and `shekel_app` deliberately has no DELETE on the audit log -- fixed with the same empty-string pattern as the other deployment scripts, verified end-to-end via `docker compose run` in dev (real DELETE as owner). | [x] script + units done 2026-06-12 (timer 03:30, after the backup window; reference units in `/opt/docker/shekel/`); [ ] operator must install: `sudo cp /opt/docker/shekel/shekel-audit-cleanup.{service,timer} /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now shekel-audit-cleanup.timer`; first successful prod run needs the next image deploy (the running image bakes the old script) |
 | D22 | info | Surprise but harmless: **Flask serves `/static/` in prod too** -- shared nginx has no static location (proxies everything to the app), the bundled nginx is profile-disabled, so the entrypoint's static-volume copy (entrypoint.sh:347-352) is dead code in shared mode. Cache headers are correct either way (content-hash `v=` + 1-year immutable from the app's own hook). Candidate cleanup: remove the dead copy + volume in shared mode. | [ ] candidate |
 
 ## D. Intentional divergences -- keep these
@@ -105,24 +109,24 @@ references to that run.
    Redis, client IP unchanged at 172.24.0.1 so saved sessions survive,
    855-transaction clone intact).  D03 took the revised owner-role design
    (see its register row).
-2. [x] **Repo backport** (D14 repo side, 2026-06-12). [ ] Host sync of the
-   three files (base compose, override, nginx.conf -- all comment-only
-   deltas now) pending operator consent; use targeted `cp` + `cmp`, NOT
-   the full reconcile script (its .env-rewrite and snapshot steps are for
-   the original migration, and rerunning them recreates residue).
-3. [ ] **Host hygiene** (M08 residue deletion + rotation, D26 volumes):
-   pending operator consent; commands in `/opt/docker/shekel/PARITY-NOTES.md`.
-   Root-cause script fix landed (see M08 row).
+2. [x] **Repo backport + host sync** (D14, M07): done 2026-06-12 via
+   targeted `cp` + `cmp` (NOT the full reconcile script, whose
+   .env-rewrite and snapshot steps are for the original migration and
+   would recreate residue).
+3. [x] **Host hygiene** (M08 residue + rotation, D26 volumes): done
+   2026-06-12, folded together with the D12 ACL-secret migration into a
+   single redis+app recreate.
 4. [x] **Timezone** (M01): done 2026-06-12, see decision log.
 5. [x] **Doc fixes** (D25, M06): done 2026-06-12.
 
-New since the original plan: M09 (audit-log retention job unscheduled)
-needs an operator decision.
+New since the original plan: M09 (see register row -- units staged,
+operator install command pending) and the decision-log entries of
+2026-06-12 (containerized-primary workflow, D12 implemented, D10
+declined).
 
-Optional posture change discussed: make the **containerized dev app** the
-primary daily workflow (with D03/D17 it is now the full-parity path and
-keeps live reload via the bind mount), demoting host `flask run` to
-fallback. Not yet decided.
+The only remaining open items: the M09 `sudo` install one-liner, the
+first post-deploy verification of the timer, and the accepted-residual
+review hooks recorded in the decision log.
 
 ## Dev workflow notes (post-parity)
 

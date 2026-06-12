@@ -375,6 +375,58 @@ services:
       - ./deploy/postgres/server.crt:/etc/postgresql/certs/server.crt:ro
       - ./deploy/postgres/server.key:/etc/postgresql/certs/server.key:ro
 
+  # ── Redis with file-backed ACLs (parity audit 2026-06-12, D12) ──
+  # The base file defines the ACL users inline in ``command:``, which
+  # interpolates ``${SHEKEL_REDIS_PASSWORD}`` into the container's
+  # argv -- visible to any docker-group member via ``docker inspect``
+  # or ``docker ps``.  Shared mode replaces the command with an
+  # ``--aclfile`` pointing at a docker secret.  The secret file holds
+  # only a SHA-256 HASH of the password (redis ACL ``#<hex>`` form),
+  # so neither the argv, the rendered config, nor the acl file itself
+  # contains the recoverable value.  Residual channel, accepted and
+  # documented: the APP container's env still carries the plaintext
+  # inside RATELIMIT_STORAGE_URI (base-file interpolation); closing
+  # that requires teaching entrypoint.sh to _load_secret the URI,
+  # which only takes effect with an image rebuild -- tracked in the
+  # parity register, not silently attempted here.
+  #
+  # Compose replaces list-typed keys wholesale, so this command block
+  # must restate the base file's persistence/memory flags verbatim
+  # (everything except the ``--user`` definitions, which move to the
+  # acl file).  Bundled mode keeps the env-interpolated inline ACLs.
+  #
+  # Operator pre-flight (one-time): write the acl file --
+  #   printf 'user default off\nuser shekel on #%s resetkeys ~LIMITS* &* +@all -@dangerous\nuser healthcheck on nopass resetkeys +ping\n' \
+  #       "$(printf '%s' "$SHEKEL_REDIS_PASSWORD" | sha256sum | cut -d' ' -f1)" \
+  #       > /opt/docker/shekel/secrets/redis_users.acl
+  #   chmod 0640 /opt/docker/shekel/secrets/redis_users.acl
+  # Mode rationale: compose v2 ignores the uid/gid/mode fields on the
+  # secret reference below (documented intent only); the container
+  # sees the HOST file.  redis:7.4-alpine runs as uid 999 gid 1000,
+  # and gid 1000 is the operating user's group on this host, so 0640
+  # group-read suffices -- no world-readable bit, 0700 dir on
+  # secrets/ contains the rest.  The file holds a hash, not a secret
+  # value, so even a loose mode would not disclose the password.
+  redis:
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "64mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--aclfile"
+      - "/run/secrets/redis_users_acl"
+    secrets:
+      - source: redis_users_acl
+        target: redis_users_acl
+        uid: "999"
+        gid: "1000"
+        mode: 0440
+
   app:
     # Pin to an immutable digest sourced from .env.  ``${VAR:?...}``
     # makes the missing-variable case a hard parse failure with a
@@ -493,6 +545,10 @@ secrets:
     file: /opt/docker/shekel/secrets/app_role_password
   totp_encryption_key:
     file: /opt/docker/shekel/secrets/totp_encryption_key
+  # Redis ACL definitions (hash-bearing, not value-bearing -- see the
+  # redis service comment above).  Parity audit 2026-06-12, D12.
+  redis_users_acl:
+    file: /opt/docker/shekel/secrets/redis_users.acl
 
 networks:
   # External pre-existing bridge that hosts the shared /opt/docker/nginx
