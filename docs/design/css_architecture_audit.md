@@ -8,8 +8,19 @@ infrastructure, selector usage map, gates/docs assumptions, and a cascade-order 
 Line numbers cited below are snapshots of the 1,889-line file and WILL drift; re-verify
 against current code before acting (CLAUDE.md rule 2).
 
-Status: ASSESSED, decisions pending (see "Decision gates" at the end). Nothing in this
-document has been implemented.
+Status: SPLIT IMPLEMENTED 2026-06-11 (same day). Developer decisions: Scope B (multiple
+palettes) is the chosen theme-selector direction, with Steel Ink the app default and the
+only palette until more are built -- hence the per-palette token file
+`theme-steel-ink.css`; the selector UI/persistence itself is NOT yet built. The 7-file
+layout below is live in base.html; the dead selectors were deleted with the split.
+Verification: a parser-level lossless check (274 rules carried over exactly, order
+constraints asserted) plus 20 before/after Playwright screenshot pairs (grid, dashboard,
+analytics, settings, login x desktop/mobile x dark/light), all pixel-identical.
+Implementation deltas from the plan as written: `theme.css` became `theme-steel-ink.css`
+(Scope B naming); `.input-rem-7` and `.chart-min-h` stayed in `utilities.css` with the
+rest of the C-02 block rather than moving to `components.css` (keeps the
+order-sensitive block intact); the C-02 `body` font rule and `.logo-img` moved to
+`base.css` (document-level, not tie-sensitive).
 
 ## 1. Current state (verified facts)
 
@@ -119,7 +130,7 @@ count).
 
 | # | File | Contents |
 | - | ---- | -------- |
-| 1 | `theme.css` | ONLY the `[data-bs-theme="dark"]` / `[data-bs-theme="light"]` token blocks. The swappable layer: a theme is one block of variable values. |
+| 1 | `theme-steel-ink.css` | ONLY the `[data-bs-theme="dark"]` / `[data-bs-theme="light"]` token blocks. The swappable layer: a theme is one block of variable values, one file per palette. |
 | 2 | `base.css` | Themed Bootstrap component skins (navbar, card, table, modal, form, btn, list-group), body font, `.font-mono`, `.logo-img`, focus ring, skip link, HTMX indicator/loading, toast, breadcrumb, offcanvas drawer, `#theme-toggle`, pulse-warning, welcome banner. |
 | 3 | `components.css` | Command palette (intended to spread app-wide per overhaul plan), password meter/toggle, `.shekel-scroll-pills`, `.btn-close-sm`, `.category-group-header`, `.input-rem-7`, `.chart-min-h`. |
 | 4 | `grid.css` | Everything in the grid-only list above, including the grid rules from the global mobile media blocks (each wrapped in its own `@media`), in original source order. |
@@ -253,34 +264,50 @@ each palette = ~30 token values per mode (~60 lines). Real costs:
 Recommendation: build Scope A now; structure the split so Scope B stays cheap; take Scope B
 only if alternate palettes are genuinely wanted.
 
-## 5. Out-of-scope findings surfaced by the survey (report, not fixed)
+## 5. Findings surfaced by the survey -- ALL FIXED 2026-06-12 (except as noted)
 
-1. **CONFIRMED defect -- chart function options silently stripped.** `chart_theme.js:97`
-   clones configs with `JSON.parse(JSON.stringify(userConfig))`, dropping every
-   function-valued option before `new Chart()`. `chart_variance.js` passes tooltip
-   callbacks (line 64) and an axis tick formatter (line 91) through `ShekelChart.create`
-   (line 38), so they never reach Chart.js -- on initial render or re-render. All seven
-   chart files use `ShekelChart.create`; variance is hand-verified, the rest should be
-   checked for function-valued options when fixing.
-2. **Theme toggle leaves stale chart dataset colors.** Per-chart files bake
-   `ShekelChart.getColor()` hex at config-build time; `rerenderAll()` re-merges the
-   original config, so dataset colors keep the old theme's variant (only axes, legend,
-   grid refresh).
-3. **Cache-busting gap.** No asset versioning anywhere. Bundled mode: nginx `expires 7d` +
-   `immutable` on unversioned filenames = up to 7 days of stale CSS/JS after an edit.
-   Shared mode (actual prod): static is proxied to Gunicorn/Flask (no-cache + ETag), so
-   always fresh but uncached at nginx -- and the comment at `app/__init__.py:812-818`
-   ("in production nginx serves /static/") is wrong for this mode.
-4. Minor: `settings/settings.html` is an orphan template (no route renders it); the
-   `.cell-focused` comment in app.css credits a nonexistent `grid_keyboard.js` (logic is
-   in `app.js`); `#theme-toggle` icon and `meta theme-color` issues covered above; dead
-   CSS table in section 2.
+1. **FIXED -- chart function options silently stripped.** Root cause: `mergeThemeDefaults`
+   cloned configs with `JSON.parse(JSON.stringify(...))`, dropping every function-valued
+   option (tooltip/tick callbacks) before `new Chart()`. Fix: `ShekelChart.create()` now
+   takes a config FACTORY (throws TypeError otherwise); the factory's fresh output is
+   merged directly with no clone, so functions survive. All six consumer files
+   (chart_variance, chart_year_end, payoff_chart, growth_chart, retirement_gap_chart,
+   debt_strategy) converted to factory closures. Verified in real Chromium against the
+   real files: tooltip label/afterBody and tick callbacks reach the live Chart instance
+   and compute correct output.
+2. **FIXED -- stale chart dataset colors on theme toggle.** Same root cause and fix:
+   colors resolve via `ShekelChart.getColor()` INSIDE the factory, and `rerenderAll()`
+   re-invokes the factory on `shekel:theme-changed`, so dataset colors re-resolve.
+   Verified: variance chart datasets flip dark->light palette variants on toggle while
+   callbacks survive the re-render.
+3. **FIXED -- cache-busting gap.** `_register_static_versioning` (app/__init__.py)
+   appends a per-file content hash `v=` to every `url_for('static', ...)` URL via
+   `static_file_version` (app/routes/static_pass.py, sha256 prefix memoized by mtime,
+   safe_join-guarded). URLs are now content-addressed, making the bundled deploy's
+   `expires 7d + immutable` correct; in shared mode (actual prod, Flask serves static)
+   the after-request hook grants `public, max-age=31536000, immutable` ONLY when the
+   `v=` matches the file's current hash (forged/stale values keep no-cache + ETag).
+   The wrong "nginx serves /static in production" comment in app/__init__.py and the
+   matching test docstring were corrected. The service worker composes cleanly (it
+   caches by full URL and its cache name is already content-versioned). Tests:
+   TestStaticFileVersion (test_static_pass.py) + 4 cache-header tests
+   (test_cache_control.py). RESIDUE (accepted): icon paths inside
+   app/static/manifest.json are plain strings the hook cannot version; a changed icon
+   can stay stale up to 7 days for non-SW clients in bundled mode.
+4. Minor items: `settings/settings.html` orphan DELETED 2026-06-12; the `.cell-focused`
+   comment fixed with the split; `meta theme-color` not tracking the theme remains
+   DEFERRED to the Scope B selector work (the real fix is server-rendered theme
+   awareness); dead CSS deleted with the split (section 2).
 
-## 6. Decision gates (developer calls before implementation)
+## 6. Decision gates -- resolved 2026-06-11
 
-1. Approve the 7-file split layout + the dead-selector deletion riding along.
-2. Scope A theme preference: ref table vs string CHECK (recommendation: ref table).
-3. Fate of the navbar toggle under Scope A (recommendation: keep it, make it persist).
-4. Scope B (multiple palettes): product decision, deferred by default.
-5. Findings 1-3 above: schedule as separate fixes (finding 1 is a real runtime defect in
-   the variance chart and likely others).
+1. 7-file split + dead-selector deletion: APPROVED and implemented (see Status).
+2. Theme selector: developer chose SCOPE B (multiple palettes). Steel Ink is the app
+   default and sole palette until more are built; the per-user selector (settings UI,
+   persistence, `data-shekel-theme` dimension, chart_theme.js token refactor, stray-color
+   tokenization -- see section 4 Scope B) is future work, unblocked by the split.
+3. Findings 1-3 in section 5: FIXED 2026-06-12 (chart factory API + static URL
+   versioning; details and verification in section 5). All app.css path references,
+   including the test_grid.py docstring and the grid_edit.js comment, were updated with
+   the split. Remaining from this audit: only the section-5 residue notes (manifest icon
+   paths; meta theme-color deferred to Scope B).

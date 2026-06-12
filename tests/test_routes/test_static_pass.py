@@ -20,10 +20,15 @@ scope rationale.  These tests pin:
      the worker only reinstalls when an asset actually changes.
 """
 
+import os
 import re
 from pathlib import Path
 
-from app.routes.static_pass import _VERSION_PLACEHOLDER, _static_asset_version
+from app.routes.static_pass import (
+    _VERSION_PLACEHOLDER,
+    _static_asset_version,
+    static_file_version,
+)
 
 
 class TestServiceWorkerPassthrough:
@@ -112,3 +117,68 @@ class TestServiceWorkerPassthrough:
         match = re.search(r"shekel-static-([0-9a-f]{6,})", first)
         assert match is not None
         assert match.group(1) == _static_asset_version(app.static_folder)
+
+
+class TestStaticFileVersion:
+    """Tests for the per-file content hash behind static ``?v=`` URLs.
+
+    ``static_file_version`` backs the cache-busting URL parameter that
+    ``_register_static_versioning`` (app/__init__.py) appends to every
+    ``url_for('static', ...)`` URL; see
+    docs/design/css_architecture_audit.md (cache-busting gap).  These
+    tests exercise the helper directly against a temp directory so no
+    repo static file is ever touched.
+    """
+
+    def test_version_is_deterministic_for_unchanged_content(self, tmp_path):
+        """Same bytes produce the same 12-hex-char version every call.
+
+        A version that varied between calls would make every page load
+        emit different asset URLs and defeat caching entirely.
+        """
+        asset = tmp_path / "a.css"
+        asset.write_text("body { color: red; }", encoding="utf-8")
+        first = static_file_version(str(tmp_path), "a.css")
+        second = static_file_version(str(tmp_path), "a.css")
+        assert first is not None
+        assert first == second
+        assert re.fullmatch(r"[0-9a-f]{12}", first)
+
+    def test_version_changes_when_content_changes(self, tmp_path):
+        """Changed bytes produce a different version (the cache bust).
+
+        The mtime is bumped explicitly because the helper memoizes by
+        mtime, and two writes can land within one filesystem timestamp
+        granule; the explicit bump models a real edit deterministically.
+        """
+        asset = tmp_path / "a.css"
+        asset.write_text("body { color: red; }", encoding="utf-8")
+        before = static_file_version(str(tmp_path), "a.css")
+        asset.write_text("body { color: blue; }", encoding="utf-8")
+        stat = asset.stat()
+        os.utime(asset, (stat.st_atime, stat.st_mtime + 2))
+        after = static_file_version(str(tmp_path), "a.css")
+        assert before is not None
+        assert after is not None
+        assert before != after
+
+    def test_missing_file_returns_none(self, tmp_path):
+        """A filename that does not exist yields None (unversioned URL).
+
+        The url_defaults hook then emits the plain URL rather than
+        failing the page render over a bad asset reference.
+        """
+        assert static_file_version(str(tmp_path), "missing.css") is None
+
+    def test_path_escape_returns_none(self, tmp_path):
+        """A filename escaping the static folder yields None.
+
+        ``safe_join`` rejects traversal, so the helper can never hash
+        (and thereby confirm the existence of) a file outside the
+        static folder.
+        """
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret", encoding="utf-8")
+        static_root = tmp_path / "static"
+        static_root.mkdir()
+        assert static_file_version(str(static_root), "../outside.txt") is None

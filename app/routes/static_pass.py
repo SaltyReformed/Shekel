@@ -1,14 +1,21 @@
 """
-Shekel Budget App -- Root-Scope Static Passthrough
+Shekel Budget App -- Root-Scope Static Passthrough and Asset Versioning
 
 Serves a small number of static files at the application root
-rather than under ``/static/``.  Currently the only entry is
-``/sw.js`` -- the browser scopes a service worker to the directory
-its file is served from, so a worker at ``/static/sw.js`` would
-only see ``/static/...`` requests and could not intercept app-
-route fetches.  Hosting the worker at ``/sw.js`` widens the scope
-to ``/`` so the static-asset cache also covers requests issued
-from any page in the app.
+rather than under ``/static/``, and owns the static-asset
+content-hash helpers used for cache busting: the service worker's
+cache name (:func:`_static_asset_version`, a hash over every cached
+asset) and the per-file ``v=`` URL parameter
+(:func:`static_file_version`, appended to every
+``url_for('static', ...)`` URL by ``_register_static_versioning``
+in ``app/__init__.py``).
+
+The only root-scope entry is ``/sw.js`` -- the browser scopes a
+service worker to the directory its file is served from, so a
+worker at ``/static/sw.js`` would only see ``/static/...`` requests
+and could not intercept app-route fetches.  Hosting the worker at
+``/sw.js`` widens the scope to ``/`` so the static-asset cache also
+covers requests issued from any page in the app.
 
 The route is exempt from Flask-Limiter for the same reason
 ``/health`` is: the browser may request ``/sw.js`` on every page
@@ -31,6 +38,7 @@ import hashlib
 from pathlib import Path
 
 from flask import Blueprint, Response, current_app
+from werkzeug.security import safe_join
 
 from app.extensions import limiter
 
@@ -57,6 +65,11 @@ _VERSION_HEX_LEN = 12
 # Memoized version per static folder.  The cached assets do not change
 # within a running process (a new deploy is a new process), so the
 # tree walk runs once per worker rather than on every /sw.js request.
+# Deliberate asymmetry with _FILE_VERSION_CACHE below: per-file ``v=``
+# hashes re-key on mtime so the dev server tracks in-place edits,
+# while this whole-tree hash stays fixed for the process -- in dev the
+# SW cache name can lag an edit until restart, which is harmless (new
+# ``v=`` URLs miss the SW cache and fetch fresh).
 _VERSION_CACHE: dict[str, str] = {}
 
 
@@ -103,6 +116,56 @@ def _static_asset_version(static_folder: str) -> str:
 
     version = digest.hexdigest()[:_VERSION_HEX_LEN]
     _VERSION_CACHE[static_folder] = version
+    return version
+
+
+# Memoized per-file version for ``static_file_version``: absolute file
+# path -> (mtime at hash time, hash).  Keying on mtime means the dev
+# server re-hashes a file when it is edited in place, while production
+# hashes each file exactly once (a deployed image's static files never
+# change without a new process).
+_FILE_VERSION_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def static_file_version(static_folder: str, filename: str) -> str | None:
+    """Return a short content hash for one static file, or ``None``.
+
+    Backs the ``v=`` query parameter appended to every
+    ``url_for('static', ...)`` URL (see ``_register_static_versioning``
+    in ``app/__init__.py``): the URL changes exactly when the file's
+    bytes change, so long-lived HTTP caching (nginx's ``expires 7d`` +
+    ``immutable`` in the bundled deploy; the verified-version branch of
+    the after-request hook when Flask serves static in shared mode)
+    can never pin a stale asset against a fresh page.
+
+    Args:
+        static_folder: Absolute path to the Flask static folder.
+        filename: Asset path relative to ``static_folder``, exactly as
+            passed to ``url_for('static', filename=...)``.
+
+    Returns:
+        The first ``_VERSION_HEX_LEN`` hex characters of the file's
+        SHA-256 digest, or ``None`` when ``filename`` does not resolve
+        to a file inside ``static_folder`` (missing file or a
+        path-escaping name) -- callers then emit the URL unversioned,
+        preserving the pre-versioning behavior.
+    """
+    joined = safe_join(static_folder, filename)
+    if joined is None:
+        return None
+    path = Path(joined)
+    try:
+        mtime = path.stat().st_mtime
+        cached = _FILE_VERSION_CACHE.get(str(path))
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        digest = hashlib.sha256(path.read_bytes())
+    except OSError:
+        # Missing file, or it vanished between stat and read; emit the
+        # unversioned URL rather than failing the page render.
+        return None
+    version = digest.hexdigest()[:_VERSION_HEX_LEN]
+    _FILE_VERSION_CACHE[str(path)] = (mtime, version)
     return version
 
 

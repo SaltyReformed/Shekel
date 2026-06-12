@@ -102,12 +102,15 @@ unhelpful (developer's verdict), so the work crosses into `dashboard_service.py`
 
 ## Small follow-ups (not screen-sized)
 
-- CSS architecture (`css_architecture_audit.md`, assessed 2026-06-11, decisions pending):
-  split app.css into 7 files (do BEFORE the dashboard rebuild so that work lands in
-  `dashboard.css`); per-user theme preference in settings (Scope A small / Scope B palette
-  selector gated); plus surfaced defects -- chart_theme.js JSON-clone strips function
-  options (variance chart tooltips dead, CONFIRMED), stale chart dataset colors on theme
-  toggle, asset cache-busting gap.
+- CSS architecture (`css_architecture_audit.md`): app.css split into 7 files DONE
+  2026-06-11 (verified pixel-identical; dashboard rebuild work now lands in
+  `dashboard.css`). Theme selector: developer chose Scope B (multiple palettes,
+  per-palette token files); Steel Ink is the default and only palette until more are
+  built -- the selector UI/persistence is future work. The audit's open defects were
+  FIXED 2026-06-12: chart_theme.js factory API (function options survive + dataset
+  colors re-resolve on theme toggle) and content-hash `v=` static URL versioning
+  (cache busting in both deploy modes). Only residue: manifest icon paths are
+  unversioned strings; meta theme-color deferred to the Scope B selector work.
 - A5 (grid audit): quick-create has no name field for ad-hoc rows -- Opus scope
   (create schema/route).
 - D1/D2 (grid audit, noted-not-prioritized): period-nav simplification; friendlier
