@@ -367,6 +367,18 @@ services:
     # APP_ROLE_PASSWORD).  Audit findings F-060, F-155 / Commit C-36.
     image: ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?Set SHEKEL_IMAGE_DIGEST=sha256:... in /opt/docker/shekel/.env to pin the production image (audit finding F-060). See deploy/README.md "Image digest pinning" for the procedure.}
     environment:
+      # Pin the app's civil timezone (parity audit 2026-06-12, finding
+      # M01 in docs/audits/dev-prod-parity/findings.md).  The image
+      # default is UTC, which flipped ``date.today()`` to the next day
+      # at 20:00 America/New_York (19:00 in winter), so date-defaulted
+      # entries, pay-period membership, and staleness flags disagreed
+      # with the operator's wall clock for four hours nightly.  The
+      # app's date logic is naive process-local time throughout, so the
+      # process timezone IS the app timezone.  tzdata ships in
+      # python:3.14-slim (verified: /usr/share/zoneinfo/America/New_York
+      # exists in the running image).  docker-compose.dev.yml pins the
+      # same value so dev and prod compute identical calendar dates.
+      TZ: America/New_York
       # Shared mode: the in-stack ``backend`` bridge no longer carries
       # the reverse-proxy hop -- the shared /opt/docker/nginx talks to
       # the app over ``shekel-frontend``.  Override the bundled-mode
