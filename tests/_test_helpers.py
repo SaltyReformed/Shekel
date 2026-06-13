@@ -870,3 +870,83 @@ def assert_pay_period_invariants(db_session, user_id):
         f"user {user_id}: {orphans} transaction(s) reference a deleted "
         f"pay period"
     )
+
+
+def make_every_period_rule(db_session, user_id):
+    """Create and flush an ``Every Period`` recurrence rule for the user.
+
+    The shared rule builder for the pay-period CRUD test suites (extend /
+    truncate / regenerate), so the template builders below and their
+    callers do not each re-derive it.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.models.recurrence_rule import RecurrenceRule
+    from app.models.ref import RecurrencePattern
+
+    pattern = (
+        db_session.query(RecurrencePattern).filter_by(name="Every Period").one()
+    )
+    rule = RecurrenceRule(user_id=user_id, pattern_id=pattern.id)
+    db_session.add(rule)
+    db_session.flush()
+    return rule
+
+
+def make_expense_template(db_session, seed_user, amount="1200.00", is_active=True):
+    """Create and flush an every-period expense template on the seed account.
+
+    Shared by the pay-period CRUD test suites so the
+    ``RecurrenceRule`` + ``TransactionTemplate`` construction block is
+    defined once.  The caller commits.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.models.ref import TransactionType
+    from app.models.transaction_template import TransactionTemplate
+
+    rule = make_every_period_rule(db_session, seed_user["user"].id)
+    expense_type = (
+        db_session.query(TransactionType).filter_by(name="Expense").one()
+    )
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"]["Rent"].id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=expense_type.id,
+        name="Rent",
+        default_amount=Decimal(amount),
+        is_active=is_active,
+    )
+    db_session.add(template)
+    db_session.flush()
+    return template
+
+
+def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
+    """Create and flush an every-period transfer template (checking -> to).
+
+    Shared by the pay-period CRUD test suites so the
+    ``RecurrenceRule`` + ``TransferTemplate`` construction block is
+    defined once.  The caller commits.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.models.transfer_template import TransferTemplate
+
+    rule = make_every_period_rule(db_session, seed_user["user"].id)
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=to_account.id,
+        recurrence_rule_id=rule.id,
+        name="To Savings",
+        default_amount=Decimal(amount),
+    )
+    db_session.add(template)
+    db_session.flush()
+    return template

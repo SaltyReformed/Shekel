@@ -5,29 +5,37 @@ The structural / destructive pay-period operations -- the lock
 classifier and extend / truncate / regenerate -- kept out of the heavily
 imported read/generate ``pay_period_service`` so the destructive paths
 live in one isolated place.  Flask-isolated: takes and returns plain
-data, never imports ``request`` / ``session``; flushes, never commits
-(the route owns the transaction).
+data, never imports ``request`` / ``session``; flushes / bulk-deletes,
+never commits (the route owns the transaction).
 
 The module's foundation is the single reusable **lock classifier**: the
 one place that decides whether a pay period may be deleted or rebuilt.
 Truncate and regenerate consult it before touching anything; the
 settings UI renders its result as a per-period lock badge.  The
-operations (``extend_pay_periods`` here; truncate / regenerate to
-follow) build on it and on ``pay_period_service`` / ``recurrence_engine``.
+operations build on it and on ``pay_period_service`` /
+``period_population``.
 """
 
 import enum
 import logging
 from datetime import date, timedelta
 
+from sqlalchemy import or_
+
+from app.exceptions import (
+    PayPeriodDiscardRequired,
+    PayPeriodLocked,
+    ValidationError,
+)
 from app.extensions import db
-from app.exceptions import ValidationError
 from app.models.account import Account
+from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services import pay_period_service, pay_schedule_service
 from app.services.period_population import populate_periods_from_active_templates
-from app.utils.balance_predicates import settled_status_ids
+from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +210,123 @@ def extend_pay_periods(user_id, num_periods, cadence_days=None):
     )
     populate_periods_from_active_templates(user_id, new_periods)
     return new_periods
+
+
+def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
+    """Delete the schedule tail beyond ``keep_through_index``.
+
+    Removes every pay period whose ``period_index`` is greater than
+    ``keep_through_index`` (tail-truncate preserves the index==calendar
+    invariant; only tail ops do).  Two gates protect real data, checked
+    in order before anything is deleted:
+
+      1. **Hard locks (not overridable).** If any to-delete period is
+         historical, holds a settled transaction, or is an account /
+         recurrence anchor, raise :class:`PayPeriodLocked` and delete
+         nothing.
+      2. **Discard gate (overridable).** If any to-delete period holds a
+         row regeneration cannot reproduce -- hand-entered, override, or
+         Credit/Cancelled -- and ``confirm_discard`` is False, raise
+         :class:`PayPeriodDiscardRequired` and delete nothing.
+
+    Deletion is a single bulk ``DELETE`` so PostgreSQL performs the whole
+    cascade in one pass: transactions, transfers (and both shadows,
+    preserving the transfer invariant), and anchor history all go, with
+    ``recurrence_rules.start_period_id`` set NULL; DB-level audit triggers
+    still fire.  Per-object ``session.delete()`` would instead trip
+    SQLAlchemy's nullify-on-disassociate against the NOT NULL
+    ``transactions.pay_period_id`` and raise before the DB cascade fires.
+    ``expire_all`` then drops the now-stale identity map.
+
+    Args:
+        user_id: The owning user's id.
+        keep_through_index: The highest ``period_index`` to KEEP; every
+            higher index is deleted.
+        confirm_discard: When True, proceed past the discard gate (the
+            user has acknowledged the loss).  Hard locks are never
+            bypassed.
+
+    Returns:
+        The number of pay periods deleted (0 when the tail is already at
+        or below ``keep_through_index`` -- an idempotent no-op).
+
+    Raises:
+        PayPeriodLocked: A to-delete period is hard-locked.
+        PayPeriodDiscardRequired: A to-delete period holds unrecoverable
+            rows and ``confirm_discard`` is False.
+    """
+    to_delete = [
+        p for p in pay_period_service.get_all_periods(user_id)
+        if p.period_index > keep_through_index
+    ]
+    if not to_delete:
+        return 0
+
+    locks = classify_periods_bulk(to_delete)
+    blocking = {
+        pid: reason for pid, reason in locks.items() if reason is not None
+    }
+    if blocking:
+        raise PayPeriodLocked(blocking)
+
+    period_ids = [p.id for p in to_delete]
+    if not confirm_discard:
+        discardable = _count_discardable_items(period_ids)
+        if discardable > 0:
+            raise PayPeriodDiscardRequired(discardable)
+
+    deleted = (
+        db.session.query(PayPeriod)
+        .filter(PayPeriod.id.in_(period_ids))
+        .delete(synchronize_session=False)
+    )
+    db.session.expire_all()
+    return deleted
+
+
+def _count_discardable_items(period_ids):
+    """Count rows in the periods that regeneration cannot reproduce.
+
+    A row needs the user's confirmation before truncate / regenerate
+    wipes it when it is hand-entered (no template), a manual override, or
+    carries a deliberate non-Projected status (Credit / Cancelled --
+    settled rows are already hard-locked upstream, so they never reach
+    here).  Transfer shadows always carry ``template_id IS NULL``, so the
+    transaction scan excludes them (``transfer_id IS NULL``) and transfers
+    are counted once on their own table via the parallel predicate
+    (``transfer_template_id`` in place of ``template_id``).  That way a
+    recurring transfer (regenerable) does not falsely trip the gate while
+    an ad-hoc transfer does.  The not-Projected test routes through
+    ``balance_predicates.is_projected_clause`` (negated) so no inline
+    status-id comparison lives here (D6-09).
+
+    Args:
+        period_ids: The pay-period ids being deleted.
+
+    Returns:
+        The number of unrecoverable rows (non-shadow transactions plus
+        transfers; a transfer counts once, not its two shadows).
+    """
+    txn_count = db.session.query(Transaction.id).filter(
+        Transaction.pay_period_id.in_(period_ids),
+        Transaction.is_deleted.is_(False),
+        Transaction.transfer_id.is_(None),
+        or_(
+            Transaction.template_id.is_(None),
+            Transaction.is_override.is_(True),
+            ~is_projected_clause(Transaction),
+        ),
+    ).count()
+    transfer_count = db.session.query(Transfer.id).filter(
+        Transfer.pay_period_id.in_(period_ids),
+        Transfer.is_deleted.is_(False),
+        or_(
+            Transfer.transfer_template_id.is_(None),
+            Transfer.is_override.is_(True),
+            ~is_projected_clause(Transfer),
+        ),
+    ).count()
+    return txn_count + transfer_count
 
 
 def _holds_settled_transaction(period_id: int) -> bool:

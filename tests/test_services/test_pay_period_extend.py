@@ -19,12 +19,8 @@ from decimal import Decimal
 import pytest
 
 from app.exceptions import ValidationError
-from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern, TransactionType
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
-from app.models.transfer_template import TransferTemplate
 from app.services import (
     balance_resolver,
     pay_period_admin,
@@ -36,55 +32,12 @@ from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
 )
-from tests._test_helpers import assert_pay_period_invariants, create_savings_account
-
-
-def _every_period_rule(db_session, user_id):
-    """Create and flush an ``Every Period`` recurrence rule for the user."""
-    pattern = (
-        db_session.query(RecurrencePattern).filter_by(name="Every Period").one()
-    )
-    rule = RecurrenceRule(user_id=user_id, pattern_id=pattern.id)
-    db_session.add(rule)
-    db_session.flush()
-    return rule
-
-
-def _make_expense_template(db_session, seed_user, amount="1200.00", is_active=True):
-    """Create an every-period expense template on the seed user's account."""
-    rule = _every_period_rule(db_session, seed_user["user"].id)
-    expense_type = (
-        db_session.query(TransactionType).filter_by(name="Expense").one()
-    )
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
-        transaction_type_id=expense_type.id,
-        name="Rent",
-        default_amount=Decimal(amount),
-        is_active=is_active,
-    )
-    db_session.add(template)
-    db_session.flush()
-    return template
-
-
-def _make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
-    """Create an every-period transfer template (checking -> to_account)."""
-    rule = _every_period_rule(db_session, seed_user["user"].id)
-    template = TransferTemplate(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=to_account.id,
-        recurrence_rule_id=rule.id,
-        name="To Savings",
-        default_amount=Decimal(amount),
-    )
-    db_session.add(template)
-    db_session.flush()
-    return template
+from tests._test_helpers import (
+    assert_pay_period_invariants,
+    create_savings_account,
+    make_expense_template,
+    make_transfer_template,
+)
 
 
 def _future_periods(db_session, seed_user, count=4, start=date(2026, 7, 3)):
@@ -111,7 +64,7 @@ class TestPopulateFromActiveTemplates:
         """An active every-period template yields one txn per period."""
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=3)
-            _make_expense_template(db.session, seed_user)
+            make_expense_template(db.session, seed_user)
             created = period_population.populate_periods_from_active_templates(
                 seed_user["user"].id, periods,
             )
@@ -140,7 +93,7 @@ class TestPopulateFromActiveTemplates:
                 seed_user, db.session, "Savings", Decimal("500.00"),
                 anchor_period_id=periods[0].id,
             )
-            _make_transfer_template(db.session, seed_user, savings)
+            make_transfer_template(db.session, seed_user, savings)
             created = period_population.populate_periods_from_active_templates(
                 seed_user["user"].id, periods,
             )
@@ -161,7 +114,7 @@ class TestPopulateFromActiveTemplates:
         """An inactive (archived) template produces no rows."""
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=3)
-            _make_expense_template(db.session, seed_user, is_active=False)
+            make_expense_template(db.session, seed_user, is_active=False)
             created = period_population.populate_periods_from_active_templates(
                 seed_user["user"].id, periods,
             )
@@ -176,7 +129,7 @@ class TestPopulateFromActiveTemplates:
         """
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=3)
-            _make_expense_template(db.session, seed_user)
+            make_expense_template(db.session, seed_user)
             first = period_population.populate_periods_from_active_templates(
                 seed_user["user"].id, periods,
             )
@@ -267,7 +220,7 @@ class TestExtendPayPeriods:
         """Extended periods are repopulated with active templates' rows."""
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)
-            _make_expense_template(db.session, seed_user)
+            make_expense_template(db.session, seed_user)
             new_periods = pay_period_admin.extend_pay_periods(
                 seed_user["user"].id, num_periods=2,
             )
@@ -286,7 +239,7 @@ class TestExtendPayPeriods:
         """An archived template generates nothing into the new periods."""
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)
-            _make_expense_template(db.session, seed_user, is_active=False)
+            make_expense_template(db.session, seed_user, is_active=False)
             new_periods = pay_period_admin.extend_pay_periods(
                 seed_user["user"].id, num_periods=2,
             )
@@ -321,7 +274,7 @@ class TestExtendPayPeriods:
         user_id = seed_user["user"].id
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=4)  # idx 1..4
-            _make_expense_template(db.session, seed_user, amount="1200.00")
+            make_expense_template(db.session, seed_user, amount="1200.00")
             period_population.populate_periods_from_active_templates(
                 user_id, periods,
             )
