@@ -814,8 +814,10 @@ B-4 verification ran 2026-06-12 against dev with real data: both themes and view
 rendered; the anchor-edit Enter-open / Escape-revert cycle and the theme-toggle chart
 re-render verified via Playwright; street edge-label clamping fixed live. Route tests 51/51;
 suite 6,068 passed + pylint 10.00/10 (the one unrelated failure is the developer's
-in-progress backup-script edit, outside this work). COMMIT HELD: the developer is driving
-the live dashboard before accepting; the B-2/B-3/R change set stays in the working tree.
+in-progress backup-script edit, outside this work). The developer drove the live
+dashboard through acceptance (rulings during the drive: Due Soon removed, stat row placed
+beside the hero, Highest Point chip added, SSOT verified) and the full slice was COMMITTED
+to dev as `7adcfff` on 2026-06-12.
 
 **SSOT verification (2026-06-12, on developer request):** a two-pass check confirmed every
 dashboard dollar figure derives from the same producers the grid uses. Code trace: chart /
