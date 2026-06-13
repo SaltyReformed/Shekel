@@ -39,6 +39,7 @@ from app.services import anchor_service, entry_service, pay_period_service
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import to_display_tz
 
 logger = logging.getLogger(__name__)
 
@@ -347,7 +348,7 @@ def true_up(account_id):
     )
     as_of_html = (
         f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
-        f'as of {account.updated_at.strftime("%b %-d, %Y")}'
+        f'as of {to_display_tz(account.updated_at).strftime("%b %-d, %Y")}'
         f'</small>'
     )
     return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}

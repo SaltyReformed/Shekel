@@ -11,7 +11,7 @@
     <div>
       <h5 class="mb-0">{{ account.name if account else 'Account' }} Balance</h5>
       {% if account and account.updated_at %}
-      <small class="text-muted" id="anchor-as-of">as of {{ account.updated_at.strftime('%b %-d, %Y') }}</small>
+      <small class="text-muted" id="anchor-as-of">as of {{ account.updated_at | local_datetime('%b %-d, %Y') }}</small>
       {% endif %}
     </div>
     {% if account %}

@@ -12,9 +12,14 @@ contract so every caller shares one tested definition:
 - The inclusive ``+ 1`` and zero-floor that individual callers add stay
   the caller's concern (verified here by composing them with the helper).
 """
-from datetime import date
+from datetime import date, datetime, timezone
 
-from app.utils.dates import months_between
+from app.utils.dates import (
+    DISPLAY_TIMEZONE,
+    months_between,
+    to_display_date,
+    to_display_tz,
+)
 
 
 class TestMonthsBetween:
@@ -61,3 +66,68 @@ class TestMonthsBetween:
         elapsed = months_between(date(2020, 1, 1), date(2026, 1, 1))  # 72
         assert elapsed == 72
         assert max(0, 60 - elapsed) == 0  # past-term loan: no months left
+
+
+class TestDisplayTimezone:
+    """Pin the presentation-layer UTC -> America/New_York conversion.
+
+    Storage stays UTC; these helpers express a stored instant in the
+    user's wall clock at the display boundary.  The headline case is the
+    motivating bug: a late-evening Eastern true-up whose UTC ``created_at``
+    has already rolled to the next calendar day must still display as the
+    Eastern day the user performed it.
+    """
+
+    def test_summer_instant_converts_to_edt(self):
+        """A UTC instant in summer renders in EDT (UTC-4)."""
+        # 2026-06-12 14:00 UTC - 4h (EDT) = 2026-06-12 10:00 Eastern.
+        utc = datetime(2026, 6, 12, 14, 0, tzinfo=timezone.utc)
+        local = to_display_tz(utc)
+        assert local.utcoffset().total_seconds() == -4 * 3600
+        assert (local.year, local.month, local.day, local.hour) == (
+            2026, 6, 12, 10,
+        )
+
+    def test_winter_instant_converts_to_est(self):
+        """A UTC instant in winter renders in EST (UTC-5), proving DST awareness."""
+        # 2026-01-15 14:00 UTC - 5h (EST) = 2026-01-15 09:00 Eastern.
+        utc = datetime(2026, 1, 15, 14, 0, tzinfo=timezone.utc)
+        local = to_display_tz(utc)
+        assert local.utcoffset().total_seconds() == -5 * 3600
+        assert (local.year, local.month, local.day, local.hour) == (
+            2026, 1, 15, 9,
+        )
+
+    def test_naive_instant_assumed_utc(self):
+        """A naive datetime is treated as UTC, not the server's local zone."""
+        # 2026-06-12 14:00 (naive, == UTC) -> 10:00 EDT, same as the aware case.
+        local = to_display_tz(datetime(2026, 6, 12, 14, 0))
+        assert local.tzinfo == DISPLAY_TIMEZONE
+        assert (local.month, local.day, local.hour) == (6, 12, 10)
+
+    def test_display_date_rolls_back_late_evening_summer(self):
+        """THE BUG: 9:30 PM EDT true-up stored as next-UTC-day shows the EDT day.
+
+        A true-up at 2026-06-11 21:30 Eastern (EDT, UTC-4) is stored as
+        2026-06-12 01:30 UTC.  Truncating the UTC instant gives June 12
+        (the old wrong behavior); converting to Eastern first gives the
+        June 11 the user actually performed it.
+        """
+        stored_utc = datetime(2026, 6, 12, 1, 30, tzinfo=timezone.utc)
+        assert to_display_date(stored_utc) == date(2026, 6, 11)
+
+    def test_display_date_rolls_back_late_evening_winter(self):
+        """Same roll-back holds in winter (EST, UTC-5)."""
+        # 2026-01-15 20:00 EST + 5h = 2026-01-16 01:00 UTC -> Eastern Jan 15.
+        stored_utc = datetime(2026, 1, 16, 1, 0, tzinfo=timezone.utc)
+        assert to_display_date(stored_utc) == date(2026, 1, 15)
+
+    def test_display_date_same_day_when_no_boundary_cross(self):
+        """A daytime UTC instant maps to the same calendar day in Eastern."""
+        # 2026-06-12 18:00 UTC -> 14:00 EDT: still June 12.
+        stored_utc = datetime(2026, 6, 12, 18, 0, tzinfo=timezone.utc)
+        assert to_display_date(stored_utc) == date(2026, 6, 12)
+
+    def test_display_date_none_passthrough(self):
+        """A None instant (anchor never set) returns None, not an error."""
+        assert to_display_date(None) is None

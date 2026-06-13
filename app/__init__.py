@@ -17,6 +17,7 @@ from flask import Flask, render_template, request, session as flask_session
 from app.config import CONFIG_MAP
 from app.extensions import csrf, db, limiter, login_manager, migrate
 from app.routes.static_pass import static_file_version
+from app.utils.dates import to_display_tz
 from app.utils.log_events import ACCESS, EVT_RATE_LIMIT_EXCEEDED, log_event
 from app.utils.logging_config import setup_logging
 from app.utils.session_helpers import (
@@ -154,6 +155,29 @@ def create_app(config_name=None):
         if value is None:
             return None
         return Decimal(str(value)) * Decimal("100")
+
+    @app.template_filter("local_datetime")
+    def local_datetime(value, fmt="%b %-d, %Y"):
+        """Render a stored UTC instant in the user's display timezone.
+
+        Presentation-only conversion: every ``timestamptz`` in this app is
+        stored UTC; this expresses one in :data:`app.utils.dates.DISPLAY_TIMEZONE`
+        (Eastern) before formatting, so a late-evening Eastern event does
+        not display on the next UTC day.  ``fmt`` is a ``strftime`` format
+        (default: ``"Jun 11, 2026"``).  Returns ``""`` for ``None`` so a
+        template can pipe an absent timestamp through without guarding.
+
+        Args:
+            value: A stored UTC datetime, or ``None``.
+            fmt: A ``strftime`` format string.
+
+        Returns:
+            The display-timezone formatted string, or ``""`` when ``value``
+            is ``None``.
+        """
+        if value is None:
+            return ""
+        return to_display_tz(value).strftime(fmt)
 
     # --- Context Processors -----------------------------------------------
     _register_context_processors(app)
