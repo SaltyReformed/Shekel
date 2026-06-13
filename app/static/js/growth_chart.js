@@ -106,10 +106,7 @@ function renderGrowthChart(canvasId) {
           tooltip: {
             callbacks: {
               label: function (ctx) {
-                return ctx.dataset.label + ': $' + ctx.parsed.y.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                });
+                return ctx.dataset.label + ': ' + ShekelChart.formatMoney(ctx.parsed.y, true);
               },
             },
           },
@@ -122,7 +119,7 @@ function renderGrowthChart(canvasId) {
           y: {
             ticks: {
               callback: function (v) {
-                return '$' + v.toLocaleString();
+                return ShekelChart.formatMoney(v, false);
               },
             },
           },

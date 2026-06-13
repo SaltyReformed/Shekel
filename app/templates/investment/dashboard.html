@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}{{ account.name }} -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -15,7 +16,7 @@
   <h4>
     <i class="bi bi-graph-up"></i> {{ account.name }}
     <small class="text-muted">
-      {% if account.account_type %}{{ account.account_type.name|format_account_type }}{% endif %}
+      {% if account.account_type %}{{ account.account_type.name }}{% endif %}
     </small>
   </h4>
   <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">
@@ -37,7 +38,7 @@
       <div class="col-md-3">
         <div class="text-muted small">Current Balance</div>
         <div class="fs-4 fw-bold font-mono text-accent">
-          ${{ "{:,.2f}".format(current_balance) }}
+          {{ money(current_balance) }}
         </div>
       </div>
       <div class="col-md-3">
@@ -53,13 +54,13 @@
       <div class="col-md-3">
         <div class="text-muted small">Per-Period Contribution</div>
         <div class="fs-4 fw-bold font-mono">
-          ${{ "{:,.2f}".format(periodic_contribution) }}
+          {{ money(periodic_contribution) }}
         </div>
       </div>
       <div class="col-md-3">
         <div class="text-muted small">Employer Per Period</div>
         <div class="fs-4 fw-bold font-mono">
-          ${{ "{:,.2f}".format(employer_contribution_per_period) }}
+          {{ money(employer_contribution_per_period) }}
         </div>
       </div>
     </div>
@@ -71,9 +72,9 @@
 <div class="card mb-4">
   <div class="card-body">
     <div class="d-flex justify-content-between align-items-center mb-2">
-      <span class="text-muted">{{ date.today().year if date is defined else '' }} Contributions</span>
+      <span class="text-muted">{% if params.contribution_limit_year is not none %}{{ params.contribution_limit_year }} {% endif %}Contributions</span>
       <span class="font-mono fw-bold">
-        ${{ "{:,.2f}".format(limit_info.ytd) }} / ${{ "{:,.2f}".format(limit_info.limit) }}
+        {{ money(limit_info.ytd) }} / {{ money(limit_info.limit) }}
       </span>
     </div>
     <div class="progress progress-h-10">
@@ -120,7 +121,7 @@
     <p class="mb-2 small">
       {% if suggested_amount and suggested_amount > 0 %}
       Create a recurring transfer of
-      <strong class="font-mono">${{ "{:,.2f}".format(suggested_amount) }}</strong>
+      <strong class="font-mono">{{ money(suggested_amount) }}</strong>
       per pay period to stay on track with your contribution limit.
       {% else %}
       Create a recurring transfer to this account to start building your investment.
@@ -160,18 +161,21 @@
 {% endif %}
 
 {# --- Employer Contribution Details --- #}
-{% if employer_params and employer_params.type != 'none' %}
+{# The service returns employer_params=None for the NONE/unset type, so a
+   non-None dict always carries a real type_id (flat-percentage or match).
+   Branch on type_id, not a non-existent 'type' string key. #}
+{% if employer_params %}
 <div class="card mb-4">
   <div class="card-header">
     <h6 class="mb-0"><i class="bi bi-building"></i> Employer Contribution</h6>
   </div>
   <div class="card-body">
-    {% if employer_params.type == 'flat_percentage' %}
+    {% if employer_params.type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}
     <p class="mb-0">
       Employer contributes <strong>{{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}%</strong>
       of gross salary each pay period, regardless of employee contribution.
     </p>
-    {% elif employer_params.type == 'match' %}
+    {% elif employer_params.type_id == EMPLOYER_TYPE_MATCH %}
     <p class="mb-0">
       Employer matches <strong>{{ "%.0f"|format(employer_params.match_percentage|to_percent) }}%</strong>
       of employee contributions up to <strong>{{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}%</strong>

@@ -55,6 +55,35 @@ __all__ = ["RowKey", "grid_bp"]
 # regardless of how the user is navigating in This Period.
 PLAN_WINDOW_PERIODS = 13
 
+# Whole-dollar threshold used to flag a projected balance as "low"
+# (the dashed line on the dashboard chart, the yellow balance cells on
+# the grid) when the requesting user has no ``UserSettings`` row at all.
+# Mirrors ``UserSettings.low_balance_threshold``'s NOT NULL server
+# default of 500: with a settings row the column always carries a
+# concrete value, so this constant only covers the row-absent edge
+# case (an owner whose registration-time settings row is somehow
+# missing) -- never the previous "value is NULL" branch, which the
+# column constraint now forbids.
+_DEFAULT_LOW_BALANCE_THRESHOLD = 500
+
+
+def _resolve_low_balance_threshold() -> int:
+    """Return the current user's low-balance threshold for grid rendering.
+
+    Reads ``current_user.settings.low_balance_threshold`` -- a NOT NULL
+    integer column, so it always carries a value when a settings row
+    exists.  Falls back to :data:`_DEFAULT_LOW_BALANCE_THRESHOLD` only
+    when the user has no settings row at all, so the grid's
+    ``bal < low_balance_threshold`` cell comparison always has a
+    concrete integer to test against.  Shared by :func:`index` and
+    :func:`balance_row`, which render the same threshold-aware balance
+    cells.
+    """
+    settings = current_user.settings
+    if settings is None:
+        return _DEFAULT_LOW_BALANCE_THRESHOLD
+    return settings.low_balance_threshold
+
 
 class _GridContext(NamedTuple):
     """Request-derived context for the grid view.
@@ -550,12 +579,7 @@ def index():
         anchor_balance=anchor_balance,
         today=date.today(),
         all_periods=ctx.all_periods,
-        low_balance_threshold=(
-            current_user.settings.low_balance_threshold
-            if current_user.settings
-            and current_user.settings.low_balance_threshold is not None
-            else 500
-        ),
+        low_balance_threshold=_resolve_low_balance_threshold(),
         stale_anchor_warning=stale_anchor_warning,
         entry_sums=row_data.entry_sums,
         entry_lists=row_data.entry_lists,
@@ -759,11 +783,7 @@ def balance_row():
         balances = OrderedDict()
         stale_anchor_warning = False
 
-    low_balance_threshold = (
-        current_user.settings.low_balance_threshold
-        if current_user.settings and current_user.settings.low_balance_threshold is not None
-        else 500
-    )
+    low_balance_threshold = _resolve_low_balance_threshold()
 
     return render_template(
         "grid/_balance_row.html",

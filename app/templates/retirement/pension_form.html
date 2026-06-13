@@ -53,7 +53,8 @@
               <i class="bi bi-pencil"></i>
             </a>
             <form method="POST" action="{{ url_for('retirement.delete_pension', pension_id=p.id) }}"
-                  class="d-inline">
+                  class="d-inline"
+                  data-confirm="Delete this pension profile?">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-danger">
                 <i class="bi bi-trash"></i>

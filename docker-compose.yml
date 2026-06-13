@@ -26,22 +26,29 @@ name: shekel-prod
 services:
   # ── PostgreSQL Database ──────────────────────────────────────────
   db:
-    # Pinned to postgres:18-alpine 18.3 (digest sha256:54451e...).  The
+    # Pinned to postgres:18-alpine 18.4 (digest sha256:96d56f...).  The
     # tag-plus-digest form documents the human-readable version and
     # guarantees the immutable bytes.  Update both halves together when
     # bumping minor versions; see deploy/README.md "Image digest pinning"
-    # for the workflow.  PG 18+ changed PGDATA from
+    # for the workflow.  docker-compose.dev.yml pins the same digest so
+    # dev and prod always test the identical postgres build -- bump both
+    # files in the same commit.  PG 18+ changed PGDATA from
     # /var/lib/postgresql/data to /var/lib/postgresql/$PG_MAJOR/docker
     # (PR docker-library/postgres#1259) and refuses to start when a
     # legacy mount sits at the old path; the volumes block below mounts
     # the named volume at the parent /var/lib/postgresql so the per-
     # major-version subdir lives inside the volume.
-    image: postgres:18-alpine@sha256:54451ecb8ab38c24c3ec123f2fd501303a3a1856a5c66e98cecf2460d5e1e9d7
+    image: postgres:18-alpine@sha256:96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88
     container_name: shekel-prod-db
     restart: unless-stopped
+    # Match the postgres:N-alpine line -- patch tags within PG18 and
+    # eventual PG19+ rebuilds, without surfacing the -trixie / -bookworm
+    # / -windowsservercore variants WUD otherwise reports.
+    labels:
+      - "wud.tag.include=^\\d+-alpine$$"
     # ``user: postgres`` is load-bearing alongside ``cap_drop: ALL``
     # (audit findings F-055, F-056, F-117 / Commit C-35).  The
-    # postgres:16-alpine entrypoint, when it sees uid 0, runs
+    # postgres:18-alpine entrypoint, when it sees uid 0, runs
     # ``chown -R postgres /var/lib/postgresql/data`` and
     # ``chown -R postgres /var/run/postgresql`` and then drops to the
     # postgres user via ``gosu``.  With ``cap_drop: ALL`` neither
@@ -149,6 +156,12 @@ services:
     image: redis:7.4-alpine
     container_name: shekel-prod-redis
     restart: unless-stopped
+    # Stay on the Redis 7.x-alpine line. Redis 8 (and 8-rc) introduce
+    # the BSD-vs-AGPL relicensing branch and ACL/CONFIG behavior
+    # changes that would need re-validation against the ACL block
+    # below before any bump.
+    labels:
+      - "wud.tag.include=^7\\.\\d+-alpine$$"
     networks:
       - backend
     # Redis CLI flags:
@@ -301,6 +314,13 @@ services:
     pull_policy: always
     container_name: shekel-prod-app
     restart: unless-stopped
+    # `latest` is a moving tag -- no semver to compare. Constrain
+    # candidate tags to literally `latest` (no cross-tag noise) and
+    # enable digest watching so WUD pings whenever the published
+    # `:latest` digest changes (i.e. you've shipped a new build).
+    labels:
+      - "wud.tag.include=^latest$$"
+      - "wud.watch.digest=true"
     depends_on:
       db:
         condition: service_healthy
@@ -503,6 +523,8 @@ services:
     image: nginx:1.27-alpine
     container_name: shekel-prod-nginx
     restart: unless-stopped
+    labels:
+      - "wud.tag.include=^\\d+\\.\\d+-alpine$$"
     depends_on:
       app:
         condition: service_healthy

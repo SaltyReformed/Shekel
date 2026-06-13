@@ -50,6 +50,7 @@
                                   pattern.
 #}
 {% from "grid/_grid_row_macros.html" import render_row_static %}
+{% from "_money_macros.html" import money %}
 
 {% if plan_periods %}
 <div class="accordion" id="plan-accordion">
@@ -103,13 +104,13 @@
             </div>
             {% if subtotal is not none %}
               <small class="text-muted">
-                Income ${{ "{:,.0f}".format(subtotal.income) }}
+                Income {{ money(subtotal.income, cents=false) }}
                 &middot;
-                Expense ${{ "{:,.0f}".format(subtotal.expense) }}
+                Expense {{ money(subtotal.expense, cents=false) }}
                 &middot;
                 Net
                 <span class="{{ 'balance-negative' if subtotal.net < 0 else '' }}">
-                  ${{ "{:,.0f}".format(subtotal.net) }}
+                  {{ money(subtotal.net, cents=false) }}
                 </span>
               </small>
             {% endif %}
@@ -122,7 +123,7 @@
                 {% elif low_balance_threshold is defined and bal < low_balance_threshold %}
                   <i class="bi bi-exclamation-circle" aria-hidden="true"></i>
                 {% endif %}
-                ${{ "{:,.2f}".format(bal) }}
+                {{ money(bal) }}
               </div>
               <small class="text-muted">Projected</small>
             </div>

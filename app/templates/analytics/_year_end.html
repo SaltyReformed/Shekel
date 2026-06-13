@@ -1,9 +1,6 @@
 {# Year-End Financial Summary -- HTMX partial.
    Rendered by analytics.year_end_tab() into #tab-content. #}
-
-{% macro fmt(value) -%}
-  ${{ "{:,.2f}".format(value) }}
-{%- endmacro %}
+{% from "_money_macros.html" import money %}
 
 {# ── Year Selector ─────────────────────────────────────────────── #}
 
@@ -58,26 +55,26 @@
       <tbody>
         <tr>
           <td>Gross Wages <small class="text-muted">(W-2 Box 1)</small></td>
-          <td class="text-end font-mono">{{ fmt(data.income_tax.gross_wages) }}</td>
+          <td class="text-end font-mono">{{ money(data.income_tax.gross_wages) }}</td>
         </tr>
         <tr class="table-group-divider">
           <td colspan="2" class="text-muted small fw-semibold">Taxes Withheld</td>
         </tr>
         <tr>
           <td class="ps-4">Federal Income Tax <small class="text-muted">(Box 2)</small></td>
-          <td class="text-end font-mono">{{ fmt(data.income_tax.federal_tax) }}</td>
+          <td class="text-end font-mono">{{ money(data.income_tax.federal_tax) }}</td>
         </tr>
         <tr>
           <td class="ps-4">Social Security Tax <small class="text-muted">(Box 4)</small></td>
-          <td class="text-end font-mono">{{ fmt(data.income_tax.social_security_tax) }}</td>
+          <td class="text-end font-mono">{{ money(data.income_tax.social_security_tax) }}</td>
         </tr>
         <tr>
           <td class="ps-4">Medicare Tax <small class="text-muted">(Box 6)</small></td>
-          <td class="text-end font-mono">{{ fmt(data.income_tax.medicare_tax) }}</td>
+          <td class="text-end font-mono">{{ money(data.income_tax.medicare_tax) }}</td>
         </tr>
         <tr>
           <td class="ps-4">State Income Tax <small class="text-muted">(Box 17)</small></td>
-          <td class="text-end font-mono">{{ fmt(data.income_tax.state_tax) }}</td>
+          <td class="text-end font-mono">{{ money(data.income_tax.state_tax) }}</td>
         </tr>
 
         {% if data.income_tax.pretax_deductions %}
@@ -87,12 +84,12 @@
         {% for ded in data.income_tax.pretax_deductions %}
         <tr>
           <td class="ps-4">{{ ded.name }}</td>
-          <td class="text-end font-mono">{{ fmt(ded.annual_total) }}</td>
+          <td class="text-end font-mono">{{ money(ded.annual_total) }}</td>
         </tr>
         {% endfor %}
         <tr class="year-end-subtotal">
           <td class="ps-4 fw-semibold">Total Pre-Tax Deductions</td>
-          <td class="text-end font-mono fw-semibold">{{ fmt(data.income_tax.total_pretax) }}</td>
+          <td class="text-end font-mono fw-semibold">{{ money(data.income_tax.total_pretax) }}</td>
         </tr>
         {% endif %}
 
@@ -103,24 +100,24 @@
         {% for ded in data.income_tax.posttax_deductions %}
         <tr>
           <td class="ps-4">{{ ded.name }}</td>
-          <td class="text-end font-mono">{{ fmt(ded.annual_total) }}</td>
+          <td class="text-end font-mono">{{ money(ded.annual_total) }}</td>
         </tr>
         {% endfor %}
         <tr class="year-end-subtotal">
           <td class="ps-4 fw-semibold">Total Post-Tax Deductions</td>
-          <td class="text-end font-mono fw-semibold">{{ fmt(data.income_tax.total_posttax) }}</td>
+          <td class="text-end font-mono fw-semibold">{{ money(data.income_tax.total_posttax) }}</td>
         </tr>
         {% endif %}
 
         <tr class="year-end-subtotal">
           <td class="fw-bold">Net Pay</td>
-          <td class="text-end font-mono fw-bold">{{ fmt(data.income_tax.net_pay_total) }}</td>
+          <td class="text-end font-mono fw-bold">{{ money(data.income_tax.net_pay_total) }}</td>
         </tr>
 
         {% if data.income_tax.mortgage_interest_total > 0 %}
         <tr class="table-group-divider">
           <td>Mortgage Interest Paid <small class="text-muted">(Schedule A)</small></td>
-          <td class="text-end font-mono">{{ fmt(data.income_tax.mortgage_interest_total) }}</td>
+          <td class="text-end font-mono">{{ money(data.income_tax.mortgage_interest_total) }}</td>
         </tr>
         {% endif %}
       </tbody>
@@ -145,7 +142,7 @@
                   data-bs-target="#spending-group-{{ loop.index }}"
                   aria-expanded="false">
             <span class="flex-grow-1">{{ group.group_name }}</span>
-            <span class="font-mono me-3">{{ fmt(group.group_total) }}</span>
+            <span class="font-mono me-3">{{ money(group.group_total) }}</span>
           </button>
         </h2>
         <div id="spending-group-{{ loop.index }}"
@@ -162,12 +159,12 @@
                     {% set bd = item.entry_breakdown %}
                     <small class="text-muted">
                       ({{ bd.entry_count }} entr{{ 'ies' if bd.entry_count != 1 else 'y' }},
-                      avg {{ fmt(bd.avg_entry) }}{% if bd.credit_total > 0 %},
-                      {{ fmt(bd.credit_total) }} on credit card{% endif %})
+                      avg {{ money(bd.avg_entry) }}{% if bd.credit_total > 0 %},
+                      {{ money(bd.credit_total) }} on credit card{% endif %})
                     </small>
                     {% endif %}
                   </td>
-                  <td class="text-end font-mono">{{ fmt(item.item_total) }}</td>
+                  <td class="text-end font-mono">{{ money(item.item_total) }}</td>
                 </tr>
                 {% endfor %}
               </tbody>
@@ -199,7 +196,7 @@
         {% for t in data.transfers_summary %}
         <tr>
           <td>{{ t.destination_account }}</td>
-          <td class="text-end font-mono">{{ fmt(t.total_amount) }}</td>
+          <td class="text-end font-mono">{{ money(t.total_amount) }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -217,18 +214,18 @@
     <div class="row text-center mb-3">
       <div class="col-4">
         <div class="text-muted small">Jan 1</div>
-        <div class="font-mono">{{ fmt(data.net_worth.jan1) }}</div>
+        <div class="font-mono">{{ money(data.net_worth.jan1) }}</div>
       </div>
       <div class="col-4">
         <div class="text-muted small">Dec 31</div>
-        <div class="font-mono">{{ fmt(data.net_worth.dec31) }}</div>
+        <div class="font-mono">{{ money(data.net_worth.dec31) }}</div>
       </div>
       <div class="col-4">
         <div class="text-muted small">Change</div>
         {% if data.net_worth.delta >= 0 %}
-        <div class="font-mono year-end-delta-positive">+{{ fmt(data.net_worth.delta) }}</div>
+        <div class="font-mono year-end-delta-positive">+{{ money(data.net_worth.delta) }}</div>
         {% else %}
-        <div class="font-mono year-end-delta-negative">-{{ fmt(data.net_worth.delta|abs) }}</div>
+        <div class="font-mono year-end-delta-negative">-{{ money(data.net_worth.delta|abs) }}</div>
         {% endif %}
       </div>
     </div>
@@ -261,10 +258,10 @@
         {% for d in data.debt_progress %}
         <tr>
           <td>{{ d.account_name }}</td>
-          <td class="text-end font-mono">{{ fmt(d.jan1_balance) }}</td>
-          <td class="text-end font-mono">{{ fmt(d.dec31_balance) }}</td>
+          <td class="text-end font-mono">{{ money(d.jan1_balance) }}</td>
+          <td class="text-end font-mono">{{ money(d.dec31_balance) }}</td>
           <td class="text-end font-mono {% if d.principal_paid > 0 %}year-end-delta-positive{% endif %}">
-            {{ fmt(d.principal_paid) }}
+            {{ money(d.principal_paid) }}
           </td>
         </tr>
         {% endfor %}
@@ -296,11 +293,11 @@
         {% for s in data.savings_progress %}
         <tr>
           <td>{{ s.account_name }}</td>
-          <td class="text-end font-mono">{{ fmt(s.jan1_balance) }}</td>
-          <td class="text-end font-mono">{{ fmt(s.dec31_balance) }}</td>
-          <td class="text-end font-mono">{{ fmt(s.total_contributions) }}</td>
-          <td class="text-end font-mono">{{ fmt(s.employer_contributions) }}</td>
-          <td class="text-end font-mono">{{ fmt(s.investment_growth) }}</td>
+          <td class="text-end font-mono">{{ money(s.jan1_balance) }}</td>
+          <td class="text-end font-mono">{{ money(s.dec31_balance) }}</td>
+          <td class="text-end font-mono">{{ money(s.total_contributions) }}</td>
+          <td class="text-end font-mono">{{ money(s.employer_contributions) }}</td>
+          <td class="text-end font-mono">{{ money(s.investment_growth) }}</td>
         </tr>
         {% endfor %}
       </tbody>

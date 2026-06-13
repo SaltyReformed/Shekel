@@ -1,149 +1,95 @@
-# Shekel Monitoring Stack Setup
+# Shekel Log Monitoring
 
 ## Overview
 
-Shekel outputs structured JSON logs to stdout. These logs are scraped by
-Promtail and shipped to Loki for querying via Grafana.
+Shekel emits structured JSON logs to stdout (see `app/logging_config.py`
+and `docs/observability.md`). Docker's `json-file` driver captures the
+stream; a host-level collector ships it to Loki for querying in Grafana.
 
-## Architecture
+## Architecture (deployed)
 
 ```
-Shekel App (JSON stdout) → Docker log driver → Promtail → Loki → Grafana
+Shekel App (JSON stdout) -> Docker json-file driver -> Grafana Alloy -> Loki -> Grafana
 ```
 
-## Prerequisites
+The collector stack (Alloy + Loki + Grafana + Prometheus) is part of the
+host-level compose project at `/opt/docker/monitoring/` on the
+deployment host -- it is operator infrastructure shared by every service
+on the machine, not part of this repository. Alloy discovers containers
+over the Docker socket (via a socket proxy) and ships each container's
+log stream to Loki; no shared "monitoring" network and no per-app
+scrape config are required on the Shekel side.
 
-- Docker and Docker Compose on the Proxmox host
-- Shekel stack running via `docker-compose.yml`
+Historical note: an earlier iteration of this document described a
+Promtail-based pipeline that required attaching the app container to a
+shared `monitoring` network. That pipeline was replaced by Alloy; the
+app-side network coupling was removed from `docker-compose.build.yml`
+in the same cleanup (parity audit 2026-06-12, finding M06 in
+`docs/audits/dev-prod-parity/findings.md`).
 
-## Setup Steps
+## What the Shekel side guarantees
 
-### 1. Create the monitoring network
-
-```bash
-docker network create monitoring
-```
-
-### 2. Add the network to Shekel's docker-compose.yml
-
-```yaml
-services:
-  app:
-    networks:
-      - default
-      - monitoring
-
-networks:
-  monitoring:
-    external: true
-```
-
-### 3. Create monitoring docker-compose.yml
-
-Save this as `monitoring/docker-compose.yml` on the Proxmox host:
-
-```yaml
-services:
-  loki:
-    image: grafana/loki:latest
-    container_name: loki
-    restart: unless-stopped
-    ports:
-      - "3100:3100"
-    volumes:
-      - loki-data:/loki
-    networks:
-      - monitoring
-
-  promtail:
-    image: grafana/promtail:latest
-    container_name: promtail
-    restart: unless-stopped
-    volumes:
-      - ./promtail-config.yml:/etc/promtail/config.yml
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - loki
-    networks:
-      - monitoring
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana-data:/var/lib/grafana
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-    depends_on:
-      - loki
-    networks:
-      - monitoring
-
-volumes:
-  loki-data:
-  grafana-data:
-
-networks:
-  monitoring:
-    external: true
-```
-
-### 4. Start the monitoring stack
-
-```bash
-cd monitoring
-docker compose up -d
-```
-
-### 5. Configure Grafana
-
-1. Open `http://<proxmox-ip>:3000`
-2. Log in (admin / admin, change password on first login)
-3. Add Data Source → Loki → URL: `http://loki:3100`
-4. Go to Explore → Select Loki → Run queries
+- Every log line on stdout is single-line JSON with `timestamp`,
+  `level`, `logger`, `message`, and `request_id` fields; domain events
+  add `event`, `category`, and `user_id` (see `log_event()` usage).
+- Gunicorn's native access log is disabled (`accesslog = None` in
+  `gunicorn.conf.py`); Flask's `_log_request_summary()` emits the JSON
+  request log instead.
+- Container logs rotate locally (json-file, 10 MiB x 5 for the app) so
+  the host disk cannot fill; Loki holds the long-term record.
 
 ## Useful LogQL Queries
 
+The examples assume the collector labels each stream with the Docker
+container name (Alloy's `discovery.docker` default); the production
+container is `shekel-prod-app`.
+
 | Purpose | Query |
 |---------|-------|
-| All auth events | `{container="shekel-app"} \| json \| category="auth"` |
-| Login failures | `{container="shekel-app"} \| json \| event="login_failed"` |
-| Slow requests | `{container="shekel-app"} \| json \| event="slow_request"` |
-| All errors | `{container="shekel-app"} \| json \| level="ERROR"` |
-| Specific user | `{container="shekel-app"} \| json \| user_id="1"` |
-| Trace a request | `{container="shekel-app"} \| json \| request_id="<uuid>"` |
-| Password changes | `{container="shekel-app"} \| json \| event="password_changed"` |
-| MFA events | `{container="shekel-app"} \| json \| event=~"mfa_.*"` |
-| Business events | `{container="shekel-app"} \| json \| category="business"` |
+| All auth events | `{container="shekel-prod-app"} \| json \| category="auth"` |
+| Login failures | `{container="shekel-prod-app"} \| json \| event="login_failed"` |
+| Slow requests | `{container="shekel-prod-app"} \| json \| event="slow_request"` |
+| All errors | `{container="shekel-prod-app"} \| json \| level="ERROR"` |
+| Specific user | `{container="shekel-prod-app"} \| json \| user_id="1"` |
+| Trace a request | `{container="shekel-prod-app"} \| json \| request_id="<uuid>"` |
+| Password changes | `{container="shekel-prod-app"} \| json \| event="password_changed"` |
+| MFA events | `{container="shekel-prod-app"} \| json \| event=~"mfa_.*"` |
+| Business events | `{container="shekel-prod-app"} \| json \| category="business"` |
 
 ## Audit Log Retention
 
-The `scripts/audit_cleanup.py` script deletes old audit log rows from
-PostgreSQL. Schedule it via cron on the Proxmox host:
+`scripts/audit_cleanup.py` deletes `system.audit_log` rows older than
+`AUDIT_RETENTION_DAYS` (default 365). It is NOT run automatically by
+the app -- the operator must schedule it. The deployed schedule is the
+`shekel-audit-cleanup.timer` systemd unit (reference copies in
+`/opt/docker/shekel/`, daily at 03:30, deliberately after the backup
+window so pruned rows are always in that night's snapshots), whose
+service runs:
 
-```cron
-# Daily at 3:00 AM -- delete audit rows older than 365 days.
-0 3 * * * docker exec shekel-app python scripts/audit_cleanup.py
+```bash
+cd /opt/docker/shekel && docker compose run --rm --no-deps --pull never \
+    app python scripts/audit_cleanup.py
 ```
+
+`docker compose run` matters: the entrypoint loads the docker secrets
+and rebuilds the owner-role `DATABASE_URL` first. A bare
+`docker exec shekel-prod-app python scripts/...` does NOT work
+post-C-38 -- exec'd processes get the container's stored placeholder
+env, not the secret values the entrypoint loaded (and the
+least-privilege role deliberately cannot DELETE audit rows).
 
 To preview what would be deleted without actually deleting:
 
 ```bash
-docker exec shekel-app python scripts/audit_cleanup.py --dry-run
+cd /opt/docker/shekel && docker compose run --rm --no-deps --pull never \
+    app python scripts/audit_cleanup.py --dry-run
 ```
 
 ## Troubleshooting
 
-- **No logs in Grafana:** Check that `docker logs shekel-app` shows JSON
-  output. Verify the Promtail container can see the Shekel container
-  (`docker logs promtail`).
-- **Promtail can't discover containers:** Ensure `/var/run/docker.sock`
-  is mounted in the Promtail container.
-- **Network issues:** Verify both stacks share the `monitoring` network
-  (`docker network inspect monitoring`).
-- **Gunicorn access logs appearing:** The entrypoint disables Gunicorn's
-  native access log (`--access-logfile ""`). Flask's `_log_request_summary()`
-  handles request logging in JSON format instead.
+- **No logs in Grafana:** Check that `docker logs shekel-prod-app`
+  shows JSON output, then check the collector's own logs in the
+  `/opt/docker/monitoring` stack.
+- **Gunicorn access logs appearing:** `gunicorn.conf.py` disables the
+  native access log (`accesslog = None`); if raw access lines show up,
+  that config is no longer being loaded.

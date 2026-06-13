@@ -10,125 +10,53 @@
 {% endblock %}
 
 {% block content %}
-{% if not has_default_account %}
+{# Q "Terminal Road" rebuild (docs/design/dashboard_card_audit.md,
+   "Rebuild decisions (Loop A COMPLETE)"): one pulse region (canvas +
+   street + due-soon list) refreshing on balanceChanged, then the
+   page-load-only position tracks.
+
+   Context contract (dashboard.page):
+     has_account: bool -- an account resolved for the user
+     pulse: dict | None -- compute_pulse_section output + route
+       serialization (see _pulse.html); None when no pay period covers
+       today
+     tracks: dict -- compute_tracks_section output + route-added
+       debt.principal_paid_pct #}
+
+{% if not has_account %}
+{# Neutral copy (Gate B7): no account exists yet, so none can be named.
+   The dashboard projects whatever account resolves as the default. #}
 <div class="text-center py-5">
   <i class="bi bi-bank fs-1 text-muted"></i>
-  <h5 class="mt-3">Set up your checking account to see your dashboard</h5>
-  <p class="text-muted">The dashboard needs a checking account to display your financial overview.</p>
+  <h5 class="mt-3">Set up an account to see your dashboard</h5>
+  <p class="text-muted">The dashboard projects your default account forward,
+    pay period by pay period.</p>
   <a href="{{ url_for('accounts.new_account') }}" class="btn btn-primary">
     <i class="bi bi-plus-circle"></i> Create Account
   </a>
 </div>
 {% else %}
 
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi bi-speedometer2"></i> Dashboard</h4>
-  <a href="{{ url_for('grid.index') }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-grid-3x3"></i> Open Grid
-  </a>
+{% if pulse %}
+<div id="pulse-section"
+     hx-get="{{ url_for('dashboard.pulse_section') }}"
+     hx-trigger="balanceChanged from:body"
+     hx-swap="innerHTML">
+  {% include "dashboard/_pulse.html" %}
 </div>
+{% else %}
+{% include "dashboard/_no_period.html" %}
+{% endif %}
 
-{# Row 1: Bills + Alerts.
-   Bills Due carries ``order-first order-lg-1`` so that even if the
-   source order of Row 1's children shifts in a future edit, Bills Due
-   stays the first card in the row (it is the highest-priority surface
-   on mobile, per the mobile v3 plan Commit 22 sub-problem 1). Alerts
-   keeps its implicit ``order-lg-2`` by source position. #}
-<div class="row g-3 mb-3">
-  <div class="col-lg-8 order-first order-lg-1">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-receipt"></i> Upcoming Bills</h6>
-      </div>
-      <div class="card-body" id="bills-section"
-           hx-get="{{ url_for('dashboard.bills_section') }}"
-           hx-trigger="dashboardRefresh from:body"
-           hx-swap="innerHTML">
-        {% include "dashboard/_upcoming_bills.html" %}
-      </div>
-    </div>
-  </div>
-  <div class="col-lg-4">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-bell"></i> Alerts</h6>
-      </div>
-      <div class="card-body">
-        {% include "dashboard/_alerts.html" %}
-      </div>
-    </div>
-  </div>
-</div>
-
-{# Row 2: Balance + Payday + Savings #}
-<div class="row g-3 mb-3">
-  <div class="col-md-6 col-lg-3">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-wallet2"></i> Balance</h6>
-      </div>
-      <div class="card-body" id="balance-section"
-           hx-get="{{ url_for('dashboard.balance_section') }}"
-           hx-trigger="balanceChanged from:body, dashboardRefresh from:body"
-           hx-swap="innerHTML">
-        {% include "dashboard/_balance_runway.html" %}
-      </div>
-    </div>
-  </div>
-  <div class="col-md-6 col-lg-3">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-calendar-check"></i> Next Payday</h6>
-      </div>
-      <div class="card-body">
-        {% include "dashboard/_payday.html" %}
-      </div>
-    </div>
-  </div>
-  <div class="col-lg-6">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-bullseye"></i> Savings Goals</h6>
-      </div>
-      <div class="card-body">
-        {% include "dashboard/_savings_goals.html" %}
-      </div>
-    </div>
-  </div>
-</div>
-
-{# Row 3: Debt + Spending #}
-<div class="row g-3 mb-3">
-  {% if debt_summary %}
-  <div class="col-md-6">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-credit-card"></i> Debt Summary</h6>
-      </div>
-      <div class="card-body">
-        {% include "dashboard/_debt_summary.html" %}
-      </div>
-    </div>
-  </div>
-  {% endif %}
-  <div class="col-md-6">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-arrow-left-right"></i> Spending Comparison</h6>
-      </div>
-      <div class="card-body"
-           hx-get="{{ url_for('dashboard.bills_section') }}"
-           hx-trigger="dashboardRefresh from:body"
-           hx-swap="none">
-        {% include "dashboard/_spending_comparison.html" %}
-      </div>
-    </div>
-  </div>
-</div>
+{% if tracks and (tracks.goals or tracks.debt) %}
+{% include "dashboard/_tracks.html" %}
+{% endif %}
 
 {% endif %}
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
+<script src="{{ url_for('static', filename='js/dashboard_pulse.js') }}"></script>
 {% endblock %}

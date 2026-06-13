@@ -18,8 +18,17 @@ Examples:
     python scripts/audit_cleanup.py --days 90       # Delete rows older than 90 days
     python scripts/audit_cleanup.py --dry-run       # Preview without deleting
 
-Cron example (daily at 3:00 AM):
-    0 3 * * * cd /home/shekel/app && /opt/venv/bin/python scripts/audit_cleanup.py
+Production invocation (the shekel-audit-cleanup.timer unit): run via
+``docker compose run`` so the ENTRYPOINT loads the docker secrets and
+rebuilds the owner DATABASE_URL first --
+
+    cd /opt/docker/shekel && docker compose run --rm --no-deps app \
+        python scripts/audit_cleanup.py
+
+``docker exec <app> python scripts/audit_cleanup.py`` does NOT work
+post-C-38: exec'd processes get the container's stored Config.Env,
+which holds the ``replaced_by_docker_secret`` placeholders, not the
+values the entrypoint loaded for the gunicorn process.
 """
 import argparse
 import logging
@@ -31,6 +40,19 @@ from sqlalchemy.orm import Session
 
 # Ensure the project root is on sys.path so 'app' is importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Force the owner role.  DELETE on system.audit_log is deliberately
+# not granted to the least-privilege ``shekel_app`` role (the audit
+# log is tamper-resistant from the runtime app; init_db_role.sql
+# grants it SELECT/INSERT only), so this script must connect as the
+# owner.  When invoked through the container entrypoint (the
+# production timer path), DATABASE_URL_APP is already exported and
+# the config would otherwise prefer it.  Empty string rather than
+# ``pop`` for the dotenv-resurrection reason documented in
+# scripts/init_database.py: config.py's ``load_dotenv()`` re-inserts
+# a ``.env`` value into an absent key, while an existing-but-empty
+# key survives and the config resolver documents empty-as-unset.
+os.environ["DATABASE_URL_APP"] = ""
 
 # Pylint: wrong-import-position -- the sys.path bootstrap above must run
 # first so ``scripts`` resolves when invoked as

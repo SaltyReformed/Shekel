@@ -38,7 +38,7 @@
       var el = nodes[i];
       var raw = el.getAttribute("data-progress-pct");
       var pct = parseFloat(raw);
-      if (isFinite(pct)) {
+      if (Number.isFinite(pct)) {
         // Clamp to [0, 100] so a malformed server value cannot push the
         // progress bar off-axis.  The server should already clamp, but
         // defending here protects against template-time arithmetic

@@ -1,0 +1,179 @@
+{# Pulse region partial -- the Q "Terminal Road" canvas, street, and
+   due-soon list. Swap target of #pulse-section
+   (hx-trigger="balanceChanged from:body"); also rendered by
+   ``dashboard.pulse_section``.
+
+   Context contract (provided by dashboard.page / dashboard.pulse_section
+   from dashboard_pulse_service.compute_pulse_section plus route-layer
+   serialization -- floats exist only inside chart_json):
+
+     pulse.hero: balance (Decimal), period_start_date, period_end_date,
+       account_name, account_id, last_updated_date (date|None),
+       is_stale (bool), next_paycheck_date (date|None)
+     pulse.chart_json: JSON string {labels: [str], values: [float],
+       threshold: float|null}
+     pulse.trough: {balance, end_date, offset} | None
+     pulse.peak: {balance, end_date, offset} | None (the trough's mirror)
+     pulse.still_due: current_period, next_period (Decimals),
+       next_period_start, next_period_end (dates|None)
+     pulse.street: {days_total: int, today_offset: int}
+     pulse.due_soon: bill dicts (txn_to_bill_dict anatomy, plus
+       day_offset: int|None and undated: bool) -- consumed ONLY by the
+       street below; the due-soon list itself was removed by developer
+       ruling (per-bill rows live on the grid) #}
+{% from "_money_macros.html" import money %}
+
+<div class="pulse-canvas">
+  {# Sky: hero + chips + Open Grid. The due-soon LIST was removed by
+     developer ruling (2026-06-12: "better handled on the grid"); the
+     STREET below is the only per-bill surface, and on mobile -- where
+     the street does not render -- the chip totals and grid links carry
+     the whole bills story. #}
+  <div class="pulse-sky">
+    <div class="pulse-sky__main">
+    <div class="pulse-hero">
+      <div class="pulse-hero__label">End of this period</div>
+      {% include "dashboard/_pulse_balance.html" %}
+      <div class="pulse-hero__cap">
+        projected through {{ pulse.hero.period_end_date.strftime('%b %-d') }}
+        &middot; {{ pulse.hero.account_name }}
+      </div>
+      <div class="pulse-hero__cap pulse-hero__cap--faint">
+        <span id="anchor-as-of" {% if pulse.hero.is_stale %}class="pulse-stale"{% endif %}>
+          {%- if pulse.hero.is_stale %}<i class="bi bi-exclamation-triangle-fill"></i> {% endif -%}
+          {%- if pulse.hero.last_updated_date -%}
+          last updated {{ pulse.hero.last_updated_date.strftime('%b %-d, %Y') }}
+          {%- else -%}
+          balance never set
+          {%- endif -%}
+        </span>
+        {%- if pulse.hero.next_paycheck_date %}
+        &middot; next paycheck {{ pulse.hero.next_paycheck_date.strftime('%b %-d, %Y') }}
+        {%- endif %}
+      </div>
+    </div>
+    </div>
+    {# Stat row beside the hero (developer placement ruling 2026-06-12):
+       the chips sit BETWEEN the hero and the Open Grid button on the
+       sky band, leaving the full band below to the chart's y-axis. #}
+    <div class="pulse-statrow">
+    <div class="pulse-chip">
+      <div class="pulse-chip__label">Still due this period</div>
+      <div class="pulse-chip__value font-mono">{{ money(pulse.still_due.current_period) }}</div>
+      {% if pulse.still_due.next_period_start %}
+      <a class="pulse-chip__link"
+         href="{{ url_for('grid.index', offset=1) }}">
+        next period {{ money(pulse.still_due.next_period) }} &middot; view in grid
+      </a>
+      {% else %}
+      <a class="pulse-chip__link"
+         href="{{ url_for('pay_periods.generate_form') }}">
+        no next period &middot; generate
+      </a>
+      {% endif %}
+    </div>
+    {% if pulse.trough %}
+    <div class="pulse-chip{% if pulse.trough.balance < 0 %} pulse-chip--danger{% endif %}">
+      <div class="pulse-chip__label">Lowest point ahead</div>
+      <div class="pulse-chip__value font-mono">{{ money(pulse.trough.balance) }}</div>
+      <a class="pulse-chip__link"
+         href="{{ url_for('grid.index', offset=pulse.trough.offset) }}">
+        {{ pulse.trough.end_date.strftime('%b %-d, %Y') }} &middot; view in grid
+      </a>
+    </div>
+    {% endif %}
+    {% if pulse.peak %}
+    <div class="pulse-chip{% if pulse.peak.balance >= 0 %} pulse-chip--done{% else %} pulse-chip--danger{% endif %}">
+      <div class="pulse-chip__label">Highest point ahead</div>
+      <div class="pulse-chip__value font-mono">{{ money(pulse.peak.balance) }}</div>
+      <a class="pulse-chip__link"
+         href="{{ url_for('grid.index', offset=pulse.peak.offset) }}">
+        {{ pulse.peak.end_date.strftime('%b %-d, %Y') }} &middot; view in grid
+      </a>
+    </div>
+    {% endif %}
+    </div>
+    <a href="{{ url_for('grid.index') }}"
+       class="btn btn-outline-secondary btn-sm pulse-open-grid">
+      <i class="bi bi-grid-3x3"></i> Open Grid
+    </a>
+  </div>
+  <div class="pulse-chart">
+    <canvas id="pulse-chart-canvas" data-chart='{{ pulse.chart_json }}'
+            role="img"
+            aria-label="Projected end balance for the next six months"></canvas>
+  </div>
+</div>
+
+{# Magnification bracket: the current period's sliver of the chart's
+   time axis, flared to the full-width street band below. #}
+<svg class="pulse-bracket" viewBox="0 0 1440 26" preserveAspectRatio="none"
+     aria-hidden="true">
+  <path d="M 0 0 L 120 0 L 1440 24 L 0 24 Z"></path>
+</svg>
+
+<div class="street" data-street-days="{{ pulse.street.days_total }}">
+  <div class="street__head">
+    <span>This period, day by day &middot;
+      {{ pulse.hero.period_start_date.strftime('%b %-d') }} -
+      {{ pulse.hero.period_end_date.strftime('%b %-d') }}</span>
+    <span class="street__head-total">
+      <span class="font-mono fw-bold">{{ money(pulse.still_due.current_period) }}</span>
+      <span class="text-muted">still due</span> &middot;
+      <a href="{{ url_for('grid.index', offset=0) }}">Open in grid</a>
+    </span>
+  </div>
+  <div class="street__axis">
+    {% for ev in pulse.due_soon | rejectattr("undated") %}
+    {% set state = 'overdue' if ev.days_until_due is not none and ev.days_until_due < 0
+       else ('soon' if ev.days_until_due is not none and ev.days_until_due <= 3
+       else 'normal') %}
+    <div class="street__event street__event--{{ state }}{% if loop.index0 is odd %} street__event--below{% endif %}{% if ev.entry_over_budget %} street__event--over{% endif %}"
+         data-day="{{ ev.day_offset }}">
+      <span class="street__event-label">
+        {{ ev.name }}
+        <span class="street__event-amt font-mono">
+          {%- if ev.is_tracked|default(false) and ev.entry_total is not none -%}
+          {{ money(ev.entry_total) }} / {{ money(ev.amount) }}
+          {%- else -%}
+          {{ money(ev.amount) }}
+          {%- endif -%}
+          {%- if state == 'overdue' %} &middot; overdue{% endif -%}
+        </span>
+      </span>
+    </div>
+    {% endfor %}
+    <div class="street__today" data-day="{{ pulse.street.today_offset }}">
+      <span class="street__today-label">Today</span>
+    </div>
+    {# The end-station sits AT the period end on the axis, so it renders
+       the period-end chart point (balances_for), not the as-of-today
+       hero -- identical unless an entry is dated after today, and the
+       label must agree with the figure either way (principle 2; SSOT
+       verification 2026-06-12). #}
+    <div class="street__end" data-day="{{ pulse.street.days_total }}">
+      <span class="street__event-label">
+        period ends {{ pulse.hero.period_end_date.strftime('%b %-d') }}
+        <span class="street__event-amt font-mono fw-bold">{{ money(pulse.chart.points[0].balance) }}</span>
+      </span>
+    </div>
+  </div>
+  {% set undated = pulse.due_soon | selectattr("undated") | list %}
+  {% if undated %}
+  <div class="street__shelf">
+    <span class="text-muted">Anytime this period:</span>
+    {% for ev in undated %}
+    <span>{{ ev.name }}
+      <span class="font-mono{% if ev.entry_over_budget %} text-danger fw-semibold{% endif %}">
+        {%- if ev.is_tracked|default(false) and ev.entry_total is not none -%}
+        {{ money(ev.entry_total) }} / {{ money(ev.amount) }}
+        {%- else -%}
+        {{ money(ev.amount) }}
+        {%- endif -%}
+      </span>
+      {%- if ev.amount_base %} <small class="text-muted">{{ ev.amount_base }}</small>{% endif %}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

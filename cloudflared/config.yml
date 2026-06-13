@@ -4,26 +4,39 @@
 # tunnel to the local Nginx reverse proxy.  Cloudflare handles TLS
 # termination; Nginx listens on plain HTTP.
 #
-# ── Prerequisites ────────────────────────────────────────────────
-#   1. cloudflared installed on the Proxmox host
-#   2. Authenticated:  cloudflared tunnel login
-#   3. Tunnel created: cloudflared tunnel create shekel
-#   4. DNS record:     cloudflared tunnel route dns shekel <DOMAIN>
+# ── Prerequisites (one-time, run from any machine with cloudflared) ─
+#   1. Authenticated:  cloudflared tunnel login
+#   2. Tunnel created: cloudflared tunnel create shekel
+#   3. DNS record:     cloudflared tunnel route dns shekel <DOMAIN>
 #
-# ── Setup ────────────────────────────────────────────────────────
-#   1. Copy this file to the cloudflared config directory:
-#        sudo mkdir -p /etc/cloudflared
-#        sudo cp cloudflared/config.yml /etc/cloudflared/config.yml
+# ── Setup (containerized -- the deployed topology) ───────────────
+#   The production deployment runs cloudflared as a Docker container
+#   (cloudflare/cloudflared image) defined in the host-level compose
+#   stack, NOT as a host systemd service -- this project's deployment
+#   rules are no systemd and no exposed ports (see CLAUDE.md
+#   "Deployment").  The maintainer's instance lives in
+#   /opt/docker/docker-compose.yml with its config directory bind-
+#   mounted read-only.
+#
+#   1. Place this file and the tunnel credentials JSON in the
+#      directory the container mounts (e.g. /opt/docker/cloudflared/):
+#        config.yml            (this file, placeholders replaced)
+#        <TUNNEL_ID>.json      (from `cloudflared tunnel create`)
+#      and point credentials-file below at the in-container path.
 #
 #   2. Replace all <PLACEHOLDER> values with your actual values.
 #
 #   3. Test in the foreground first:
-#        cloudflared tunnel --config /etc/cloudflared/config.yml run shekel
+#        docker run --rm -v /opt/docker/cloudflared:/etc/cloudflared:ro \
+#            cloudflare/cloudflared:latest \
+#            tunnel --config /etc/cloudflared/config.yml run shekel
 #
-#   4. Install as a systemd service:
-#        sudo cloudflared service install
-#        sudo systemctl enable cloudflared
-#        sudo systemctl start cloudflared
+#   4. Run it as a service container from the host compose stack,
+#      attached to the bridge that carries the reverse proxy
+#      (shared mode: shekel-frontend; see deploy/README.md).
+#
+#   A bare-host install (cloudflared binary + service manager) also
+#   works with this same file; adjust the config path accordingly.
 #
 # ── Placeholder Reference ────────────────────────────────────────
 #   <TUNNEL_ID>       -- UUID from `cloudflared tunnel create shekel`
@@ -92,9 +105,9 @@ ingress:
   # Production: route all traffic for the domain to Nginx.
   #
   # Bundled mode (this template):
-  #   cloudflared runs as a systemd service on the host (or in a
-  #   sidecar with ``network_mode: host``) and reaches the in-stack
-  #   nginx via the host port mapping (``${NGINX_PORT:-80}:80`` in
+  #   cloudflared runs on the host network (a bare-host binary, or a
+  #   container with ``network_mode: host``) and reaches the in-stack
+  #   nginx via the host port mapping (``${NGINX_PORT:-80}:8080`` in
   #   docker-compose.yml).  ``http://localhost:80`` is correct.
   #
   # Shared mode (operator's homelab):

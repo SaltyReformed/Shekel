@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Confirm Calibration -- {{ profile.name }} -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -32,15 +33,15 @@
           </tr>
           <tr>
             <td class="text-muted">Gross Pay</td>
-            <td class="text-end font-mono">${{ "%.2f"|format(data.actual_gross_pay) }}</td>
+            <td class="text-end font-mono">{{ money(data.actual_gross_pay) }}</td>
           </tr>
           <tr>
             <td class="text-muted">Pre-Tax Deductions</td>
-            <td class="text-end font-mono">${{ "%.2f"|format(total_pre_tax) }}</td>
+            <td class="text-end font-mono">{{ money(total_pre_tax) }}</td>
           </tr>
           <tr>
             <td class="text-muted">Taxable Income</td>
-            <td class="text-end font-mono fw-bold">${{ "%.2f"|format(taxable_income) }}</td>
+            <td class="text-end font-mono fw-bold">{{ money(taxable_income) }}</td>
           </tr>
         </table>
       </div>
@@ -62,22 +63,22 @@
           <tbody>
             <tr>
               <td>Federal Income Tax</td>
-              <td class="text-end font-mono">${{ "%.2f"|format(data.actual_federal_tax) }}</td>
+              <td class="text-end font-mono">{{ money(data.actual_federal_tax) }}</td>
               <td class="text-end font-mono fw-bold">{{ "%.3f"|format((rates.effective_federal_rate|to_percent)) }}%</td>
             </tr>
             <tr>
               <td>State Income Tax</td>
-              <td class="text-end font-mono">${{ "%.2f"|format(data.actual_state_tax) }}</td>
+              <td class="text-end font-mono">{{ money(data.actual_state_tax) }}</td>
               <td class="text-end font-mono fw-bold">{{ "%.3f"|format((rates.effective_state_rate|to_percent)) }}%</td>
             </tr>
             <tr>
               <td>Social Security</td>
-              <td class="text-end font-mono">${{ "%.2f"|format(data.actual_social_security) }}</td>
+              <td class="text-end font-mono">{{ money(data.actual_social_security) }}</td>
               <td class="text-end font-mono fw-bold">{{ "%.3f"|format((rates.effective_ss_rate|to_percent)) }}%</td>
             </tr>
             <tr>
               <td>Medicare</td>
-              <td class="text-end font-mono">${{ "%.2f"|format(data.actual_medicare) }}</td>
+              <td class="text-end font-mono">{{ money(data.actual_medicare) }}</td>
               <td class="text-end font-mono fw-bold">{{ "%.3f"|format((rates.effective_medicare_rate|to_percent)) }}%</td>
             </tr>
           </tbody>

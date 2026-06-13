@@ -14,9 +14,13 @@
   var incomeFields = document.getElementById('income-fields');
 
   function toggleMode() {
+    // Toggle Bootstrap's `.d-none` (display:none !important) rather than
+    // inline style.display: the template hides #income-fields with `d-none`,
+    // and an inline style cannot override an !important rule, so the
+    // income-relative fields were previously unreachable through the UI.
     var isFixed = modeSelect.value === fixedModeId;
-    fixedFields.style.display = isFixed ? '' : 'none';
-    incomeFields.style.display = isFixed ? 'none' : '';
+    fixedFields.classList.toggle('d-none', !isFixed);
+    incomeFields.classList.toggle('d-none', isFixed);
   }
 
   modeSelect.addEventListener('change', toggleMode);

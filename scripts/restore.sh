@@ -4,26 +4,40 @@
 # Restores the Shekel database from a backup file produced by backup.sh.
 #
 # Restore sequence:
-#     1. Stop the application container (if running)
-#     2. Terminate existing database connections
-#     3. Drop and recreate the database with schemas
-#     4. Restore from the backup file (via psql --single-transaction)
-#     5. Restart the application container (entrypoint runs Alembic migrations)
-#     6. Verify the restore with basic sanity checks
+#     1. VALIDATE the backup artifact end-to-end (decrypt + gzip integrity +
+#        non-empty) -- nothing destructive happens until the artifact proves
+#        restorable (polyglot audit 2026-06-12, OPS/SH-01: the previous
+#        sequence dropped the production database before reading a single
+#        byte, so a wrong passphrase or truncated file left an empty DB with
+#        no recovery path)
+#     2. Take a pre-restore SAFETY DUMP of the current database
+#     3. Stop the application container (if running)
+#     4. Terminate existing database connections
+#     5. Drop and recreate the database with schemas
+#     6. Restore from the backup file (via psql --single-transaction)
+#     7. Restart the application container (entrypoint runs Alembic migrations)
+#     8. Verify the restore with basic sanity checks
+#
+# If anything fails between the drop and a completed restore, the script
+# prints recovery guidance naming the safety dump.
 #
 # Usage:
 #     ./scripts/restore.sh <backup_file>
 #     ./scripts/restore.sh --skip-confirm <backup_file>
 #
 # Options:
-#     --skip-confirm  Skip the interactive confirmation prompt
-#     --help          Show this help message
+#     --skip-confirm      Skip the interactive confirmation prompt
+#     --skip-safety-dump  Proceed without the pre-restore safety dump (for the
+#                         disaster case where the current database is already
+#                         lost/unreadable and the dump step itself fails)
+#     --help              Show this help message
 #
 # Exit codes:
 #     0   Restore completed successfully
-#     1   Fatal error (missing file, decryption failure, restore failure)
+#     1   Fatal error (missing file, validation failure, restore failure)
 
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
 
@@ -32,15 +46,13 @@ APP_CONTAINER="${APP_CONTAINER:-shekel-prod-app}"
 PGUSER="${PGUSER:-shekel_user}"
 PGDATABASE="${PGDATABASE:-shekel}"
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
+BACKUP_LOCAL_DIR="${BACKUP_LOCAL_DIR:-/var/backups/shekel}"
+
+# Set once the DROP DATABASE has run; drives the recovery-guidance trap.
+DESTRUCTIVE_WINDOW=false
+SAFETY_DUMP_PATH=""
 
 # ── Functions ────────────────────────────────────────────────────
-
-log() {
-    # Structured log output: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
-    local level="$1"
-    shift
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
-}
 
 usage() {
     cat <<EOF
@@ -49,18 +61,22 @@ Usage: $(basename "$0") [OPTIONS] <backup_file>
 Restore the Shekel database from a backup file.
 
 This will:
-    1. Stop the application container (if running)
-    2. Drop and recreate the database
-    3. Restore from the backup file
-    4. Run pending Alembic migrations (via app container restart)
-    5. Verify the restore
+    1. Validate the backup artifact (decrypt + integrity) BEFORE any
+       destructive step
+    2. Take a pre-restore safety dump of the current database
+    3. Stop the application container (if running)
+    4. Drop and recreate the database
+    5. Restore from the backup file
+    6. Run pending Alembic migrations (via app container restart)
+    7. Verify the restore
 
 Arguments:
     backup_file     Path to a .sql.gz or .sql.gz.gpg backup file
 
 Options:
-    --skip-confirm  Skip the interactive confirmation prompt
-    --help          Show this help message
+    --skip-confirm      Skip the interactive confirmation prompt
+    --skip-safety-dump  Proceed without the pre-restore safety dump
+    --help              Show this help message
 
 Environment Variables:
     DB_CONTAINER                  Docker container name for PostgreSQL
@@ -68,21 +84,41 @@ Environment Variables:
     PGUSER                        PostgreSQL user
     PGDATABASE                    PostgreSQL database name
     BACKUP_ENCRYPTION_PASSPHRASE  GPG passphrase (required for .gpg files)
+    BACKUP_LOCAL_DIR              Where the safety dump is written
 EOF
 }
 
-check_prerequisites() {
-    # Verify docker is available.
-    if ! command -v docker &>/dev/null; then
-        log "ERROR" "docker command not found"
-        exit 1
+recovery_guidance() {
+    # ERR/EXIT-path guidance once the database has been dropped: the operator
+    # must know the state and the way back (OPS/SH-01: the previous script
+    # died under set -e leaving an empty database and no instructions).
+    if [[ "${DESTRUCTIVE_WINDOW}" == true ]]; then
+        {
+            echo ""
+            echo "============================================================"
+            echo "  RESTORE FAILED INSIDE THE DESTRUCTIVE WINDOW"
+            echo "============================================================"
+            echo "  The database '${PGDATABASE}' was dropped and may be empty"
+            echo "  or partially restored."
+            if [[ -n "${SAFETY_DUMP_PATH}" ]]; then
+                echo "  A pre-restore safety dump of the PREVIOUS state exists:"
+                echo "      ${SAFETY_DUMP_PATH}"
+                echo "  Recover it with:"
+                echo "      ./scripts/restore.sh --skip-safety-dump ${SAFETY_DUMP_PATH}"
+            else
+                echo "  No safety dump was taken (--skip-safety-dump was set)."
+                echo "  Recover from the most recent nightly backup."
+            fi
+            echo "  The app container was left STOPPED on purpose."
+            echo "============================================================"
+        } >&2
     fi
+}
+trap recovery_guidance ERR
 
-    # Verify the database container is running.
-    if ! docker inspect --format='{{.State.Running}}' "${DB_CONTAINER}" 2>/dev/null | grep -q true; then
-        log "ERROR" "Database container '${DB_CONTAINER}' is not running"
-        exit 1
-    fi
+check_prerequisites() {
+    # shellcheck disable=SC2310 # require_db_container is a boolean predicate (explicit if-not/return 1, no internal set -e reliance); the trailing || exit 1 is the intended abort on failure
+    require_db_container "${DB_CONTAINER}" || exit 1
 }
 
 app_container_exists() {
@@ -103,7 +139,7 @@ confirm_restore() {
     echo ""
     read -r -p "  Are you sure you want to continue? [y/N] " response
     case "${response}" in
-        [yY][eE][sS]|[yY])
+        [yY][eE][sS] | [yY])
             log "INFO" "Restore confirmed by user"
             ;;
         *)
@@ -113,8 +149,42 @@ confirm_restore() {
     esac
 }
 
+take_safety_dump() {
+    # Dump the CURRENT database before destroying it. Temp-file + rename, same
+    # partial-file discipline as backup.sh.
+    local ts
+    ts="$(date +%Y%m%d_%H%M%S)"
+    local dump_path="${BACKUP_LOCAL_DIR}/pre_restore_safety_${ts}.sql.gz"
+    local tmp_path="${dump_path}.tmp"
+
+    log "INFO" "Taking pre-restore safety dump: ${dump_path}"
+    mkdir -p "${BACKUP_LOCAL_DIR}"
+    # shellcheck disable=SC2046 # word splitting of the --schema flags is intended
+    # shellcheck disable=SC2310,SC2312 # shekel_pg_dump_schema_flags only printfs a static schema array, so it cannot meaningfully fail; its return value carries no error to mask in this if-condition
+    if ! docker exec "${DB_CONTAINER}" pg_dump \
+        -U "${PGUSER}" -d "${PGDATABASE}" \
+        --clean --if-exists --no-owner --no-privileges \
+        $(shekel_pg_dump_schema_flags) \
+        | gzip >"${tmp_path}"; then
+        rm -f "${tmp_path}"
+        log "ERROR" "Pre-restore safety dump FAILED. If the current database is"
+        log "ERROR" "already lost (the disaster-recovery case), re-run with"
+        log "ERROR" "--skip-safety-dump. Refusing to drop the database otherwise."
+        exit 1
+    fi
+    if [[ ! -s "${tmp_path}" ]]; then
+        rm -f "${tmp_path}"
+        log "ERROR" "Pre-restore safety dump is empty; refusing to proceed."
+        exit 1
+    fi
+    mv "${tmp_path}" "${dump_path}"
+    SAFETY_DUMP_PATH="${dump_path}"
+    log "INFO" "Safety dump complete: ${dump_path}"
+}
+
 stop_app() {
     # Stop the app container if it exists and is running.
+    # shellcheck disable=SC2310 # app_container_exists is a boolean predicate (docker inspect &>/dev/null); the container-absent non-zero status IS its intended return, not an error to abort on
     if app_container_exists; then
         log "INFO" "Stopping application container: ${APP_CONTAINER}"
         docker stop "${APP_CONTAINER}" 2>/dev/null || true
@@ -126,6 +196,7 @@ stop_app() {
 
 drop_and_recreate_database() {
     log "INFO" "Dropping and recreating database: ${PGDATABASE}"
+    DESTRUCTIVE_WINDOW=true
 
     # Terminate existing connections to the target database.
     docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d postgres -c \
@@ -138,15 +209,12 @@ drop_and_recreate_database() {
     docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d postgres --quiet -c \
         "CREATE DATABASE ${PGDATABASE} OWNER ${PGUSER};"
 
-    # Recreate schemas. The pg_dump --clean output includes DROP/CREATE for
-    # tables within schemas, but the schemas themselves must exist first
-    # for the restore to succeed.
+    # Recreate schemas (shared SHEKEL_APP_SCHEMAS list -- OPS/SH-06). The
+    # pg_dump --clean output includes DROP/CREATE for tables within schemas,
+    # but the schemas themselves must exist first for the restore to succeed.
+    # shellcheck disable=SC2312 # shekel_create_schema_sql only printfs static CREATE SCHEMA statements, so it cannot meaningfully fail; there is no inner return value worth surfacing here
     docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" --quiet -c \
-        "CREATE SCHEMA IF NOT EXISTS ref;
-         CREATE SCHEMA IF NOT EXISTS auth;
-         CREATE SCHEMA IF NOT EXISTS budget;
-         CREATE SCHEMA IF NOT EXISTS salary;
-         CREATE SCHEMA IF NOT EXISTS system;"
+        "$(shekel_create_schema_sql)"
 
     log "INFO" "Database recreated with schemas"
 }
@@ -155,32 +223,21 @@ restore_backup() {
     local backup_file="$1"
 
     log "INFO" "Restoring from: ${backup_file}"
-
-    # Determine if the file is encrypted.
-    if [[ "${backup_file}" == *.gpg ]]; then
-        if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
-            log "ERROR" "Backup is encrypted but BACKUP_ENCRYPTION_PASSPHRASE is not set"
-            exit 1
-        fi
-        log "INFO" "Decrypting backup..."
-        # Decrypt → decompress → pipe to psql inside the db container.
-        echo "${BACKUP_ENCRYPTION_PASSPHRASE}" | gpg --batch --passphrase-fd 0 --quiet -d "${backup_file}" \
-            | gunzip \
-            | docker exec -i "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" \
-                --quiet --single-transaction --set ON_ERROR_STOP=1 --output /dev/null
-    else
-        # Decompress → pipe to psql inside the db container.
-        gunzip -c "${backup_file}" \
-            | docker exec -i "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" \
-                --quiet --single-transaction --set ON_ERROR_STOP=1 --output /dev/null
-    fi
+    # backup_stream handles .gpg decryption (passphrase via fd, never argv)
+    # and gzip decompression for both artifact shapes (OPS/SH-06: the
+    # pipeline previously existed twice here and once in verify_backup.sh).
+    backup_stream "${backup_file}" \
+        | docker exec -i "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" \
+            --quiet --single-transaction --set ON_ERROR_STOP=1 --output /dev/null
 
     log "INFO" "Database restore complete"
+    DESTRUCTIVE_WINDOW=false
 }
 
 start_app() {
     # Restart the app container. The entrypoint runs init_database.py which
     # detects the existing database and applies any pending Alembic migrations.
+    # shellcheck disable=SC2310 # app_container_exists is a boolean predicate (docker inspect &>/dev/null); the container-absent non-zero status IS its intended return, not an error to abort on
     if ! app_container_exists; then
         log "INFO" "Application container '${APP_CONTAINER}' not found (dev mode)"
         log "INFO" "Run 'flask db upgrade' manually to apply any pending migrations"
@@ -221,13 +278,17 @@ start_app() {
 }
 
 verify_restore() {
-    # Quick sanity checks against the restored database.
+    # Quick sanity checks against the restored database. Each query's failure
+    # is surfaced, not masked (OPS/SH-17: 2>/dev/null previously turned a
+    # psql failure into a blank interpolated into a 'Verification:' line).
     log "INFO" "Running post-restore verification..."
 
     local user_count
-    user_count=$(docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" -t -c \
-        "SELECT COUNT(*) FROM auth.users;" 2>/dev/null | tr -d ' ')
-
+    if ! user_count=$(docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" -t -c \
+        "SELECT COUNT(*) FROM auth.users;" | tr -d ' '); then
+        log "ERROR" "Verification query failed: auth.users count"
+        return 1
+    fi
     if [[ -z "${user_count}" || "${user_count}" -eq 0 ]]; then
         log "WARNING" "No users found in the restored database. Verify the backup file."
     else
@@ -235,14 +296,20 @@ verify_restore() {
     fi
 
     local period_count
-    period_count=$(docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" -t -c \
-        "SELECT COUNT(*) FROM budget.pay_periods;" 2>/dev/null | tr -d ' ')
+    if ! period_count=$(docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" -t -c \
+        "SELECT COUNT(*) FROM budget.pay_periods;" | tr -d ' '); then
+        log "ERROR" "Verification query failed: budget.pay_periods count"
+        return 1
+    fi
     log "INFO" "Verification: ${period_count} pay period(s) in restored database"
 
     local table_count
-    table_count=$(docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" -t -c \
+    if ! table_count=$(docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" -t -c \
         "SELECT COUNT(*) FROM information_schema.tables
-         WHERE table_schema IN ('ref','auth','budget','salary','system');" 2>/dev/null | tr -d ' ')
+         WHERE table_schema IN ('ref','auth','budget','salary','system');" | tr -d ' '); then
+        log "ERROR" "Verification query failed: table count"
+        return 1
+    fi
     log "INFO" "Verification: ${table_count} table(s) across all schemas"
 }
 
@@ -250,6 +317,7 @@ verify_restore() {
 
 main() {
     local skip_confirm=false
+    local skip_safety_dump=false
     local backup_file=""
 
     # Parse command-line arguments.
@@ -257,6 +325,10 @@ main() {
         case "$1" in
             --skip-confirm)
                 skip_confirm=true
+                shift
+                ;;
+            --skip-safety-dump)
+                skip_safety_dump=true
                 shift
                 ;;
             --help)
@@ -289,16 +361,23 @@ main() {
     BACKUP_FILE="${backup_file}"
 
     check_prerequisites
+    # shellcheck disable=SC2310 # require_passphrase_for is a boolean predicate (explicit return 1, no internal set -e reliance); the trailing || exit 1 is the intended abort on failure
+    require_passphrase_for "${backup_file}" "${BACKUP_ENCRYPTION_PASSPHRASE}" || exit 1
 
-    # Validate encryption requirements before any destructive operations.
-    if [[ "${backup_file}" == *.gpg && -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
-        log "ERROR" "Backup is encrypted but BACKUP_ENCRYPTION_PASSPHRASE is not set"
-        exit 1
-    fi
+    # The OPS/SH-01 gate: prove the artifact decrypts and decompresses
+    # end-to-end BEFORE anything destructive runs.
+    # shellcheck disable=SC2310 # validate_backup_artifact returns explicit codes (subshell-local set -o pipefail so pipe failures reach the caller without errexit); the trailing || exit 1 IS the OPS/SH-01 abort-before-destructive gate
+    validate_backup_artifact "${backup_file}" || exit 1
 
     # Confirmation prompt (default: No).
     if [[ "${skip_confirm}" == false ]]; then
         confirm_restore
+    fi
+
+    if [[ "${skip_safety_dump}" == false ]]; then
+        take_safety_dump
+    else
+        log "WARNING" "Pre-restore safety dump SKIPPED (--skip-safety-dump)"
     fi
 
     stop_app
@@ -308,6 +387,11 @@ main() {
     verify_restore
 
     log "INFO" "Restore complete."
+    if [[ -n "${SAFETY_DUMP_PATH}" ]]; then
+        log "INFO" "Pre-restore safety dump retained at: ${SAFETY_DUMP_PATH}"
+        log "INFO" "(delete it once the restored state is confirmed good)"
+    fi
+    # shellcheck disable=SC2310 # app_container_exists is a boolean predicate (docker inspect &>/dev/null); the container-absent non-zero status IS its intended return, not an error to abort on
     if app_container_exists; then
         log "INFO" "Review the application at http://localhost:5000 to verify."
     else

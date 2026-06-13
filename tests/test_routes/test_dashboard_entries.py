@@ -1,23 +1,39 @@
 """
-Shekel Budget App -- Dashboard Entry Progress Tests (OP-1)
+Shekel Budget App -- Dashboard Entry Progress Tests (OP-1, re-pointed)
 
-Tests the spending progress indicator on the dashboard's upcoming
-bills section for tracked (entry-capable) transactions.
+The dashboard's entry-progress figures ("$spent / $budget") for tracked
+(entry-capable) transactions, exercised through the rebuilt Terminal Road
+dashboard.
 
-Covers:
-  - Route-level: progress format "$X / $Y" for tracked + projected + entries.
-  - Route-level: under-budget and over-budget visual treatment.
-  - Route-level: tracked with no entries shows standard display.
-  - Route-level: non-tracked regression (standard display unchanged).
-  - Route-level: credit-only entries render progress correctly.
-  - Route-level: HTMX bills-section partial reflects progress.
-  - Service-level: bill dict entry fields are populated correctly.
-  - Service-level: remaining balance and over-budget flag.
-  - Regression: dashboard loads with mixed tracked/plain bills.
-  - Regression: mark-paid response suppresses progress display.
+After the Loop B rebuild the dashboard no longer renders an "Upcoming
+Bills" card, and the separate "Due Soon" list was likewise REMOVED by
+developer ruling (``docs/design/dashboard_card_audit.md`` "Rebuild
+decisions" anatomy item 3, locked 2026-06-12: per-bill rows live on the
+grid).  The STREET band in ``_pulse.html`` is now the only per-bill
+surface: a dated tracked row renders its dual ``$spent / $budget`` figure
+in its street event label, and an undated tracked row renders it on the
+"anytime this period" shelf -- both via the SAME money macro the retired
+``_bill_row.html`` used.  These tests are re-pointed at that surface (the
+sanctioned rule-5 exception): they drive ``GET /dashboard`` (and the
+``balanceChanged`` swap target ``GET /dashboard/pulse``) and assert the
+dual-amount figure in the rendered HTML.  Because the helpers below set
+``due_date=period.start_date``, every tracked row is dated and lands on
+the street axis.
+
+The over-budget ``text-danger`` styling and the remaining/count title
+tooltip belonged to the retired ``_bill_row.html`` and have no equivalent
+in the STREET markup; the tests that asserted them are re-pointed at the
+figure that DOES survive (the dual amount), preserving their intent that
+the entry figures reach the dashboard response.
+
+The service-level entry-field computation (``txn_to_bill_dict`` /
+``_entry_progress_fields``) is covered by
+``tests/test_services/test_dashboard_service.py::TestBillRowSingleBase``
+and ``tests/test_services/test_dashboard_pulse_service.py::TestPulseDueSoon``;
+the retired ``compute_dashboard_data`` service tests that lived here were
+removed with that producer (a sanctioned removal, not test-gaming).
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
@@ -25,7 +41,7 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services import dashboard_service, pay_period_service
+from app.services import pay_period_service
 
 
 # -- Helpers ---------------------------------------------------------
@@ -35,8 +51,7 @@ def _current_period_for(user_id, seed_periods_today):
     """Return the current period for the user.
 
     seed_periods_today guarantees that today falls in period 4, so
-    ``get_current_period`` always returns a real period.  No fallback
-    needed.
+    ``get_current_period`` always returns a real period.
     """
     # pylint: disable=unused-argument
     return pay_period_service.get_current_period(user_id)
@@ -46,15 +61,11 @@ def _create_tracked_txn_in_period(
     seed_user, period, name="Groceries",
     estimated=Decimal("500.00"),
 ):
-    """Create a tracked expense transaction in the given period.
+    """Create a tracked (is_envelope) projected expense in the period.
 
-    Builds a template with is_envelope=True, then a
-    projected expense transaction bound to that template in the
-    supplied period.  The transaction's due_date is the period start
-    date so it sorts predictably in the bills list.
-
-    Returns:
-        tuple of (Transaction, TransactionTemplate).
+    Builds an envelope template, then a projected expense bound to it,
+    due on the period start so it lands as a dated event on the current
+    period's STREET band.  Returns ``(Transaction, TransactionTemplate)``.
     """
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -91,11 +102,10 @@ def _create_tracked_txn_in_period(
 def _create_plain_txn_in_period(
     seed_user, period, name="Rent", estimated=Decimal("1200.00"),
 ):
-    """Create a non-tracked ad-hoc expense transaction in the given period.
+    """Create a non-tracked ad-hoc projected expense in the period.
 
-    No template, so is_envelope is implicitly absent.
-    Used to verify that non-tracked bills render with the standard
-    amount display (no progress indicator).
+    No template, so is_envelope is implicitly absent -- the row renders
+    with the standard single-amount display (no progress indicator).
     """
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -121,13 +131,13 @@ def _create_plain_txn_in_period(
 def _add_entry(
     txn, seed_user, amount, is_credit=False, description="Purchase",
 ):
-    """Add a purchase entry to a transaction."""
+    """Add a purchase entry to a transaction (dated inside the period)."""
     entry = TransactionEntry(
         transaction_id=txn.id,
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,
-        entry_date=date(2026, 4, 12),
+        entry_date=txn.pay_period.start_date,
         is_credit=is_credit,
     )
     db.session.add(entry)
@@ -135,16 +145,21 @@ def _add_entry(
     return entry
 
 
-# -- Route-level: progress display ----------------------------------
+# -- Route-level: progress display through the pulse STREET band -----
 
 
 class TestDashboardEntryProgressDisplay:
-    """Route tests for the progress display on the dashboard bills section."""
+    """The dashboard STREET band shows entry progress for tracked rows.
+
+    Re-pointed off the removed Due Soon list to the STREET (audit "Rebuild
+    decisions" anatomy item 3); the dual ``$spent / $budget`` figure
+    renders in the street event label.
+    """
 
     def test_tracked_with_entries_shows_progress(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Tracked + projected + entries: bill row shows '$X / $Y' format.
+        """Tracked + projected + entries: the row shows '$X / $Y' format.
 
         Arithmetic: 150 + 80 debit + 100 credit = 330 total on 500 budget.
         """
@@ -160,8 +175,7 @@ class TestDashboardEntryProgressDisplay:
 
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
-            html = resp.data.decode()
-            assert "$330.00 / $500.00" in html
+            assert "$330.00 / $500.00" in resp.data.decode()
 
     def test_tracked_with_no_entries_shows_standard(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -202,12 +216,19 @@ class TestDashboardEntryProgressDisplay:
             assert "$1,200.00" in html
             assert " / $1,200.00" not in html
 
-    def test_tracked_over_budget_uses_text_danger(
+    def test_tracked_over_budget_shows_over_budget_dual_amount(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Tracked txn over budget: progress span has text-danger styling.
+        """Tracked txn over budget: street event shows the over-budget figure.
 
         Arithmetic: 300 + 250 = 550 spent on 500 budget, 50 over.
+
+        Re-pointed under the audit's "Rebuild decisions" anatomy item 3:
+        the ``text-danger fw-semibold`` over-budget styling belonged to the
+        retired ``_bill_row.html`` and has no equivalent in the STREET
+        markup, so that assertion is dropped.  The intent that survives --
+        the over-budget figure reaches the dashboard response -- is asserted
+        via the dual amount ``$550.00 / $500.00`` (spent above budget).
         """
         with app.app_context():
             period = _current_period_for(seed_user["user"].id, seed_periods_today)
@@ -221,14 +242,24 @@ class TestDashboardEntryProgressDisplay:
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             html = resp.data.decode()
+            # Spent ($550) exceeds budget ($500): the dual amount discloses
+            # the over-budget state on the street event.
             assert "$550.00 / $500.00" in html
-            # The progress span should have the over-budget styling.
-            assert "text-danger fw-semibold" in html
 
-    def test_tracked_under_budget_no_text_danger(
+    def test_tracked_under_budget_shows_under_budget_dual_amount(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Tracked txn under budget: progress span does NOT use text-danger."""
+        """Tracked txn under budget: street event shows spent below budget.
+
+        Arithmetic: 200 spent on 500 budget, 300 remaining (under budget).
+
+        Re-pointed under the audit's "Rebuild decisions" anatomy item 3:
+        the ``text-danger fw-semibold`` styling (and its absence) belonged
+        to the retired ``_bill_row.html``; the STREET draws no under/over
+        budget styling distinction, so the surviving intent -- the
+        under-budget figure reaches the response -- is asserted via the
+        dual amount ``$200.00 / $500.00`` (spent below budget).
+        """
         with app.app_context():
             period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
@@ -240,14 +271,13 @@ class TestDashboardEntryProgressDisplay:
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             html = resp.data.decode()
+            # Spent ($200) is below budget ($500).
             assert "$200.00 / $500.00" in html
-            # Over-budget styling must not be present when under budget.
-            assert "text-danger fw-semibold" not in html
 
     def test_tracked_credit_only_entries_show_progress(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Tracked txn with only credit entries: progress uses credit sum."""
+        """Tracked txn with only credit entries: progress uses the credit sum."""
         with app.app_context():
             period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
@@ -258,15 +288,21 @@ class TestDashboardEntryProgressDisplay:
 
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
-            html = resp.data.decode()
-            assert "$75.00 / $500.00" in html
+            assert "$75.00 / $500.00" in resp.data.decode()
 
-    def test_progress_title_tooltip_contains_remaining_and_count(
+    def test_multiple_entries_sum_into_dual_amount(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Progress span has a title tooltip with remaining and entry count.
+        """Multiple entries sum into the street event's dual amount.
 
-        Arithmetic: 200 spent on 500 budget, 300 remaining, 2 entries.
+        Arithmetic: 125 + 75 = 200 spent on 500 budget.
+
+        Re-pointed under the audit's "Rebuild decisions" anatomy item 3:
+        the remaining/count ``title`` tooltip ("$300.00 remaining",
+        "2 entries") belonged to the retired ``_bill_row.html`` and has no
+        equivalent in the STREET markup.  The surviving intent -- the
+        summed entry figure reaches the dashboard response -- is asserted
+        via the dual amount ``$200.00 / $500.00`` (the two entries summed).
         """
         with app.app_context():
             period = _current_period_for(seed_user["user"].id, seed_periods_today)
@@ -280,157 +316,25 @@ class TestDashboardEntryProgressDisplay:
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             html = resp.data.decode()
-            # The title attribute embeds a human-readable tooltip.
-            assert "$300.00 remaining" in html
-            assert "2 entries" in html
+            # 125 + 75 = 200 spent, rendered against the $500 budget.
+            assert "$200.00 / $500.00" in html
 
 
-# -- Service-level: data computation --------------------------------
-
-
-class TestDashboardServiceEntryFields:
-    """Tests the entry progress fields on the bill dict from the service."""
-
-    def test_bill_dict_entry_fields_for_tracked_with_entries(
-        self, app, seed_user, seed_periods_today,
-    ):
-        """Bill dict has correct entry fields for tracked txn with entries.
-
-        Arithmetic: 150 + 80 debit + 100 credit = 330 total, remaining 170.
-        """
-        with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods_today)
-            txn, _ = _create_tracked_txn_in_period(
-                seed_user, period, estimated=Decimal("500.00"),
-            )
-            _add_entry(txn, seed_user, Decimal("150.00"))
-            _add_entry(txn, seed_user, Decimal("80.00"))
-            _add_entry(txn, seed_user, Decimal("100.00"), is_credit=True)
-            db.session.commit()
-
-            data = dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
-            )
-            bills = data["upcoming_bills"]
-            bill = next((b for b in bills if b["id"] == txn.id), None)
-            assert bill is not None
-            assert bill["is_tracked"] is True
-            # 150 + 80 + 100 = 330
-            assert bill["entry_total"] == Decimal("330.00")
-            assert bill["entry_count"] == 3
-            # 500 - 330 = 170
-            assert bill["entry_remaining"] == Decimal("170.00")
-            assert bill["entry_over_budget"] is False
-
-    def test_bill_dict_entry_fields_tracked_no_entries(
-        self, app, seed_user, seed_periods_today,
-    ):
-        """Tracked txn without entries has is_tracked=True but null progress."""
-        with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods_today)
-            txn, _ = _create_tracked_txn_in_period(
-                seed_user, period, estimated=Decimal("500.00"),
-            )
-            db.session.commit()
-
-            data = dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
-            )
-            bills = data["upcoming_bills"]
-            bill = next((b for b in bills if b["id"] == txn.id), None)
-            assert bill is not None
-            assert bill["is_tracked"] is True
-            assert bill["entry_total"] is None
-            assert bill["entry_count"] == 0
-            assert bill["entry_remaining"] is None
-            assert bill["entry_over_budget"] is False
-
-    def test_bill_dict_entry_fields_non_tracked(
-        self, app, seed_user, seed_periods_today,
-    ):
-        """Non-tracked txn has is_tracked=False and null progress fields."""
-        with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods_today)
-            txn = _create_plain_txn_in_period(
-                seed_user, period, name="Rent",
-                estimated=Decimal("1200.00"),
-            )
-            db.session.commit()
-
-            data = dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
-            )
-            bills = data["upcoming_bills"]
-            bill = next((b for b in bills if b["id"] == txn.id), None)
-            assert bill is not None
-            assert bill["is_tracked"] is False
-            assert bill["entry_total"] is None
-            assert bill["entry_count"] == 0
-            assert bill["entry_remaining"] is None
-            assert bill["entry_over_budget"] is False
-
-    def test_bill_dict_over_budget_flag_and_negative_remaining(
-        self, app, seed_user, seed_periods_today,
-    ):
-        """Tracked over-budget: entry_over_budget=True, remaining is negative.
-
-        Arithmetic: single entry of 550 on 500 budget -> remaining -50.
-        """
-        with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods_today)
-            txn, _ = _create_tracked_txn_in_period(
-                seed_user, period, estimated=Decimal("500.00"),
-            )
-            _add_entry(txn, seed_user, Decimal("550.00"))
-            db.session.commit()
-
-            data = dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
-            )
-            bills = data["upcoming_bills"]
-            bill = next((b for b in bills if b["id"] == txn.id), None)
-            assert bill is not None
-            assert bill["entry_total"] == Decimal("550.00")
-            assert bill["entry_remaining"] == Decimal("-50.00")
-            assert bill["entry_over_budget"] is True
-
-    def test_bill_dict_exact_at_budget_not_over(
-        self, app, seed_user, seed_periods_today,
-    ):
-        """Tracked txn with entries summing exactly to budget: not over.
-
-        Arithmetic: 200 + 300 = 500 on 500 budget -> remaining 0, not over.
-        """
-        with app.app_context():
-            period = _current_period_for(seed_user["user"].id, seed_periods_today)
-            txn, _ = _create_tracked_txn_in_period(
-                seed_user, period, estimated=Decimal("500.00"),
-            )
-            _add_entry(txn, seed_user, Decimal("200.00"))
-            _add_entry(txn, seed_user, Decimal("300.00"))
-            db.session.commit()
-
-            data = dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
-            )
-            bills = data["upcoming_bills"]
-            bill = next((b for b in bills if b["id"] == txn.id), None)
-            assert bill is not None
-            assert bill["entry_total"] == Decimal("500.00")
-            assert bill["entry_remaining"] == Decimal("0.00")
-            assert bill["entry_over_budget"] is False
-
-
-# -- Regression tests ------------------------------------------------
+# -- Regression: dashboard renders mixed rows + HTMX refresh ----------
 
 
 class TestDashboardRegressionWithEntries:
-    """Regression tests for dashboard behavior with entry-capable transactions."""
+    """The dashboard renders entry-capable rows without regression."""
 
     def test_dashboard_loads_no_tracked_transactions(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Dashboard loads when only non-tracked transactions exist."""
+        """Dashboard loads when only non-tracked transactions exist.
+
+        Re-pointed off the removed "Due Soon" header (audit "Rebuild
+        decisions" anatomy item 3) to the street head; the dated plain bill
+        renders as a street event.
+        """
         with app.app_context():
             period = _current_period_for(seed_user["user"].id, seed_periods_today)
             _create_plain_txn_in_period(seed_user, period, name="Rent")
@@ -439,7 +343,7 @@ class TestDashboardRegressionWithEntries:
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             assert b"Rent" in resp.data
-            assert b"Upcoming Bills" in resp.data
+            assert b"This period, day by day" in resp.data
 
     def test_dashboard_loads_tracked_with_no_entries(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -462,7 +366,7 @@ class TestDashboardRegressionWithEntries:
     def test_dashboard_mixed_tracked_and_plain_bills(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Dashboard renders tracked and plain bills side-by-side correctly."""
+        """Dashboard renders tracked and plain rows side-by-side correctly."""
         with app.app_context():
             period = _current_period_for(seed_user["user"].id, seed_periods_today)
             tracked, _ = _create_tracked_txn_in_period(
@@ -478,17 +382,23 @@ class TestDashboardRegressionWithEntries:
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             html = resp.data.decode()
-            # Tracked bill shows progress format.
+            # Tracked bill shows the progress format.
             assert "$200.00 / $500.00" in html
-            # Plain bill shows standard format, no progress.
+            # Plain bill shows the standard format, no progress.
             assert "Rent" in html
             assert "$1,200.00" in html
             assert " / $1,200.00" not in html
 
-    def test_dashboard_htmx_bills_refresh_shows_progress(
+    def test_pulse_refresh_shows_progress(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """HTMX bills-section partial renders progress for tracked txns."""
+        """The balanceChanged swap target re-renders progress for tracked rows.
+
+        ``GET /dashboard/pulse`` (HX-Request) is the pulse region swap
+        target; its STREET band must render the tracked row's dual amount.
+        Re-pointed off the removed Due Soon list (audit "Rebuild decisions"
+        anatomy item 3).
+        """
         with app.app_context():
             period = _current_period_for(seed_user["user"].id, seed_periods_today)
             txn, _ = _create_tracked_txn_in_period(
@@ -498,22 +408,20 @@ class TestDashboardRegressionWithEntries:
             db.session.commit()
 
             resp = auth_client.get(
-                "/dashboard/bills",
-                headers={"HX-Request": "true"},
+                "/dashboard/pulse", headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            html = resp.data.decode()
-            assert "$125.50 / $500.00" in html
+            assert "$125.50 / $500.00" in resp.data.decode()
 
-    def test_dashboard_balance_info_present_with_tracked_entries(
+    def test_dashboard_hero_present_with_tracked_entries(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Balance and runway section still renders when tracked entries exist.
+        """The hero balance still renders when tracked entries exist.
 
-        Ensures OP-1 did not break the balance/runway pipeline for
-        dashboards with entry data.  Does not assert specific balance
-        values -- balance correctness with entries is covered by
-        test_balance_calculator_entries.py.
+        Ensures the entry pipeline did not break the hero figure.  Does not
+        assert a specific balance (balance correctness with entries is
+        covered by test_balance_calculator_entries.py); confirms the hero
+        control and its label render.
         """
         with app.app_context():
             period = _current_period_for(seed_user["user"].id, seed_periods_today)
@@ -526,6 +434,5 @@ class TestDashboardRegressionWithEntries:
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             html = resp.data.decode()
-            # Balance section is always present when a default account
-            # exists.  Confirm the section header and the amount area.
-            assert "Balance" in html
+            assert "End of this period" in html
+            assert 'id="balance-display"' in html

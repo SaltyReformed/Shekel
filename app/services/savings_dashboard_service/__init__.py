@@ -36,9 +36,14 @@ Module map:
 * :mod:`app.services.savings_dashboard_service._display` -- account
   grouping for the template.
 * :mod:`app.services.savings_dashboard_service._orchestrator` --
-  ``compute_dashboard_data`` (the full-page entry point) and
-  ``compute_debt_summary`` (the narrow debt-card producer behind
-  ``dashboard_service._get_debt_summary``; deep-hunt #82).
+  ``compute_dashboard_data`` (the full-page entry point),
+  ``compute_debt_summary`` (the narrow debt-card producer behind the
+  dashboard's debt track; deep-hunt #82),
+  ``compute_debt_principal_progress`` (the narrow principal-paid fraction
+  producer behind the dashboard's debt track marker; Loop B B-1), and
+  ``compute_goal_progress`` (the narrow savings-goal producer behind the
+  dashboard's savings tracks).  The dashboard consumers all live in
+  ``dashboard_pulse_service.compute_tracks_section``.
 """
 
 # Re-export the public entry points so consumers that
@@ -47,7 +52,14 @@ Module map:
 # them without an edit.
 from app.services.savings_dashboard_service._orchestrator import (
     compute_dashboard_data,
+    compute_debt_principal_progress,
     compute_debt_summary,
+    compute_goal_progress,
 )
 
-__all__ = ["compute_dashboard_data", "compute_debt_summary"]
+__all__ = [
+    "compute_dashboard_data",
+    "compute_debt_principal_progress",
+    "compute_debt_summary",
+    "compute_goal_progress",
+]

@@ -1,0 +1,35 @@
+{# Shared money / verdict display macros.
+
+   Usage:
+     {% from "_money_macros.html" import money, pace_pill, dti_badge %}
+
+   ``money`` is the ONE currency formatter for templates (Gate B7): it
+   renders negatives with the sign before the dollar symbol (-$1,234.56,
+   not $-1,234.56) and replaces the per-template "{:,.2f}" duplication.
+   The unary minus inside is display formatting (sign placement), not
+   financial arithmetic -- the value itself is computed in the service.
+
+   ``pace_pill`` and ``dti_badge`` centralize the verdict-chip mappings.
+   ``pace`` and ``dti_label`` are computed domain strings from the
+   savings services (calculate_trajectory / _get_dti_label), not
+   reference-table ``.name`` columns, so literal comparison here is the
+   sanctioned pattern (see dashboard_card_audit.md, card 6 note). #}
+
+{%- macro money(value, cents=true) -%}
+{%- set fmt = "{:,.2f}" if cents else "{:,.0f}" -%}
+{%- if value < 0 -%}-${{ fmt.format(-value) }}{%- else -%}${{ fmt.format(value) }}{%- endif -%}
+{%- endmacro -%}
+
+{%- macro pace_pill(pace) -%}
+{%- if pace == 'behind' -%}
+<span class="verdict-pill verdict-pill--credit">Behind</span>
+{%- elif pace == 'ahead' -%}
+<span class="verdict-pill verdict-pill--done">Ahead</span>
+{%- elif pace == 'on_track' -%}
+<span class="verdict-pill verdict-pill--done">On track</span>
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro dti_badge(dti_label) -%}
+<span class="badge {% if dti_label == 'healthy' %}bg-success{% elif dti_label == 'moderate' %}bg-warning text-dark{% else %}bg-danger{% endif %}">{{ dti_label|title }}</span>
+{%- endmacro -%}

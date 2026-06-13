@@ -117,21 +117,21 @@
   {# ── Content Area ── #}
   <div class="col-md-9">
     {% if active_section == 'general' %}
-      {% include 'settings/_general.html' %}
+      {% include "settings/_general.html" %}
     {% elif active_section == 'categories' %}
-      {% include 'settings/_categories.html' %}
+      {% include "settings/_categories.html" %}
     {% elif active_section == 'pay-periods' %}
-      {% include 'settings/_pay_periods.html' %}
+      {% include "settings/_pay_periods.html" %}
     {% elif active_section == 'tax' %}
-      {% include 'settings/_tax_config.html' %}
+      {% include "settings/_tax_config.html" %}
     {% elif active_section == 'account-types' %}
-      {% include 'settings/_account_types.html' %}
+      {% include "settings/_account_types.html" %}
     {% elif active_section == 'retirement' %}
-      {% include 'settings/_retirement.html' %}
+      {% include "settings/_retirement.html" %}
     {% elif active_section == 'companions' %}
-      {% include 'settings/_companion.html' %}
+      {% include "settings/_companion.html" %}
     {% elif active_section == 'security' %}
-      {% include 'settings/_security.html' %}
+      {% include "settings/_security.html" %}
     {% endif %}
   </div>
 </div>

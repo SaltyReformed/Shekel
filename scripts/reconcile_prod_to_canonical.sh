@@ -38,7 +38,10 @@ SHARED_NGINX_CONF_D=/opt/docker/nginx/conf.d
 
 log() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 warn() { printf '\033[1;33mWARN: %s\033[0m\n' "$*" >&2; }
-die() { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 # Sanity: run from repo root.
 [[ -f "$REPO_ROOT/docker-compose.yml" ]] || die "must be invoked from the Shekel repo (cwd=$REPO_ROOT)"
@@ -69,16 +72,20 @@ chmod 0700 "$PROD_ROOT/secrets"
 # ── 3. Migrate four secrets from .env to files ────────────────────
 log "Step 3: migrate secrets to files"
 extract_env_value() {
+    # Echo the key's value, or EMPTY when the line is absent -- never a
+    # non-zero status. Under set -e + pipefail a bare grep-miss here used
+    # to kill the whole script mid-run with no diagnostic, AFTER step 3
+    # had already migrated secrets (OPS/SH-12); required keys get their
+    # explicit die at the call sites instead.
     local key=$1
-    grep -E "^${key}=" "$PROD_ROOT/.env" | head -1 | cut -d= -f2-
+    grep -E "^${key}=" "$PROD_ROOT/.env" | head -1 | cut -d= -f2- || true
 }
 
 for pair in \
     "SECRET_KEY:secret_key" \
     "POSTGRES_PASSWORD:postgres_password" \
     "APP_ROLE_PASSWORD:app_role_password" \
-    "TOTP_ENCRYPTION_KEY:totp_encryption_key"
-do
+    "TOTP_ENCRYPTION_KEY:totp_encryption_key"; do
     env_key=${pair%%:*}
     file_name=${pair##*:}
     target="$PROD_ROOT/secrets/$file_name"
@@ -93,23 +100,36 @@ do
     # ``printf '%s'`` writes the exact bytes with no trailing newline.
     # The entrypoint's _load_secret helper strips a trailing newline
     # for forgiveness, but printf-style is the documented form.
-    printf '%s' "$value" > "$target"
+    # umask-first so the file is NEVER world-readable, even for the
+    # instant before chmod (OPS/SH-22).
+    (
+        umask 077
+        printf '%s' "$value" >"$target"
+    )
     chmod 0600 "$target"
-    echo "wrote $target ($(wc -c < "$target") bytes)"
+    # shellcheck disable=SC2312 # wc -c is a display-only byte count for the wrote message; the file was just written (the preceding chmod would have aborted on a missing file)
+    echo "wrote $target ($(wc -c <"$target") bytes)"
 done
 
 # ── 4. Rewrite /opt/docker/shekel/.env ────────────────────────────
 log "Step 4: rewrite $PROD_ROOT/.env"
 
-# Snapshot the current digest pinned in /opt/docker/shekel/docker-compose.yml
-# so the new SHEKEL_IMAGE_DIGEST line matches what's already running --
-# we are NOT image-bumping as part of this reconciliation.
-current_digest=$(grep -oE 'sha256:[0-9a-f]{64}' "$PROD_ROOT/docker-compose.yml" | grep -A1 saltyreformed | head -1 || true)
+# Carry the current image digest forward unchanged -- we are NOT
+# image-bumping as part of this reconciliation. Post-C-36 the digest
+# lives in .env as SHEKEL_IMAGE_DIGEST (the canonical layout this script
+# itself installs); the grep fallback covers only the legacy layout
+# where the digest sat inline on the shekel image line. The original
+# primary pipeline here was dead logic -- grep -oE emits bare digests,
+# so the downstream `grep -A1 saltyreformed` could never match -- and
+# its fallback died under set -e BEFORE the crafted die() could run
+# when nothing matched (OPS/SH-11). NOTE the fallback greps the SHEKEL
+# image line specifically: a bare 'first sha256 in the file' would now
+# match the postgres digest pin.
+current_digest=$(extract_env_value SHEKEL_IMAGE_DIGEST)
 if [[ -z "$current_digest" ]]; then
-    # Fallback: parse `image:` line directly.
-    current_digest=$(grep -E 'image:.*saltyreformed/shekel' "$PROD_ROOT/docker-compose.yml" | grep -oE 'sha256:[0-9a-f]{64}' | head -1)
+    current_digest=$(grep -E 'image:.*saltyreformed/shekel' "$PROD_ROOT/docker-compose.yml" | grep -oE 'sha256:[0-9a-f]{64}' | head -1 || true)
 fi
-[[ -n "$current_digest" ]] || die "could not extract current image digest from $PROD_ROOT/docker-compose.yml"
+[[ -n "$current_digest" ]] || die "could not determine the image digest: no SHEKEL_IMAGE_DIGEST in $PROD_ROOT/.env and no inline digest on the shekel image line of $PROD_ROOT/docker-compose.yml"
 
 # Carry forward the values that should survive: SHEKEL_REDIS_PASSWORD,
 # SEED_USER_*, GUNICORN_WORKERS, NGINX_PORT, AUDIT_RETENTION_DAYS,
@@ -131,7 +151,8 @@ cp "$PROD_ROOT/.env" "$backup"
 chmod 0600 "$backup"
 echo "backed up to $backup"
 
-cat > "$PROD_ROOT/.env" <<ENVEOF
+# shellcheck disable=SC2312 # the only command-sub in this heredoc is the date -u call on the comment line, which always succeeds and only stamps a timestamp into a .env comment
+cat >"$PROD_ROOT/.env" <<ENVEOF
 # Shekel Budget App -- shared-mode production environment.
 # Rewritten by scripts/reconcile_prod_to_canonical.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ).
 # Real secret values for SECRET_KEY, POSTGRES_PASSWORD,
@@ -200,9 +221,13 @@ log "Step 6: shared Nginx vhost"
 # repo->host sync can clobber load-bearing config.  Snapshot first,
 # diff second, copy third.
 nginx_snap=/opt/docker/nginx/.reconcile-snapshot-$(date +%Y%m%d-%H%M%S)
-mkdir -p "$nginx_snap"
-cp "$SHARED_NGINX_CONF_D/shekel.conf"    "$nginx_snap/shekel.conf.pre-reconcile" 2>/dev/null || true
-cp /opt/docker/nginx/nginx.conf          "$nginx_snap/nginx.conf.pre-reconcile"
+# 0700: snapshot dirs hold pre-reconcile copies of live config; keep
+# them owner-only so residue can never widen the exposure of whatever
+# it captured (parity audit 2026-06-12, finding M08 -- the 2026-05-14
+# run left a world-readable rendered config embedding a credential).
+install -d -m 0700 "$nginx_snap"
+cp "$SHARED_NGINX_CONF_D/shekel.conf" "$nginx_snap/shekel.conf.pre-reconcile" 2>/dev/null || true
+cp /opt/docker/nginx/nginx.conf "$nginx_snap/nginx.conf.pre-reconcile"
 echo "nginx snapshot saved to $nginx_snap/"
 
 if cmp -s "$REPO_ROOT/deploy/nginx-shared/conf.d/shekel.conf" "$SHARED_NGINX_CONF_D/shekel.conf"; then
@@ -212,19 +237,26 @@ else
     echo "(operator: validate + reload nginx after step 7)"
 fi
 
-# Also sync the main nginx.conf if it differs -- but FAIL LOUDLY if
-# the host file contains directives the repo file does not (audit
-# B7 limit_req_zone, etc.).  Pure visual diff for the operator to
-# review before letting the sync proceed.
+# Also sync the main nginx.conf if it differs -- and FAIL LOUDLY (for
+# real now -- OPS/SH-13: the previous revision PROMISED this gate in a
+# comment while unconditionally cp-ing over the host file) when the host
+# file carries critical directives the repo copy lacks: that is host-only
+# hardening a sync would clobber, the exact drift mode the deploy rules
+# warn about. Back-port to the repo first, then re-run.
 if cmp -s "$REPO_ROOT/deploy/nginx-shared/nginx.conf" /opt/docker/nginx/nginx.conf; then
     echo "/opt/docker/nginx/nginx.conf already matches repo"
 else
     drift_dir=$nginx_snap/divergence
-    mkdir -p "$drift_dir"
-    diff -u /opt/docker/nginx/nginx.conf "$REPO_ROOT/deploy/nginx-shared/nginx.conf" > "$drift_dir/nginx.conf.diff" || true
+    install -d -m 0700 "$drift_dir"
+    diff -u /opt/docker/nginx/nginx.conf "$REPO_ROOT/deploy/nginx-shared/nginx.conf" >"$drift_dir/nginx.conf.diff" || true
     echo "Drift between host and repo nginx.conf saved to $drift_dir/nginx.conf.diff"
-    echo "Critical directives that must NOT be lost in the sync:"
-    grep -nE "limit_req_zone|limit_conn_zone|client_body_timeout|client_header_timeout|send_timeout|client_max_body_size|set_real_ip_from" /opt/docker/nginx/nginx.conf || true
+    critical_re="limit_req_zone|limit_conn_zone|client_body_timeout|client_header_timeout|send_timeout|client_max_body_size|set_real_ip_from"
+    host_only_critical=$(grep -E "$critical_re" /opt/docker/nginx/nginx.conf | sort -u | comm -23 - <(grep -E "$critical_re" "$REPO_ROOT/deploy/nginx-shared/nginx.conf" | sort -u) || true)
+    if [[ -n "$host_only_critical" ]]; then
+        echo "HOST-ONLY critical directives that the sync would clobber:"
+        printf '%s\n' "$host_only_critical"
+        die "host nginx.conf carries hardening the repo copy lacks; back-port to deploy/nginx-shared/nginx.conf first (diff at $drift_dir/nginx.conf.diff)"
+    fi
     cp -v "$REPO_ROOT/deploy/nginx-shared/nginx.conf" /opt/docker/nginx/nginx.conf
 fi
 
@@ -232,7 +264,8 @@ fi
 log "Step 7: compose files"
 # Snapshot the old files for rollback before overwriting.
 snap_dir=$PROD_ROOT/.reconcile-snapshot-$(date +%Y%m%d-%H%M%S)
-mkdir -p "$snap_dir"
+# 0700 for the same M08 rationale as the nginx snapshot above.
+install -d -m 0700 "$snap_dir"
 cp "$PROD_ROOT/docker-compose.yml" "$snap_dir/docker-compose.yml.pre-reconcile"
 cp "$PROD_ROOT/docker-compose.override.yml" "$snap_dir/docker-compose.override.yml.pre-reconcile"
 echo "snapshot saved to $snap_dir/"
@@ -240,9 +273,15 @@ echo "snapshot saved to $snap_dir/"
 cp -v "$REPO_ROOT/docker-compose.yml" "$PROD_ROOT/docker-compose.yml"
 cp -v "$REPO_ROOT/deploy/docker-compose.prod.yml" "$PROD_ROOT/docker-compose.override.yml"
 
-# Validate the merged config before exiting.
+# Validate the merged config before exiting.  The rendered merge
+# INTERPOLATES .env values -- any credential that is not yet a docker
+# secret (e.g. SHEKEL_REDIS_PASSWORD inside the redis ACL command and
+# the app's RATELIMIT_STORAGE_URI default) appears in cleartext -- so
+# the file must be owner-only from the moment it exists (umask first,
+# then chmod is belt-and-braces; finding M08).
 log "Validation: docker compose config (merged)"
-(cd "$PROD_ROOT" && docker compose config) > "$snap_dir/merged-config.yml"
+(umask 077 && cd "$PROD_ROOT" && docker compose config >"$snap_dir/merged-config.yml")
+chmod 0600 "$snap_dir/merged-config.yml"
 echo "merged config rendered to $snap_dir/merged-config.yml"
 
 # Sanity-spot key fields.

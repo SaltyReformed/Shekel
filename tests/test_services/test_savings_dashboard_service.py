@@ -182,8 +182,9 @@ class TestGoalProgress:
         budget-dashboard savings-goal card for the same goal.  So the value
         is now ``Decimal("99.60")`` (not the old truncated ``99``); the
         template renders it ``"{:.0f}".format(...)`` -> "100%", matching the
-        budget dashboard's ``_savings_goals.html`` label.  Revert-proof: the
-        old ``int(99.6) == 99`` fails this ``99.60`` assertion.
+        budget dashboard's savings-goal track label (``_tracks.html``;
+        the pre-rebuild ``_savings_goals.html`` it replaced).  Revert-proof:
+        the old ``int(99.6) == 99`` fails this ``99.60`` assertion.
         """
         with app.app_context():
             savings_type = (
@@ -767,43 +768,17 @@ def _create_small_loan(seed_user, db_session, name="Test Loan",
 
     Uses a small principal for fast engine replay and easy verification.
     Origination is Jan 2026 with term=24 so remaining months is
-    comfortably positive (~21 from April 2026).
+    comfortably positive (~21 from April 2026).  Thin wrapper over the
+    shared ``create_loan_account`` builder (DRY -- the four-step
+    factory + params + origination-event + rate dance lives in
+    ``tests/_test_helpers``, not duplicated per suite).
     """
-    loan_type = db_session.query(AccountType).filter_by(name="Auto Loan").one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=principal,
-        ),
+    from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
+    return create_loan_account(
+        seed_user, db_session, name=name,
+        principal=principal, rate=rate, term=term,
+        origination_date=date(2026, 1, 1), payment_day=1,
     )
-    db_session.add(account)
-    db_session.flush()
-
-    from app.models.loan_params import LoanParams as LP  # pylint: disable=import-outside-toplevel
-    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-        insert_origination_event,
-        insert_origination_rate,
-    )
-    params = LP(
-        account_id=account.id,
-        original_principal=principal,
-        current_principal=principal,
-        term_months=term,
-        origination_date=date(2026, 1, 1),
-        payment_day=1,
-    )
-    db_session.add(params)
-    db_session.flush()
-    # E-18 / Commit 15: origination event so the resolver can
-    # answer "paid off?" by replaying confirmed payments forward.
-    insert_origination_event(params)
-    # DH-#56: origination RateHistory row -- the loan's rate now lives
-    # here, not the dropped LoanParams.interest_rate column.
-    insert_origination_rate(params, rate)
-    db_session.commit()
-    return account
 
 
 class TestPaidOffFlag:
@@ -1542,6 +1517,202 @@ class TestDebtSummary:
                 ae.calculate_remaining_months(date(2024, 1, 1), 360),
             )
             assert ds["total_monthly_payments"] > pi_only
+
+
+class TestDebtPrincipalProgress:
+    """Tests for ``compute_debt_principal_progress`` (Loop B B-1).
+
+    The narrow producer behind the dashboard's debt track marker: the
+    aggregate fraction of original loan principal paid down so far.  Per
+    the 2026-06-12 ruling (``dashboard_card_audit.md`` Rebuild decisions
+    item 4) it sums over ALL loans ever originated -- paid-off loans stay
+    in both the numerator and the denominator -- so the fraction is
+    monotonic, reaches exactly ``1`` at full payoff, and stays there.
+    ``original_principal`` is a NOT NULL, ``> 0`` column, so any loan
+    supplies the denominator; the ONLY ``None`` case is no loans at all.
+    """
+
+    def test_none_when_no_loans(self, app, db, seed_user, seed_periods):
+        """No loan accounts -> the fraction is None (no marker drawn)."""
+        with app.app_context():
+            assert savings_dashboard_service.compute_debt_principal_progress(
+                seed_user["user"].id,
+            ) is None
+
+    def test_fraction_present_for_a_loan(self, app, db, seed_user, seed_periods):
+        """A loan -> a Decimal fraction that reconciles with the debt summary.
+
+        A $1,000.00 auto loan.  The fraction sums over the SAME loan set
+        the debt summary's ``total_debt`` uses, so:
+            fraction = (original - current) / original
+                     = (1000.00 - total_debt) / 1000.00.
+        ``original_principal`` is NOT NULL, so the data IS present and the
+        fraction is a real Decimal in [0, 1], never None.
+        """
+        with app.app_context():
+            _create_small_loan(seed_user, db.session)
+
+            summary = savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
+            )
+            fraction = (
+                savings_dashboard_service.compute_debt_principal_progress(
+                    seed_user["user"].id,
+                )
+            )
+            assert isinstance(fraction, Decimal)
+            assert Decimal("0") <= fraction <= Decimal("1")
+            # Reconcile against the debt summary's current balance.
+            expected = (
+                (Decimal("1000.00") - summary["total_debt"]) / Decimal("1000.00")
+            )
+            assert fraction == expected
+
+    def test_fraction_zero_at_origination(self, app, db, seed_user, seed_periods):
+        """A loan originated today (no payments yet) -> fraction exactly 0.
+
+        ``_create_small_loan`` originates 2026-01-01 at term 24; under the
+        frozen 2026-03-20 today some scheduled payments are confirmed, so
+        to isolate the zero case we true-up the balance back UP to the
+        original principal, leaving current == original:
+            (1000.00 - 1000.00) / 1000.00 = 0.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import insert_trueup_event
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+            # Assert the current balance equals the original principal.
+            insert_trueup_event(acct.loan_params, Decimal("1000.00"))
+            db.session.commit()
+
+            fraction = (
+                savings_dashboard_service.compute_debt_principal_progress(
+                    seed_user["user"].id,
+                )
+            )
+            assert fraction == Decimal("0")
+
+    def test_fraction_one_when_all_loans_paid_off(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """All loans paid off -> the fraction is exactly 1 (full payoff).
+
+        A loan trued-up to $0 is paid off.  Under the all-loans-ever basis
+        it stays in BOTH sums, contributing $0 to the current-balance sum
+        and its full $1,000.00 original principal to the denominator, so:
+            (1000.00 - 0.00) / 1000.00 = 1.
+        The fraction reaches 1 at full payoff and is NOT None -- None is
+        reserved for the no-loans-at-all case.  ``compute_debt_summary``
+        still reports total_debt $0.00 (active-loans-only), so the two
+        surfaces deliberately disagree on which loans count.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app import ref_cache as rc
+        from app.enums import StatusEnum
+        from app.services.transfer_service import TransferSpec, create_transfer
+        from tests._test_helpers import insert_trueup_event
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+            # A confirmed payment so the loan reads as "ever paid off".
+            create_transfer(
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=acct.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
+            )
+            db.session.commit()
+            insert_trueup_event(acct.loan_params, Decimal("0.00"))
+            db.session.commit()
+
+            # The debt summary reports the active-loans-only total ($0.00) ...
+            summary = savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
+            )
+            assert summary is not None
+            assert summary["total_debt"] == Decimal("0.00")
+            # ... but the principal-paid fraction is exactly 1: the paid-off
+            # loan keeps its full original principal in both sums.
+            fraction = (
+                savings_dashboard_service.compute_debt_principal_progress(
+                    seed_user["user"].id,
+                )
+            )
+            # (1000.00 - 0.00) / 1000.00 = 1.
+            assert fraction == Decimal("1")
+
+    def test_fraction_monotonic_one_paid_one_partial(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One paid-off + one partial loan -> all-loans-ever fraction.
+
+        Loan A: $1,000.00 original, paid off (trued-up to $0) -> stays in
+        both sums, contributing $0 to the current-balance sum.
+        Loan B: $1,000.00 original, trued-up to a known $400.00 balance ->
+        contributes $400.00 to the current-balance sum.
+
+        Under the all-loans-ever basis BOTH loans count, so the fraction
+        does NOT jump (it would under the old active-only basis, which
+        would have dropped Loan A entirely):
+            (orig_A + orig_B - balance_B) / (orig_A + orig_B)
+          = (1000.00 + 1000.00 - 400.00) / (1000.00 + 1000.00)
+          = 1600.00 / 2000.00
+          = 0.8.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app import ref_cache as rc
+        from app.enums import StatusEnum
+        from app.services.transfer_service import TransferSpec, create_transfer
+        from tests._test_helpers import insert_trueup_event
+
+        with app.app_context():
+            paid_off = _create_small_loan(
+                seed_user, db.session, name="Paid Off Loan",
+            )
+            partial = _create_small_loan(
+                seed_user, db.session, name="Partial Loan",
+            )
+            # Confirmed payment so the first loan reads as "ever paid off".
+            create_transfer(
+                TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=paid_off.id,
+                    pay_period_id=seed_periods[7].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1100.00"),
+                    status_id=rc.status_id(StatusEnum.DONE),
+                    category_id=seed_user["categories"]["Rent"].id,
+                ),
+            )
+            db.session.commit()
+            # Loan A: trued-up to $0 (paid off).
+            insert_trueup_event(paid_off.loan_params, Decimal("0.00"))
+            # Loan B: trued-up to a known $400.00 partial balance.
+            insert_trueup_event(partial.loan_params, Decimal("400.00"))
+            db.session.commit()
+
+            fraction = (
+                savings_dashboard_service.compute_debt_principal_progress(
+                    seed_user["user"].id,
+                )
+            )
+            # (orig_A + orig_B - balance_B) / (orig_A + orig_B)
+            # = (1000.00 + 1000.00 - 400.00) / (1000.00 + 1000.00)
+            # = 1600.00 / 2000.00 = 0.8.
+            expected = (
+                (Decimal("1000.00") + Decimal("1000.00") - Decimal("400.00"))
+                / (Decimal("1000.00") + Decimal("1000.00"))
+            )
+            assert fraction == expected
+            assert fraction == Decimal("0.8")
 
 
 class TestDTI:

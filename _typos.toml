@@ -1,0 +1,73 @@
+# typos configuration for the Shekel repo (polyglot-cleanup Phase 5).
+#
+# typos is adopted as a content-spell floor over first-party code,
+# comments, and living docs. The raw baseline is ~1700 findings, ~all
+# false positives (vendored bundles, prior secret-scanner output blobs,
+# write-once audit registers, domain terms, and truncated SQL keywords).
+# This config excludes the noise sources and allowlists the domain
+# vocabulary so the gate floor sits at zero real typos.
+#
+# PIN typos-cli in CI: dictionary updates can newly flag unchanged files.
+
+[files]
+extend-exclude = [
+  # Vendored third-party bundles (zxcvbn, Chart.js, htmx, Bootstrap,
+  # fonts): not our source; minified identifiers + name dictionaries.
+  "app/static/vendor/**",
+  # Minified assets / source maps anywhere.
+  "*.min.js",
+  "*.min.css",
+  "*.map",
+  # Prior-scanner OUTPUT blobs + write-once audit registers and archived
+  # planning docs: machine text and quoted code/SQL/audit-codes, not
+  # living prose (same write-once scoping the markdown gate uses).
+  "docs/audits/**",
+  "docs/historical/**",
+  # Diff artifact kept only for git history.
+  "*.patch",
+  # Operator-run manual browser harness (not collected by pytest).
+  "tests/manual/**",
+  # Archived planning docs (write-once).
+  "docs/plans/historical/**",
+]
+
+[default.extend-words]
+# Domain vocabulary and library names -- correct as written, not typos.
+HSA = "HSA"             # Health Savings Account (app/enums.py)
+hsa = "hsa"
+astroid = "astroid"    # the pylint AST library (tools/pylint/)
+# Jinja/loop-variable abbreviations used as template conventions.
+ded = "ded"            # {% for ded in pretax_deductions %}
+ect = "ect"            # {% for ect in employer_contribution_types %}
+mis = "mis"
+# Deliberate misspellings that are LOAD-BEARING, not slips:
+transferr = "transferr"   # invalid-context test sentinel (test_state_machine.py:404)
+buisness = "buisness"     # docstring illustrating a typo'd constant name (log_events.py)
+confrim = "confrim"       # tests asserting a typo'd CLI flag does NOT fire
+# Accepted alternative English spelling used consistently in the app.
+unparseable = "unparseable"
+# IIFE = Immediately-Invoked Function Expression (a real JS term in code
+# comments); typos splits "IIFEs" into "IIF" and would "correct" it to IF.
+IIF = "IIF"
+# Truncated SQL keywords / PostgreSQL-truncated identifiers (63-char
+# limit) that recur in migration DDL and SQL examples -- in this
+# SQL-heavy app these uppercase fragments are never real typos.
+CHEC = "CHEC"
+INSER = "INSER"
+UPDAT = "UPDAT"
+DELET = "DELET"
+SELEC = "SELEC"
+TRUNCAT = "TRUNCAT"
+TABL = "TABL"
+# Integrity-check code prefix ('BA-02' = balance category, integrity_check.py).
+BA = "BA"
+ba = "ba"
+# The ordinal suffix for 2nd/22nd (app/jinja_filters.py ordinal filter).
+nd = "nd"
+# Deliberate identifiers / test-string fragments split by the camelCase
+# tokenizer -- not typos: `sav` (savings var), `WRON`/`Hed` from the test
+# strings "WRONGpass1234"/"PATCHed", `PN` in a design-doc diagram label.
+sav = "sav"
+WRON = "WRON"
+Hed = "Hed"
+PN = "PN"

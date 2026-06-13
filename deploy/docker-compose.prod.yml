@@ -176,7 +176,7 @@
 #
 #     # Generate the self-signed cert.  Requires sudo because
 #     # the key file must be chowned to the postgres user (uid 70
-#     # in postgres:16-alpine) for postgres to accept it.
+#     # in postgres:18-alpine) for postgres to accept it.
 #     sudo ./scripts/generate_pg_cert.sh
 #
 #     # The script writes deploy/postgres/server.crt (mode 0644)
@@ -240,19 +240,35 @@
 # secrets -- see ``docs/runbook_secrets.md`` "Migrating to Docker
 # secrets" for the end-to-end procedure):
 #
-#     # Create the secrets directory with restrictive permissions.
-#     sudo install -d -m 0700 -o root -g root /opt/docker/shekel/secrets
+#     # Create the secrets directory with restrictive permissions,
+#     # OWNED BY THE OPERATING USER (the uid that runs ``docker
+#     # compose``), not root -- the deployed reality on the homelab
+#     # host is josh:josh 0700.
+#     install -d -m 0700 /opt/docker/shekel/secrets
 #
-#     # Write each secret value with mode 0600.  ``printf`` (no
-#     # trailing newline) is preferred so the file content matches
-#     # the exact secret bytes; the entrypoint loader strips a
-#     # trailing newline if ``echo`` was used by mistake but
-#     # printf-style is the documented form.
-#     sudo printf '%s' '<SECRET_KEY-value>'        > /opt/docker/shekel/secrets/secret_key
-#     sudo printf '%s' '<POSTGRES_PASSWORD-value>' > /opt/docker/shekel/secrets/postgres_password
-#     sudo printf '%s' '<APP_ROLE_PASSWORD-value>' > /opt/docker/shekel/secrets/app_role_password
-#     sudo printf '%s' '<TOTP_ENCRYPTION_KEY-value>' > /opt/docker/shekel/secrets/totp_encryption_key
-#     sudo chmod 0600 /opt/docker/shekel/secrets/*
+#     # Write each secret value.  ``printf`` (no trailing newline) is
+#     # preferred so the file content matches the exact secret bytes;
+#     # the entrypoint loader strips a trailing newline if ``echo``
+#     # was used by mistake but printf-style is the documented form.
+#     printf '%s' '<SECRET_KEY-value>'        > /opt/docker/shekel/secrets/secret_key
+#     printf '%s' '<POSTGRES_PASSWORD-value>' > /opt/docker/shekel/secrets/postgres_password
+#     printf '%s' '<APP_ROLE_PASSWORD-value>' > /opt/docker/shekel/secrets/app_role_password
+#     printf '%s' '<TOTP_ENCRYPTION_KEY-value>' > /opt/docker/shekel/secrets/totp_encryption_key
+#
+#     # File modes: compose v2 (non-Swarm) IGNORES the uid:/gid:/mode:
+#     # fields on the secret references below -- the container sees the
+#     # HOST file's ownership and mode (see .claude/rules/deploy.md).
+#     # The app-consumed secrets are read by uid 1000 (the ``shekel``
+#     # user), which matches the operating user's uid, so 0600 works:
+#     chmod 0600 /opt/docker/shekel/secrets/secret_key \
+#                /opt/docker/shekel/secrets/app_role_password \
+#                /opt/docker/shekel/secrets/totp_encryption_key
+#     # postgres_password is read by the DB container as uid 70
+#     # (postgres), which cannot read a josh-owned 0600 file.  Either
+#     # chown it to 70 with mode 0600, or leave it 0644 and rely on
+#     # the 0700 directory for containment -- the deployed posture is
+#     # the latter:
+#     chmod 0644 /opt/docker/shekel/secrets/postgres_password
 #
 #     # Replace the real values in /opt/docker/shekel/.env with
 #     # placeholder strings so the base file's ${VAR:?...}
@@ -281,7 +297,7 @@
 services:
   # ── PostgreSQL with TLS enabled (Commit C-37 / F-154) ───────────
   # Layer ``ssl=on`` plus the cert/key file directives onto the base
-  # ``postgres:16-alpine`` service.  Compose performs additive merges
+  # ``postgres:18-alpine`` service.  Compose performs additive merges
   # for ``volumes`` (the named ``shekel-prod-pgdata`` mount declared
   # in the base file is preserved), and ``command`` is unset on the
   # base service so the override below is the only command Postgres
@@ -359,6 +375,58 @@ services:
       - ./deploy/postgres/server.crt:/etc/postgresql/certs/server.crt:ro
       - ./deploy/postgres/server.key:/etc/postgresql/certs/server.key:ro
 
+  # ── Redis with file-backed ACLs (parity audit 2026-06-12, D12) ──
+  # The base file defines the ACL users inline in ``command:``, which
+  # interpolates ``${SHEKEL_REDIS_PASSWORD}`` into the container's
+  # argv -- visible to any docker-group member via ``docker inspect``
+  # or ``docker ps``.  Shared mode replaces the command with an
+  # ``--aclfile`` pointing at a docker secret.  The secret file holds
+  # only a SHA-256 HASH of the password (redis ACL ``#<hex>`` form),
+  # so neither the argv, the rendered config, nor the acl file itself
+  # contains the recoverable value.  Residual channel, accepted and
+  # documented: the APP container's env still carries the plaintext
+  # inside RATELIMIT_STORAGE_URI (base-file interpolation); closing
+  # that requires teaching entrypoint.sh to _load_secret the URI,
+  # which only takes effect with an image rebuild -- tracked in the
+  # parity register, not silently attempted here.
+  #
+  # Compose replaces list-typed keys wholesale, so this command block
+  # must restate the base file's persistence/memory flags verbatim
+  # (everything except the ``--user`` definitions, which move to the
+  # acl file).  Bundled mode keeps the env-interpolated inline ACLs.
+  #
+  # Operator pre-flight (one-time): write the acl file --
+  #   printf 'user default off\nuser shekel on #%s resetkeys ~LIMITS* &* +@all -@dangerous\nuser healthcheck on nopass resetkeys +ping\n' \
+  #       "$(printf '%s' "$SHEKEL_REDIS_PASSWORD" | sha256sum | cut -d' ' -f1)" \
+  #       > /opt/docker/shekel/secrets/redis_users.acl
+  #   chmod 0640 /opt/docker/shekel/secrets/redis_users.acl
+  # Mode rationale: compose v2 ignores the uid/gid/mode fields on the
+  # secret reference below (documented intent only); the container
+  # sees the HOST file.  redis:7.4-alpine runs as uid 999 gid 1000,
+  # and gid 1000 is the operating user's group on this host, so 0640
+  # group-read suffices -- no world-readable bit, 0700 dir on
+  # secrets/ contains the rest.  The file holds a hash, not a secret
+  # value, so even a loose mode would not disclose the password.
+  redis:
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "64mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--aclfile"
+      - "/run/secrets/redis_users_acl"
+    secrets:
+      - source: redis_users_acl
+        target: redis_users_acl
+        uid: "999"
+        gid: "1000"
+        mode: 0440
+
   app:
     # Pin to an immutable digest sourced from .env.  ``${VAR:?...}``
     # makes the missing-variable case a hard parse failure with a
@@ -367,6 +435,18 @@ services:
     # APP_ROLE_PASSWORD).  Audit findings F-060, F-155 / Commit C-36.
     image: ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?Set SHEKEL_IMAGE_DIGEST=sha256:... in /opt/docker/shekel/.env to pin the production image (audit finding F-060). See deploy/README.md "Image digest pinning" for the procedure.}
     environment:
+      # Pin the app's civil timezone (parity audit 2026-06-12, finding
+      # M01 in docs/audits/dev-prod-parity/findings.md).  The image
+      # default is UTC, which flipped ``date.today()`` to the next day
+      # at 20:00 America/New_York (19:00 in winter), so date-defaulted
+      # entries, pay-period membership, and staleness flags disagreed
+      # with the operator's wall clock for four hours nightly.  The
+      # app's date logic is naive process-local time throughout, so the
+      # process timezone IS the app timezone.  tzdata ships in
+      # python:3.14-slim (verified: /usr/share/zoneinfo/America/New_York
+      # exists in the running image).  docker-compose.dev.yml pins the
+      # same value so dev and prod compute identical calendar dates.
+      TZ: America/New_York
       # Shared mode: the in-stack ``backend`` bridge no longer carries
       # the reverse-proxy hop -- the shared /opt/docker/nginx talks to
       # the app over ``shekel-frontend``.  Override the bundled-mode
@@ -465,6 +545,10 @@ secrets:
     file: /opt/docker/shekel/secrets/app_role_password
   totp_encryption_key:
     file: /opt/docker/shekel/secrets/totp_encryption_key
+  # Redis ACL definitions (hash-bearing, not value-bearing -- see the
+  # redis service comment above).  Parity audit 2026-06-12, D12.
+  redis_users_acl:
+    file: /opt/docker/shekel/secrets/redis_users.acl
 
 networks:
   # External pre-existing bridge that hosts the shared /opt/docker/nginx

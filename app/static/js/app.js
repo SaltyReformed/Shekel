@@ -58,6 +58,18 @@ document.body.addEventListener("gridRefresh", function() {
   window.location.reload();
 });
 
+// Mark a transaction credit via HTMX, swapping just its cell.  Shared by
+// the grid 'c' keyboard shortcut (below) and the command palette's Credit
+// action (command_palette.js), so the route path is defined in one place
+// (JS-19).  Defined at module scope so command_palette.js -- loaded after
+// app.js -- can call it.
+function markTxnCredit(txnId) {
+  htmx.ajax('POST', '/transactions/' + txnId + '/mark-credit', {
+    target: '#txn-cell-' + txnId,
+    swap: 'innerHTML',
+  });
+}
+
 // Reset the Add Transaction form whenever its modal opens.
 var addModal = document.getElementById("addTransactionModal");
 
@@ -312,9 +324,12 @@ function _populateRaiseForm(editBtn) {
     }
 }
 
-// Reset the raise form to add mode (clear fields, restore action).
-function _resetRaiseForm() {
-    var form = document.getElementById('raise-form');
+// Reset a collapsible add/edit form back to add mode: restore the add
+// action + hx-post, clear the fields and the optimistic-lock version pin,
+// and reset the submit button label.  Shared by the raise and deduction
+// forms, which differ only in their element ids and button markup (JS-10).
+function _resetForm(formId, buttonId, buttonHtml) {
+    var form = document.getElementById(formId);
     if (!form) return;
 
     var addUrl = form.dataset.addAction;
@@ -331,8 +346,13 @@ function _resetRaiseForm() {
     var versionInput = form.querySelector('[name=version_id]');
     if (versionInput) versionInput.value = '';
 
-    var btn = document.getElementById('raise-submit-btn');
-    if (btn) btn.innerHTML = '<i class="bi bi-plus"></i>';
+    var btn = document.getElementById(buttonId);
+    if (btn) btn.innerHTML = buttonHtml;
+}
+
+// Reset the raise form to add mode (clear fields, restore action).
+function _resetRaiseForm() {
+    _resetForm('raise-form', 'raise-submit-btn', '<i class="bi bi-plus"></i>');
 }
 
 // Populate the deduction form fields from the edit button's data attributes
@@ -401,25 +421,7 @@ function _populateDeductionForm(editBtn) {
 
 // Reset the deduction form to add mode.
 function _resetDeductionForm() {
-    var form = document.getElementById('deduction-form');
-    if (!form) return;
-
-    var addUrl = form.dataset.addAction;
-    if (addUrl) {
-        form.action = addUrl;
-        form.setAttribute('hx-post', addUrl);
-        if (window.htmx) htmx.process(form);
-    }
-
-    form.reset();
-
-    // Clear the optimistic-lock pin so a subsequent add submission
-    // does not carry a stale version from a prior edit cycle.
-    var versionInput = form.querySelector('[name=version_id]');
-    if (versionInput) versionInput.value = '';
-
-    var btn = document.getElementById('ded-submit-btn');
-    if (btn) btn.innerHTML = '<i class="bi bi-plus"></i> Add';
+    _resetForm('deduction-form', 'ded-submit-btn', '<i class="bi bi-plus"></i> Add');
 }
 
 // Update deduction form labels when calc method changes.
@@ -429,7 +431,11 @@ document.addEventListener('change', function(e) {
     if (!form) return;
     var amountInput = form.querySelector('[name=amount]');
     var label = form.querySelector('.amount-label');
-    if (e.target.selectedOptions[0].textContent.trim().toLowerCase() === 'percentage') {
+    // Key off the option's semantic data-name ("percentage"/"flat"), not its
+    // |title display text -- renaming the label or filter must not flip the
+    // amount field's meaning (mirrors investment_form.js).
+    var selectedOpt = e.target.selectedOptions[0];
+    if (selectedOpt && selectedOpt.dataset.name === 'percentage') {
         if (amountInput) { amountInput.placeholder = 'e.g. 6 for 6%'; amountInput.step = '0.01'; }
         if (label) label.textContent = 'Amount (%)';
     } else {
@@ -481,6 +487,29 @@ document.addEventListener('keydown', function(e) {
       new bootstrap.Modal(modal).show();
     }
   }
+});
+
+// --- Keyboard activation for click-to-edit affordances ---
+// Elements wired for click only (role="button" tabindex="0") -- the anchor
+// balance cells and the calendar day cells -- must also activate on Enter /
+// Space for keyboard users, or the role="button" is a lie.  Opt-in via
+// data-keyboard-activate so this never hijacks Enter/Space on unrelated
+// controls.  (The dashboard's #balance-display has its own handler in
+// dashboard_pulse.js.)
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+  var el = e.target;
+  if (!el || !el.matches
+      || !el.matches('[data-keyboard-activate][role="button"][tabindex="0"]')) {
+    return;
+  }
+  // preventDefault stops Space from scrolling; stopImmediatePropagation stops
+  // the grid-navigation keydown handler (registered later on document) from
+  // ALSO acting on this Enter -- otherwise activating the grid anchor cell
+  // would also move the cell cursor or open a focused cell's editor.
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  el.click();
 });
 
 // --- Keyboard Navigation ---
@@ -690,7 +719,7 @@ document.addEventListener('keydown', function(e) {
           }
         }
         break;
-      case 'Enter':
+      case 'Enter': {
         // Enter opens the cell's edit surface: the anchored action
         // card for a transaction (.txn-open), or quick-create on an
         // empty cell (rebuild decision 3, docs/design/grid_audit.md).
@@ -702,13 +731,14 @@ document.addEventListener('keydown', function(e) {
           if (clickable) clickable.click();
         }
         break;
+      }
       case 'Escape':
         e.preventDefault();
         clearFocus();
         focusedRow = -1;
         focusedCol = -1;
         break;
-      case ' ':
+      case ' ': {
         // Space marks the focused cell paid via its one-click check
         // button -- the button only renders on projected cells, the
         // exact precondition of the projected -> done transition, so
@@ -727,13 +757,20 @@ document.addEventListener('keydown', function(e) {
           }
         }
         break;
+      }
       case 'c':
-      case 'C':
+      case 'C': {
         // C marks the focused cell credit.  The template stamps
         // data-can-credit with the same predicate as the card's
         // Credit button (expense, projected, not a transfer shadow,
         // not an envelope), so this cannot fire where the button
         // would not render.
+        //
+        // Ctrl+C / Cmd+C is the OS copy shortcut: bail before any
+        // preventDefault so the browser still copies and no
+        // mark-credit POST fires (mirrors the ctrlKey/metaKey branch
+        // on the Arrow cases above).
+        if (e.ctrlKey || e.metaKey) break;
         var creditCell = getFocusedCell();
         var creditable = creditCell
           && creditCell.querySelector('.txn-open[data-can-credit]');
@@ -741,14 +778,10 @@ document.addEventListener('keydown', function(e) {
           e.preventDefault();
           // Same reveal-before-mutate rule as Space above.
           setFocus(focusedRow, focusedCol);
-          htmx.ajax('POST',
-            '/transactions/' + creditable.dataset.txnId + '/mark-credit',
-            {
-              target: '#txn-cell-' + creditable.dataset.txnId,
-              swap: 'innerHTML',
-            });
+          markTxnCredit(creditable.dataset.txnId);
         }
         break;
+      }
       case 'Home':
         e.preventDefault();
         setFocus(focusedRow, 0);

@@ -26,14 +26,6 @@ function renderPayoffChart(canvasId) {
   var floor = JSON.parse(canvas.getAttribute('data-floor') || '[]');
   var accelerated = JSON.parse(canvas.getAttribute('data-accelerated') || '[]');
 
-  // Backward compat: data-standard maps to original for older callers.
-  if (original.length === 0) {
-    var standard = JSON.parse(canvas.getAttribute('data-standard') || '[]');
-    if (standard.length > 0) {
-      original = standard;
-    }
-  }
-
   if (labels.length === 0 || original.length === 0) return;
 
   // Config factory: dataset colors resolve inside so a theme toggle
@@ -118,7 +110,7 @@ function renderPayoffChart(canvasId) {
             display: true,
             ticks: {
               callback: function(value) {
-                return '$' + value.toLocaleString();
+                return ShekelChart.formatMoney(value, false);
               },
             },
           },
@@ -127,10 +119,7 @@ function renderPayoffChart(canvasId) {
           tooltip: {
             callbacks: {
               label: function(context) {
-                return context.dataset.label + ': $' + context.parsed.y.toLocaleString(undefined, {
-                  minimumFractionDigits: 0,
-                  maximumFractionDigits: 0,
-                });
+                return context.dataset.label + ': ' + ShekelChart.formatMoney(context.parsed.y, false);
               },
             },
           },

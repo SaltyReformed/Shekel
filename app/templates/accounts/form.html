@@ -42,7 +42,7 @@
           {% for at in account_types %}
           <option value="{{ at.id }}"
             {{ 'selected' if account and account.account_type_id == at.id else '' }}>
-            {{ at.name|format_account_type }}
+            {{ at.name }}
           </option>
           {% endfor %}
         </select>

@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Grid row macros -- single source for matching-driven row rendering.
 
    Both macros consume `matched_by_row_period`, the precomputed
@@ -30,7 +31,6 @@
 -#}
 {%- if idx > 0 and periods[idx].start_date.month != periods[idx - 1].start_date.month %} mstart{% endif -%}
 {%- endmacro %}
-
 
 {% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, txn_type_id, account, today, current_period_id=none) -%}
 {#- Desktop grid row.  Emits one <tr> containing the sticky row
@@ -79,7 +79,6 @@
 </tr>
 {%- endmacro %}
 
-
 {% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
 {#- Mobile grid cards for one (rk, period) cell.
 
@@ -104,7 +103,6 @@
 {{ render_one_card(rk, period, txn, entry_sums, can_edit, id_prefix, entry_lists, today) }}
 {% endfor %}
 {%- endmacro %}
-
 
 {% macro render_one_card(rk, period, txn, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
 {#- Render exactly one mobile transaction card.
@@ -224,7 +222,7 @@
         role="button" tabindex="0"
         aria-expanded="false"
         aria-controls="{{ _aid }}"
-        aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
+        aria-label="{% if show_progress %}{{ txn.name }}: {{ money(es.total) }} / {{ money(txn.estimated_amount) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: {{ money(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
       <span class="text-truncate me-2">
         {{ rk.display_name }}
         {% if txn.status %}
@@ -243,9 +241,9 @@
       </span>
       <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
         {% if show_progress %}
-          ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+          {{ money(es.total, cents=false) }} / {{ money(txn.estimated_amount, cents=false) }}
         {% else %}
-          ${{ "{:,.0f}".format(display_amount) }}
+          {{ money(display_amount, cents=false) }}
         {% endif %}
       </span>
     </li>
@@ -294,9 +292,9 @@
             <span>{{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}</span>
             <span class="font-mono{% if over_budget %} text-danger{% endif %}">
               {% if remaining >= 0 %}
-                ${{ "{:,.0f}".format(remaining) }} left
+                {{ money(remaining, cents=false) }} left
               {% else %}
-                ${{ "{:,.0f}".format(remaining|abs) }} over
+                {{ money(remaining|abs, cents=false) }} over
               {% endif %}
             </span>
           </div>
@@ -348,7 +346,6 @@
     </div>
   </div>
 {%- endmacro %}
-
 
 {% macro render_row_static(rk, period, matched_by_row_period) -%}
 {#- Mobile Plan tab static row.  Emits zero or more non-interactive
@@ -414,7 +411,7 @@
       {% endif %}
     </span>
     <span class="font-mono fw-semibold text-nowrap">
-      ${{ "{:,.0f}".format(display_amount) }}
+      {{ money(display_amount, cents=false) }}
     </span>
   </li>
 {% endfor %}

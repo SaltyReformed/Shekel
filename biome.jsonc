@@ -1,0 +1,78 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.16/schema.json",
+  // Biome config for the Shekel JS + CSS surface (polyglot-cleanup Phase 5,
+  // docs/audits/polyglot-cleanup/tooling.md). Lint-only: the formatter is
+  // intentionally OFF (no Node, no formatting churn this pass). Scope is
+  // first-party app/static/js + app/static/css only; vendored bundles under
+  // app/static/vendor are never linted.
+  // Honor .gitignore so biome does not traverse .venv / .worktrees /
+  // node_modules (which contain symlink cycles) when invoked bare.
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "app/static/js/**/*.js",
+      "app/static/css/**/*.css",
+      "!app/static/vendor"
+    ]
+  },
+  "formatter": { "enabled": false },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        // Biome parses .js as modules and flags the meaningful 'use strict'
+        // inside our IIFEs -- a proven false positive on this codebase.
+        "noRedundantUseStrict": "off"
+      },
+      "complexity": {
+        // Stylistic rewrites deliberately NOT inherited this pass (arrow-fn /
+        // optional-chain conversions are large churn, no correctness gain).
+        // noImportantStyles OFF: grid.css uses deliberate, commented
+        // !important to beat Bootstrap specificity.
+        "useArrowFunction": "off",
+        "useOptionalChain": "off",
+        "noImportantStyles": "off"
+      },
+      "style": {
+        "useTemplate": "off",
+        // noDescendingSpecificity OFF: the CSS is grouped by component
+        // (a base selector like `.badge-done` co-located with its peers;
+        // contextual overrides like `.txn-chip .badge-done` defined with
+        // their component), which yields benign base-after-contextual
+        // ordering. Those pairs have DIFFERENT specificity, so source
+        // order has no cascade effect -- the warnings are style noise and
+        // reordering would only fragment the concern-based grouping.
+        "noDescendingSpecificity": "off"
+      },
+      "correctness": {
+        // noInnerDeclarations DEFERRED (Phase 5, Decision 3): all 68 hits are
+        // benign ES5 `var` nested in blocks in a uniformly-var codebase; a
+        // piecemeal fix creates var/const inconsistency, and a full
+        // var->const modernization needs the JS browser harness -- tracked
+        // as a follow-up. noUndeclaredVariables turned ON (off by default)
+        // with the cross-file globals allowlist below.
+        "noInnerDeclarations": "off",
+        "noUndeclaredVariables": "error"
+      }
+    }
+  },
+  "javascript": {
+    // The complete set of legitimate cross-file globals (top-level
+    // functions/objects defined in one app/static/js file and used in
+    // another, plus the vendored libs). Any growth here is a design smell.
+    "globals": [
+      "ShekelChart",
+      "Chart",
+      "htmx",
+      "bootstrap",
+      "activePopover",
+      "closeFullEdit",
+      "markTxnCredit"
+    ]
+  }
+}

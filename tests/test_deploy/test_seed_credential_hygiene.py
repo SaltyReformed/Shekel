@@ -2,7 +2,9 @@
 
 Covers audit findings F-022 (SEED_USER_PASSWORD persists in container
 env), F-053 (REGISTRATION_ENABLED=true default), F-054 (stale
-container retire helper exists), and F-113 (.dockerignore excludes
+container retire helper -- RETIRED 2026-06-12: the one-shot script was
+deleted after its targets, the pre-rename containers/volumes, were
+removed; polyglot audit OPS/SH-25), and F-113 (.dockerignore excludes
 dev-only files).  These tests are intentionally
 filesystem-and-text-based: they assert on the on-disk shape of the
 deployment artefacts that the Phase 6 audit reviewers will inspect,
@@ -37,7 +39,6 @@ ENV_EXAMPLE = REPO_ROOT / ".env.example"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 APP_CONFIG = REPO_ROOT / "app" / "config.py"
-RETIRE_SCRIPT = REPO_ROOT / "scripts" / "retire_stale_containers.sh"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -299,12 +300,15 @@ class TestComposeAppStateVolume:
             "volume mount will be root-owned and entrypoint.sh's "
             "sentinel touch will fail"
         )
-        # The chown line is shared with /var/www/static; we assert
-        # that ``chown -R shekel:shekel /home/shekel/app`` covers the
-        # state dir (the recursive chown reaches it via /home/shekel/app).
-        assert "chown -R shekel:shekel /home/shekel/app" in text, (
-            "Dockerfile no longer chowns /home/shekel/app recursively; "
-            "the state subdirectory will be root-owned and unwritable"
+        # The state dir is chowned to shekel directly (one line, shared
+        # with /var/www/static). Polyglot CI/DF-03 narrowed the prior
+        # ``chown -R shekel:shekel /home/shekel/app`` -- which reached the
+        # state dir by recursing the whole app tree -- to chown only the
+        # two dirs that need it; state still ends up shekel-owned.
+        assert "chown shekel:shekel /home/shekel/app/state" in text, (
+            "Dockerfile no longer chowns /home/shekel/app/state to shekel; "
+            "the state subdirectory will be root-owned and entrypoint.sh's "
+            "sentinel touch will fail under set -e"
         )
 
 
@@ -387,146 +391,6 @@ class TestRegistrationDisabledByDefault:
         )
 
 
-# ──────────────────────────────────────────────────────────────────
-# F-054: scripts/retire_stale_containers.sh exists + is well-shaped
-# ──────────────────────────────────────────────────────────────────
-
-
-class TestRetireStaleContainersScript:
-    """The retire helper exists, is executable, and parses cleanly.
-
-    Behavioural testing of the script (does it actually remove the
-    right containers?) is impractical in unit tests because it needs
-    a live Docker daemon.  The script is exercised by the operator
-    via --dry-run before --confirm; these tests check the
-    structural invariants that surface in `bash -n` and source
-    inspection.
-    """
-
-    def test_script_exists_and_is_executable(self) -> None:
-        """The script file exists and has the executable bit set."""
-        assert RETIRE_SCRIPT.is_file(), (
-            f"missing: {RETIRE_SCRIPT}"
-        )
-        # POSIX exec bit on owner.
-        mode = RETIRE_SCRIPT.stat().st_mode
-        assert mode & 0o100, (
-            f"{RETIRE_SCRIPT} is not executable; ``chmod +x`` it"
-        )
-
-    def test_script_parses_cleanly(self) -> None:
-        """``bash -n`` accepts the script (no syntax errors)."""
-        result = subprocess.run(
-            ["bash", "-n", str(RETIRE_SCRIPT)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        assert result.returncode == 0, (
-            f"bash -n failed for {RETIRE_SCRIPT}:\n"
-            f"  stdout: {result.stdout}\n  stderr: {result.stderr}"
-        )
-
-    def test_script_default_mode_is_dry_run(self) -> None:
-        """A bare invocation defaults to --dry-run (non-destructive).
-
-        The default-to-safe pattern: if an operator forgets the
-        explicit mode flag, nothing happens.  Asserting on source
-        rather than running the script (which would touch Docker)
-        because the test suite must remain hermetic.
-        """
-        text = RETIRE_SCRIPT.read_text(encoding="utf-8")
-        assert 'MODE="dry-run"' in text, (
-            "retire_stale_containers.sh no longer defaults MODE to dry-run; "
-            "a forgotten flag could cause unintended deletions"
-        )
-
-    def test_script_lists_all_audited_resources(self) -> None:
-        """The script enumerates every resource called out in F-054.
-
-        Audit finding F-054 names: containers shekel-app, shekel-db,
-        shekel-nginx; networks shekel_backend, shekel_frontend,
-        shekel_default; volume shekel_pgdata.  A regression that
-        drops any of these from the script's STALE_* arrays would
-        leave the corresponding host resource behind.
-        """
-        text = RETIRE_SCRIPT.read_text(encoding="utf-8")
-        for c in ("shekel-app", "shekel-db", "shekel-nginx"):
-            assert f'"{c}"' in text, (
-                f"retire script does not target container ``{c}`` "
-                "(audit finding F-054)"
-            )
-        for n in ("shekel_backend", "shekel_frontend", "shekel_default"):
-            assert f'"{n}"' in text, (
-                f"retire script does not target network ``{n}`` "
-                "(audit finding F-054)"
-            )
-        assert '"shekel_pgdata"' in text, (
-            "retire script does not target volume ``shekel_pgdata`` "
-            "(audit finding F-054)"
-        )
-
-    def test_script_backs_up_volume_before_removal(self) -> None:
-        """The destructive volume removal path is preceded by a backup step.
-
-        Source-order assertion: a ``backup_volume`` call must appear
-        BEFORE any ``remove_volume`` call in the main control flow.
-        A regression that swaps the order would unlink the volume
-        before the tarball is written, losing the data the audit
-        finding explicitly flagged as potentially-real production
-        state.
-        """
-        text = RETIRE_SCRIPT.read_text(encoding="utf-8")
-        backup_calls = [
-            m.start() for m in re.finditer(r"\bbackup_volume\b", text)
-        ]
-        remove_calls = [
-            m.start() for m in re.finditer(r"\bremove_volume\b", text)
-        ]
-        assert backup_calls and remove_calls, (
-            "retire script no longer references both backup_volume and "
-            "remove_volume; the safe-by-default destruction order is "
-            "no longer guaranteed"
-        )
-        # All backup callsites in the main control flow must precede
-        # all remove callsites (definitions can be in any order, but
-        # the helper definitions are not at the same lexical position
-        # as their main-block callsites because main() is at the end).
-        # We slice to "after the last function definition" by finding
-        # the ``main()`` entry in the file and asserting on offsets
-        # after that point.
-        main_match = re.search(r"^main\(\)\s*\{", text, re.MULTILINE)
-        assert main_match is not None, "no main() function in retire script"
-        main_offset = main_match.start()
-        backup_in_main = [b for b in backup_calls if b > main_offset]
-        remove_in_main = [r for r in remove_calls if r > main_offset]
-        assert backup_in_main and remove_in_main, (
-            "main() does not call both backup_volume and remove_volume"
-        )
-        assert max(backup_in_main) < min(remove_in_main), (
-            "main() calls remove_volume BEFORE backup_volume; the "
-            "tarball-then-unlink invariant is violated"
-        )
-
-    def test_script_requires_explicit_confirm_for_destruction(self) -> None:
-        """Destruction is gated on ``--confirm``; ``--dry-run`` is non-destructive."""
-        text = RETIRE_SCRIPT.read_text(encoding="utf-8")
-        # The dry-run branch in main() returns early before any
-        # destructive call.  We assert on the conditional, then on
-        # the early ``exit 0`` that follows.
-        assert re.search(
-            r'if\s*\[\[\s*"\$\{MODE\}"\s*==\s*"dry-run"\s*\]\];\s*then',
-            text,
-        ), "retire script does not branch on --dry-run mode"
-        # Confirmation prompt exists.
-        assert "prompt_confirm" in text, (
-            "retire script does not call prompt_confirm before destruction"
-        )
-
-
-# ──────────────────────────────────────────────────────────────────
-# F-113: .dockerignore excludes dev-only files
 # ──────────────────────────────────────────────────────────────────
 
 

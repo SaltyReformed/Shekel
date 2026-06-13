@@ -45,6 +45,7 @@
                      <tbody> to render on the initial page-load include.
                      Ignored when ``oob`` is true.
 #}
+{% from "_money_macros.html" import money %}
 {% from "grid/_grid_row_macros.html" import mstart %}
 {% set _refresh_url = url_for('grid.subtotal_rows', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.subtotal_rows', periods=num_periods|default(periods|length), offset=start_offset|default(0)) %}
 
@@ -61,7 +62,7 @@
     {% for period in periods %}
       {% set val = subtotals[period.id].income %}
       <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
-        {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
+        {% if val is not none %}{{ money(val, cents=false) }}{% endif %}
       </td>
     {% endfor %}
   </tr>
@@ -79,7 +80,7 @@
     {% for period in periods %}
       {% set val = subtotals[period.id].expense %}
       <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
-        {% if val %}${{ "{:,.0f}".format(val) }}{% endif %}
+        {% if val is not none %}{{ money(val, cents=false) }}{% endif %}
       </td>
     {% endfor %}
   </tr>
@@ -90,9 +91,9 @@
     {% for period in periods %}
       {% set net = subtotals[period.id].net %}
       <td class="text-end font-mono fw-bold {{ 'balance-negative' if net < 0 else '' }}{{ mstart(periods, loop.index0) }}">
-        {% if net %}
+        {% if net is not none %}
           {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
-          ${{ "{:,.0f}".format(net) }}
+          {{ money(net, cents=false) }}
         {% endif %}
       </td>
     {% endfor %}

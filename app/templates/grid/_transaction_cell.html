@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Transaction cell -- displays amount with status badge.
    Clicking opens the inline edit form via HTMX.
 
@@ -58,6 +59,11 @@
      keyboard C action (grid_keyboard.js) only fires where the button
      would render -- expense, projected, not a transfer shadow, not an
      envelope. #}
+  {# aria-label and title share the same status/progress detail; build it
+     ONCE (polyglot audit TPLB/TPL-10).  aria-label additionally prefixes
+     the txn name for screen readers, and the two conflict prefixes differ
+     only in punctuation, so those stay inline. #}
+  {% set detail %}{% if show_progress %}{{ money(es.total) }} / {{ money(t.estimated_amount) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ money(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: {{ money(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}{% endset %}
   <span class="txn-open"
         data-txn-id="{{ t.id }}"
         {% if t.is_expense and t.status_id == STATUS_PROJECTED
@@ -65,8 +71,8 @@
         {% if t.tracks_purchases %}data-envelope="1"{% endif %}
         role="button"
         tabindex="0"
-        aria-label="{% if is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{% if show_progress %}{{ t.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ t.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}"
-        title="{% if is_conflict %}This transaction was changed by another action -- click to retry. {% endif %}{% if show_progress %}${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(t.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}${{ '{:,.2f}'.format(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: ${{ '{:,.2f}'.format(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}">
+        aria-label="{% if is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{{ t.name }}: {{ detail }}"
+        title="{% if is_conflict %}This transaction was changed by another action -- click to retry. {% endif %}{{ detail }}">
     {% if is_conflict %}
     <i class="bi bi-exclamation-triangle text-warning small me-1"
        aria-label="Edit conflict"></i>

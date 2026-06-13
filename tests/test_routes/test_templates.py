@@ -1882,30 +1882,40 @@ class TestEnvelopeIncomeRejection:
 
 
 class TestRecurrenceCellLock:
-    """C7 source-level locks for the ``recurrence_cell`` macros.
+    """C7 source-level locks for the ``recurrence_cell`` macro.
 
     Guards CLAUDE.md "Reference Tables -- IDs for logic, strings for
-    display only" against silent regression.  The macros in
-    ``app/templates/templates/list.html`` and
-    ``app/templates/transfers/list.html`` historically compared
-    ``rr.pattern.name`` strings (via an intermediate ``pname`` set
-    variable) to drive eight elif branches.  Commit 7 of the
+    display only" against silent regression.  The macro historically
+    compared ``rr.pattern.name`` strings (via an intermediate ``pname``
+    set variable) to drive eight elif branches.  Commit 7 of the
     mobile-followup plan (F-8) rewired the comparisons onto integer
-    pattern IDs sourced from the ``REC_*`` Jinja globals registered
-    by ``app.jinja_globals.register_ref_id_globals``, sweeping both
-    files in one commit per F-8's "transfers/list.html if it carries
-    the same pattern" guidance.
+    pattern IDs sourced from the ``REC_*`` Jinja globals registered by
+    ``app.jinja_globals.register_ref_id_globals``.
 
-    These tests lock the post-commit state for both macros: no
-    ``.name ==`` or ``pname ==`` substrings (the comparison patterns
-    the rewrite eliminated), and every recurrence pattern enum
-    member has a matching ``REC_*`` comparison in each macro so a
+    The polyglot cleanup (TPLB/TPL-07) then consolidated the two
+    byte-identical copies that lived in
+    ``app/templates/templates/list.html`` and
+    ``app/templates/transfers/list.html`` into one shared macro at
+    ``app/templates/_recurrence_macros.html``, which both list
+    templates now import.  These tests therefore lock the single
+    source of truth: no ``.name ==`` or ``pname ==`` substrings (the
+    comparison patterns the rewrite eliminated), every recurrence
+    pattern enum member has a matching ``REC_*`` comparison so a
     future "added a new pattern but forgot to wire the branch"
-    regression fails the lock instead of silently falling through
-    to the else branch.
+    regression fails the lock instead of silently falling through to
+    the else branch, and both list templates still import the shared
+    macro so the consolidation cannot silently regress into a divergent
+    re-inlined copy.
     """
 
     _MACRO_PATHS = (
+        (
+            "_recurrence_macros.html",
+            ("app", "templates", "_recurrence_macros.html"),
+        ),
+    )
+
+    _LIST_TEMPLATE_PATHS = (
         ("templates/list.html", ("app", "templates", "templates", "list.html")),
         ("transfers/list.html", ("app", "templates", "transfers", "list.html")),
     )
@@ -1968,3 +1978,27 @@ class TestRecurrenceCellLock:
                     "branch would silently fall through to the else "
                     "fallback."
                 )
+
+    def test_list_templates_import_shared_recurrence_macro(self):
+        """Both list templates import the consolidated macro (TPLB/TPL-07).
+
+        The recurrence_cell macro was deduplicated out of the two list
+        templates into ``_recurrence_macros.html``.  Locking the import
+        ensures neither template re-inlines a private copy that could
+        diverge from the single source the two tests above guard.  The
+        ``with context`` clause is required: the macro's else-branch
+        fallback reads ``recurrence_pattern_labels``, an
+        ``@app.context_processor`` variable invisible to a context-less
+        import.
+        """
+        for label, parts in self._LIST_TEMPLATE_PATHS:
+            src = self._read_macro_source(parts)
+
+            assert (
+                'from "_recurrence_macros.html" import recurrence_cell '
+                "with context" in src
+            ), (
+                f"{label} must import recurrence_cell from "
+                "_recurrence_macros.html with context, not define its "
+                "own copy."
+            )

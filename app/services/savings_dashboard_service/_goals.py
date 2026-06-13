@@ -18,6 +18,29 @@ from app.services import obligations_aggregator, savings_goal_service
 from app.utils.money import percent_complete
 
 
+def _load_active_goals(user_id):
+    """Load the user's active savings goals.
+
+    The single active-goal loader shared by both savings-dashboard entry
+    points: the narrow ``compute_goal_progress`` (which also needs the
+    goals up front to restrict the projected accounts to those backing a
+    goal) and the full ``compute_dashboard_data``.  Centralizing the
+    query here means :func:`_compute_goal_progress` no longer re-runs the
+    identical ``is_active`` query its caller already issued.
+
+    Args:
+        user_id: Integer ID of the current user.
+
+    Returns:
+        List of active :class:`SavingsGoal` instances.
+    """
+    return (
+        db.session.query(SavingsGoal)
+        .filter_by(user_id=user_id, is_active=True)
+        .all()
+    )
+
+
 def _load_goal_templates(user_id, goals):
     """Batch-load active recurring transfer templates targeting goal accounts.
 
@@ -160,7 +183,7 @@ def _build_goal_datum(
     }
 
 
-def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay):
+def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay, goals):
     """Compute savings goal progress, contributions, and trajectory.
 
     For income-relative goals, the resolved target is calculated from
@@ -177,6 +200,10 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
         all_periods: All pay periods for the user.
         net_biweekly_pay: Current net biweekly pay (Decimal).  Used to
             resolve income-relative goal targets.
+        goals: The user's active :class:`SavingsGoal` instances, already
+            loaded by the caller via :func:`_load_active_goals`.  Passed
+            in rather than re-queried so the active-goal lookup runs once
+            per request, not twice (both entry points already load it).
 
     Returns:
         List of dicts with keys: goal, current_balance, progress_pct,
@@ -184,12 +211,6 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay)
         goal_mode_id, income_descriptor, has_salary_data, trajectory,
         monthly_contribution.
     """
-    goals = (
-        db.session.query(SavingsGoal)
-        .filter_by(user_id=user_id, is_active=True)
-        .all()
-    )
-
     templates_by_account = _load_goal_templates(user_id, goals)
 
     goal_data = []

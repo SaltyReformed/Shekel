@@ -31,6 +31,15 @@ exclude = [
     ".git",
     "_site",
     "site",
+    # Write-once audit registers and archived planning docs: generated /
+    # historical artifacts (long finding-register tables, quoted code and
+    # SQL) not worth reflowing. Excluded in the polyglot-cleanup Phase 5
+    # so the markdown gate reflects LIVING docs (README, CLAUDE.md,
+    # coding/testing standards, runbooks, design). The hard rumdl gate is
+    # deferred -- see docs/audits/polyglot-cleanup/findings.md Phase 5 log.
+    "docs/audits",
+    "docs/historical",
+    "docs/plans/historical",
 ]
 
 # ---------------------------------------------------------------------------

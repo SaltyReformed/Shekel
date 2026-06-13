@@ -64,10 +64,7 @@ function renderGapChart(canvasId) {
           tooltip: {
             callbacks: {
               label: function (ctx) {
-                return ctx.dataset.label + ': $' + ctx.parsed.x.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                });
+                return ctx.dataset.label + ': ' + ShekelChart.formatMoney(ctx.parsed.x, true);
               },
             },
           },
@@ -78,7 +75,7 @@ function renderGapChart(canvasId) {
             stacked: true,
             ticks: {
               callback: function (v) {
-                return '$' + v.toLocaleString();
+                return ShekelChart.formatMoney(v, false);
               },
             },
           },

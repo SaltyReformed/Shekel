@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Salary Profiles -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -47,10 +48,10 @@
       <td>{{ p.name }}</td>
       <td class="d-none d-lg-table-cell">{{ p.filing_status.name|replace('_', ' ')|title if p.filing_status else '--' }}</td>
       <td class="d-none d-lg-table-cell">{{ p.state_code }}</td>
-      <td class="text-end">${{ "%.2f"|format(p.annual_salary) }}</td>
+      <td class="text-end">{{ money(p.annual_salary) }}</td>
       <td class="text-end">
         {% if item.net_pay is not none %}
-          <span class="text-success fw-bold">${{ "%.2f"|format(item.net_pay) }}</span>
+          <span class="text-success fw-bold">{{ money(item.net_pay) }}</span>
           {% if p.calibration and p.calibration.is_active %}
           <span class="badge bg-success ms-1" title="Calibrated from pay stub">Cal</span>
           {% endif %}
@@ -119,7 +120,7 @@
         <h6 class="card-title mb-0">{{ p.name }}</h6>
         <span class="font-mono fw-bold">
           {% if item.net_pay is not none %}
-            <span class="text-success">${{ "%.2f"|format(item.net_pay) }}</span>
+            <span class="text-success">{{ money(item.net_pay) }}</span>
             {% if p.calibration and p.calibration.is_active %}
             <span class="badge bg-success ms-1" title="Calibrated from pay stub">Cal</span>
             {% endif %}
@@ -129,36 +130,32 @@
         </span>
       </div>
       <small class="text-muted">
-        ${{ "%.2f"|format(p.annual_salary) }} annual{% if p.filing_status %} | {{ p.filing_status.name|replace('_', ' ')|title }}{% endif %}{% if not p.is_active %} | Inactive{% endif %}
+        {{ money(p.annual_salary) }} annual{% if p.filing_status %} | {{ p.filing_status.name|replace('_', ' ')|title }}{% endif %}{% if not p.is_active %} | Inactive{% endif %}
       </small>
       <div class="mt-2">
         {# Mobile action dropdown -- preserved from v1 commit a3e9467. #}
         <div class="dropdown d-md-none d-inline-block">
-          <button class="btn btn-sm btn-outline-secondary dropdown-toggle d-inline-flex align-items-center" type="button"
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle d-inline-flex align-items-center btn-touch-44" type="button"
                   data-bs-toggle="dropdown" aria-expanded="false"
-                  style="min-height: 44px;"
                   aria-label="Actions for {{ p.name }}">
             <i class="bi bi-three-dots-vertical"></i>
           </button>
           <ul class="dropdown-menu">
             <li>
-              <a class="dropdown-item d-flex align-items-center"
-                 href="{{ url_for('salary.edit_profile', profile_id=p.id) }}"
-                 style="min-height: 44px;">
+              <a class="dropdown-item d-flex align-items-center btn-touch-44"
+                 href="{{ url_for('salary.edit_profile', profile_id=p.id) }}">
                 <i class="bi bi-pencil me-2"></i>Edit
               </a>
             </li>
             <li>
-              <a class="dropdown-item d-flex align-items-center"
-                 href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}"
-                 style="min-height: 44px;">
+              <a class="dropdown-item d-flex align-items-center btn-touch-44"
+                 href="{{ url_for('salary.breakdown_current', profile_id=p.id) }}">
                 <i class="bi bi-receipt me-2"></i>Breakdown
               </a>
             </li>
             <li>
-              <a class="dropdown-item d-flex align-items-center"
-                 href="{{ url_for('salary.projection', profile_id=p.id) }}"
-                 style="min-height: 44px;">
+              <a class="dropdown-item d-flex align-items-center btn-touch-44"
+                 href="{{ url_for('salary.projection', profile_id=p.id) }}">
                 <i class="bi bi-graph-up me-2"></i>Projection
               </a>
             </li>
@@ -169,8 +166,7 @@
                     data-confirm="Deactivate this salary profile?">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit"
-                        class="dropdown-item d-flex align-items-center text-danger"
-                        style="min-height: 44px;">
+                        class="dropdown-item d-flex align-items-center text-danger btn-touch-44">
                   <i class="bi bi-x-circle me-2"></i>Deactivate
                 </button>
               </form>

@@ -11,21 +11,37 @@
 # production setup on the same machine.  The name: field below forces
 # a safe project name regardless of directory.
 #
-# Primary workflow (recommended):
-#   1. docker compose -f docker-compose.dev.yml up db
-#   2. flask run    (from host, connects to containerized Postgres)
+# Primary workflow (operator decision 2026-06-12, parity audit
+# docs/audits/dev-prod-parity/findings.md): the CONTAINERIZED app is
+# the daily dev server -- full production parity (same entrypoint
+# pipeline incl. the audit-trigger boot gate, least-privilege
+# shekel_app role, redis-backed fail-closed rate limiting, hardened
+# read-only rootfs) with live reload via the source bind mount:
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker logs -f shekel-dev-app
 #
-# Full stack (containerized dev app with live reload):
-#   docker compose -f docker-compose.dev.yml up
+# Fallback (host flask run -- supported, intentionally NOT prod
+# parity: owner-role DB access, no entrypoint pipeline):
+#   1. docker compose -f docker-compose.dev.yml up -d db redis
+#   2. flask run    (connects to containerized Postgres; reads
+#      RATELIMIT_STORAGE_URI from .flaskenv, so the limiter is
+#      fail-closed against the redis service -- starting db alone
+#      would 500 every non-exempt request)
 #
-# Both workflows:
-#   docker compose -f docker-compose.dev.yml up db test-db
+# Test database only (scripts/test.sh manages its restarts):
+#   docker compose -f docker-compose.dev.yml up -d test-db
 
 name: shekel-dev
 
 services:
   db:
-    image: postgres:18-alpine
+    # Digest-pinned to the SAME postgres build production runs (parity
+    # audit 2026-06-12, finding D15 in
+    # docs/audits/dev-prod-parity/findings.md).  Tag-only pins let dev
+    # and prod drift to different PG patch levels on pull timing; bump
+    # this digest and the one in docker-compose.yml's db service in the
+    # same commit.
+    image: postgres:18-alpine@sha256:96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88
     container_name: shekel-dev-db
     restart: unless-stopped
     environment:
@@ -66,7 +82,9 @@ services:
       retries: 5
 
   test-db:
-    image: postgres:18-alpine
+    # Same digest as the db service above (and prod) -- see the comment
+    # there.  The test template is built against this exact PG build.
+    image: postgres:18-alpine@sha256:96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88
     container_name: shekel-dev-test-db
     restart: unless-stopped
     environment:
@@ -186,16 +204,89 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Redis (Flask-Limiter storage) ────────────────────────────────
+  # Mirrors the production redis service (parity audit 2026-06-12,
+  # finding D04): same persistence-off flags, same memory bounds, and
+  # the SAME ACL shape (default user disabled, per-app ``shekel`` user
+  # scoped to ``~LIMITS*`` minus @dangerous, nopass ping-only
+  # healthcheck user) so the prod rate-limit path -- fail-closed Redis
+  # storage, ACL key-pattern fit, counters that survive app restarts --
+  # is exercised in dev instead of silently degrading to ``memory://``.
+  # The password is a committed dev-only value, consistent with the
+  # other public dev credentials in this file (see the db service
+  # comment); the port is loopback-bound so host ``flask run`` can
+  # reach it but the LAN cannot.  No hardening keys, matching the dev
+  # db posture (D08 hardens only the app service, whose writes are the
+  # code under test).
+  redis:
+    image: redis:7.4-alpine
+    container_name: shekel-dev-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "64mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--user"
+      - "default"
+      - "off"
+      - "--user"
+      - "shekel"
+      - "on"
+      - ">dev-only-shekel-redis-password"
+      - "resetkeys"
+      - "~LIMITS*"
+      - "&*"
+      - "+@all"
+      - "-@dangerous"
+      - "--user"
+      - "healthcheck"
+      - "on"
+      - "nopass"
+      - "resetkeys"
+      - "+ping"
+    healthcheck:
+      # Same probe as prod: PING via the nopass healthcheck ACL user;
+      # ``-a ''`` forces the AUTH frame, grep makes the exit code
+      # reflect the actual response (see docker-compose.yml redis
+      # service for the full rationale).
+      test: ["CMD-SHELL", "redis-cli --user healthcheck -a '' --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   app:
     build: .
     container_name: shekel-dev-app
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        # Mirrors prod: the limiter runs fail-closed (no in-memory
+        # fallback, errors not swallowed), so the app must not boot
+        # before Redis answers PING or the first rate-limited request
+        # 500s.
+        condition: service_healthy
     environment:
       FLASK_APP: run.py
       FLASK_ENV: development
       FLASK_DEBUG: "1"
+      # Match prod's pinned civil timezone (parity audit 2026-06-12,
+      # finding M01; see deploy/docker-compose.prod.yml for the full
+      # rationale) so the containerized dev app computes the same
+      # calendar dates as prod and as host ``flask run`` (which
+      # inherits the host's America/New_York).  Without this the
+      # container defaults to UTC and "today" diverges from the
+      # operator's wall clock between 20:00 and midnight Eastern.
+      TZ: America/New_York
       # SECRET_KEY must be set in .env (or shell env) -- no placeholder
       # default.  Generate with:
       #   python -c "import secrets; print(secrets.token_hex(32))"
@@ -220,10 +311,34 @@ services:
       SEED_USER_PASSWORD: ChangeMe!2026
       SEED_USER_DISPLAY_NAME: Budget Admin
       TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
+      # Rate-limit storage on the dev redis above (parity audit
+      # 2026-06-12, finding D04).  Hardcoded rather than interpolated
+      # so the container value cannot be shadowed by the .env entry
+      # host ``flask run`` uses (which points at localhost instead of
+      # the compose service name).  NOTE the behavior change vs the
+      # old ``memory://`` default: counters now persist across the
+      # reloader's restarts, so the global default limit
+      # (``200 per hour; 30 per minute``, app/config.py) is enforced
+      # for real per client IP.  All host-originated traffic NATs to
+      # the bridge gateway and shares one bucket; an aggressive
+      # automated crawl can now meet 429s that memory:// never
+      # surfaced.  That is prod behavior -- fix the crawl rate, not
+      # the limit.
+      RATELIMIT_STORAGE_URI: redis://shekel:dev-only-shekel-redis-password@redis:6379/0
     ports:
-      # Flask dev server on port 5000, mapped directly to host.
-      # No Nginx in development.
-      - "5000:5000"
+      # Loopback bind for the developer's own browser plus an explicit
+      # bind on the shekel-frontend bridge gateway so the operator's
+      # LAN-allowlisted nginx vhost (an un-mirrored host-side artifact
+      # that proxies to 172.32.0.1:5000) keeps working.  Replaces the
+      # earlier ``"5000:5000"`` publish on ALL interfaces, which
+      # exposed the Werkzeug debugger (FLASK_DEBUG=1 above) to every
+      # LAN device, bypassing that vhost's allowlist entirely (parity
+      # audit 2026-06-12, finding D09).  On a machine without the
+      # shekel-frontend bridge (fresh checkout), delete the second
+      # mapping -- Docker cannot bind an address the host does not
+      # have.
+      - "127.0.0.1:5000:5000"
+      - "172.32.0.1:5000:5000"
     volumes:
       # Mount source code for live reload.  Flask's reloader detects
       # file changes and restarts automatically.
@@ -232,6 +347,48 @@ services:
     # The entrypoint.sh still runs (DB init, seeding), then exec's
     # this command instead of the Dockerfile CMD (gunicorn).
     command: ["flask", "run", "--host=0.0.0.0", "--port=5000"]
+    healthcheck:
+      # Override the image HEALTHCHECK, which probes Gunicorn's :8000
+      # and can never pass against the flask-run command above -- the
+      # container sat permanently ``unhealthy`` and any future
+      # ``depends_on: service_healthy`` on it would deadlock (parity
+      # audit 2026-06-12, finding D07).  Same cadence as the image
+      # probe; /health is limiter-exempt.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+    # Container hardening to prod parity for the APP only (parity
+    # audit 2026-06-12, finding D08; the db/test-db/redis services
+    # stay unhardened -- their write patterns are the images' own, not
+    # app code under test).  ``read_only`` is the bug-catching one:
+    # app code that writes outside /tmp or its mounts works on a rw
+    # rootfs and crashes prod.  The source bind mount above stays rw,
+    # so the reloader and ``__pycache__`` writes are unaffected (prod
+    # needs PYTHONDONTWRITEBYTECODE=1 because its app dir is immutable
+    # image content; dev deliberately omits it).  The entrypoint's
+    # static-volume copy is failure-tolerant (``|| true``) and its
+    # seed sentinel lands in the rw bind mount, so the read-only
+    # rootfs does not break startup.  no-new-privileges also comes
+    # from the daemon default on this host; declared here so the
+    # committed file carries the posture on any host.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
 
 volumes:
+  # External so ``docker compose -p shekel-dev down -v`` can never
+  # delete the dev database -- it frequently holds a clone of REAL
+  # production financial data (parity audit 2026-06-12, finding D18;
+  # mirrors the prod pgdata posture).  ``name:`` keeps the literal
+  # volume name the compose-managed era created, so existing data is
+  # reused as-is.  Fresh machines create it once with:
+  #   docker volume create shekel-dev_pgdata
   pgdata:
+    external: true
+    name: shekel-dev_pgdata

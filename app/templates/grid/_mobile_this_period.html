@@ -88,6 +88,7 @@
                             for companion URL parity).
 #}
 {% from "grid/_grid_row_macros.html" import render_row_card %}
+{% from "_money_macros.html" import money %}
 {% set period = periods[0] %}
 {% set can_edit = can_edit | default(True) %}
 {% set show_period_nav = show_period_nav | default(True) %}
@@ -160,7 +161,7 @@
            update this header total out-of-band on mobileCardSettled. #}
         <span id="mobile-tp-income-total-{{ period.id }}" class="font-mono fw-bold">
           {% set inc_total = subtotals[period.id].income %}
-          {% if inc_total %}${{ "{:,.0f}".format(inc_total) }}{% else %}$0{% endif %}
+          {% if inc_total %}{{ money(inc_total, cents=false) }}{% else %}$0{% endif %}
         </span>
       {% endif %}
     </div>
@@ -196,7 +197,7 @@
            update this header total out-of-band on mobileCardSettled. #}
         <span id="mobile-tp-expense-total-{{ period.id }}" class="font-mono fw-bold">
           {% set exp_total = subtotals[period.id].expense %}
-          {% if exp_total %}${{ "{:,.0f}".format(exp_total) }}{% else %}$0{% endif %}
+          {% if exp_total %}{{ money(exp_total, cents=false) }}{% else %}$0{% endif %}
         </span>
       {% endif %}
     </div>

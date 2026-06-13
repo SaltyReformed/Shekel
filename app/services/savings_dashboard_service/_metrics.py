@@ -254,6 +254,121 @@ def _compute_avg_monthly_expenses(
     return max(historical, floor)
 
 
+def _loan_ad_current_principal(ad: dict) -> Decimal | None:
+    """Return a loan account dict's contributing current balance, or None.
+
+    The single definition of "which loan accounts contribute to the debt
+    summary's active-loans-only aggregates" (its ``total_debt``,
+    ``total_monthly_payments``, and weighted-average rate).  A loan
+    contributes its resolver-derived current balance when it is neither
+    paid off nor at a zero (or negative) balance; otherwise it contributes
+    nothing and the caller skips it.  The principal-paid progress fraction
+    does NOT use this predicate -- it sums over ALL loans ever originated
+    (see :func:`_compute_principal_paid_fraction`), keeping paid-off loans
+    in both of its sums so the marker stays monotonic.  The displayed debt
+    balance, by contrast, is active-loans-only, which is exactly what this
+    predicate scopes.
+
+    Args:
+        ad: A per-account dict carrying ``is_paid_off`` and
+            ``current_balance`` (a loan entry from
+            ``_compute_account_projections``).
+
+    Returns:
+        The loan's resolver-derived current balance as a positive
+        ``Decimal`` when it contributes, or ``None`` when it is paid off
+        or its balance is zero / negative.
+    """
+    if ad["is_paid_off"]:
+        return None
+    # Resolver-derived current_balance (E-18 / Commit 15).  Same dollar
+    # figure as the loan card; replaces the previous read of the
+    # non-authoritative ``LoanParams.current_principal`` column that
+    # produced F-008's stored-vs-engine divergence.
+    principal = ad["current_balance"] or Decimal("0.00")
+    if principal <= Decimal("0.00"):
+        return None
+    return principal
+
+
+def _compute_principal_paid_fraction(
+    account_data: list[dict],
+) -> Decimal | None:
+    """Aggregate fraction of original principal paid across ALL loans ever.
+
+    Computes ``(sum(original_principal) - sum(current_balance)) /
+    sum(original_principal)`` over EVERY loan the pipeline surfaces, not
+    just the loans still carrying a balance.  A paid-off loan stays in
+    BOTH the numerator and the denominator, contributing
+    ``Decimal("0.00")`` to the current-balance sum -- so its full
+    ``original_principal`` lands in the "paid" portion of the numerator.
+
+    This "all loans ever originated" basis (locked 2026-06-12 in
+    ``docs/design/dashboard_card_audit.md``, Rebuild decisions item 4) is
+    what makes the debt-track marker MONOTONIC: paying a single loan all
+    the way off only adds its principal to the paid portion and never
+    removes anything from the denominator, so the fraction can only rise,
+    reaches exactly ``1`` at full payoff of every loan, and stays there --
+    it never jumps backward the way the prior active-loans-only basis did
+    when one loan dropped out of both sums at payoff.  The displayed
+    balance label remains active-loans-only; that is
+    :func:`_compute_debt_summary`'s concern, not this marker's.
+
+    "All loans the pipeline surfaces" is, reachably, all of the user's
+    NON-ARCHIVED (``is_active=True``) loan accounts that have a
+    ``LoanParams`` row.  Archived accounts are filtered out upstream by
+    ``_load_dashboard_core_data`` (``is_active=True``) and never reach
+    ``account_data``, so they cannot be included; a loan with no
+    ``LoanParams`` row carries no ``original_principal`` and is likewise
+    not a loan-ad here.  Paid-off loans, by contrast, remain active
+    accounts and DO appear in ``account_data`` carrying
+    ``is_paid_off=True``, so the all-loans-ever set is fully reachable.
+
+    ``original_principal`` is a NOT NULL, ``> 0`` column on
+    :class:`~app.models.loan_params.LoanParams`, so any real loan-ad
+    supplies a positive denominator.  ``None`` is returned ONLY when the
+    user has no loan accounts at all (the denominator would be zero); a
+    fully paid-off loan set returns ``Decimal("1")``, not ``None``.
+
+    Args:
+        account_data: Per-account dicts from
+            ``_compute_account_projections`` (any mix -- only entries
+            carrying ``loan_params`` are read).
+
+    Returns:
+        The principal-paid fraction as a ``Decimal`` in ``[0, 1]`` (a
+        loan whose current balance somehow exceeds its original principal
+        is clamped to ``0`` so the marker never renders to the left of the
+        rail), or ``None`` when the user has no loans at all.
+    """
+    loan_ads = [ad for ad in account_data if ad.get("loan_params")]
+
+    total_original = Decimal("0.00")
+    total_current = Decimal("0.00")
+    for ad in loan_ads:
+        # ALL loans ever: every loan-ad contributes its original
+        # principal to the denominator.  A paid-off loan contributes
+        # Decimal("0.00") to the current-balance sum (regardless of the
+        # resolver's as-of-today figure) so its full principal counts as
+        # paid; an active loan contributes its resolver-derived current
+        # balance, never below zero.
+        total_original += ad["loan_params"].original_principal
+        if ad["is_paid_off"]:
+            continue
+        current = ad["current_balance"] or Decimal("0.00")
+        total_current += max(current, Decimal("0.00"))
+
+    if total_original <= Decimal("0.00"):
+        return None
+
+    fraction = (total_original - total_current) / total_original
+    # A current balance above the original principal (negative paid
+    # fraction) is meaningless for a payoff marker; clamp to 0.
+    if fraction < Decimal("0"):
+        return Decimal("0")
+    return fraction
+
+
 def _accumulate_loan_debt(
     loan_ads: list, escrow_map: dict,
 ) -> tuple[Decimal, Decimal, Decimal, list]:
@@ -279,16 +394,10 @@ def _accumulate_loan_debt(
     payoff_dates = []
 
     for ad in loan_ads:
-        if ad["is_paid_off"]:
-            continue
-
-        # Resolver-derived current_balance (E-18 / Commit 15).  Same
-        # dollar figure as the loan card; replaces the previous read
-        # of the non-authoritative ``LoanParams.current_principal``
-        # column that produced F-008's stored-vs-engine divergence.
-        principal = ad["current_balance"] or Decimal("0.00")
-
-        if principal <= Decimal("0.00"):
+        # The same contribute-or-skip rule the principal-paid fraction
+        # uses, so the two aggregates sum over one loan set (DRY).
+        principal = _loan_ad_current_principal(ad)
+        if principal is None:
             continue
 
         # DH-#56: the loan's CURRENT rate (resolver-derived,

@@ -14,7 +14,7 @@
  *   data-slider-target="elementId" -- the HTMX target element to trigger.
  *   data-slider-debounce="250"    -- debounce delay in ms (default 250).
  */
-var ChartSlider = (function () {
+(function () {
 
   var timers = {};
 
@@ -53,7 +53,7 @@ var ChartSlider = (function () {
       // Sync text → range.
       textInput.addEventListener('input', function () {
         var val = parseFloat(textInput.value);
-        if (!isNaN(val)) {
+        if (!Number.isNaN(val)) {
           var min = parseFloat(rangeInput.min);
           var max = parseFloat(rangeInput.max);
           rangeInput.value = Math.max(min, Math.min(max, val));

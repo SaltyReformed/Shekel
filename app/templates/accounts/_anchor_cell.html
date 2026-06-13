@@ -8,6 +8,7 @@
    page reload.  See app/routes/accounts.py:inline_anchor_update for
    the optimistic-locking contract (commit C-17 / F-009).
 #}
+{% from "_money_macros.html" import money %}
 {% if editing %}
 <form hx-patch="{{ url_for('accounts.inline_anchor_update', account_id=acct.id) }}"
       hx-target="this"
@@ -42,10 +43,11 @@
       hx-swap="outerHTML"
       role="button"
       tabindex="0"
+      data-keyboard-activate
       class="font-mono cursor-pointer{% if conflict %} text-warning{% endif %}"
-      aria-label="Current balance: ${{ '{:,.2f}'.format(acct.current_anchor_balance) if acct.current_anchor_balance is not none else '0.00' }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
+      aria-label="Current balance: {{ money(acct.current_anchor_balance) if acct.current_anchor_balance is not none else '$0.00' }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
       title="{% if conflict %}This account was changed by another action -- click to retry{% else %}Click to edit{% endif %}">
-  ${{ "%.2f"|format(acct.current_anchor_balance) if acct.current_anchor_balance is not none else '0.00' }}
+  {{ money(acct.current_anchor_balance) if acct.current_anchor_balance is not none else '$0.00' }}
   {% if conflict %}
   <i class="bi bi-exclamation-triangle text-warning ms-1 small"
      aria-label="Edit conflict"></i>

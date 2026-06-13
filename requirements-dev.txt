@@ -27,6 +27,16 @@ pylint==4.0.5
 pylint-flask==0.6
 pylint-flask-sqlalchemy==0.2.0
 
+# Polyglot-cleanup Phase 5 linters (pip-installable). The binary tools
+# (shellcheck, shfmt, biome, actionlint, typos, gitleaks, hadolint) are
+# installed on the host and pinned by download in CI; these three ship
+# via pip, so they live here and CI installs them with this file.
+# Versions match the host toolchain; pinning guards against rule/dictionary
+# drift newly flagging unchanged files between releases.
+yamllint==1.38.0
+zizmor==1.25.2
+djlint==1.39.2
+
 # Pre-commit framework: runs the local hooks in .pre-commit-config.yaml
 # (pylint app/ + the custom checkers) before each commit, mirroring the CI
 # gate. A pre-merge belt-and-suspenders layer for commits made outside a

@@ -452,7 +452,7 @@ class TestInlineAnchor:
             )
 
             assert response.status_code == 200
-            assert b"$1000.00" in response.data
+            assert b"$1,000.00" in response.data
             assert b"font-mono" in response.data
 
     def test_inline_anchor_invalid_amount(self, app, auth_client, seed_user):
@@ -3910,6 +3910,149 @@ class TestAnchorTemplatesEmitVersionPin:
             assert f'value="{current_version}"' in body, (
                 "version_id hidden input must carry the current row's "
                 "version, not a placeholder."
+            )
+
+    def test_anchor_form_default_revert_is_grid_display(
+        self, app, auth_client, seed_user,
+    ):
+        """Without ?revert, the editor reverts to the grid display cell.
+
+        Fix C: the grid path passes no ``revert`` token, so Cancel /
+        Escape keep their original target -- the ``accounts.anchor_display``
+        GET endpoint -- byte-for-byte unchanged.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(f"/accounts/{acct_id}/anchor-form")
+            assert response.status_code == 200
+            body = response.data.decode()
+            display_url = f"/accounts/{acct_id}/anchor-display"
+            # Cancel hx-get and Escape data-revert-url both target the
+            # grid display cell.
+            assert f'hx-get="{display_url}"' in body
+            assert f'data-revert-url="{display_url}"' in body
+            assert "/dashboard/balance" not in body
+
+    def test_anchor_form_dashboard_revert_targets_balance_section(
+        self, app, auth_client, seed_user,
+    ):
+        """With ?revert=dashboard, the editor reverts to the balance card.
+
+        Fix C: opened from the dashboard balance card, Cancel / Escape must
+        restore THAT card (``dashboard.balance_section``) rather than
+        stranding the dashboard on the grid's whole-dollar display cell.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form?revert=dashboard"
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            # Cancel hx-get and Escape data-revert-url both point at the
+            # dashboard balance-section partial, not the grid display cell.
+            assert 'hx-get="/dashboard/balance"' in body
+            assert 'data-revert-url="/dashboard/balance"' in body
+            assert f"/accounts/{acct_id}/anchor-display" not in body
+
+    def test_grid_anchor_form_patch_url_carries_no_revert(
+        self, app, auth_client, seed_user,
+    ):
+        """M1 (grid): the edit form's hx-patch carries no ``revert`` token.
+
+        The grid path passes no ``revert`` query param, so the form's
+        mutation URL must be the bare ``/true-up`` endpoint -- byte-for-byte
+        unchanged from before the revert round-trip was added.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(f"/accounts/{acct_id}/anchor-form")
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert f'hx-patch="/accounts/{acct_id}/true-up"' in body
+            assert "revert=dashboard" not in body
+
+    def test_dashboard_anchor_form_patch_url_threads_revert(
+        self, app, auth_client, seed_user,
+    ):
+        """M1 (dashboard): the edit form's hx-patch threads ``revert=dashboard``.
+
+        Opened from the dashboard balance card, the form's mutation URL
+        must carry the ``revert`` token so a 409 conflict response can
+        re-render the conflict cell with the dashboard retry target rather
+        than stranding the card on the grid display cell.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form?revert=dashboard"
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert (
+                f'hx-patch="/accounts/{acct_id}/true-up?revert=dashboard"'
+                in body
+            )
+
+    def test_grid_conflict_cell_retry_opener_carries_no_revert(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """M1 (grid conflict): the 409 conflict cell's retry opener is token-free.
+
+        A stale-version PATCH with no ``revert`` token returns the grid
+        conflict cell.  Its retry opener (the click-to-reopen ``hx-get``)
+        must reopen the bare ``anchor-form`` -- no ``revert`` token -- so the
+        grid conflict path is byte-for-byte unchanged.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            stale_version = db.session.get(Account, acct_id).version_id
+            _bump_account_version_outside_session(acct_id)
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={
+                    "anchor_balance": "1200.00",
+                    "version_id": str(stale_version),
+                },
+            )
+            assert response.status_code == 409
+            body = response.data.decode()
+            # Confirm this is the conflict cell, then pin its retry opener.
+            assert "changed by another action" in body.lower()
+            assert f'hx-get="/accounts/{acct_id}/anchor-form"' in body
+            assert "revert=dashboard" not in body
+
+    def test_dashboard_conflict_cell_retry_opener_carries_revert(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """M1 (dashboard conflict): the 409 conflict cell reopens in the dashboard.
+
+        A stale-version PATCH carrying ``?revert=dashboard`` returns the
+        conflict cell whose retry opener must reopen ``anchor-form`` WITH
+        ``revert=dashboard``.  Without this, a conflict raised from the
+        dashboard balance card would strand it on the grid display cell:
+        the retry would reopen with no token, and Cancel would then revert
+        to the grid rather than the dashboard balance section.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            stale_version = db.session.get(Account, acct_id).version_id
+            _bump_account_version_outside_session(acct_id)
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up?revert=dashboard",
+                data={
+                    "anchor_balance": "1200.00",
+                    "version_id": str(stale_version),
+                },
+            )
+            assert response.status_code == 409
+            body = response.data.decode()
+            assert "changed by another action" in body.lower()
+            assert (
+                f'hx-get="/accounts/{acct_id}/anchor-form?revert=dashboard"'
+                in body
             )
 
     def test_inline_anchor_form_includes_version_pin(

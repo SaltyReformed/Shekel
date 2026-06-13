@@ -1,5 +1,15 @@
 #!/bin/bash
-# Shekel Budget App -- Production Deployment Script
+# Shekel Budget App -- SELF-HOSTED Source-Build Deployment Script
+#
+# SCOPE (polyglot audit 2026-06-12, OPS/SH-14): this script serves
+# self-hosted installs that BUILD FROM SOURCE (docker-compose.yml +
+# docker-compose.build.yml). It is NOT the maintainer's production
+# deploy path -- that is the digest-pinned, cosign-keyless-verified
+# /opt/docker/scripts/shekel-deploy.sh pipeline driving the hardened
+# stack at /opt/docker/shekel. Running this script on a host where
+# that canonical stack exists would replace the pinned, hardened
+# container with an unpinned locally-built one, so it now REFUSES to
+# run when /opt/docker/shekel exists (override: --force-self-hosted).
 #
 # Pulls the latest code from GitHub, builds the Docker image, restarts
 # the application container, verifies health, and rolls back to the
@@ -39,7 +49,10 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 NGINX_PORT="${NGINX_PORT:-80}"
 HEALTH_URL="http://localhost:${NGINX_PORT}/health"
-COMPOSE_FILES="-f docker-compose.yml -f docker-compose.build.yml"
+# Array, not a space-joined string: the callers expand it unquoted
+# otherwise -- the precise unquoted-expansion pattern the shell
+# standards ban (OPS/SH-19).
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.build.yml)
 
 # Image reference used by Cosign sign + verify steps.  Matches the
 # tag the local build produces (the COMPOSE_FILES merge tags the
@@ -69,6 +82,7 @@ COSIGN_REQUIRED="${COSIGN_REQUIRED:-false}"
 SKIP_PULL=false
 SKIP_BACKUP=false
 SKIP_COSIGN=false
+FORCE_SELF_HOSTED=false
 
 # ── Functions ────────────────────────────────────────────────────
 
@@ -76,6 +90,7 @@ log() {
     # Structured log output: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
     local level="$1"
     shift
+    # shellcheck disable=SC2312 # date with a fixed format string always succeeds; this is log-line formatting, not a checked command.
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
 }
 
@@ -100,6 +115,9 @@ Options:
     --skip-pull         Skip git pull (deploy from current working tree)
     --skip-backup       Skip pre-deploy database backup
     --skip-cosign       Skip Cosign sign + verify (use only in emergencies)
+    --require-cosign    Fail the deploy when cosign/keys are missing
+                        (equivalent to COSIGN_REQUIRED=true)
+    --force-self-hosted Run even though /opt/docker/shekel exists (see header)
     --health-timeout N  Seconds to wait for health check (default: 60)
     --health-interval N Seconds between health check retries (default: 5)
     --help              Show this help message
@@ -173,6 +191,7 @@ pull_latest() {
         exit 1
     fi
 
+    # shellcheck disable=SC2312 # HEAD is resolvable after the preceding ff-only pull succeeded; the short hash is used only for the display log line.
     log "INFO" "Code updated to $(git rev-parse --short HEAD)"
 }
 
@@ -220,7 +239,7 @@ build_image() {
     log "INFO" "Building new Docker image..."
     cd "${DEPLOY_DIR}"
 
-    if ! docker compose ${COMPOSE_FILES} build app; then
+    if ! docker compose "${COMPOSE_FILES[@]}" build app; then
         log "ERROR" "Docker image build failed. The previous version is still running."
         exit 1
     fi
@@ -290,6 +309,8 @@ handle_cosign_skip() {
     log "WARNING" "${reason}; continuing without signature controls."
     log "WARNING" "Set COSIGN_REQUIRED=true in .env or pass --require-cosign"
     log "WARNING" "to promote this warning to an error in steady-state ops."
+    # (--require-cosign exists since the OPS/SH-18 fix; it simply sets
+    # COSIGN_REQUIRED=true for this run.)
     return 0
 }
 
@@ -300,12 +321,16 @@ sign_image() {
     # Audit finding F-155 / Commit C-36.
     log "INFO" "Signing image with Cosign..."
 
+    # shellcheck disable=SC2310 # cosign_available is a boolean predicate (wraps command -v); its 0/1 is exactly what this if tests, no internal command needs to abort the script.
     if ! cosign_available; then
+        # shellcheck disable=SC2310 # handle_cosign_skip's return is the policy decision (1 only when COSIGN_REQUIRED); the || exit 1 fully routes that status, nothing is swallowed.
         handle_cosign_skip "cosign not installed (sign step)" || exit 1
         return 0
     fi
 
+    # shellcheck disable=SC2310 # cosign_signing_key_present is a boolean predicate ([ -f ]/[ -r ] tests); its 0/1 is exactly what this if tests.
     if ! cosign_signing_key_present; then
+        # shellcheck disable=SC2310 # handle_cosign_skip's return is the policy decision (1 only when COSIGN_REQUIRED); the || exit 1 fully routes that status.
         handle_cosign_skip \
             "cosign keypair missing at COSIGN_PRIVATE_KEY=${COSIGN_PRIVATE_KEY} or COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}" \
             || exit 1
@@ -316,7 +341,7 @@ sign_image() {
     digest=$(cosign_resolve_digest)
     if [ -z "$digest" ]; then
         log "ERROR" "Could not resolve digest for ${IMAGE_REF}; cannot sign."
-        log "ERROR" "Verify ``docker images ${IMAGE_REF}`` lists the image."
+        log "ERROR" "Verify 'docker images ${IMAGE_REF}' lists the image."
         exit 1
     fi
 
@@ -326,8 +351,8 @@ sign_image() {
     # before invoking deploy.sh; the script never prompts because
     # the deploy is intended to run unattended once initiated.
     if ! COSIGN_PASSWORD="${COSIGN_PASSWORD:-}" cosign sign --yes \
-            --key "${COSIGN_PRIVATE_KEY}" \
-            "${IMAGE_REF}@${digest}"; then
+        --key "${COSIGN_PRIVATE_KEY}" \
+        "${IMAGE_REF}@${digest}"; then
         log "ERROR" "cosign sign failed for ${IMAGE_REF}@${digest}."
         log "ERROR" "Check COSIGN_PASSWORD env var (required for"
         log "ERROR" "encrypted private keys) and the key permissions."
@@ -346,12 +371,16 @@ verify_image_signature() {
     # before the container swap.  Audit finding F-155 / Commit C-36.
     log "INFO" "Verifying image signature with Cosign..."
 
+    # shellcheck disable=SC2310 # cosign_available is a boolean predicate (wraps command -v); its 0/1 is exactly what this if tests, no internal command needs to abort the script.
     if ! cosign_available; then
+        # shellcheck disable=SC2310 # handle_cosign_skip's return is the policy decision (1 only when COSIGN_REQUIRED); the || exit 1 fully routes that status, nothing is swallowed.
         handle_cosign_skip "cosign not installed (verify step)" || exit 1
         return 0
     fi
 
+    # shellcheck disable=SC2310 # cosign_verifier_key_present is a boolean predicate ([ -f ]/[ -r ] tests); its 0/1 is exactly what this if tests.
     if ! cosign_verifier_key_present; then
+        # shellcheck disable=SC2310 # handle_cosign_skip's return is the policy decision (1 only when COSIGN_REQUIRED); the || exit 1 fully routes that status.
         handle_cosign_skip \
             "cosign verifier key missing at COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}" \
             || exit 1
@@ -366,7 +395,7 @@ verify_image_signature() {
     fi
 
     if ! cosign verify --key "${COSIGN_PUBLIC_KEY}" \
-            "${IMAGE_REF}@${digest}" >/dev/null 2>&1; then
+        "${IMAGE_REF}@${digest}" >/dev/null 2>&1; then
         log "ERROR" "cosign verify FAILED for ${IMAGE_REF}@${digest}."
         log "ERROR" "The locally-built image is unsigned or its signature"
         log "ERROR" "does not match COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}."
@@ -386,7 +415,7 @@ restart_app() {
     # Recreate the app container with the new image.
     # --no-deps: only restart the app, not db or nginx.
     # The db and nginx containers remain running.
-    if ! docker compose ${COMPOSE_FILES} up -d --no-deps --force-recreate app; then
+    if ! docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate app; then
         log "ERROR" "Failed to restart app container."
         rollback
         exit 1
@@ -451,12 +480,12 @@ rollback() {
 
     # Stop the failed container.
     log "INFO" "Stopping failed container..."
-    docker compose ${COMPOSE_FILES} stop app 2>/dev/null || true
+    docker compose "${COMPOSE_FILES[@]}" stop app 2>/dev/null || true
 
     # Re-tag the previous image as the current compose image.
     # Get the compose image name (what docker compose build targets).
     local compose_image
-    compose_image=$(docker compose ${COMPOSE_FILES} images app --format json 2>/dev/null \
+    compose_image=$(docker compose "${COMPOSE_FILES[@]}" images app --format json 2>/dev/null \
         | python3 -c "import sys,json; data=json.load(sys.stdin); print(data[0].get('Repository','') if isinstance(data,list) else data.get('Repository',''))" 2>/dev/null || true)
 
     if [ -n "$compose_image" ]; then
@@ -467,10 +496,11 @@ rollback() {
     fi
 
     # Restart with the previous image.
-    docker compose ${COMPOSE_FILES} up -d --no-deps --force-recreate app
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate app
 
     # Verify the rollback succeeded.
     log "INFO" "Verifying rollback health..."
+    # shellcheck disable=SC2310 # wait_for_health is a poll-with-timeout predicate returning 0 healthy / 1 timed-out; this if branches on that status and the timeout case is the handled (else) path.
     if wait_for_health; then
         log "WARNING" "Rollback successful. Previous version is running."
         log "WARNING" "Investigate the failed deployment before retrying."
@@ -497,6 +527,17 @@ main() {
                 SKIP_COSIGN=true
                 shift
                 ;;
+            --require-cosign)
+                # Promote missing-cosign warnings to hard errors for this
+                # run (the option this script's own guidance recommended
+                # but never parsed -- OPS/SH-18).
+                COSIGN_REQUIRED=true
+                shift
+                ;;
+            --force-self-hosted)
+                FORCE_SELF_HOSTED=true
+                shift
+                ;;
             --health-timeout)
                 HEALTH_TIMEOUT="$2"
                 shift 2
@@ -519,6 +560,19 @@ main() {
 
     log "INFO" "=== Shekel Deployment Starting ==="
     log "INFO" "Deploy directory: ${DEPLOY_DIR}"
+
+    # Canonical-stack guard (OPS/SH-14): on the maintainer host the
+    # digest-pinned hardened stack lives at /opt/docker/shekel and is
+    # deployed by shekel-deploy; this source-build script targets the SAME
+    # compose project name and would silently swap the pinned container
+    # for an unpinned local build.
+    if [ -d /opt/docker/shekel ] && [ "${FORCE_SELF_HOSTED}" = false ]; then
+        log "ERROR" "Canonical production stack detected at /opt/docker/shekel."
+        log "ERROR" "Use the digest-pinned pipeline (shekel-deploy) to deploy there."
+        log "ERROR" "If you REALLY mean to run a source-build deploy on this host,"
+        log "ERROR" "rerun with --force-self-hosted."
+        exit 1
+    fi
 
     # Step 1: Check prerequisites.
     check_prerequisites
@@ -558,6 +612,7 @@ main() {
     restart_app
 
     # Step 9: Health check.
+    # shellcheck disable=SC2310 # wait_for_health is a poll-with-timeout predicate returning 0 healthy / 1 timed-out; this if branches on that status and the failure case triggers rollback in the else path.
     if wait_for_health; then
         log "INFO" "=== Deployment Successful ==="
         log "INFO" "Application is healthy at ${HEALTH_URL}"

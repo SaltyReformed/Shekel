@@ -1,40 +1,490 @@
-/* Shekel dashboard screen -- bill list rows and the balance display.
-   Expected to grow with the dashboard rebuild (the overhaul's second
-   target; see docs/design/overhaul_plan.md "Dashboard playbook").
+/* Shekel dashboard screen -- the Q "Terminal Road" rebuild.
+   Anatomy (docs/design/dashboard_card_audit.md, "Rebuild decisions
+   (Loop A COMPLETE)"): pulse canvas (sky + chart band), magnification
+   bracket, current-period street band, due-soon list, position tracks.
 
    Load-order contract (see base.html): after theme-steel-ink.css and
-   base.css. */
+   base.css. Tokens only -- no raw hex. */
 
 /* =============================================
-   DASHBOARD
+   PULSE CANVAS (sky + chart band)
    ============================================= */
-.bill-row {
-  transition: background-color 0.15s;
+.pulse-canvas {
+  background: var(--shekel-surface);
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 0.75rem;
+  overflow: hidden;
 }
 
-.bill-row:hover {
-  background-color: var(--shekel-row-hover);
+.pulse-sky {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem 1.5rem;
+  padding: 1.125rem 1.375rem 0.25rem;
+  flex-wrap: wrap;
 }
 
-.bill-row--paid {
-  opacity: 0.6;
+.pulse-sky__main {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
-.balance-display {
-  font-size: 1.75rem;
+.pulse-hero__label,
+.pulse-chip__label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-muted);
+}
+
+/* The hero figure doubles as the click-to-edit anchor control
+   (#balance-display); hover/focus affordance mirrors the old card. */
+.pulse-hero__num {
+  font-size: clamp(1.9rem, 3.5vw, 2.6rem);
   font-weight: 700;
-  color: var(--shekel-accent);
+  line-height: 1.1;
+  color: var(--shekel-text-primary);
   cursor: pointer;
-  padding: 0.25rem 0.5rem;
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  margin-left: -0.4rem;
   border-radius: 0.375rem;
   transition: background-color 0.15s;
 }
 
-.balance-display:hover,
-.balance-display:focus-visible {
+.pulse-hero__num:hover,
+.pulse-hero__num:focus-visible {
   background-color: rgba(var(--shekel-accent-rgb), 0.12);
 }
 
-.runway-badge {
+.pulse-hero__cap {
+  font-size: 0.8125rem;
+  color: var(--shekel-text-secondary);
+  margin-top: 0.125rem;
+}
+
+.pulse-hero__cap--faint {
+  font-size: 0.75rem;
   color: var(--shekel-text-muted);
+}
+
+/* Stale-anchor state of the "last updated" caption (Gate ruling: the
+   alerts banner retired; staleness lives on the control that fixes it). */
+.pulse-stale {
+  color: var(--shekel-credit);
+  font-weight: 600;
+}
+
+/* Stat row on the sky band, between the hero and the Open Grid button
+   (developer placement ruling 2026-06-12) -- the band below stays
+   entirely the chart's. */
+.pulse-statrow {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0.25rem 0 0 1.25rem;
+}
+
+.pulse-chip {
+  padding: 0.5rem 0.875rem;
+  border-radius: 0.75rem;
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+}
+
+.pulse-chip__value {
+  font-size: 1.1875rem;
+  font-weight: 700;
+  margin-top: 0.0625rem;
+}
+
+.pulse-chip__link {
+  display: block;
+  font-size: 0.71875rem;
+  margin-top: 0.0625rem;
+}
+
+/* Color as meaning: the trough chip turns danger-tinted when the
+   lowest projected point is negative. */
+.pulse-chip--danger {
+  background: color-mix(in srgb, var(--shekel-danger) 12%, var(--shekel-surface));
+  border-color: color-mix(in srgb, var(--shekel-danger) 35%, transparent);
+}
+
+.pulse-chip--danger .pulse-chip__value {
+  color: var(--shekel-danger);
+}
+
+.pulse-chip--done {
+  background: color-mix(in srgb, var(--shekel-done) 10%, var(--shekel-surface));
+  border-color: color-mix(in srgb, var(--shekel-done) 30%, transparent);
+}
+
+.pulse-chip--done .pulse-chip__value {
+  color: var(--shekel-done);
+}
+
+.pulse-open-grid {
+  margin-left: auto;
+  margin-top: 1.4rem;
+  white-space: nowrap;
+}
+
+.pulse-chart {
+  height: 330px;
+  padding: 0.25rem 0.875rem 0.625rem;
+}
+
+/* =============================================
+   BRACKET + STREET (current period, magnified)
+   ============================================= */
+.pulse-bracket {
+  display: block;
+  width: 100%;
+  height: 26px;
+}
+
+.pulse-bracket path {
+  fill: var(--shekel-surface-raised);
+  stroke: var(--shekel-border-subtle);
+  stroke-width: 1;
+}
+
+.street {
+  background: color-mix(in srgb, var(--shekel-accent) 5%, var(--shekel-surface));
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 0.75rem;
+  padding: 0.625rem 1.125rem 0.375rem;
+}
+
+.street__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-secondary);
+  flex-wrap: wrap;
+}
+
+.street__head-total {
+  font-size: 0.875rem;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 400;
+}
+
+/* The day axis: a relative strip; events are absolutely positioned by
+   dashboard_pulse.js from data-day / data-street-days (CSP forbids
+   inline style attributes; see progress_bar.js for the pattern). */
+.street__axis {
+  position: relative;
+  height: 7.25rem;
+  margin: 0.375rem 0.5rem;
+}
+
+.street__axis::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  background: var(--shekel-border-strong);
+}
+
+.street__event,
+.street__today,
+.street__end {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.street__event::before {
+  content: "";
+  display: block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  margin: 0 auto;
+  background: var(--shekel-text-muted);
+}
+
+.street__event--overdue::before { background: var(--shekel-danger); }
+.street__event--soon::before { background: var(--shekel-credit); }
+
+.street__event-label {
+  position: absolute;
+  bottom: calc(50% + 0.875rem);
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--shekel-text-secondary);
+}
+
+.street__event--below .street__event-label {
+  bottom: auto;
+  top: calc(50% + 0.875rem);
+}
+
+/* Edge clamping (classes applied by dashboard_pulse.js): labels near
+   the band's ends re-anchor inward instead of centering on the point,
+   so day-0 / period-end text never clips outside the street. */
+.street__edge-left .street__event-label {
+  left: 0;
+  transform: translateX(0);
+  text-align: left;
+}
+
+.street__edge-right .street__event-label {
+  left: auto;
+  right: 0;
+  transform: translateX(0);
+  text-align: right;
+}
+
+.street__event-amt {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.street__event--overdue .street__event-amt { color: var(--shekel-danger); }
+.street__event--soon .street__event-amt { color: var(--shekel-credit); }
+/* Over-budget envelopes keep the red dual-amount signal the retired
+   list carried (color pairs with the dual amount, not color alone). */
+.street__event--over .street__event-amt {
+  color: var(--shekel-danger);
+  font-weight: 700;
+}
+
+.street__today {
+  height: 100%;
+  width: 2px;
+}
+
+.street__today::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-left: 2px dashed var(--shekel-accent);
+}
+
+.street__today-label {
+  position: absolute;
+  top: calc(100% + 0.125rem);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.71875rem;
+  font-weight: 600;
+  color: var(--shekel-accent);
+  white-space: nowrap;
+}
+
+.street__end::before {
+  content: "";
+  display: block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  margin: 0 auto;
+  background: var(--shekel-surface);
+  border: 3px solid var(--shekel-accent);
+}
+
+.street__shelf {
+  display: flex;
+  gap: 0.375rem 1.25rem;
+  flex-wrap: wrap;
+  font-size: 0.78125rem;
+  color: var(--shekel-text-secondary);
+  padding: 0.125rem 0 0.375rem;
+}
+
+/* =============================================
+   TRACKS (position tier: savings goals + debt)
+   ============================================= */
+.tracks {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--shekel-border-subtle);
+  padding-top: 0.75rem;
+}
+
+.tracks__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.375rem;
+}
+
+.tracks__head h6 {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-secondary);
+  margin: 0;
+}
+
+.track {
+  display: grid;
+  grid-template-columns: 11rem 1fr 14rem;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.875rem 0;
+}
+
+.track + .track {
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+.track__label {
+  font-size: 0.84375rem;
+  font-weight: 600;
+}
+
+.track__label .verdict-pill {
+  margin-left: 0.375rem;
+}
+
+.verdict-pill {
+  display: inline-block;
+  padding: 0.0625rem 0.5625rem;
+  border-radius: 99px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.verdict-pill--credit {
+  background: color-mix(in srgb, var(--shekel-credit) 18%, transparent);
+  color: var(--shekel-credit);
+}
+
+.verdict-pill--done {
+  background: color-mix(in srgb, var(--shekel-done) 18%, transparent);
+  color: var(--shekel-done);
+}
+
+.track__rail {
+  position: relative;
+  height: 2.25rem;
+}
+
+.track__rail::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 99px;
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+}
+
+/* Fill width applied by progress_bar.js from data-progress-pct. */
+.track__fill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 99px;
+  background: var(--shekel-accent);
+}
+
+/* Marker / label left applied by dashboard_pulse.js from data-rail-pct. */
+.track__here {
+  position: absolute;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: var(--shekel-surface);
+  border: 3px solid var(--shekel-accent);
+  transform: translateX(-50%);
+}
+
+.track__here-label {
+  position: absolute;
+  top: -0.375rem;
+  transform: translateX(-50%);
+  font-size: 0.71875rem;
+  color: var(--shekel-text-muted);
+  white-space: nowrap;
+}
+
+.track__here-label--static {
+  position: static;
+  transform: none;
+  line-height: 2.25rem;
+}
+
+.track__dest {
+  text-align: right;
+  font-size: 0.78125rem;
+  color: var(--shekel-text-secondary);
+}
+
+.track__dest-sub {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--shekel-text-muted);
+}
+
+/* =============================================
+   RESPONSIVE: the street cannot scale below tablet width -- the
+   due-soon list is its mobile representation (locked rule).
+   ============================================= */
+@media (max-width: 767.98px) {
+  .pulse-bracket,
+  .street {
+    display: none;
+  }
+
+  .pulse-sky {
+    gap: 0.75rem 1.25rem;
+    padding: 0.875rem 1rem 0.125rem;
+  }
+
+  .pulse-statrow {
+    margin: 0.25rem 0 0;
+  }
+
+  .pulse-open-grid {
+    margin-left: 0;
+    order: 99;
+  }
+
+  .pulse-chart {
+    height: 250px;
+    padding: 0.25rem 0.5rem 0.5rem;
+  }
+
+  .track {
+    grid-template-columns: 1fr;
+    gap: 0.375rem;
+    padding: 0.75rem 0;
+  }
+
+  .track__dest {
+    text-align: left;
+  }
+
+  .track__rail {
+    margin-top: 0.875rem;
+  }
 }

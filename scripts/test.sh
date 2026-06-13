@@ -57,8 +57,11 @@ READINESS_TIMEOUT_SECONDS="${READINESS_TIMEOUT_SECONDS:-15}"
 # startup) and may contain values with unquoted spaces (display
 # names, comments) that the shell would mis-parse.  Extract only
 # the one line we need, value-after-first-=, single match.
-if [ -z "${TEST_DATABASE_URL:-}" ] && [ -f .env ]; then
-    _env_value="$(grep -E '^TEST_DATABASE_URL=' .env | head -n1 | cut -d= -f2-)"
+_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -z "${TEST_DATABASE_URL:-}" ] && [ -f "${_REPO_ROOT}/.env" ]; then
+    # Resolved via BASH_SOURCE, not the invoker's cwd, so a run from
+    # outside the repo root still finds the dotenv (OPS/SH-26).
+    _env_value="$(grep -E '^TEST_DATABASE_URL=' "${_REPO_ROOT}/.env" | head -n1 | cut -d= -f2-)"
     if [ -n "$_env_value" ]; then
         export TEST_DATABASE_URL="$_env_value"
     fi
@@ -82,20 +85,21 @@ fi
 
 if [ -n "${SKIP_DB_RESTART:-}" ]; then
     echo "[test.sh] SKIP_DB_RESTART set -- skipping container restart" >&2
-elif ! command -v docker > /dev/null 2>&1; then
+elif ! command -v docker >/dev/null 2>&1; then
     echo "[test.sh] docker not on PATH -- skipping container restart" >&2
-elif ! docker inspect "$DB_CONTAINER" > /dev/null 2>&1; then
+elif ! docker inspect "$DB_CONTAINER" >/dev/null 2>&1; then
     echo "[test.sh] container $DB_CONTAINER does not exist -- skipping restart" >&2
 else
-    docker restart "$DB_CONTAINER" > /dev/null
+    docker restart "$DB_CONTAINER" >/dev/null
 
     # Wait for PostgreSQL to accept connections.  ``pg_isready`` is
     # the standard health probe and is included in the postgres
     # image.  Cap the wait at READINESS_TIMEOUT_SECONDS so a hung
     # container fails loud instead of blocking the test invocation
     # indefinitely.
-    deadline=$(( $(date +%s) + READINESS_TIMEOUT_SECONDS ))
+    deadline=$(($(date +%s) + READINESS_TIMEOUT_SECONDS))
     until docker exec "$DB_CONTAINER" pg_isready -q -U shekel_user 2>/dev/null; do
+        # shellcheck disable=SC2312 # date +%s always succeeds; its timestamp only drives the readiness-timeout comparison, no destructive/financial path
         if [ "$(date +%s)" -ge "$deadline" ]; then
             echo "[test.sh] $DB_CONTAINER did not become ready within ${READINESS_TIMEOUT_SECONDS}s" >&2
             exit 2

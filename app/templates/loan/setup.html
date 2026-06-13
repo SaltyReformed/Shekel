@@ -38,7 +38,7 @@
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" id="current_principal"
                        name="current_principal" step="0.01" min="0" required
-                       value="{{ "%.2f"|format(account.current_anchor_balance) if account.current_anchor_balance else '' }}">
+                       value="{{ "%.2f"|format(account.current_anchor_balance) if account.current_anchor_balance is not none else '' }}">
               </div>
             </div>
           </div>
@@ -62,7 +62,7 @@
                      placeholder="{{ account_type.max_term_months or 360 }}">
               <div class="form-text">
                 {% if account_type.max_term_months %}
-                  Max {{ account_type.max_term_months }} months ({{ (account_type.max_term_months / 12)|round(0)|int }} years)
+                  Max {{ account_type.max_term_months }} months ({{ account_type.max_term_months|months_to_years(0) }} years)
                 {% else %}
                   e.g. 360 for 30 years
                 {% endif %}

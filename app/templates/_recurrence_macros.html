@@ -1,0 +1,45 @@
+{# Shared recurrence-description macro (polyglot audit TPLB/TPL-07).
+
+   Single source for the recurrence_cell column that templates/list.html
+   and transfers/list.html previously each defined verbatim.  Import WITH
+   CONTEXT -- the else-branch fallback reads ``recurrence_pattern_labels``,
+   which is an @app.context_processor variable rather than a jinja global
+   and is otherwise invisible to an imported macro:
+
+     {% from "_recurrence_macros.html" import recurrence_cell with context %}
+
+   Pattern matching uses the REC_* integer globals (app.jinja_globals),
+   per the project's "IDs for logic, strings for display only" rule, and
+   month names come from the ``month_name`` filter (app.jinja_filters), so
+   this macro needs no per-template month_names dict.  The else branch is a
+   defensive fallback for a future pattern row added without a matching
+   REC_* constant; it reads ``rr.pattern.name`` for display only. #}
+{% macro recurrence_cell(t) %}
+{% if t.recurrence_rule %}
+  {% set rr = t.recurrence_rule %}
+  {% if rr.pattern_id == REC_EVERY_PERIOD %}
+    Every paycheck
+  {% elif rr.pattern_id == REC_EVERY_N_PERIODS %}
+    Every {{ rr.interval_n }} paychecks
+  {% elif rr.pattern_id == REC_MONTHLY and rr.day_of_month %}
+    Monthly (day {{ rr.day_of_month }})
+  {% elif rr.pattern_id == REC_MONTHLY_FIRST %}
+    Monthly (first paycheck)
+  {% elif rr.pattern_id == REC_QUARTERLY %}
+    Quarterly{% if rr.month_of_year %} (starting {{ rr.month_of_year|month_name(abbr=true) }}){% endif %}
+  {% elif rr.pattern_id == REC_SEMI_ANNUAL %}
+    Every 6 months{% if rr.month_of_year %} (starting {{ rr.month_of_year|month_name(abbr=true) }}){% endif %}
+  {% elif rr.pattern_id == REC_ANNUAL %}
+    Yearly{% if rr.month_of_year %} ({{ rr.month_of_year|month_name(abbr=true) }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
+  {% elif rr.pattern_id == REC_ONCE %}
+    One-time
+  {% else %}
+    {{ recurrence_pattern_labels.get(rr.pattern.name, rr.pattern.name|replace('_', ' ')|title) }}
+  {% endif %}
+  {% if rr.end_date %}
+    <br><small class="text-muted">until {{ rr.end_date.strftime('%b %d, %Y') }}</small>
+  {% endif %}
+{% else %}
+  <span class="text-muted">One-time</span>
+{% endif %}
+{% endmacro %}

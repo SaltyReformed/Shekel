@@ -1,5 +1,8 @@
 #!/bin/bash
-set -eEo pipefail
+# -u (nounset): a typo'd variable dies loudly instead of expanding empty
+# (polyglot audit 2026-06-12, OPS/SH-23 -- every other script in the repo
+# already runs with it). Optional variables are referenced with :- below.
+set -eEuo pipefail
 
 # ── Error handler ────────────────────────────────────────────────
 # Prints troubleshooting guidance when any command fails.
@@ -72,7 +75,7 @@ _load_secret() {
     # ``echo "value" > file`` leaves behind, so the in-process value
     # matches what ``printf 'value' > file`` would produce.  Internal
     # newlines (the rare PEM-encoded secret) are preserved.
-    secret_value="$(< "${secret_path}")"
+    secret_value="$(<"${secret_path}")"
 
     if [ -z "${secret_value}" ]; then
         echo "ERROR: secret file ${secret_path} is present but empty." >&2
@@ -135,7 +138,7 @@ unset _postgres_password_loaded_from_file
 # never touched under a placeholder key.  The placeholder list below
 # must stay in sync with _KNOWN_DEFAULT_SECRETS in app/config.py.
 # 32 is the minimum length matching _MIN_SECRET_KEY_LENGTH.
-if [ -z "${SECRET_KEY}" ]; then
+if [ -z "${SECRET_KEY:-}" ]; then
     echo "ERROR: SECRET_KEY is not set in the environment." >&2
     echo "       Generate with: python -c \"import secrets; print(secrets.token_hex(32))\"" >&2
     echo "       and add SECRET_KEY=<value> to .env before starting the app." >&2
@@ -147,7 +150,7 @@ if [ "${#SECRET_KEY}" -lt 32 ]; then
     exit 1
 fi
 case "${SECRET_KEY}" in
-    dev-only-*|change-me-to-a-random-secret-key|dev-secret-key-not-for-production|replaced_by_docker_secret*)
+    dev-only-* | change-me-to-a-random-secret-key | dev-secret-key-not-for-production | replaced_by_docker_secret*)
         echo "ERROR: SECRET_KEY matches a known placeholder." >&2
         echo "       Replace it with a secure random value before starting the app." >&2
         # ``replaced_by_docker_secret*`` is the Commit C-38 placeholder
@@ -177,7 +180,7 @@ esac
 # -- we only check that it is set and not a placeholder.  A sensible
 # minimum length deters accidental short or empty values; the
 # operator can use any sufficiently random secret.
-if [ -z "${APP_ROLE_PASSWORD}" ]; then
+if [ -z "${APP_ROLE_PASSWORD:-}" ]; then
     echo "ERROR: APP_ROLE_PASSWORD is not set in the environment." >&2
     echo "       Generate with: python -c \"import secrets; print(secrets.token_urlsafe(32))\"" >&2
     echo "       and add APP_ROLE_PASSWORD=<value> to .env before starting the app." >&2
@@ -205,7 +208,7 @@ done
 echo "PostgreSQL is ready."
 
 # Validate required environment variables.
-if [ -z "${DB_PASSWORD}" ]; then
+if [ -z "${DB_PASSWORD:-}" ]; then
     echo "ERROR: DB_PASSWORD is not set. Set it in .env or docker-compose.yml."
     echo "       It must match POSTGRES_PASSWORD on the db service."
     exit 1
@@ -231,18 +234,27 @@ echo "Schemas ready."
 # to think the password is being interpolated by shell expansion --
 # the boundary is explicit.
 echo "Provisioning shekel_app role..."
+# The password reaches psql via \getenv from psql's OWN environment
+# (inherited; psql >= 15, image ships 17), never via argv -- a -v
+# assignment on the command line was readable in /proc/<pid>/cmdline by
+# any process in the container for the duration of the provisioning run
+# (polyglot audit 2026-06-12, OPS/SH-09; the same channel the F-022
+# scrub closes for the seed credentials).
 PGPASSWORD="${DB_PASSWORD}" psql \
     -h "${DB_HOST:-db}" -p "${DB_PORT:-5432}" \
     -U "${DB_USER:-shekel_user}" -d "${DB_NAME:-shekel}" \
-    -v "APP_ROLE_PASSWORD_LITERAL=${APP_ROLE_PASSWORD}" \
-    -v ON_ERROR_STOP=1 \
-    -f scripts/init_db_role.sql -q
+    -v ON_ERROR_STOP=1 -q <<'PSQL'
+\getenv APP_ROLE_PASSWORD_LITERAL APP_ROLE_PASSWORD
+\i scripts/init_db_role.sql
+PSQL
 echo "Role ready."
 
 # ── 3. Initialize database (fresh) or run migrations (existing) ─
-# init_database.py pops DATABASE_URL_APP from os.environ at startup
-# so it always runs as the owner role (DATABASE_URL).  Migrations
-# need DDL privileges; the app role has DML only.
+# init_database.py blanks DATABASE_URL_APP in its own process env at
+# startup (empty-as-unset per the config resolver; robust against
+# load_dotenv re-population) so it always runs as the owner role
+# (DATABASE_URL).  Migrations need DDL privileges; the app role has
+# DML only.
 echo "Initializing database..."
 python scripts/init_database.py
 
@@ -277,7 +289,7 @@ python scripts/seed_ref_tables.py
 # idempotent repair tool for pre-existing users with missing rows.
 SEED_STATE_DIR="/home/shekel/app/state"
 SEED_SENTINEL="${SEED_STATE_DIR}/.seed-complete"
-if [ -n "${SEED_USER_EMAIL}" ]; then
+if [ -n "${SEED_USER_EMAIL:-}" ]; then
     if [ -f "${SEED_SENTINEL}" ]; then
         echo "Seed sentinel present at ${SEED_SENTINEL}; skipping user seed step."
     else
@@ -345,11 +357,29 @@ fi
 echo "Audit trigger health OK: ${ACTUAL_TRIGGERS} triggers (expected >= ${EXPECTED_TRIGGERS})."
 
 # ── 8. Copy static files to shared volume ────────────────────────
-# Nginx serves /static/ directly from this volume.  Copying on every
-# start ensures files are current after image updates.
-echo "Copying static files to shared volume..."
-cp -r /home/shekel/app/app/static/* /var/www/static/ 2>/dev/null || true
-echo "Static files ready."
+# When a static_files volume is MOUNTED (bundled mode, where the
+# in-stack nginx serves /static/ from it), the copy must succeed
+# LOUDLY or fail LOUDLY -- a silent miss means stale assets with
+# content-hash URLs pointing at bytes that no longer exist (polyglot
+# audit 2026-06-12, OPS/SH-10: the previous `2>/dev/null || true`
+# masked every failure mode and then printed success). When no volume
+# is mounted, skip explicitly. The probe is /proc/mounts, NOT a bare
+# -d test: the Dockerfile pre-creates the directory inside the image,
+# so it always exists -- read-only and unmounted -- on a hardened dev
+# rootfs (caught live by the Phase 2 battery: the -d form blocked the
+# dev container's boot).
+if grep -qs ' /var/www/static ' /proc/mounts; then
+    echo "Copying static files to shared volume..."
+    if ! cp -r /home/shekel/app/app/static/* /var/www/static/; then
+        echo "ERROR: static file copy to /var/www/static failed" >&2
+        echo "       (volume read-only? disk full?). Refusing to start with" >&2
+        echo "       potentially stale static assets." >&2
+        exit 1
+    fi
+    echo "Static files ready."
+else
+    echo "No /var/www/static volume mounted; skipping static copy (Flask serves static)."
+fi
 
 # ── 9. Start the application server ──────────────────────────────
 # Construct the DATABASE_URL_APP just-in-time so seed scripts above

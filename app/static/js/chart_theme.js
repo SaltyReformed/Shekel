@@ -19,6 +19,7 @@
  *
  * @namespace ShekelChart
  */
+// biome-ignore lint/correctness/noUnusedVariables: ShekelChart is a window-global namespace consumed cross-file by chart_*.js; biome parses each file as a module and cannot see the cross-<script> usage.
 var ShekelChart = (function () {
 
   /**
@@ -213,27 +214,25 @@ var ShekelChart = (function () {
   }
 
   /**
-   * Destroy all tracked chart instances.
-   * Call before full page unload or HTMX full page swap.
-   */
-  function destroyAll() {
-    for (var i = 0; i < trackedCharts.length; i++) {
-      trackedCharts[i].instance.destroy();
-    }
-    trackedCharts = [];
-  }
-
-  /**
    * Re-render all tracked charts with updated theme colors.
-   * Called automatically on theme toggle.
+   * Called automatically on theme toggle.  Also evicts charts whose
+   * canvas has left the DOM (e.g. an HTMX tab swap replaced #tab-content):
+   * the orphaned instance is destroyed and dropped, so trackedCharts
+   * cannot grow unbounded across repeated toggles (JS-08).
    */
   function rerenderAll() {
     applyGlobalDefaults();
 
+    var live = [];
     for (var i = 0; i < trackedCharts.length; i++) {
       var entry = trackedCharts[i];
       var canvas = document.getElementById(entry.id);
-      if (!canvas) continue;
+      if (!canvas) {
+        // Canvas removed from the DOM: destroy the orphaned instance
+        // (frees its data arrays + detached canvas) and drop the entry.
+        entry.instance.destroy();
+        continue;
+      }
 
       // Rebuild the config from the factory so theme-dependent
       // colors (getColor, getThemeColors) re-resolve against the
@@ -243,7 +242,9 @@ var ShekelChart = (function () {
       // Destroy old instance and create new one.
       entry.instance.destroy();
       entry.instance = new Chart(canvas, merged);
+      live.push(entry);
     }
+    trackedCharts = live;
   }
 
   // Listen for theme change events.
@@ -252,58 +253,33 @@ var ShekelChart = (function () {
   });
 
   /**
-   * Build a Chart.js x-axis ticks callback for year-boundary awareness.
+   * Format a number as a US-dollar display string for axis ticks and
+   * tooltips.  Negatives put the sign BEFORE the dollar symbol
+   * ("-$1,234", not "$-1,234"), mirroring the Jinja money macro
+   * (_money_macros.html).  Display formatting only -- the value must
+   * already be a final number; no monetary computation happens here.
    *
-   * When labels span multiple years (detected by the "'YY" suffix that
-   * the Python chart_data_service adds), the callback shows the year
-   * suffix only on the first tick and at each January boundary.  This
-   * avoids cluttering every tick with the year while still providing
-   * orientation.  When labels do not span years, returns null so the
-   * caller can skip applying a custom callback.
-   *
-   * @param {string[]} labels - Array of label strings from the chart data.
-   * @returns {function|null} A ticks.callback function, or null if not needed.
+   * @param {number} value - Numeric dollar amount.
+   * @param {boolean} cents - true for exactly 2 fraction digits
+   *   ("-$112.40"), false for whole dollars ("-$1,234").
+   * @returns {string} Formatted dollar string.
    */
-  function yearBoundaryCallback(labels) {
-    if (!labels || labels.length === 0) return null;
-
-    // Detect whether any label has the 'YY suffix (e.g. "Jan 02 '26").
-    var hasYearSuffix = false;
-    for (var i = 0; i < labels.length; i++) {
-      if (/'\d{2}$/.test(labels[i])) {
-        hasYearSuffix = true;
-        break;
-      }
-    }
-    if (!hasYearSuffix) return null;
-
-    return function (value, index) {
-      var label = labels[index] || '';
-      var yearMatch = label.match(/'(\d{2})$/);
-      if (!yearMatch) return label;
-
-      var base = label.replace(/\s*'\d{2}$/, '');
-
-      // Always show year on the first tick.
-      if (index === 0) return label;
-
-      // Show year at January boundaries.
-      if (/^Jan\b/.test(label)) return label;
-
-      // Otherwise strip the year suffix to reduce clutter.
-      return base;
-    };
+  function formatMoney(value, cents) {
+    var digits = cents ? 2 : 0;
+    var sign = value < 0 ? '-' : '';
+    return sign + '$' + Math.abs(value).toLocaleString('en-US', {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits
+    });
   }
 
   // Public API.
   return {
-    palette: palette,
     getColor: getColor,
     getThemeColors: getThemeColors,
     create: create,
     destroyById: destroyById,
-    destroyAll: destroyAll,
     rerenderAll: rerenderAll,
-    yearBoundaryCallback: yearBoundaryCallback
+    formatMoney: formatMoney
   };
 })();

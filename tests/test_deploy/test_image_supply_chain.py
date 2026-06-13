@@ -312,9 +312,12 @@ class TestDockerfilePreservesC34Invariants:
             "Dockerfile no longer pre-creates /home/shekel/app/state; "
             "regresses C-34 / F-022."
         )
-        assert "chown -R shekel:shekel /home/shekel/app" in text, (
-            "Dockerfile no longer chowns /home/shekel/app to shekel; "
-            "regresses C-34 / F-022."
+        assert "chown shekel:shekel /home/shekel/app/state" in text, (
+            "Dockerfile no longer chowns /home/shekel/app/state to shekel; "
+            "regresses C-34 / F-022. Polyglot CI/DF-03 narrowed the prior "
+            "recursive chown -R /home/shekel/app to the two dirs that need "
+            "it (state + /var/www/static); state must stay shekel-owned so "
+            "the volume inherits shekel ownership on first mount."
         )
 
     def test_runs_as_unprivileged_shekel_user(self, text: str) -> None:

@@ -1,16 +1,13 @@
+{% from "_money_macros.html" import money %}
 {# Spending Trends -- HTMX partial.
    Rendered by analytics.trends_tab() into #tab-content. #}
-
-{% macro fmt(value) -%}
-  ${{ "{:,.2f}".format(value) }}
-{%- endmacro %}
 
 {% macro fmt_pct(value) -%}
   {% if value is none %}New{% elif value > 0 %}+{{ "{:.2f}".format(value) }}%{% elif value < 0 %}{{ "{:.2f}".format(value) }}%{% else %}0.00%{% endif %}
 {%- endmacro %}
 
 {% macro fmt_change(value) -%}
-  {% if value > 0 %}+{{ fmt(value) }}{% elif value < 0 %}-{{ fmt(value|abs) }}{% else %}{{ fmt(value) }}{% endif %}
+  {% if value > 0 %}+{% endif %}{{ money(value) }}
 {%- endmacro %}
 
 {% macro dir_class(direction) -%}
@@ -86,7 +83,7 @@
               <div class="text-end">
                 <span class="trend-pct trend-up">{{ fmt_pct(item.pct_change) }}</span><br>
                 <small class="trend-abs text-muted">{{ fmt_change(item.absolute_change) }}/period</small><br>
-                <small class="text-muted">Avg: {{ fmt(item.period_average) }}/period ({{ item.data_points }} periods)</small>
+                <small class="text-muted">Avg: {{ money(item.period_average) }}/period ({{ item.data_points }} periods)</small>
               </div>
             </div>
           </li>
@@ -125,7 +122,7 @@
               <div class="text-end">
                 <span class="trend-pct trend-down">{{ fmt_pct(item.pct_change) }}</span><br>
                 <small class="trend-abs text-muted">{{ fmt_change(item.absolute_change) }}/period</small><br>
-                <small class="text-muted">Avg: {{ fmt(item.period_average) }}/period ({{ item.data_points }} periods)</small>
+                <small class="text-muted">Avg: {{ money(item.period_average) }}/period ({{ item.data_points }} periods)</small>
               </div>
             </div>
           </li>
@@ -161,13 +158,13 @@
         {% set gidx = loop.index %}
         <tr class="variance-group-row"
             data-bs-toggle="collapse" data-bs-target=".tg-{{ gidx }}"
-            role="button" aria-expanded="false">
+            role="button" tabindex="0" data-keyboard-activate aria-expanded="false">
           <td class="fw-semibold">
             <i class="bi bi-chevron-right variance-chevron me-1 small"></i>
             {{ group.group_name }}
             {% if group.is_flagged %}<span class="trend-flagged badge bg-warning bg-opacity-25 text-warning ms-1">!</span>{% endif %}
           </td>
-          <td class="text-end font-mono">{{ fmt(group.total_spending) }}</td>
+          <td class="text-end font-mono">{{ money(group.total_spending) }}</td>
           <td class="text-end font-mono {{ dir_class(group.trend_direction) }}">{{ fmt_pct(group.pct_change) }}</td>
           <td class="text-center {{ dir_class(group.trend_direction) }}">{{ dir_icon(group.trend_direction) }}</td>
         </tr>
@@ -177,7 +174,7 @@
             {{ item.item_name }}
             {% if item.is_flagged %}<span class="trend-flagged badge bg-warning bg-opacity-25 text-warning ms-1">!</span>{% endif %}
           </td>
-          <td class="text-end font-mono">{{ fmt(item.total_spending) }}</td>
+          <td class="text-end font-mono">{{ money(item.total_spending) }}</td>
           <td class="text-end font-mono {{ dir_class(item.trend_direction) }}">{{ fmt_pct(item.pct_change) }}</td>
           <td class="text-center {{ dir_class(item.trend_direction) }}">{{ dir_icon(item.trend_direction) }}</td>
         </tr>
@@ -220,7 +217,7 @@
               <td class="text-center {{ dir_class(item.trend_direction) }}">{{ dir_icon(item.trend_direction) }}</td>
               <td class="text-end font-mono {{ dir_class(item.trend_direction) }}">{{ fmt_pct(item.pct_change) }}</td>
               <td class="text-end font-mono">{{ fmt_change(item.absolute_change) }}</td>
-              <td class="text-end font-mono">{{ fmt(item.period_average) }}</td>
+              <td class="text-end font-mono">{{ money(item.period_average) }}</td>
               <td class="text-center">
                 {% if item.is_flagged %}<i class="bi bi-exclamation-triangle text-warning"></i>{% endif %}
               </td>

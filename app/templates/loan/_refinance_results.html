@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# HTMX fragment: refinance comparison results.
 
    Swapped into #refinance-results by the refinance_calculate route.
@@ -20,13 +21,13 @@
     <tbody>
       <tr>
         <td>Monthly Payment (P&I)</td>
-        <td class="font-mono">${{ "{:,.2f}".format(comparison.current_monthly) }}</td>
-        <td class="font-mono">${{ "{:,.2f}".format(comparison.refi_monthly) }}</td>
+        <td class="font-mono">{{ money(comparison.current_monthly) }}</td>
+        <td class="font-mono">{{ money(comparison.refi_monthly) }}</td>
         <td class="font-mono {{ 'text-success' if comparison.monthly_savings > 0 else ('text-danger' if comparison.monthly_savings < 0 else '') }}">
           {% if comparison.monthly_savings > 0 %}
-            +${{ "{:,.2f}".format(comparison.monthly_savings) }}/mo
+            +{{ money(comparison.monthly_savings) }}/mo
           {% elif comparison.monthly_savings < 0 %}
-            -${{ "{:,.2f}".format(comparison.monthly_savings|abs) }}/mo
+            {{ money(comparison.monthly_savings) }}/mo
           {% else %}
             $0.00
           {% endif %}
@@ -34,13 +35,13 @@
       </tr>
       <tr>
         <td>Total Interest</td>
-        <td class="font-mono">${{ "{:,.2f}".format(comparison.current_total_interest) }}</td>
-        <td class="font-mono">${{ "{:,.2f}".format(comparison.refi_total_interest) }}</td>
+        <td class="font-mono">{{ money(comparison.current_total_interest) }}</td>
+        <td class="font-mono">{{ money(comparison.refi_total_interest) }}</td>
         <td class="font-mono {{ 'text-success' if comparison.interest_savings > 0 else ('text-danger' if comparison.interest_savings < 0 else '') }}">
           {% if comparison.interest_savings > 0 %}
-            +${{ "{:,.2f}".format(comparison.interest_savings) }}
+            +{{ money(comparison.interest_savings) }}
           {% elif comparison.interest_savings < 0 %}
-            -${{ "{:,.2f}".format(comparison.interest_savings|abs) }}
+            {{ money(comparison.interest_savings) }}
           {% else %}
             $0.00
           {% endif %}
@@ -51,9 +52,8 @@
         <td>{{ comparison.current_remaining_months }} months</td>
         <td>{{ comparison.refi_term }} months</td>
         <td>
-          {% set term_diff = comparison.refi_term - comparison.current_remaining_months %}
-          {% if term_diff > 0 %}+{{ term_diff }} months
-          {% elif term_diff < 0 %}{{ term_diff }} months
+          {% if comparison.term_diff > 0 %}+{{ comparison.term_diff }} months
+          {% elif comparison.term_diff < 0 %}{{ comparison.term_diff }} months
           {% else %}No change{% endif %}
         </td>
       </tr>
@@ -66,13 +66,13 @@
       {% if comparison.refi_principal != comparison.current_principal %}
       <tr>
         <td>Principal</td>
-        <td class="font-mono">${{ "{:,.2f}".format(comparison.current_principal) }}</td>
-        <td class="font-mono">${{ "{:,.2f}".format(comparison.refi_principal) }}</td>
+        <td class="font-mono">{{ money(comparison.current_principal) }}</td>
+        <td class="font-mono">{{ money(comparison.refi_principal) }}</td>
         <td class="font-mono text-muted">
           {% if comparison.principal_diff > 0 %}
-            +${{ "{:,.2f}".format(comparison.principal_diff) }}
+            +{{ money(comparison.principal_diff) }}
           {% elif comparison.principal_diff < 0 %}
-            -${{ "{:,.2f}".format(comparison.principal_diff_abs) }}
+            {{ money(comparison.principal_diff) }}
           {% else %}
             $0.00
           {% endif %}
@@ -88,15 +88,15 @@
 <div class="alert alert-info">
   <strong>Break-even:</strong> {{ comparison.break_even_months }} months.
   After {{ comparison.break_even_months }} months, your monthly savings
-  (${{ "{:,.2f}".format(comparison.monthly_savings) }}/mo) will exceed your
-  closing costs (${{ "{:,.2f}".format(comparison.closing_costs) }}).
+  ({{ money(comparison.monthly_savings) }}/mo) will exceed your
+  closing costs ({{ money(comparison.closing_costs) }}).
 </div>
 {% elif comparison.closing_costs > 0 and comparison.monthly_savings <= 0 %}
 <div class="alert alert-warning">
   Your monthly payment would increase.
   {% if comparison.interest_savings > 0 %}
   The benefit of this refinance is
-  ${{ "{:,.2f}".format(comparison.interest_savings) }} in total interest savings over
+  {{ money(comparison.interest_savings) }} in total interest savings over
   the life of the loan, not monthly cash flow improvement.
   {% else %}
   This refinance does not offer monthly payment or total interest savings with the given terms.

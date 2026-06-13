@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Entry list with inline add/edit forms for entry-capable transactions.
 
    Expected context:
@@ -67,10 +68,10 @@
                class="form-control form-control-sm mw-px-130">
         <div class="form-check form-check-inline mb-0">
           <input type="checkbox" name="is_credit" value="true"
-                 class="form-check-input" id="edit-cc-{{ entry.id }}"
+                 class="form-check-input" id="edit-cc-{{ entry_list_host_id }}-{{ entry.id }}"
                  {{ 'checked' if entry.is_credit else '' }}>
           <input type="hidden" name="is_credit" value="false">
-          <label class="form-check-label small" for="edit-cc-{{ entry.id }}">CC</label>
+          <label class="form-check-label small" for="edit-cc-{{ entry_list_host_id }}-{{ entry.id }}">CC</label>
         </div>
         <button type="submit" class="btn btn-sm btn-primary py-0 px-1">
           <i class="bi bi-check"></i>
@@ -103,7 +104,7 @@
         <i class="bi bi-exclamation-circle"></i>
       </span>
       {% endif %}
-      <span class="font-mono">${{ "{:,.2f}".format(entry.amount) }}</span>
+      <span class="font-mono">{{ money(entry.amount) }}</span>
       {% if not entry.is_credit %}
       {# Reconciled toggle: a cleared entry is already reflected in the
          checking anchor balance and is subtracted from the budget
@@ -147,7 +148,7 @@
   <div class="d-flex justify-content-between py-1 small fw-semibold">
     <span>Remaining</span>
     <span class="font-mono{% if remaining < 0 %} text-danger{% endif %}">
-      {% if remaining < 0 %}-{% endif %}${{ "{:,.2f}".format(remaining|abs) }}
+      {{ money(remaining) }}
     </span>
   </div>
 
@@ -165,8 +166,8 @@
       <input type="hidden" name="entry_date" value="{{ today }}">
       <div class="form-check form-check-inline mb-0">
         <input type="checkbox" name="is_credit" class="form-check-input"
-               id="cc-{{ txn.id }}">
-        <label class="form-check-label small" for="cc-{{ txn.id }}">CC</label>
+               id="cc-{{ entry_list_host_id }}">
+        <label class="form-check-label small" for="cc-{{ entry_list_host_id }}">CC</label>
       </div>
       <button type="submit" class="btn btn-sm btn-primary">
         <i class="bi bi-plus"></i>

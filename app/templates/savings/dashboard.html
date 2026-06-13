@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import dti_badge, money %}
 {% block title %}Accounts Dashboard -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -51,11 +52,11 @@
       <div class="col-md-6">
         <div class="d-flex justify-content-between small mb-1">
           <span class="text-muted">Total Debt</span>
-          <span class="fw-bold font-mono">${{ "{:,.2f}".format(debt_summary.total_debt) }}</span>
+          <span class="fw-bold font-mono">{{ money(debt_summary.total_debt) }}</span>
         </div>
         <div class="d-flex justify-content-between small mb-1">
           <span class="text-muted">Monthly Payments</span>
-          <span class="fw-bold font-mono">${{ "{:,.2f}".format(debt_summary.total_monthly_payments) }}</span>
+          <span class="fw-bold font-mono">{{ money(debt_summary.total_monthly_payments) }}</span>
         </div>
       </div>
       <div class="col-md-6">
@@ -76,13 +77,9 @@
     <div class="mt-2 pt-2 border-top d-flex align-items-center">
       <span class="text-muted small me-2">Debt-to-Income:</span>
       <strong class="me-2">{{ debt_summary.dti_ratio }}%</strong>
-      {% if debt_summary.dti_label == 'healthy' %}
-      <span class="badge bg-success">Healthy</span>
-      {% elif debt_summary.dti_label == 'moderate' %}
-      <span class="badge bg-warning text-dark">Moderate</span>
-      {% else %}
-      <span class="badge bg-danger">High</span>
-      {% endif %}
+      {# Shared verdict-badge macro (Gate B6: this mapping was duplicated
+         with the dashboard's debt card). #}
+      {{ dti_badge(debt_summary.dti_label) }}
     </div>
     {% elif debt_summary %}
     <div class="mt-2 pt-2 border-top">
@@ -129,9 +126,9 @@
             </h6>
             <small class="text-muted">
               {% if ad.account.account_type and ad.account.account_type.has_interest %}
-                {{ ad.account.account_type.name|format_account_type }}
+                {{ ad.account.account_type.name }}
               {% elif ad.account.account_type %}
-                {{ ad.account.account_type.name|format_account_type }}
+                {{ ad.account.account_type.name }}
               {% endif %}
               {% if ad.interest_params is defined and ad.interest_params %}
                 -- APY: {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%
@@ -185,7 +182,7 @@
           <div class="text-muted small">Current Balance</div>
           <div class="fs-4 fw-bold font-mono text-accent">
             {% if ad.current_balance is not none %}
-              ${{ "{:,.2f}".format(ad.current_balance) }}
+              {{ money(ad.current_balance) }}
             {% else %}
               --
             {% endif %}
@@ -195,7 +192,7 @@
         <div class="mt-2">
           <div class="d-flex justify-content-between small">
             <span class="text-muted">Monthly Payment</span>
-            <span class="font-mono">${{ "{:,.2f}".format(ad.monthly_payment) }}</span>
+            <span class="font-mono">{{ money(ad.monthly_payment) }}</span>
           </div>
           {% if ad.payoff_date %}
           <div class="d-flex justify-content-between small">
@@ -211,7 +208,7 @@
           {% for label, bal in ad.projected.items() %}
           <div class="d-flex justify-content-between">
             <small class="text-muted">{{ label }}</small>
-            <small class="font-mono">${{ "{:,.0f}".format(bal) }}</small>
+            <small class="font-mono">{{ money(bal, cents=false) }}</small>
           </div>
           {% endfor %}
         </div>
@@ -261,7 +258,7 @@
                   {% endif %}
                 </h6>
                 <small>
-                  {{ ad.account.account_type.name|format_account_type if ad.account.account_type else '--' }}
+                  {{ ad.account.account_type.name if ad.account.account_type else '--' }}
                 </small>
               </div>
               <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=ad.account.id) }}"
@@ -275,7 +272,7 @@
             <div class="mt-2">
               <div class="small">Last Balance</div>
               <div class="fs-5 fw-bold font-mono">
-                ${{ "{:,.2f}".format(ad.current_balance) }}
+                {{ money(ad.current_balance) }}
               </div>
             </div>
           </div>
@@ -316,9 +313,9 @@
     </div>
     <div class="text-center mt-2">
       <small class="text-muted">
-        Based on ${{ "{:,.0f}".format(total_savings) }} savings
+        Based on {{ money(total_savings, cents=false) }} savings
         {% if avg_monthly_expenses > 0 %}
-        and ${{ "{:,.0f}".format(avg_monthly_expenses) }}/mo avg expenses
+        and {{ money(avg_monthly_expenses, cents=false) }}/mo avg expenses
         {% endif %}
       </small>
     </div>
@@ -362,9 +359,9 @@
         {# Progress bar #}
         <div class="mb-2">
           <div class="d-flex justify-content-between small mb-1">
-            <span class="font-mono">${{ "{:,.0f}".format(gd.current_balance) }}</span>
+            <span class="font-mono">{{ money(gd.current_balance, cents=false) }}</span>
             <span class="font-mono">
-              ${{ "{:,.0f}".format(gd.resolved_target) }}
+              {{ money(gd.resolved_target, cents=false) }}
               {% if gd.income_descriptor %}
               <span class="text-muted">({{ gd.income_descriptor }})</span>
               {% endif %}
@@ -401,7 +398,7 @@
         <div class="d-flex justify-content-between small mt-1">
           <span class="text-muted fw-semibold">Recommended per paycheck</span>
           <span class="fw-semibold font-mono text-accent">
-            ${{ "{:,.2f}".format(gd.required_contribution) }}
+            {{ money(gd.required_contribution) }}
           </span>
         </div>
         {% elif gd.required_contribution is none and gd.progress_pct < 100 %}
@@ -413,7 +410,7 @@
         {% if gd.goal.contribution_per_period %}
         <div class="d-flex justify-content-between small">
           <span class="text-muted">Manual target</span>
-          <span class="font-mono">${{ "{:,.2f}".format(gd.goal.contribution_per_period) }}/period</span>
+          <span class="font-mono">{{ money(gd.goal.contribution_per_period) }}/period</span>
         </div>
         {% endif %}
 
@@ -443,7 +440,7 @@
           <span class="badge bg-warning text-dark">Behind pace</span>
           {% if traj.required_monthly %}
           <p class="small text-muted mt-1 mb-0">
-            Increase to ${{ "{:,.2f}".format(traj.required_monthly) }}/mo
+            Increase to {{ money(traj.required_monthly) }}/mo
             to reach goal by {{ gd.goal.target_date.strftime('%b %Y') }}.
           </p>
           {% endif %}

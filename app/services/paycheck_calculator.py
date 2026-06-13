@@ -726,7 +726,7 @@ def _get_raise_event(profile, period):
                 pct = Decimal(str(raise_obj.percentage)) * 100
                 events.append(f"{raise_type.upper()} +{pct}%")
             else:
-                events.append(f"{raise_type.upper()} +${raise_obj.flat_amount}")
+                events.append(f"{raise_type.upper()} +${raise_obj.flat_amount:,.2f}")
 
     return ", ".join(events)
 

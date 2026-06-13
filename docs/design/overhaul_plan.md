@@ -4,7 +4,7 @@ The roadmap and durable status record for the full UI/UX overhaul (visual rebuil
 UX/workflow/IA + functionality -- NOT a reskin). This document answers "what is the plan,
 what is done, what is next"; it deliberately contains no design content of its own.
 
-Last updated: 2026-06-11.
+Last updated: 2026-06-12.
 
 ## Where things live
 
@@ -70,7 +70,7 @@ for `app/services` / `app/routes` / test-assertion changes.
 | Foundation (design language, skill, dashboard audit) | DONE -- merged via PR #29 |
 | Steel Ink theme (app-wide token swap) | MERGED to `dev` via PR #31 (2026-06-11) |
 | **Grid** (first rebuild target) | MERGED to `dev` via PR #31 (2026-06-11, CI green). All 6 Loop B phases + audit fix-list items 1-5 done; decisions in `grid_audit.md`. Ships to prod with the next `dev` -> `main` PR |
-| **Dashboard** (second target) | NEXT -- follow the "Dashboard playbook" below; audit exists (`dashboard_card_audit.md`); leading direction: the "E2" horizon strip + alert line from the grid's Loop A rounds |
+| **Dashboard** (second target) | IN PROGRESS -- playbook steps 1-3 DONE 2026-06-12. Step 1: audit re-verified ("Re-verification (2026-06-12)" in `dashboard_card_audit.md`). Step 2: Gate A locked ("Rebuild decisions": keep+fix cards 1-6, REMOVE Spending Comparison, as-of-today balance headline, transfers excluded from spending / included in runway). Step 3: data-correctness pass COMMITTED to dev (`308b49f` pay-period guard, `0ef7ba6` dashboard; full suite 6063, pylint 10.00/10; all fixes live-verified). Step 4: UX/IA pass DONE, Gate B LOCKED 2026-06-12 ("UX/IA pass (step 4)" section in `dashboard_card_audit.md`): B1-B7 all approved -- pulse strip consolidating Balance + Payday + Alerts + the E2 horizon; bills still-due totals on the REMAINING basis with transfer shadows INCLUDED; position tier; copy/consistency fold-ins. AMENDED same day by the data-value pass ("Data-value pass (Gate B amendments)" in the audit, after Loop A round 1 read "about the same"): chart-centric health check (13-period end-balance chart + trough stat; the hero IS the current period's projected end balance under reservation semantics), due-soon list replaces the full bills list, runway and the payday card dropped (a "next paycheck" caption survives), design-language Differentiation re-scoped to the grid. Developer framing recorded: the dashboard is "a quick easy to read health check"; the two most-tracked values are still due + projected end balance; grid-as-homepage stays the fallback. Step 5 Loop A COMPLETE same day after SIX rounds; Loop B BUILT, B-4 ACCEPTED through a live developer drive (direction refined Q -> R -> P during acceptance: Due Soon card removed, stat row beside the hero, Highest Point chip added), SSOT verified (code trace + live 13/13 grid reconciliation), and **COMMITTED to dev as `7adcfff` (2026-06-12)** -- incl. the low_balance_threshold NOT NULL migration and the grid negative-formatting adoption of the shared money macro. Durable anatomy + every ruling in the audit. OPEN: the two revisit-later presentational deviations; the anchor UTC-day-vs-Eastern bucketing ruling (recorded in the audit + parity memory). Ships to prod with the next `dev` -> `main` PR; run `/update-docs` after it merges |
 | Remaining screens | PROVISIONAL ORDER from the original plan (confirm per screen at each start): accounts, savings, salary, analytics, retirement, investment, loan, settings. The app-wide navbar/IA rework is its own area. Screens the original list omits (recurring, transfers, obligations, companion, calendar) slot in per developer call. |
 
 ## Dashboard playbook (carried from the original proof-step plan)
@@ -97,8 +97,8 @@ unhelpful (developer's verdict), so the work crosses into `dashboard_service.py`
 4. **UX/IA pass** for surviving cards: what the user is trying to do on the dashboard, what
    each card should show, what to consolidate, reorder, or drop.
 5. **Loop A directions** (2-3, scratch mockups in /tmp) honoring the existing HTMX refresh
-   contracts (`dashboardRefresh from:body`, `balanceChanged from:body`), then the
-   direction gate, then Loop B -- same process as the grid.
+   contract (`balanceChanged from:body`; the old `dashboardRefresh` event was deleted in the
+   step 3 data pass), then the direction gate, then Loop B -- same process as the grid.
 
 ## Small follow-ups (not screen-sized)
 

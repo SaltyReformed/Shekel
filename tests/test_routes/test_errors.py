@@ -21,11 +21,11 @@ class TestErrorPages:
         assert "Page Not Found" in html
 
     def test_404_contains_navigation(self, app, auth_client):
-        """404 page contains a link back to the budget grid."""
+        """404 page contains a recovery link back to the dashboard."""
         response = auth_client.get("/this-page-does-not-exist")
         html = response.data.decode()
-        assert "/grid" in html
-        assert "Back to Budget Grid" in html
+        assert "/dashboard" in html
+        assert "Back to Dashboard" in html
 
     def test_429_renders_custom_page(self, app, seed_user):
         """Rate-limited request returns 429 with custom template.
@@ -252,7 +252,7 @@ class TestErrorPages:
             _db.engine.dispose()
 
     def test_400_contains_navigation(self):
-        """400 page contains a link back to the budget grid."""
+        """400 page contains a recovery link back to the dashboard."""
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
 
@@ -266,7 +266,7 @@ class TestErrorPages:
         with error_app.app_context():
             response = error_client.get("/test-400-trigger")
             html = response.data.decode()
-            assert "Back to Budget Grid" in html
+            assert "Back to Dashboard" in html
 
         with error_app.app_context():
             from app.extensions import db as _db  # pylint: disable=import-outside-toplevel
@@ -330,7 +330,7 @@ class TestErrorPages:
             _db.engine.dispose()
 
     def test_403_contains_navigation(self):
-        """403 page contains a link back to the budget grid."""
+        """403 page contains a recovery link back to the dashboard."""
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
 
@@ -344,7 +344,7 @@ class TestErrorPages:
         with error_app.app_context():
             response = error_client.get("/test-403-trigger")
             html = response.data.decode()
-            assert "Back to Budget Grid" in html
+            assert "Back to Dashboard" in html
 
         with error_app.app_context():
             from app.extensions import db as _db  # pylint: disable=import-outside-toplevel

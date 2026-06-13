@@ -131,6 +131,70 @@ class TestInvestmentDashboard:
         assert b"25,000.00" in resp.data
         assert b"Assumed Return" in resp.data
 
+    def test_dashboard_employer_match_card(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Employer-contribution card renders the match formula (TPLA-01).
+
+        The card body branches on ``employer_params.type_id``; before the
+        fix it compared a non-existent ``type`` key, so the card header
+        rendered while both branches stayed false -- a permanently blank
+        body for every configured employer match.
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        acct.current_anchor_period_id = seed_periods_today[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.MATCH),
+            employer_match_percentage=Decimal("0.50"),
+            employer_match_cap_percentage=Decimal("0.06"),
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        assert b"Employer Contribution" in resp.data
+        assert b"Employer matches" in resp.data
+        # Stored fractions render through |to_percent: 0.50 -> 50%, 0.06 -> 6.00%.
+        assert b"50%" in resp.data
+        assert b"6.00%" in resp.data
+
+    def test_dashboard_employer_flat_card(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Employer flat-percentage card renders the contribute formula (TPLA-01)."""
+        acct = _create_investment_account(seed_user, db.session)
+        acct.current_anchor_period_id = seed_periods_today[0].id
+        _create_investment_params(
+            db.session, acct.id,
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+            employer_flat_percentage=Decimal("0.03"),
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        assert b"Employer Contribution" in resp.data
+        assert b"Employer contributes" in resp.data
+        # 0.03 -> 3.00% through |to_percent.
+        assert b"3.00%" in resp.data
+
+    def test_dashboard_ytd_card_shows_limit_year(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """YTD contribution card title shows the configured limit year (TPLA-04).
+
+        Before the fix the title computed ``date.today().year`` via an
+        undefined ``date`` global and rendered a bare ' Contributions' with
+        no year.
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        acct.current_anchor_period_id = seed_periods_today[0].id
+        _create_investment_params(
+            db.session, acct.id, contribution_limit_year=2026,
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        assert b"2026 Contributions" in resp.data
+
 
 class TestContributionLimitZeroCap:
     """Pin the zero-vs-None annual-limit branches (quality-pass B7).

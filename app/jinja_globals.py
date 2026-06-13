@@ -39,6 +39,7 @@ from app.enums import (
     AcctTypeEnum,
     CalcMethodEnum,
     DeductionTimingEnum,
+    EmployerContributionTypeEnum,
     GoalModeEnum,
     IncomeUnitEnum,
     RecurrencePatternEnum,
@@ -118,6 +119,11 @@ _REF_ID_GLOBALS: tuple[tuple[Callable[[Enum], int], dict[str, Enum]], ...] = (
     (ref_cache.income_unit_id, {
         "INCOME_UNIT_PAYCHECKS": IncomeUnitEnum.PAYCHECKS,
         "INCOME_UNIT_MONTHS": IncomeUnitEnum.MONTHS,
+    }),
+    (ref_cache.employer_contribution_type_id, {
+        "EMPLOYER_TYPE_NONE": EmployerContributionTypeEnum.NONE,
+        "EMPLOYER_TYPE_FLAT_PERCENTAGE": EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+        "EMPLOYER_TYPE_MATCH": EmployerContributionTypeEnum.MATCH,
     }),
 )
 

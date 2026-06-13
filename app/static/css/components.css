@@ -138,7 +138,10 @@
 }
 
 [data-bs-theme="dark"] .category-group-header {
-  background-color: #2A3040 !important;
+  /* Steel Ink token instead of a hardcoded hex; the two-class selector
+     outranks Bootstrap's single-class .card-header bg, so no !important
+     is needed (polyglot audit CSS-07). */
+  background-color: var(--shekel-group-header-bg);
 }
 
 .category-group-header + .list-group .list-group-item {
@@ -162,9 +165,7 @@
 .shekel-scroll-pills {
   flex-wrap: nowrap;
   overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
   scrollbar-width: none;        /* Firefox */
-  -ms-overflow-style: none;     /* IE/Edge legacy */
 }
 
 .shekel-scroll-pills::-webkit-scrollbar {

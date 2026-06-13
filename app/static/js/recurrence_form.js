@@ -30,6 +30,11 @@
   var startPeriodLabel = document.getElementById('start-period-label');
   var startPeriodHelp = document.getElementById('start-period-help');
 
+  // In-flight preview fetch.  A rapid field change aborts the previous
+  // request; otherwise the LAST response to ARRIVE wins and a slow earlier
+  // fetch can clobber the preview with stale dates.
+  var previewAbortController = null;
+
   function toggleFields(pattern) {
     var isOneTime = !pattern || pattern === ONCE;
 
@@ -97,10 +102,21 @@
     var endDateEl = document.getElementById('end_date');
     if (endDateEl && endDateEl.value) params.set('end_date', endDateEl.value);
 
-    fetch(previewUrl + '?' + params.toString())
-      .then(function(r) { return r.text(); })
+    // Abort any preview still in flight, then reject non-2xx so a 4xx/5xx or
+    // session-expiry login page is never injected as if it were the dates.
+    if (previewAbortController) previewAbortController.abort();
+    previewAbortController = new AbortController();
+    fetch(previewUrl + '?' + params.toString(), { signal: previewAbortController.signal })
+      .then(function(r) {
+        if (!r.ok) throw new Error('recurrence preview fetch failed: ' + r.status);
+        return r.text();
+      })
       .then(function(html) { preview.innerHTML = html; })
-      .catch(function() { preview.innerHTML = '<small class="text-muted">Could not load preview</small>'; });
+      .catch(function(err) {
+        // A newer field change aborted this preview -- intentional, not an error.
+        if (err.name === 'AbortError') return;
+        preview.innerHTML = '<small class="text-muted">Could not load preview</small>';
+      });
   }
 
   // Initialize on page load.

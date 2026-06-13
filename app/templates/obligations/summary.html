@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Recurring Obligations -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -51,7 +52,7 @@
       <div class="col-md-4">
         <div class="text-muted small">Now</div>
         <div class="fw-bold fs-5 font-mono {% if projection.now_balance < 0 %}text-danger{% endif %}">
-          {% if projection.now_balance < 0 %}-${{ "{:,.2f}".format(-projection.now_balance) }}{% else %}${{ "{:,.2f}".format(projection.now_balance) }}{% endif %}
+          {{ money(projection.now_balance) }}
         </div>
       </div>
       <div class="col-md-4">
@@ -59,7 +60,7 @@
           In ~12 months{% if projection.twelve_month %} ({{ projection.twelve_month.as_of_date.strftime('%b %Y') }}){% endif %}
         </div>
         <div class="fw-bold fs-5 font-mono {% if projection.twelve_month and projection.twelve_month.balance < 0 %}text-danger{% endif %}">
-          {% if projection.twelve_month is none %}--{% elif projection.twelve_month.balance < 0 %}-${{ "{:,.2f}".format(-projection.twelve_month.balance) }}{% else %}${{ "{:,.2f}".format(projection.twelve_month.balance) }}{% endif %}
+          {% if projection.twelve_month is none %}--{% else %}{{ money(projection.twelve_month.balance) }}{% endif %}
         </div>
         {% if projection.negative_period_count > 0 %}
         <div class="text-danger small">
@@ -73,7 +74,7 @@
           End of projection{% if projection.end %} ({{ projection.end.as_of_date.strftime('%b %Y') }}){% endif %}
         </div>
         <div class="fw-bold fs-5 font-mono {% if projection.end and projection.end.balance < 0 %}text-danger{% elif projection.direction == 'growing' %}text-success{% endif %}">
-          {% if projection.end is none %}--{% elif projection.end.balance < 0 %}-${{ "{:,.2f}".format(-projection.end.balance) }}{% else %}${{ "{:,.2f}".format(projection.end.balance) }}{% endif %}
+          {% if projection.end is none %}--{% else %}{{ money(projection.end.balance) }}{% endif %}
         </div>
       </div>
     </div>
@@ -122,9 +123,9 @@
             <td>{{ item.name }}</td>
             <td class="d-none d-md-table-cell">{{ item.account_name }}</td>
             <td class="d-none d-md-table-cell">{{ item.category_name }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.amount) }}</td>
+            <td class="font-mono">{{ money(item.amount) }}</td>
             <td>{{ item.frequency }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.monthly) }}</td>
+            <td class="font-mono">{{ money(item.monthly) }}</td>
             <td>{{ item.next_date.strftime('%-m/%-d/%Y') if item.next_date else '--' }}</td>
           </tr>
           {% endfor %}
@@ -133,7 +134,7 @@
           <tr>
             <td colspan="5" class="d-none d-md-table-cell text-end fw-bold">Total Monthly</td>
             <td colspan="3" class="d-md-none text-end fw-bold">Total Monthly</td>
-            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_expense_monthly) }}</td>
+            <td class="font-mono fw-bold">{{ money(total_expense_monthly) }}</td>
             <td></td>
           </tr>
         </tfoot>
@@ -171,9 +172,9 @@
             <td>{{ item.name }}</td>
             <td>{{ item.from_account }}</td>
             <td>{{ item.to_account }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.amount) }}</td>
+            <td class="font-mono">{{ money(item.amount) }}</td>
             <td>{{ item.frequency }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.monthly) }}</td>
+            <td class="font-mono">{{ money(item.monthly) }}</td>
             <td>{{ item.next_date.strftime('%-m/%-d/%Y') if item.next_date else '--' }}</td>
           </tr>
           {% endfor %}
@@ -181,7 +182,7 @@
         <tfoot class="table-light">
           <tr>
             <td colspan="5" class="text-end fw-bold">Total Monthly</td>
-            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_transfer_monthly) }}</td>
+            <td class="font-mono fw-bold">{{ money(total_transfer_monthly) }}</td>
             <td></td>
           </tr>
         </tfoot>
@@ -217,9 +218,9 @@
           <tr>
             <td>{{ item.name }}</td>
             <td class="d-none d-md-table-cell">{{ item.account_name }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.amount) }}</td>
+            <td class="font-mono">{{ money(item.amount) }}</td>
             <td>{{ item.frequency }}</td>
-            <td class="font-mono">${{ "{:,.2f}".format(item.monthly) }}</td>
+            <td class="font-mono">{{ money(item.monthly) }}</td>
             <td>{{ item.next_date.strftime('%-m/%-d/%Y') if item.next_date else '--' }}</td>
           </tr>
           {% endfor %}
@@ -228,7 +229,7 @@
           <tr>
             <td colspan="4" class="d-none d-md-table-cell text-end fw-bold">Total Monthly</td>
             <td colspan="3" class="d-md-none text-end fw-bold">Total Monthly</td>
-            <td class="font-mono fw-bold">${{ "{:,.2f}".format(total_income_monthly) }}</td>
+            <td class="font-mono fw-bold">{{ money(total_income_monthly) }}</td>
             <td></td>
           </tr>
         </tfoot>

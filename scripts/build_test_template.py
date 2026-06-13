@@ -61,10 +61,10 @@ Environment variables (read at module load before app import):
   non-production sentinel value if unset; the template database is
   never reachable through Gunicorn so the value is purely a
   placeholder needed for app construction.
-* ``DATABASE_URL_APP``: Removed from the environment if set --
-  the script needs DDL privileges (the owner role, ``DATABASE_URL``),
-  not the least-privilege app role.  Matches
-  ``scripts/init_database.py``.
+* ``DATABASE_URL_APP``: Overridden to the empty string (= unset, per
+  the config resolver's documented contract) -- the script needs DDL
+  privileges (the owner role, ``DATABASE_URL``), not the
+  least-privilege app role.  Matches ``scripts/init_database.py``.
 
 Usage::
 
@@ -127,15 +127,21 @@ os.environ.setdefault("SECRET_KEY", _DEFAULT_SECRET_KEY)
 # TABLE, CREATE TRIGGER, ...).  ``app/config.py`` prefers
 # ``DATABASE_URL_APP`` over ``DATABASE_URL`` when both are set, which
 # is correct for the runtime app (least privilege) but wrong here.
-# ``pop`` is process-local; the parent shell's env is untouched.
-os.environ.pop("DATABASE_URL_APP", None)
+# Empty string rather than ``pop``: config.py's ``load_dotenv()``
+# (override=False) re-inserts a ``.env`` ``DATABASE_URL_APP`` line
+# into an absent key, defeating the override; an existing-but-empty
+# key survives dotenv and the config resolver documents
+# empty-as-unset (falls through to DATABASE_URL).  See the matching
+# block in scripts/init_database.py.  The assignment is
+# process-local; the parent shell's env is untouched.
+os.environ["DATABASE_URL_APP"] = ""
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Pylint: wrong-import-position -- the environment setup (TEST_DATABASE_URL,
-# SECRET_KEY, the DATABASE_URL_APP pop) and the sys.path bootstrap above
-# must run before these imports: the app config reads the environment at
-# import time, and ``app`` only resolves once the repo root is on sys.path.
+# SECRET_KEY, the DATABASE_URL_APP override) and the sys.path bootstrap
+# above must run before these imports: the app config reads the environment
+# at import time, and ``app`` only resolves once the repo root is on sys.path.
 # pylint: disable=wrong-import-position
 import psycopg2
 from psycopg2 import sql

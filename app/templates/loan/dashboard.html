@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}{{ account.name }} -- {{ account_type.name }} -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -54,10 +55,10 @@
     <h6 class="alert-heading mb-1">No recurring payment set up for this loan</h6>
     <p class="mb-2 small">
       Create a recurring monthly transfer of
-      <strong class="font-mono">${{ "{:,.2f}".format(total_payment) }}</strong>
+      <strong class="font-mono">{{ money(total_payment) }}</strong>
       {% if monthly_escrow > 0 %}
-        (<span class="font-mono">${{ "{:,.2f}".format(summary.monthly_payment) }}</span> P&I
-        + <span class="font-mono">${{ "{:,.2f}".format(monthly_escrow) }}</span> escrow)
+        (<span class="font-mono">{{ money(summary.monthly_payment) }}</span> P&I
+        + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow)
       {% endif %}
       to keep your loan on track.
     </p>
@@ -96,7 +97,7 @@
           <div class="card-body">
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Original Principal</span>
-              <span class="font-mono">${{ "{:,.2f}".format(params.original_principal) }}</span>
+              <span class="font-mono">{{ money(params.original_principal) }}</span>
             </div>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Current Principal</span>
@@ -105,7 +106,7 @@
                    not the non-authoritative stored LoanParams.current_principal
                    column.  Same dollar figure as /savings debt card and
                    the year-end net-worth liability. #}
-                ${{ "{:,.2f}".format(current_principal_display) }}
+                {{ money(current_principal_display) }}
               </span>
             </div>
             <div class="d-flex justify-content-between mb-2" id="interest-rate-display">
@@ -120,7 +121,7 @@
             </div>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Term</span>
-              <span>{{ params.term_months }} months ({{ (params.term_months / 12)|round(1) }} years)</span>
+              <span>{{ params.term_months }} months ({{ params.term_months|months_to_years }} years)</span>
             </div>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Origination Date</span>
@@ -128,22 +129,24 @@
             </div>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Payment Day</span>
-              <span>{{ params.payment_day }}{{ "st" if params.payment_day == 1 else ("nd" if params.payment_day == 2 else ("rd" if params.payment_day == 3 else "th")) }} of each month</span>
+              {# The ordinal filter handles the day-of-month suffix
+                 (1st/21st/31st vs the 11th/12th/13th teens). #}
+              <span>{{ params.payment_day|ordinal }} of each month</span>
             </div>
             <hr>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted" title="Principal &amp; Interest">Monthly P&I</span>
-              <span class="fw-bold font-mono">${{ "{:,.2f}".format(summary.monthly_payment) }}</span>
+              <span class="fw-bold font-mono">{{ money(summary.monthly_payment) }}</span>
             </div>
             <div class="d-flex justify-content-between mb-2{% if not total_payment %} d-none{% endif %}" id="total-payment-display">
               <span class="text-muted">Total Monthly (with escrow)</span>
               <span class="fw-bold font-mono text-accent">
-                {% if total_payment %}${{ "{:,.2f}".format(total_payment) }}{% endif %}
+                {% if total_payment %}{{ money(total_payment) }}{% endif %}
               </span>
             </div>
             <div class="d-flex justify-content-between mb-2">
               <span class="text-muted">Total Interest (life of loan)</span>
-              <span class="font-mono">${{ "{:,.2f}".format(summary.total_interest) }}</span>
+              <span class="font-mono">{{ money(summary.total_interest) }}</span>
             </div>
             <div class="d-flex justify-content-between">
               <span class="text-muted">Projected Payoff</span>
@@ -290,7 +293,7 @@
       <div class="card-header d-flex justify-content-between align-items-center">
         <h6 class="mb-0"><i class="bi bi-shield-check"></i> Escrow Components</h6>
         <span class="badge bg-secondary font-mono" id="escrow-badge">
-          ${{ "{:,.2f}".format(monthly_escrow) }}/mo
+          {{ money(monthly_escrow) }}/mo
         </span>
       </div>
       <div id="escrow-list">

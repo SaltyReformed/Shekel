@@ -1,5 +1,8 @@
+{% from "_money_macros.html" import money %}
 {# Anchor balance -- toggles between display and edit mode.
-   Expected context: account, editing (bool), conflict (bool, optional).
+   Expected context: account, editing (bool), conflict (bool, optional),
+   revert_context (str|None, optional -- the normalized surface token that
+   opened the editor, e.g. 'dashboard').
 
    When conflict=True, the editor was attempting an update against a
    stale version_id and the route returned 409.  The display cell
@@ -8,10 +11,34 @@
    the editor with the fresh value.  See
    app/routes/accounts.py:true_up for the optimistic-locking contract
    (commit C-17 / F-009).
-#}
+
+   ``revert_context`` is threaded through every reopen path (the edit
+   form's hx-patch and the conflict cell's retry hx-get) so a conflict
+   raised from the dashboard balance card reopens the editor back in the
+   dashboard surface rather than stranding the card on the grid display
+   cell.  Unset / None is the grid default and keeps both URLs token-free,
+   so the grid path stays byte-for-byte unchanged. #}
+{% set is_dashboard_revert = (revert_context is defined and revert_context == 'dashboard') %}
 {% if editing %}
-{# Edit mode: input field with save on Enter #}
-<form hx-patch="{{ url_for('accounts.true_up', account_id=account.id) }}"
+{# Edit mode: input field with save on Enter.
+   ``revert_url`` is the GET endpoint Cancel / Escape swaps back in.  It
+   depends on which surface opened the editor (anchor_form sets it from
+   the ``revert`` query param): the grid restores its display cell, the
+   dashboard restores its full balance card.  Defaults to the grid's
+   anchor_display so a render without ``revert_url`` in context (the
+   grid path) is byte-for-byte unchanged.
+
+   The hx-patch carries the same ``revert`` token (dashboard only) so the
+   true_up handler can re-render a 409 conflict cell with the right retry
+   target. #}
+{% set revert_url = revert_url
+   or url_for('accounts.anchor_display', account_id=account.id) %}
+{% if is_dashboard_revert %}
+{% set true_up_url = url_for('accounts.true_up', account_id=account.id, revert='dashboard') %}
+{% else %}
+{% set true_up_url = url_for('accounts.true_up', account_id=account.id) %}
+{% endif %}
+<form hx-patch="{{ true_up_url }}"
       hx-target="this"
       hx-swap="outerHTML"
       hx-disabled-elt="find button[type=submit]"
@@ -27,30 +54,39 @@
            class="form-control" autofocus
            aria-label="{{ account.name }} account balance"
            data-action="anchor-cancel-on-escape"
-           data-revert-url="{{ url_for('accounts.anchor_display', account_id=account.id) }}">
+           data-revert-url="{{ revert_url }}">
   </div>
   <button type="submit" class="btn btn-sm btn-primary" aria-label="Save balance">
     <i class="bi bi-check"></i>
   </button>
   <button type="button" class="btn btn-sm btn-outline-secondary" aria-label="Cancel editing"
-          hx-get="{{ url_for('accounts.anchor_display', account_id=account.id) }}"
+          hx-get="{{ revert_url }}"
           hx-target="closest form"
           hx-swap="outerHTML">
     <i class="bi bi-x"></i>
   </button>
 </form>
 {% else %}
-{# Display mode: clickable balance #}
+{# Display mode: clickable balance.  The reopen hx-get carries the same
+   ``revert`` token (dashboard only) so a conflict cell rendered for the
+   dashboard surface reopens the editor back in the dashboard, not the
+   grid. #}
+{% if is_dashboard_revert %}
+{% set reopen_url = url_for('accounts.anchor_form', account_id=account.id, revert='dashboard') %}
+{% else %}
+{% set reopen_url = url_for('accounts.anchor_form', account_id=account.id) %}
+{% endif %}
 <div id="anchor-display"
-     hx-get="{{ url_for('accounts.anchor_form', account_id=account.id) }}"
+     hx-get="{{ reopen_url }}"
      hx-trigger="click"
      hx-swap="outerHTML"
      class="anchor-balance-display font-mono{% if conflict %} text-warning{% endif %}"
      role="button"
      tabindex="0"
-     aria-label="{{ account.name }} balance: ${{ '{:,.0f}'.format(account.current_anchor_balance if account.current_anchor_balance else 0) }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
+     data-keyboard-activate
+     aria-label="{{ account.name }} balance: {{ money(account.current_anchor_balance if account.current_anchor_balance else 0, cents=false) }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
      title="{% if conflict %}This account was changed by another action -- click to retry{% else %}Click to update balance{% endif %}">
-  ${{ "{:,.0f}".format(account.current_anchor_balance if account.current_anchor_balance else 0) }}
+  {{ money(account.current_anchor_balance if account.current_anchor_balance else 0, cents=false) }}
   {% if conflict %}
   <i class="bi bi-exclamation-triangle text-warning ms-1 small"
      aria-label="Edit conflict"></i>

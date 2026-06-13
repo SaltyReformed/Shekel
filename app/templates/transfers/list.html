@@ -1,12 +1,7 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
+{% from "_recurrence_macros.html" import recurrence_cell with context %}
 {% block title %}Recurring Transfers -- Shekel{% endblock %}
-
-
-{% set month_names = {
-  1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr',
-  5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Aug',
-  9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec',
-} %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -16,41 +11,6 @@
   </ol>
 </nav>
 {% endblock %}
-
-{# Macro for the recurrence description column to avoid duplication between active/archived tables.
-   Compares against integer pattern IDs (REC_* globals from app.jinja_globals) rather than against
-   the string ``pattern.name`` column, per CLAUDE.md "Reference Tables -- IDs for logic, strings
-   for display only".  The else branch is a defensive fallback for a future pattern row added to
-   the database without a matching REC_* constant; it reads ``rr.pattern.name`` for display only. #}
-{% macro recurrence_cell(t) %}
-{% if t.recurrence_rule %}
-  {% set rr = t.recurrence_rule %}
-  {% if rr.pattern_id == REC_EVERY_PERIOD %}
-    Every paycheck
-  {% elif rr.pattern_id == REC_EVERY_N_PERIODS %}
-    Every {{ rr.interval_n }} paychecks
-  {% elif rr.pattern_id == REC_MONTHLY and rr.day_of_month %}
-    Monthly (day {{ rr.day_of_month }})
-  {% elif rr.pattern_id == REC_MONTHLY_FIRST %}
-    Monthly (first paycheck)
-  {% elif rr.pattern_id == REC_QUARTERLY %}
-    Quarterly{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-  {% elif rr.pattern_id == REC_SEMI_ANNUAL %}
-    Every 6 months{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-  {% elif rr.pattern_id == REC_ANNUAL %}
-    Yearly{% if rr.month_of_year %} ({{ month_names[rr.month_of_year] }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
-  {% elif rr.pattern_id == REC_ONCE %}
-    One-time
-  {% else %}
-    {{ recurrence_pattern_labels.get(rr.pattern.name, rr.pattern.name|replace('_', ' ')|title) }}
-  {% endif %}
-  {% if rr.end_date %}
-    <br><small class="text-muted">until {{ rr.end_date.strftime('%b %d, %Y') }}</small>
-  {% endif %}
-{% else %}
-  <span class="text-muted">One-time</span>
-{% endif %}
-{% endmacro %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -83,7 +43,7 @@
       <td>{{ t.name }}</td>
       <td>{{ t.from_account.name if t.from_account else '--' }}</td>
       <td>{{ t.to_account.name if t.to_account else '--' }}</td>
-      <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
+      <td class="text-end">{{ money(t.default_amount) }}</td>
       <td class="d-none d-md-table-cell">{{ recurrence_cell(t) }}</td>
       <td>
         <a href="{{ url_for('transfers.edit_transfer_template', template_id=t.id) }}"
@@ -125,7 +85,7 @@
     <div class="card-body py-2 px-3">
       <div class="d-flex justify-content-between align-items-baseline">
         <h6 class="card-title mb-0">{{ t.name }}</h6>
-        <span class="font-mono fw-bold">${{ "%.2f"|format(t.default_amount) }}</span>
+        <span class="font-mono fw-bold">{{ money(t.default_amount) }}</span>
       </div>
       <small class="text-muted d-block mt-1">
         {{ t.from_account.name if t.from_account else '--' }}
@@ -135,8 +95,7 @@
       <small class="text-muted d-block">{{ recurrence_cell(t) }}</small>
       <div class="mt-2 d-flex flex-wrap gap-2">
         <a href="{{ url_for('transfers.edit_transfer_template', template_id=t.id) }}"
-           class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center"
-           style="min-height: 44px;"
+           class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center btn-touch-44"
            aria-label="Edit {{ t.name }}">
           <i class="bi bi-pencil me-1"></i> Edit
         </a>
@@ -145,8 +104,7 @@
               data-confirm="Archive this recurring transfer? All projected transfers will be removed.">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit"
-                  class="btn btn-sm btn-outline-warning d-inline-flex align-items-center"
-                  style="min-height: 44px;"
+                  class="btn btn-sm btn-outline-warning d-inline-flex align-items-center btn-touch-44"
                   aria-label="Archive {{ t.name }}">
             <i class="bi bi-archive me-1"></i> Archive
           </button>
@@ -156,8 +114,7 @@
               data-confirm="Permanently delete this recurring transfer? This cannot be undone.">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit"
-                  class="btn btn-sm btn-outline-danger d-inline-flex align-items-center"
-                  style="min-height: 44px;"
+                  class="btn btn-sm btn-outline-danger d-inline-flex align-items-center btn-touch-44"
                   aria-label="Delete {{ t.name }}">
             <i class="bi bi-trash me-1"></i> Delete
           </button>
@@ -205,7 +162,7 @@
           <td>{{ t.name }}</td>
           <td>{{ t.from_account.name if t.from_account else '--' }}</td>
           <td>{{ t.to_account.name if t.to_account else '--' }}</td>
-          <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
+          <td class="text-end">{{ money(t.default_amount) }}</td>
           <td class="d-none d-md-table-cell">{{ recurrence_cell(t) }}</td>
           <td>
             <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
@@ -239,7 +196,7 @@
         <div class="card-body py-2 px-3">
           <div class="d-flex justify-content-between align-items-baseline">
             <h6 class="card-title mb-0">{{ t.name }}</h6>
-            <span class="font-mono fw-bold">${{ "%.2f"|format(t.default_amount) }}</span>
+            <span class="font-mono fw-bold">{{ money(t.default_amount) }}</span>
           </div>
           <small class="text-muted d-block mt-1">
             {{ t.from_account.name if t.from_account else '--' }}
@@ -252,8 +209,7 @@
                   class="m-0">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit"
-                      class="btn btn-sm btn-outline-success d-inline-flex align-items-center"
-                      style="min-height: 44px;"
+                      class="btn btn-sm btn-outline-success d-inline-flex align-items-center btn-touch-44"
                       aria-label="Unarchive {{ t.name }}">
                 <i class="bi bi-arrow-counterclockwise me-1"></i> Unarchive
               </button>
@@ -263,8 +219,7 @@
                   data-confirm="Permanently delete this recurring transfer? This cannot be undone.">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit"
-                      class="btn btn-sm btn-outline-danger d-inline-flex align-items-center"
-                      style="min-height: 44px;"
+                      class="btn btn-sm btn-outline-danger d-inline-flex align-items-center btn-touch-44"
                       aria-label="Delete {{ t.name }}">
                 <i class="bi bi-trash me-1"></i> Delete
               </button>

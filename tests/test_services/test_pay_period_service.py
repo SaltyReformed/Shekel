@@ -122,8 +122,8 @@ class TestGeneratePayPeriods:
             assert new[1].period_index == 4
 
     def test_offset_start_before_existing_rejected(self, app, db, bare_user):
-        """An offset batch whose start predates the latest existing payday is
-        rejected (DH-#39).
+        """An offset batch whose start predates the latest existing coverage is
+        rejected (DH-#39, bound tightened by fix I).
 
         The new periods would receive the highest period_index values while
         carrying earlier dates -- out of calendar order AND overlapping the
@@ -133,7 +133,10 @@ class TestGeneratePayPeriods:
         """
         with app.app_context():
             user_id = bare_user["user"].id
-            # Jan 2, Jan 16, Jan 30 (latest payday Jan 30).
+            # Jan 2, Jan 16, Jan 30 (14-day cadence).  The latest period
+            # starts Jan 30 and ends Jan 30 + 13 = Feb 12, so the
+            # overlap bound (fix I) is the latest END date, 2026-02-12,
+            # not the latest START date 2026-01-30.
             pay_period_service.generate_pay_periods(
                 user_id=user_id, start_date=date(2026, 1, 2), num_periods=3,
             )
@@ -144,10 +147,74 @@ class TestGeneratePayPeriods:
                 pay_period_service.generate_pay_periods(
                     user_id=user_id, start_date=date(2026, 1, 9), num_periods=4,
                 )
-            # The message names the latest existing payday as the bound.
-            assert "2026-01-30" in str(excinfo.value)
+            # The message names the latest existing END date as the bound
+            # (fix I): Jan 30 + 13 days = 2026-02-12 (was 2026-01-30 when
+            # the guard compared only start dates).
+            assert "2026-02-12" in str(excinfo.value)
             # Nothing was created -- still exactly the original 3.
             assert len(pay_period_service.get_all_periods(user_id)) == 3
+
+    def test_batch_starting_within_final_period_rejected(self, app, db, bare_user):
+        """A batch starting INSIDE the last existing period is rejected (fix I).
+
+        The audit's overlap-guard hole: with periods Jan 2 / Jan 16 / Jan 30
+        (14-day cadence), the last period spans Jan 30 - Feb 12.  A new batch
+        starting Feb 5 has a start date AFTER the latest existing START
+        (Jan 30), so the old start-date-only guard ACCEPTED it -- but Feb 5
+        falls WITHIN the Jan 30 period's [start, end] span, producing two
+        periods covering Feb 5 - Feb 12 and a nondeterministic
+        get_current_period.  The end-date bound (Feb 12) now rejects it.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_service.generate_pay_periods(
+                user_id=user_id, start_date=date(2026, 1, 2), num_periods=3,
+            )
+            db.session.commit()
+
+            # Feb 5 > latest start Jan 30 (old guard passed) but
+            # <= latest end Feb 12 (new guard rejects).
+            with pytest.raises(ValidationError) as excinfo:
+                pay_period_service.generate_pay_periods(
+                    user_id=user_id, start_date=date(2026, 2, 5), num_periods=4,
+                )
+            assert "2026-02-12" in str(excinfo.value)
+            # Nothing created -- the original 3 are untouched.
+            assert len(pay_period_service.get_all_periods(user_id)) == 3
+
+    def test_batch_starting_after_final_period_end_accepted(
+        self, app, db, bare_user,
+    ):
+        """A batch starting the day AFTER coverage ends is accepted (fix I).
+
+        Periods Jan 2 / Jan 16 / Jan 30 end at Feb 12.  A new batch
+        starting Feb 13 (one day after coverage ends, the natural next
+        payday) does not overlap, so it extends the schedule forward with
+        sequential indices.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_service.generate_pay_periods(
+                user_id=user_id, start_date=date(2026, 1, 2), num_periods=3,
+            )
+            db.session.commit()
+
+            new = pay_period_service.generate_pay_periods(
+                user_id=user_id, start_date=date(2026, 2, 13), num_periods=2,
+            )
+            db.session.commit()
+
+            assert len(new) == 2
+            assert [p.period_index for p in new] == [3, 4]
+            assert [p.start_date for p in new] == [
+                date(2026, 2, 13), date(2026, 2, 27),
+            ]
+            # Index order still matches calendar order across the full set.
+            starts = [
+                p.start_date
+                for p in pay_period_service.get_all_periods(user_id)
+            ]
+            assert starts == sorted(starts)
 
     def test_larger_count_rerun_from_same_start_extends_forward(
         self, app, db, bare_user

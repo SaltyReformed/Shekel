@@ -11,7 +11,7 @@
     <div>
       <h5 class="mb-0">{{ account.name if account else 'Account' }} Balance</h5>
       {% if account and account.updated_at %}
-      <small class="text-muted" id="anchor-as-of">as of {{ account.updated_at.strftime('%b %-d, %Y') }}</small>
+      <small class="text-muted" id="anchor-as-of">as of {{ account.updated_at | local_datetime('%b %-d, %Y') }}</small>
       {% endif %}
     </div>
     {% if account %}
@@ -276,6 +276,7 @@
         <h5 class="modal-title" id="addTransactionModalLabel">Add Transaction</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
+      {% if account %}
       <form hx-post="{{ url_for('transactions.create_transaction') }}"
             hx-swap="none" data-modal-auto-close
             hx-disabled-elt="find button[type=submit]">
@@ -284,33 +285,33 @@
           <input type="hidden" name="account_id" value="{{ account.id }}">
 
           <div class="mb-3">
-            <label class="form-label">Name</label>
-            <input type="text" name="name" class="form-control" required autofocus>
+            <label class="form-label" for="add_txn_name">Name</label>
+            <input type="text" id="add_txn_name" name="name" class="form-control" required autofocus>
           </div>
           <div class="mb-3">
-            <label class="form-label">Amount</label>
-            <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
+            <label class="form-label" for="add_txn_amount">Amount</label>
+            <input type="number" step="0.01" inputmode="decimal" id="add_txn_amount" name="estimated_amount"
                    class="form-control" required>
           </div>
           <div class="mb-3">
-            <label class="form-label">Type</label>
-            <select name="transaction_type_id" class="form-select" required>
+            <label class="form-label" for="add_txn_type">Type</label>
+            <select id="add_txn_type" name="transaction_type_id" class="form-select" required>
               {% for tt in transaction_types %}
               <option value="{{ tt.id }}" {{ 'selected' if tt.id == TXN_TYPE_EXPENSE else '' }}>{{ tt.name }}</option>
               {% endfor %}
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">Category</label>
-            <select name="category_id" class="form-select" required>
+            <label class="form-label" for="add_txn_category">Category</label>
+            <select id="add_txn_category" name="category_id" class="form-select" required>
               {% for cat in categories %}
               <option value="{{ cat.id }}">{{ cat.display_name }}</option>
               {% endfor %}
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">Pay Period</label>
-            <select name="pay_period_id" class="form-select" required>
+            <label class="form-label" for="add_txn_period">Pay Period</label>
+            <select id="add_txn_period" name="pay_period_id" class="form-select" required>
               {% for p in all_periods %}
               <option value="{{ p.id }}"
                 {{ 'selected' if p.id == current_period.id else '' }}>
@@ -346,6 +347,21 @@
           <button type="submit" class="btn btn-primary">Add</button>
         </div>
       </form>
+      {% else %}
+      {# A user with zero accounts has no account_id to post, so the form
+         could only fail schema validation.  Guide them to create an account
+         first, mirroring the "No account configured" anchor state above. #}
+      <div class="modal-body">
+        <p class="text-muted mb-0">
+          No account is configured yet.
+          <a href="{{ url_for('accounts.new_account') }}">Add an account</a>
+          before creating transactions.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>

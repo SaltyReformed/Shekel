@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Carry-Forward Preview Modal (Phase 5)
 
    HTMX partial: rendered into ``#carry-forward-modal-mount`` by the
@@ -104,47 +105,47 @@
                         {% if plan.leftover and plan.leftover > 0 %}
                           {% if plan.target_will_be_generated %}
                             Settle source at
-                            <strong>${{ "{:,.2f}".format(plan.entries_sum) }}</strong>;
+                            <strong>{{ money(plan.entries_sum) }}</strong>;
                             generate canonical at
-                            <strong>${{ "{:,.2f}".format(plan.target_estimated_before) }}</strong>
+                            <strong>{{ money(plan.target_estimated_before) }}</strong>
                             in {{ current_period.label }} and bump to
-                            <strong>${{ "{:,.2f}".format(plan.target_estimated_after) }}</strong>
+                            <strong>{{ money(plan.target_estimated_after) }}</strong>
                             (rolling
-                            <strong>${{ "{:,.2f}".format(plan.leftover) }}</strong>
+                            <strong>{{ money(plan.leftover) }}</strong>
                             forward).
                           {% elif plan.target_estimated_before is not none %}
                             Settle source at
-                            <strong>${{ "{:,.2f}".format(plan.entries_sum) }}</strong>;
+                            <strong>{{ money(plan.entries_sum) }}</strong>;
                             bump target from
-                            <strong>${{ "{:,.2f}".format(plan.target_estimated_before) }}</strong>
+                            <strong>{{ money(plan.target_estimated_before) }}</strong>
                             to
-                            <strong>${{ "{:,.2f}".format(plan.target_estimated_after) }}</strong>
+                            <strong>{{ money(plan.target_estimated_after) }}</strong>
                             (rolling
-                            <strong>${{ "{:,.2f}".format(plan.leftover) }}</strong>
+                            <strong>{{ money(plan.leftover) }}</strong>
                             forward).
                           {% else %}
                             {# Blocked envelope with leftover > 0 -- target
                                estimated_before/after are None.  Show the
                                intent so the user understands what failed. #}
                             Would settle source at
-                            <strong>${{ "{:,.2f}".format(plan.entries_sum) }}</strong>
+                            <strong>{{ money(plan.entries_sum) }}</strong>
                             and roll
-                            <strong>${{ "{:,.2f}".format(plan.leftover) }}</strong>
+                            <strong>{{ money(plan.leftover) }}</strong>
                             forward.
                           {% endif %}
                         {% else %}
                           Settle source at
-                          <strong>${{ "{:,.2f}".format(plan.entries_sum) }}</strong>;
+                          <strong>{{ money(plan.entries_sum) }}</strong>;
                           no leftover to roll forward
-                          (estimate ${{ "{:,.2f}".format(plan.transaction.estimated_amount) }}).
+                          (estimate {{ money(plan.transaction.estimated_amount) }}).
                         {% endif %}
                       {% elif plan.kind == "discrete" %}
                         Defer entire row
-                        ({{ "${:,.2f}".format(plan.transaction.estimated_amount) }})
+                        ({{ money(plan.transaction.estimated_amount) }})
                         to {{ current_period.label }}.
                       {% elif plan.kind == "transfer" %}
                         Move transfer
-                        ({{ "${:,.2f}".format(plan.transaction.estimated_amount) }})
+                        ({{ money(plan.transaction.estimated_amount) }})
                         and both linked shadow rows to {{ current_period.label }}.
                       {% endif %}
                     </div>

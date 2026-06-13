@@ -66,21 +66,17 @@ function renderVarianceChart(canvasId) {
           tooltip: {
             callbacks: {
               label: function(context) {
-                return context.dataset.label + ': $' +
-                  context.parsed.y.toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  });
+                return context.dataset.label + ': ' +
+                  ShekelChart.formatMoney(context.parsed.y, true);
               },
               afterBody: function(items) {
                 var idx = items[0].dataIndex;
                 var diff = variance[idx];
-                var prefix = diff >= 0 ? '+$' : '-$';
+                // formatMoney renders the '-' itself; only the explicit
+                // '+' for non-negative variance is added here.
+                var prefix = diff >= 0 ? '+' : '';
                 return 'Variance: ' + prefix +
-                  Math.abs(diff).toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  });
+                  ShekelChart.formatMoney(diff, true);
               },
             },
           },
@@ -92,7 +88,7 @@ function renderVarianceChart(canvasId) {
           y: {
             ticks: {
               callback: function(value) {
-                return '$' + value.toLocaleString();
+                return ShekelChart.formatMoney(value, false);
               },
             },
           },
@@ -109,10 +105,15 @@ document.addEventListener('htmx:afterSwap', function() {
   }
 });
 
-// "Show only variances" toggle -- hides rows with zero variance.
+// "Show only variances" toggle -- hides rows with zero variance.  This fires
+// on EVERY htmx:afterSwap, so bind the change listener once per toggle
+// element: the toggle is replaced wholesale on each analytics swap today (old
+// listeners GC with the old node), but a future refactor that kept it across
+// swaps would otherwise stack a duplicate change listener every swap (JS-15).
 document.addEventListener('htmx:afterSwap', function() {
   var toggle = document.getElementById('variance-filter-toggle');
-  if (!toggle) return;
+  if (!toggle || toggle.dataset.varianceFilterBound) return;
+  toggle.dataset.varianceFilterBound = 'true';
 
   toggle.addEventListener('change', function() {
     var rows = document.querySelectorAll(

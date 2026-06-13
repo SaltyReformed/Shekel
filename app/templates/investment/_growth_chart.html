@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {% if chart_labels %}
 <canvas id="growthChart"
         data-labels='{{ chart_labels|tojson }}'
@@ -5,7 +6,7 @@
         data-contributions='{{ chart_contributions|tojson }}'
         {% if what_if_balances is defined and what_if_balances %}
         data-whatif-balances='{{ what_if_balances|tojson }}'
-        data-whatif-label="What-If (${{ '{:,.2f}'.format(what_if_amount) }}/period)"
+        data-whatif-label="What-If ({{ money(what_if_amount) }}/period)"
         {% endif %}
         class="canvas-max-h-350">
 </canvas>
@@ -13,11 +14,11 @@
 <div class="row text-center mt-3 py-2 border rounded">
   <div class="col-md-4">
     <div class="text-muted small">Current Plan</div>
-    <div class="fw-bold font-mono">${{ "{:,.2f}".format(comparison.committed_end) }}</div>
+    <div class="fw-bold font-mono">{{ money(comparison.committed_end) }}</div>
   </div>
   <div class="col-md-4">
-    <div class="text-muted small">What-If (${{ "{:,.2f}".format(what_if_amount) }}/period)</div>
-    <div class="fw-bold font-mono">${{ "{:,.2f}".format(comparison.whatif_end) }}</div>
+    <div class="text-muted small">What-If ({{ money(what_if_amount) }}/period)</div>
+    <div class="fw-bold font-mono">{{ money(comparison.whatif_end) }}</div>
   </div>
   <div class="col-md-4">
     <div class="text-muted small">Difference</div>
@@ -25,9 +26,9 @@
       {% if comparison.is_zero %}
       $0.00 -- same as current plan
       {% elif comparison.is_positive %}
-      +${{ "{:,.2f}".format(comparison.difference) }}
+      +{{ money(comparison.difference) }}
       {% else %}
-      -${{ "{:,.2f}".format(comparison.difference|abs) }}
+      -{{ money(comparison.difference|abs) }}
       {% endif %}
     </div>
   </div>
