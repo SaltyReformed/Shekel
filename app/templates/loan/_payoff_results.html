@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# HTMX fragment: payoff calculator results #}
 {% if error %}
 <div class="alert alert-warning">{{ error }}</div>
@@ -16,7 +17,7 @@
   <div class="col-md-4">
     <div class="text-muted small">Interest Saved</div>
     <div class="fw-bold text-success font-mono">
-      ${{ "{:,.2f}".format(payoff_summary.interest_saved) }}
+      {{ money(payoff_summary.interest_saved) }}
     </div>
   </div>
 </div>
@@ -34,7 +35,7 @@
       {% endif %}
       <span class="font-mono ms-2 text-success">
         {% if committed_interest_saved > 0 %}
-        ${{ "{:,.2f}".format(committed_interest_saved) }} saved
+        {{ money(committed_interest_saved) }} saved
         {% endif %}
       </span>
     </div>
@@ -71,7 +72,7 @@
   <div class="col-md-6">
     <div class="text-muted small">Add on Top of Your Current Plan</div>
     <div class="fs-5 fw-bold font-mono text-accent">
-      ${{ "{:,.2f}".format(outlook.required_extra) }}/mo
+      {{ money(outlook.required_extra) }}/mo
     </div>
   </div>
   {% if outlook.committed_payoff_date %}
@@ -86,10 +87,10 @@
 {% if required_extra is not none and required_extra > 0 %}
 <div class="text-muted small mt-2">
   Without your recurring plan you would need
-  <span class="font-mono">${{ "{:,.2f}".format(required_extra) }}</span>/mo
+  <span class="font-mono">{{ money(required_extra) }}</span>/mo
   extra over the contractual payment
   {%- if total_monthly %}
-  (<span class="font-mono">${{ "{:,.2f}".format(total_monthly) }}</span> total)
+  (<span class="font-mono">{{ money(total_monthly) }}</span> total)
   {%- endif %}.
 </div>
 {% endif %}
@@ -107,13 +108,13 @@
   <div class="col-md-6">
     <div class="text-muted small">Required Extra Monthly Payment</div>
     <div class="fs-5 fw-bold font-mono text-accent">
-      ${{ "{:,.2f}".format(required_extra) }}
+      {{ money(required_extra) }}
     </div>
   </div>
   <div class="col-md-6">
     <div class="text-muted small">New Total Monthly</div>
     <div class="fw-bold font-mono">
-      ${{ "{:,.2f}".format(total_monthly) }}
+      {{ money(total_monthly) }}
     </div>
   </div>
 </div>

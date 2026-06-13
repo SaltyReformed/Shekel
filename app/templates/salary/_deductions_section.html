@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 <div class="card mb-3" id="deductions-section">
   <div class="card-header d-flex justify-content-between align-items-center">
     <h6 class="mb-0"><i class="bi bi-dash-circle"></i> Deductions</h6>
@@ -37,7 +38,7 @@
             {% if d.calc_method_id == CALC_PERCENTAGE %}
               {{ "%.2f"|format((d.amount|to_percent)) }}%
             {% else %}
-              ${{ "%.2f"|format(d.amount) }}
+              {{ money(d.amount) }}
             {% endif %}
           </td>
           <td>
@@ -52,7 +53,7 @@
             {% endif %}
           </td>
           <td class="text-end">
-            {{ '$' ~ "%.2f"|format(d.annual_cap) if d.annual_cap else '--' }}
+            {{ money(d.annual_cap) if d.annual_cap else '--' }}
           </td>
           <td>
             {% if d.target_account %}

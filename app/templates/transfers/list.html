@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Recurring Transfers -- Shekel{% endblock %}
 
 
@@ -83,7 +84,7 @@
       <td>{{ t.name }}</td>
       <td>{{ t.from_account.name if t.from_account else '--' }}</td>
       <td>{{ t.to_account.name if t.to_account else '--' }}</td>
-      <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
+      <td class="text-end">{{ money(t.default_amount) }}</td>
       <td class="d-none d-md-table-cell">{{ recurrence_cell(t) }}</td>
       <td>
         <a href="{{ url_for('transfers.edit_transfer_template', template_id=t.id) }}"
@@ -125,7 +126,7 @@
     <div class="card-body py-2 px-3">
       <div class="d-flex justify-content-between align-items-baseline">
         <h6 class="card-title mb-0">{{ t.name }}</h6>
-        <span class="font-mono fw-bold">${{ "%.2f"|format(t.default_amount) }}</span>
+        <span class="font-mono fw-bold">{{ money(t.default_amount) }}</span>
       </div>
       <small class="text-muted d-block mt-1">
         {{ t.from_account.name if t.from_account else '--' }}
@@ -205,7 +206,7 @@
           <td>{{ t.name }}</td>
           <td>{{ t.from_account.name if t.from_account else '--' }}</td>
           <td>{{ t.to_account.name if t.to_account else '--' }}</td>
-          <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
+          <td class="text-end">{{ money(t.default_amount) }}</td>
           <td class="d-none d-md-table-cell">{{ recurrence_cell(t) }}</td>
           <td>
             <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
@@ -239,7 +240,7 @@
         <div class="card-body py-2 px-3">
           <div class="d-flex justify-content-between align-items-baseline">
             <h6 class="card-title mb-0">{{ t.name }}</h6>
-            <span class="font-mono fw-bold">${{ "%.2f"|format(t.default_amount) }}</span>
+            <span class="font-mono fw-bold">{{ money(t.default_amount) }}</span>
           </div>
           <small class="text-muted d-block mt-1">
             {{ t.from_account.name if t.from_account else '--' }}

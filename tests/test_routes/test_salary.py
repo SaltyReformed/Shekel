@@ -1615,7 +1615,7 @@ class TestTaxConfigLayout:
             html = response.data.decode()
 
             # Bracket amounts from seeded data should be present in the HTML.
-            assert "$11600" in html
+            assert "$11,600" in html
             assert "10.0%" in html
 
     def test_federal_brackets_toggle_button_exists(self, app, auth_client, seed_user):

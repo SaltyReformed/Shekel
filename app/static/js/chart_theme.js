@@ -295,6 +295,27 @@ var ShekelChart = (function () {
     };
   }
 
+  /**
+   * Format a number as a US-dollar display string for axis ticks and
+   * tooltips.  Negatives put the sign BEFORE the dollar symbol
+   * ("-$1,234", not "$-1,234"), mirroring the Jinja money macro
+   * (_money_macros.html).  Display formatting only -- the value must
+   * already be a final number; no monetary computation happens here.
+   *
+   * @param {number} value - Numeric dollar amount.
+   * @param {boolean} cents - true for exactly 2 fraction digits
+   *   ("-$112.40"), false for whole dollars ("-$1,234").
+   * @returns {string} Formatted dollar string.
+   */
+  function formatMoney(value, cents) {
+    var digits = cents ? 2 : 0;
+    var sign = value < 0 ? '-' : '';
+    return sign + '$' + Math.abs(value).toLocaleString('en-US', {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits
+    });
+  }
+
   // Public API.
   return {
     palette: palette,
@@ -304,6 +325,7 @@ var ShekelChart = (function () {
     destroyById: destroyById,
     destroyAll: destroyAll,
     rerenderAll: rerenderAll,
-    yearBoundaryCallback: yearBoundaryCallback
+    yearBoundaryCallback: yearBoundaryCallback,
+    formatMoney: formatMoney
   };
 })();

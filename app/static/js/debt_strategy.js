@@ -137,7 +137,7 @@ function renderStrategyChart(canvasId) {
                         beginAtZero: true,
                         ticks: {
                             callback: function (value) {
-                                return "$" + value.toLocaleString();
+                                return ShekelChart.formatMoney(value, false);
                             }
                         }
                     }
@@ -146,11 +146,8 @@ function renderStrategyChart(canvasId) {
                     tooltip: {
                         callbacks: {
                             label: function (context) {
-                                return context.dataset.label + ": $" +
-                                    context.parsed.y.toLocaleString(undefined, {
-                                        minimumFractionDigits: 0,
-                                        maximumFractionDigits: 0
-                                    });
+                                return context.dataset.label + ": " +
+                                    ShekelChart.formatMoney(context.parsed.y, false);
                             }
                         }
                     }

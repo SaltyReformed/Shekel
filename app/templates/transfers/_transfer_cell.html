@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Transfer cell -- displays amount with direction arrow and status badge.
    Clicking opens the inline edit form via HTMX.
 
@@ -18,7 +19,7 @@
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{% if is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: ${{ '{:,.0f}'.format(xfer.effective_amount) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
+     aria-label="{% if is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: {{ money(xfer.effective_amount, cents=false) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
      title="{% if is_conflict %}This transfer was changed by another action -- click to retry. {% endif %}{{ xfer.name or 'Transfer' }}{% if xfer.notes %} -- {{ xfer.notes }}{% endif %}">
   {% if is_conflict %}
   <i class="bi bi-exclamation-triangle text-warning small me-1"

@@ -25,32 +25,6 @@
   "use strict";
 
   /**
-   * Format a number as whole dollars for axis ticks.
-   * @param {number} value - Numeric dollar amount.
-   * @returns {string} e.g. "-$1,234" / "$2,000".
-   */
-  function fmtAxis(value) {
-    var sign = value < 0 ? "-" : "";
-    return sign + "$" + Math.abs(value).toLocaleString("en-US", {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0
-    });
-  }
-
-  /**
-   * Format a number as dollars-and-cents for tooltips.
-   * @param {number} value - Numeric dollar amount.
-   * @returns {string} e.g. "-$112.40".
-   */
-  function fmtTooltip(value) {
-    var sign = value < 0 ? "-" : "";
-    return sign + "$" + Math.abs(value).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    });
-  }
-
-  /**
    * Convert a hex color (#rgb or #rrggbb) to an rgba() string.
    * @param {string} hex - Hex color from a CSS custom property.
    * @param {number} alpha - Alpha channel 0..1.
@@ -144,7 +118,9 @@
             tooltip: {
               filter: function (item) { return item.datasetIndex === 0; },
               callbacks: {
-                label: function (ctx) { return fmtTooltip(ctx.parsed.y); }
+                label: function (ctx) {
+                  return ShekelChart.formatMoney(ctx.parsed.y, true);
+                }
               }
             }
           },
@@ -159,7 +135,9 @@
                 }
               },
               ticks: {
-                callback: function (value) { return fmtAxis(value); }
+                callback: function (value) {
+                  return ShekelChart.formatMoney(value, false);
+                }
               }
             },
             x: { grid: { display: false } }

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Accounts -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -87,7 +88,7 @@
       <div class="d-flex justify-content-between align-items-baseline">
         <h6 class="card-title mb-0">{{ acct.name }}</h6>
         <span class="font-mono fw-bold">
-          ${{ "%.2f"|format(acct.current_anchor_balance) if acct.current_anchor_balance is not none else "0.00" }}
+          {{ money(acct.current_anchor_balance) if acct.current_anchor_balance is not none else "$0.00" }}
         </span>
       </div>
       <small class="text-muted">
@@ -164,7 +165,7 @@
           <td>{{ acct.account_type.name|format_account_type if acct.account_type else '--' }}</td>
           <td class="text-end">
             {% if acct.current_anchor_balance is not none %}
-              ${{ "%.2f"|format(acct.current_anchor_balance) }}
+              {{ money(acct.current_anchor_balance) }}
             {% else %}
               --
             {% endif %}
@@ -201,7 +202,7 @@
             <h6 class="card-title mb-0">{{ acct.name }}</h6>
             <span class="font-mono fw-bold">
               {% if acct.current_anchor_balance is not none %}
-                ${{ "%.2f"|format(acct.current_anchor_balance) }}
+                {{ money(acct.current_anchor_balance) }}
               {% else %}
                 --
               {% endif %}

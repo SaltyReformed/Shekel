@@ -452,7 +452,7 @@ class TestInlineAnchor:
             )
 
             assert response.status_code == 200
-            assert b"$1000.00" in response.data
+            assert b"$1,000.00" in response.data
             assert b"font-mono" in response.data
 
     def test_inline_anchor_invalid_amount(self, app, auth_client, seed_user):

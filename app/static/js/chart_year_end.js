@@ -60,7 +60,7 @@ function renderYearEndNetWorth(canvasId) {
           y: {
             ticks: {
               callback: function(value) {
-                return '$' + value.toLocaleString();
+                return ShekelChart.formatMoney(value, false);
               },
             },
           },
@@ -74,12 +74,7 @@ function renderYearEndNetWorth(canvasId) {
                 return labels[items[0].dataIndex] || items[0].label;
               },
               label: function(context) {
-                var val = context.parsed.y;
-                var prefix = val < 0 ? '-$' : '$';
-                return 'Net Worth: ' + prefix + Math.abs(val).toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                });
+                return 'Net Worth: ' + ShekelChart.formatMoney(context.parsed.y, true);
               },
             },
           },

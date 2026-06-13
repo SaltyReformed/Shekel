@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Partial: full retirement account projection table (thead + rows).
    Used by both the dashboard card and the HTMX OOB swap on slider change.
    Desktop renders the table; mobile (< md) gets a card-per-account list.
@@ -51,7 +52,7 @@
       </div>
       <div class="d-flex justify-content-between mt-2">
         <small class="text-muted">Current balance</small>
-        <span class="font-mono">${{ "{:,.2f}".format(proj.current_balance) }}</span>
+        <span class="font-mono">{{ money(proj.current_balance) }}</span>
       </div>
       <div class="d-flex justify-content-between">
         <small class="text-muted">Annual return</small>
@@ -65,7 +66,7 @@
       </div>
       <div class="d-flex justify-content-between">
         <small class="text-muted">Projected at retirement</small>
-        <span class="font-mono fw-bold">${{ "{:,.2f}".format(proj.projected_balance) }}</span>
+        <span class="font-mono fw-bold">{{ money(proj.projected_balance) }}</span>
       </div>
     </div>
   </div>

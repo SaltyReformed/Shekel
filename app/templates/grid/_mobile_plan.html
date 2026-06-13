@@ -104,9 +104,9 @@
             </div>
             {% if subtotal is not none %}
               <small class="text-muted">
-                Income ${{ "{:,.0f}".format(subtotal.income) }}
+                Income {{ money(subtotal.income, cents=false) }}
                 &middot;
-                Expense ${{ "{:,.0f}".format(subtotal.expense) }}
+                Expense {{ money(subtotal.expense, cents=false) }}
                 &middot;
                 Net
                 <span class="{{ 'balance-negative' if subtotal.net < 0 else '' }}">

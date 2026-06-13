@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Retirement Planning -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -102,20 +103,20 @@
             <td class="text-muted">High Salary Average
               <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Average of your highest consecutive salary years, determined by the pension's high-years window."></i>
             </td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format(pension_benefit.high_salary_average) }}</td>
+            <td class="text-end font-mono">{{ money(pension_benefit.high_salary_average) }}</td>
           </tr>
           <tr>
             <td class="text-muted">Annual Benefit
               <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Benefit multiplier × years of service × high salary average."></i>
             </td>
-            <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(pension_benefit.annual_benefit) }}</td>
+            <td class="text-end font-mono fw-bold">{{ money(pension_benefit.annual_benefit) }}</td>
           </tr>
           <tr>
             <td class="text-muted">Monthly Benefit
               <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Annual benefit divided by 12."></i>
             </td>
             <td class="text-end font-mono fw-bold text-accent">
-              ${{ "{:,.2f}".format(pension_benefit.monthly_benefit) }}
+              {{ money(pension_benefit.monthly_benefit) }}
             </td>
           </tr>
         </table>
@@ -127,7 +128,7 @@
           {% for year, salary in pension_benefit.high_salary_years %}
           <tr>
             <td>{{ year }}</td>
-            <td class="text-end font-mono">${{ "{:,.2f}".format(salary) }}</td>
+            <td class="text-end font-mono">{{ money(salary) }}</td>
           </tr>
           {% endfor %}
         </table>

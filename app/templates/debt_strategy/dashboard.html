@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Debt Payoff Strategy -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -129,7 +130,7 @@
                   </select>
                 </td>
                 <td>{{ debt.name }}</td>
-                <td class="font-mono">${{ "{:,.2f}".format(debt.current_principal) }}</td>
+                <td class="font-mono">{{ money(debt.current_principal) }}</td>
                 <td>{{ "%.2f"|format(debt.interest_rate|to_percent) }}%</td>
               </tr>
               {% endfor %}

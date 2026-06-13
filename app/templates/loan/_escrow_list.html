@@ -1,11 +1,12 @@
 {# HTMX fragment: escrow component list + OOB payment summary updates #}
+{% from "_money_macros.html" import money %}
 
 {# OOB swap: update the total monthly payment on the Overview tab #}
 {% if total_payment is defined and total_payment is not none %}
 <div class="d-flex justify-content-between mb-2" id="total-payment-display" hx-swap-oob="true">
   <span class="text-muted">Total Monthly (with escrow)</span>
   <span class="fw-bold font-mono text-accent">
-    ${{ "{:,.2f}".format(total_payment) }}
+    {{ money(total_payment) }}
   </span>
 </div>
 {% endif %}
@@ -13,7 +14,7 @@
 {# OOB swap: update the monthly escrow badge in the Escrow tab header #}
 {% if monthly_escrow is defined and monthly_escrow is not none %}
 <span class="badge bg-secondary font-mono" id="escrow-badge" hx-swap-oob="true">
-  ${{ "{:,.2f}".format(monthly_escrow) }}/mo
+  {{ money(monthly_escrow) }}/mo
 </span>
 {% endif %}
 <div class="card-body p-0">
@@ -33,8 +34,8 @@
         {% for comp in escrow_components %}
         <tr>
           <td>{{ comp.name }}</td>
-          <td class="text-end font-mono">${{ "{:,.2f}".format(comp.annual_amount) }}</td>
-          <td class="text-end font-mono">${{ "{:,.2f}".format(comp.monthly_amount) }}</td>
+          <td class="text-end font-mono">{{ money(comp.annual_amount) }}</td>
+          <td class="text-end font-mono">{{ money(comp.monthly_amount) }}</td>
           <td class="text-end">
             {% if comp.inflation_rate %}
               {{ "%.1f"|format(comp.inflation_rate_pct) }}%

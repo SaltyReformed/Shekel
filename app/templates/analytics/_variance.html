@@ -1,8 +1,9 @@
+{% from "_money_macros.html" import money %}
 {# Budget Variance Analysis -- HTMX partial.
    Rendered by analytics.variance_tab() into #tab-content. #}
 
 {% macro fmt(value) -%}
-  ${{ "{:,.2f}".format(value) }}
+  {{ money(value) }}
 {%- endmacro %}
 
 {% macro fmt_var(value) -%}

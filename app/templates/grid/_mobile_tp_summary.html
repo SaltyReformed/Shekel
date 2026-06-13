@@ -73,7 +73,7 @@
             Projected Balance
           </span>
           <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
-            ${{ "{:,.2f}".format(bal) }}
+            {{ money(bal) }}
           </span>
         </div>
       </div>
@@ -87,12 +87,12 @@
     {% set inc_total = subtotals[period.id].income %}
     <span id="mobile-tp-income-total-{{ period.id }}"
           hx-swap-oob="true" class="font-mono fw-bold">
-      {% if inc_total %}${{ "{:,.0f}".format(inc_total) }}{% else %}$0{% endif %}
+      {% if inc_total %}{{ money(inc_total, cents=false) }}{% else %}$0{% endif %}
     </span>
     {% set exp_total = subtotals[period.id].expense %}
     <span id="mobile-tp-expense-total-{{ period.id }}"
           hx-swap-oob="true" class="font-mono fw-bold">
-      {% if exp_total %}${{ "{:,.0f}".format(exp_total) }}{% else %}$0{% endif %}
+      {% if exp_total %}{{ money(exp_total, cents=false) }}{% else %}$0{% endif %}
     </span>
   {% endif %}
 

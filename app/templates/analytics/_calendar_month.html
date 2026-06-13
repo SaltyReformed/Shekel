@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Month detail calendar -- 7-column Sun-Sat grid with inline totals. #}
 
 {# Navigation #}
@@ -50,10 +51,10 @@
     {% if day.entries %}
     <div class="calendar-day-totals">
       {% if day.income_total %}
-      <div class="calendar-day-income font-mono">${{ "{:,.0f}".format(day.income_total) }}</div>
+      <div class="calendar-day-income font-mono">{{ money(day.income_total, cents=false) }}</div>
       {% endif %}
       {% if day.expense_total %}
-      <div class="calendar-day-expense font-mono">${{ "{:,.0f}".format(day.expense_total) }}</div>
+      <div class="calendar-day-expense font-mono">{{ money(day.expense_total, cents=false) }}</div>
       {% endif %}
     </div>
     {% endif %}
@@ -92,7 +93,7 @@
           <td>{{ entry.name }}</td>
           <td class="text-muted">{{ entry.category_group|default("--", true) }}</td>
           <td class="text-end font-mono {{ 'text-success' if entry.is_income else 'text-danger' }}">
-            ${{ "{:,.2f}".format(entry.amount) }}
+            {{ money(entry.amount) }}
           </td>
           <td><span class="badge {{ 'bg-success' if entry.is_paid else 'bg-secondary' }}">
             {{ "Paid" if entry.is_paid else "Projected" }}
@@ -111,20 +112,20 @@
 <div class="row g-2 text-center">
   <div class="col-6 col-md-3">
     <small class="text-muted d-block">Income</small>
-    <span class="font-mono text-success">${{ "{:,.2f}".format(data.total_income) }}</span>
+    <span class="font-mono text-success">{{ money(data.total_income) }}</span>
   </div>
   <div class="col-6 col-md-3">
     <small class="text-muted d-block">Expenses</small>
-    <span class="font-mono text-danger">${{ "{:,.2f}".format(data.total_expenses) }}</span>
+    <span class="font-mono text-danger">{{ money(data.total_expenses) }}</span>
   </div>
   <div class="col-6 col-md-3">
     <small class="text-muted d-block">Net</small>
     <span class="font-mono fw-bold {% if data.net >= 0 %}text-success{% else %}text-danger{% endif %}">
-      ${{ "{:,.2f}".format(data.net) }}
+      {{ money(data.net) }}
     </span>
   </div>
   <div class="col-6 col-md-3">
     <small class="text-muted d-block">End Balance</small>
-    <span class="font-mono">${{ "{:,.2f}".format(data.projected_end_balance) }}</span>
+    <span class="font-mono">{{ money(data.projected_end_balance) }}</span>
   </div>
 </div>

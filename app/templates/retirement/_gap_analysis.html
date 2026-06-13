@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# HTMX fragment: gap analysis table + chart #}
 {% if gap_analysis %}
 <table class="table table-sm mb-0">
@@ -6,39 +7,39 @@
       <td class="text-muted">Projected Pre-Retirement Income
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Based on your salary profile's net biweekly pay, projected to retirement with raises applied (net biweekly × 26 ÷ 12)."></i>
       </td>
-      <td class="text-end font-mono fw-bold">${{ "{:,.2f}".format(gap_analysis.pre_retirement_net_monthly) }}</td>
+      <td class="text-end font-mono fw-bold">{{ money(gap_analysis.pre_retirement_net_monthly) }}</td>
     </tr>
     <tr>
       <td class="text-muted">Projected Monthly Pension
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Total monthly benefit from all active pension profiles, calculated from years of service, benefit multiplier, and highest consecutive salary average."></i>
       </td>
-      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.monthly_pension_income) }}</td>
+      <td class="text-end font-mono">{{ money(gap_analysis.monthly_pension_income) }}</td>
     </tr>
     {% if gap_analysis.after_tax_monthly_pension is not none %}
     <tr>
       <td class="text-muted">After-Tax Monthly Pension
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Monthly pension reduced by your estimated retirement tax rate, configured in Settings > Retirement."></i>
       </td>
-      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.after_tax_monthly_pension) }}</td>
+      <td class="text-end font-mono">{{ money(gap_analysis.after_tax_monthly_pension) }}</td>
     </tr>
     {% endif %}
     <tr>
       <td class="text-muted">Monthly Income Gap
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="The monthly shortfall between your pre-retirement income and pension income. Your savings must cover this gap."></i>
       </td>
-      <td class="text-end font-mono text-warning">${{ "{:,.2f}".format(gap_analysis.monthly_income_gap) }}</td>
+      <td class="text-end font-mono text-warning">{{ money(gap_analysis.monthly_income_gap) }}</td>
     </tr>
     <tr>
       <td class="text-muted">Required Savings ({{ "%.1f"|format(gap_analysis.safe_withdrawal_rate|to_percent) }}% rule)
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Total savings needed to generate enough withdrawal income to cover the gap. Formula: (monthly gap × 12) ÷ safe withdrawal rate."></i>
       </td>
-      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.required_retirement_savings) }}</td>
+      <td class="text-end font-mono">{{ money(gap_analysis.required_retirement_savings) }}</td>
     </tr>
     <tr>
       <td class="text-muted">Projected Retirement Savings
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Sum of all retirement and investment account balances projected to your planned retirement date, including contributions and growth."></i>
       </td>
-      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.projected_total_savings) }}</td>
+      <td class="text-end font-mono">{{ money(gap_analysis.projected_total_savings) }}</td>
     </tr>
     <tr class="table-active">
       <td class="fw-bold">
@@ -50,7 +51,7 @@
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Projected savings minus required savings. Positive (green) means on track; negative (red) means a shortfall."></i>
       </td>
       <td class="text-end font-mono fw-bold {{ 'text-success' if gap_analysis.savings_surplus_or_shortfall >= 0 else 'text-danger' }}">
-        {% if gap_analysis.savings_surplus_or_shortfall >= 0 %}+{% endif %}${{ "{:,.2f}".format(gap_analysis.savings_surplus_or_shortfall) }}
+        {% if gap_analysis.savings_surplus_or_shortfall >= 0 %}+{% endif %}{{ money(gap_analysis.savings_surplus_or_shortfall) }}
       </td>
     </tr>
     {% if gap_analysis.after_tax_projected_savings is not none %}
@@ -61,14 +62,14 @@
       <td class="text-muted">After-Tax Projected Savings
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Traditional (pre-tax) account balances reduced by your estimated retirement tax rate. Roth balances are not taxed."></i>
       </td>
-      <td class="text-end font-mono">${{ "{:,.2f}".format(gap_analysis.after_tax_projected_savings) }}</td>
+      <td class="text-end font-mono">{{ money(gap_analysis.after_tax_projected_savings) }}</td>
     </tr>
     <tr>
       <td class="text-muted">After-Tax Surplus/Shortfall
         <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="After-tax projected savings minus required savings."></i>
       </td>
       <td class="text-end font-mono {{ 'text-success' if gap_analysis.after_tax_surplus_or_shortfall >= 0 else 'text-danger' }}">
-        {% if gap_analysis.after_tax_surplus_or_shortfall >= 0 %}+{% endif %}${{ "{:,.2f}".format(gap_analysis.after_tax_surplus_or_shortfall) }}
+        {% if gap_analysis.after_tax_surplus_or_shortfall >= 0 %}+{% endif %}{{ money(gap_analysis.after_tax_surplus_or_shortfall) }}
       </td>
     </tr>
     {% endif %}

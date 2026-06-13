@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Salary Projection -- {{ profile.name }} -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -47,21 +48,21 @@
           </a>
           <small class="text-muted">{{ period.start_date.strftime('%Y') }}</small>
         </td>
-        <td class="text-end">${{ "%.2f"|format(bd.earnings.annual_salary) }}</td>
+        <td class="text-end">{{ money(bd.earnings.annual_salary) }}</td>
         <td>
           {% if bd.period.raise_event %}
             <span class="badge bg-success">{{ bd.period.raise_event }}</span>
           {% endif %}
         </td>
-        <td class="text-end">${{ "%.2f"|format(bd.earnings.gross_biweekly) }}</td>
+        <td class="text-end">{{ money(bd.earnings.gross_biweekly) }}</td>
         <td class="text-end text-danger">
-          {% if bd.deductions.total_pre_tax > 0 %}-${{ "%.2f"|format(bd.deductions.total_pre_tax) }}{% else %}--{% endif %}
+          {% if bd.deductions.total_pre_tax > 0 %}-{{ money(bd.deductions.total_pre_tax) }}{% else %}--{% endif %}
         </td>
-        <td class="text-end text-danger">-${{ "%.2f"|format(bd.taxes.total) }}</td>
+        <td class="text-end text-danger">-{{ money(bd.taxes.total) }}</td>
         <td class="text-end text-danger">
-          {% if bd.deductions.total_post_tax > 0 %}-${{ "%.2f"|format(bd.deductions.total_post_tax) }}{% else %}--{% endif %}
+          {% if bd.deductions.total_post_tax > 0 %}-{{ money(bd.deductions.total_post_tax) }}{% else %}--{% endif %}
         </td>
-        <td class="text-end fw-bold text-success">${{ "%.2f"|format(bd.earnings.net_pay) }}</td>
+        <td class="text-end fw-bold text-success">{{ money(bd.earnings.net_pay) }}</td>
         <td>
           {% if bd.period.is_third_paycheck %}
             <i class="bi bi-star-fill text-warning" title="3rd paycheck" aria-label="3rd paycheck in month"></i>

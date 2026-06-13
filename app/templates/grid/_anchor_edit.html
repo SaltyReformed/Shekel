@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Anchor balance -- toggles between display and edit mode.
    Expected context: account, editing (bool), conflict (bool, optional),
    revert_context (str|None, optional -- the normalized surface token that
@@ -82,9 +83,9 @@
      class="anchor-balance-display font-mono{% if conflict %} text-warning{% endif %}"
      role="button"
      tabindex="0"
-     aria-label="{{ account.name }} balance: ${{ '{:,.0f}'.format(account.current_anchor_balance if account.current_anchor_balance else 0) }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
+     aria-label="{{ account.name }} balance: {{ money(account.current_anchor_balance if account.current_anchor_balance else 0, cents=false) }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
      title="{% if conflict %}This account was changed by another action -- click to retry{% else %}Click to update balance{% endif %}">
-  ${{ "{:,.0f}".format(account.current_anchor_balance if account.current_anchor_balance else 0) }}
+  {{ money(account.current_anchor_balance if account.current_anchor_balance else 0, cents=false) }}
   {% if conflict %}
   <i class="bi bi-exclamation-triangle text-warning ms-1 small"
      aria-label="Edit conflict"></i>

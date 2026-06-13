@@ -66,21 +66,17 @@ function renderVarianceChart(canvasId) {
           tooltip: {
             callbacks: {
               label: function(context) {
-                return context.dataset.label + ': $' +
-                  context.parsed.y.toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  });
+                return context.dataset.label + ': ' +
+                  ShekelChart.formatMoney(context.parsed.y, true);
               },
               afterBody: function(items) {
                 var idx = items[0].dataIndex;
                 var diff = variance[idx];
-                var prefix = diff >= 0 ? '+$' : '-$';
+                // formatMoney renders the '-' itself; only the explicit
+                // '+' for non-negative variance is added here.
+                var prefix = diff >= 0 ? '+' : '';
                 return 'Variance: ' + prefix +
-                  Math.abs(diff).toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  });
+                  ShekelChart.formatMoney(diff, true);
               },
             },
           },
@@ -92,7 +88,7 @@ function renderVarianceChart(canvasId) {
           y: {
             ticks: {
               callback: function(value) {
-                return '$' + value.toLocaleString();
+                return ShekelChart.formatMoney(value, false);
               },
             },
           },

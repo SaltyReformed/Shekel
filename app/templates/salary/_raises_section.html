@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {% set month_names = {
   1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr',
   5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Aug',
@@ -38,7 +39,7 @@
             {% if r.percentage %}
               {{ "%.2f"|format((r.percentage|to_percent)) }}%
             {% else %}
-              ${{ "%.2f"|format(r.flat_amount) }}
+              {{ money(r.flat_amount) }}
             {% endif %}
           </td>
           <td>

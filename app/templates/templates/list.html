@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import money %}
 {% block title %}Recurring Transactions -- Shekel{% endblock %}
 
 
@@ -101,7 +102,7 @@
           <span class="badge bg-danger">Expense</span>
         {% endif %}
       </td>
-      <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
+      <td class="text-end">{{ money(t.default_amount) }}</td>
       <td>{{ recurrence_cell(t) }}</td>
       <td>
         <a href="{{ url_for('templates.edit_template', template_id=t.id) }}"
@@ -155,7 +156,7 @@
             </span>
           {% endif %}
         </h6>
-        <span class="font-mono fw-bold">${{ "%.2f"|format(t.default_amount) }}</span>
+        <span class="font-mono fw-bold">{{ money(t.default_amount) }}</span>
       </div>
       <div class="d-flex justify-content-between align-items-center mt-1">
         <small class="text-muted">{{ recurrence_cell(t) }}</small>
@@ -258,7 +259,7 @@
               <span class="badge bg-danger">Expense</span>
             {% endif %}
           </td>
-          <td class="text-end">${{ "%.2f"|format(t.default_amount) }}</td>
+          <td class="text-end">{{ money(t.default_amount) }}</td>
           <td>{{ recurrence_cell(t) }}</td>
           <td>
             <form method="POST" action="{{ url_for('templates.unarchive_template', template_id=t.id) }}"
@@ -302,7 +303,7 @@
                 </span>
               {% endif %}
             </h6>
-            <span class="font-mono fw-bold">${{ "%.2f"|format(t.default_amount) }}</span>
+            <span class="font-mono fw-bold">{{ money(t.default_amount) }}</span>
           </div>
           <div class="d-flex justify-content-between align-items-center mt-1">
             <small class="text-muted">{{ recurrence_cell(t) }}</small>

@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Grid row macros -- single source for matching-driven row rendering.
 
    Both macros consume `matched_by_row_period`, the precomputed
@@ -224,7 +225,7 @@
         role="button" tabindex="0"
         aria-expanded="false"
         aria-controls="{{ _aid }}"
-        aria-label="{% if show_progress %}{{ txn.name }}: ${{ '{:,.2f}'.format(es.total) }} / ${{ '{:,.2f}'.format(txn.estimated_amount) }} -- ${{ '{:,.2f}'.format(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes ${{ '{:,.2f}'.format(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: ${{ '{:,.2f}'.format(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
+        aria-label="{% if show_progress %}{{ txn.name }}: {{ money(es.total) }} / {{ money(txn.estimated_amount) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: {{ money(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
       <span class="text-truncate me-2">
         {{ rk.display_name }}
         {% if txn.status %}
@@ -243,9 +244,9 @@
       </span>
       <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
         {% if show_progress %}
-          ${{ "{:,.0f}".format(es.total) }} / ${{ "{:,.0f}".format(txn.estimated_amount) }}
+          {{ money(es.total, cents=false) }} / {{ money(txn.estimated_amount, cents=false) }}
         {% else %}
-          ${{ "{:,.0f}".format(display_amount) }}
+          {{ money(display_amount, cents=false) }}
         {% endif %}
       </span>
     </li>
@@ -294,9 +295,9 @@
             <span>{{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}</span>
             <span class="font-mono{% if over_budget %} text-danger{% endif %}">
               {% if remaining >= 0 %}
-                ${{ "{:,.0f}".format(remaining) }} left
+                {{ money(remaining, cents=false) }} left
               {% else %}
-                ${{ "{:,.0f}".format(remaining|abs) }} over
+                {{ money(remaining|abs, cents=false) }} over
               {% endif %}
             </span>
           </div>
@@ -414,7 +415,7 @@
       {% endif %}
     </span>
     <span class="font-mono fw-semibold text-nowrap">
-      ${{ "{:,.0f}".format(display_amount) }}
+      {{ money(display_amount, cents=false) }}
     </span>
   </li>
 {% endfor %}
