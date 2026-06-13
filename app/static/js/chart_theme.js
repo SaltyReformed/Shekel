@@ -130,10 +130,10 @@ var ShekelChart = (function () {
 
     // Apply scale colors if scales exist and weren't fully customized.
     if (config.options.scales) {
-      var scaleNames = Object.keys(config.options.scales);
-      for (var i = 0; i < scaleNames.length; i++) {
-        var scaleName = scaleNames[i];
-        var scale = config.options.scales[scaleName];
+      const scaleNames = Object.keys(config.options.scales);
+      for (let i = 0; i < scaleNames.length; i++) {
+        const scaleName = scaleNames[i];
+        const scale = config.options.scales[scaleName];
 
         // Apply tick color.
         scale.ticks = scale.ticks || {};
@@ -205,7 +205,7 @@ var ShekelChart = (function () {
    * @param {string} canvasId - The canvas element ID.
    */
   function destroyById(canvasId) {
-    for (var i = trackedCharts.length - 1; i >= 0; i--) {
+    for (let i = trackedCharts.length - 1; i >= 0; i--) {
       if (trackedCharts[i].id === canvasId) {
         trackedCharts[i].instance.destroy();
         trackedCharts.splice(i, 1);
@@ -224,9 +224,9 @@ var ShekelChart = (function () {
     applyGlobalDefaults();
 
     var live = [];
-    for (var i = 0; i < trackedCharts.length; i++) {
-      var entry = trackedCharts[i];
-      var canvas = document.getElementById(entry.id);
+    for (let i = 0; i < trackedCharts.length; i++) {
+      const entry = trackedCharts[i];
+      const canvas = document.getElementById(entry.id);
       if (!canvas) {
         // Canvas removed from the DOM: destroy the orphaned instance
         // (frees its data arrays + detached canvas) and drop the entry.
@@ -237,7 +237,7 @@ var ShekelChart = (function () {
       // Rebuild the config from the factory so theme-dependent
       // colors (getColor, getThemeColors) re-resolve against the
       // now-active theme, then re-merge the global defaults.
-      var merged = mergeThemeDefaults(entry.configFn());
+      const merged = mergeThemeDefaults(entry.configFn());
 
       // Destroy old instance and create new one.
       entry.instance.destroy();

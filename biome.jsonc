@@ -50,13 +50,20 @@
         "noDescendingSpecificity": "off"
       },
       "correctness": {
-        // noInnerDeclarations DEFERRED (Phase 5, Decision 3): all 68 hits are
-        // benign ES5 `var` nested in blocks in a uniformly-var codebase; a
-        // piecemeal fix creates var/const inconsistency, and a full
-        // var->const modernization needs the JS browser harness -- tracked
-        // as a follow-up. noUndeclaredVariables turned ON (off by default)
-        // with the cross-file globals allowlist below.
-        "noInnerDeclarations": "off",
+        // noInnerDeclarations enforced as error (polyglot-cleanup follow-up,
+        // 2026-06-13). The 68 prior hits -- all block-confined ES5 `var`
+        // declarations nested in loop bodies / if-blocks / switch-cases --
+        // were converted to block-scoped `const`/`let`. The conversion is
+        // behavior-preserving by construction: every flagged var was used
+        // only inside the block it was declared in, with no reliance on
+        // var function-scope hoisting and no closure capturing a loop var,
+        // so block scope and function scope are observationally identical.
+        // Re-running this ruleset is the mechanical proof (a var wrongly
+        // block-scoped would surface as a use-before-declaration here).
+        // Function-root `var`s are out of this rule's scope and remain as-is.
+        // noUndeclaredVariables turned ON (off by default) with the
+        // cross-file globals allowlist below.
+        "noInnerDeclarations": "error",
         "noUndeclaredVariables": "error"
       }
     }

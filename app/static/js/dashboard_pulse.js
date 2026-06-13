@@ -171,14 +171,14 @@
   function positionStreet(root) {
     var scope = root && root.querySelectorAll ? root : document;
     var streets = scope.querySelectorAll("[data-street-days]");
-    for (var s = 0; s < streets.length; s++) {
-      var days = parseFloat(streets[s].getAttribute("data-street-days"));
+    for (let s = 0; s < streets.length; s++) {
+      const days = parseFloat(streets[s].getAttribute("data-street-days"));
       if (!Number.isFinite(days) || days <= 0) continue;
-      var nodes = streets[s].querySelectorAll("[data-day]");
-      for (var i = 0; i < nodes.length; i++) {
-        var day = parseFloat(nodes[i].getAttribute("data-day"));
+      const nodes = streets[s].querySelectorAll("[data-day]");
+      for (let i = 0; i < nodes.length; i++) {
+        const day = parseFloat(nodes[i].getAttribute("data-day"));
         if (!Number.isFinite(day)) continue;
-        var pct = (day / days) * 100;
+        let pct = (day / days) * 100;
         if (pct < 0) pct = 0;
         if (pct > 100) pct = 100;
         nodes[i].style.left = pct + "%";
@@ -201,8 +201,8 @@
   function positionRails(root) {
     var scope = root && root.querySelectorAll ? root : document;
     var nodes = scope.querySelectorAll("[data-rail-pct]");
-    for (var i = 0; i < nodes.length; i++) {
-      var pct = clampPct(nodes[i].getAttribute("data-rail-pct"));
+    for (let i = 0; i < nodes.length; i++) {
+      const pct = clampPct(nodes[i].getAttribute("data-rail-pct"));
       if (pct !== null) {
         nodes[i].style.left = pct + "%";
       }

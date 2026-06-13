@@ -44,7 +44,7 @@
 
         /* Deselect previous day. */
         if (activeDay !== null) {
-          var prev = tabContent.querySelector('.calendar-day--selected');
+          const prev = tabContent.querySelector('.calendar-day--selected');
           if (prev) prev.classList.remove('calendar-day--selected');
         }
 

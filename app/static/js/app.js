@@ -86,7 +86,7 @@ function syncAddEnvelopeVisibility() {
   var isExpense = typeSel.value === row.getAttribute("data-expense-type-id");
   row.classList.toggle("d-none", !isExpense);
   if (!isExpense) {
-    var cb = row.querySelector('input[name="is_envelope"]');
+    const cb = row.querySelector('input[name="is_envelope"]');
     if (cb) cb.checked = false;
   }
 }
@@ -97,7 +97,7 @@ if (addModal) {
     if (form) form.reset();
     syncAddEnvelopeVisibility();
   });
-  var addTypeSel = addModal.querySelector('select[name="transaction_type_id"]');
+  const addTypeSel = addModal.querySelector('select[name="transaction_type_id"]');
   if (addTypeSel) {
     addTypeSel.addEventListener("change", syncAddEnvelopeVisibility);
   }
@@ -159,8 +159,8 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
   // a keep-open, which is correct.  When the issuer is unknown
   // (requestConfig absent), keep the card open rather than guessing.
   if (typeof activePopover !== 'undefined' && activePopover) {
-    var requestConfig = event.detail.requestConfig;
-    var issuer = requestConfig && requestConfig.elt;
+    const requestConfig = event.detail.requestConfig;
+    const issuer = requestConfig && requestConfig.elt;
     if (issuer && activePopover.contains(issuer)
         && !activePopover.contains(event.target)) {
       closeFullEdit();
@@ -228,7 +228,7 @@ document.body.addEventListener("htmx:afterRequest", function(event) {
     if (!event.detail.successful) return;
     var form = event.detail.elt;
     if (form && form.hasAttribute('data-modal-auto-close')) {
-        var modal = bootstrap.Modal.getInstance(
+        const modal = bootstrap.Modal.getInstance(
             document.getElementById('addTransactionModal')
         );
         if (modal) modal.hide();
@@ -241,7 +241,7 @@ document.addEventListener('click', function(e) {
     // Toggle target element (e.g. deduction form collapse)
     var toggleBtn = e.target.closest('[data-toggle-target]');
     if (toggleBtn) {
-        var target = document.getElementById(toggleBtn.dataset.toggleTarget);
+        const target = document.getElementById(toggleBtn.dataset.toggleTarget);
         if (target) target.classList.toggle('show');
         // If the button also has a reset attribute, reset the corresponding form.
         if (toggleBtn.hasAttribute('data-raise-reset')) {
@@ -270,7 +270,7 @@ document.addEventListener('click', function(e) {
     // Period select navigation (breakdown page)
     var navBtn = e.target.closest('[data-action="period-navigate"]');
     if (navBtn) {
-        var sel = document.getElementById(navBtn.dataset.selectId);
+        const sel = document.getElementById(navBtn.dataset.selectId);
         if (sel) window.location.href = sel.value;
         return;
     }
@@ -478,10 +478,10 @@ document.addEventListener('change', function(e) {
 // --- Keyboard Help Modal (? key) ---
 document.addEventListener('keydown', function(e) {
   if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
-    var tag = e.target.tagName;
+    const tag = e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (document.querySelector('.modal.show')) return;
-    var modal = document.getElementById('keyboardHelpModal');
+    const modal = document.getElementById('keyboardHelpModal');
     if (modal) {
       e.preventDefault();
       new bootstrap.Modal(modal).show();
@@ -588,14 +588,14 @@ document.addEventListener('keydown', function(e) {
     if (!table) return;
     var wrapper = table.closest('.grid-scroll-wrapper');
     if (wrapper) {
-      var thead = table.querySelector('thead');
-      var tfoot = table.querySelector('tfoot');
+      const thead = table.querySelector('thead');
+      const tfoot = table.querySelector('tfoot');
       // Measure the label column via its thead header: the first
       // `tbody .sticky-col` is the INCOME section banner, whose
       // colspan covers the whole table, and measuring it would set a
       // table-wide scroll-padding-left (verified in a live-browser
       // harness: 796px vs the header's 112px on the same table).
-      var label = table.querySelector('thead .row-label-col');
+      const label = table.querySelector('thead .row-label-col');
       wrapper.style.scrollPaddingTop = (thead ? thead.offsetHeight : 0) + 'px';
       wrapper.style.scrollPaddingBottom = (tfoot ? tfoot.offsetHeight : 0) + 'px';
       wrapper.style.scrollPaddingLeft = (label ? label.offsetWidth : 0) + 'px';
@@ -683,7 +683,7 @@ document.addEventListener('keydown', function(e) {
         if (e.ctrlKey || e.metaKey) {
           // Ctrl+Right: shift period window forward
           e.preventDefault();
-          var rightArrow = document.querySelector('a[title="Later"]');
+          const rightArrow = document.querySelector('a[title="Later"]');
           if (rightArrow) rightArrow.click();
         } else {
           e.preventDefault();
@@ -694,7 +694,7 @@ document.addEventListener('keydown', function(e) {
         if (e.ctrlKey || e.metaKey) {
           // Ctrl+Left: shift period window backward
           e.preventDefault();
-          var leftArrow = document.querySelector('a[title="Earlier"]');
+          const leftArrow = document.querySelector('a[title="Earlier"]');
           if (leftArrow) leftArrow.click();
         } else {
           e.preventDefault();
@@ -724,9 +724,9 @@ document.addEventListener('keydown', function(e) {
         // card for a transaction (.txn-open), or quick-create on an
         // empty cell (rebuild decision 3, docs/design/grid_audit.md).
         e.preventDefault();
-        var cell = getFocusedCell();
+        const cell = getFocusedCell();
         if (cell) {
-          var clickable = cell.querySelector(
+          const clickable = cell.querySelector(
             '.txn-open[data-txn-id], .txn-empty-cell');
           if (clickable) clickable.click();
         }
@@ -744,9 +744,9 @@ document.addEventListener('keydown', function(e) {
         // exact precondition of the projected -> done transition, so
         // Space on any other cell is a deliberate no-op.
         e.preventDefault();
-        var spaceCell = getFocusedCell();
+        const spaceCell = getFocusedCell();
         if (spaceCell) {
-          var payBtn = spaceCell.querySelector('.paybtn');
+          const payBtn = spaceCell.querySelector('.paybtn');
           if (payBtn) {
             // Re-run setFocus on the cursor cell before mutating: the
             // user may have scrolled the cursor out of view since
@@ -771,8 +771,8 @@ document.addEventListener('keydown', function(e) {
         // mark-credit POST fires (mirrors the ctrlKey/metaKey branch
         // on the Arrow cases above).
         if (e.ctrlKey || e.metaKey) break;
-        var creditCell = getFocusedCell();
-        var creditable = creditCell
+        const creditCell = getFocusedCell();
+        const creditable = creditCell
           && creditCell.querySelector('.txn-open[data-can-credit]');
         if (creditable) {
           e.preventDefault();
@@ -816,12 +816,12 @@ document.addEventListener('keydown', function(e) {
     if (!table) return;
     var td = e.target.closest('td.cell');
     if (td) {
-      var tr = td.parentElement;
-      var rows = getDataRows();
-      var rowIdx = rows.indexOf(tr);
+      const tr = td.parentElement;
+      const rows = getDataRows();
+      const rowIdx = rows.indexOf(tr);
       if (rowIdx >= 0) {
         // Find column index (subtract 1 for sticky col)
-        var colIdx = Array.from(tr.children).indexOf(td) - 1;
+        const colIdx = Array.from(tr.children).indexOf(td) - 1;
         if (colIdx >= 0) {
           focusedRow = rowIdx;
           focusedCol = colIdx;

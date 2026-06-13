@@ -28,7 +28,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    for (var i = 0; i < radios.length; i++) {
+    for (let i = 0; i < radios.length; i++) {
         radios[i].addEventListener("change", updateCustomVisibility);
     }
     updateCustomVisibility();
@@ -48,7 +48,7 @@ document.addEventListener("DOMContentLoaded", function () {
         // Build priority -> account_id map from the select dropdowns.
         var selects = document.querySelectorAll("[data-custom-priority]");
         var entries = [];
-        for (var j = 0; j < selects.length; j++) {
+        for (let j = 0; j < selects.length; j++) {
             entries.push({
                 priority: parseInt(selects[j].value, 10),
                 accountId: selects[j].dataset.accountId
@@ -58,7 +58,7 @@ document.addEventListener("DOMContentLoaded", function () {
         // Sort by priority number and extract account IDs.
         entries.sort(function (a, b) { return a.priority - b.priority; });
         var ids = [];
-        for (var k = 0; k < entries.length; k++) {
+        for (let k = 0; k < entries.length; k++) {
             ids.push(entries[k].accountId);
         }
         orderInput.value = ids.join(",");
@@ -103,9 +103,9 @@ function renderStrategyChart(canvasId) {
         // Build Chart.js datasets from the serialized data, assigning
         // colors from the ShekelChart palette by index.
         var datasets = [];
-        for (var i = 0; i < chartData.datasets.length; i++) {
-            var ds = chartData.datasets[i];
-            var color = ShekelChart.getColor(ds.colorIndex != null ? ds.colorIndex : i);
+        for (let i = 0; i < chartData.datasets.length; i++) {
+            const ds = chartData.datasets[i];
+            const color = ShekelChart.getColor(ds.colorIndex != null ? ds.colorIndex : i);
             datasets.push({
                 label: ds.label,
                 data: ds.data,

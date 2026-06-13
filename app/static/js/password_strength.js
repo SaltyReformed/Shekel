@@ -90,7 +90,7 @@
     var text = container.querySelector("[data-password-meter-text]");
     if (bar) {
       bar.style.width = "0%";
-      for (var i = 0; i < ALL_BAR_CLASSES.length; i++) {
+      for (let i = 0; i < ALL_BAR_CLASSES.length; i++) {
         bar.classList.remove(ALL_BAR_CLASSES[i]);
       }
       bar.setAttribute("aria-valuenow", "0");
@@ -113,7 +113,7 @@
     var text = container.querySelector("[data-password-meter-text]");
     if (bar) {
       bar.style.width = display.widthPct + "%";
-      for (var i = 0; i < ALL_BAR_CLASSES.length; i++) {
+      for (let i = 0; i < ALL_BAR_CLASSES.length; i++) {
         bar.classList.remove(ALL_BAR_CLASSES[i]);
       }
       bar.classList.add(display.barClass);
@@ -160,7 +160,7 @@
 
   function init() {
     var inputs = document.querySelectorAll("[data-password-input]");
-    for (var i = 0; i < inputs.length; i++) {
+    for (let i = 0; i < inputs.length; i++) {
       bind(inputs[i]);
     }
   }
