@@ -15,7 +15,17 @@ class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
     __tablename__ = "pay_periods"
     __table_args__ = (
         db.UniqueConstraint("user_id", "start_date", name="uq_pay_periods_user_start"),
-        db.Index("idx_pay_periods_user_index", "user_id", "period_index"),
+        # ``period_index`` is unique per user: the balance resolver walks a
+        # user's periods ordered by ``period_index`` and trusts that order
+        # to be chronological, so a duplicate index would silently drop a
+        # period from as-of balances.  Enforced in the schema (migration
+        # f75485db6757) so every period-appending path -- extend,
+        # regenerate, rolling top-up -- is protected, not just one.  The
+        # backing index also serves the ``(user_id, period_index)`` lookups
+        # the old non-unique ``idx_pay_periods_user_index`` covered.
+        db.UniqueConstraint(
+            "user_id", "period_index", name="uq_pay_periods_user_index"
+        ),
         db.CheckConstraint("start_date < end_date", name="ck_pay_periods_date_order"),
         db.CheckConstraint("period_index >= 0", name="ck_pay_periods_positive_index"),
         {"schema": "budget"},

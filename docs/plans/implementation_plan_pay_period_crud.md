@@ -1,6 +1,42 @@
 # Implementation Plan: Pay Period CRUD + Continuous Rolling Window
 
-Status: PLANNED (design approved for a future implementation session). Not yet started.
+Status: IN BUILD. Design review 2026-06-13 locked four corrections to the original draft (see Review
+corrections below). **Phase 0 COMPLETE on `dev` (2026-06-13):** migrations `d410f6b9caa3` (anchor FK
+-> `NO ACTION DEFERRABLE INITIALLY IMMEDIATE`) + `f75485db6757` (`UNIQUE(user_id, period_index)`
+with a duplicate pre-flight guard); model edits in `account.py` / `pay_period.py`; new tests
+`test_anchor_fk_deferrable.py` + `test_pay_period_index_unique.py` (9 tests); ~20 latent dup-index
+bugs in existing test scaffolding fixed at the root. Both migration directions verified,
+`flask db check` clean, `pylint app/` 10.00/10, full suite green. **NEXT: Phase 1 (CRUD)** -- and it
+must land with Test plan Disciplines 1-4 (invariant checker, balance-after-every-op,
+integrity-checker integration, adversarial tests), not just the per-operation bullets.
+
+## Review corrections (2026-06-13, locked via developer Q&A)
+
+These supersede the original draft wherever they conflict; the body below has been updated to match.
+
+1. **Truncate/reset delete via bulk DELETE, not `db.session.delete(p)`.** `PayPeriod.transactions`
+   (`pay_period.py:30`) has no `cascade`/`passive_deletes`, so per-object `session.delete()` makes
+   SQLAlchemy try to NULL the `NOT NULL` `transactions.pay_period_id` (nullify-on-disassociate) and
+   raises `IntegrityError` before the DB `ON DELETE CASCADE` can fire. Use
+   `db.session.query(PayPeriod).filter(PayPeriod.id.in_(ids)).delete(synchronize_session=False)` +
+   `db.session.expire_all()` so Postgres does the whole cascade in one pass (txns + transfers + both
+   shadows + anchor history; SET NULL on recurrence rules) and audit triggers still fire.
+2. **Enforce `UNIQUE(user_id, period_index)` at the schema level** (upgrade the non-unique
+   `idx_pay_periods_user_index`). This puts the resolver's index-is-unique-and-chronological
+   invariant in the schema, defending ALL append paths (extend / regenerate / top-up), not just
+   top-up. Every operation keeps indices unique, so it is always satisfiable. The Phase 2 advisory
+   lock is then a UX nicety (clean wait-and-noop instead of an `IntegrityError` 500), NOT the sole
+   correctness guard. (The original draft's claim that concurrent top-ups dodge
+   `uq_pay_periods_user_start` via differing start_dates was wrong: symmetric top-ups compute the
+   same `next_start` and DO collide on start_date; the real uncaught window was manual-op-vs-top-up
+   with disjoint dates, which the unique index closes.)
+3. **Drop `anchor_start_date` from `budget.pay_schedule`.** It equals `min(pay_periods.start_date)`
+   and had no consumer; storing derivable data risks drift. The table keeps `cadence_days` + rolling
+   config (the genuinely non-derivable data that justifies its existence).
+4. **Defer the full reset (operation 5) to its own later phase (Phase 3).** Phase 0's deferrable FK
+   still ships now (harmless and future-proof; behaves like immediate `NO ACTION` for every
+   non-reset path), but the reset surgery (deferred-FK swap + re-anchor + history rewrite) is built
+   only after the CRUD core is proven. Lowest MVP risk.
 
 ## Context
 
@@ -30,11 +66,13 @@ Three facts from the codebase shape the whole design and are non-negotiable:
 - **Edit model:** Regenerate, **no per-period date editing**. "Fix a mistake" = rebuild the unlocked
   future tail from a new start date + cadence; locked/historical periods stay frozen.
 - **Continuous trigger:** **On-request top-up** at grid + dashboard entry (no scheduler exists --
-  Gunicorn only). Cheap (one count query), idempotent, concurrency-safe via a Postgres advisory
-  lock.
+  Gunicorn only). Cheap (one count query), idempotent. Correctness under concurrency comes from the
+  `UNIQUE(user_id, period_index)` constraint (Review correction 2); the Postgres advisory lock is a
+  UX nicety layered on top (clean wait-and-noop instead of an `IntegrityError` 500).
 - **Rolling window framing:** **Count-based** -- "always keep N periods ahead of the current one."
 - **Config storage:** **New normalized `budget.pay_schedule` table** (one row per user), holding
-  cadence + rolling on/off + target count + anchor start date.
+  cadence + rolling on/off + target count (NO `anchor_start_date` -- dropped per Review correction 3
+  as derivable from `min(pay_periods.start_date)`).
 - **Destructive-op data safety (recommended default, not separately asked):** **block-and-confirm.**
   Truncate/regenerate refuse if the wiped window holds hand-entered (`template_id IS NULL`) or
   override (`is_override=True`) transactions, until the user passes an explicit
@@ -43,12 +81,12 @@ Three facts from the codebase shape the whole design and are non-negotiable:
 - **Repopulation scope (recommended default):** baseline scenario only for MVP; include both
   transaction templates AND transfer templates (so new periods do not silently miss recurring
   transfers). Multi-scenario reserved for later.
-- **Full reset (first-time setup correction):** a bounded `reset_pay_periods` rebuilds the WHOLE
-  schedule including the anchor period (which Regenerate cannot touch), re-anchoring through the
-  existing `anchor_service` and preserving the account + its balance. Offered ONLY when the user has
-  no settled transactions. This closes the deferred pay-period reset/realign feature (see
-  `docs/audits/pylint-cleanup/deep-quality-hunt.md`, DH-#39 / Batch Y, and the 2026-06-10 design
-  feedback note in that register).
+- **Full reset (first-time setup correction; built in Phase 3 per Review correction 4):** a bounded
+  `reset_pay_periods` rebuilds the WHOLE schedule including the anchor period (which Regenerate
+  cannot touch), re-anchoring through the existing `anchor_service` and preserving the account + its
+  balance. Offered ONLY when the user has no settled transactions. This closes the deferred
+  pay-period reset/realign feature (see `docs/audits/pylint-cleanup/deep-quality-hunt.md`, DH-#39 /
+  Batch Y, and the 2026-06-10 design feedback note in that register).
 
 ## New model: `budget.pay_schedule`
 
@@ -60,7 +98,6 @@ the constraint/naming style of `app/models/pay_period.py:12-22`.
 | `id` | Integer PK | |
 | `user_id` | Integer FK `auth.users.id` CASCADE | `UserScopedMixin`; `uq_pay_schedule_user` UNIQUE -- one schedule per user |
 | `cadence_days` | Integer NOT NULL | `ck_pay_schedule_cadence_range`: BETWEEN 1 AND 365 |
-| `anchor_start_date` | Date NOT NULL | canonical first payday / schedule origin |
 | `rolling_enabled` | Boolean NOT NULL, server_default false | continuous mode on/off |
 | `rolling_target_periods` | Integer NOT NULL, server_default `DEFAULT_PAY_PERIOD_HORIZON` (52) | `ck_pay_schedule_positive_target`: > 0 |
 | `created_at` | TIMESTAMPTZ | `CreatedAtMixin` |
@@ -68,7 +105,7 @@ the constraint/naming style of `app/models/pay_period.py:12-22`.
 - Register `("budget", "pay_schedule")` in `app/audit_infrastructure.py` AUDITED_TABLES (database
   rule: every new `budget` table is audited).
 - New service `app/services/pay_schedule_service.py` (Flask-isolated): `get_schedule(user_id)`,
-  `upsert_schedule(user_id, cadence_days, anchor_start_date)` (called on generate/regenerate),
+  `upsert_schedule(user_id, cadence_days)` (called on generate/regenerate),
   `set_rolling(user_id, enabled, target_periods)` (called from settings), `resolve_cadence(user_id)`
   (schedule cadence, else fall back to inferring from the last period's length for legacy users).
 
@@ -102,9 +139,14 @@ infrequent settings-page actions, not HTMX-worthy). The route commits; services 
    anchor / rule anchor) -> raise `PayPeriodLocked(blocking_periods)`; delete nothing.
 3. If any to-delete period has hand-entered/override rows and `confirm_discard` is False -> raise
    `PayPeriodDiscardRequired(count)`; delete nothing.
-4. `db.session.delete(p)` for each. CASCADE clears transactions + transfers (+ both shadows,
-   preserving transfer invariants, `transfer.py:123-131`) + anchor history. The anchor/rule guards
-   guarantee the `accounts.current_anchor_period_id` NOT-NULL FK is never hit via this path.
+4. **Bulk DELETE, not per-object `session.delete()`** (see Review correction 1):
+   `db.session.query(PayPeriod).filter(PayPeriod.id.in_([p.id for p in to_delete])) .delete(synchronize_session=False)`
+   then `db.session.expire_all()`. Postgres does the whole cascade in one pass: transactions +
+   transfers (+ both shadows, preserving transfer invariants, `transfer.py:123-131`) + anchor
+   history, SET NULL on `recurrence_rules.start_period_id`; audit triggers (DB-level) still fire.
+   Per-object `session.delete()` would instead trip SQLAlchemy's nullify-on-disassociate against the
+   `NOT NULL` `transactions.pay_period_id` and raise `IntegrityError`. The anchor/rule guards
+   guarantee the `accounts.current_anchor_period_id` FK is never hit via this path.
 
 ### 3. Regenerate -- `POST /pay-periods/regenerate`
 
@@ -112,29 +154,42 @@ infrequent settings-page actions, not HTMX-worthy). The route commits; services 
 = compute the **mutable boundary** (lowest `period_index` that is both unlocked and
 `start_date >= today`) -> `truncate_pay_periods(keep_through_index = boundary - 1, confirm_discard)`
 -> `generate_pay_periods(new_start_date, num_periods, cadence_days)` -> repopulate ->
-`pay_schedule_service.upsert_schedule(...)` with the new cadence/anchor. `new_start_date` must be >
-the last RETAINED period's `end_date` (re-checked by `_reject_overlapping_batch`). If a settled/
-historical/anchor period sits inside the requested window, the truncate guard refuses (you cannot
-rewrite history under a settled paycheck).
+`pay_schedule_service.upsert_schedule(user_id, cadence_days)` with the new cadence. `new_start_date`
+must be > the last RETAINED period's `end_date` (re-checked by `_reject_overlapping_batch`). If a
+settled/ historical/anchor period sits inside the requested window, the truncate guard refuses (you
+cannot rewrite history under a settled paycheck).
 
 ### 4. Continuous rolling top-up -- `top_up_rolling_window(user_id, now=None)`
 
 1. Read `pay_schedule_service.get_schedule(user_id)`. `rolling_enabled` false -> return 0 (zero
-   extra queries in the common disabled path).
-2. One count query: `future = COUNT(pay_periods WHERE user_id=? AND end_date >= today)`. If
-   `future >= rolling_target_periods` -> return 0.
-3. Wrap steps 2-3 in `SELECT pg_advisory_xact_lock(<hash(user_id)>)` (transaction-scoped, auto-
-   released on commit). **Mandatory:** two concurrent grid loads would otherwise both read the same
-   `max_index` and append two periods with the SAME `period_index` (different start_dates, so
-   `uq_pay_periods_user_start` does NOT catch it) -- breaking the index->calendar bijection the
-   resolver depends on.
+   extra queries in the common disabled path; no lock taken).
+2. Cheap pre-check (no lock): `future = COUNT(pay_periods WHERE user_id=? AND end_date >= today)`.
+   If `future >= rolling_target_periods` -> return 0. This `end_date >= today` count INCLUDES the
+   current period, so "keep N ahead" means N counting the current one -- state that plainly in the
+   settings help text.
+3. Deficit exists -> `SELECT pg_advisory_xact_lock(<ROLLING_LOCK_NAMESPACE>, user_id)` (the
+   two-argument `(int4, int4)` form with a constant namespace key, NOT a hashed single key, so this
+   feature cannot collide with any other advisory-lock user keyed on the same id;
+   transaction-scoped, auto-released on commit). Then **re-count under the lock** (double-checked:
+   another request may have just filled the window) and recompute the deficit.
 4. `extend_pay_periods(user_id, deficit = target - future, cadence)`.
 
-- **Trigger:** call from the top of `grid.index` (`app/routes/grid.py`) and the dashboard route,
-  guarded `if current_user.is_authenticated and not companion`. These are the only routes that
-  consume future periods.
+- **Correctness vs. UX:** the `UNIQUE(user_id, period_index)` constraint (Review correction 2) is
+  the actual guard against duplicate indices, and it covers ALL append paths (manual extend /
+  regenerate / top-up), not just this one. The advisory lock here is a UX nicety: it serializes
+  concurrent top-ups so the loser cleanly re-reads a full window and does nothing, instead of racing
+  to an `IntegrityError` 500. Do not document the lock as the sole correctness guard.
+- **Trigger:** call from the top of `grid.index` (`app/routes/grid.py`) and the dashboard route.
+  Owner-only routes already (`@require_owner` 404s companions, `grid.py`/`auth_helpers.py:77`), so
+  no extra companion guard is needed; just `if current_user.is_authenticated`. These are the only
+  routes that consume future periods.
 
-### 5. Full reset (first-time setup correction) -- `POST /pay-periods/reset`
+### 5. Full reset (first-time setup correction) -- `POST /pay-periods/reset` -- DEFERRED TO PHASE 3
+
+Per Review correction 4, this operation is built in its own later phase, AFTER extend / truncate /
+regenerate / continuous are shipped and proven. Phase 0's deferrable FK still ships up front (it is
+inert for every non-reset path), so no second FK migration is needed when reset lands. Spec retained
+here so the design is not lost.
 
 `reset_pay_periods(user_id, new_start_date, num_periods, cadence_days)`. Closes the deferred reset/
 realign feature: it rebuilds the WHOLE schedule, INCLUDING the anchor period, which Regenerate
@@ -148,7 +203,9 @@ correction, NOT a tool for users with real history (they use Regenerate). One tr
 1. `SET CONSTRAINTS <anchor fk> DEFERRED` (defer the anchor FK to commit -- see Migration 1).
 2. Capture each account's `current_anchor_balance` (a real dollar value, preserved across the
    reset).
-3. Delete all the user's pay periods. CASCADE clears transactions/transfers/anchor-history; the
+3. Delete all the user's pay periods via the SAME bulk DELETE the truncate path uses (Review
+   correction 1): `query(PayPeriod).filter_by(user_id=...).delete(synchronize_session=False)` +
+   `expire_all()`. CASCADE clears transactions/transfers/anchor-history; the
    `recurrence_rules.start_period_id` SET NULL nulls any rule anchors.
 4. `generate_pay_periods(user_id, new_start_date, num_periods, cadence_days)`.
 5. Re-establish each account's anchor on the new schedule: re-point `current_anchor_period_id` using
@@ -178,9 +235,11 @@ In `pay_period_admin.py`. `PeriodLockReason` enum: `HISTORICAL`, `SETTLED_TXN`, 
 the first reason or None (mutable). Checks, in order:
 
 - `end_date < today` -> HISTORICAL.
-- Holds a settled txn: reuse the exact subquery from `templates.py:696-701` --
-  `Status.id WHERE is_settled.is_(True)` scalar-subquery, `Transaction.pay_period_id == period.id`,
-  `status_id.in_(...)`, `is_deleted.is_(False)` -> SETTLED_TXN.
+- Holds a settled txn: **adapt** (do NOT copy verbatim) the `Status.id WHERE is_settled.is_(True)`
+  scalar-subquery from `templates.py:696-701`. That site uses `.notin_(...)` to delete non-settled
+  rows and does not filter `is_deleted`; the classifier needs the inverse: an `EXISTS` over
+  `Transaction.pay_period_id == period.id`, `status_id.in_(settled_status_ids)`,
+  `is_deleted.is_(False)` (a soft-deleted settled row must NOT lock) -> SETTLED_TXN.
 - `EXISTS(Account WHERE current_anchor_period_id == period.id)` -> ACCOUNT_ANCHOR (the NOT-NULL FK
   landmine, `account.py:73-86`).
 - `EXISTS(RecurrenceRule WHERE start_period_id == period.id)` -> RECURRENCE_ANCHOR (SET NULL would
@@ -210,11 +269,21 @@ the reset transaction `SET CONSTRAINTS ... DEFERRED` so the FK is validated at c
 point the anchor points at a fresh period); every other path keeps fail-fast immediate checking.
 Equally safe, strictly more flexible.
 
-**Migration 2 (Phase 1):** create `budget.pay_schedule` (named constraints above) +
+**Migration 1b (Phase 0, ships with Phase 0):** upgrade the non-unique `idx_pay_periods_user_index`
+to a UNIQUE constraint/index on `(user_id, period_index)` -- name `uq_pay_periods_user_index`
+(Review correction 2). FIRST verify no existing user has duplicate `(user_id, period_index)` pairs
+(every shipped path assigns `max+1`, so production should be clean): run a
+`SELECT user_id, period_index, COUNT(*) ... GROUP BY ... HAVING COUNT(*) > 1` guard and
+`raise RuntimeError` with the offending rows if any survive (database rule: constraint additions on
+a populated table verify first). `upgrade()` drops the plain index then creates the unique one;
+`downgrade()` restores the plain index. Pure DDL both directions; no `Review:` line needed
+(additive, non-destructive of data).
+
+**Migration 2 (Phase 1):** create `budget.pay_schedule` (named constraints above; no
+`anchor_start_date` column -- Review correction 3) +
 **backfill one row per user who already has pay periods** (backfills belong in the migration):
-`cadence_days` = last period length `(end_date - start_date) + 1`, `anchor_start_date` = first
-period `start_date`, `rolling_enabled` = false, `rolling_target_periods` = 52. Users with no periods
-get no row. `downgrade()` drops the table.
+`cadence_days` = last period length `(end_date - start_date) + 1`, `rolling_enabled` = false,
+`rolling_target_periods` = 52. Users with no periods get no row. `downgrade()` drops the table.
 
 ## Routes, schemas, settings
 
@@ -227,8 +296,8 @@ get no row. `downgrade()` drops the table.
 - `/pay-periods/schedule` writes via `pay_schedule_service.set_rolling(...)` (NOT the
   `_SIMPLE_SETTINGS_FIELDS` allowlist in `settings.py`, since config now lives in `pay_schedule`,
   not `user_settings`).
-- On the existing `generate()` route, also `upsert_schedule(user_id, cadence_days, start_date)` so
-  cadence is captured authoritatively at first generation.
+- On the existing `generate()` route, also `upsert_schedule(user_id, cadence_days)` so cadence is
+  captured authoritatively at first generation.
 
 ## Templates / UI
 
@@ -254,37 +323,124 @@ recurrence_engine.populate_periods_from_active_templates(
 ```
 
 1. Baseline scenario via `scenario_resolver.get_baseline_scenario(user_id)` (matches how
-   `templates.py:326` populates).
-2. Active `TransactionTemplate`s for the user ->
-   `generate_for_template(template, periods, scenario.id, effective_from=periods[0].start_date)` for
-   each (`recurrence_engine.py:131`).
-3. Active `TransferTemplate`s -> the transfer recurrence engine's generate (keeps the transfer +
-   exactly-2-shadows invariant, CLAUDE.md transfer invariants).
+   `templates.py:324-331` populates).
+2. Active `TransactionTemplate`s (filter `is_active` -- `IsActiveMixin`; archived =
+   `is_active=False`) ->
+   `recurrence_engine.generate_for_template(template, periods, scenario.id, effective_from=periods[0].start_date)`
+   for each (`recurrence_engine.py:131`).
+3. Active `TransferTemplate`s -> `transfer_recurrence.generate_for_template(...)` (same signature,
+   in `app/services/transfer_recurrence.py:46`; delegates to `transfer_service.create_transfer`,
+   keeping the transfer + exactly-2-shadows invariant, CLAUDE.md transfer invariants).
 Cannot violate the unique partial index `idx_transactions_template_period_scenario`
-(`transaction.py`) because new/just-truncated periods are empty, and the engine's
-`should_skip_period` (`recurrence_engine.py:161-172`) skips any already-populated period -- so
-retried top-ups create nothing.
+(`migrations/versions/c79bfaef598e_*`, scoped
+`template_id IS NOT NULL AND is_deleted=FALSE AND is_override=FALSE`) because new/just-truncated
+periods are empty, and the shared `should_skip_period` (`app/services/_recurrence_common.py:181`)
+skips any already-populated period -- so retried top-ups create nothing.
+
+**DRY opportunity (out of scope -- do NOT build now, but recorded so it is not forgotten):** the
+"resolve baseline scenario -> `get_all_periods` -> `generate_for_template`" idiom already exists,
+duplicated across the route layer -- `app/routes/_transfer_creation_helpers.py:217`
+(`generate_transfers_for_all_periods`), the inline block at `templates.py:324-331`,
+`app/routes/investment.py`, and `app/routes/loan/payment_transfer.py`. The new service-layer
+`populate_periods_from_active_templates` is better placed than all of them (Flask-isolated; handles
+BOTH transaction and transfer templates in one pass over a SPECIFIC period subset). Once it exists,
+those route helpers could delegate to it to kill the duplication. Tracked as a follow-up; not part
+of this work's scope.
 
 ## Phased rollout (tight scope, no gold-plating)
 
-- **Phase 0:** Migration 1 (anchor FK -> `NO ACTION DEFERRABLE INITIALLY IMMEDIATE`) + model comment
-  fix + FK tests. Ships alone.
-- **Phase 1 (CRUD):** Migration 2 (`pay_schedule` + backfill); `PaySchedule` model + audit
-  registration; `pay_schedule_service`; `pay_period_admin` (classifier + extend + truncate +
-  regenerate with block-and-confirm + full reset bounded to no-settled, deferred-FK atomic swap +
-  re-anchor via `anchor_service`); `populate_periods_from_active_templates`; routes + schemas;
-  manage UI; tests.
-- **Phase 2 (continuous):** `top_up_rolling_window` (advisory lock); rolling settings UI; grid +
-  dashboard trigger hooks; concurrency/idempotency tests.
+- **Phase 0:** Migration 1 (anchor FK -> `NO ACTION DEFERRABLE INITIALLY IMMEDIATE`) + Migration 1b
+  (`UNIQUE(user_id, period_index)`) + model comment fix + FK/unique-index tests. Ships alone.
+- **Phase 1 (CRUD):** Migration 2 (`pay_schedule` + backfill, no `anchor_start_date`); `PaySchedule`
+  model + audit registration; `pay_schedule_service`; `pay_period_admin` (classifier + extend +
+  truncate + regenerate with block-and-confirm, all destructive deletes via bulk DELETE);
+  `populate_periods_from_active_templates`; routes + schemas; manage UI; tests.
+  **Full reset is NOT in Phase 1** (moved to Phase 3).
+- **Phase 2 (continuous):** `top_up_rolling_window` (advisory lock as a UX nicety -- the unique
+  index from Phase 0 is the correctness guard); rolling settings UI; grid + dashboard trigger hooks;
+  concurrency/idempotency tests.
+- **Phase 3 (full reset, deferred):** `reset_pay_periods` bounded to no-settled, deferred-FK atomic
+  swap + re-anchor via `anchor_service` + recurrence re-pointing; `POST /pay-periods/reset` + schema
+  - UI gated to zero-settled users; tests. The Phase 0 deferrable FK is already in place, so no new
+  migration is needed here. Closes DH-#39's first-time-setup half.
 - **Out of scope:** per-period date editing; multi-scenario repopulation; carry-forward of ad-hoc
-  rows on regenerate; any scheduler/Celery infra. Each is a documented later-if-needed.
+  rows on regenerate; any scheduler/Celery infra; the route-helper DRY consolidation noted under
+  Template repopulation. Each is a documented later-if-needed.
 
 ## Test plan
 
+**Why testing is the load-bearing safeguard for this feature (read first).** A pay period is the
+spine of every financial number in Shekel: the balance resolver walks periods by `period_index` and
+trusts that order to be chronological, and every transaction, paycheck, transfer, and as-of balance
+hangs off a period. Corrupt the period structure -- a duplicate or non-monotonic index, a deleted
+anchor, an orphaned shadow, a wiped settled row -- and the corruption does not announce itself: it
+silently produces a WRONG balance that looks plausible. This is the one feature whose bugs are both
+the most likely to be invisible and the most expensive (real money mismanaged). There is no QA team
+and no reviewer; the tests are the only thing standing between a defect and production. So the bar
+here is higher than "each function has a test": the tests must make period corruption IMPOSSIBLE to
+ship undetected. Three non-negotiable disciplines below (invariant checker, balance-correctness
+after every mutation, corruption-attempt tests) exist specifically to meet that bar; the
+per-operation bullets are necessary but not sufficient on their own.
+
+Evidence this is not hypothetical: adding the Phase 0 `UNIQUE(user_id, period_index)` constraint
+immediately surfaced ~20 pre-existing test setups across 5 files that had been silently creating
+duplicate-index periods (the invariant was violated and nothing caught it). Each was a latent
+landmine the schema now forbids. If test SCAFFOLDING drifted that far unnoticed, app code can too --
+which is exactly why the invariant must be asserted continuously, not spot-checked.
+
 New: `tests/test_services/test_pay_period_admin.py`,
 `tests/test_services/test_pay_schedule_service.py`, `tests/test_routes/test_pay_period_admin.py`,
-`tests/test_models/test_anchor_fk_restrict.py`. Reuse `bare_user`, `bare_periods`,
-`bare_auth_client` (`conftest.py:831-901`); Decimal-from-string money; exact assertions; docstrings.
+`tests/test_models/test_anchor_fk_deferrable.py` (NOT `_restrict` -- the FK is
+`NO ACTION DEFERRABLE`, see below), `tests/test_models/test_pay_period_index_unique.py`. Reuse
+`bare_user`, `bare_periods`, `bare_auth_client` (`conftest.py:831-901`); Decimal-from-string money;
+exact assertions; docstrings.
+
+### Discipline 1: the reusable invariant checker (run after EVERY mutation)
+
+New helper
+`tests/helpers/pay_period_invariants.py::assert_pay_period_invariants(db_session, user_id)` -- the
+single source of truth for "the user's period structure is not corrupt." Called at the END of every
+extend / truncate / regenerate / top-up / reset test (and after the route-level POST in the route
+tests). Asserts, for the user:
+
+1. **Index uniqueness:** `COUNT(*) == COUNT(DISTINCT period_index)` (the schema enforces it now;
+   this catches any path that bypasses the ORM).
+2. **Index == calendar order:** sorting periods by `period_index` yields strictly ascending
+   `start_date` AND strictly ascending `end_date` -- the exact property `balance_resolver` depends
+   on. This is the assertion that would have caught a silent as-of-balance corruption.
+3. **No date overlaps and no unintended gaps** in the retained window (reuse the BA-03/BA-04 logic;
+   see Discipline 3).
+4. **Anchor integrity:** every account's `current_anchor_period_id` points at a live period owned by
+   the same user.
+5. **Transfer invariant intact:** every transfer still has exactly two shadow transactions, both in
+   the same (still-existing) period as their parent; no orphaned shadow, no shadow without sibling
+   (CLAUDE.md transfer invariants).
+6. **No orphaned template rows** referencing a deleted period.
+
+A test that mutates periods and does NOT call this helper is incomplete. The helper is DRY (one
+definition, asserted everywhere) and is the mechanism that makes "corruption cannot ship" structural
+rather than aspirational.
+
+### Discipline 2: assert the MONEY, not just the structure
+
+Because the whole risk is "wrong periods -> wrong balances," every CRUD operation test must also
+assert that **as-of balances are still correct after the mutation**, computed by hand from the
+anchor (testing-standards: service tests assert exact computed values with the arithmetic shown,
+never `> 0`). Concretely: seed a known anchor + known recurring rows, run the operation, then assert
+`balance_resolver.balance_as_of_date(...)` returns the hand-computed Decimal for at least one date
+in the affected window AND one date in the retained (locked) window. Structure passing while
+balances drift is the precise failure mode this catches.
+
+### Discipline 3: wire the operations into the existing integrity checker
+
+`scripts/integrity_check.py` already detects period-structure anomalies (BA-02 anchor-beyond-last,
+BA-03 index gap, BA-04 date overlap, plus the FK/orphan checks). After each CRUD operation in the
+service tests, run `check_balance_anomalies(db_session)` (and the FK/orphan checks) and assert ALL
+pass -- the operations must never produce a state the production integrity checker would flag. This
+connects the new feature to the safety net that already guards the database and means a regression
+trips two independent tripwires (the invariant helper and the shipped checker).
+
+### Per-operation assertions (necessary, not sufficient -- pair each with Disciplines 1-3)
 
 - **Classifier:** future-empty -> None; historical -> HISTORICAL; Paid txn -> SETTLED_TXN
   (PROJECTED-only NOT locked; soft-deleted settled NOT locked); account anchor -> ACCOUNT_ANCHOR;
@@ -297,26 +453,66 @@ New: `tests/test_services/test_pay_period_admin.py`,
   `PayPeriodDiscardRequired`, with confirm proceeds; idempotent no-op past max index.
 - **Regenerate:** locked prefix retained, mutable tail rebuilt + repopulated; refuses when a settled
   period is inside the window; resolver as-of balances still correct after rebuild.
-- **Full reset:** refuses when ANY settled transaction exists; on a no-settled schedule, wipes +
-  rebuilds all periods INCLUDING the old anchor period; re-points each account's
-  `current_anchor_period_id` to the new current period with the balance preserved; writes a fresh
-  origination history row; the deferred anchor FK validates at commit (no orphan, no NOT-NULL
-  violation); recurrence-rule anchors re-pointed + templates repopulated; resolver as-of balances
-  correct against the new schedule. Assert a brand-new (not-yet-anchored) user can full-reset too.
-- **Top-up:** disabled -> 0, no write query; full window -> 0; deficit D -> exactly D, second call
-  -> 0; two sequential top-ups against the same short state never produce a duplicate `period_index`
-  (`COUNT(*) == COUNT(DISTINCT period_index)`); hitting `/grid` with rolling enabled
-  - deficit creates periods.
-- **FK migration:** `pg_constraint.confdeltype == 'r'` for the anchor FK (mirror
-  `tests/test_models/test_c43_ondelete_and_naming_convention.py`); deleting an anchor period raises
-  IntegrityError.
-Run via `./scripts/test.sh`; every batch ends `<N> passed`.
+- **Full reset (PHASE 3 -- tests land with that phase, not Phase 1):** refuses when ANY settled
+  transaction exists; on a no-settled schedule, wipes (bulk DELETE) + rebuilds all periods INCLUDING
+  the old anchor period; re-points each account's `current_anchor_period_id` to the new current
+  period with the balance preserved; writes a fresh origination history row; the deferred anchor FK
+  validates at commit (no orphan, no NOT-NULL violation) -- assert the
+  `SET CONSTRAINTS ... DEFERRED` path inside one transaction; recurrence-rule anchors re-pointed +
+  templates repopulated; resolver as-of balances correct against the new schedule. Assert a
+  brand-new (not-yet-anchored) user can full-reset too.
+- **Top-up:** disabled -> 0, no write query (and no advisory lock taken); full window -> 0; deficit
+  D -> exactly D, second call -> 0; two sequential top-ups against the same short state never
+  produce a duplicate `period_index` (`COUNT(*) == COUNT(DISTINCT period_index)`); hitting `/grid`
+  with rolling enabled + deficit creates periods.
+- **Unique index (`UNIQUE(user_id, period_index)`):** inserting a second period with an existing
+  `(user_id, period_index)` raises `IntegrityError`; the same `period_index` for a DIFFERENT user is
+  allowed; mirror the constraint-introspection style of
+  `tests/test_models/test_c43_ondelete_and_naming_convention.py`.
+- **FK migration:** the anchor FK is `NO ACTION DEFERRABLE INITIALLY IMMEDIATE`, so assert
+  `pg_constraint.confdeltype == 'a'` (NO ACTION) AND `condeferrable IS TRUE` AND
+  `condeferred IS FALSE` -- NOT `'r'` (mirror
+  `tests/test_models/test_c43_ondelete_and_naming_convention.py`); deleting an anchor period
+  (immediate check) raises IntegrityError, while a transaction that `SET CONSTRAINTS ... DEFERRED`
+  can delete-then-re-point within one commit (this last assertion is Phase 3).
+- **Migration pre-flight guards (prove the safety nets fire):** the unique-index migration's
+  `upgrade()` must RAISE `RuntimeError` naming the offending rows when the data already holds a
+  duplicate `(user_id, period_index)` (drop the constraint, insert a dup via the test session, run
+  `upgrade()`, assert the raise + that the constraint was not created; restore in `finally`). Mirror
+  the established pattern in `test_c19_credit_payback_unique.py::TestMigrationPreFlightCheck`. Same
+  spirit for the `pay_schedule` backfill: assert the backfilled `cadence_days` equals the real last
+  period length for a user with periods, and that a no-periods user gets no row.
+
+### Discipline 4: adversarial / corruption-attempt tests (assert the bad state is REFUSED)
+
+For a feature whose failure mode is silent corruption, the negative tests carry as much weight as
+the happy path. Each must assert the corrupting action is BLOCKED (raises / 404 / 422 / no-op), and
+then call the invariant checker to confirm nothing changed:
+
+- Truncate/regenerate over a window containing a settled / historical / account-anchor / rule-anchor
+  period -> raises the lock; assert the DB is byte-for-byte unchanged (period count, the settled
+  txn, the anchor) -- never a partial delete.
+- Truncate/regenerate that would discard hand-entered/override rows without `confirm_discard` ->
+  raises `PayPeriodDiscardRequired`; nothing deleted.
+- Deleting an anchor period by any path -> IntegrityError (the Phase 0 FK), never a silent NULL.
+- Concurrency: two top-ups (and a top-up racing a manual extend/regenerate) against the same short
+  state -> the unique index guarantees `COUNT(*) == COUNT(DISTINCT period_index)`; the loser no-ops
+  or fails loudly, never lands a duplicate index.
+- IDOR: a user cannot extend/truncate/regenerate/reset another user's schedule (404, the project
+  security response), and a companion cannot reach any of these routes (`@require_owner`).
+- Resolver fuzz: after a randomized sequence of extend/truncate/regenerate operations, the invariant
+  checker (Discipline 1) and a hand-anchored balance spot-check (Discipline 2) both still hold --
+  the strongest guard that no operation ordering corrupts the index->calendar->balance chain.
+
+Run via `./scripts/test.sh`; every batch ends `<N> passed`. The full suite is the final gate, and a
+green suite is the definition of done for each phase precisely because it is the only safeguard.
 
 ## Verification (end-to-end)
 
 1. `python scripts/build_test_template.py` after Migration 2; run targeted then full suite via
    `./scripts/test.sh`.
-2. `flask db upgrade` then `flask db downgrade` for BOTH migrations (DoD requires both directions).
+2. `flask db upgrade` then `flask db downgrade` for ALL migrations -- Migration 1 (FK), 1b (unique
+   index), and 2 (`pay_schedule`) -- in both directions (DoD requires both directions).
 3. `pylint app/ --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale`
    clean.
 4. Manual in the dev container (`docker compose -f docker-compose.dev.yml up -d`): generate a
@@ -328,13 +524,20 @@ Run via `./scripts/test.sh`; every batch ends `<N> passed`.
 
 - `app/services/pay_period_service.py` (reused: `generate_pay_periods` 70-147,
   `_reject_overlapping_batch` 26-67, `get_all_periods` 197)
-- `app/services/recurrence_engine.py` (reused: `generate_for_template` 131-208)
-- `app/services/anchor_service.py` (reused: `apply_anchor_true_up` 166-258),
-  `app/services/account_service.py` (reused: `_resolve_anchor_period_id` 48-87)
-- `app/routes/pay_periods.py`, `app/routes/grid.py` (190-224 + trigger), `app/routes/settings.py`
-  (69, 114)
-- `app/models/pay_schedule.py` (new), `app/models/account.py` (73-86 FK + comment),
-  `app/audit_infrastructure.py`
-- `migrations/versions/b4b588a49a0c_*` (C-43 helpers to reuse),
-  `app/schemas/validation/pay_periods.py`
+- `app/services/recurrence_engine.py` (reused: `generate_for_template` 131),
+  `app/services/transfer_recurrence.py` (reused: `generate_for_template` 46),
+  `app/services/_recurrence_common.py` (reused: `should_skip_period` 181),
+  `app/services/scenario_resolver.py` (reused: `get_baseline_scenario`)
+- `app/services/anchor_service.py` (reused: `apply_anchor_true_up` 166-258, Phase 3),
+  `app/services/account_service.py` (reused: `_resolve_anchor_period_id` 48-87, Phase 3)
+- `app/routes/pay_periods.py`, `app/routes/grid.py` (`index` 484-588 + trigger),
+  `app/routes/settings.py` (69, 114)
+- `app/models/pay_period.py` (Migration 1b unique index; the `transactions` relationship
+  `pay_period.py:30` is WHY truncate must bulk-DELETE), `app/models/pay_schedule.py` (new),
+  `app/models/account.py` (73-86 FK + comment, Phase 0), `app/audit_infrastructure.py`
+- `migrations/versions/b4b588a49a0c_*` (C-43 helpers to reuse; extend to emit
+  `DEFERRABLE INITIALLY IMMEDIATE`), `app/schemas/validation/pay_periods.py`
 - `app/templates/settings/_pay_periods.html` (+ new `_pay_periods_manage.html`)
+- DRY follow-up (out of scope): `app/routes/_transfer_creation_helpers.py:217`,
+  `templates.py:324-331`, `app/routes/investment.py`, `app/routes/loan/payment_transfer.py` --
+  candidates to later delegate to `populate_periods_from_active_templates`

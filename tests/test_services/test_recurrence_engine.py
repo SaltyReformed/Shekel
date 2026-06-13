@@ -2229,7 +2229,14 @@ class TestDueDateGeneration:
             seed_user: The seed_user fixture dict.
             start:     Period start_date.
             end:       Period end_date.
-            index:     period_index (default 0).
+            index:     Relative period index among this test's custom
+                       periods (default 0).  Stored as ``index + 1`` to
+                       clear ``seed_user``'s bootstrap period (which
+                       occupies ``period_index`` 0), satisfying the
+                       ``uq_pay_periods_user_index`` constraint.  These
+                       tests assert on ``due_date`` (date-derived), never
+                       on the absolute index, so the offset is invisible
+                       to every assertion.
 
         Returns:
             The created PayPeriod, flushed with an assigned ID.
@@ -2240,7 +2247,7 @@ class TestDueDateGeneration:
             user_id=seed_user["user"].id,
             start_date=start,
             end_date=end,
-            period_index=index,
+            period_index=index + 1,
         )
         db.session.add(period)
         db.session.flush()

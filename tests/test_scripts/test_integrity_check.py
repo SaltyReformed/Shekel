@@ -336,9 +336,12 @@ class TestBalanceAnomalies:
     def test_ba03_detects_period_gap(self, app, db, seed_user):
         """BA-03 detects a gap in the pay period index sequence."""
         user = seed_user["user"]
-        # Create periods with indices 0, 1, 3 (gap at 2).
-        for idx, start in [(0, date(2026, 1, 2)), (1, date(2026, 1, 16)),
-                           (3, date(2026, 2, 13))]:
+        # Create periods with indices 1, 2, 4 (gap at 3), offset past
+        # seed_user's bootstrap period (index 0) so the
+        # uq_pay_periods_user_index constraint holds.  Across the full
+        # set {0, 1, 2, 4}, BA-03 still sees exactly one gap (index 3).
+        for idx, start in [(1, date(2026, 1, 2)), (2, date(2026, 1, 16)),
+                           (4, date(2026, 2, 13))]:
             pp = PayPeriod(
                 user_id=user.id,
                 start_date=start,
@@ -351,7 +354,7 @@ class TestBalanceAnomalies:
         results = check_balance_anomalies(db.session)
         ba03 = next(r for r in results if r.check_id == "BA-03")
         assert not ba03.passed
-        assert ba03.detail_count == 1  # 1 gap at index 2
+        assert ba03.detail_count == 1  # 1 gap at index 3
 
     def test_ba02_detects_anchor_beyond_last_period(self, app, db, seed_user):
         """BA-02: Anchor period is beyond the last pay period for the user.
@@ -366,6 +369,9 @@ class TestBalanceAnomalies:
         account = seed_user["account"]
 
         # Create normal periods for this user so max_idx is well-defined.
+        # Indices 1, 2, 3 -- offset past seed_user's bootstrap period
+        # (index 0) so the uq_pay_periods_user_index constraint holds; the
+        # account's max real period_index is 3, well below the fake 999.
         for idx, (start, end) in enumerate([
             (date(2026, 1, 2), date(2026, 1, 15)),
             (date(2026, 1, 16), date(2026, 1, 29)),
@@ -375,7 +381,7 @@ class TestBalanceAnomalies:
                 user_id=user.id,
                 start_date=start,
                 end_date=end,
-                period_index=idx,
+                period_index=idx + 1,
             )
             db.session.add(pp)
         db.session.flush()
@@ -415,18 +421,22 @@ class TestBalanceAnomalies:
     def test_ba04_detects_date_overlap(self, app, db, seed_user):
         """BA-04 detects overlapping pay period date ranges."""
         user = seed_user["user"]
-        # Create two overlapping periods.
+        # Two overlapping periods at indices 1 and 2, offset past
+        # seed_user's bootstrap period (index 0) so the
+        # uq_pay_periods_user_index constraint holds.  The bootstrap's
+        # 2024 dates do not overlap these, so BA-04 still sees exactly the
+        # one overlapping pair (pp1/pp2).
         pp1 = PayPeriod(
             user_id=user.id,
             start_date=date(2026, 1, 2),
             end_date=date(2026, 1, 15),
-            period_index=0,
+            period_index=1,
         )
         pp2 = PayPeriod(
             user_id=user.id,
             start_date=date(2026, 1, 10),
             end_date=date(2026, 1, 23),
-            period_index=1,
+            period_index=2,
         )
         db.session.add_all([pp1, pp2])
         db.session.flush()
