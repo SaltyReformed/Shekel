@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Login -- Shekel{% endblock %}
+{% block title %}Login -- Shekel{% endblock title %}
 
 {% block content %}
 <div class="row justify-content-center mt-5">
@@ -45,10 +45,10 @@
     </div>
   </div>
 </div>
-{% endblock %}
+{% endblock content %}
 
 {% block scripts %}
 {# Show/hide eye icon on the login password input.  No strength meter
    here because no zxcvbn analysis applies to an existing password. #}
 <script src="{{ url_for('static', filename='js/password_toggle.js') }}"></script>
-{% endblock %}
+{% endblock scripts %}

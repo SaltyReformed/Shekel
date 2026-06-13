@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if profile else 'New' }} Salary Profile -- Shekel{% endblock %}
+{% block title %}{{ 'Edit' if profile else 'New' }} Salary Profile -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -8,7 +8,7 @@
     <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Profile' if profile else 'New Profile' }}</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -220,4 +220,4 @@
     {% endif %}
   </div>
 </div>
-{% endblock %}
+{% endblock content %}

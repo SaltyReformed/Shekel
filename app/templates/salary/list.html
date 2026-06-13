@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
-{% block title %}Salary Profiles -- Shekel{% endblock %}
+{% block title %}Salary Profiles -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -9,7 +9,7 @@
     <li class="breadcrumb-item active" aria-current="page">Salary</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -184,4 +184,4 @@
   No salary profiles yet. Create one to start calculating paychecks.
 </div>
 {% endif %}
-{% endblock %}
+{% endblock content %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Tax Configuration -- Shekel{% endblock %}
+{% block title %}Tax Configuration -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -8,7 +8,7 @@
     <li class="breadcrumb-item active" aria-current="page">Tax Configuration</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -23,4 +23,4 @@
     {% include "settings/_tax_config_sections.html" %}
   </div>
 </div>
-{% endblock %}
+{% endblock content %}

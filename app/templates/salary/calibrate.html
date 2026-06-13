@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Calibrate Paycheck -- {{ profile.name }} -- Shekel{% endblock %}
+{% block title %}Calibrate Paycheck -- {{ profile.name }} -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -9,7 +9,7 @@
     <li class="breadcrumb-item active" aria-current="page">Calibrate</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -112,4 +112,4 @@
     </form>
   </div>
 </div>
-{% endblock %}
+{% endblock content %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if pension else 'New' }} Pension -- Shekel{% endblock %}
+{% block title %}{{ 'Edit' if pension else 'New' }} Pension -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -8,7 +8,7 @@
     <li class="breadcrumb-item active" aria-current="page">Pensions</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -165,4 +165,4 @@
     </form>
   </div>
 </div>
-{% endblock %}
+{% endblock content %}

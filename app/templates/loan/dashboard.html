@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
-{% block title %}{{ account.name }} -- {{ account_type.name }} -- Shekel{% endblock %}
+{% block title %}{{ account.name }} -- {{ account_type.name }} -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -9,7 +9,7 @@
     <li class="breadcrumb-item active" aria-current="page">{{ account.name }} {{ account_type.name }}</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -406,11 +406,11 @@
     {% include "loan/_refinance.html" %}
   </div>
 </div>
-{% endblock %}
+{% endblock content %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payoff_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
-{% endblock %}
+{% endblock scripts %}

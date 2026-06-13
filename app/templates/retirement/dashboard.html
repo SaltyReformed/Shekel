@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
-{% block title %}Retirement Planning -- Shekel{% endblock %}
+{% block title %}Retirement Planning -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -9,7 +9,7 @@
     <li class="breadcrumb-item active" aria-current="page">Retirement</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -156,11 +156,11 @@
   <small>Projections are estimates based on assumed rates of return and the safe withdrawal rate.
   Actual results will vary with market performance, inflation, and tax law changes.</small>
 </div>
-{% endblock %}
+{% endblock content %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/retirement_gap_chart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
-{% endblock %}
+{% endblock scripts %}

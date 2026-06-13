@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard -- Shekel{% endblock %}
+{% block title %}Dashboard -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -7,7 +7,7 @@
     <li class="breadcrumb-item active" aria-current="page">Dashboard</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 {# Q "Terminal Road" rebuild (docs/design/dashboard_card_audit.md,
@@ -53,10 +53,10 @@
 {% endif %}
 
 {% endif %}
-{% endblock %}
+{% endblock content %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/dashboard_pulse.js') }}"></script>
-{% endblock %}
+{% endblock scripts %}

@@ -16,7 +16,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Shekel{% endblock %}</title>
+  <title>{% block title %}Shekel{% endblock title %}</title>
   <meta name="csrf-token" content="{{ csrf_token() }}">
 
   {# HTMX reads its config from this meta tag at startup.  includeIndicatorStyles
@@ -199,7 +199,7 @@
   {% endif %}
 
   {# --- Breadcrumbs --- #}
-  {% block breadcrumbs %}{% endblock %}
+  {% block breadcrumbs %}{% endblock breadcrumbs %}
 
   {# --- Welcome Banner (Onboarding) --- #}
   {% if current_user.is_authenticated and onboarding is defined and not onboarding.complete %}
@@ -273,7 +273,7 @@
 
   {# --- Page Content --- #}
   <main id="main-content" class="container-fluid py-2" role="main">
-    {% block content %}{% endblock %}
+    {% block content %}{% endblock content %}
   </main>
 
   {# --- Global Modals --- #}
@@ -304,7 +304,7 @@
   <script src="{{ url_for('static', filename='js/categories.js') }}"></script>
   <script src="{{ url_for('static', filename='js/anchor_edit.js') }}"></script>
 
-  {% block scripts %}{% endblock %}
+  {% block scripts %}{% endblock scripts %}
 </body>
 
 </html>

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import dti_badge, money %}
-{% block title %}Accounts Dashboard -- Shekel{% endblock %}
+{% block title %}Accounts Dashboard -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -9,7 +9,7 @@
     <li class="breadcrumb-item active" aria-current="page">Accounts</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -465,4 +465,4 @@
   to track progress toward your savings targets.
 </div>
 {% endif %}
-{% endblock %}
+{% endblock content %}
