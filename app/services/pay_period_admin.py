@@ -2,25 +2,31 @@
 Shekel Budget App -- Pay Period Admin Service
 
 The structural / destructive pay-period operations -- the lock
-classifier and (in later slices) extend / truncate / regenerate -- kept
-out of the heavily imported read/generate ``pay_period_service`` so the
-destructive paths live in one isolated place.  Flask-isolated: takes and
-returns plain data, never imports ``request`` / ``session``.
+classifier and extend / truncate / regenerate -- kept out of the heavily
+imported read/generate ``pay_period_service`` so the destructive paths
+live in one isolated place.  Flask-isolated: takes and returns plain
+data, never imports ``request`` / ``session``; flushes, never commits
+(the route owns the transaction).
 
-This module's first responsibility is the single reusable **lock
-classifier**: the one place that decides whether a pay period may be
-deleted or rebuilt.  Truncate and regenerate consult it before touching
-anything; the settings UI renders its result as a per-period lock badge.
+The module's foundation is the single reusable **lock classifier**: the
+one place that decides whether a pay period may be deleted or rebuilt.
+Truncate and regenerate consult it before touching anything; the
+settings UI renders its result as a per-period lock badge.  The
+operations (``extend_pay_periods`` here; truncate / regenerate to
+follow) build on it and on ``pay_period_service`` / ``recurrence_engine``.
 """
 
 import enum
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from app.extensions import db
+from app.exceptions import ValidationError
 from app.models.account import Account
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
+from app.services import pay_period_service, pay_schedule_service
+from app.services.period_population import populate_periods_from_active_templates
 from app.utils.balance_predicates import settled_status_ids
 
 logger = logging.getLogger(__name__)
@@ -150,6 +156,52 @@ def classify_periods_bulk(
         )
         for period in periods
     }
+
+
+def extend_pay_periods(user_id, num_periods, cadence_days=None):
+    """Append ``num_periods`` pay periods to the end of the user's schedule.
+
+    Tail-append only: the new periods take the highest ``period_index``
+    values, so the ``period_index == calendar-order`` invariant the
+    balance resolver relies on is preserved (only tail-append and
+    tail-truncate do).  ``generate_pay_periods`` creates the new periods
+    EMPTY -- it does not run the recurrence engine -- so they are then
+    repopulated with each active template's recurring rows.
+
+    Args:
+        user_id: The owning user's id.
+        num_periods: How many periods to append (>= 1; the route's
+            schema validates the range).
+        cadence_days: Days between paydays for the new periods.  Defaults
+            to the user's resolved cadence (the stored schedule, else
+            inferred from the last period's length).
+
+    Returns:
+        The list of newly created :class:`~app.models.pay_period.PayPeriod`
+        objects.
+
+    Raises:
+        ValidationError: When the user has no existing periods to extend
+            from (they must generate first), or when
+            ``generate_pay_periods`` rejects the batch via its
+            forward-only overlap guard.
+    """
+    existing = pay_period_service.get_all_periods(user_id)
+    if not existing:
+        raise ValidationError(
+            "Generate your first pay-period schedule before extending it."
+        )
+
+    if cadence_days is None:
+        cadence_days = pay_schedule_service.resolve_cadence(user_id)
+
+    last = existing[-1]
+    next_start = last.end_date + timedelta(days=1)
+    new_periods = pay_period_service.generate_pay_periods(
+        user_id, next_start, num_periods, cadence_days,
+    )
+    populate_periods_from_active_templates(user_id, new_periods)
+    return new_periods
 
 
 def _holds_settled_transaction(period_id: int) -> bool:
