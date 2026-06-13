@@ -32,7 +32,6 @@
 {%- if idx > 0 and periods[idx].start_date.month != periods[idx - 1].start_date.month %} mstart{% endif -%}
 {%- endmacro %}
 
-
 {% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, txn_type_id, account, today, current_period_id=none) -%}
 {#- Desktop grid row.  Emits one <tr> containing the sticky row
     label (<th scope="row">) followed by one <td class="text-end
@@ -80,7 +79,6 @@
 </tr>
 {%- endmacro %}
 
-
 {% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
 {#- Mobile grid cards for one (rk, period) cell.
 
@@ -105,7 +103,6 @@
 {{ render_one_card(rk, period, txn, entry_sums, can_edit, id_prefix, entry_lists, today) }}
 {% endfor %}
 {%- endmacro %}
-
 
 {% macro render_one_card(rk, period, txn, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
 {#- Render exactly one mobile transaction card.
@@ -349,7 +346,6 @@
     </div>
   </div>
 {%- endmacro %}
-
 
 {% macro render_row_static(rk, period, matched_by_row_period) -%}
 {#- Mobile Plan tab static row.  Emits zero or more non-interactive

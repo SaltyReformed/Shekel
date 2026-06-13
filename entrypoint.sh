@@ -75,7 +75,7 @@ _load_secret() {
     # ``echo "value" > file`` leaves behind, so the in-process value
     # matches what ``printf 'value' > file`` would produce.  Internal
     # newlines (the rare PEM-encoded secret) are preserved.
-    secret_value="$(< "${secret_path}")"
+    secret_value="$(<"${secret_path}")"
 
     if [ -z "${secret_value}" ]; then
         echo "ERROR: secret file ${secret_path} is present but empty." >&2
@@ -150,7 +150,7 @@ if [ "${#SECRET_KEY}" -lt 32 ]; then
     exit 1
 fi
 case "${SECRET_KEY}" in
-    dev-only-*|change-me-to-a-random-secret-key|dev-secret-key-not-for-production|replaced_by_docker_secret*)
+    dev-only-* | change-me-to-a-random-secret-key | dev-secret-key-not-for-production | replaced_by_docker_secret*)
         echo "ERROR: SECRET_KEY matches a known placeholder." >&2
         echo "       Replace it with a secure random value before starting the app." >&2
         # ``replaced_by_docker_secret*`` is the Commit C-38 placeholder

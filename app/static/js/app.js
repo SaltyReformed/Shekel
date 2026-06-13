@@ -719,7 +719,7 @@ document.addEventListener('keydown', function(e) {
           }
         }
         break;
-      case 'Enter':
+      case 'Enter': {
         // Enter opens the cell's edit surface: the anchored action
         // card for a transaction (.txn-open), or quick-create on an
         // empty cell (rebuild decision 3, docs/design/grid_audit.md).
@@ -731,13 +731,14 @@ document.addEventListener('keydown', function(e) {
           if (clickable) clickable.click();
         }
         break;
+      }
       case 'Escape':
         e.preventDefault();
         clearFocus();
         focusedRow = -1;
         focusedCol = -1;
         break;
-      case ' ':
+      case ' ': {
         // Space marks the focused cell paid via its one-click check
         // button -- the button only renders on projected cells, the
         // exact precondition of the projected -> done transition, so
@@ -756,8 +757,9 @@ document.addEventListener('keydown', function(e) {
           }
         }
         break;
+      }
       case 'c':
-      case 'C':
+      case 'C': {
         // C marks the focused cell credit.  The template stamps
         // data-can-credit with the same predicate as the card's
         // Credit button (expense, projected, not a transfer shadow,
@@ -779,6 +781,7 @@ document.addEventListener('keydown', function(e) {
           markTxnCredit(creditable.dataset.txnId);
         }
         break;
+      }
       case 'Home':
         e.preventDefault();
         setFocus(focusedRow, 0);

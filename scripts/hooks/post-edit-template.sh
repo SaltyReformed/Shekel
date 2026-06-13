@@ -22,7 +22,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/_hooklib.sh"
 FILE="$(hook_target_relpath)" || exit 2
 [[ "$FILE" == app/templates/*.html ]] || exit 0
 
+# shellcheck disable=SC2312 # hook_repo_root is just local-assign + printf of a param expansion (cannot fail); the cd itself is the guard, a bad/empty path trips the || block and exits 2.
 cd "$(hook_repo_root)" || {
+    # shellcheck disable=SC2312 # display-only: hook_repo_root cannot fail, and its value here just labels the diagnostic immediately before exit 2.
     echo "post-edit-template: cannot cd to project root '$(hook_repo_root)' -- failing closed." >&2
     exit 2
 }

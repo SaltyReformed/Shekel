@@ -60,6 +60,7 @@ BACKUP_FILENAME="shekel_backup_${TIMESTAMP}.sql.gz"
 # real exit status with 1 -- the same errexit-semantics class this whole
 # family was audited for (caught by the Phase 2 test battery).
 _TMP_FILES=()
+# shellcheck disable=SC2329 # invoked indirectly via the EXIT trap registered below, never called by name
 _cleanup_tmp() {
     local f
     for f in "${_TMP_FILES[@]:-}"; do
@@ -96,6 +97,7 @@ EOF
 }
 
 check_prerequisites() {
+    # shellcheck disable=SC2310 # require_db_container is a boolean predicate (explicit 'return 1' on every failure path, not set -e); the trailing '|| exit 1' aborts the script on its failure
     require_db_container "${DB_CONTAINER}" || exit 1
     # Create local backup directory if it does not exist.
     mkdir -p "${BACKUP_LOCAL_DIR}"
@@ -124,6 +126,7 @@ create_backup() {
     # schema added there is automatically dumped here (OPS/SH-06).
     #
     # shellcheck disable=SC2046 # word splitting of the --schema flags is intended
+    # shellcheck disable=SC2310,SC2312 # shekel_pg_dump_schema_flags only printfs a fixed schema array (always succeeds); its status is intentionally not relied on, and the pipeline's real failure (pg_dump/gzip) is caught by the 'if !' guard
     if ! docker exec "${DB_CONTAINER}" pg_dump \
         -U "${PGUSER}" \
         -d "${PGDATABASE}" \
@@ -132,7 +135,7 @@ create_backup() {
         --no-owner \
         --no-privileges \
         $(shekel_pg_dump_schema_flags) \
-        | gzip > "${tmp_path}"; then
+        | gzip >"${tmp_path}"; then
         log "ERROR" "pg_dump pipeline failed; partial file removed by trap"
         exit 1
     fi
@@ -275,6 +278,7 @@ main() {
     # Copy to NAS (non-fatal on failure).
     local nas_status=0
     if [[ "${skip_nas}" == false ]]; then
+        # shellcheck disable=SC2310 # copy_to_nas is a boolean predicate (explicit 'return 1' on every failure path per OPS/SH-03); NAS failure is intentionally non-fatal, captured here as nas_status=1 and surfaced as a WARNING
         copy_to_nas || nas_status=1
     else
         log "INFO" "NAS copy skipped (--no-nas)"

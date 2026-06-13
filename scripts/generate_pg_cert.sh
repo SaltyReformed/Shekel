@@ -82,6 +82,7 @@ log() {
     # Structured log output: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
     local level="$1"
     shift
+    # shellcheck disable=SC2312  # date with a fixed format string is a trivially-succeeding command whose output is used only for the log timestamp display, never fed into a control or financial path.
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
 }
 
@@ -186,7 +187,7 @@ parse_args() {
                 FORCE="true"
                 shift
                 ;;
-            --help|-h)
+            --help | -h)
                 usage
                 exit 0
                 ;;
@@ -214,6 +215,7 @@ check_prerequisites() {
     # outright rather than emit a confusing chown EPERM later.
     # The script's only side effects before this point are
     # in-memory parsing; aborting here is safe.
+    # shellcheck disable=SC2312  # id -u is a trivially-succeeding command; if it ever returned empty the [ -ne 0 ] test errors and aborts under set -e (the safe direction), never silently proceeding as non-root.
     if [ "$(id -u)" -ne 0 ]; then
         log "ERROR" "must be run as root (or via sudo) so the generated key can be chowned to uid ${POSTGRES_UID}"
         log "ERROR" "Re-run with: sudo $(basename "$0") $*"
@@ -319,7 +321,9 @@ generate_cert_and_key() {
     chown "${POSTGRES_UID}:${POSTGRES_GID}" "${key_path}"
 
     log "INFO" "Generated:"
+    # shellcheck disable=SC2312  # stat reports the mode/owner of files just created and chmod'd above (set -e aborts on any prior failure); the output is display-only confirmation for the operator.
     log "INFO" "  ${cert_path} ($(stat -c '%a' "${cert_path}") $(stat -c '%U:%G' "${cert_path}"))"
+    # shellcheck disable=SC2312  # stat reports the mode/owner of the key just created, chmod'd, and chowned above (set -e aborts on any prior failure); the output is display-only confirmation for the operator.
     log "INFO" "  ${key_path} ($(stat -c '%a' "${key_path}") $(stat -c '%U:%G' "${key_path}"))"
 }
 

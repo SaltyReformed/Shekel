@@ -90,6 +90,7 @@ log() {
     # Structured log output: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
     local level="$1"
     shift
+    # shellcheck disable=SC2312 # date with a fixed format string always succeeds; this is log-line formatting, not a checked command.
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
 }
 
@@ -190,6 +191,7 @@ pull_latest() {
         exit 1
     fi
 
+    # shellcheck disable=SC2312 # HEAD is resolvable after the preceding ff-only pull succeeded; the short hash is used only for the display log line.
     log "INFO" "Code updated to $(git rev-parse --short HEAD)"
 }
 
@@ -319,12 +321,16 @@ sign_image() {
     # Audit finding F-155 / Commit C-36.
     log "INFO" "Signing image with Cosign..."
 
+    # shellcheck disable=SC2310 # cosign_available is a boolean predicate (wraps command -v); its 0/1 is exactly what this if tests, no internal command needs to abort the script.
     if ! cosign_available; then
+        # shellcheck disable=SC2310 # handle_cosign_skip's return is the policy decision (1 only when COSIGN_REQUIRED); the || exit 1 fully routes that status, nothing is swallowed.
         handle_cosign_skip "cosign not installed (sign step)" || exit 1
         return 0
     fi
 
+    # shellcheck disable=SC2310 # cosign_signing_key_present is a boolean predicate ([ -f ]/[ -r ] tests); its 0/1 is exactly what this if tests.
     if ! cosign_signing_key_present; then
+        # shellcheck disable=SC2310 # handle_cosign_skip's return is the policy decision (1 only when COSIGN_REQUIRED); the || exit 1 fully routes that status.
         handle_cosign_skip \
             "cosign keypair missing at COSIGN_PRIVATE_KEY=${COSIGN_PRIVATE_KEY} or COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}" \
             || exit 1
@@ -335,7 +341,7 @@ sign_image() {
     digest=$(cosign_resolve_digest)
     if [ -z "$digest" ]; then
         log "ERROR" "Could not resolve digest for ${IMAGE_REF}; cannot sign."
-        log "ERROR" "Verify ``docker images ${IMAGE_REF}`` lists the image."
+        log "ERROR" "Verify 'docker images ${IMAGE_REF}' lists the image."
         exit 1
     fi
 
@@ -345,8 +351,8 @@ sign_image() {
     # before invoking deploy.sh; the script never prompts because
     # the deploy is intended to run unattended once initiated.
     if ! COSIGN_PASSWORD="${COSIGN_PASSWORD:-}" cosign sign --yes \
-            --key "${COSIGN_PRIVATE_KEY}" \
-            "${IMAGE_REF}@${digest}"; then
+        --key "${COSIGN_PRIVATE_KEY}" \
+        "${IMAGE_REF}@${digest}"; then
         log "ERROR" "cosign sign failed for ${IMAGE_REF}@${digest}."
         log "ERROR" "Check COSIGN_PASSWORD env var (required for"
         log "ERROR" "encrypted private keys) and the key permissions."
@@ -365,12 +371,16 @@ verify_image_signature() {
     # before the container swap.  Audit finding F-155 / Commit C-36.
     log "INFO" "Verifying image signature with Cosign..."
 
+    # shellcheck disable=SC2310 # cosign_available is a boolean predicate (wraps command -v); its 0/1 is exactly what this if tests, no internal command needs to abort the script.
     if ! cosign_available; then
+        # shellcheck disable=SC2310 # handle_cosign_skip's return is the policy decision (1 only when COSIGN_REQUIRED); the || exit 1 fully routes that status, nothing is swallowed.
         handle_cosign_skip "cosign not installed (verify step)" || exit 1
         return 0
     fi
 
+    # shellcheck disable=SC2310 # cosign_verifier_key_present is a boolean predicate ([ -f ]/[ -r ] tests); its 0/1 is exactly what this if tests.
     if ! cosign_verifier_key_present; then
+        # shellcheck disable=SC2310 # handle_cosign_skip's return is the policy decision (1 only when COSIGN_REQUIRED); the || exit 1 fully routes that status.
         handle_cosign_skip \
             "cosign verifier key missing at COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}" \
             || exit 1
@@ -385,7 +395,7 @@ verify_image_signature() {
     fi
 
     if ! cosign verify --key "${COSIGN_PUBLIC_KEY}" \
-            "${IMAGE_REF}@${digest}" >/dev/null 2>&1; then
+        "${IMAGE_REF}@${digest}" >/dev/null 2>&1; then
         log "ERROR" "cosign verify FAILED for ${IMAGE_REF}@${digest}."
         log "ERROR" "The locally-built image is unsigned or its signature"
         log "ERROR" "does not match COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY}."
@@ -490,6 +500,7 @@ rollback() {
 
     # Verify the rollback succeeded.
     log "INFO" "Verifying rollback health..."
+    # shellcheck disable=SC2310 # wait_for_health is a poll-with-timeout predicate returning 0 healthy / 1 timed-out; this if branches on that status and the timeout case is the handled (else) path.
     if wait_for_health; then
         log "WARNING" "Rollback successful. Previous version is running."
         log "WARNING" "Investigate the failed deployment before retrying."
@@ -601,6 +612,7 @@ main() {
     restart_app
 
     # Step 9: Health check.
+    # shellcheck disable=SC2310 # wait_for_health is a poll-with-timeout predicate returning 0 healthy / 1 timed-out; this if branches on that status and the failure case triggers rollback in the else path.
     if wait_for_health; then
         log "INFO" "=== Deployment Successful ==="
         log "INFO" "Application is healthy at ${HEALTH_URL}"

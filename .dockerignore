@@ -162,6 +162,8 @@ amortization-fix.patch
 # scripts/vendor_google_fonts.py Vendoring step that runs at build
 #                 time on the host; fonts already shipped in
 #                 app/static/vendor/.
+# scripts/check_template_syntax.py CI/dev Jinja parse linter; never
+#                 invoked inside the container.
 # scripts/backup.sh, restore.sh, verify_backup.sh,
 # scripts/backup_retention.sh, deploy.sh, retire_stale_containers.sh
 #                 Host-side ops scripts that talk to ``docker`` from
@@ -176,6 +178,7 @@ amortization-fix.patch
 scripts/audit/
 scripts/hooks/
 scripts/vendor_google_fonts.py
+scripts/check_template_syntax.py
 scripts/backup.sh
 scripts/backup_retention.sh
 scripts/restore.sh

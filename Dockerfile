@@ -66,9 +66,20 @@ ENV PATH="/opt/venv/bin:$PATH"
 # with a CVE-fixed pip independent of the base image's pip.
 RUN pip install --no-cache-dir --upgrade 'pip>=26.0,<27'
 
+# Explicit builder working directory so the requirements COPY and the
+# pip install below do not depend on the base image's default working
+# directory (also clears hadolint DL3045).
+WORKDIR /build
+
 COPY requirements.txt .
+# Install the pinned production dependencies.  gunicorn is pinned HERE
+# rather than in requirements.txt (that file's header keeps it out of
+# the local dev venv) so the WSGI server cannot float to a new major on
+# an image rebuild unreviewed -- matching the ==-pin on every other
+# dependency and the digest-pinned base image.  Bump this in lockstep
+# with a tested gunicorn upgrade.
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir gunicorn
+    && pip install --no-cache-dir 'gunicorn==26.0.0'
 
 # -- Stage 2: Runtime -------------------------------------------------
 FROM python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd
@@ -96,9 +107,11 @@ WORKDIR /home/shekel/app
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy application code and entrypoint.
+# Copy application code.  entrypoint.sh ships in the build context (see
+# .dockerignore -- it is a must-ship file), so this single COPY already
+# places it at /home/shekel/app/entrypoint.sh with shekel ownership; no
+# separate COPY for it is needed.
 COPY --chown=shekel:shekel . .
-COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 
 # Ensure the static-files mount point exists.  /var/www/static is a
 # shared volume Nginx reads from.  Logs go to stdout (captured by
@@ -115,7 +128,7 @@ COPY --chown=shekel:shekel entrypoint.sh /home/shekel/app/entrypoint.sh
 # the unprivileged shekel user without an in-line chown step.  See
 # audit finding F-022 and remediation Commit C-34.
 RUN mkdir -p /var/www/static /home/shekel/app/state \
-    && chown -R shekel:shekel /home/shekel/app /var/www/static
+    && chown shekel:shekel /home/shekel/app/state /var/www/static
 
 USER shekel
 EXPOSE 8000

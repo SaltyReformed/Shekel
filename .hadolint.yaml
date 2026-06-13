@@ -1,0 +1,23 @@
+# hadolint configuration for the Shekel Dockerfile
+# (polyglot-cleanup Phase 5, docs/audits/polyglot-cleanup/tooling.md).
+#
+# DL3008 (pin versions in apt-get install) is IGNORED with rationale: it
+# conflicts with the Dockerfile's deliberate apt-upgrade-currency pattern
+# -- the base image is digest-pinned for reproducibility AND both stages
+# run `apt-get upgrade` so a CVE landing in Debian's repos between digest
+# refreshes is picked up on the next build. Pinning individual apt
+# package versions would defeat that currency mechanism.
+#
+# The other two audit-class findings are FIXED in the Dockerfile, not
+# ignored: DL3013 (unpinned pip) by `gunicorn==26.0.0` (CI/DF-01), and
+# DL3045 (COPY to a relative path with no WORKDIR) by `WORKDIR /build`
+# in the builder stage (CI/DF-04).
+ignored:
+  - DL3008
+  # DL3059 (multiple consecutive RUN instructions) -- the builder stage
+  # keeps `pip upgrade`, `venv create`, and the in-venv `pip upgrade` as
+  # separate, individually-commented steps (each documents its CVE/pip
+  # rationale). Builder-stage layers are discarded (only the venv is
+  # copied to the runtime stage), so consolidating saves nothing in the
+  # final image while reducing clarity. Info-level; ignored with reason.
+  - DL3059

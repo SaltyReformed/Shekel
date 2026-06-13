@@ -25,6 +25,10 @@ esac
     echo "requirements-dev.txt). Confirm this package (or version bump) was discussed"
     echo "before proceeding."
     echo ""
+    # hook_repo_root is local-assign + printf of a param expansion, so it
+    # effectively always succeeds; the captured root only feeds a read-only
+    # `git diff` whose output is informational before the unconditional exit 2.
+    # shellcheck disable=SC2312
     git -C "$(hook_repo_root)" diff -- "$FILE" 2>/dev/null
 } >&2
 exit 2

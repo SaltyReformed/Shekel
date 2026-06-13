@@ -83,3 +83,76 @@ repos:
         files: ^tools/pylint/.*\.py$
         pass_filenames: false
         args: [tools/pylint/tests, -c, /dev/null, -q]
+
+      # ── Polyglot-cleanup Phase 5 floors ─────────────────────────────
+      # Non-Python linters adopted in docs/audits/polyglot-cleanup. Each
+      # tool's config lives in its own file (.shellcheckrc, biome.jsonc,
+      # .yamllint, .djlintrc, .gitleaks.toml, _typos.toml, .hadolint.yaml).
+      # All run language:system, so they use the host binaries (shellcheck,
+      # shfmt, biome, actionlint, typos, gitleaks, hadolint) and the venv
+      # pip tools (yamllint, zizmor, djlint). These mirror the ci.yml
+      # polyglot-lint job; CI remains the enforced gate.
+      - id: shellcheck
+        name: shellcheck (shell; masked-errexit groups via .shellcheckrc)
+        entry: shellcheck
+        language: system
+        types: [shell]
+      - id: shfmt
+        name: shfmt (shell format check)
+        entry: shfmt -d -i 4 -ci -bn
+        language: system
+        types: [shell]
+      - id: yamllint
+        name: yamllint
+        entry: yamllint
+        language: system
+        types: [yaml]
+      - id: actionlint
+        name: actionlint (GitHub workflows)
+        entry: actionlint
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        pass_filenames: false
+      - id: zizmor
+        name: zizmor (workflow security)
+        entry: zizmor --offline .github/workflows/
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        pass_filenames: false
+      - id: biome
+        name: biome lint (JS + CSS)
+        entry: biome lint app/static/js app/static/css
+        language: system
+        files: ^app/static/(js|css)/.*\.(js|css)$
+        pass_filenames: false
+      - id: hadolint
+        name: hadolint (Dockerfile)
+        # hadolint is AUR-only (no pip/pacman package), so skip with a loud
+        # notice if the host binary is absent rather than blocking every
+        # local commit. The ci.yml polyglot-lint job installs a pinned
+        # hadolint and hard-enforces it -- CI is the authoritative gate for
+        # this surface (install locally with: yay -S hadolint-bin).
+        entry: bash -c 'if command -v hadolint >/dev/null 2>&1; then hadolint "$@"; else echo "hadolint not installed (yay -S hadolint-bin) -- skipped locally; CI enforces."; fi' --
+        language: system
+        files: ^Dockerfile$
+      - id: gitleaks
+        name: gitleaks (committed-secret scan)
+        entry: gitleaks dir . --no-banner --redact
+        language: system
+        pass_filenames: false
+      - id: typos
+        name: typos (content spell check)
+        entry: typos
+        language: system
+        pass_filenames: false
+      - id: djlint
+        name: djlint (Jinja templates, lint-only)
+        entry: djlint --lint
+        language: system
+        files: ^app/templates/.*\.html$
+      - id: jinja-syntax
+        name: jinja2 template parse check
+        entry: python scripts/check_template_syntax.py
+        language: system
+        files: ^app/templates/.*\.html$
+        pass_filenames: false

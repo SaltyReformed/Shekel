@@ -36,7 +36,7 @@
       h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
     }
     var num = parseInt(h, 16);
-    if (!isFinite(num)) return "rgba(0,0,0," + alpha + ")";
+    if (!Number.isFinite(num)) return "rgba(0,0,0," + alpha + ")";
     var r = (num >> 16) & 255;
     var g = (num >> 8) & 255;
     var b = num & 255;
@@ -155,7 +155,7 @@
    */
   function clampPct(raw) {
     var pct = parseFloat(raw);
-    if (!isFinite(pct)) return null;
+    if (!Number.isFinite(pct)) return null;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     return pct;
@@ -173,11 +173,11 @@
     var streets = scope.querySelectorAll("[data-street-days]");
     for (var s = 0; s < streets.length; s++) {
       var days = parseFloat(streets[s].getAttribute("data-street-days"));
-      if (!isFinite(days) || days <= 0) continue;
+      if (!Number.isFinite(days) || days <= 0) continue;
       var nodes = streets[s].querySelectorAll("[data-day]");
       for (var i = 0; i < nodes.length; i++) {
         var day = parseFloat(nodes[i].getAttribute("data-day"));
-        if (!isFinite(day)) continue;
+        if (!Number.isFinite(day)) continue;
         var pct = (day / days) * 100;
         if (pct < 0) pct = 0;
         if (pct > 100) pct = 100;

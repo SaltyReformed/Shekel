@@ -579,7 +579,7 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.defaultPrevented
         && e.target.matches && e.target.matches('.txn-open[data-txn-id]')) {
         e.preventDefault();
-        openFullEdit(parseInt(e.target.dataset.txnId), e.target);
+        openFullEdit(parseInt(e.target.dataset.txnId, 10), e.target);
         return;
     }
 
@@ -593,7 +593,7 @@ document.addEventListener('keydown', function(e) {
             // Transfer expand button takes priority when present.
             const xferBtn = quickForm.querySelector('.xfer-expand-btn');
             if (xferBtn) {
-                openTransferFullEdit(parseInt(xferBtn.dataset.xferId), quickInput);
+                openTransferFullEdit(parseInt(xferBtn.dataset.xferId, 10), quickInput);
                 return;
             }
 
@@ -601,14 +601,14 @@ document.addEventListener('keydown', function(e) {
             const expandBtn = quickForm.querySelector('.txn-expand-btn');
             if (quickForm.dataset.mode === 'create') {
                 openFullCreate(
-                    parseInt(expandBtn.dataset.categoryId),
-                    parseInt(expandBtn.dataset.periodId),
-                    parseInt(expandBtn.dataset.transactionTypeId),
-                    parseInt(expandBtn.dataset.accountId),
+                    parseInt(expandBtn.dataset.categoryId, 10),
+                    parseInt(expandBtn.dataset.periodId, 10),
+                    parseInt(expandBtn.dataset.transactionTypeId, 10),
+                    parseInt(expandBtn.dataset.accountId, 10),
                     quickInput
                 );
             } else {
-                openFullEdit(parseInt(expandBtn.dataset.txnId), quickInput);
+                openFullEdit(parseInt(expandBtn.dataset.txnId, 10), quickInput);
             }
             return;
         }
@@ -641,21 +641,21 @@ document.addEventListener('click', function(e) {
     // mark-paid and the card open cannot collide.
     var openTarget = e.target.closest('.txn-open[data-txn-id]');
     if (openTarget) {
-        openFullEdit(parseInt(openTarget.dataset.txnId), openTarget);
+        openFullEdit(parseInt(openTarget.dataset.txnId, 10), openTarget);
         return;
     }
 
     // Open full edit popover (expand button in quick-edit mode)
     var editBtn = e.target.closest('.txn-expand-btn[data-txn-id]');
     if (editBtn) {
-        openFullEdit(parseInt(editBtn.dataset.txnId), editBtn);
+        openFullEdit(parseInt(editBtn.dataset.txnId, 10), editBtn);
         return;
     }
 
     // Open full edit popover for transfers (expand button in transfer quick-edit)
     var xferEditBtn = e.target.closest('.xfer-expand-btn[data-xfer-id]');
     if (xferEditBtn) {
-        openTransferFullEdit(parseInt(xferEditBtn.dataset.xferId), xferEditBtn);
+        openTransferFullEdit(parseInt(xferEditBtn.dataset.xferId, 10), xferEditBtn);
         return;
     }
 
@@ -663,10 +663,10 @@ document.addEventListener('click', function(e) {
     var createBtn = e.target.closest('.txn-expand-btn[data-category-id]');
     if (createBtn) {
         openFullCreate(
-            parseInt(createBtn.dataset.categoryId),
-            parseInt(createBtn.dataset.periodId),
-            parseInt(createBtn.dataset.transactionTypeId),
-            parseInt(createBtn.dataset.accountId),
+            parseInt(createBtn.dataset.categoryId, 10),
+            parseInt(createBtn.dataset.periodId, 10),
+            parseInt(createBtn.dataset.transactionTypeId, 10),
+            parseInt(createBtn.dataset.accountId, 10),
             createBtn
         );
         return;

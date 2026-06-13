@@ -300,12 +300,15 @@ class TestComposeAppStateVolume:
             "volume mount will be root-owned and entrypoint.sh's "
             "sentinel touch will fail"
         )
-        # The chown line is shared with /var/www/static; we assert
-        # that ``chown -R shekel:shekel /home/shekel/app`` covers the
-        # state dir (the recursive chown reaches it via /home/shekel/app).
-        assert "chown -R shekel:shekel /home/shekel/app" in text, (
-            "Dockerfile no longer chowns /home/shekel/app recursively; "
-            "the state subdirectory will be root-owned and unwritable"
+        # The state dir is chowned to shekel directly (one line, shared
+        # with /var/www/static). Polyglot CI/DF-03 narrowed the prior
+        # ``chown -R shekel:shekel /home/shekel/app`` -- which reached the
+        # state dir by recursing the whole app tree -- to chown only the
+        # two dirs that need it; state still ends up shekel-owned.
+        assert "chown shekel:shekel /home/shekel/app/state" in text, (
+            "Dockerfile no longer chowns /home/shekel/app/state to shekel; "
+            "the state subdirectory will be root-owned and entrypoint.sh's "
+            "sentinel touch will fail under set -e"
         )
 
 

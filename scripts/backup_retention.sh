@@ -107,7 +107,7 @@ extract_date_from_filename() {
 is_sunday_backup() {
     # Check if the backup date (YYYYMMDD) falls on a Sunday.
     # GNU date: %u returns 1=Monday .. 7=Sunday.
-    local date_str="$1"  # YYYYMMDD
+    local date_str="$1" # YYYYMMDD
     local formatted="${date_str:0:4}-${date_str:4:2}-${date_str:6:2}"
     local dow
     dow=$(date -d "${formatted}" +%u 2>/dev/null) || return 1
@@ -116,18 +116,18 @@ is_sunday_backup() {
 
 is_first_of_month_backup() {
     # Check if the backup date (YYYYMMDD) is the 1st of the month.
-    local date_str="$1"  # YYYYMMDD
+    local date_str="$1" # YYYYMMDD
     [[ "${date_str:6:2}" == "01" ]]
 }
 
 days_old() {
     # Calculate how many days old a backup is based on the date in its filename.
-    local date_str="$1"  # YYYYMMDD
+    local date_str="$1" # YYYYMMDD
     local formatted="${date_str:0:4}-${date_str:4:2}-${date_str:6:2}"
     local backup_epoch today_epoch
     backup_epoch=$(date -d "${formatted}" +%s 2>/dev/null) || return 1
     today_epoch=$(date +%s)
-    echo $(( (today_epoch - backup_epoch) / 86400 ))
+    echo $(((today_epoch - backup_epoch) / 86400))
 }
 
 prune_directory() {
@@ -146,8 +146,8 @@ prune_directory() {
     log "INFO" "Processing directory: ${dir}"
 
     # Calculate cutoff thresholds in days.
-    local weekly_cutoff_days=$(( RETENTION_WEEKLY_WEEKS * 7 ))
-    local monthly_cutoff_days=$(( RETENTION_MONTHLY_MONTHS * 30 ))
+    local weekly_cutoff_days=$((RETENTION_WEEKLY_WEEKS * 7))
+    local monthly_cutoff_days=$((RETENTION_MONTHLY_MONTHS * 30))
 
     # Pass 1: classify. Files iterate in glob (lexicographic = chronological,
     # the timestamp is in the name) order, so delete_candidates is oldest-first
@@ -164,8 +164,10 @@ prune_directory() {
         local filename
         filename=$(basename "${filepath}")
         local date_str
+        # shellcheck disable=SC2310 # extract_date_from_filename is a value-or-fail probe; a name with no embedded date makes its grep return non-zero, which the trailing continue handles by skipping the file rather than aborting.
         date_str=$(extract_date_from_filename "${filename}") || continue
         local age
+        # shellcheck disable=SC2310 # days_old is a value-or-fail probe; an unparseable date makes date -d fail and the function return 1, which the trailing continue handles by skipping the file rather than aborting.
         age=$(days_old "${date_str}") || continue
 
         # Track the newest file's age for the staleness alarm.
@@ -179,11 +181,13 @@ prune_directory() {
         # A file that qualifies for a higher tier is always kept.
 
         # Monthly tier: 1st of month, kept for RETENTION_MONTHLY_MONTHS months.
+        # shellcheck disable=SC2310 # is_first_of_month_backup is a boolean predicate (string compare of the day field); its 0/1 result drives the tier decision and is never relied on to abort the script.
         if is_first_of_month_backup "${date_str}" && [[ ${age} -le ${monthly_cutoff_days} ]]; then
             keep=true
         fi
 
         # Weekly tier: Sunday backups, kept for RETENTION_WEEKLY_WEEKS weeks.
+        # shellcheck disable=SC2310 # is_sunday_backup is a boolean predicate (true=Sunday); its 0/1 result drives the tier decision and is never relied on to abort the script.
         if [[ "${keep}" == false ]] && is_sunday_backup "${date_str}" && [[ ${age} -le ${weekly_cutoff_days} ]]; then
             keep=true
         fi
@@ -202,14 +206,14 @@ prune_directory() {
     # Keep-floor (OPS/SH-05): never let pruning reduce the directory below
     # the RETENTION_MIN_KEEP newest backups. Rescue candidates newest-first
     # (from the end of the oldest-first candidate list).
-    local would_remain=$(( total - ${#delete_candidates[@]} ))
+    local would_remain=$((total - ${#delete_candidates[@]}))
     while [[ ${#delete_candidates[@]} -gt 0 && ${would_remain} -lt ${RETENTION_MIN_KEEP} ]]; do
-        local rescued_idx=$(( ${#delete_candidates[@]} - 1 ))
+        local rescued_idx=$((${#delete_candidates[@]} - 1))
         log "WARNING" "Keep-floor: retaining $(basename "${delete_candidates[${rescued_idx}]}") despite policy (directory would drop below ${RETENTION_MIN_KEEP} backups -- is the backup producer still running?)"
         unset 'delete_candidates[rescued_idx]' 'delete_ages[rescued_idx]'
         delete_candidates=("${delete_candidates[@]}")
         delete_ages=("${delete_ages[@]}")
-        would_remain=$(( total - ${#delete_candidates[@]} ))
+        would_remain=$((total - ${#delete_candidates[@]}))
     done
 
     # Pass 2: delete (or report).

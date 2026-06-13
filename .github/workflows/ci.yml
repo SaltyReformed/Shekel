@@ -24,6 +24,15 @@ on:
     branches: [main]
   pull_request:
 
+# ── Token permissions ─────────────────────────────────────────────
+# Least privilege: this job only checks out code, installs deps, and
+# runs pylint/pytest -- it needs no write scope.  Dropping GITHUB_TOKEN
+# to read-only bounds the blast radius of a compromised dev dependency
+# running in the install/test steps.  docker-publish.yml scopes its own
+# (broader) token separately.
+permissions:
+  contents: read
+
 # ── Jobs ──────────────────────────────────────────────────────────
 jobs:
   lint-and-test:
@@ -36,7 +45,11 @@ jobs:
     # clones per pytest session.
     services:
       postgres:
-        image: postgres:18
+        # Digest-pinned to match the dev/prod compose files (prod
+        # parity: CI validates against the SAME PostgreSQL build that
+        # runs in production, not a floating Debian tag).  Keep this
+        # digest in lockstep with docker-compose.yml / docker-compose.dev.yml.
+        image: postgres:18-alpine@sha256:96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88
         env:
           POSTGRES_USER: shekel_test
           POSTGRES_PASSWORD: shekel_test
@@ -58,8 +71,12 @@ jobs:
       # session by cloning ``shekel_test_template`` into a uniquely
       # named DB and rewriting the env var before the first ``import
       # app``.  The value below is the legacy fallback used only if
-      # the bootstrap is skipped (it points at the original shared
-      # database, which is no longer created in CI).
+      # the bootstrap is skipped: it points at the empty ``shekel_test``
+      # database the service container auto-creates from POSTGRES_DB.
+      # That database has no schemas or tables (build_test_template.py
+      # populates ``shekel_test_template``, not this one), so a skipped
+      # bootstrap fails loudly at first DB access rather than silently
+      # running against stale data.
       TEST_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/shekel_test
       # Admin DSN consumed by both ``scripts/build_test_template.py``
       # (drops and creates ``shekel_test_template``) and by
@@ -77,19 +94,24 @@ jobs:
     steps:
       # ── 1. Check out the repository ──────────────────────────────
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # No git operations run after checkout (only pylint + pytest),
+          # so the GITHUB_TOKEN need not persist in .git/config.  Avoids
+          # the credential-persistence vector (zizmor artipacked).
+          persist-credentials: false
 
       # ── 2. Set up Python ─────────────────────────────────────────
       # Use the same Python version as the production Dockerfile.
       - name: Set up Python 3.14
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.14"
 
       # ── 3. Cache pip dependencies ────────────────────────────────
       # Speeds up subsequent runs by caching downloaded packages.
       - name: Cache pip packages
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
@@ -183,3 +205,109 @@ jobs:
       # no manual database setup is needed.
       - name: Run tests
         run: pytest --tb=short -q
+
+  # ── Polyglot linters ──────────────────────────────────────────────
+  # Non-Python lint floors adopted in docs/audits/polyglot-cleanup
+  # (shell, JS/CSS, Jinja templates, workflows, Dockerfile, YAML,
+  # secrets, spelling). Mirrors the local .pre-commit-config.yaml hooks.
+  # Binary tools are pinned by version and downloaded (no extra
+  # third-party actions to SHA-pin); the pip tools (yamllint, zizmor,
+  # djlint) come from requirements-dev.txt. Each tool reads its own
+  # in-repo config file. NOTE: add this job to the branch-protection
+  # required checks to make the floor block merges (it runs on every PR
+  # regardless).
+  polyglot-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Cache pip packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # pip-installable linters (yamllint, zizmor, djlint) + jinja2 for the
+      # template parse check, all pinned in requirements-dev.txt.
+      - name: Install pip linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # Version-pinned standalone binaries, extracted to ~/.local/bin via
+      # `find` so a change in an archive's internal layout cannot break the
+      # step. shellcheck is pinned to 0.11.0 specifically: the optional
+      # masked-errexit groups in .shellcheckrc need >= 0.10 and the runner's
+      # preinstalled build may lag.
+      - name: Install pinned binary linters
+        run: |
+          set -euo pipefail
+          bin="${HOME}/.local/bin"
+          mkdir -p "${bin}"
+          echo "${bin}" >> "${GITHUB_PATH}"
+          tmp="$(mktemp -d)"
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz | tar -xJf - -C "${tmp}"
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz | tar -xzf - -C "${tmp}"
+          curl -fsSL https://github.com/crate-ci/typos/releases/download/v1.47.2/typos-v1.47.2-x86_64-unknown-linux-musl.tar.gz | tar -xzf - -C "${tmp}"
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xzf - -C "${tmp}"
+          curl -fsSL -o "${tmp}/shfmt" https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64
+          curl -fsSL -o "${tmp}/biome" "https://github.com/biomejs/biome/releases/download/@biomejs/biome@2.4.16/biome-linux-x64"
+          curl -fsSL -o "${tmp}/hadolint" https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          for t in shellcheck actionlint typos gitleaks; do
+              install -m 0755 "$(find "${tmp}" -type f -name "${t}" | head -1)" "${bin}/${t}"
+          done
+          install -m 0755 "${tmp}/shfmt" "${bin}/shfmt"
+          install -m 0755 "${tmp}/biome" "${bin}/biome"
+          install -m 0755 "${tmp}/hadolint" "${bin}/hadolint"
+
+      - name: shellcheck (shell)
+        run: git ls-files -z '*.sh' 'entrypoint.sh' | xargs -0 -r shellcheck
+
+      - name: shfmt (shell format check)
+        run: git ls-files -z '*.sh' 'entrypoint.sh' | xargs -0 -r shfmt -d -i 4 -ci -bn
+
+      - name: yamllint
+        run: git ls-files -z '*.yml' '*.yaml' | xargs -0 -r yamllint
+
+      - name: actionlint (GitHub workflows)
+        run: actionlint
+
+      - name: zizmor (workflow security)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor .github/workflows/
+
+      - name: biome (JS + CSS)
+        run: biome lint app/static/js app/static/css
+
+      - name: hadolint (Dockerfile)
+        run: hadolint Dockerfile
+
+      - name: gitleaks (committed-secret scan)
+        run: gitleaks dir . --no-banner --redact
+
+      - name: typos (content spell check)
+        run: typos
+
+      - name: djlint (Jinja templates, lint-only)
+        run: djlint app/templates/ --lint
+
+      - name: jinja2 template parse check
+        run: python scripts/check_template_syntax.py
+
+      - name: docker compose schema validation
+        run: |
+          for f in docker-compose.yml docker-compose.dev.yml docker-compose.build.yml; do
+              docker compose -f "${f}" config --no-interpolate -q
+          done
+          docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml config --no-interpolate -q

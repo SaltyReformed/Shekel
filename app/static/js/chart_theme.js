@@ -19,6 +19,7 @@
  *
  * @namespace ShekelChart
  */
+// biome-ignore lint/correctness/noUnusedVariables: ShekelChart is a window-global namespace consumed cross-file by chart_*.js; biome parses each file as a module and cannot see the cross-<script> usage.
 var ShekelChart = (function () {
 
   /**

@@ -38,7 +38,10 @@ SHARED_NGINX_CONF_D=/opt/docker/nginx/conf.d
 
 log() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 warn() { printf '\033[1;33mWARN: %s\033[0m\n' "$*" >&2; }
-die() { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 # Sanity: run from repo root.
 [[ -f "$REPO_ROOT/docker-compose.yml" ]] || die "must be invoked from the Shekel repo (cwd=$REPO_ROOT)"
@@ -82,8 +85,7 @@ for pair in \
     "SECRET_KEY:secret_key" \
     "POSTGRES_PASSWORD:postgres_password" \
     "APP_ROLE_PASSWORD:app_role_password" \
-    "TOTP_ENCRYPTION_KEY:totp_encryption_key"
-do
+    "TOTP_ENCRYPTION_KEY:totp_encryption_key"; do
     env_key=${pair%%:*}
     file_name=${pair##*:}
     target="$PROD_ROOT/secrets/$file_name"
@@ -100,9 +102,13 @@ do
     # for forgiveness, but printf-style is the documented form.
     # umask-first so the file is NEVER world-readable, even for the
     # instant before chmod (OPS/SH-22).
-    ( umask 077; printf '%s' "$value" > "$target" )
+    (
+        umask 077
+        printf '%s' "$value" >"$target"
+    )
     chmod 0600 "$target"
-    echo "wrote $target ($(wc -c < "$target") bytes)"
+    # shellcheck disable=SC2312 # wc -c is a display-only byte count for the wrote message; the file was just written (the preceding chmod would have aborted on a missing file)
+    echo "wrote $target ($(wc -c <"$target") bytes)"
 done
 
 # ── 4. Rewrite /opt/docker/shekel/.env ────────────────────────────
@@ -145,7 +151,8 @@ cp "$PROD_ROOT/.env" "$backup"
 chmod 0600 "$backup"
 echo "backed up to $backup"
 
-cat > "$PROD_ROOT/.env" <<ENVEOF
+# shellcheck disable=SC2312 # the only command-sub in this heredoc is the date -u call on the comment line, which always succeeds and only stamps a timestamp into a .env comment
+cat >"$PROD_ROOT/.env" <<ENVEOF
 # Shekel Budget App -- shared-mode production environment.
 # Rewritten by scripts/reconcile_prod_to_canonical.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ).
 # Real secret values for SECRET_KEY, POSTGRES_PASSWORD,
@@ -219,8 +226,8 @@ nginx_snap=/opt/docker/nginx/.reconcile-snapshot-$(date +%Y%m%d-%H%M%S)
 # it captured (parity audit 2026-06-12, finding M08 -- the 2026-05-14
 # run left a world-readable rendered config embedding a credential).
 install -d -m 0700 "$nginx_snap"
-cp "$SHARED_NGINX_CONF_D/shekel.conf"    "$nginx_snap/shekel.conf.pre-reconcile" 2>/dev/null || true
-cp /opt/docker/nginx/nginx.conf          "$nginx_snap/nginx.conf.pre-reconcile"
+cp "$SHARED_NGINX_CONF_D/shekel.conf" "$nginx_snap/shekel.conf.pre-reconcile" 2>/dev/null || true
+cp /opt/docker/nginx/nginx.conf "$nginx_snap/nginx.conf.pre-reconcile"
 echo "nginx snapshot saved to $nginx_snap/"
 
 if cmp -s "$REPO_ROOT/deploy/nginx-shared/conf.d/shekel.conf" "$SHARED_NGINX_CONF_D/shekel.conf"; then
@@ -241,10 +248,10 @@ if cmp -s "$REPO_ROOT/deploy/nginx-shared/nginx.conf" /opt/docker/nginx/nginx.co
 else
     drift_dir=$nginx_snap/divergence
     install -d -m 0700 "$drift_dir"
-    diff -u /opt/docker/nginx/nginx.conf "$REPO_ROOT/deploy/nginx-shared/nginx.conf" > "$drift_dir/nginx.conf.diff" || true
+    diff -u /opt/docker/nginx/nginx.conf "$REPO_ROOT/deploy/nginx-shared/nginx.conf" >"$drift_dir/nginx.conf.diff" || true
     echo "Drift between host and repo nginx.conf saved to $drift_dir/nginx.conf.diff"
     critical_re="limit_req_zone|limit_conn_zone|client_body_timeout|client_header_timeout|send_timeout|client_max_body_size|set_real_ip_from"
-    host_only_critical=$(grep -E "$critical_re" /opt/docker/nginx/nginx.conf | sort -u         | comm -23 - <(grep -E "$critical_re" "$REPO_ROOT/deploy/nginx-shared/nginx.conf" | sort -u) || true)
+    host_only_critical=$(grep -E "$critical_re" /opt/docker/nginx/nginx.conf | sort -u | comm -23 - <(grep -E "$critical_re" "$REPO_ROOT/deploy/nginx-shared/nginx.conf" | sort -u) || true)
     if [[ -n "$host_only_critical" ]]; then
         echo "HOST-ONLY critical directives that the sync would clobber:"
         printf '%s\n' "$host_only_critical"
@@ -273,7 +280,7 @@ cp -v "$REPO_ROOT/deploy/docker-compose.prod.yml" "$PROD_ROOT/docker-compose.ove
 # the file must be owner-only from the moment it exists (umask first,
 # then chmod is belt-and-braces; finding M08).
 log "Validation: docker compose config (merged)"
-(umask 077 && cd "$PROD_ROOT" && docker compose config > "$snap_dir/merged-config.yml")
+(umask 077 && cd "$PROD_ROOT" && docker compose config >"$snap_dir/merged-config.yml")
 chmod 0600 "$snap_dir/merged-config.yml"
 echo "merged config rendered to $snap_dir/merged-config.yml"
 

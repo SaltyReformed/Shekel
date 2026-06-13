@@ -1,0 +1,25 @@
+# shellcheck configuration for the Shekel shell surface
+# (polyglot-cleanup Phase 5, docs/audits/polyglot-cleanup/tooling.md).
+#
+# Resolve sourced libraries relative to the script being checked and
+# follow them, so `source ./_backup_lib.sh` etc. do not raise SC1091
+# "file not followed" noise.
+source-path=SCRIPTDIR
+external-sources=true
+
+# Enable the two OPTIONAL groups that catch the masked-errexit class
+# that bit this project (the Phase 2 backup-family bugs). The default
+# shellcheck profile catches NONE of these:
+#   check-set-e-suppressed     -> SC2310/SC2311: a function used in an
+#                                 if / && / || / ! condition runs with
+#                                 `set -e` disabled inside it.
+#   check-extra-masked-returns -> SC2312: a command substitution masks
+#                                 the inner command's non-zero return.
+# Where the pattern is deliberate (a boolean predicate helper, or a
+# value captured at assignment time), the call site carries an inline
+# `# shellcheck disable=SCxxxx # <reason>` directive. NOTE: shellcheck
+# 0.11.0 needs a SECOND `#` before the rationale text -- unlike the
+# pylint `-- <reason>` separator, the `-- ` form here raises SC1072/
+# SC1073 and would suppress nothing.
+enable=check-set-e-suppressed
+enable=check-extra-masked-returns

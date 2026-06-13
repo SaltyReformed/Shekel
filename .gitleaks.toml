@@ -1,0 +1,34 @@
+# gitleaks configuration for the Shekel repo (polyglot-cleanup Phase 5).
+#
+# Adopted as a committed-secret floor -- the one catastrophic class the
+# rest of the linter stack does not watch, with no human reviewer behind
+# the solo operator. The gate scans the working tree; the allowlist
+# below collapses the ~480 raw findings (all noise) to zero:
+#   * prior secret-scanner OUTPUT blobs committed as audit artifacts
+#     (detect-secrets baseline, container/db config dumps, gitleaks' own
+#     json/sarif) are wall-to-wall detected-string hashes, not live keys,
+#   * the remediation plan quotes a couple of detected example strings,
+#   * tests carry obvious dummy credentials by design,
+#   * the operator's local .env is gitignored (never committed); gitleaks
+#     `dir` mode reads gitignored files, so it is allowlisted to keep
+#     local pre-commit runs clean -- CI never sees it.
+#
+# Note: the gate scans the working tree (`gitleaks dir`), NOT history. A
+# secret that lived only in history (app/config.py, scrubbed from the
+# current tree months ago) is out of scope here; rewriting published
+# history is a separate, higher-risk operation.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Audit-artifact scanner output, test fixtures, local .env"
+paths = [
+  '''docs/audits/security-2026-04-15/scans/''',
+  '''docs/audits/security-2026-04-15/remediation-plan\.md''',
+  '''(^|/)\.env$''',
+  '''tests/conftest\.py$''',
+  '''tests/test_config\.py$''',
+  '''tests/test_models/test_account_anchor_invariant\.py$''',
+  '''tests/test_routes/test_errors\.py$''',
+]

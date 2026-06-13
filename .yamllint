@@ -1,0 +1,38 @@
+# yamllint configuration for the Shekel YAML surface -- compose files,
+# GitHub Actions workflows, the cloudflared config, and this repo's
+# pre-commit config.
+#
+# Adopted in Phase 5 of the polyglot-cleanup audit
+# (docs/audits/polyglot-cleanup/tooling.md) as the "thin layer" that
+# guards YAML STRUCTURE (syntax, indentation, key duplication, flow-map
+# spacing). Compose SCHEMA is validated separately by
+# `docker compose config -q` in pre-commit/CI -- something yamllint
+# cannot do. Several default rules are relaxed for this repo's
+# deliberate, heavily-commented compose style.
+extends: default
+
+rules:
+  # Compose / nginx / workflow files carry legitimately long atomic
+  # values (a 239-char line in the prod override, image digests, command
+  # strings) that wrapping would only obscure. yamllint is adopted here
+  # for structure, not column policing.
+  line-length: disable
+
+  # GitHub Actions workflows key on `on:`, which YAML 1.1 reads as the
+  # boolean `on`. Don't truthy-check keys; values are still checked.
+  truthy:
+    check-keys: false
+
+  # The deploy rules mandate the compact resource flow-map style
+  # `{ cpus: '2', memory: 1G, pids: 256 }` -- allow one space inside.
+  braces:
+    max-spaces-inside: 1
+
+  # Allow a single space before an inline comment: the `@<sha> # vN`
+  # action-pin convention reads better with one space than two.
+  comments:
+    min-spaces-from-content: 1
+
+  # No file in the repo opens with a `---` document-start marker; that
+  # is the established convention for this single-document file set.
+  document-start: disable

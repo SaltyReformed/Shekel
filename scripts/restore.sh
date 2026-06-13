@@ -117,6 +117,7 @@ recovery_guidance() {
 trap recovery_guidance ERR
 
 check_prerequisites() {
+    # shellcheck disable=SC2310 # require_db_container is a boolean predicate (explicit if-not/return 1, no internal set -e reliance); the trailing || exit 1 is the intended abort on failure
     require_db_container "${DB_CONTAINER}" || exit 1
 }
 
@@ -138,7 +139,7 @@ confirm_restore() {
     echo ""
     read -r -p "  Are you sure you want to continue? [y/N] " response
     case "${response}" in
-        [yY][eE][sS]|[yY])
+        [yY][eE][sS] | [yY])
             log "INFO" "Restore confirmed by user"
             ;;
         *)
@@ -159,11 +160,12 @@ take_safety_dump() {
     log "INFO" "Taking pre-restore safety dump: ${dump_path}"
     mkdir -p "${BACKUP_LOCAL_DIR}"
     # shellcheck disable=SC2046 # word splitting of the --schema flags is intended
+    # shellcheck disable=SC2310,SC2312 # shekel_pg_dump_schema_flags only printfs a static schema array, so it cannot meaningfully fail; its return value carries no error to mask in this if-condition
     if ! docker exec "${DB_CONTAINER}" pg_dump \
         -U "${PGUSER}" -d "${PGDATABASE}" \
         --clean --if-exists --no-owner --no-privileges \
         $(shekel_pg_dump_schema_flags) \
-        | gzip > "${tmp_path}"; then
+        | gzip >"${tmp_path}"; then
         rm -f "${tmp_path}"
         log "ERROR" "Pre-restore safety dump FAILED. If the current database is"
         log "ERROR" "already lost (the disaster-recovery case), re-run with"
@@ -182,6 +184,7 @@ take_safety_dump() {
 
 stop_app() {
     # Stop the app container if it exists and is running.
+    # shellcheck disable=SC2310 # app_container_exists is a boolean predicate (docker inspect &>/dev/null); the container-absent non-zero status IS its intended return, not an error to abort on
     if app_container_exists; then
         log "INFO" "Stopping application container: ${APP_CONTAINER}"
         docker stop "${APP_CONTAINER}" 2>/dev/null || true
@@ -209,6 +212,7 @@ drop_and_recreate_database() {
     # Recreate schemas (shared SHEKEL_APP_SCHEMAS list -- OPS/SH-06). The
     # pg_dump --clean output includes DROP/CREATE for tables within schemas,
     # but the schemas themselves must exist first for the restore to succeed.
+    # shellcheck disable=SC2312 # shekel_create_schema_sql only printfs static CREATE SCHEMA statements, so it cannot meaningfully fail; there is no inner return value worth surfacing here
     docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${PGDATABASE}" --quiet -c \
         "$(shekel_create_schema_sql)"
 
@@ -233,6 +237,7 @@ restore_backup() {
 start_app() {
     # Restart the app container. The entrypoint runs init_database.py which
     # detects the existing database and applies any pending Alembic migrations.
+    # shellcheck disable=SC2310 # app_container_exists is a boolean predicate (docker inspect &>/dev/null); the container-absent non-zero status IS its intended return, not an error to abort on
     if ! app_container_exists; then
         log "INFO" "Application container '${APP_CONTAINER}' not found (dev mode)"
         log "INFO" "Run 'flask db upgrade' manually to apply any pending migrations"
@@ -356,10 +361,12 @@ main() {
     BACKUP_FILE="${backup_file}"
 
     check_prerequisites
+    # shellcheck disable=SC2310 # require_passphrase_for is a boolean predicate (explicit return 1, no internal set -e reliance); the trailing || exit 1 is the intended abort on failure
     require_passphrase_for "${backup_file}" "${BACKUP_ENCRYPTION_PASSPHRASE}" || exit 1
 
     # The OPS/SH-01 gate: prove the artifact decrypts and decompresses
     # end-to-end BEFORE anything destructive runs.
+    # shellcheck disable=SC2310 # validate_backup_artifact returns explicit codes (subshell-local set -o pipefail so pipe failures reach the caller without errexit); the trailing || exit 1 IS the OPS/SH-01 abort-before-destructive gate
     validate_backup_artifact "${backup_file}" || exit 1
 
     # Confirmation prompt (default: No).
@@ -384,6 +391,7 @@ main() {
         log "INFO" "Pre-restore safety dump retained at: ${SAFETY_DUMP_PATH}"
         log "INFO" "(delete it once the restored state is confirmed good)"
     fi
+    # shellcheck disable=SC2310 # app_container_exists is a boolean predicate (docker inspect &>/dev/null); the container-absent non-zero status IS its intended return, not an error to abort on
     if app_container_exists; then
         log "INFO" "Review the application at http://localhost:5000 to verify."
     else

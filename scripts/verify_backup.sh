@@ -71,6 +71,7 @@ Environment Variables:
 EOF
 }
 
+# shellcheck disable=SC2329 # invoked indirectly as the EXIT trap handler registered by 'trap cleanup EXIT' in main, never called by name
 cleanup() {
     # Trap handler: always drop the temporary database on exit.
     log "INFO" "Cleaning up: dropping temporary database ${VERIFY_DB}"
@@ -112,6 +113,7 @@ get_db_password() {
 }
 
 check_prerequisites() {
+    # shellcheck disable=SC2310 # require_db_container is a boolean predicate; the trailing '|| exit 1' propagates its failure explicitly, so masked errexit inside it is irrelevant
     require_db_container "${DB_CONTAINER}" || exit 1
 }
 
@@ -126,6 +128,7 @@ create_temp_database() {
         "CREATE DATABASE ${VERIFY_DB} OWNER ${PGUSER};"
 
     # Create schemas (shared SHEKEL_APP_SCHEMAS list -- OPS/SH-06).
+    # shellcheck disable=SC2312 # shekel_create_schema_sql only printf's over a static array and cannot fail; its return value carries no signal worth propagating
     docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${VERIFY_DB}" --quiet -c \
         "$(shekel_create_schema_sql)"
 
@@ -136,6 +139,7 @@ restore_to_temp() {
     local backup_file="$1"
     log "INFO" "Restoring backup to temporary database..."
 
+    # shellcheck disable=SC2310 # require_passphrase_for is a boolean predicate; the trailing '|| return 1' propagates its failure explicitly, so masked errexit inside it is irrelevant
     require_passphrase_for "${backup_file}" "${BACKUP_ENCRYPTION_PASSPHRASE}" || return 1
     backup_stream "${backup_file}" \
         | docker exec -i "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${VERIFY_DB}" \
@@ -244,6 +248,7 @@ run_integrity_checks() {
     # the script proceeded with an empty password (OPS/SH-07, verified
     # during the audit). `|| return 1` does not depend on errexit.
     local db_password
+    # shellcheck disable=SC2310 # get_db_password's own '|| return 1' already makes its failure explicit; the trailing '|| return 1' here propagates it, so masked errexit inside the function is irrelevant
     db_password=$(get_db_password) || return 1
 
     # Determine how to run the integrity check script.
@@ -258,7 +263,7 @@ run_integrity_checks() {
         local env_file
         env_file=$(umask 077 && mktemp)
         printf 'DATABASE_URL=postgresql://%s:%s@db:5432/%s\n' \
-            "${PGUSER}" "${db_password}" "${VERIFY_DB}" > "${env_file}"
+            "${PGUSER}" "${db_password}" "${VERIFY_DB}" >"${env_file}"
         docker exec --env-file "${env_file}" \
             "${APP_CONTAINER}" python scripts/integrity_check.py --verbose || exit_code=$?
         rm -f "${env_file}"
@@ -331,7 +336,9 @@ main() {
     local sanity_failures=0
     local integrity_code=0
 
+    # shellcheck disable=SC2310 # run_sanity_checks deliberately returns its failure COUNT; '|| sanity_failures=$?' captures that count for the summary and exit-code decision below, which is the function's contract, not a swallowed fatal error
     run_sanity_checks || sanity_failures=$?
+    # shellcheck disable=SC2310 # run_integrity_checks deliberately returns integrity_check.py's 0/1/2 code; '|| integrity_code=$?' captures it for the summary and is mapped to the script's exit code below, which is the function's contract, not a swallowed fatal error
     run_integrity_checks || integrity_code=$?
 
     # Report final status.

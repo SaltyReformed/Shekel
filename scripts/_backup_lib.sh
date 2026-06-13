@@ -48,6 +48,7 @@ log() {
     # Structured log output: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
     local level="$1"
     shift
+    # shellcheck disable=SC2312 # date with a literal format string always succeeds; the timestamp is display-only inside this log line, never fed to a downstream operation
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
 }
 
@@ -110,7 +111,10 @@ validate_backup_artifact() {
     fi
     # Subshell-local pipefail: the gpg/gunzip stage failures must reach the
     # if-condition even when a caller runs this helper without pipefail.
-    if ! decoded_bytes=$(set -o pipefail; backup_stream "${file}" | wc -c); then
+    if ! decoded_bytes=$(
+        set -o pipefail
+        backup_stream "${file}" | wc -c
+    ); then
         log "ERROR" "Backup artifact failed validation (decryption or gzip integrity): ${file}"
         log "ERROR" "Check BACKUP_ENCRYPTION_PASSPHRASE (for .gpg) and the file's integrity."
         return 1
