@@ -284,6 +284,87 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
     return deleted
 
 
+def regenerate_pay_periods(
+    user_id, new_start_date, num_periods, cadence_days, confirm_discard=False,
+):
+    """Rebuild the not-yet-started, unlocked tail from a corrected start.
+
+    "Fix a mistake" without per-period date editing: truncate the
+    rebuildable future tail (the first not-yet-started unlocked period
+    onward), then generate a fresh ``num_periods``-long schedule from
+    ``new_start_date`` at ``cadence_days`` and repopulate it with the
+    active templates' recurring rows.  Periods that have already started,
+    are historical, hold settled money, or anchor an account / rule are
+    KEPT; if any such locked period sits inside the rebuildable tail the
+    truncate step refuses (history cannot be rewritten under a settled
+    paycheck).  The new cadence is persisted so later extends continue at
+    it.
+
+    The whole operation is one transaction the route commits: if the
+    generate step rejects ``new_start_date`` after the truncate has run,
+    the route's rollback undoes the truncate too -- nothing partial ships.
+
+    Args:
+        user_id: The owning user's id.
+        new_start_date: First payday of the rebuilt tail.  Must fall after
+            the last RETAINED period's ``end_date`` (re-checked by
+            ``generate_pay_periods``' forward-only guard).
+        num_periods: How many periods to generate.
+        cadence_days: Days between paydays for the rebuilt tail; also
+            persisted as the user's schedule cadence.
+        confirm_discard: Forwarded to the truncate step -- when False and
+            the rebuildable tail holds unrecoverable rows, raise
+            :class:`PayPeriodDiscardRequired` and change nothing.
+
+    Returns:
+        The list of newly created :class:`~app.models.pay_period.PayPeriod`
+        objects.
+
+    Raises:
+        PayPeriodLocked: A locked period sits inside the rebuildable tail.
+        PayPeriodDiscardRequired: The tail holds unrecoverable rows and
+            ``confirm_discard`` is False.
+        ValidationError: ``new_start_date`` overlaps or predates the
+            retained schedule (``generate_pay_periods``' forward-only guard).
+    """
+    keep_through = _regenerate_keep_through_index(user_id)
+    truncate_pay_periods(user_id, keep_through, confirm_discard=confirm_discard)
+    new_periods = pay_period_service.generate_pay_periods(
+        user_id, new_start_date, num_periods, cadence_days,
+    )
+    populate_periods_from_active_templates(user_id, new_periods)
+    pay_schedule_service.upsert_schedule(user_id, cadence_days)
+    return new_periods
+
+
+def _regenerate_keep_through_index(user_id):
+    """Return the ``keep_through_index`` regenerate truncates to.
+
+    Everything up to and including the last period that has already
+    started or is locked is kept; the first not-yet-started AND unlocked
+    period is where the rebuildable tail begins, so this returns that
+    period's index minus one.  When there is no rebuildable future tail
+    (every period has started or is locked), it returns the last index --
+    the truncate is then a no-op and regenerate degrades to an append
+    from ``new_start_date``.  With no periods at all, it returns -1.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The highest ``period_index`` to keep.
+    """
+    periods = pay_period_service.get_all_periods(user_id)
+    if not periods:
+        return -1
+    today = date.today()
+    locks = classify_periods_bulk(periods)
+    for period in periods:
+        if period.start_date >= today and locks[period.id] is None:
+            return period.period_index - 1
+    return periods[-1].period_index
+
+
 def _count_discardable_items(period_ids):
     """Count rows in the periods that regeneration cannot reproduce.
 
