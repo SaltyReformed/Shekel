@@ -188,7 +188,9 @@ hardening, and prod-override-sync conventions auto-load via `.claude/rules/deplo
 
 ## Development Status
 
-See `docs/` for plans and roadmap and `docs/progress.md` for current phase status.
+See `docs/project_roadmap_v5.md` for the roadmap and direction. Planning docs lag
+the code: treat the codebase and recent git history as the source of truth for what
+is actually shipped, not any doc's stated status.
 
 ## Style
 

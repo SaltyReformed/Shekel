@@ -453,7 +453,7 @@ Last evaluated: 2026-03-23
 
 **Status key:** Complete | In Progress | Not Started | Deferred
 
-See [docs/progress.md](docs/progress.md) for detailed feature-level tracking.
+See [docs/project_roadmap_v5.md](docs/project_roadmap_v5.md) for the project roadmap.
 
 ---
 
