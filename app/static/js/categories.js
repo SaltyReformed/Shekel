@@ -65,8 +65,8 @@
 
     if (action === "cat-edit-show") {
       // "Edit" button.  Show the edit form, hide the display row.
-      var editForm = getPeer(trigger, "editId");
-      var displayRow = getPeer(trigger, "displayId");
+      const editForm = getPeer(trigger, "editId");
+      const displayRow = getPeer(trigger, "displayId");
       editForm.classList.remove("d-none");
       displayRow.classList.add("d-none");
       return;
@@ -75,11 +75,11 @@
     if (action === "cat-edit-cancel") {
       // "Cancel" button.  Hide the edit form (the closest <form>),
       // restore the display row.
-      var form = trigger.closest("form");
+      const form = trigger.closest("form");
       if (form) {
         form.classList.add("d-none");
       }
-      var display = getPeer(trigger, "displayId");
+      const display = getPeer(trigger, "displayId");
       display.classList.remove("d-none");
       return;
     }
@@ -101,7 +101,7 @@
     if (target.value === "__new__") {
       customDiv.classList.remove("d-none");
       hiddenInput.value = "";
-      var customInput = customDiv.querySelector("input");
+      const customInput = customDiv.querySelector("input");
       if (customInput) {
         customInput.focus();
       }

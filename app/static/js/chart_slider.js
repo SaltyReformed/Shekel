@@ -54,8 +54,8 @@
       textInput.addEventListener('input', function () {
         var val = parseFloat(textInput.value);
         if (!Number.isNaN(val)) {
-          var min = parseFloat(rangeInput.min);
-          var max = parseFloat(rangeInput.max);
+          const min = parseFloat(rangeInput.min);
+          const max = parseFloat(rangeInput.max);
           rangeInput.value = Math.max(min, Math.min(max, val));
         }
         debounceTrigger(group, targetId, debounceMs);

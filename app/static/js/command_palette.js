@@ -279,10 +279,10 @@
         var ti = 0;
         var total = 0;
         var streak = 0;
-        for (var qi = 0; qi < q.length; qi += 1) {
-            var ch = q[qi];
+        for (let qi = 0; qi < q.length; qi += 1) {
+            const ch = q[qi];
             if (ch === ' ') { streak = 0; continue; }
-            var found = t.indexOf(ch, ti);
+            const found = t.indexOf(ch, ti);
             if (found === -1) return -1;
             total += 1;
             if (found === ti) { streak += 1; total += streak; }
@@ -328,7 +328,7 @@
     function render() {
         resultsEl.textContent = '';
         if (!matches.length) {
-            var empty = document.createElement('div');
+            const empty = document.createElement('div');
             empty.className = 'cmdk-empty';
             empty.textContent = 'No matching commands in the visible window.';
             resultsEl.appendChild(empty);

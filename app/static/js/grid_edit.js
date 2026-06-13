@@ -169,7 +169,7 @@ function positionPopover(cell) {
 
     // Mobile: bottom sheet -- CSS handles positioning via fixed position.
     if (window.innerWidth < 768) {
-        var backdrop = document.createElement('div');
+        const backdrop = document.createElement('div');
         backdrop.className = 'bottom-sheet-backdrop';
         backdrop.id = 'bottom-sheet-backdrop';
         backdrop.addEventListener('click', closeFullEdit);
@@ -248,7 +248,7 @@ function applyMobileBottomSheetBehavior(popover) {
     }, { passive: true });
 
     if (window.visualViewport) {
-        var adjustForKeyboard = function() {
+        const adjustForKeyboard = function() {
             // When the iOS soft keyboard opens, visualViewport.height
             // shrinks and offsetTop becomes positive.  Pin the sheet's
             // bottom edge so it floats above the keyboard rather than

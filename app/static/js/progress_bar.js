@@ -34,10 +34,10 @@
       return;
     }
     var nodes = root.querySelectorAll("[data-progress-pct]");
-    for (var i = 0; i < nodes.length; i++) {
-      var el = nodes[i];
-      var raw = el.getAttribute("data-progress-pct");
-      var pct = parseFloat(raw);
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      const raw = el.getAttribute("data-progress-pct");
+      let pct = parseFloat(raw);
       if (Number.isFinite(pct)) {
         // Clamp to [0, 100] so a malformed server value cannot push the
         // progress bar off-axis.  The server should already clamp, but
