@@ -90,7 +90,7 @@ repos:
       # .yamllint, .djlintrc, .gitleaks.toml, _typos.toml, .hadolint.yaml).
       # All run language:system, so they use the host binaries (shellcheck,
       # shfmt, biome, actionlint, typos, gitleaks, hadolint) and the venv
-      # pip tools (yamllint, zizmor, djlint). These mirror the ci.yml
+      # pip tools (yamllint, zizmor, djlint, rumdl). These mirror the ci.yml
       # polyglot-lint job; CI remains the enforced gate.
       - id: shellcheck
         name: shellcheck (shell; masked-errexit groups via .shellcheckrc)
@@ -155,4 +155,13 @@ repos:
         entry: python scripts/check_template_syntax.py
         language: system
         files: ^app/templates/.*\.html$
+        pass_filenames: false
+      - id: rumdl
+        name: rumdl (Markdown lint + format check)
+        # rumdl scans the whole tree honoring .rumdl.toml excludes, so it runs
+        # unfiltered (pass_filenames: false); the files key just gates WHEN the
+        # hook fires (any staged Markdown change).
+        entry: rumdl check
+        language: system
+        files: \.md$
         pass_filenames: false

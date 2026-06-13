@@ -13,69 +13,49 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
   `test_adversarial/`, `test_scripts/`.
 - **Use existing fixtures** from `conftest.py` (`seed_user`, `seed_second_user`, `auth_client`,
   `second_auth_client`, etc.). Do not create ad-hoc user setup in test methods.
-- **Check for existing coverage** before writing a new test. Duplicate tests waste time and
-  create maintenance burden.
+- **Check for existing coverage** before writing a new test. Duplicate tests waste time and create
+  maintenance burden.
 
 ## Test Run Guidelines
 
-- **Invoke via `./scripts/test.sh`, not bare `pytest`.**  The
-  wrapper restarts `shekel-dev-test-db` before pytest runs (see
-  "Catalog fragmentation and the test-runner wrapper" below for
-  the reason), forwards all arguments verbatim, and falls through
-  to plain pytest when the container is absent (CI, fresh
-  checkout).  `SKIP_DB_RESTART=1` skips the restart for chained
-  follow-up invocations.
-- **Full suite:** ~65 s wall-clock including the restart (~62 s
-  pytest + ~3 s restart) on a fresh test-db container, ~5,504
-  tests at the default `-n 12` parallelism (set in `pytest.ini`
-  `addopts`).  A single `./scripts/test.sh` invocation completes
-  well under the 10-min hard timeout.
-- **Concurrent invocations are NOT safe under Phase 3b.**  The
-  per-worker DB name is the stable form `shekel_test_{worker_id}`
-  (no PID suffix) so the Flask-SQLAlchemy engine URL stays valid
-  across every drop+reclone.  Two simultaneous pytest invocations
-  against the same cluster collide on the same worker DB name --
-  the bootstrap's `pg_stat_activity` filter prevents dropping a
-  sibling's live DB, so the second invocation gets a clear
-  "database already exists" failure instead of silent corruption.
-  Workarounds when you genuinely need concurrent invocations: run
-  one against the dev `db` cluster on port 5432 (point
-  `TEST_ADMIN_DATABASE_URL` at it after rebuilding the template
-  there), or run them sequentially with a `wait` between
-  invocations.  Sequential invocations are unaffected; orphan
-  cleanup at session start drops any leftover DB from a previous
-  crashed run.
-- **First-time setup:** build the template once with
-  `python scripts/build_test_template.py`; see "Building the test
-  template" below for when to rebuild.
-- **Before reporting done:** every batch (or the single full-
-  suite invocation) must end in `<N> passed`; any `failed`,
-  `errors`, or `xfailed` lines block the "done" report.
-- **During development:** run only relevant test files; targeted
-  runs typically finish in seconds.
-- **Override parallelism:** `-n 0` for single-process debugging,
-  `-n auto` to match the host CPU count, or any specific number.
-  The CLI flag overrides `pytest.ini`'s default.  Past `-n 12`
-  the marginal speedup falls off because PostgreSQL's cluster-
-  wide `pg_database` catalog lock (formerly the WAL/fsync
-  pipeline pre-Phase-3) is the serialised resource; see
-  `docs/audits/test_improvements/test-performance-research.md`
-  for the full profile.
-- **Test timeout:** 30s per test, configured in `pytest.ini`.
-  Slowest known test is ~3s (bcrypt-bound MFA/auth tests; ~1-3s
-  each is expected).  Anything past 30s raises a timeout error
+- **Invoke via `./scripts/test.sh`, not bare `pytest`.** The wrapper restarts `shekel-dev-test-db`
+  before pytest runs (see "Catalog fragmentation and the test-runner wrapper" below for the reason),
+  forwards all arguments verbatim, and falls through to plain pytest when the container is absent
+  (CI, fresh checkout). `SKIP_DB_RESTART=1` skips the restart for chained follow-up invocations.
+- **Full suite:** ~65 s wall-clock including the restart (~62 s pytest + ~3 s restart) on a fresh
+  test-db container, ~5,504 tests at the default `-n 12` parallelism (set in `pytest.ini`
+  `addopts`). A single `./scripts/test.sh` invocation completes well under the 10-min hard timeout.
+- **Concurrent invocations are NOT safe under Phase 3b.** The per-worker DB name is the stable form
+  `shekel_test_{worker_id}` (no PID suffix) so the Flask-SQLAlchemy engine URL stays valid across
+  every drop+reclone. Two simultaneous pytest invocations against the same cluster collide on the
+  same worker DB name -- the bootstrap's `pg_stat_activity` filter prevents dropping a sibling's
+  live DB, so the second invocation gets a clear "database already exists" failure instead of silent
+  corruption. Workarounds when you genuinely need concurrent invocations: run one against the dev
+  `db` cluster on port 5432 (point `TEST_ADMIN_DATABASE_URL` at it after rebuilding the template
+  there), or run them sequentially with a `wait` between invocations. Sequential invocations are
+  unaffected; orphan cleanup at session start drops any leftover DB from a previous crashed run.
+- **First-time setup:** build the template once with `python scripts/build_test_template.py`; see
+  "Building the test template" below for when to rebuild.
+- **Before reporting done:** every batch (or the single full- suite invocation) must end in
+  `<N> passed`; any `failed`, `errors`, or `xfailed` lines block the "done" report.
+- **During development:** run only relevant test files; targeted runs typically finish in seconds.
+- **Override parallelism:** `-n 0` for single-process debugging, `-n auto` to match the host CPU
+  count, or any specific number. The CLI flag overrides `pytest.ini`'s default. Past `-n 12` the
+  marginal speedup falls off because PostgreSQL's cluster- wide `pg_database` catalog lock (formerly
+  the WAL/fsync pipeline pre-Phase-3) is the serialised resource; see
+  `docs/audits/test_improvements/test-performance-research.md` for the full profile.
+- **Test timeout:** 30s per test, configured in `pytest.ini`. Slowest known test is ~3s
+  (bcrypt-bound MFA/auth tests; ~1-3s each is expected). Anything past 30s raises a timeout error
   rather than hanging the suite.
 
 ## Catalog fragmentation and the test-runner wrapper
 
-Phase 3b's per-test drop+reclone gives strict isolation but
-exposes a PostgreSQL behaviour worth naming explicitly so future
-"is the suite slowing down?" investigations land on the answer
+Phase 3b's per-test drop+reclone gives strict isolation but exposes a PostgreSQL behaviour worth
+naming explicitly so future "is the suite slowing down?" investigations land on the answer
 immediately.
 
-**Symptom.**  Over many back-to-back suite runs on a long-lived
-test-db container, full-suite wall-clock drifts linearly.
-Measured progression starting from a freshly-restarted container:
+**Symptom.** Over many back-to-back suite runs on a long-lived test-db container, full-suite
+wall-clock drifts linearly. Measured progression starting from a freshly-restarted container:
 
 | Run | Wall (s) | Single CREATE/DROP (ms) |
 |---:|---:|---:|
@@ -85,78 +65,58 @@ Measured progression starting from a freshly-restarted container:
 | 4 | 81 | 20.9 |
 | ~50 (37 h uptime) | 220 | 128 |
 
-The slowdown is entirely in `DROP DATABASE WITH (FORCE)`; the
-fixture profile harness (`SHEKEL_TEST_FIXTURE_PROFILE=1`) shows
-DROP dominating ~80 % of per-test fixture cost in the degraded
-state.  `CREATE DATABASE ... TEMPLATE` stays constant at ~5 ms
-because `file_copy_method=clone` is a reflink, independent of
-catalog state.
+The slowdown is entirely in `DROP DATABASE WITH (FORCE)`; the fixture profile harness
+(`SHEKEL_TEST_FIXTURE_PROFILE=1`) shows DROP dominating ~80 % of per-test fixture cost in the
+degraded state. `CREATE DATABASE ... TEMPLATE` stays constant at ~5 ms because
+`file_copy_method=clone` is a reflink, independent of catalog state.
 
-**Cause.**  Not on-disk bloat.  Verified with `VACUUM`,
-`VACUUM (FULL)` on `pg_database` / `pg_shdepend` /
-`pg_shseclabel` / `pg_db_role_setting`, and `CHECKPOINT` --
-none of them moved DROP time at all.  The catalog tables are
-small (1 page, 5 live rows, 0 dead) even in the degraded state.
+**Cause.** Not on-disk bloat. Verified with `VACUUM`, `VACUUM (FULL)` on `pg_database` /
+`pg_shdepend` / `pg_shseclabel` / `pg_db_role_setting`, and `CHECKPOINT` -- none of them moved DROP
+time at all. The catalog tables are small (1 page, 5 live rows, 0 dead) even in the degraded state.
 
-The accumulation is in PG's in-memory shared state: the shared
-invalidation (`sinval`) queue, syscache, and relcache
-invalidations broadcast by every DDL operation.  Long-lived
-backends (Python xdist worker pools held by SQLAlchemy) consume
-these invalidations slowly, and over thousands of CREATE/DROP
-DATABASE cycles the postmaster's bookkeeping degrades.  Only
-restarting the postmaster resets it.
+The accumulation is in PG's in-memory shared state: the shared invalidation (`sinval`) queue,
+syscache, and relcache invalidations broadcast by every DDL operation. Long-lived backends (Python
+xdist worker pools held by SQLAlchemy) consume these invalidations slowly, and over thousands of
+CREATE/DROP DATABASE cycles the postmaster's bookkeeping degrades. Only restarting the postmaster
+resets it.
 
-Verified by the negative: 5,000 CREATE/DROP cycles through
-fresh `psql` connections (each command exits, no long-lived
-backend) does **not** fragment -- DROP stays at ~3 ms.  Only
-the workload pattern of "many long-lived backends + heavy DDL"
-triggers the drift.
+Verified by the negative: 5,000 CREATE/DROP cycles through fresh `psql` connections (each command
+exits, no long-lived backend) does **not** fragment -- DROP stays at ~3 ms. Only the workload
+pattern of "many long-lived backends + heavy DDL" triggers the drift.
 
-**Fix.**  `./scripts/test.sh` restarts `shekel-dev-test-db`
-before every pytest invocation, waits for `pg_isready`, then
-execs into pytest with whatever arguments were passed.  Cost
-is ~3 s -- ~5 % of a 65 s suite, invisible compared to the
-variance it eliminates.
+**Fix.** `./scripts/test.sh` restarts `shekel-dev-test-db` before every pytest invocation, waits for
+`pg_isready`, then execs into pytest with whatever arguments were passed. Cost is ~3 s -- ~5 % of a
+65 s suite, invisible compared to the variance it eliminates.
 
 Escape hatches:
 
-- `SKIP_DB_RESTART=1 ./scripts/test.sh ...` -- skip the restart
-  for follow-up invocations in a tight iteration loop.  First
-  invocation pays the restart; subsequent ones reuse the warm
-  cluster.  Re-restart manually (or just call the wrapper without
-  `SKIP_DB_RESTART`) once degradation becomes noticeable -- a
-  single `CREATE / DROP DATABASE` round-trip at the admin DSN
-  past ~15 ms is the rule-of-thumb cutoff.
-- `DB_CONTAINER=other-container-name ./scripts/test.sh` -- point
-  at a different test-db container (e.g. when running against a
-  staging cluster on a different port).
-- Wrapper is a no-op when the container does not exist, so CI
-  (which spins up its own postgres service) is unaffected.
+- `SKIP_DB_RESTART=1 ./scripts/test.sh ...` -- skip the restart for follow-up invocations in a tight
+  iteration loop. First invocation pays the restart; subsequent ones reuse the warm cluster.
+  Re-restart manually (or just call the wrapper without `SKIP_DB_RESTART`) once degradation becomes
+  noticeable -- a single `CREATE / DROP DATABASE` round-trip at the admin DSN past ~15 ms is the
+  rule-of-thumb cutoff.
+- `DB_CONTAINER=other-container-name ./scripts/test.sh` -- point at a different test-db container
+  (e.g. when running against a staging cluster on a different port).
+- Wrapper is a no-op when the container does not exist, so CI (which spins up its own postgres
+  service) is unaffected.
 
-**Why not just VACUUM the shared catalogs from a pytest
-sessionstart hook?**  Tried; does not help.  See "Cause" above.
-The fragmentation is in PG shared memory, not on-disk pages.
+**Why not just VACUUM the shared catalogs from a pytest sessionstart hook?** Tried; does not help.
+See "Cause" above. The fragmentation is in PG shared memory, not on-disk pages.
 
-**Why not switch back to TRUNCATE-based reset?**  The Phase 3b
-move to drop+reclone was driven by audit-trigger and DDL-state
-isolation requirements (see
-`docs/audits/test_improvements/per-worker-database-plan.md`).
-Reverting would re-introduce the bugs Phase 3b fixed.  The
-restart-per-suite cost is a better tradeoff than test isolation
-gaps.
+**Why not switch back to TRUNCATE-based reset?** The Phase 3b move to drop+reclone was driven by
+audit-trigger and DDL-state isolation requirements (see
+`docs/audits/test_improvements/per-worker-database-plan.md`). Reverting would re-introduce the bugs
+Phase 3b fixed. The restart-per-suite cost is a better tradeoff than test isolation gaps.
 
 ### Optional per-directory batching (historical)
 
-The 8-batch split below was required when the suite was ~28 min
-sequentially and the 10-min CI timeout forced sub-batches.  At
-the current Phase 3 `-n 12` default (~65 s full suite via
-`./scripts/test.sh`) it is **purely historical** -- batched invocations
-no longer offer any wall-clock benefit and individual batches
-finish in seconds, so the bisecting-a-regression and sequential-
-debugging scenarios are better served by `pytest <specific-file>
--v` rather than a whole batch.  The table is preserved so existing
-references to "Batch N" in old commits or docs remain decodable;
-DO NOT cite these timings in new measurements.
+The 8-batch split below was required when the suite was ~28 min sequentially and the 10-min CI
+timeout forced sub-batches. At the current Phase 3 `-n 12` default (~65 s full suite via
+`./scripts/test.sh`) it is **purely historical** -- batched invocations no longer offer any
+wall-clock benefit and individual batches finish in seconds, so the bisecting-a-regression and
+sequential- debugging scenarios are better served by `pytest <specific-file> -v` rather than a whole
+batch. The table is preserved so existing references to "Batch N" in old commits or docs remain
+decodable; DO NOT cite these timings in new measurements.
 
 | Batch | Tests | Notes |
 |---|---|---|
@@ -169,23 +129,19 @@ DO NOT cite these timings in new measurements.
 | `tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/` | ~545 | -- |
 | `tests/test_audit_fixes.py test_ref_cache.py test_schemas/ test_utils/ test_concurrent/` | ~400 | -- |
 
-Total: ~5,504 tests / ~65 s at `-n 12` via `./scripts/test.sh`
-(full suite is faster than the sum of batches because pytest
-startup + 12-worker bootstrap overhead amortises over the full
-inventory rather than paying 8x).  `tests/test_performance/` is
-excluded from the default `addopts` and must be invoked
-explicitly: `./scripts/test.sh tests/test_performance -v -s`.
+Total: ~5,504 tests / ~65 s at `-n 12` via `./scripts/test.sh` (full suite is faster than the sum of
+batches because pytest startup + 12-worker bootstrap overhead amortises over the full inventory
+rather than paying 8x). `tests/test_performance/` is excluded from the default `addopts` and must be
+invoked explicitly: `./scripts/test.sh tests/test_performance -v -s`.
 
 ## Building the test template
 
 `shekel_test_template` is the PostgreSQL template database that
-`tests/conftest.py::_bootstrap_worker_database` clones into a
-uniquely-named per-session DB at the start of every pytest
-invocation (and every pytest-xdist worker within a session).
-Cloning a populated template is roughly two orders of magnitude
-faster than running migrations + audit infrastructure + reference
-seed per session, which is what unlocks the parallel and
-concurrent-safe test runs documented above.
+`tests/conftest.py::_bootstrap_worker_database` clones into a uniquely-named per-session DB at the
+start of every pytest invocation (and every pytest-xdist worker within a session). Cloning a
+populated template is roughly two orders of magnitude faster than running migrations + audit
+infrastructure + reference seed per session, which is what unlocks the parallel and concurrent-safe
+test runs documented above.
 
 **First-time build:**
 
@@ -193,62 +149,50 @@ concurrent-safe test runs documented above.
 python scripts/build_test_template.py
 ```
 
-The script is idempotent: it drops and recreates the template on
-every run, so re-running is the recovery path for any template-
-corruption symptom.  Three steps print progress: drop+create,
-populate (Alembic chain to `head` + audit infrastructure +
-reference seed + `TRUNCATE system.audit_log`), verify (account-
-type count, audit trigger count, `system.audit_log` row count).
+The script is idempotent: it drops and recreates the template on every run, so re-running is the
+recovery path for any template- corruption symptom. Three steps print progress: drop+create,
+populate (Alembic chain to `head` + audit infrastructure + reference seed +
+`TRUNCATE system.audit_log`), verify (account- type count, audit trigger count, `system.audit_log`
+row count).
 
 **When to rebuild:**
 
-- **After a migration** (`flask db migrate` + `flask db upgrade`).
-  The template runs `alembic.command.upgrade(..., 'head')` at
-  build time; per-test clones do not pick up new migrations
-  without a template rebuild.
-- **After editing `app/ref_seeds.py`.**  Reference data lives in
-  the template; per-test fixtures re-seed against the existing
-  schema but do not pick up new ref tables or changed seed
-  contents without a rebuild.
-- **After editing `app/audit_infrastructure.py`,** particularly
-  additions to `AUDITED_TABLES`.  The template carries the audit
-  triggers; new triggers attach only after a rebuild.
-- **If the bootstrap raises `RuntimeError`** complaining the
-  template is missing or has the wrong row/trigger count.  The
-  error message names the offending count and the most likely
-  root cause.
+- **After a migration** (`flask db migrate` + `flask db upgrade`). The template runs
+  `alembic.command.upgrade(..., 'head')` at build time; per-test clones do not pick up new
+  migrations without a template rebuild.
+- **After editing `app/ref_seeds.py`.** Reference data lives in the template; per-test fixtures
+  re-seed against the existing schema but do not pick up new ref tables or changed seed contents
+  without a rebuild.
+- **After editing `app/audit_infrastructure.py`,** particularly additions to `AUDITED_TABLES`. The
+  template carries the audit triggers; new triggers attach only after a rebuild.
+- **If the bootstrap raises `RuntimeError`** complaining the template is missing or has the wrong
+  row/trigger count. The error message names the offending count and the most likely root cause.
 
 **Environment:**
 
-The script reads `TEST_ADMIN_DATABASE_URL` for the admin DSN
-(default `postgresql:///postgres`).  Local development
-convention is
-`postgresql://shekel_user:shekel_pass@localhost:5433/postgres`
+The script reads `TEST_ADMIN_DATABASE_URL` for the admin DSN (default `postgresql:///postgres`).
+Local development convention is `postgresql://shekel_user:shekel_pass@localhost:5433/postgres`
 (matching the local PG container); CI uses
-`postgresql://shekel_test:shekel_test@localhost:5432/postgres`.
-`SECRET_KEY` is defaulted by the script -- the template DB is
-never reachable through Gunicorn so the value is purely
-scaffolding for app construction.
+`postgresql://shekel_test:shekel_test@localhost:5432/postgres`. `SECRET_KEY` is defaulted by the
+script -- the template DB is never reachable through Gunicorn so the value is purely scaffolding for
+app construction.
 
 ## Cluster-state tests and `xdist_group`
 
-PostgreSQL has two kinds of state.  Per-database state (rows,
-indexes, triggers, schemas) is isolated by the per-session DB
-clone: two xdist workers writing to `budget.transactions` cannot
-collide because each writes to its own database.  Cluster-scoped
-state (`CREATE ROLE`, replication slots, `pg_advisory_lock`) is
-shared across all databases in the cluster; two workers racing on
-the same cluster-level operation will collide.
+PostgreSQL has two kinds of state. Per-database state (rows, indexes, triggers, schemas) is isolated
+by the per-session DB clone: two xdist workers writing to `budget.transactions` cannot collide
+because each writes to its own database. Cluster-scoped state (`CREATE ROLE`, replication slots,
+`pg_advisory_lock`) is shared across all databases in the cluster; two workers racing on the same
+cluster-level operation will collide.
 
-The only test file in the current suite that mutates cluster
-state is `tests/test_models/test_audit_migration.py`: the
-`shekel_app_role` fixture executes `CREATE ROLE shekel_app` and
-`DROP ROLE shekel_app`, and `apply_audit_infrastructure` (called
-from sibling test classes in the same file) conditionally
-`GRANT`s to the role when it exists.  Both touch the cluster.
+The only test file in the current suite that mutates cluster state is
+`tests/test_models/test_audit_migration.py`: the `shekel_app_role` fixture executes
+`CREATE ROLE shekel_app` and `DROP ROLE shekel_app`, and `apply_audit_infrastructure` (called from
+sibling test classes in the same file) conditionally `GRANT`s to the role when it exists. Both touch
+the cluster.
 
-**Pattern:** pin all tests that touch cluster state to one
-pytest-xdist worker via `@pytest.mark.xdist_group("name")`:
+**Pattern:** pin all tests that touch cluster state to one pytest-xdist worker via
+`@pytest.mark.xdist_group("name")`:
 
 ```python
 import pytest
@@ -260,26 +204,22 @@ import pytest
 pytestmark = pytest.mark.xdist_group("shekel_app_role")
 ```
 
-Use a **module-level** marker when sibling classes share the
-cluster-state coupling (as in `test_audit_migration.py`).  Use a
-**class-level** or **test-level** marker when only some tests in
+Use a **module-level** marker when sibling classes share the cluster-state coupling (as in
+`test_audit_migration.py`). Use a **class-level** or **test-level** marker when only some tests in
 the file are affected.
 
-The marker **name** must be unique per cluster-state resource:
-tests sharing a name run on the same worker, so two unrelated
-cluster-state tests with the same name would unnecessarily
-serialise.  Prefer distinct names per resource.
+The marker **name** must be unique per cluster-state resource: tests sharing a name run on the same
+worker, so two unrelated cluster-state tests with the same name would unnecessarily serialise.
+Prefer distinct names per resource.
 
-If you add a new test that mutates cluster state, add the marker
-and a comment naming the resource.  Without it the test will
-race across workers and produce intermittent failures like
-`role "X" already exists` or `DependentObjectsStillExist` on
-`DROP ROLE`.
+If you add a new test that mutates cluster state, add the marker and a comment naming the resource.
+Without it the test will race across workers and produce intermittent failures like
+`role "X" already exists` or `DependentObjectsStillExist` on `DROP ROLE`.
 
 ## Zero Tolerance for Failing Tests
 
-When you run the test suite -- targeted or full -- every test must pass. If any test fails, you
-must investigate. Do not report "done" while any test is failing.
+When you run the test suite -- targeted or full -- every test must pass. If any test fails, you must
+investigate. Do not report "done" while any test is failing.
 
 If a test you did not write is failing:
 
@@ -292,9 +232,9 @@ Never assume a failing test is someone else's problem. There is no one else.
 
 ## Test Output is Evidence
 
-When reporting test results, include the actual output -- pass counts, fail counts, error
-messages. Do not summarize "tests passed" without showing it. If output is long, show the
-final summary lines at minimum.
+When reporting test results, include the actual output -- pass counts, fail counts, error messages.
+Do not summarize "tests passed" without showing it. If output is long, show the final summary lines
+at minimum.
 
 ## Test Quality Standards
 
@@ -310,22 +250,21 @@ changed correctly.
 
 ### Service Tests
 
-Service tests must assert **computed values with exact expectations.** Do not assert
-`result > 0` or `result is not None` when you can compute the expected value by hand. For
-financial calculations, every test should include a comment showing the arithmetic that
-produces the expected value.
+Service tests must assert **computed values with exact expectations.** Do not assert `result > 0` or
+`result is not None` when you can compute the expected value by hand. For financial calculations,
+every test should include a comment showing the arithmetic that produces the expected value.
 
 ### Edge Case Tests
 
 Edge case tests must assert the **specific edge behavior**, not just that the function did not
-crash. A test for "zero amount" must assert what happens with zero, not just that no exception
-was raised.
+crash. A test for "zero amount" must assert what happens with zero, not just that no exception was
+raised.
 
 ### General Test Requirements
 
 - **All tests need docstrings** explaining what is verified and why.
-- **Tests must be independent.** Each test sets up its own preconditions. No ordering
-  dependencies or shared mutable state between tests.
+- **Tests must be independent.** Each test sets up its own preconditions. No ordering dependencies
+  or shared mutable state between tests.
 - **Test the behavior, not the implementation.** Assert what the function produces, not how it
   produces it. Implementation-coupled tests break on every refactor.
 
@@ -333,24 +272,24 @@ was raised.
 
 ## Problem Reporting Protocol
 
-You are the only automated safeguard this project has. If you see a problem and say nothing,
-that problem ships to production.
+You are the only automated safeguard this project has. If you see a problem and say nothing, that
+problem ships to production.
 
 ### What Counts as a Problem
 
-A failing test. A linter warning. A logic error noticed while reading code. A function that
-does not handle an edge case. A query missing a `user_id` filter. A Decimal compared to a
-float. A TODO that has been there for months. An unused import. A migration that does not match
-the model. Any discrepancy between what the code does and what it should do.
+A failing test. A linter warning. A logic error noticed while reading code. A function that does not
+handle an edge case. A query missing a `user_id` filter. A Decimal compared to a float. A TODO that
+has been there for months. An unused import. A migration that does not match the model. Any
+discrepancy between what the code does and what it should do.
 
 ### Response Protocol
 
 1. **Within scope of the current task:** Fix it. Test the fix. Include it in the commit.
-2. **Outside scope but quick and safe:** Report it to the developer. Fix in a separate commit
-   only if the developer approves.
-3. **Outside scope and risky or complex:** Report it immediately. State: what the problem is,
-   where it is (file and function), what the impact could be, and your recommended next step.
-   Lead with it -- do not bury it at the end of a long message.
+2. **Outside scope but quick and safe:** Report it to the developer. Fix in a separate commit only
+   if the developer approves.
+3. **Outside scope and risky or complex:** Report it immediately. State: what the problem is, where
+   it is (file and function), what the impact could be, and your recommended next step. Lead with it
+   -- do not bury it at the end of a long message.
 
 ### What You Must Never Do
 

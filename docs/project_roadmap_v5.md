@@ -12,27 +12,26 @@ historical reference)
 
 This version is a structural reorganisation of the roadmap; almost no content was deleted.
 
-1. **Numbering collapsed.** v4-6 carried two parallel numbering systems -- a "Priority N"
-   track in the summary table and a "Section M / Phase Y" track in the document body. The two
-   had drifted (Priority 4 mapped to Section 8, Priority 5 mapped to Section 6, Section 9
-   claimed Priority 8 while the priority table also assigned Priority 8 to Multi-user). v5
-   drops the Priority column and uses a single sequential top-level numbering scheme
-   ordered by execution priority. Subsection numbers follow their new parent section
-   (former 6.x is now 3.x, former 7.x is now 4.x, former 8A.x is now 5.x), so internal
-   cross-references stay aligned with the sections they point to.
-2. **Completed work moved to Appendix A.** All sections marked complete in v4-6 plus the
-   newly completed Visualization and Reporting Overhaul and Spending Tracker and Companion
-   View are summarised in Appendix A under their original section labels. Full historical
-   detail remains in `project_roadmap_v4-6.md`.
+1. **Numbering collapsed.** v4-6 carried two parallel numbering systems -- a "Priority N" track in
+   the summary table and a "Section M / Phase Y" track in the document body. The two had drifted
+   (Priority 4 mapped to Section 8, Priority 5 mapped to Section 6, Section 9 claimed Priority 8
+   while the priority table also assigned Priority 8 to Multi-user). v5 drops the Priority column
+   and uses a single sequential top-level numbering scheme ordered by execution priority. Subsection
+   numbers follow their new parent section (former 6.x is now 3.x, former 7.x is now 4.x, former
+   8A.x is now 5.x), so internal cross-references stay aligned with the sections they point to.
+2. **Completed work moved to Appendix A.** All sections marked complete in v4-6 plus the newly
+   completed Visualization and Reporting Overhaul and Spending Tracker and Companion View are
+   summarised in Appendix A under their original section labels. Full historical detail remains in
+   `project_roadmap_v4-6.md`.
 3. **Two new sections added.**
-   - **Section 1 (Security Remediation):** the in-progress April 2026 audit response
-     (56 commits across 10 phases; 16 merged). Entry summarises status and links to the
-     canonical plan at `docs/audits/security-2026-04-15/remediation-plan.md`; the plan is not
-     duplicated in the roadmap.
-   - **Section 2 (Financial Calculation Consistency):** a new parent section addressing
-     drift between the multiple paths that compute monetary amounts. Three sequenced stages:
-     unify existing paths (committed), double-entry ledger refactor (decision pending), and
-     envelope budgeting layer (decision pending, requires the ledger).
+   - **Section 1 (Security Remediation):** the in-progress April 2026 audit response (56 commits
+     across 10 phases; 16 merged). Entry summarises status and links to the canonical plan at
+     `docs/audits/security-2026-04-15/remediation-plan.md`; the plan is not duplicated in the
+     roadmap.
+   - **Section 2 (Financial Calculation Consistency):** a new parent section addressing drift
+     between the multiple paths that compute monetary amounts. Three sequenced stages: unify
+     existing paths (committed), double-entry ledger refactor (decision pending), and envelope
+     budgeting layer (decision pending, requires the ledger).
 
 ### Production status
 
@@ -143,16 +142,14 @@ mismatch (Appendix A.1, task 3.3).
 
 **Outcome after Stage A:**
 
-- A single canonical computation produces every balance, subtotal, and aggregate the app
-  shows in the grid, dashboards, calendar views, year-end summary, and account detail pages.
-- A single status-aware "effective amount" rule is the only way to read a transaction's
-  contribution to a balance. The rule covers projected, paid, settled, credit, and
-  cancelled statuses and resolves correctly for both estimated and actual values.
-- A path-equivalence regression test suite asserts that every consumer of balance data
-  produces the same result for the same inputs. A new code path that diverges fails the
-  suite.
-- The coding standards record the rule so future contributors do not introduce a parallel
-  path.
+- A single canonical computation produces every balance, subtotal, and aggregate the app shows in
+  the grid, dashboards, calendar views, year-end summary, and account detail pages.
+- A single status-aware "effective amount" rule is the only way to read a transaction's contribution
+  to a balance. The rule covers projected, paid, settled, credit, and cancelled statuses and
+  resolves correctly for both estimated and actual values.
+- A path-equivalence regression test suite asserts that every consumer of balance data produces the
+  same result for the same inputs. A new code path that diverges fails the suite.
+- The coding standards record the rule so future contributors do not introduce a parallel path.
 
 ### 2.2 Stage B -- Double-entry ledger (decision pending)
 
@@ -163,13 +160,12 @@ primary records.
 
 **Outcome after Stage B:**
 
-- Every financial operation produces matched debit and credit entries in a dedicated
-  journal table.
+- Every financial operation produces matched debit and credit entries in a dedicated journal table.
 - The journal is the authoritative source of account balances. Balance display becomes an
   aggregation over the journal.
-- Transactions and transfers continue to exist as drivers that emit journal entries. The
-  existing transfer invariants (matched expense and income shadows for every transfer)
-  extend naturally: each shadow becomes a matched debit/credit pair in the journal.
+- Transactions and transfers continue to exist as drivers that emit journal entries. The existing
+  transfer invariants (matched expense and income shadows for every transfer) extend naturally: each
+  shadow becomes a matched debit/credit pair in the journal.
 
 The data model might look something like:
 
@@ -198,10 +194,10 @@ category-level limits that aggregate across multiple templates.
 - Each budget category has a per-period allocation amount (the envelope).
 - Per-envelope remaining balance is visible at a glance, computed from authoritative journal
   entries.
-- Optional hard-cap mode prevents spending past the allocation; soft-warning mode flags
-  envelopes at risk.
-- Existing per-template entry tracking continues to work; envelopes aggregate spending
-  across templates within a category.
+- Optional hard-cap mode prevents spending past the allocation; soft-warning mode flags envelopes at
+  risk.
+- Existing per-template entry tracking continues to work; envelopes aggregate spending across
+  templates within a category.
 
 The data model might look something like:
 
@@ -282,12 +278,12 @@ New columns on `budget.transaction_templates`:
 
 - A "Seasonal History" tab or section on the transaction template edit page, visible only when
   `is_seasonal` is checked.
-- The form displays a grid: rows are years, columns are months (Jan-Dec). The user enters
-  dollar amounts per cell. Each cell can optionally expand to enter billing period dates
-  (period start, period end, due date). If billing period dates are provided, the app
-  calculates the consumption month automatically and places the amount in the correct column.
-- Manual entry only. No CSV import. This is intentional given the small number of templates
-  that will use this feature (approximately 3-5).
+- The form displays a grid: rows are years, columns are months (Jan-Dec). The user enters dollar
+  amounts per cell. Each cell can optionally expand to enter billing period dates (period start,
+  period end, due date). If billing period dates are provided, the app calculates the consumption
+  month automatically and places the amount in the correct column.
+- Manual entry only. No CSV import. This is intentional given the small number of templates that
+  will use this feature (approximately 3-5).
 - The form should support entering partial years (e.g., only the months you have data for).
 
 #### 3.1.4 Forecasting Engine
@@ -299,17 +295,15 @@ New service: `services/seasonal_forecast.py`
 - **Primary method -- weighted trend:**
   1. For the target month, collect all historical amounts across years.
   2. Apply exponential decay weighting (most recent year gets the highest weight, older years
-     decay). Suggested default decay factor: 0.7 (configurable in user_settings if needed
-     later).
+     decay). Suggested default decay factor: 0.7 (configurable in user_settings if needed later).
   3. Calculate a weighted average as the base.
-  4. Apply a linear trend adjustment: fit a simple linear regression to the year-over-year
-     values for that month and extrapolate the slope forward.
+  4. Apply a linear trend adjustment: fit a simple linear regression to the year-over-year values
+     for that month and extrapolate the slope forward.
   5. The final forecast = weighted_average + (trend_slope \* years_forward).
-- **Fallback method -- weighted average only:** Same as above but without the trend adjustment.
-  Used when there are fewer than 3 data points for a given month (not enough to detect a
-  reliable trend).
-- **Minimum data requirement:** At least 1 year of data for the target month. If no data
-  exists for a given month, fall back to the template's base amount.
+- **Fallback method -- weighted average only:** Same as above but without the trend adjustment. Used
+  when there are fewer than 3 data points for a given month (not enough to detect a reliable trend).
+- **Minimum data requirement:** At least 1 year of data for the target month. If no data exists for
+  a given month, fall back to the template's base amount.
 - **Course correction:** As actuals are recorded (transaction marked as "Paid" with an actual
   amount), the actual is automatically added to the seasonal history table for that month/year.
   Future forecasts for the same month in subsequent years will incorporate this new data point.
@@ -318,10 +312,10 @@ New service: `services/seasonal_forecast.py`
 
 - When the recurrence engine generates a transaction for a seasonal template, it calls the
   forecasting engine to get the projected amount for that transaction's target month.
-- The recurrence engine already handles monthly placement by due date. The seasonal forecast
-  only supplies the amount; placement logic is unchanged.
-- The generated transaction should display an indicator (icon or label) showing that the amount
-  is a seasonal forecast, not a flat recurring amount.
+- The recurrence engine already handles monthly placement by due date. The seasonal forecast only
+  supplies the amount; placement logic is unchanged.
+- The generated transaction should display an indicator (icon or label) showing that the amount is a
+  seasonal forecast, not a flat recurring amount.
 
 #### 3.1.6 Applicable Templates
 
@@ -336,46 +330,44 @@ a rolling average of recent actuals.
 
 #### 3.2.1 Concept
 
-- When the user views a future transaction for a variable expense template, the app calculates
-  the average of the last N actuals (suggested default: N = 6, configurable).
-- The suggestion is displayed alongside the current estimate but is never auto-applied. The
-  user must explicitly accept the suggestion to update the template or individual transaction.
-- This feature becomes useful only after enough actuals have been recorded. Display the
-  suggestion only when at least 3 actuals exist for the template.
+- When the user views a future transaction for a variable expense template, the app calculates the
+  average of the last N actuals (suggested default: N = 6, configurable).
+- The suggestion is displayed alongside the current estimate but is never auto-applied. The user
+  must explicitly accept the suggestion to update the template or individual transaction.
+- This feature becomes useful only after enough actuals have been recorded. Display the suggestion
+  only when at least 3 actuals exist for the template.
 
 #### 3.2.2 Implementation
 
 - New service: `services/smart_estimate.py`
-- Pure function: given a template_id and a count N, query the last N transactions for that
-  template where status is "paid" and an actual amount exists. Return the average.
-- UI: A small "suggested: $X.XX" label next to the amount field on future transactions for
-  eligible templates. Clicking it populates the amount field.
+- Pure function: given a template_id and a count N, query the last N transactions for that template
+  where status is "paid" and an actual amount exists. Return the average.
+- UI: A small "suggested: $X.XX" label next to the amount field on future transactions for eligible
+  templates. Clicking it populates the amount field.
 
 ### 3.3 Expense Inflation
 
-- Per-template inflation settings: opt-in per expense template with a global default rate
-  (stored in `auth.user_settings.default_inflation_rate`, already exists) and per-template
-  override.
+- Per-template inflation settings: opt-in per expense template with a global default rate (stored in
+  `auth.user_settings.default_inflation_rate`, already exists) and per-template override.
 - When enabled, the recurrence engine multiplies the base amount by
   `(1 + annual_rate) ^ (years_from_start)` for each future period.
 - Inflated amounts display with an indicator so the user knows the number includes an inflation
   adjustment.
 - The user can override any individual period's amount, which locks it.
 - **Interaction with seasonal forecasting:** If a template is both seasonal and has inflation
-  enabled, the seasonal forecast already incorporates trend (which captures inflation
-  implicitly). In this case, the explicit inflation adjustment should be disabled or the user
-  warned about double-counting. Recommended: seasonal templates should not also use explicit
-  inflation. The trend component of the seasonal forecast serves this purpose.
+  enabled, the seasonal forecast already incorporates trend (which captures inflation implicitly).
+  In this case, the explicit inflation adjustment should be disabled or the user warned about
+  double-counting. Recommended: seasonal templates should not also use explicit inflation. The trend
+  component of the seasonal forecast serves this purpose.
 
 ### 3.4 Deduction Inflation
 
-- Applied at open enrollment time (user-specified month, likely November or December for a
-  January effective date).
+- Applied at open enrollment time (user-specified month, likely November or December for a January
+  effective date).
 - Each paycheck deduction can have an optional annual inflation rate.
 - At the open enrollment month, deduction amounts for the next year are recalculated:
   `new_amount = current_amount * (1 + deduction_inflation_rate)`.
-- The user is prompted to review and confirm adjusted amounts rather than having them
-  auto-applied.
+- The user is prompted to review and confirm adjusted amounts rather than having them auto-applied.
 
 ### 3.5 Budget Variance Analysis -- COMPLETE
 
@@ -394,82 +386,79 @@ original spec.
 
 ### 3.8 Third Paycheck Suggestions
 
-- **Problem:** Biweekly pay results in two months per year containing a third paycheck. The
-  calendar service detects these months (`is_third_paycheck_month` flag on the year overview,
-  built in Appendix A.9), but the detection is passive -- the user sees a badge but receives
-  no actionable guidance on how to use the extra funds.
-- **Feature:** An actionable third paycheck card on the dashboard and enhanced calendar badge.
-  When the next third paycheck is within 60 days, the dashboard displays a card showing the
-  net amount of the extra check alongside two contextual facts: emergency fund status (current
-  balance vs. goal target, if an emergency fund savings goal exists and is not yet met) and
-  highest-rate debt (account name, rate, remaining balance, if active debt accounts exist).
-  These facts give the user context for their decision without recommending one option over
-  the other.
-- **Action button:** A "Create Transfer" button opens the existing one-time transfer creation
-  form (`/transfers/new`) with the amount pre-filled to the net paycheck amount via query
-  parameter. The user selects the destination account and confirms. The transfer form route
-  needs a small modification to accept an optional `amount` query parameter as a form default.
-- **Calendar integration:** The existing "3rd check" badge on the year overview calendar gains
-  a tooltip or popover showing the same net amount and contextual facts. No action button on
-  the calendar -- the dashboard is the action surface.
+- **Problem:** Biweekly pay results in two months per year containing a third paycheck. The calendar
+  service detects these months (`is_third_paycheck_month` flag on the year overview, built in
+  Appendix A.9), but the detection is passive -- the user sees a badge but receives no actionable
+  guidance on how to use the extra funds.
+- **Feature:** An actionable third paycheck card on the dashboard and enhanced calendar badge. When
+  the next third paycheck is within 60 days, the dashboard displays a card showing the net amount of
+  the extra check alongside two contextual facts: emergency fund status (current balance vs. goal
+  target, if an emergency fund savings goal exists and is not yet met) and highest-rate debt
+  (account name, rate, remaining balance, if active debt accounts exist). These facts give the user
+  context for their decision without recommending one option over the other.
+- **Action button:** A "Create Transfer" button opens the existing one-time transfer creation form
+  (`/transfers/new`) with the amount pre-filled to the net paycheck amount via query parameter. The
+  user selects the destination account and confirms. The transfer form route needs a small
+  modification to accept an optional `amount` query parameter as a form default.
+- **Calendar integration:** The existing "3rd check" badge on the year overview calendar gains a
+  tooltip or popover showing the same net amount and contextual facts. No action button on the
+  calendar -- the dashboard is the action surface.
 - **Implementation:** No new service file. The dashboard service orchestrates the lookup using
-  existing data: net biweekly pay from the salary service, emergency fund goal from the
-  savings dashboard service, highest-rate debt from the debt summary service
-  (`_compute_debt_summary`), and third paycheck dates from the calendar service's
-  `_detect_third_paycheck_months()`. A helper function within the dashboard service assembles
-  the card data.
+  existing data: net biweekly pay from the salary service, emergency fund goal from the savings
+  dashboard service, highest-rate debt from the debt summary service (`_compute_debt_summary`), and
+  third paycheck dates from the calendar service's `_detect_third_paycheck_months()`. A helper
+  function within the dashboard service assembles the card data.
 - **Future enhancement -- priority engine (not in Phase 9):** A future mini-phase could add a
-  priority engine that recommends the optimal destination for surplus funds. This would
-  require new `auth.user_settings` columns (surplus priority mode, savings floor months),
-  committed debt strategy selection, and orchestration logic. Noted here for future scoping
-  but explicitly out of scope for Phase 9.
-- **Dependency:** Built on the calendar service and dashboard service from Appendix A.9.
-  Benefits from the debt summary (Appendix A.7 task 5.12) and savings goal trajectory
-  (Appendix A.7 task 5.15) features already implemented.
+  priority engine that recommends the optimal destination for surplus funds. This would require new
+  `auth.user_settings` columns (surplus priority mode, savings floor months), committed debt
+  strategy selection, and orchestration logic. Noted here for future scoping but explicitly out of
+  scope for Phase 9.
+- **Dependency:** Built on the calendar service and dashboard service from Appendix A.9. Benefits
+  from the debt summary (Appendix A.7 task 5.12) and savings goal trajectory (Appendix A.7 task
+  5.15) features already implemented.
 
 ### 3.9 Estimate Confidence Indicator
 
 - **Problem:** Every future transaction in the grid displays an estimated amount, but the
-  reliability of that estimate varies dramatically depending on its source. A seasonal
-  forecast backed by 4 years of history is far more reliable than a flat amount the user
-  entered once during initial setup. The user has no visual signal for which estimates to
-  trust and which to review.
-- **Feature:** A three-tier confidence indicator displayed on future transactions in the grid
-  and transaction detail views.
+  reliability of that estimate varies dramatically depending on its source. A seasonal forecast
+  backed by 4 years of history is far more reliable than a flat amount the user entered once during
+  initial setup. The user has no visual signal for which estimates to trust and which to review.
+- **Feature:** A three-tier confidence indicator displayed on future transactions in the grid and
+  transaction detail views.
 - **Confidence tiers:**
-  1. **High confidence (green):** Seasonal forecast (3.1) with 3+ years of data for the
-     target month, OR rolling average (3.2) with 6+ actuals.
-  2. **Medium confidence (yellow):** Seasonal forecast with 1-2 years of data, OR rolling
-     average with 3-5 actuals, OR inflation adjustment (3.3) applied.
+  1. **High confidence (green):** Seasonal forecast (3.1) with 3+ years of data for the target
+     month, OR rolling average (3.2) with 6+ actuals.
+  2. **Medium confidence (yellow):** Seasonal forecast with 1-2 years of data, OR rolling average
+     with 3-5 actuals, OR inflation adjustment (3.3) applied.
   3. **Low confidence (gray):** Template's static base amount with no supporting actuals, no
      seasonal history, and no inflation adjustment.
   If multiple sources apply, the highest-confidence source wins.
-- **Display:** A small color-coded icon (dot or badge) on each future transaction cell in the
-  grid. Tooltip on hover shows the source: "Seasonal forecast (4 years of data)" or "Rolling
-  average of last 6 actuals" or "Static estimate -- no actuals recorded." Same indicator with
-  a one-line explanation in the transaction quick edit / detail view. No indicator on past
-  transactions with actual amounts.
-- **Implementation:** New service: `services/estimate_confidence.py`. Pure function that takes
-  a template_id and target (year, month) and returns a confidence tier and source description.
-  Checks: is the template seasonal? Count seasonal_history records. Does the template have
-  actuals? Count paid transactions. Does the template have inflation enabled? Apply tier
-  rules. Supports a batch mode (list of template_id/year/month tuples, two bulk queries,
-  evaluate in memory) to avoid N+1 queries during grid rendering.
+- **Display:** A small color-coded icon (dot or badge) on each future transaction cell in the grid.
+  Tooltip on hover shows the source: "Seasonal forecast (4 years of data)" or "Rolling average of
+  last 6 actuals" or "Static estimate -- no actuals recorded." Same indicator with a one-line
+  explanation in the transaction quick edit / detail view. No indicator on past transactions with
+  actual amounts.
+- **Implementation:** New service: `services/estimate_confidence.py`. Pure function that takes a
+  template_id and target (year, month) and returns a confidence tier and source description. Checks:
+  is the template seasonal? Count seasonal_history records. Does the template have actuals? Count
+  paid transactions. Does the template have inflation enabled? Apply tier rules. Supports a batch
+  mode (list of template_id/year/month tuples, two bulk queries, evaluate in memory) to avoid N+1
+  queries during grid rendering.
 - **No new data model.** Computed from existing data: `seasonal_history` rows (3.1), paid
   transaction counts, and template flags.
-- **Dependency:** Requires 3.1 (seasonal history table, `is_seasonal` flag) and 3.2 (rolling
-  average service for actual count lookup). Benefits from 3.3 (inflation flag adds a
-  medium-confidence signal).
+- **Dependency:** Requires 3.1 (seasonal history table, `is_seasonal` flag) and 3.2 (rolling average
+  service for actual count lookup). Benefits from 3.3 (inflation flag adds a medium-confidence
+  signal).
 
 ### 3.10 Bill Due Date Optimization
 
-- **Problem:** When expenses cluster unevenly across pay periods, one period may have a
-  dangerously low projected end balance while the adjacent period has comfortable surplus.
-  The user has no visibility into which expenses could be shifted to balance cash flow.
-- **Feature:** An advisory analysis that detects pay period imbalance, identifies moveable
-  expenses, simulates the balance impact of shifting them, and recommends an action path.
-  The app advises but does not automate -- the user decides how to act (change the due date,
-  use the Credit/Credit Payback feature, or transfer from savings).
+- **Problem:** When expenses cluster unevenly across pay periods, one period may have a dangerously
+  low projected end balance while the adjacent period has comfortable surplus. The user has no
+  visibility into which expenses could be shifted to balance cash flow.
+- **Feature:** An advisory analysis that detects pay period imbalance, identifies moveable expenses,
+  simulates the balance impact of shifting them, and recommends an action path. The app advises but
+  does not automate -- the user decides how to act (change the due date, use the Credit/Credit
+  Payback feature, or transfer from savings).
 
 #### 3.10.1 Data Model
 
@@ -488,91 +477,84 @@ form.
 
 New service: `services/due_date_optimizer.py`
 
-- **Input:** A date range (typically the next 2-4 pay periods) and the user's active
-  transaction templates.
-- **Step 1 -- Detect imbalance:** For each pay period in the range, compute total committed
-  outflows and projected end balance. Identify pairs of adjacent periods where the balance
-  difference exceeds a threshold (any period's projected end balance drops below the user's
-  warning threshold, or balance difference between adjacent periods exceeds 40% of net pay).
+- **Input:** A date range (typically the next 2-4 pay periods) and the user's active transaction
+  templates.
+- **Step 1 -- Detect imbalance:** For each pay period in the range, compute total committed outflows
+  and projected end balance. Identify pairs of adjacent periods where the balance difference exceeds
+  a threshold (any period's projected end balance drops below the user's warning threshold, or
+  balance difference between adjacent periods exceeds 40% of net pay).
 - **Step 2 -- Identify moveable expenses:** From the lower-balance period, collect generated
   transactions whose template has `is_due_date_flexible=TRUE`. Sort by amount descending.
-- **Step 3 -- Simulate moves:** For each moveable expense, calculate the effect of shifting it
-  to the adjacent higher-balance period. Report: "Moving [expense_name] ($[amount]) from
-  period [date] to period [date] would raise your low-period end balance from $[old] to
-  $[new]."
+- **Step 3 -- Simulate moves:** For each moveable expense, calculate the effect of shifting it to
+  the adjacent higher-balance period. Report: "Moving [expense_name]
+  ($[amount]) from period [date] to period [date] would raise your low-period end balance from $[old]
+  to $[new]."
 - **Step 4 -- Recommend action path:** For each suggested move:
-  1. If the expense due date falls after the next paycheck date: "This bill can be
-     rescheduled -- change the due date to [suggested_date] or later."
-  2. If the expense due date falls before the next paycheck (must be paid before money
-     arrives): "This bill is due before your next paycheck. Options: pay with a credit card
-     (use the Credit/Credit Payback feature), or transfer from savings to cover the
-     $[shortfall] gap."
+  1. If the expense due date falls after the next paycheck date: "This bill can be rescheduled --
+     change the due date to [suggested_date] or later."
+  2. If the expense due date falls before the next paycheck (must be paid before money arrives):
+     "This bill is due before your next paycheck. Options: pay with a credit card (use the
+     Credit/Credit Payback feature), or transfer from savings to cover the $[shortfall] gap."
   3. Compute the exact shortfall amount for bridge funding scenarios.
-- **Output:** A list of suggestion objects: template name, amount, source period, target
-  period, old end balance, new end balance, action path (reschedule / credit card / savings
-  transfer), and shortfall amount.
-- **Pure function:** Receives pre-loaded period and transaction data. Does not query the
-  database.
+- **Output:** A list of suggestion objects: template name, amount, source period, target period, old
+  end balance, new end balance, action path (reschedule / credit card / savings transfer), and
+  shortfall amount.
+- **Pure function:** Receives pre-loaded period and transaction data. Does not query the database.
 
 #### 3.10.3 Display
 
-- **Dashboard integration:** When the optimizer detects an actionable imbalance in the next 2
-  pay periods, show a brief alert in the dashboard's "Alerts / Needs Attention" section:
-  "Cash flow imbalance detected in [period_date] -- [count] suggestion(s) available." Links
-  to the full analysis.
-- **Full analysis view:** A section on the analytics page or a dedicated page. Table showing
-  each suggestion with template name, amount, source/target periods, balance improvement, and
-  recommended action. All suggestions are informational -- no action buttons that automate
-  the move.
+- **Dashboard integration:** When the optimizer detects an actionable imbalance in the next 2 pay
+  periods, show a brief alert in the dashboard's "Alerts / Needs Attention" section: "Cash flow
+  imbalance detected in [period_date] -- [count] suggestion(s) available." Links to the full
+  analysis.
+- **Full analysis view:** A section on the analytics page or a dedicated page. Table showing each
+  suggestion with template name, amount, source/target periods, balance improvement, and recommended
+  action. All suggestions are informational -- no action buttons that automate the move.
 
 #### 3.10.4 Dependency
 
-- **Requires:** Dashboard service (Appendix A.9) for alert integration; existing balance
-  calculator for projected end balances.
-- **No dependency on 3.1-3.4.** Works with whatever amounts are in the generated
-  transactions.
+- **Requires:** Dashboard service (Appendix A.9) for alert integration; existing balance calculator
+  for projected end balances.
+- **No dependency on 3.1-3.4.** Works with whatever amounts are in the generated transactions.
 - **Benefits from:** Section 4 (notifications) for delivering imbalance alerts.
 
 ### 3.11 Year-over-Year Seasonal Comparison
 
 - **Problem:** Seasonal forecasts are opaque. The user sees a forecasted amount for a future
-  seasonal bill but has no easy way to verify whether it feels right without manually looking
-  up last year's actual.
-- **Feature:** When viewing a future transaction for a seasonal template, show the prior
-  year's actual alongside this year's forecast. Example: "Jul 2025 actual: $184.32 --
-  Forecast: $195.00 (+4.1%)." If no prior year actual exists, show: "No prior year data for
-  [month]."
+  seasonal bill but has no easy way to verify whether it feels right without manually looking up
+  last year's actual.
+- **Feature:** When viewing a future transaction for a seasonal template, show the prior year's
+  actual alongside this year's forecast. Example: "Jul 2025 actual: $184.32 -- Forecast: $195.00
+  (+4.1%)." If no prior year actual exists, show: "No prior year data for [month]."
 - **Display locations:**
   - **Grid transaction cell:** Tooltip or expanded detail view shows the comparison.
   - **Transaction quick edit / detail:** Small info line below the amount field.
-  - **Seasonal history entry form (3.1.3):** Highlight cells that already have prior year data
-    and show the year-over-year change as the user enters new values. Catches data entry
-    errors (e.g., $1,870 instead of $187).
+  - **Seasonal history entry form (3.1.3):** Highlight cells that already have prior year data and
+    show the year-over-year change as the user enters new values. Catches data entry errors (e.g.,
+    $1,870 instead of $187).
 - **Implementation:** Add a function to `services/seasonal_forecast.py` (created in 3.1.4):
   `get_prior_year_comparison(template_id, target_year, target_month)`. Returns a dict:
   `{prior_year, prior_amount, forecast_amount, change_pct}` or `None` if no prior year data.
-  Supports batch lookup (list of template_id/year/month tuples, one bulk query) for grid
-  rendering.
+  Supports batch lookup (list of template_id/year/month tuples, one bulk query) for grid rendering.
 - **No new data model.** Reads from the `seasonal_history` table created by 3.1.
 - **Dependency:** Requires 3.1 (seasonal history table and forecasting engine). Should be
-  implemented after 3.1 is complete and the user has entered at least one year of seasonal
-  history.
+  implemented after 3.1 is complete and the user has entered at least one year of seasonal history.
 
 ### 3.12 Expense Anomaly Detection
 
-- **Problem:** When a recurring bill comes in significantly different from its expected amount,
-  the user may not notice until they've already confirmed the transaction. Billing errors,
-  forgotten add-ons, rate changes, and data entry typos go undetected at the point of entry.
+- **Problem:** When a recurring bill comes in significantly different from its expected amount, the
+  user may not notice until they've already confirmed the transaction. Billing errors, forgotten
+  add-ons, rate changes, and data entry typos go undetected at the point of entry.
 - **Feature:** When the user records an actual amount for a recurring transaction (via
-  mark-as-paid), the app compares the actual to the expected amount and flags significant
-  deviations inline before the transaction is confirmed.
+  mark-as-paid), the app compares the actual to the expected amount and flags significant deviations
+  inline before the transaction is confirmed.
 
 #### 3.12.1 Expected Amount Resolution
 
 The comparison uses the most specific estimate source available, checked in priority order:
 
-1. **Seasonal forecast (3.1):** If the template has `is_seasonal=True` and a forecast is
-   available for the transaction's target month.
+1. **Seasonal forecast (3.1):** If the template has `is_seasonal=True` and a forecast is available
+   for the transaction's target month.
 2. **Rolling average (3.2):** If the template has 3+ paid actuals.
 3. **Template base amount:** The template's static `amount` field.
 
@@ -588,52 +570,52 @@ configurable percentage threshold.
 #### 3.12.3 Detection Timing and Display
 
 - **Primary trigger -- mark-as-paid flow:** When the user enters an actual amount during
-  mark-as-paid (grid or dashboard), the anomaly check runs before the transaction is
-  confirmed. If anomalous, an inline warning is displayed: "This amount ($[actual]) is [X]%
-  [higher/lower] than expected ($[expected] from [source_label]). Confirm or correct."
-  Source label identifies the estimate source: "seasonal forecast", "rolling average", or
+  mark-as-paid (grid or dashboard), the anomaly check runs before the transaction is confirmed. If
+  anomalous, an inline warning is displayed: "This amount
+  ($[actual]) is [X]% [higher/lower] than expected ($[expected] from [source_label]). Confirm or
+  correct." Source label identifies the estimate source: "seasonal forecast", "rolling average", or
   "template amount."
-- **Two-step confirmation:** When an anomaly is detected, the response renders a confirmation
-  form with the warning and two buttons: "Confirm $[actual]" and "Edit Amount." The "Confirm"
-  button submits with a `force=true` parameter that bypasses the anomaly check. This prevents
-  accidental confirmation of typos while not blocking legitimate unusual amounts.
+- **Two-step confirmation:** When an anomaly is detected, the response renders a confirmation form
+  with the warning and two buttons: "Confirm $[actual]" and "Edit Amount." The "Confirm" button
+  submits with a `force=true` parameter that bypasses the anomaly check. This prevents accidental
+  confirmation of typos while not blocking legitimate unusual amounts.
 - **Dashboard mark-as-paid:** Same anomaly check and two-step confirmation applies to the
   dashboard's mark-as-paid flow (built in Appendix A.9).
 
 #### 3.12.4 Implementation
 
 - **New service:** `services/anomaly_detection.py`
-- **Primary function:** `check_anomaly(template_id, actual_amount, target_year, target_month,
-  threshold_pct)` -- returns an `AnomalyResult` with fields: `is_anomalous` (bool),
-  `expected_amount` (Decimal), `source` (str), `deviation_pct` (float), `direction` (str:
-  'over' or 'under').
+- **Primary function:**
+  `check_anomaly(template_id, actual_amount, target_year, target_month, threshold_pct)` -- returns
+  an `AnomalyResult` with fields: `is_anomalous` (bool), `expected_amount` (Decimal), `source`
+  (str), `deviation_pct` (float), `direction` (str: 'over' or 'under').
 - **Resolution logic:** Checks sources in priority order (3.12.1). Calls
-  `seasonal_forecast.get_forecast()` if seasonal, then `smart_estimate.get_rolling_average()`
-  if actuals exist, then falls back to template base amount.
+  `seasonal_forecast.get_forecast()` if seasonal, then `smart_estimate.get_rolling_average()` if
+  actuals exist, then falls back to template base amount.
 - **Integration:** The transaction route's mark-done handler calls `check_anomaly()` when
   `actual_amount` is provided. If anomalous and `force` is not set, the response includes the
   warning partial. If `force=true`, the transaction is committed normally.
-- **Shared utility:** Tasks 3.9 and 3.12 both resolve "best estimate source for this
-  template" in the same priority order. A shared `_resolve_best_estimate(template_id, year,
-  month)` utility function avoids duplicating this logic.
-- **No retroactive review screen.** Budget variance analysis (3.5, completed) already
-  provides retroactive visibility into estimate-vs-actual gaps.
+- **Shared utility:** Tasks 3.9 and 3.12 both resolve "best estimate source for this template" in
+  the same priority order. A shared `_resolve_best_estimate(template_id, year, month)` utility
+  function avoids duplicating this logic.
+- **No retroactive review screen.** Budget variance analysis (3.5, completed) already provides
+  retroactive visibility into estimate-vs-actual gaps.
 
 #### 3.12.5 Interaction with Other Features
 
-- **3.1 course correction:** When a seasonal transaction is marked paid, 3.1.4 writes the
-  actual to seasonal_history. Anomaly detection runs before this write. If the user confirms
-  an anomalous amount, it still gets recorded -- the actual is real data regardless.
-- **3.2 smart estimates:** An anomalous-but-confirmed actual shifts the rolling average. Over
-  time, if the new amount becomes the norm, future occurrences stop being flagged.
+- **3.1 course correction:** When a seasonal transaction is marked paid, 3.1.4 writes the actual to
+  seasonal_history. Anomaly detection runs before this write. If the user confirms an anomalous
+  amount, it still gets recorded -- the actual is real data regardless.
+- **3.2 smart estimates:** An anomalous-but-confirmed actual shifts the rolling average. Over time,
+  if the new amount becomes the norm, future occurrences stop being flagged.
 - **3.9 estimate confidence:** The anomaly service can reuse the confidence service's source
   resolution logic (or both use the shared utility).
 
 #### 3.12.6 Dependency
 
-- **Requires:** 3.1 (seasonal forecast as comparison source) and 3.2 (rolling average as
-  comparison source). Can function with only the template base amount if 3.1 and 3.2 are not
-  yet implemented, but value is significantly reduced.
+- **Requires:** 3.1 (seasonal forecast as comparison source) and 3.2 (rolling average as comparison
+  source). Can function with only the template base amount if 3.1 and 3.2 are not yet implemented,
+  but value is significantly reduced.
 - **Benefits from:** 3.9 (shared estimate source resolution logic).
 - **Requires:** Dashboard mark-as-paid flow (Appendix A.9) for dashboard integration. Grid
   integration depends only on the existing mark-as-paid endpoint.
@@ -722,113 +704,112 @@ Organized into 6 groups matching the settings UI layout.
 
 ## Group 1: Balance & Cash Flow
 
-1. **Low projected balance (warning and critical):** Triggered when the projected end balance
-   for any future pay period within the configured lookahead window drops below the configured
-   threshold. Warning and critical thresholds are configurable per account. Severity is
-   determined by which threshold is breached. The lookahead window defaults to 6 periods (~3
-   months biweekly) and is configurable via `lookahead_periods`. The app calculates out to 52
-   periods by default, but generating low-balance notifications for periods 6+ months out
-   creates noise the user cannot act on.
-2. **Balance recovery:** Triggered when a prior low-balance warning's underlying condition
-   clears (the projected balance for that period recovers above the threshold). The original
-   warning notification is auto-resolved (`resolved_at` set) and a new info-severity
-   notification is created: "Your checking balance for [period_date] has recovered from
+1. **Low projected balance (warning and critical):** Triggered when the projected end balance for
+   any future pay period within the configured lookahead window drops below the configured
+   threshold. Warning and critical thresholds are configurable per account. Severity is determined
+   by which threshold is breached. The lookahead window defaults to 6 periods (~3 months biweekly)
+   and is configurable via `lookahead_periods`. The app calculates out to 52 periods by default, but
+   generating low-balance notifications for periods 6+ months out creates noise the user cannot act
+   on.
+2. **Balance recovery:** Triggered when a prior low-balance warning's underlying condition clears
+   (the projected balance for that period recovers above the threshold). The original warning
+   notification is auto-resolved (`resolved_at` set) and a new info-severity notification is
+   created: "Your checking balance for [period_date] has recovered from
    -$[old_balance] to $[new_balance]. The low balance warning has been resolved." Provides
    confirmation that the user's corrective action worked.
 3. **Pre-payday cash flow summary:** Triggered 2 days before each payday. Generates a single
-   notification summarizing the upcoming period: bill count, total bill amount, and projected
-   end balance. Example: "Next period (Apr 11--24): 6 bills totaling $1,847. Projected end
-   balance: $423." Fires even when nothing is wrong -- proactive awareness, not just alerts.
-   Implementation: one query against generated transactions for the next period, formatted
-   into a single notification. Runs during the daily scheduled check.
+   notification summarizing the upcoming period: bill count, total bill amount, and projected end
+   balance. Example: "Next period (Apr 11--24): 6 bills totaling
+   $1,847. Projected end balance: $423." Fires even when nothing is wrong -- proactive awareness,
+   not just alerts. Implementation: one query against generated transactions for the next period,
+   formatted into a single notification. Runs during the daily scheduled check.
 
 ## Group 2: Bills & Payments
 
 4. **Upcoming large expense:** Triggered N days before a large expense is due (`days_before`
    configurable, default: 7). "Large" is configurable as a flat dollar threshold
-   (`large_expense_amount`), a percentage of net paycheck (`large_expense_pct`), or both. When
-   both are set, an expense triggers the notification if it exceeds either threshold. Gives the
-   user time to ensure funds are available.
+   (`large_expense_amount`), a percentage of net paycheck (`large_expense_pct`), or both. When both
+   are set, an expense triggers the notification if it exceeds either threshold. Gives the user time
+   to ensure funds are available.
 5. **Missed payment detection:** Triggered when a recurring transaction passes its due date and
-   remains in Projected status (not marked Paid). Catches genuinely missed payments and
-   transactions the user forgot to reconcile. Detection runs during the daily scheduled check
-   (4.1.3). Severity: warning initially, escalates to critical after a configurable number of
-   days (`missed_payment_escalation_days`, default: 3). Auto-resolved when the transaction is
-   marked Paid.
-6. **Unreconciled period aging:** Triggered when a pay period's end date has passed and the
-   period has not been reconciled (no anchor balance set). Warning fires after
-   `period_aging_warning_days` (default: 3) past the period end date. Escalates to critical
-   after `period_aging_critical_days` (default: 7). Message includes the downstream impact:
-   "Your [period_date] period ended [N] days ago and hasn't been reconciled. Projected
-   balances for all future periods may be inaccurate." Auto-resolved when the period is
-   reconciled (anchor balance set). The dashboard already computes this as an ephemeral alert
-   (Appendix A.9) -- this notification persists it and adds escalation.
+   remains in Projected status (not marked Paid). Catches genuinely missed payments and transactions
+   the user forgot to reconcile. Detection runs during the daily scheduled check (4.1.3). Severity:
+   warning initially, escalates to critical after a configurable number of days
+   (`missed_payment_escalation_days`, default: 3). Auto-resolved when the transaction is marked
+   Paid.
+6. **Unreconciled period aging:** Triggered when a pay period's end date has passed and the period
+   has not been reconciled (no anchor balance set). Warning fires after `period_aging_warning_days`
+   (default: 3) past the period end date. Escalates to critical after `period_aging_critical_days`
+   (default: 7). Message includes the downstream impact: "Your [period_date] period ended [N] days
+   ago and hasn't been reconciled. Projected balances for all future periods may be inaccurate."
+   Auto-resolved when the period is reconciled (anchor balance set). The dashboard already computes
+   this as an ephemeral alert (Appendix A.9) -- this notification persists it and adds escalation.
 
 ## Group 3: Savings & Goals
 
-7. **Savings milestone reached:** Triggered when a savings goal reaches a milestone percentage
-   (25%, 50%, 75%, 100%). Informational and motivational. The 100% milestone receives distinct
-   celebratory treatment in the UI (different icon or color, congratulatory message) to
-   differentiate it from routine progress notifications.
-8. **Savings goal pace alert:** Triggered when a savings goal with a target date is falling
-   behind the required savings rate. Depends on the savings goal trajectory feature
-   (Appendix A.7 task 5.15). Includes the corrective action: "At your current rate, you'll
-   miss your Emergency Fund goal by $2,400. Increase monthly contributions from $500 to $650
-   to reach your target by December 2027." Links to the savings account dashboard.
+7. **Savings milestone reached:** Triggered when a savings goal reaches a milestone percentage (25%,
+   50%, 75%, 100%). Informational and motivational. The 100% milestone receives distinct celebratory
+   treatment in the UI (different icon or color, congratulatory message) to differentiate it from
+   routine progress notifications.
+8. **Savings goal pace alert:** Triggered when a savings goal with a target date is falling behind
+   the required savings rate. Depends on the savings goal trajectory feature (Appendix A.7 task
+   5.15). Includes the corrective action: "At your current rate, you'll miss your Emergency Fund
+   goal by $2,400. Increase monthly contributions from $500 to $650 to reach your target by December
+   2027." Links to the savings account dashboard.
 9. **Savings contribution reminder:** Triggered at the start of each month if no transfer to a
-   goal-linked savings account has been recorded for that month. Message: "No contribution to
-   your [goal_name] this month. You need $[required_monthly]/month to stay on pace for your
-   [target_date] target." Different from the pace alert (#8), which fires after you've fallen
-   behind -- this fires before you fall behind, when there's still time to act. Depends on
-   savings goal trajectory (Appendix A.7 task 5.15). Runs during the daily scheduled check.
+   goal-linked savings account has been recorded for that month. Message: "No contribution to your
+   [goal_name] this month. You need $[required_monthly]/month to stay on pace for your [target_date]
+   target." Different from the pace alert (#8), which fires after you've fallen behind -- this fires
+   before you fall behind, when there's still time to act. Depends on savings goal trajectory
+   (Appendix A.7 task 5.15). Runs during the daily scheduled check.
 
 ## Group 4: Debt
 
 10. **Debt payoff milestone:** Triggered when a debt account's balance crosses a round-number
-    threshold (e.g., drops below $10,000) or when the projected payoff date moves ahead of
-    schedule. Example: "Your auto loan balance dropped below $10,000!" or "At your current
-    payment rate, your student loan pays off in October 2028 -- 2 months ahead of schedule."
-    Motivational. Uses data already computed by the debt payoff projection services
+    threshold (e.g., drops below
+    $10,000) or when the projected payoff date moves ahead of schedule. Example: "Your auto loan balance dropped below $10,000!" <!-- MD013 kept: rumdl 0.2.14 reflow cannot wrap a line containing a quoted phrase (it emits a >100 line and reverts a manual wrap); left as the canonical form. --> <!-- rumdl-disable-line MD013 -->
+    or "At your current payment rate, your student loan pays off in October 2028 -- 2 months ahead
+    of schedule." Motivational. Uses data already computed by the debt payoff projection services
     (Appendix A.7 tasks 5.1, 5.5). Runs during the daily scheduled check.
 11. **ARM rate adjustment reminder:** Triggered N days before an ARM loan's next scheduled rate
-    adjustment date (`days_before` configurable, default: 30). The adjustment date is
-    calculated from the loan's origination date, `arm_first_adjustment_months`, and
+    adjustment date (`days_before` configurable, default: 30). The adjustment date is calculated
+    from the loan's origination date, `arm_first_adjustment_months`, and
     `arm_adjustment_interval_months`. Reminds the user to watch for their lender's rate change
-    notice and update the rate history in the app. Depends on ARM rate support
-    (Appendix A.7 task 5.7). Runs during the daily scheduled check.
+    notice and update the rate history in the app. Depends on ARM rate support (Appendix A.7 task
+    5.7). Runs during the daily scheduled check.
 
 ## Group 5: Templates & Trends
 
 12. **Recurring template change detection:** Triggered when the rolling average of a recurring
     transaction's actual amounts has diverged from the template's base amount by more than a
-    configurable threshold (`template_change_threshold_pct`, default: 15%). Example: "Your
-    T-Mobile bill has averaged $95.20 over the last 3 months, but the template amount is
-    $85.00 (+12%). Update the template?" Links to the template edit page. Bridges the gap
-    between anomaly detection (Section 3 task 3.12, which catches one-off spikes) and the user
-    forgetting to update a template after a legitimate rate change. Depends on Section 3 task
-    3.2 (rolling average engine). Runs during the daily scheduled check.
+    configurable threshold (`template_change_threshold_pct`, default: 15%). Example: "Your T-Mobile
+    bill has averaged $95.20 over the last 3 months, but the template amount is $85.00 (+12%).
+    Update the template?" Links to the template edit page. Bridges the gap between anomaly detection
+    (Section 3 task 3.12, which catches one-off spikes) and the user forgetting to update a template
+    after a legitimate rate change. Depends on Section 3 task 3.2 (rolling average engine). Runs
+    during the daily scheduled check.
 
 ## Group 6: Digests
 
 13. **Weekly summary:** Generated once per week (day configurable, default: Monday). In-app:
-    rendered as a pinned notification at the top of the notification dropdown. Email: sent as
-    an HTML digest. Content includes: upcoming bills for the week, savings goal progress
-    summary, any unresolved alerts from the past week, and net worth change (if net worth is
-    computed elsewhere; omit this section if not available). The weekly digest is an
-    all-or-nothing toggle -- the user cannot select individual sections. Auto-resolved after
-    7 days (replaced by the next week's digest).
-14. **Payday reconciliation reminder:** Email only -- not shown in-app (the user is already in
-    the app if they can see notifications). Triggered on payday or the day after as a reminder
-    to open the app and reconcile the current period. Runs during the daily scheduled check.
-    Delivered immediately (not batched).
+    rendered as a pinned notification at the top of the notification dropdown. Email: sent as an
+    HTML digest. Content includes: upcoming bills for the week, savings goal progress summary, any
+    unresolved alerts from the past week, and net worth change (if net worth is computed elsewhere;
+    omit this section if not available). The weekly digest is an all-or-nothing toggle -- the user
+    cannot select individual sections. Auto-resolved after 7 days (replaced by the next week's
+    digest).
+14. **Payday reconciliation reminder:** Email only -- not shown in-app (the user is already in the
+    app if they can see notifications). Triggered on payday or the day after as a reminder to open
+    the app and reconcile the current period. Runs during the daily scheduled check. Delivered
+    immediately (not batched).
 
 Future notification types (not in initial build):
 
 - Retirement goal milestones
 - Contribution limit warnings (approaching annual 401(k)/IRA limit)
-- Upcoming rate/term change awareness (promotional APR expiry, student loan deferment end,
-  escrow analysis adjustment) -- depends on whether account parameter architecture stores
-  future effective dates for rate changes
+- Upcoming rate/term change awareness (promotional APR expiry, student loan deferment end, escrow
+  analysis adjustment) -- depends on whether account parameter architecture stores future effective
+  dates for rate changes
 
 ### 4.1.3 Persist Dashboard Alerts as Notifications
 
@@ -841,65 +822,62 @@ conditions during its scheduled check and persists them.
 
 Mapping:
 
-- Stale anchor alert -> no dedicated notification type; covered by unreconciled period aging
-  (#6) which escalates on a similar timeline. If the stale anchor alert uses a different
-  staleness threshold than period aging, reconcile the two thresholds during implementation.
-- Negative projected balance alert -> covered by low projected balance (#1). The dashboard
-  alert fires for any negative balance; the notification fires based on configurable
-  thresholds. A threshold of $0.00 produces equivalent behavior.
+- Stale anchor alert -> no dedicated notification type; covered by unreconciled period aging (#6)
+  which escalates on a similar timeline. If the stale anchor alert uses a different staleness
+  threshold than period aging, reconcile the two thresholds during implementation.
+- Negative projected balance alert -> covered by low projected balance (#1). The dashboard alert
+  fires for any negative balance; the notification fires based on configurable thresholds. A
+  threshold of $0.00 produces equivalent behavior.
 - Overdue reconciliation alert -> covered by unreconciled period aging (#6).
 
 #### 4.1.4 Trigger Mechanism
 
-- **On transaction edit:** After any transaction is created, updated, or status-changed, the
-  balance roll-forward is recalculated. At this point, check projected balances against
-  thresholds for low balance warnings (#1) and check for balance recovery (#2).
-- **Scheduled check (daily):** A lightweight scheduled job (cron or APScheduler) runs daily.
-  Checks for: pre-payday cash flow summary (#3), upcoming large expenses (#4), missed
-  payments (#5), unreconciled period aging (#6), savings contribution reminders (#9), debt
-  payoff milestones (#10), ARM rate adjustment reminders (#11), recurring template change
-  detection (#12), weekly summary generation (#13, on the configured day), and payday
-  reconciliation reminders (#14). This avoids making the transaction edit path heavier than
-  necessary.
+- **On transaction edit:** After any transaction is created, updated, or status-changed, the balance
+  roll-forward is recalculated. At this point, check projected balances against thresholds for low
+  balance warnings (#1) and check for balance recovery (#2).
+- **Scheduled check (daily):** A lightweight scheduled job (cron or APScheduler) runs daily. Checks
+  for: pre-payday cash flow summary (#3), upcoming large expenses (#4), missed payments (#5),
+  unreconciled period aging (#6), savings contribution reminders (#9), debt payoff milestones (#10),
+  ARM rate adjustment reminders (#11), recurring template change detection (#12), weekly summary
+  generation (#13, on the configured day), and payday reconciliation reminders (#14). This avoids
+  making the transaction edit path heavier than necessary.
 - **On savings goal update:** When a savings account balance changes (via transfer or anchor
   true-up), check goal progress for milestone notifications (#7) and pace alerts (#8).
 
 #### 4.1.5 Deduplication
 
-- The system should not generate duplicate notifications for the same event. Use a combination
-  of notification_type + related_entity_type + related_entity_id + a time window to prevent
-  duplicates.
-- Example: A low balance warning for checking account ID 1 for pay period ID 47 should only
-  be generated once. If the user fixes the issue and the balance recovers, the warning is
-  auto-resolved and a balance recovery notification is generated. If the balance drops again
-  later, a new warning is generated.
+- The system should not generate duplicate notifications for the same event. Use a combination of
+  notification_type + related_entity_type + related_entity_id + a time window to prevent duplicates.
+- Example: A low balance warning for checking account ID 1 for pay period ID 47 should only be
+  generated once. If the user fixes the issue and the balance recovers, the warning is auto-resolved
+  and a balance recovery notification is generated. If the balance drops again later, a new warning
+  is generated.
 - Weekly summaries replace the prior week's pinned digest (old one is auto-resolved).
-- Savings milestones use the milestone percentage as part of the deduplication key (reaching
-  50% only fires once per goal, even if the balance fluctuates around the threshold).
+- Savings milestones use the milestone percentage as part of the deduplication key (reaching 50%
+  only fires once per goal, even if the balance fluctuates around the threshold).
 
 #### 4.1.6 Snooze
 
 - Any notification can be snoozed. Snoozing sets `snoozed_until` to a future timestamp.
-- Snoozed notifications are hidden from the dropdown and the `/notifications` page until the
-  snooze expires.
-- Configurable snooze durations presented as options: 1 day, 3 days, 7 days, until next
-  payday. "Until next payday" computes the next pay period start date from the pay period
-  schedule.
-- Snoozing does not prevent auto-resolve. If the underlying condition clears while a
-  notification is snoozed, it is still resolved.
-- Snoozing does not prevent deduplication. If the same event would generate a new notification
-  while the original is snoozed, no duplicate is created.
+- Snoozed notifications are hidden from the dropdown and the `/notifications` page until the snooze
+  expires.
+- Configurable snooze durations presented as options: 1 day, 3 days, 7 days, until next payday.
+  "Until next payday" computes the next pay period start date from the pay period schedule.
+- Snoozing does not prevent auto-resolve. If the underlying condition clears while a notification is
+  snoozed, it is still resolved.
+- Snoozing does not prevent deduplication. If the same event would generate a new notification while
+  the original is snoozed, no duplicate is created.
 
 #### 4.1.7 Auto-Resolve
 
-- Notifications are automatically marked resolved (`resolved_at` set to current timestamp)
-  when the underlying condition clears. Resolved notifications are visually distinct in the UI
-  (muted styling, strikethrough, or moved to a "resolved" section).
+- Notifications are automatically marked resolved (`resolved_at` set to current timestamp) when the
+  underlying condition clears. Resolved notifications are visually distinct in the UI (muted
+  styling, strikethrough, or moved to a "resolved" section).
 - Auto-resolve conditions by type:
   - Low projected balance (#1): balance recovers above the threshold for that period.
   - Balance recovery (#2): not auto-resolved (informational; ages out naturally).
-  - Pre-payday summary (#3): auto-resolved when the period begins (the summary is no longer
-    relevant once the period is active).
+  - Pre-payday summary (#3): auto-resolved when the period begins (the summary is no longer relevant
+    once the period is active).
   - Upcoming large expense (#4): auto-resolved when the transaction is marked Paid.
   - Missed payment (#5): auto-resolved when the transaction is marked Paid.
   - Unreconciled period aging (#6): auto-resolved when the period is reconciled.
@@ -908,8 +886,8 @@ Mapping:
   - Savings contribution reminder (#9): auto-resolved when a transfer to the goal account is
     recorded for the current month.
   - Debt payoff milestone (#10): not auto-resolved (permanent achievement record).
-  - ARM rate reminder (#11): auto-resolved when the rate history is updated in the app for
-    the current adjustment period.
+  - ARM rate reminder (#11): auto-resolved when the rate history is updated in the app for the
+    current adjustment period.
   - Template change detection (#12): auto-resolved when the template amount is updated.
   - Weekly summary (#13): auto-resolved after 7 days (replaced by the next digest).
   - Payday reconciliation reminder (#14): auto-resolved when the period is reconciled.
@@ -918,30 +896,30 @@ Mapping:
 
 #### 4.2.1 Notification Bell and Dropdown
 
-- **Notification bell icon** in the app header (Bootstrap navbar). Displays an unread count
-  badge. The badge counts only unread, non-snoozed, non-resolved notifications.
-- **Dropdown panel** on click: shows recent notifications (last 10), newest first. The weekly
-  digest (#13) is pinned to the top of the dropdown when present, regardless of age. Each
-  notification shows severity (color-coded), title, timestamp, and a brief message.
-- **Actions per notification:** mark as read (click), snooze (with duration picker), dismiss
-  (mark resolved manually).
+- **Notification bell icon** in the app header (Bootstrap navbar). Displays an unread count badge.
+  The badge counts only unread, non-snoozed, non-resolved notifications.
+- **Dropdown panel** on click: shows recent notifications (last 10), newest first. The weekly digest
+  (#13) is pinned to the top of the dropdown when present, regardless of age. Each notification
+  shows severity (color-coded), title, timestamp, and a brief message.
+- **Actions per notification:** mark as read (click), snooze (with duration picker), dismiss (mark
+  resolved manually).
 - **Bulk actions:** mark all as read.
-- **Link to context:** Notifications with a `related_entity_url` link to the relevant page
-  (e.g., a low balance warning links to the pay period in the grid; a savings milestone links
-  to the account dashboard; a template change detection links to the template edit page).
+- **Link to context:** Notifications with a `related_entity_url` link to the relevant page (e.g., a
+  low balance warning links to the pay period in the grid; a savings milestone links to the account
+  dashboard; a template change detection links to the template edit page).
 - **"View all" link** at the bottom of the dropdown navigates to `/notifications`.
 
 #### 4.2.2 Notifications Page (`/notifications`)
 
 - Full-page view of all notifications.
-- **Filters:** by notification type, by severity (info/warning/critical), by date range, by
-  status (unread/read/resolved/snoozed).
+- **Filters:** by notification type, by severity (info/warning/critical), by date range, by status
+  (unread/read/resolved/snoozed).
 - **Default view:** shows unresolved, non-snoozed notifications, newest first.
-- **Resolved notifications** are accessible via the status filter but hidden by default to
-  keep the view clean.
+- **Resolved notifications** are accessible via the status filter but hidden by default to keep the
+  view clean.
 - **Bulk actions:** mark selected as read, snooze selected, dismiss selected.
-- **No analytics or trends.** This is a filtered list, not a reporting tool. Historical
-  analysis of notification patterns can be done via direct database queries if needed.
+- **No analytics or trends.** This is a filtered list, not a reporting tool. Historical analysis of
+  notification patterns can be done via direct database queries if needed.
 
 ### 4.3 Settings UI (`/settings/notifications`)
 
@@ -954,45 +932,45 @@ Mapping:
   4. Debt (types #10, #11)
   5. Templates & Trends (type #12)
   6. Digests (types #13, #14)
-- **Group-level master toggle:** Each group card has a toggle that enables/disables all
-  notification types within the group at once. Expanding the card reveals per-type controls.
+- **Group-level master toggle:** Each group card has a toggle that enables/disables all notification
+  types within the group at once. Expanding the card reveals per-type controls.
 - **Per-type controls:** Each notification type within a group has:
   - Enabled/disabled toggle
   - Delivery channel checkboxes: In-App, Email
   - Type-specific parameters displayed inline (thresholds, days-before, lookahead window,
     percentages, etc.)
 - **Email checkboxes** are greyed out with a tooltip ("Email delivery requires mail server
-  configuration") until the mail server is configured. The presence of a configured mail
-  server can be indicated by an application setting or environment variable.
+  configuration") until the mail server is configured. The presence of a configured mail server can
+  be indicated by an application setting or environment variable.
 - **Defaults for all types:** In-app enabled, email disabled.
-- **Defaults for new types added in future releases:** In-app enabled, email disabled. When a
-  new notification type is added in a future release, a row is inserted into
-  `notification_settings` for each existing user with these defaults.
-- **Email delivery preferences** section at the top or bottom of the page (outside the type
-  groups): preferred delivery time, delivery window start, delivery window end. Greyed out
-  until mail server is configured.
+- **Defaults for new types added in future releases:** In-app enabled, email disabled. When a new
+  notification type is added in a future release, a row is inserted into `notification_settings` for
+  each existing user with these defaults.
+- **Email delivery preferences** section at the top or bottom of the page (outside the type groups):
+  preferred delivery time, delivery window start, delivery window end. Greyed out until mail server
+  is configured.
 
 ### 4.4 Email Delivery (Deferred Sub-phase)
 
-- **Dependency:** Requires a self-hosted mail server to be operational. This is infrastructure
-  work outside the app (OPNsense mail features or a dedicated mail service on the Arch Linux
-  host). Research and setup should happen in parallel with the in-app notification build.
-- **Implementation:** When a notification is generated and the user has `delivery_email = TRUE`
-  for that type, queue an email. Use Python's `smtplib` with the self-hosted SMTP server.
+- **Dependency:** Requires a self-hosted mail server to be operational. This is infrastructure work
+  outside the app (OPNsense mail features or a dedicated mail service on the Arch Linux host).
+  Research and setup should happen in parallel with the in-app notification build.
+- **Implementation:** When a notification is generated and the user has `delivery_email = TRUE` for
+  that type, queue an email. Use Python's `smtplib` with the self-hosted SMTP server.
 - **Delivery window:** Emails are only sent during the user's configured delivery window
-  (`delivery_window_start` to `delivery_window_end`). Emails generated outside this window
-  are queued and delivered when the window opens. The preferred delivery time
+  (`delivery_window_start` to `delivery_window_end`). Emails generated outside this window are
+  queued and delivered when the window opens. The preferred delivery time
   (`preferred_delivery_time`) is used for scheduled digests and reminders.
-- **Email format:** Simple HTML email with the notification title, message, severity, and a
-  link back to the app.
-- **Batching:** For notification types that could fire frequently (low balance warnings during
-  a heavy editing session), batch emails into a digest rather than sending one per event.
-  Batch window: 1 hour. Milestone notifications, payday reconciliation reminders, and the
-  weekly digest send immediately (within the delivery window).
+- **Email format:** Simple HTML email with the notification title, message, severity, and a link
+  back to the app.
+- **Batching:** For notification types that could fire frequently (low balance warnings during a
+  heavy editing session), batch emails into a digest rather than sending one per event. Batch
+  window: 1 hour. Milestone notifications, payday reconciliation reminders, and the weekly digest
+  send immediately (within the delivery window).
 - **Payday reconciliation reminder (#14):** Email only. This notification type is not rendered
   in-app. The in-app delivery checkbox is hidden or disabled for this type in the settings UI.
-- **Weekly digest (#13):** Sent as an HTML email containing all digest sections. Delivered at
-  the user's preferred delivery time on the configured day of week.
+- **Weekly digest (#13):** Sent as an HTML email containing all digest sections. Delivered at the
+  user's preferred delivery time on the configured day of week.
 
 ---
 
@@ -1002,11 +980,10 @@ Mapping:
 record-keeping. This section is a data management concern independent of the visualization and
 reporting overhaul (which built CSV export for analytics views as part of Appendix A.9).
 
-- **Problem:** The app currently has no general transaction-level data export capability. The
-  user cannot extract their financial data for use in external tools, tax preparation, or
-  personal record-keeping.
-- **Feature:** Export functionality accessible from a settings or reports page. Three export
-  types:
+- **Problem:** The app currently has no general transaction-level data export capability. The user
+  cannot extract their financial data for use in external tools, tax preparation, or personal
+  record-keeping.
+- **Feature:** Export functionality accessible from a settings or reports page. Three export types:
 
 ### 5.1 CSV Export
 
@@ -1030,9 +1007,9 @@ backup includes all accounts, transactions, templates, transfers, salary profile
 configurations, and account parameters. A corresponding import/restore function allows the user to
 rebuild their data from a backup file.
 
-- **Implementation notes:** CSV export is the highest priority (most broadly useful). PDF
-  export depends on a PDF generation library (e.g., WeasyPrint or ReportLab). Full data
-  backup is an ops feature that should be simple and reliable rather than feature-rich.
+- **Implementation notes:** CSV export is the highest priority (most broadly useful). PDF export
+  depends on a PDF generation library (e.g., WeasyPrint or ReportLab). Full data backup is an ops
+  feature that should be simple and reliable rather than feature-rich.
 
 ---
 
@@ -1045,19 +1022,19 @@ in Appendix A.10 (`owner`/`companion` with `linked_owner_id`) is a deliberate pr
 multi-user design should evaluate compatibility with the companion model and plan the migration
 path. When the time comes, the work is primarily:
 
-- Registration UI and flow (note: `REGISTRATION_ENABLED` toggle already exists, added in
-  Appendix A.5).
-- Ensuring all queries filter by `user_id` (audit needed; substantially advanced by
-  Section 1's access-control consistency phase).
+- Registration UI and flow (note: `REGISTRATION_ENABLED` toggle already exists, added in Appendix
+  A.5).
+- Ensuring all queries filter by `user_id` (audit needed; substantially advanced by Section 1's
+  access-control consistency phase).
 - Role/permission model (parent vs. kid account).
 - Kid account restrictions (view-only? limited editing?).
-- **Account sharing model:** Some accounts may need to be visible to multiple users (e.g., a
-  joint checking account shared between spouses, a savings account visible to both parent and
-  child). The multi-user design should not assume strictly siloed data. A sharing model where
-  specific accounts can be linked to multiple users (with configurable permissions: view-only
-  vs. full access) would support household financial management. This does not need to be
-  designed now but should be noted as a constraint so the eventual implementation does not
-  paint itself into a single-user-per-account corner.
+- **Account sharing model:** Some accounts may need to be visible to multiple users (e.g., a joint
+  checking account shared between spouses, a savings account visible to both parent and child). The
+  multi-user design should not assume strictly siloed data. A sharing model where specific accounts
+  can be linked to multiple users (with configurable permissions: view-only vs. full access) would
+  support household financial management. This does not need to be designed now but should be noted
+  as a constraint so the eventual implementation does not paint itself into a
+  single-user-per-account corner.
 
 This section will be scoped when it becomes relevant.
 

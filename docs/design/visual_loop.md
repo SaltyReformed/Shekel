@@ -10,12 +10,12 @@ A fresh session must generate its own directions from the written design intent,
 mockup someone already made. So:
 
 - Source of truth for a screen: `docs/design/fable5-design-language.md` plus that screen's audit
-  (for the grid, `docs/design/grid_audit.md`). The `shekel-design` skill loads these. They state
-  the constraints and the option space, not a fixed look.
-- Keep exploration mockups OUT of the repo and out of `docs/design/`. Put scratch mockup HTML and its
-  screenshots under `/tmp` (or another scratch dir) and delete them when done. A mockup committed to
-  `docs/design/` would anchor the next session toward that look. (This is why the earlier grid
-  directions mockup was removed.)
+  (for the grid, `docs/design/grid_audit.md`). The `shekel-design` skill loads these. They state the
+  constraints and the option space, not a fixed look.
+- Keep exploration mockups OUT of the repo and out of `docs/design/`. Put scratch mockup HTML and
+  its screenshots under `/tmp` (or another scratch dir) and delete them when done. A mockup
+  committed to `docs/design/` would anchor the next session toward that look. (This is why the
+  earlier grid directions mockup was removed.)
 
 ## The two loops
 
@@ -27,11 +27,13 @@ For trying visual directions on a screen before touching real templates.
    `<style>`/`<script>` are fine here because the file is opened directly, not served through the
    app, so the app CSP does not apply.
 2. Shoot it:
-   ```
+
+   ```text
    .venv/bin/python tests/manual/shoot.py /tmp/grid_explore.html \
        --directions a,b,c --themes dark,light --viewports desktop,mobile \
        --out /tmp/grid_shots
    ```
+
 3. `Read` the PNGs in `/tmp/grid_shots` (the Read tool renders images). Compare against the design
    language and the audit. Edit the mockup, re-shoot, repeat.
 4. Once a direction is chosen, move to Loop B to build it for real, then delete the scratch files.
@@ -45,21 +47,25 @@ For building the chosen direction into the real grid.
    `http://172.32.0.1:5000` (see `tests/manual/save_dev_session.py`); the app must be reachable
    there. Confirm your normal dev-run command serves on that address.
 3. One-time login capture (re-run when the cookie expires or after logout):
-   ```
+
+   ```text
    .venv/bin/python tests/manual/save_dev_session.py
    ```
-   It prompts for the password (typed silently) and writes
-   `tests/manual/.dev_session_state.json` (gitignored).
+
+   It prompts for the password (typed silently) and writes `tests/manual/.dev_session_state.json`
+   (gitignored).
 4. Edit the real templates (`app/templates/grid/`) and the matching stylesheet under
-   `app/static/css/` (`grid.css` for the grid; layout in `css_architecture_audit.md`). Honor the hard
-   constraints: no inline `<style>`/`<script>` (CSP), tokens not raw hex, both themes via
+   `app/static/css/` (`grid.css` for the grid; layout in `css_architecture_audit.md`). Honor the
+   hard constraints: no inline `<style>`/`<script>` (CSP), tokens not raw hex, both themes via
    `data-bs-theme`, money computed in services not templates.
 5. Shoot the running grid:
-   ```
+
+   ```text
    .venv/bin/python tests/manual/shoot.py http://172.32.0.1:5000/grid \
        --themes dark,light --viewports desktop,mobile \
        --storage-state tests/manual/.dev_session_state.json
    ```
+
    (Default `--out` is `tests/manual/screenshots/`, which is gitignored.)
 6. `Read` the PNGs, compare, iterate.
 

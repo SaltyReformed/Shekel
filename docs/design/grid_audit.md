@@ -64,9 +64,9 @@ spreadsheet that grew a real interface; the forward, period-by-period view is th
 - **B1. No row/column tracking aid across a wide grid. (fix, high; design-direction call.)** Sticky
   row labels and a sticky balance row exist, but nothing helps the eye follow a single row or column
   across roughly 13 columns. Candidate tools, to be judged visually from the directions: subtle row
-  banding, a hover crosshair that lights the row and column under the cursor, stronger current-period
-  column emphasis, cleaner typographic grouping. The clutter-versus-clarity tradeoff is exactly what
-  the Fable directions exist to show.
+  banding, a hover crosshair that lights the row and column under the cursor, stronger
+  current-period column emphasis, cleaner typographic grouping. The clutter-versus-clarity tradeoff
+  is exactly what the Fable directions exist to show.
 - **B2. Per-cell clutter, no hierarchy. (fix, medium.)** A cell can stack amount, status badge,
   transfer icon, due-date line, envelope progress, and an override pencil with no clear visual
   hierarchy. Establish a hierarchy so a cell scans in a glance.
@@ -76,8 +76,8 @@ spreadsheet that grew a real interface; the forward, period-by-period view is th
 
 ### C. Desktop/mobile parity and correctness (priority three)
 
-- **C1. Desktop lags mobile on edit speed. (fix; ties to A.)** Mobile got the recent investment;
-  the rebuild brings desktop editing speed up to at least mobile parity.
+- **C1. Desktop lags mobile on edit speed. (fix; ties to A.)** Mobile got the recent investment; the
+  rebuild brings desktop editing speed up to at least mobile parity.
 - **C2. Possible dead "Edit Amount" button on mobile. (verify; likely bug.)** The code map flags a
   mobile action button whose target is a desktop-only element id (`#txn-cell-<id>`) that does not
   exist on mobile. Confirm on the running app; if dead, fix or remove it.
@@ -113,44 +113,44 @@ All three were settled by the Loop A direction rounds; see "Rebuild decisions" b
 
 ## Rebuild decisions (2026-06-11, Loop A complete)
 
-Four mockup rounds (directions A-K, theme rounds T1-T4 / U1-U3 / M1-M2) ran on scratch canvases
-in /tmp per the visual loop; the mockups are disposable and this section is the durable record.
+Four mockup rounds (directions A-K, theme rounds T1-T4 / U1-U3 / M1-M2) ran on scratch canvases in
+/tmp per the visual loop; the mockups are disposable and this section is the durable record.
 
-1. **Grid direction: C3 "Month Spine."** Two-row header (month band over period dates), strong
-   month boundary rules, per-period hairlines inside each month. Filled pill chips for paid
+1. **Grid direction: C3 "Month Spine."** Two-row header (month band over period dates), strong month
+   boundary rules, per-period hairlines inside each month. Filled pill chips for paid
    (`--shekel-done` tint) and credit (`--shekel-credit` tint); unpaid amounts stay plain text.
-   Hovering a cell previews the chip: dashed outline plus a ghost check positioned where the
-   paid check will sit, so clicking reads as completing the chip. One click marks paid (fixes
-   A1). Hover affects only the hovered cell, with a mild full-row tint; no crosshair, no
-   banding, no always-visible per-cell controls.
-2. **Editing model: one anchored action card replaces the three-tier popover system**
-   (A2 / A3 / A5). Anchored positioning fixes the popover misplacement bugs. Single-cell state
-   carries status actions, inline amount edit, add-purchase, and recent entries for envelope
-   rows; the full-edit surface remains only for rare deep edits.
-3. **Keyboard cursor** (vanilla JS module): arrow keys move a cell cursor; Space marks paid,
-   C marks credit, Enter edits.
-4. **Command layer (Ctrl+K):** fuzzy palette over a server-built action index (mark paid or
-   credit, add purchase, jump to row or period, anchor update). It executes the same POST
-   endpoints as the buttons; the only new surface is a read-only action-index route (Opus
-   scope per the model discipline).
-5. **Theme: M1 "Steel Ink"** - achromatic carbon base, Steel Blue as the only non-money
-   chroma, vivid state trio, dark mode first-class. Token values are recorded in
-   `fable5-design-language.md` and apply app-wide.
-6. **Stack: stay on Bootstrap 5 + HTMX + vanilla JS.** The stack ROI gate ran (React, Vue,
-   Svelte, Solid, Angular, Qwik, Astro, and Tailwind considered). A Svelte 5 island for the
-   desktop grid (direction I "Live Sheet": range selection, bulk mark-paid, type-in-cell,
-   optimistic ripple) is the recorded upgrade path, to be re-gated only if daily use of the
-   rebuilt grid shows the need. Nothing in the chosen build is thrown away by that upgrade.
+   Hovering a cell previews the chip: dashed outline plus a ghost check positioned where the paid
+   check will sit, so clicking reads as completing the chip. One click marks paid (fixes A1). Hover
+   affects only the hovered cell, with a mild full-row tint; no crosshair, no banding, no
+   always-visible per-cell controls.
+2. **Editing model: one anchored action card replaces the three-tier popover system** (A2 / A3 /
+   A5). Anchored positioning fixes the popover misplacement bugs. Single-cell state carries status
+   actions, inline amount edit, add-purchase, and recent entries for envelope rows; the full-edit
+   surface remains only for rare deep edits.
+3. **Keyboard cursor** (vanilla JS module): arrow keys move a cell cursor; Space marks paid, C marks
+   credit, Enter edits.
+4. **Command layer (Ctrl+K):** fuzzy palette over a server-built action index (mark paid or credit,
+   add purchase, jump to row or period, anchor update). It executes the same POST endpoints as the
+   buttons; the only new surface is a read-only action-index route (Opus scope per the model
+   discipline).
+5. **Theme: M1 "Steel Ink"** - achromatic carbon base, Steel Blue as the only non-money chroma,
+   vivid state trio, dark mode first-class. Token values are recorded in `fable5-design-language.md`
+   and apply app-wide.
+6. **Stack: stay on Bootstrap 5 + HTMX + vanilla JS.** The stack ROI gate ran (React, Vue, Svelte,
+   Solid, Angular, Qwik, Astro, and Tailwind considered). A Svelte 5 island for the desktop grid
+   (direction I "Live Sheet": range selection, bulk mark-paid, type-in-cell, optimistic ripple) is
+   the recorded upgrade path, to be re-gated only if daily use of the rebuilt grid shows the need.
+   Nothing in the chosen build is thrown away by that upgrade.
 7. **Noted for later screens:** direction E2's horizon strip plus alert line is the leading
    candidate for the deferred dashboard rebuild. Rejected for the grid: hover crosshair (A),
-   always-visible status rings (B), row banding, transposed period journal (D), unified
-   workspace drawer (J), chart-first grid (G), four-period window plus balance rail (H).
+   always-visible status rings (B), row banding, transposed period journal (D), unified workspace
+   drawer (J), chart-first grid (G), four-period window plus balance rail (H).
 
 ## Hard constraints (unchanged, from the design language)
 
 Bootstrap 5 plus the design tokens plus HTMX plus vanilla JS; CSP forbids inline `<style>` and
 `<script>` in app templates (CSS under `static/css/` in the file matching the concern, JS under
-`static/js/`, data via `data-*`); templates
-display, money is computed in services with `Decimal`; reference tables by id or enum, never by name
-string; CSRF on every form, POST mutations, `_` partials with an explicit `hx-target`; both themes
-via `data-bs-theme`, tokens not raw hex; tabular numerals for money.
+`static/js/`, data via `data-*`); templates display, money is computed in services with `Decimal`;
+reference tables by id or enum, never by name string; CSRF on every form, POST mutations, `_`
+partials with an explicit `hx-target`; both themes via `data-bs-theme`, tokens not raw hex; tabular
+numerals for money.

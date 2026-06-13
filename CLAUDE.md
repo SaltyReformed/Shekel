@@ -146,8 +146,8 @@ A task is NOT complete until ALL of these are true:
 1. Code is implemented in full -- no TODOs, no placeholders.
 2. Docstrings and comments per coding standards.
 3. `pylint app/` is clean: no new messages, and
-   `--fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale` passes (the per-edit and Stop
-   hooks enforce this in-loop).
+   `--fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale`
+   passes (the per-edit and Stop hooks enforce this in-loop).
 4. Targeted tests pass for changed files.
 5. Full suite passes.
 6. Test output (pass/fail counts) shown to developer.
@@ -188,14 +188,13 @@ hardening, and prod-override-sync conventions auto-load via `.claude/rules/deplo
 
 ## Development Status
 
-See `docs/project_roadmap_v5.md` for the roadmap and direction. Planning docs lag
-the code: treat the codebase and recent git history as the source of truth for what
-is actually shipped, not any doc's stated status.
+See `docs/project_roadmap_v5.md` for the roadmap and direction. Planning docs lag the code: treat
+the codebase and recent git history as the source of truth for what is actually shipped, not any
+doc's stated status.
 
 ## Style
 
-No Unicode dashes. Use periods, commas, semicolons, or colons for sentence
-breaks. Use - for ranges.
+No Unicode dashes. Use periods, commas, semicolons, or colons for sentence breaks. Use - for ranges.
 
 ## Git Workflow
 
@@ -203,6 +202,7 @@ Develop on `dev` or a short-lived feature branch off it. `main` is branch-protec
 are rejected, and a merge requires an open pull request whose `lint-and-test` (CI) check is green.
 CI runs on pull requests and on pushes to `main` -- NOT on pushes to `dev`, so `dev` work is
 validated when you open its PR. To ship `dev` to `main`: open a PR `dev` -> `main`, wait for the
-green check, then merge via the PR. Do NOT `git checkout main && git merge dev && git push origin
-main` -- branch protection rejects it. After a PR merges, resync `dev` so the next PR is not flagged
-out of date: `git fetch origin && git checkout dev && git merge origin/main && git push origin dev`.
+green check, then merge via the PR. Do NOT
+`git checkout main && git merge dev && git push origin main` -- branch protection rejects it. After
+a PR merges, resync `dev` so the next PR is not flagged out of date:
+`git fetch origin && git checkout dev && git merge origin/main && git push origin dev`.

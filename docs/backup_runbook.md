@@ -2,7 +2,9 @@
 
 ## 1. Overview
 
-This runbook covers all backup, restore, retention, and verification procedures for the Shekel budget application. The backup strategy uses `pg_dump` for PostgreSQL database dumps with gzip compression, tiered retention, optional NAS replication, and optional GPG encryption.
+This runbook covers all backup, restore, retention, and verification procedures for the Shekel
+budget application. The backup strategy uses `pg_dump` for PostgreSQL database dumps with gzip
+compression, tiered retention, optional NAS replication, and optional GPG encryption.
 
 ### Script Inventory
 
@@ -109,7 +111,8 @@ echo "CIFS mount verified."
 
 ### 3.3 Encryption Setup (Optional)
 
-GPG symmetric encryption protects backup files at rest. When enabled, backup files are encrypted with AES-256 before being written to disk.
+GPG symmetric encryption protects backup files at rest. When enabled, backup files are encrypted
+with AES-256 before being written to disk.
 
 ```bash
 # Generate a strong passphrase.
@@ -119,7 +122,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 export BACKUP_ENCRYPTION_PASSPHRASE="your-generated-passphrase"
 ```
 
-**Critical**: Store the passphrase separately from the backups. If you store backups on a NAS, the passphrase should be in a password manager or on the host -- not on the NAS. A lost passphrase means unrecoverable backups.
+**Critical**: Store the passphrase separately from the backups. If you store backups on a NAS, the
+passphrase should be in a password manager or on the host -- not on the NAS. A lost passphrase means
+unrecoverable backups.
 
 ---
 
@@ -150,7 +155,9 @@ zcat /var/backups/shekel/shekel_backup_LATEST.sql.gz | head -20
 | Weekly | Backups from Sundays | 4 weeks |
 | Monthly | Backups from the 1st of the month | 6 months |
 
-Classification is based on the date in the backup filename (`shekel_backup_YYYYMMDD_HHMMSS.sql.gz`), not the file modification time. A file that qualifies for a higher tier (e.g., a Sunday that is also the 1st) is always retained by the highest applicable tier.
+Classification is based on the date in the backup filename (`shekel_backup_YYYYMMDD_HHMMSS.sql.gz`),
+not the file modification time. A file that qualifies for a higher tier (e.g., a Sunday that is also
+the 1st) is always retained by the highest applicable tier.
 
 ```bash
 # Preview what would be deleted.
@@ -197,6 +204,7 @@ export BACKUP_ENCRYPTION_PASSPHRASE="your-passphrase"
 ```
 
 The restore script will:
+
 1. Stop the application container (if it exists)
 2. Drop and recreate the database
 3. Restore from the backup file
@@ -231,7 +239,9 @@ rm /tmp/shekel_backup_20260315_020000.sql.gz
 
 ## 7. Backup Verification
 
-The verification script restores a backup to a temporary database (`shekel_verify`), runs sanity queries and integrity checks, then drops the temporary database. The production database is never touched.
+The verification script restores a backup to a temporary database (`shekel_verify`), runs sanity
+queries and integrity checks, then drops the temporary database. The production database is never
+touched.
 
 ```bash
 # Verify the most recent backup.
@@ -241,6 +251,7 @@ The verification script restores a backup to a temporary database (`shekel_verif
 ### What It Checks
 
 **Sanity queries** (via `psql`):
+
 - `auth.users` has at least one row
 - `budget.pay_periods` row count and date range
 - `budget.transactions` row count (informational)
@@ -250,6 +261,7 @@ The verification script restores a backup to a temporary database (`shekel_verif
 - `public.alembic_version` has a value
 
 **Integrity checks** (via `integrity_check.py`):
+
 - 13 referential integrity checks (FK violations)
 - 6 orphan detection checks
 - 5 balance anomaly checks
@@ -306,8 +318,12 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 
 ### What to Do When a Check Fails
 
-- **Critical failures (FK-*, DC-01, DC-06, DC-07, DC-08)**: investigate immediately. These indicate data corruption or a broken restore. Check recent changes, restore from a known-good backup if needed.
-- **Warnings (OR-*, BA-*, DC-02 to DC-05, DC-09)**: investigate when convenient. These indicate potential issues but the application will function correctly. Common causes: unused categories from initial seed, accounts not yet configured with type-specific parameters.
+- **Critical failures (FK-*, DC-01, DC-06, DC-07, DC-08)**: investigate immediately. These indicate
+  data corruption or a broken restore. Check recent changes, restore from a known-good backup if
+  needed.
+- **Warnings (OR-*, BA-*, DC-02 to DC-05, DC-09)**: investigate when convenient. These indicate
+  potential issues but the application will function correctly. Common causes: unused categories
+  from initial seed, accounts not yet configured with type-specific parameters.
 
 ---
 

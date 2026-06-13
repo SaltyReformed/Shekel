@@ -1,8 +1,8 @@
 # Postgres TLS Materials
 
-Bind-mount source for the shared-mode `db` service's TLS certificate
-and private key. Required by the `services.db.command` directives in
-`deploy/docker-compose.prod.yml` (audit finding F-154, Commit C-37).
+Bind-mount source for the shared-mode `db` service's TLS certificate and private key. Required by
+the `services.db.command` directives in `deploy/docker-compose.prod.yml` (audit finding F-154,
+Commit C-37).
 
 ## Files
 
@@ -11,10 +11,9 @@ and private key. Required by the `services.db.command` directives in
 | `server.crt` | `scripts/generate_pg_cert.sh` | `0644` | `root` | `/etc/postgresql/certs/server.crt:ro` |
 | `server.key` | `scripts/generate_pg_cert.sh` | `0600` | uid `70` (`postgres` in alpine) | `/etc/postgresql/certs/server.key:ro` |
 
-Both files are listed in `.gitignore`; this directory is committed
-empty (apart from this README) so the bind-mount source path resolves
-cleanly on a fresh clone but the secret material never reaches the
-repo.
+Both files are listed in `.gitignore`; this directory is committed empty (apart from this README) so
+the bind-mount source path resolves cleanly on a fresh clone but the secret material never reaches
+the repo.
 
 ## Generating
 
@@ -26,19 +25,17 @@ sudo ./scripts/generate_pg_cert.sh
 
 The defaults match the shared-mode topology:
 
-* CN: `shekel-prod-db`
-* Validity: 825 days
-* Key uid/gid: `70:70` (the `postgres` user inside `postgres:16-alpine`)
-* Output directory: this directory
+- CN: `shekel-prod-db`
+- Validity: 825 days
+- Key uid/gid: `70:70` (the `postgres` user inside `postgres:16-alpine`)
+- Output directory: this directory
 
-See `scripts/generate_pg_cert.sh --help` for the full flag list and
-rotation guidance.
+See `scripts/generate_pg_cert.sh --help` for the full flag list and rotation guidance.
 
 ## Bringing the database up
 
-After the cert is generated, the shared-mode override mounts the two
-files read-only into the `db` container and the in-image `postgres`
-process picks them up via the `ssl_cert_file` / `ssl_key_file`
+After the cert is generated, the shared-mode override mounts the two files read-only into the `db`
+container and the in-image `postgres` process picks them up via the `ssl_cert_file` / `ssl_key_file`
 command-line directives:
 
 ```bash
@@ -48,15 +45,15 @@ docker compose \
     up -d db
 ```
 
-On a fresh deploy, also set the matching app-side env vars (already
-declared in `deploy/docker-compose.prod.yml`):
+On a fresh deploy, also set the matching app-side env vars (already declared in
+`deploy/docker-compose.prod.yml`):
 
-* `DATABASE_URL` includes `?sslmode=require` so the SQLAlchemy engine
-  refuses any plaintext connection.
-* `DB_SSLMODE=require` makes `entrypoint.sh` apply the same posture
-  to `DATABASE_URL_APP` (the least-privilege role's URL).
-* `PGSSLMODE=require` covers every `psql` call in `entrypoint.sh`
-  (schema bootstrap, role provisioning, audit-trigger health check).
+- `DATABASE_URL` includes `?sslmode=require` so the SQLAlchemy engine refuses any plaintext
+  connection.
+- `DB_SSLMODE=require` makes `entrypoint.sh` apply the same posture to `DATABASE_URL_APP` (the
+  least-privilege role's URL).
+- `PGSSLMODE=require` covers every `psql` call in `entrypoint.sh` (schema bootstrap, role
+  provisioning, audit-trigger health check).
 
 Verify the channel encryption:
 
@@ -67,13 +64,12 @@ docker exec shekel-prod-app psql "${DATABASE_URL}" \
     -c "SELECT pid, ssl, version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid();"
 ```
 
-Expected output: `ssl = on`, a `version` of `TLSv1.2` or `TLSv1.3`,
-and a non-NULL `cipher`.
+Expected output: `ssl = on`, a `version` of `TLSv1.2` or `TLSv1.3`, and a non-NULL `cipher`.
 
 ## Rotation
 
-The certificate's not-after date is logged at the end of every
-`scripts/generate_pg_cert.sh` run. Rotate well before expiry:
+The certificate's not-after date is logged at the end of every `scripts/generate_pg_cert.sh` run.
+Rotate well before expiry:
 
 ```bash
 sudo ./scripts/generate_pg_cert.sh --force --days 825
@@ -83,34 +79,27 @@ docker compose \
     restart db
 ```
 
-The Postgres process re-reads `ssl_cert_file` / `ssl_key_file` on
-restart, so a `restart db` is enough -- no full container recreate
-is required. The app does NOT need to be restarted as part of cert
-rotation; psycopg2 holds connections open across the brief window
-the db is unavailable.
+The Postgres process re-reads `ssl_cert_file` / `ssl_key_file` on restart, so a `restart db` is
+enough -- no full container recreate is required. The app does NOT need to be restarted as part of
+cert rotation; psycopg2 holds connections open across the brief window the db is unavailable.
 
-See `docs/runbook.md` §4.13 for the full rotation procedure including
-the failure-mode walkthrough.
+See `docs/runbook.md` §4.13 for the full rotation procedure including the failure-mode walkthrough.
 
 ## Why a self-signed cert
 
-The `cloudflared -> nginx -> gunicorn -> postgres` chain has TLS at
-every hop except the cleartext loopback inside the cloudflared/nginx
-trust zone. The Gunicorn -> Postgres hop is the last cleartext hop
-that an attacker landing in any container on the `backend` bridge
-could otherwise observe. A self-signed cert with `sslmode=require`
-encrypts that hop without the operational cost of a public-CA
-ACME bootstrap inside the internal Docker network. The cert chain
-is not validated (`sslmode=require` is strict-but-not-cert-verifying);
-upgrading to `sslmode=verify-ca` is a future hardening step that
-requires committing this same `server.crt` as the CA pem and
-distributing it to every client.
+The `cloudflared -> nginx -> gunicorn -> postgres` chain has TLS at every hop except the cleartext
+loopback inside the cloudflared/nginx trust zone. The Gunicorn -> Postgres hop is the last cleartext
+hop that an attacker landing in any container on the `backend` bridge could otherwise observe. A
+self-signed cert with `sslmode=require` encrypts that hop without the operational cost of a
+public-CA ACME bootstrap inside the internal Docker network. The cert chain is not validated
+(`sslmode=require` is strict-but-not-cert-verifying); upgrading to `sslmode=verify-ca` is a future
+hardening step that requires committing this same `server.crt` as the CA pem and distributing it to
+every client.
 
 ## See Also
 
-* `docs/runbook.md` §4.13 -- Postgres TLS cert rotation.
-* `scripts/generate_pg_cert.sh` -- the canonical generator + verifier.
-* `deploy/docker-compose.prod.yml` -- the bind-mount declarations and
-  the matching `ssl_cert_file` / `ssl_key_file` postgres flags.
-* `docs/audits/security-2026-04-15/findings.md` F-154 -- the audit
-  finding this directory closes.
+- `docs/runbook.md` §4.13 -- Postgres TLS cert rotation.
+- `scripts/generate_pg_cert.sh` -- the canonical generator + verifier.
+- `deploy/docker-compose.prod.yml` -- the bind-mount declarations and the matching `ssl_cert_file` /
+  `ssl_key_file` postgres flags.
+- `docs/audits/security-2026-04-15/findings.md` F-154 -- the audit finding this directory closes.
