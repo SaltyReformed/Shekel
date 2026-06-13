@@ -21,6 +21,13 @@ var activePopoverResizeObserver = null;
 // a successful save has already swapped the cell.
 var activePopoverQuickForm = null;
 
+// In-flight action-card fetch.  Lets a rapid second open (or a close) abort
+// the first request: without this guard a late first response would call
+// showPopover with the WRONG transaction's form anchored at the second cell.
+// closeFullEdit() aborts it -- and positionPopover() calls closeFullEdit() on
+// every open -- so each open below just starts a fresh controller.
+var activePopoverFetchController = null;
+
 // Fallback dimensions used only before content has been injected and the
 // popover has zero offsetHeight/Width.  Real values come from
 // popover.offsetHeight / offsetWidth once showPopover runs.
@@ -308,15 +315,25 @@ function openFullEdit(txnId, triggerEl) {
     // and would otherwise clear the reference we just set.
     activePopoverQuickForm = triggerEl.closest('.txn-quick-edit');
 
-    // Load the full edit form via fetch.
+    // Load the full edit form via fetch.  positionPopover already aborted any
+    // prior fetch (via closeFullEdit); start a fresh controller so a later open
+    // can abort this one.  Reject non-2xx so a 404/500/login-redirect body is
+    // never injected into the card as if it were the edit form.
+    activePopoverFetchController = new AbortController();
     fetch('/transactions/' + txnId + '/full-edit', {
-        headers: { 'HX-Request': 'true' }
+        headers: { 'HX-Request': 'true' },
+        signal: activePopoverFetchController.signal
     })
-    .then(function(r) { return r.text(); })
+    .then(function(r) {
+        if (!r.ok) throw new Error('full-edit fetch failed: ' + r.status);
+        return r.text();
+    })
     .then(function(html) {
         showPopover(popover, html);
     })
-    .catch(function() {
+    .catch(function(err) {
+        // A newer open / close aborted this fetch -- intentional, not an error.
+        if (err.name === 'AbortError') return;
         closeFullEdit();
     });
 }
@@ -331,14 +348,20 @@ function openTransferFullEdit(xferId, triggerEl) {
     if (!popover) return;
     activePopoverQuickForm = triggerEl.closest('.txn-quick-edit');
 
+    activePopoverFetchController = new AbortController();
     fetch('/transfers/' + xferId + '/full-edit', {
-        headers: { 'HX-Request': 'true' }
+        headers: { 'HX-Request': 'true' },
+        signal: activePopoverFetchController.signal
     })
-    .then(function(r) { return r.text(); })
+    .then(function(r) {
+        if (!r.ok) throw new Error('transfer full-edit fetch failed: ' + r.status);
+        return r.text();
+    })
     .then(function(html) {
         showPopover(popover, html);
     })
-    .catch(function() {
+    .catch(function(err) {
+        if (err.name === 'AbortError') return;
         closeFullEdit();
     });
 }
@@ -358,14 +381,20 @@ function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
         cell.id = 'empty-cell-' + categoryId + '-' + periodId;
     }
 
-    // Load the full create form via fetch.
+    // Load the full create form via fetch.  Abort-guarded + status-checked
+    // for the same reasons as openFullEdit above.
+    activePopoverFetchController = new AbortController();
     fetch('/transactions/new/full?category_id=' + categoryId +
           '&period_id=' + periodId +
           '&transaction_type_id=' + encodeURIComponent(txnTypeId) +
           '&account_id=' + accountId, {
-        headers: { 'HX-Request': 'true' }
+        headers: { 'HX-Request': 'true' },
+        signal: activePopoverFetchController.signal
     })
-    .then(function(r) { return r.text(); })
+    .then(function(r) {
+        if (!r.ok) throw new Error('full-create fetch failed: ' + r.status);
+        return r.text();
+    })
     .then(function(html) {
         popover.innerHTML = html;
         popover.classList.remove('d-none');
@@ -410,7 +439,8 @@ function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
             wrapper.addEventListener('scroll', closeFullEdit);
         }
     })
-    .catch(function() {
+    .catch(function(err) {
+        if (err.name === 'AbortError') return;
         closeFullEdit();
     });
 }
@@ -419,6 +449,15 @@ function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
  * Close the full edit popover and clean up listeners.
  */
 function closeFullEdit() {
+    // Abort any in-flight action-card fetch so a late response cannot
+    // repopulate or reopen the card after it has been closed or replaced.
+    // This is also the sequence guard: positionPopover() calls closeFullEdit()
+    // at the start of every open, cancelling the previous cell's request.
+    if (activePopoverFetchController) {
+        activePopoverFetchController.abort();
+        activePopoverFetchController = null;
+    }
+
     var backdrop = document.getElementById('bottom-sheet-backdrop');
     if (backdrop) backdrop.remove();
     document.body.style.overflow = '';

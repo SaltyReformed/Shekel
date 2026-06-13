@@ -40,7 +40,11 @@
 
   {# Frequent status actions first -- these target the cell by ID #}
   <div class="d-flex gap-1 flex-wrap mb-2">
-    {% if txn.is_expense and txn.status_id != STATUS_DONE %}
+    {# Status.is_settled is the canonical "already paid" boolean (Paid /
+       Received / Settled); a settled expense has status_id != STATUS_DONE,
+       so the old check left Paid showing on settled rows where mark_done is
+       an invalid transition (route 400).  Mirrors _mobile_card_actions.html. #}
+    {% if txn.is_expense and txn.status and not txn.status.is_settled %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"

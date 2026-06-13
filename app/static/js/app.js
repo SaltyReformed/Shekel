@@ -429,7 +429,11 @@ document.addEventListener('change', function(e) {
     if (!form) return;
     var amountInput = form.querySelector('[name=amount]');
     var label = form.querySelector('.amount-label');
-    if (e.target.selectedOptions[0].textContent.trim().toLowerCase() === 'percentage') {
+    // Key off the option's semantic data-name ("percentage"/"flat"), not its
+    // |title display text -- renaming the label or filter must not flip the
+    // amount field's meaning (mirrors investment_form.js).
+    var selectedOpt = e.target.selectedOptions[0];
+    if (selectedOpt && selectedOpt.dataset.name === 'percentage') {
         if (amountInput) { amountInput.placeholder = 'e.g. 6 for 6%'; amountInput.step = '0.01'; }
         if (label) label.textContent = 'Amount (%)';
     } else {
@@ -481,6 +485,29 @@ document.addEventListener('keydown', function(e) {
       new bootstrap.Modal(modal).show();
     }
   }
+});
+
+// --- Keyboard activation for click-to-edit affordances ---
+// Elements wired for click only (role="button" tabindex="0") -- the anchor
+// balance cells and the calendar day cells -- must also activate on Enter /
+// Space for keyboard users, or the role="button" is a lie.  Opt-in via
+// data-keyboard-activate so this never hijacks Enter/Space on unrelated
+// controls.  (The dashboard's #balance-display has its own handler in
+// dashboard_pulse.js.)
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+  var el = e.target;
+  if (!el || !el.matches
+      || !el.matches('[data-keyboard-activate][role="button"][tabindex="0"]')) {
+    return;
+  }
+  // preventDefault stops Space from scrolling; stopImmediatePropagation stops
+  // the grid-navigation keydown handler (registered later on document) from
+  // ALSO acting on this Enter -- otherwise activating the grid anchor cell
+  // would also move the cell cursor or open a focused cell's editor.
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  el.click();
 });
 
 // --- Keyboard Navigation ---
@@ -734,6 +761,12 @@ document.addEventListener('keydown', function(e) {
         // Credit button (expense, projected, not a transfer shadow,
         // not an envelope), so this cannot fire where the button
         // would not render.
+        //
+        // Ctrl+C / Cmd+C is the OS copy shortcut: bail before any
+        // preventDefault so the browser still copies and no
+        // mark-credit POST fires (mirrors the ctrlKey/metaKey branch
+        // on the Arrow cases above).
+        if (e.ctrlKey || e.metaKey) break;
         var creditCell = getFocusedCell();
         var creditable = creditCell
           && creditCell.querySelector('.txn-open[data-can-credit]');

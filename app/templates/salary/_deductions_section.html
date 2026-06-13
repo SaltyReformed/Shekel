@@ -153,7 +153,10 @@
             <select name="calc_method_id" class="form-select form-select-sm" required
                     data-action="update-deduction-labels">
               {% for cm in calc_methods %}
-              <option value="{{ cm.id }}">{{ cm.name|title }}</option>
+              {# data-name carries the semantic ref name ("percentage"/"flat")
+                 so app.js keys the amount-label toggle off it instead of the
+                 |title display text (mirrors investment_form.js). #}
+              <option value="{{ cm.id }}" data-name="{{ cm.name }}">{{ cm.name|title }}</option>
               {% endfor %}
             </select>
           </div>

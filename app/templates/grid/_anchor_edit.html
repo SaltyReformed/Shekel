@@ -83,6 +83,7 @@
      class="anchor-balance-display font-mono{% if conflict %} text-warning{% endif %}"
      role="button"
      tabindex="0"
+     data-keyboard-activate
      aria-label="{{ account.name }} balance: {{ money(account.current_anchor_balance if account.current_anchor_balance else 0, cents=false) }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
      title="{% if conflict %}This account was changed by another action -- click to retry{% else %}Click to update balance{% endif %}">
   {{ money(account.current_anchor_balance if account.current_anchor_balance else 0, cents=false) }}

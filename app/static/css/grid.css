@@ -388,6 +388,19 @@ thead .sticky-col {
   background-color: color-mix(in srgb, var(--shekel-danger) 12%, transparent);
 }
 
+/* The Net Cash Flow and Projected End Balance rows pin their <td>
+   backgrounds with !important above, and that `.row td` selector (0,1,1)
+   outranks the bare `.balance-negative` (0,1,0) even when both are
+   !important -- so without this the negative-total tint never rendered in
+   those two summary contexts.  These context selectors (0,2,1) win.  Every
+   OTHER landing site (the mobile card <span>/<div> totals) is already
+   tinted by the base rule above, which faces no competing !important
+   background. */
+.net-cash-flow-row td.balance-negative,
+.balance-row-summary td.balance-negative {
+  background-color: color-mix(in srgb, var(--shekel-danger) 12%, transparent) !important;
+}
+
 .balance-low {
   color: var(--shekel-credit) !important;
 }

@@ -43,6 +43,7 @@
       hx-swap="outerHTML"
       role="button"
       tabindex="0"
+      data-keyboard-activate
       class="font-mono cursor-pointer{% if conflict %} text-warning{% endif %}"
       aria-label="Current balance: {{ money(acct.current_anchor_balance) if acct.current_anchor_balance is not none else '$0.00' }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
       title="{% if conflict %}This account was changed by another action -- click to retry{% else %}Click to edit{% endif %}">

@@ -46,7 +46,7 @@
   <div class="calendar-day calendar-day--empty"></div>
   {% else %}
   <div class="calendar-day{% if day.is_today %} calendar-day--today{% endif %}{% if day.is_paycheck %} calendar-paycheck{% endif %}"
-       {% if day.entries %}data-day="{{ day.number }}" role="button" tabindex="0"{% endif %}>
+       {% if day.entries %}data-day="{{ day.number }}" role="button" tabindex="0" data-keyboard-activate{% endif %}>
     <div class="calendar-day-number{% if day.is_today %} fw-bold{% endif %}">{{ day.number }}</div>
     {% if day.entries %}
     <div class="calendar-day-totals">

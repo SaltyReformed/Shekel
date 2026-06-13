@@ -6,11 +6,12 @@ document.addEventListener("DOMContentLoaded", function () {
   function updateFlagVisibility(form) {
     var select = form.querySelector(".acct-type-category");
     if (!select) return;
-    var catName = select.options[select.selectedIndex]
-                  ? select.options[select.selectedIndex].text.trim()
-                  : "";
-    form.querySelectorAll(".acct-type-flag[data-show-for-category]").forEach(function (el) {
-      el.style.display = el.getAttribute("data-show-for-category") === catName ? "" : "none";
+    // Compare the selected category ID (the option's value), not its display
+    // text -- logic keys on the ref-table id, strings are display only.  The
+    // template stamps data-show-for-category-id from the ACCT_CAT_* globals.
+    var catId = select.value;
+    form.querySelectorAll(".acct-type-flag[data-show-for-category-id]").forEach(function (el) {
+      el.style.display = el.getAttribute("data-show-for-category-id") === catId ? "" : "none";
     });
     // Amortization-dependent fields.
     var amortCb = form.querySelector(".acct-type-amort-cb");

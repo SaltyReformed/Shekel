@@ -725,6 +725,35 @@ class TestTransactionCRUD:
             assert not field_is_disabled(html, "estimated_amount")
             assert not field_is_disabled(html, "due_date")
 
+    def test_full_edit_paid_button_gated_by_settled_status(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The desktop full-edit card offers Paid on a projected expense but
+        suppresses it once the row is settled (TPLB-06).
+
+        The old predicate ``status_id != STATUS_DONE`` is true for a settled
+        row, so Paid was offered where mark_done is an invalid state-machine
+        transition (route 400).  ``Status.is_settled`` is the canonical
+        'already paid' guard, matching _mobile_card_actions.html.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            # Projected: the Paid action is offered.
+            projected_html = auth_client.get(
+                f"/transactions/{txn.id}/full-edit"
+            ).data.decode()
+            assert "Mark as paid" in projected_html
+
+            # Settled: the Paid action is suppressed (mark_done would 400).
+            settled = db.session.query(Status).filter_by(name="Settled").one()
+            txn.status_id = settled.id
+            db.session.commit()
+            settled_html = auth_client.get(
+                f"/transactions/{txn.id}/full-edit"
+            ).data.decode()
+            assert "Mark as paid" not in settled_html
+
     def test_create_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions creates a new ad-hoc transaction."""
         with app.app_context():

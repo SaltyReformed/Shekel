@@ -198,6 +198,29 @@ class TestLoanDashboard:
         assert resp.status_code == 200
         assert b"Loan Summary" in resp.data
 
+    @pytest.mark.parametrize("payment_day,expected", [
+        (1, "1st"), (2, "2nd"), (3, "3rd"),
+        (11, "11th"), (12, "12th"), (13, "13th"),
+        (21, "21st"), (22, "22nd"), (23, "23rd"),
+        (30, "30th"), (31, "31st"),
+    ])
+    def test_dashboard_payment_day_ordinal(
+        self, auth_client, seed_user, db, seed_periods, payment_day, expected,
+    ):
+        """Payment-day ordinal suffix is correct across the 1-31 range (TPLB-11).
+
+        The old logic only special-cased days 1/2/3, so 21/22/23/31 rendered
+        as '21th'/'22th'/'23th'/'31th', and the teens were never exercised.
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, "Mortgage", "Ordinal Mortgage",
+            Decimal("250000.00"), Decimal("0.06500"), 360,
+            date(2023, 6, 1), payment_day,
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert f"{expected} of each month".encode() in resp.data
+
     def test_dashboard_setup_when_no_params(self, auth_client, seed_user, db, seed_periods):
         """Dashboard renders setup page when params don't exist yet."""
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
