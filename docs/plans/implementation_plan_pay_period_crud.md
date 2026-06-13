@@ -58,11 +58,21 @@ They supersede the draft where they conflict.
    the rolling columns now (default off / 52), but the setter that mutates them lands with its
    consumer (the rolling settings UI + `top_up_rolling_window`) in Phase 2. Phase 1 service surface
    is `get_schedule` / `upsert_schedule` / `resolve_cadence`.
+4. **`populate_periods_from_active_templates` lives in a new `period_population` module, NOT in
+   `recurrence_engine`** as the draft said. The transfer engine already imports the transaction
+   engine, so an orchestrator that calls BOTH cannot live inside either without tripping the
+   enforced cyclic-import gate (pylint R0401). A neutral module imported by neither keeps the graph
+   acyclic; extend / regenerate and the future DRY-follow-up route helpers import it from there.
+5. **`scenario_ids` param omitted** from `populate_periods_from_active_templates` and
+   `extend_pay_periods` (MVP repopulates the baseline scenario only; the param returns with its
+   first real multi-scenario caller -- no gold-plating).
 
-**Phase 1 slice (a) COMPLETE on `dev`:** migration `af8254074bef` (creates `budget.pay_schedule`,
-attaches the audit trigger, backfills cadence; both directions verified); `PaySchedule` model with
-registry and audit registration; `pay_schedule_service`; tests `test_pay_schedule_service.py` (6)
-plus `test_pay_schedule.py` (10). `pylint app/` 10.00/10, full suite 6118 passed.
+**Phase 1 slices (a)-(c) COMPLETE on `dev`:** (a) migration `af8254074bef` (`budget.pay_schedule` +
+audit trigger + cadence backfill, both directions verified), `PaySchedule` model, registry + audit
+registration, `pay_schedule_service`. (b) `pay_period_admin` lock classifier (`classify_period_lock`
+/ `classify_periods_bulk` + `PeriodLockReason`) and the reusable `assert_pay_period_invariants` (in
+`tests/_test_helpers.py`). (c) `period_population` + `extend_pay_periods`. Commits `2087a2b` /
+`61a589a` / `a903969`. `pylint app/` 10.00/10, full suite 6149 passed.
 
 ## Context
 
