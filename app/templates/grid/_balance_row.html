@@ -45,6 +45,7 @@
        aria-live="polite"
        aria-atomic="true">
   {% from "grid/_grid_row_macros.html" import mstart %}
+  {% from "_money_macros.html" import money %}
   <tr class="balance-row-summary fw-bold">
     <td class="sticky-col">
       <i class="bi bi-bank"></i> Projected End Balance
@@ -54,7 +55,9 @@
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }} {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
         {% if bal is not none %}
           {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true" title="Negative balance"></i> {% elif bal < low_balance_threshold %}<i class="bi bi-exclamation-circle" aria-hidden="true" title="Low balance"></i> {% endif %}
-          ${{ "{:,.0f}".format(bal) }}
+          {# Shared macro: negatives render -$270, not $-270 (developer
+             formatting ruling 2026-06-12; whole-dollar by design). #}
+          {{ money(bal, cents=false) }}
         {% else %}
           --
         {% endif %}

@@ -700,10 +700,14 @@ amended content model. Developer rulings:
 
 ## Rebuild decisions (Loop A COMPLETE, locked 2026-06-12)
 
-**Direction: Q "Terminal Road"** (round 6), chosen by the developer after six mockup rounds
+**Direction: R "Terminal Road"** (round 6), chosen by the developer after six mockup rounds
 (A-C ledger forms; D-F chart-forward, D chosen; G-J verdict tiers; K-L trajectory charts, L
-favored; M-O radical divergence; P-R fusion, Q chosen). The mockups were disposable per the
-visual loop; this section is the durable anatomy Loop B builds.
+favored; M-O radical divergence; P-R fusion). CORRECTION 2026-06-12 (during B-4): the
+developer initially said Q but meant R -- "I liked the due soon overlay on the projected end
+balance chart." Q and R differ only in where the due-soon LIST lives: R puts it in a
+frosted-glass panel in the canvas's sky (desktop), with no separate list section below; the
+street and everything else are identical. The mockups were disposable per the visual loop;
+this section is the durable anatomy Loop B builds.
 
 ### Page anatomy (top to bottom)
 
@@ -714,9 +718,16 @@ visual loop; this section is the durable anatomy Loop B builds.
      `revert=dashboard` cancel path; the three recorded anchor-edit coupling points apply);
      captions "projected through <period end> -- <account name>" and "last updated <date> --
      next paycheck <date>" (the last-updated fragment turns `--shekel-credit` with an icon
-     when older than `settings.anchor_staleness_days` or never set); two chips: "Still due
-     this period" (neutral) and "Lowest point ahead" (danger-tinted when negative; its date
-     links to `grid.index?offset=N`); the "Open Grid" button.
+     when older than `settings.anchor_staleness_days` or never set); the "Open Grid" button.
+     AMENDED by developer ruling (2026-06-12, B-4 drive; placement refined same day): the
+     chips form a STAT ROW on the sky band BETWEEN the hero and the Open Grid button (hero
+     left, chips middle, button right -- one band), so everything below the band belongs to
+     the chart's y-axis. A third chip was added: "Still due this period" (neutral; carries the
+     next-period total as its caption link), "Lowest point ahead" (danger-tinted when
+     negative), and "Highest point ahead" (NEW -- the trough's mirror: the maximum projected
+     end balance over the same full forward horizon, done-tinted when positive, date linking
+     to `grid.index?offset=N`; producer `peak` mirrors `trough` via a shared extremum
+     helper). The chart band height grew 250 -> 330 px desktop, 200 -> 250 px mobile.
    - **Chart band**: the 13-period projected end-balance line (Chart.js through the
      `chart_theme.js` factory; data via `data-*`; floats only at the serialization boundary);
      solid zero line; dashed `low_balance_threshold` line in `--shekel-credit`; the
@@ -730,10 +741,17 @@ visual loop; this section is the durable anatomy Loop B builds.
    figure as the hero (the reservation-semantics identity drawn); undated rows on an
    "anytime this period" shelf. MOBILE RULE: the street does not scale below ~760 px; it
    collapses and the due-soon list (item 3) is the mobile representation.
-3. **Due-soon list** (compact; two columns desktop, one mobile): the current period's unpaid
-   rows, row anatomy unchanged from Gate B (status icons, category sub-line, due date, entry
-   dual amount + tooltip, base label); header carries the still-due total; the next-period
-   total line with its grid link closes the section.
+3. **Due-soon list: REMOVED entirely (developer ruling 2026-06-12, during the B-4 acceptance
+   drive).** "It just clutters the page and it's all information that is better handled on
+   the grid." This supersedes the R glass-panel placement and lands the page on the P
+   variant: the STREET is the only per-bill surface (dated events on the time axis + the
+   undated shelf), and per-bill rows live on the grid. Consequences, named explicitly per
+   principle 3: (a) the next-period still-due TOTAL (a locked survivor) moves into the
+   still-due chip as a caption link to `grid.index?offset=1`; (b) on MOBILE -- where the
+   street does not render -- the dashboard carries NO per-bill rows at all: the still-due
+   chip totals and grid links are the whole bills story, accepted by this ruling;
+   (c) `_bill_row.html` retires (the panel was its only consumer); the `due_soon` producer
+   data survives as the street's source.
 4. **Tracks** (savings goals + debt, the position tier): metro-track rows -- name + pace
    pill (`behind` = `--shekel-credit`; `on_track`/`ahead`/`healthy` = `--shekel-done`), a
    rail with progress fill and a you-are-here marker, a target-date tick in
@@ -781,3 +799,64 @@ templates/CSS/JS)
   producers' tests -- sanctioned removals, not test-gaming), anchor-edit coupling updates.
 - **B-4: live verification** (authenticated Playwright, both themes/viewports, mutation
   paths incl. anchor edit cancel/Escape/409) and developer acceptance with real data.
+
+### Build record (2026-06-12)
+
+B-1 committed (`7d07301`; suite 6,102 after the debt-marker ruling). B-2 + B-3 built as one
+atomic change set (templates cannot ship without the route swap without breaking the live
+page): suite 6,069 passed, pylint 10.00/10, code-reviewed; the route-test rewrite covers
+content assertions, both degraded states, the new `pulse_section`/`balance_section`
+fragments, and the anchor-edit cancel/409 threading. `dashboard_service.py` survives as the
+shared bill-row helper module (996 -> 386 lines); `compute_dashboard_data` and all retired
+producers/templates deleted with consumers traced first.
+
+B-4 verification ran 2026-06-12 against dev with real data: both themes and viewports
+rendered; the anchor-edit Enter-open / Escape-revert cycle and the theme-toggle chart
+re-render verified via Playwright; street edge-label clamping fixed live. Route tests 51/51;
+suite 6,068 passed + pylint 10.00/10 (the one unrelated failure is the developer's
+in-progress backup-script edit, outside this work). COMMIT HELD: the developer is driving
+the live dashboard before accepting; the B-2/B-3/R change set stays in the working tree.
+
+**SSOT verification (2026-06-12, on developer request):** a two-pass check confirmed every
+dashboard dollar figure derives from the same producers the grid uses. Code trace: chart /
+trough / peak come from the IDENTICAL `balances_for` call the grid's balance row makes (same
+`get_baseline_scenario` + `resolve_grid_account` resolution); the hero is its sibling
+`balance_as_of_date`, pinned equal at the boundary by the C9-3 invariant and the cross-page
+equality lock (which includes a negative control proving the lock is load-bearing); still-due
+terms and street amounts use the shared `effective_amount` / `compute_remaining` / E-21
+fields; tracks delegate verbatim to the /savings producers (`balances_for` goal balances,
+`loan_resolver` debt). Live reconciliation on dev: 13/13 chart periods byte-match the grid's
+end-balance row; trough (-$269.96, Nov 4) and peak ($6,444.84, Feb 23 2028, offset 44) match
+their grid periods; a same-value anchor true-up fired a real `balanceChanged` and left every
+figure byte-identical. The ONLY legitimate divergence window: with an envelope entry dated
+after today, the hero (as-of-today, reservation semantics) is more conservative than the
+grid's current-period end cell -- by design (HIGH-02), test-pinned. Fixed during
+verification: the street end-station now renders the period-end chart point instead of the
+hero so its "period ends" label always agrees with its figure. Follow-ups from the
+developer's review of the verification, FIXED same day: (1) `low_balance_threshold` made
+NOT NULL with server_default 500 (migration `0dfd2537fecb`, both directions tested, test
+template rebuilt) -- the grid's two literal-500 fallbacks and the settings form's `or 500`
+(which masked a legitimate $0) are gone, so the threshold line on both surfaces is always
+exactly the configured setting (live-verified: saving 800 moved the chart line to 800;
+restored to 500); (2) the shared money macro gained a whole-dollar mode and the grid's
+negative-capable sites adopted it (`_balance_row`, mobile plan net + period balance, mobile
+net-cash-flow bar) -- grid negatives now render -$270, not $-270 (live-verified at offset
+10). REMAINING, needs a developer ruling (its own Opus task): anchor history buckets to the
+UTC day (`resolve_anchor`'s `astimezone(utc).date()` + the unique index's UTC-day bucket),
+so a true-up after ~8 PM Eastern anchors and displays as TOMORROW even though the container
+timezone is now correctly pinned America/New_York -- the application-layer half of the
+recorded UTC-vs-Eastern parity fork.
+
+Two PRESENTATIONAL deviations from the locked anatomy, deliberate -- developer ruling
+2026-06-12: REVISIT LATER (left open for daily-use feedback, neither ratified nor built):
+
+1. **Negative chart points carry no persistent in-chart value label** (the spec said "danger
+   dots + a value label"). The danger dot, the danger fill pocket, the hover tooltip, and the
+   trough chip (which states the figure and date and links to the grid) carry the signal; a
+   persistent label needs the chartjs-plugin-datalabels dependency or hand-drawn canvas text
+   (rule 13: not without a ruling).
+2. **The tracks target-date tick is dropped, not built.** The rail is AMOUNT-scaled (progress
+   toward the target amount); a DATE has no honest position on that axis -- the round-6
+   mockup's tick was decorative incoherence (principle 2: a figure and its caption never
+   disagree). The target date lives in the destination text ("target Mar 2027") and the pace
+   pill carries the verdict.

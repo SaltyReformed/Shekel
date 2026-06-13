@@ -252,7 +252,15 @@ class UserSettings(TimestampMixin, db.Model):
         db.Numeric(5, 4), default=Decimal("0.0300"),
     )
     grid_default_periods = db.Column(db.Integer, default=6)
-    low_balance_threshold = db.Column(db.Integer, default=500)
+    # NOT NULL with a whole-dollar server default of 500 so the grid and
+    # the dashboard chart threshold line always have a concrete value to
+    # read -- the nullable column previously forced divergent literal-500
+    # fallbacks at every read site (the grid routes, the settings form,
+    # the dashboard pulse producer's None branch).  The Python-side
+    # default keeps fresh ORM inserts at 500 without a round-trip.
+    low_balance_threshold = db.Column(
+        db.Integer, nullable=False, default=500, server_default="500",
+    )
     safe_withdrawal_rate = db.Column(
         db.Numeric(5, 4), default=Decimal("0.0400"),
         server_default=db.text("0.0400"),

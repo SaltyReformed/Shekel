@@ -19,7 +19,7 @@
                          errors=errors) }}
 
   {{ render_input_group("low_balance_threshold", "Low Balance Threshold",
-                         value=settings.low_balance_threshold or 500, prefix="$",
+                         value=settings.low_balance_threshold, prefix="$", required=true,
                          input_attrs='min="0"',
                          help_text="Balance cells turn yellow when projected balance falls below this amount.",
                          errors=errors) }}

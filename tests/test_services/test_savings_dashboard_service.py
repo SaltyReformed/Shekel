@@ -182,8 +182,9 @@ class TestGoalProgress:
         budget-dashboard savings-goal card for the same goal.  So the value
         is now ``Decimal("99.60")`` (not the old truncated ``99``); the
         template renders it ``"{:.0f}".format(...)`` -> "100%", matching the
-        budget dashboard's ``_savings_goals.html`` label.  Revert-proof: the
-        old ``int(99.6) == 99`` fails this ``99.60`` assertion.
+        budget dashboard's savings-goal track label (``_tracks.html``;
+        the pre-rebuild ``_savings_goals.html`` it replaced).  Revert-proof:
+        the old ``int(99.6) == 99`` fails this ``99.60`` assertion.
         """
         with app.app_context():
             savings_type = (

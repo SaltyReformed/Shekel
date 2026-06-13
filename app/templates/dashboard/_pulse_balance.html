@@ -1,0 +1,36 @@
+{# The #balance-display fragment: the hero figure that doubles as the
+   click-to-edit anchor control.
+
+   Contract (carried over from the pre-rebuild balance card):
+     * Clicking (or Enter/Space via dashboard_pulse.js) swaps in the
+       anchor editor, which REPLACES this element (hx-swap="outerHTML")
+       and carries ``?revert=dashboard`` so Cancel / Escape restore it
+       via ``dashboard.balance_section`` rendering THIS partial.
+     * The PATCH success path re-renders the enclosing pulse region via
+       the ``balanceChanged`` listener on #pulse-section; its OOB
+       snippet targets #anchor-as-of, which lives in _pulse.html's
+       caption line.
+
+   Context: ``pulse.hero`` -- a dict (see _pulse.html for the full
+   contract) or ``None``.  ``None`` reaches here only via
+   ``dashboard.balance_section`` when no account / scenario resolves
+   (e.g. the account was deactivated while the anchor editor was open and
+   Cancel / Escape reverts here): there is no balance to show and no
+   account to edit, so this renders a neutral, non-editable display that
+   keeps the ``#balance-display`` id so any enclosing swap target stays
+   valid.  Inside ``_pulse.html`` the hero is always populated (the
+   enclosing pulse dict is non-None), so that path never hits the
+   fallback. #}
+{% from "_money_macros.html" import money %}
+{% if pulse.hero %}
+<div id="balance-display" class="pulse-hero__num font-mono"
+     hx-get="{{ url_for('accounts.anchor_form', account_id=pulse.hero.account_id, revert='dashboard') }}"
+     hx-target="#balance-display"
+     hx-swap="outerHTML"
+     title="Click to update balance"
+     role="button" tabindex="0">{{ money(pulse.hero.balance) }}</div>
+{% else %}
+<div id="balance-display" class="pulse-hero__num font-mono text-muted">
+  No balance data available
+</div>
+{% endif %}

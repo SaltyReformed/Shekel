@@ -625,3 +625,113 @@ def add_entry(db_session, seed_user, txn, amount, entry_date):
         entry_date=entry_date,
     ))
     db_session.flush()
+
+
+def add_txn(
+    db_session, seed_user, period, name, amount,
+    status_enum=None, is_income=False,
+    due_date=None, category_key=None, is_deleted=False,
+    actual_amount=None,
+):
+    """Create a projected (default) transaction on the seed user's account.
+
+    The shared bare-Transaction builder for the dashboard suites (the
+    route, shared-helper, and pulse-producer tests all built an identical
+    ``_add_txn`` -- a duplicate-code finding).  Builds an income or expense
+    row with optional actual amount, due date, category, soft-delete flag,
+    and status.  Flushes; the caller commits.
+
+    Args:
+        db_session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (supplies the account,
+            scenario, and categories).
+        period: The :class:`~app.models.pay_period.PayPeriod` to place the
+            transaction in.
+        name: The transaction name.
+        amount: The estimated amount (str or Decimal-coercible).
+        status_enum: The :class:`~app.enums.StatusEnum` member; defaults to
+            ``StatusEnum.PROJECTED`` (resolved lazily to avoid importing
+            the enum at module-load time).
+        is_income: When True, an income row; otherwise an expense row.
+        due_date: The transaction's due date, or ``None``.
+        category_key: A key into ``seed_user["categories"]`` to set the
+            category, or ``None`` for no category.
+        is_deleted: The soft-delete flag.
+        actual_amount: The actual (tier-3) amount, or ``None``.
+
+    Returns:
+        The created :class:`~app.models.transaction.Transaction` (flushed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app import ref_cache
+    from app.enums import StatusEnum, TxnTypeEnum
+    from app.models.transaction import Transaction
+
+    if status_enum is None:
+        status_enum = StatusEnum.PROJECTED
+    type_id = (
+        ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        if is_income
+        else ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    )
+    cat_id = None
+    if category_key and category_key in seed_user["categories"]:
+        cat_id = seed_user["categories"][category_key].id
+
+    txn = Transaction(
+        account_id=seed_user["account"].id,
+        pay_period_id=period.id,
+        scenario_id=seed_user["scenario"].id,
+        status_id=ref_cache.status_id(status_enum),
+        name=name,
+        category_id=cat_id,
+        transaction_type_id=type_id,
+        estimated_amount=Decimal(str(amount)),
+        actual_amount=Decimal(str(actual_amount)) if actual_amount is not None else None,
+        due_date=due_date,
+        is_deleted=is_deleted,
+    )
+    db_session.add(txn)
+    db_session.flush()
+    return txn
+
+
+def add_anchor_history(db_session, account, period, balance, days_ago=0):
+    """Append an :class:`AccountAnchorHistory` row ``days_ago`` before now.
+
+    The shared anchor-history builder for the dashboard route and
+    pulse-producer suites (both built an identical ``_add_anchor_history``
+    -- a duplicate-code finding).  The ``created_at`` is set to
+    ``datetime.now(UTC) - days_ago``; under ``freeze_today`` the patched
+    ``datetime.now`` returns the frozen today, so a positive ``days_ago``
+    is that many days before the frozen reference.  Flushes; the caller
+    commits.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` the anchor
+            belongs to.
+        period: The :class:`~app.models.pay_period.PayPeriod` the anchor
+            is recorded against.
+        balance: The anchor balance (str or Decimal-coercible).
+        days_ago: How many days before now to date the row (default 0).
+
+    Returns:
+        The created :class:`AccountAnchorHistory` row (flushed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from datetime import datetime, timedelta, timezone
+    from app.models.account import AccountAnchorHistory
+
+    created = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    entry = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=period.id,
+        anchor_balance=Decimal(str(balance)),
+        created_at=created,
+    )
+    db_session.add(entry)
+    db_session.flush()
+    return entry

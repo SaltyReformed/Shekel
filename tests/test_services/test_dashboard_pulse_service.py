@@ -24,7 +24,7 @@ Every dollar assertion shows its arithmetic; Decimals are constructed
 from strings per the testing standards.
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -38,6 +38,7 @@ from app.models.transaction import Transaction
 from app.services import account_service, dashboard_pulse_service, transfer_service
 from app.services import pay_period_service
 from tests._test_helpers import (
+    add_anchor_history as _add_anchor_history,
     add_entry,
     create_envelope_txn,
     create_loan_account,
@@ -93,20 +94,6 @@ def _add_entry(db_session, seed_user, txn, amount, entry_date):
     add_entry(db_session, seed_user, txn, Decimal(str(amount)), entry_date)
 
 
-def _add_anchor_history(db_session, account, period, balance, days_ago=0):
-    """Append an anchor-history row ``days_ago`` before the frozen today."""
-    created = datetime.now(timezone.utc) - timedelta(days=days_ago)
-    entry = AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=period.id,
-        anchor_balance=Decimal(str(balance)),
-        created_at=created,
-    )
-    db_session.add(entry)
-    db_session.flush()
-    return entry
-
-
 # ── Hero: balance, captions, staleness, next paycheck ───────────────
 
 
@@ -114,10 +101,10 @@ class TestPulseHero:
     """The pulse hero block (as-of-today balance + captions + flags)."""
 
     def test_hero_carries_account_and_period(self, app, seed_user, seed_periods, db):
-        """Hero carries the account name/id and the current period end date.
+        """Hero carries the account name/id and the current period date range.
 
         The current period is seed_periods[5] (contains the frozen
-        2026-03-20); its end_date is 2026-03-26.
+        2026-03-20); its start_date is 2026-03-13 and end_date 2026-03-26.
         """
         with app.app_context():
             result = dashboard_pulse_service.compute_pulse_section(
@@ -126,6 +113,8 @@ class TestPulseHero:
             hero = result["hero"]
             assert hero["account_id"] == seed_user["account"].id
             assert hero["account_name"] == seed_user["account"].name
+            assert hero["period_start_date"] == seed_periods[_CURRENT_IDX].start_date
+            assert hero["period_start_date"] == date(2026, 3, 13)
             assert hero["period_end_date"] == seed_periods[_CURRENT_IDX].end_date
             assert hero["period_end_date"] == date(2026, 3, 26)
 
@@ -315,6 +304,27 @@ class TestPulseChart:
             )
             assert chart["low_balance_threshold"] == Decimal("500")
 
+    def test_chart_threshold_tracks_configured_value(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The chart threshold tracks the configured setting, not the default.
+
+        Setting low_balance_threshold to 800 (a non-default whole-dollar
+        integer) surfaces Decimal("800") on the chart -- the dashed line
+        updates dynamically with the user's configured value.
+        """
+        with app.app_context():
+            forward = seed_periods[_CURRENT_IDX:]
+            balances = {p.id: Decimal("100.00") for p in forward}
+            settings = seed_user["settings"]
+            settings.low_balance_threshold = 800
+            db.session.commit()
+
+            chart = dashboard_pulse_service._pulse_chart(
+                forward, balances, settings,
+            )
+            assert chart["low_balance_threshold"] == Decimal("800")
+
     def test_chart_threshold_none_without_settings(
         self, app, seed_user, seed_periods, db,
     ):
@@ -405,6 +415,156 @@ class TestPulseTrough:
                 forward, {}, seed_periods[_CURRENT_IDX],
             )
             assert trough is None
+
+
+# ── Peak: full-horizon maximum, beyond-chart rise, offset ───────────
+
+
+class TestPulsePeak:
+    """The highest projected end balance over the full forward horizon.
+
+    The exact mirror of :class:`TestPulseTrough`: same full-horizon scan,
+    same offset basis, same ``None`` degradation -- maximum instead of
+    minimum.
+    """
+
+    def test_peak_all_positive(self, app, seed_user, seed_periods, db):
+        """All-positive horizon -> the largest end balance at its offset.
+
+        Five forward periods (5..9) with balances 300, 400, 500, 450, 350.
+        The maximum is 500 at period 7, offset 7 - 5 = 2 -- a non-zero
+        offset, proving the scan finds the true peak, not just the first
+        point.
+        """
+        with app.app_context():
+            forward = seed_periods[_CURRENT_IDX:]
+            values = ["300.00", "400.00", "500.00", "450.00", "350.00"]
+            balances = {p.id: Decimal(v) for p, v in zip(forward, values)}
+
+            peak = dashboard_pulse_service._pulse_peak(
+                forward, balances, seed_periods[_CURRENT_IDX],
+            )
+            assert peak["balance"] == Decimal("500.00")
+            assert peak["end_date"] == seed_periods[_CURRENT_IDX + 2].end_date
+            # offset = period_index(7) - current period_index(5) = 2.
+            assert peak["offset"] == 2
+
+    def test_peak_equals_hero_when_first_period_is_max(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """When the current period is the maximum, the peak sits at offset 0.
+
+        Five forward periods (5..9) with balances 500, 400, 300, 350, 450.
+        The maximum is 500 at period 5 (the current period), offset
+        5 - 5 = 0 -- the peak coincides with the hero / chart's first
+        point, so the "highest point ahead" stat deep-links the current
+        period.
+        """
+        with app.app_context():
+            forward = seed_periods[_CURRENT_IDX:]
+            values = ["500.00", "400.00", "300.00", "350.00", "450.00"]
+            balances = {p.id: Decimal(v) for p, v in zip(forward, values)}
+
+            peak = dashboard_pulse_service._pulse_peak(
+                forward, balances, seed_periods[_CURRENT_IDX],
+            )
+            assert peak["balance"] == Decimal("500.00")
+            assert peak["end_date"] == seed_periods[_CURRENT_IDX].end_date
+            # offset = period_index(5) - current period_index(5) = 0.
+            assert peak["offset"] == 0
+
+    def test_peak_beyond_chart_window(self, app, seed_user, db):
+        """A peak BEYOND the 13-chart window is still found (full scan).
+
+        Build a 15-period forward horizon, all balances equal EXCEPT the
+        15th (index 14 in the forward list), which is the highest.  The
+        chart caps at 13 points (all equal, none the peak), so a chart-only
+        scan would miss the rise; the peak scans the FULL horizon and
+        catches it.  The peak's offset is the rise period's index minus the
+        current (forward[0]) period's index.
+        """
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 1, 2),
+                num_periods=15,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            # Treat the whole generated run as the forward horizon and its
+            # first period as the current (offset origin) -- this is a pure
+            # _pulse_peak / _pulse_chart test, independent of today.
+            forward = periods
+            current = forward[0]
+            assert len(forward) == 15  # 15 forward periods; chart caps at 13.
+
+            balances = {p.id: Decimal("500.00") for p in forward}
+            rise_period = forward[14]  # the 15th forward period (beyond chart)
+            balances[rise_period.id] = Decimal("1250.00")
+
+            # The chart sees only the first 13 -- all 500.00, none the peak.
+            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            assert len(chart["points"]) == 13
+            assert all(
+                pt["balance"] == Decimal("500.00") for pt in chart["points"]
+            )
+
+            # The peak scans all 15 and finds the rise beyond the chart.
+            peak = dashboard_pulse_service._pulse_peak(
+                forward, balances, current,
+            )
+            assert peak["balance"] == Decimal("1250.00")
+            assert peak["end_date"] == rise_period.end_date
+            # offset = rise period_index - current period_index = 14.
+            assert peak["offset"] == rise_period.period_index - current.period_index
+            assert peak["offset"] == 14
+
+    def test_peak_none_when_no_balances(self, app, seed_user, seed_periods, db):
+        """An empty end-balance map -> peak is None (no projection)."""
+        with app.app_context():
+            forward = seed_periods[_CURRENT_IDX:]
+            peak = dashboard_pulse_service._pulse_peak(
+                forward, {}, seed_periods[_CURRENT_IDX],
+            )
+            assert peak is None
+
+    def test_peak_wired_through_compute_pulse_section(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """compute_pulse_section returns a populated peak from the real walk.
+
+        A $1,200.00 projected income in the current period (5) lifts that
+        period's projected end balance to 1,000.00 + 1,200.00 = 2,200.00,
+        the highest point in the all-else-flat horizon (the later periods
+        carry the same 2,200.00 balance forward, so the peak is the FIRST
+        such period -- the current one, offset 0).  This proves the
+        producer wires _pulse_peak through, not just the helper in
+        isolation.
+        """
+        with app.app_context():
+            current = seed_periods[_CURRENT_IDX]
+            income = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Paycheck",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                estimated_amount=Decimal("1200.00"),
+            )
+            db.session.add(income)
+            db.session.commit()
+
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            peak = result["peak"]
+            # 1,000.00 anchor + 1,200.00 income = 2,200.00 end balance.
+            assert peak["balance"] == Decimal("2200.00")
+            assert peak["end_date"] == current.end_date
+            # The current period is the first to reach the high; offset 0.
+            assert peak["offset"] == 0
 
 
 # ── Still due: locked B4 bases, current vs next separation ──────────
@@ -574,6 +734,40 @@ class TestPulseStillDue:
             still = result["still_due"]
             assert still["current_period"] == Decimal("300.00")
             assert still["next_period"] == Decimal("175.00")
+            # The next period's date range accompanies its total so the
+            # template can label "Next period (Mar 27 - Apr 9): $X".
+            assert still["next_period_start"] == seed_periods[_CURRENT_IDX + 1].start_date
+            assert still["next_period_start"] == date(2026, 3, 27)
+            assert still["next_period_end"] == seed_periods[_CURRENT_IDX + 1].end_date
+            assert still["next_period_end"] == date(2026, 4, 9)
+
+    def test_still_due_next_period_dates_none_when_no_next(
+        self, app, seed_user, db,
+    ):
+        """No next period -> next_period total 0.00 and date range None/None.
+
+        Generate exactly 6 periods (indices 0..5) so the period containing
+        the frozen 2026-03-20 (index 5) is the LAST one: there is no next
+        period, so the still-due block reports next_period 0.00 and both
+        next-period dates None (the template renders its generate-periods
+        fallback line then).
+        """
+        with app.app_context():
+            pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 1, 2),
+                num_periods=6,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            still = result["still_due"]
+            assert still["next_period"] == Decimal("0.00")
+            assert still["next_period_start"] is None
+            assert still["next_period_end"] is None
 
     def test_settled_row_excluded_from_still_due(
         self, app, seed_user, seed_periods, db,
@@ -595,6 +789,70 @@ class TestPulseStillDue:
                 seed_user["user"].id,
             )
             assert result["still_due"]["current_period"] == Decimal("0.00")
+
+
+# ── Street: period day-span and today's offset, shared basis ────────
+
+
+class TestPulseStreet:
+    """The street band's day-span and today's offset within the period.
+
+    Basis (shared with the due-soon rows' ``day_offset``): the period
+    start is day 0, so an event due on the start sits at 0, the period end
+    sits at ``days_total``, and ``today_offset`` is days since the start.
+    """
+
+    def test_street_days_total_and_today_offset(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """days_total spans the period; today_offset is days since the start.
+
+        Current period 5: start 2026-03-13, end 2026-03-26; frozen today
+        2026-03-20.
+            days_total   = (2026-03-26 - 2026-03-13).days = 13.
+            today_offset = (2026-03-20 - 2026-03-13).days = 7.
+        """
+        with app.app_context():
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            street = result["street"]
+            assert street["days_total"] == 13
+            assert street["today_offset"] == 7
+
+    def test_street_shares_due_soon_basis(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A due-soon row's day_offset shares the street's day-0 basis.
+
+        A bill due on the period END date sits at day_offset == days_total
+        (the period-end station's position), and a bill due on the period
+        START sits at day_offset 0 -- proving the three numbers (start,
+        today, end) ride one axis so the band's percentage math lines up.
+        """
+        with app.app_context():
+            current = seed_periods[_CURRENT_IDX]
+            _add_expense(
+                db.session, seed_user, current,
+                "Due on end", "10.00", due_date=current.end_date,
+            )
+            _add_expense(
+                db.session, seed_user, current,
+                "Due on start", "20.00", due_date=current.start_date,
+            )
+            db.session.commit()
+
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            street = result["street"]
+            offsets = {
+                b["name"]: b["day_offset"] for b in result["due_soon"]
+            }
+            # Period-start event sits at day 0.
+            assert offsets["Due on start"] == 0
+            # Period-end event sits at days_total -- the period-end station.
+            assert offsets["Due on end"] == street["days_total"]
 
 
 # ── Due soon: current-period rows with day offset + undated flag ────
@@ -763,16 +1021,17 @@ class TestPulseSectionDegraded:
             )
             assert result is None
 
-    def test_has_all_five_keys_when_populated(
+    def test_has_all_region_keys_when_populated(
         self, app, seed_user, seed_periods, db,
     ):
-        """A populated pulse section carries exactly the five region keys."""
+        """A populated pulse section carries exactly the seven region keys."""
         with app.app_context():
             result = dashboard_pulse_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert set(result.keys()) == {
-                "hero", "chart", "trough", "still_due", "due_soon",
+                "hero", "chart", "trough", "peak",
+                "still_due", "street", "due_soon",
             }
 
 

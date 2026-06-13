@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_money_macros.html" import dti_badge %}
 {% block title %}Accounts Dashboard -- Shekel{% endblock %}
 
 {% block breadcrumbs %}
@@ -76,13 +77,9 @@
     <div class="mt-2 pt-2 border-top d-flex align-items-center">
       <span class="text-muted small me-2">Debt-to-Income:</span>
       <strong class="me-2">{{ debt_summary.dti_ratio }}%</strong>
-      {% if debt_summary.dti_label == 'healthy' %}
-      <span class="badge bg-success">Healthy</span>
-      {% elif debt_summary.dti_label == 'moderate' %}
-      <span class="badge bg-warning text-dark">Moderate</span>
-      {% else %}
-      <span class="badge bg-danger">High</span>
-      {% endif %}
+      {# Shared verdict-badge macro (Gate B6: this mapping was duplicated
+         with the dashboard's debt card). #}
+      {{ dti_badge(debt_summary.dti_label) }}
     </div>
     {% elif debt_summary %}
     <div class="mt-2 pt-2 border-top">

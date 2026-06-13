@@ -1,0 +1,97 @@
+{# Position tier -- savings goals and debt as metro tracks.
+   Page-load only by design (Gate B6: no balanceChanged emitter reachable
+   without leaving the dashboard moves these figures).
+
+   Context contract (dashboard.page, from
+   dashboard_pulse_service.compute_tracks_section plus the route-added
+   ``debt.principal_paid_pct`` -- the fraction scaled to 0-100, float,
+   or None when the user has no loans):
+
+     tracks.goals: [{name, account_name, account_id, progress_pct,
+       current_balance, target_amount, target_date, pace,
+       projected_completion_date, required_monthly, monthly_contribution}]
+     tracks.debt: compute_debt_summary dict (total_debt,
+       total_monthly_payments, dti_ratio, dti_label,
+       projected_debt_free_date) + principal_paid_pct | None
+
+   Rail mechanics: fill width via data-progress-pct (progress_bar.js),
+   marker/label position via data-rail-pct (dashboard_pulse.js). The
+   debt marker uses the ALL-LOANS-EVER monotonic basis (developer
+   ruling 2026-06-12); when principal_paid_pct is None (no loans is the
+   only reachable case while debt is non-None via summary -- defensive)
+   the rail renders without a positional marker. #}
+{% from "_money_macros.html" import money, pace_pill, dti_badge %}
+
+<div class="tracks">
+  <div class="tracks__head">
+    <h6>Position</h6>
+    <a href="{{ url_for('savings.dashboard') }}">Accounts &amp; goals</a>
+  </div>
+
+  {% for goal in tracks.goals %}
+  <div class="track"
+       {% if goal.required_monthly is not none and goal.target_date %}
+       title="needs {{ money(goal.required_monthly) }}/mo to hit {{ goal.target_date.strftime('%b %Y') }} -- contributing {{ money(goal.monthly_contribution) }}/mo now"
+       {% endif %}>
+    <div class="track__label">
+      <a href="{{ url_for('savings.dashboard') }}">{{ goal.name }}</a>
+      {{ pace_pill(goal.pace) }}
+    </div>
+    <div class="track__rail">
+      <div class="track__fill" data-progress-pct="{{ goal.progress_pct }}"></div>
+      <div class="track__here" data-rail-pct="{{ goal.progress_pct }}"></div>
+      <div class="track__here-label" data-rail-pct="{{ goal.progress_pct }}">
+        {{ money(goal.current_balance) }} &middot;
+        {{ "{:.0f}".format(goal.progress_pct) }}%
+      </div>
+    </div>
+    <div class="track__dest">
+      <span class="font-mono fw-bold">{{ money(goal.target_amount) }}</span>
+      <span class="track__dest-sub">
+        {%- if goal.projected_completion_date -%}
+        arriving ~{{ goal.projected_completion_date.strftime('%b %Y') }}
+        {%- else -%}
+        no recurring contribution
+        {%- endif -%}
+        {%- if goal.target_date %} &middot; target {{ goal.target_date.strftime('%b %Y') }}{% endif -%}
+      </span>
+    </div>
+  </div>
+  {% else %}
+  <div class="text-muted small py-2">
+    No active savings goals &middot;
+    <a href="{{ url_for('savings.dashboard') }}">Set up a goal</a>
+  </div>
+  {% endfor %}
+
+  {% if tracks.debt %}
+  <div class="track"
+       title="paying {{ money(tracks.debt.total_monthly_payments) }}/mo{% if tracks.debt.dti_ratio is not none %} -- DTI {{ '{:.1f}'.format(tracks.debt.dti_ratio) }}%{% endif %}">
+    <div class="track__label">
+      <a href="{{ url_for('savings.dashboard') }}">Debt payoff</a>
+      {% if tracks.debt.dti_label %}{{ dti_badge(tracks.debt.dti_label) }}{% endif %}
+    </div>
+    <div class="track__rail">
+      {% if tracks.debt.principal_paid_pct is not none %}
+      <div class="track__fill" data-progress-pct="{{ tracks.debt.principal_paid_pct }}"></div>
+      <div class="track__here" data-rail-pct="{{ tracks.debt.principal_paid_pct }}"></div>
+      <div class="track__here-label" data-rail-pct="{{ tracks.debt.principal_paid_pct }}">
+        {{ money(tracks.debt.total_debt) }} left
+      </div>
+      {% else %}
+      <div class="track__here-label track__here-label--static">
+        {{ money(tracks.debt.total_debt) }} left
+      </div>
+      {% endif %}
+    </div>
+    <div class="track__dest">
+      <span class="font-mono fw-bold">$0</span>
+      <span class="track__dest-sub">
+        {%- if tracks.debt.projected_debt_free_date -%}
+        debt-free {{ tracks.debt.projected_debt_free_date.strftime('%b %Y') }}
+        {%- endif -%}
+      </span>
+    </div>
+  </div>
+  {% endif %}
+</div>

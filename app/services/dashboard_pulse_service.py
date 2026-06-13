@@ -79,8 +79,13 @@ def compute_pulse_section(user_id: int) -> dict | None:
       * ``hero`` -- see :func:`_pulse_hero`.
       * ``chart`` -- see :func:`_pulse_chart`.
       * ``trough`` -- see :func:`_pulse_trough` (``None`` when no period
-        is projected).
+        is projected): the lowest projected end balance ahead.
+      * ``peak`` -- see :func:`_pulse_peak` (``None`` in the same no-period
+        case as ``trough``): the highest projected end balance ahead, the
+        exact mirror of ``trough`` over the same full forward horizon.
       * ``still_due`` -- see :func:`_pulse_still_due`.
+      * ``street`` -- see :func:`_pulse_street` (the current period's
+        day-span and today's offset within it).
       * ``due_soon`` -- see :func:`_pulse_due_soon`.
 
     Args:
@@ -137,9 +142,13 @@ def compute_pulse_section(user_id: int) -> dict | None:
         "trough": _pulse_trough(
             forward_periods, end_balances, current_period,
         ),
+        "peak": _pulse_peak(
+            forward_periods, end_balances, current_period,
+        ),
         "still_due": _pulse_still_due(
             unpaid_rows, current_period, next_period,
         ),
+        "street": _pulse_street(current_period),
         "due_soon": _pulse_due_soon(unpaid_rows, current_period),
     }
 
@@ -171,9 +180,9 @@ def _pulse_hero(
         settings: The user's settings, or ``None``.
 
     Returns:
-        A dict with keys ``balance``, ``period_end_date``,
-        ``account_name``, ``account_id``, ``last_updated_date``,
-        ``is_stale``, ``next_paycheck_date``.
+        A dict with keys ``balance``, ``period_start_date``,
+        ``period_end_date``, ``account_name``, ``account_id``,
+        ``last_updated_date``, ``is_stale``, ``next_paycheck_date``.
     """
     balance = balance_resolver.balance_as_of_date(
         account, scenario_id, date.today(),
@@ -182,6 +191,7 @@ def _pulse_hero(
 
     return {
         "balance": balance,
+        "period_start_date": current_period.start_date,
         "period_end_date": current_period.end_date,
         "account_name": account.name,
         "account_id": account.id,
@@ -238,20 +248,23 @@ def _pulse_chart(
     hero by construction (same producer family, reservation semantics):
     with no entries dated after today the as-of-today balance equals the
     current period's projected end balance.  ``low_balance_threshold`` is
-    the user's setting as a ``Decimal`` (the column is a whole-dollar
-    integer) or ``None`` when no setting exists -- the UI draws it as a
-    faint dashed line.
+    the user's setting as a ``Decimal`` (the column is a NOT NULL
+    whole-dollar integer, so it always carries a value when a settings
+    row exists) or ``None`` only when the user has no settings row at
+    all -- the UI draws it as a faint dashed line.
 
     Args:
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
             ``balances_for``.
-        settings: The user's settings, or ``None``.
+        settings: The user's settings, or ``None`` when the user has no
+            settings row.
 
     Returns:
         A dict with keys ``points`` (a list of ``{end_date, balance}``
-        dicts) and ``low_balance_threshold`` (``Decimal`` or ``None``).
+        dicts) and ``low_balance_threshold`` (``Decimal``, or ``None``
+        when ``settings`` is ``None``).
     """
     chart_periods = forward_periods[:_CHART_HORIZON_PERIODS]
     points = [
@@ -261,7 +274,7 @@ def _pulse_chart(
     ]
 
     threshold = None
-    if settings is not None and settings.low_balance_threshold is not None:
+    if settings is not None:
         threshold = Decimal(str(settings.low_balance_threshold))
 
     return {"points": points, "low_balance_threshold": threshold}
@@ -274,17 +287,10 @@ def _pulse_trough(
 ) -> dict | None:
     """Find the lowest projected end balance over the FULL forward horizon.
 
-    Scans every period from the current one forward (not just the 13
-    charted points), so a danger dip beyond the chart window is still
-    caught.  The horizon is the retired negative-projection alert's full
-    multi-year forward reach, with one deliberate divergence: that alert
-    skipped the current period (``start_date <= today``), whereas this
-    scan INCLUDES it, because the chart's first plotted point is the
-    current period's end balance and the "lowest point ahead" stat must be
-    able to coincide with it rather than understating the worst visible
-    dip.  The minimum's ``offset`` is its ``period_index`` minus the
-    current period's, so the UI can deep-link the grid at that period
-    (``grid.index?offset=N``).
+    The "lowest point ahead" stat -- the minimum extremum from
+    :func:`_pulse_extremum` (``find_max=False``).  See that helper for the
+    full-horizon scan, the deliberate current-period inclusion, and the
+    ``offset`` deep-link contract.
 
     Args:
         forward_periods: Periods from the current one forward, ordered by
@@ -298,23 +304,99 @@ def _pulse_trough(
         ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
         period has a projected balance (e.g. an empty projection).
     """
-    trough_period = None
-    trough_balance = None
+    return _pulse_extremum(
+        forward_periods, end_balances, current_period, find_max=False,
+    )
+
+
+def _pulse_peak(
+    forward_periods: list[PayPeriod],
+    end_balances: dict[int, Decimal],
+    current_period: PayPeriod,
+) -> dict | None:
+    """Find the highest projected end balance over the FULL forward horizon.
+
+    The "highest point ahead" stat -- the exact mirror of
+    :func:`_pulse_trough`, the maximum extremum from
+    :func:`_pulse_extremum` (``find_max=True``).  Scans the same full
+    forward horizon (current period onward, all periods, not just the 13
+    charted points) and degrades to ``None`` in the same no-projection
+    case as the trough.
+
+    Args:
+        forward_periods: Periods from the current one forward, ordered by
+            ``period_index``.
+        end_balances: The ``period_id -> Decimal`` end-balance map from
+            ``balances_for``.
+        current_period: The period containing today (the offset origin).
+
+    Returns:
+        A dict with keys ``balance`` (the maximum end balance),
+        ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
+        period has a projected balance (e.g. an empty projection).
+    """
+    return _pulse_extremum(
+        forward_periods, end_balances, current_period, find_max=True,
+    )
+
+
+def _pulse_extremum(
+    forward_periods: list[PayPeriod],
+    end_balances: dict[int, Decimal],
+    current_period: PayPeriod,
+    find_max: bool,
+) -> dict | None:
+    """Find the extreme projected end balance over the FULL forward horizon.
+
+    The shared core of :func:`_pulse_trough` (``find_max=False``, the
+    minimum) and :func:`_pulse_peak` (``find_max=True``, the maximum):
+    scans every period from the current one forward (not just the 13
+    charted points), so a danger dip OR a peak beyond the chart window is
+    still caught.  The horizon is the retired negative-projection alert's
+    full multi-year forward reach, with one deliberate divergence: that
+    alert skipped the current period (``start_date <= today``), whereas
+    this scan INCLUDES it, because the chart's first plotted point is the
+    current period's end balance and the "lowest/highest point ahead" stat
+    must be able to coincide with it rather than understating the worst
+    visible dip (or the visible peak).  The winner's ``offset`` is its
+    ``period_index`` minus the current period's, so the UI can deep-link
+    the grid at that period (``grid.index?offset=N``).
+
+    Args:
+        forward_periods: Periods from the current one forward, ordered by
+            ``period_index``.
+        end_balances: The ``period_id -> Decimal`` end-balance map from
+            ``balances_for``.
+        current_period: The period containing today (the offset origin).
+        find_max: ``True`` to return the maximum end balance (the peak),
+            ``False`` to return the minimum (the trough).
+
+    Returns:
+        A dict with keys ``balance`` (the extreme end balance),
+        ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
+        period has a projected balance (e.g. an empty projection).
+    """
+    extremum_period = None
+    extremum_balance = None
     for period in forward_periods:
         balance = end_balances.get(period.id)
         if balance is None:
             continue
-        if trough_balance is None or balance < trough_balance:
-            trough_balance = balance
-            trough_period = period
+        if extremum_balance is None:
+            extremum_balance = balance
+            extremum_period = period
+            continue
+        if (balance > extremum_balance) if find_max else (balance < extremum_balance):
+            extremum_balance = balance
+            extremum_period = period
 
-    if trough_period is None:
+    if extremum_period is None:
         return None
 
     return {
-        "balance": trough_balance,
-        "end_date": trough_period.end_date,
-        "offset": trough_period.period_index - current_period.period_index,
+        "balance": extremum_balance,
+        "end_date": extremum_period.end_date,
+        "offset": extremum_period.period_index - current_period.period_index,
     }
 
 
@@ -355,7 +437,10 @@ def _pulse_still_due(
         A dict with keys ``current_period`` and ``next_period``, each a
         ``Decimal`` total (``round_money(_ZERO)`` -> ``Decimal("0.00")``
         for a period with no still-due rows; ``next_period`` is
-        ``Decimal("0.00")`` when there is no next period).
+        ``Decimal("0.00")`` when there is no next period), plus
+        ``next_period_start`` and ``next_period_end`` (the next period's
+        date range, both ``None`` when there is no next period -- the
+        template renders a generate-periods fallback line then).
     """
     current_total = _ZERO
     next_total = _ZERO
@@ -369,6 +454,12 @@ def _pulse_still_due(
     return {
         "current_period": round_money(current_total),
         "next_period": round_money(next_total),
+        "next_period_start": (
+            next_period.start_date if next_period is not None else None
+        ),
+        "next_period_end": (
+            next_period.end_date if next_period is not None else None
+        ),
     }
 
 
@@ -394,6 +485,39 @@ def _row_still_due(txn: Transaction) -> Decimal:
         remaining = compute_remaining(txn.estimated_amount, txn.entries)
         return remaining if remaining > _ZERO else _ZERO
     return txn.effective_amount
+
+
+def _pulse_street(current_period: PayPeriod) -> dict:
+    """Build the street band's day-span and today's offset within it.
+
+    The street band lays the current period out day by day, and the
+    due-soon rows already position each dated event at
+    ``(due_date - current_period.start_date).days`` (see
+    :func:`_pulse_due_soon`).  These two numbers SHARE that same basis so
+    the band's percentage math lines up: the period start is day 0, the
+    period end is ``days_total``, and an event due on the start sits at 0
+    while one due on the end sits at ``days_total``.
+
+      * ``days_total`` -- ``(end_date - start_date).days``: the day span
+        of the current period.  The period-end station on the street sits
+        at this offset (the far right of the band).
+      * ``today_offset`` -- ``(today - start_date).days``: where the
+        "Today" marker falls on the band.  May fall outside ``[0,
+        days_total]`` only at a period boundary the producer never reaches
+        (``compute_pulse_section`` resolves the period that CONTAINS today,
+        so ``start_date <= today <= end_date`` and the offset is in range);
+        the JS clamps defensively regardless.
+
+    Args:
+        current_period: The period containing today.
+
+    Returns:
+        A dict with integer keys ``days_total`` and ``today_offset``.
+    """
+    return {
+        "days_total": (current_period.end_date - current_period.start_date).days,
+        "today_offset": (date.today() - current_period.start_date).days,
+    }
 
 
 def _pulse_due_soon(
@@ -528,10 +652,12 @@ def compute_tracks_section(user_id: int) -> dict:
         UI renders no positional marker in that case).  ``None`` when the
         user has no loan accounts.
 
-    No exception is caught here, for the same reasons documented on
-    ``dashboard_service._get_savings_goals`` / ``_get_debt_summary``: a
-    computation error is a programming bug that must fail loud, not be
-    masked.
+    No exception is caught here: the producers this delegates to are the
+    same code the /savings route runs without a guard, so a
+    ``ValueError`` / ``KeyError`` / ``AttributeError`` from that
+    computation is a programming bug that must fail loud, not be masked as
+    an empty tracks tier (CLAUDE.md rule 4); letting it propagate fails
+    loud and identically on the dashboard and /savings pages.
 
     Args:
         user_id: Integer ID of the current user.
@@ -542,8 +668,7 @@ def compute_tracks_section(user_id: int) -> dict:
     """
     # Pylint: ``import-outside-toplevel`` -- Deferred: savings_dashboard_service
     # pulls the heaviest service import chain (+27 modules, measured); loaded only
-    # when this path runs, not on every dashboard_pulse_service import.  Same
-    # rationale as ``dashboard_service._get_debt_summary``.
+    # when this path runs, not on every dashboard_pulse_service import.
     from app.services import savings_dashboard_service  # pylint: disable=import-outside-toplevel
 
     goal_data = savings_dashboard_service.compute_goal_progress(user_id)

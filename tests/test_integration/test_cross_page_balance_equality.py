@@ -21,8 +21,8 @@ rendering surface MUST return the identical Decimal:
   2. /savings                 -- ``savings_dashboard_service`` +
                                 ``GET /savings``.
   3. /accounts checking detail -- ``GET /accounts/<id>/checking``.
-  4. Dashboard               -- ``dashboard_service.compute_dashboard_data``
-                                + ``GET /dashboard``.
+  4. Dashboard               -- ``dashboard_service.compute_balance_section``
+                                (the pulse hero) + ``GET /dashboard``.
   5. Year-end net-worth      -- ``year_end_summary_service.compute_year_end_summary``
                                 's per-account input at the month
                                 containing the anchor period.
@@ -194,13 +194,18 @@ def _grid_value(ctx):
 
 
 def _dashboard_value(ctx):
-    """Read the dashboard's ``current_balance`` from the service dict.
+    """Read the dashboard's hero balance from the service dict.
 
-    The dashboard route renders ``balance_info["current_balance"]``
-    verbatim; the service dict is the single value the surface displays.
+    After the Terminal Road rebuild the dashboard's headline balance is
+    the pulse hero, served by ``compute_balance_section`` (the narrow
+    producer the anchor-edit revert fragment also renders); its
+    ``hero["balance"]`` is the same ``balance_as_of_date`` figure the
+    page's ``_pulse_balance.html`` renders verbatim.  The fixture pins
+    today inside the anchor period, so this as-of-today balance equals the
+    resolver's anchor-period balance.
     """
-    data = dashboard_service.compute_dashboard_data(ctx["user_id"])
-    return data["balance_info"]["current_balance"]
+    data = dashboard_service.compute_balance_section(ctx["user_id"])
+    return data["hero"]["balance"]
 
 
 def _savings_value(ctx):

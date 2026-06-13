@@ -166,8 +166,9 @@ def _project_loan_accounts(
 def compute_debt_summary(user_id: int) -> dict | None:
     """Compute only the debt summary + DTI for the budget dashboard card.
 
-    The narrow producer behind ``dashboard_service._get_debt_summary``
-    (deep-hunt #82's efficiency/SRP half).  Identical figures to
+    The narrow producer behind the dashboard's debt track
+    (``dashboard_pulse_service.compute_tracks_section``; deep-hunt #82's
+    efficiency/SRP half).  Identical figures to
     ``compute_dashboard_data(user_id)["debt_summary"]`` by construction:
     it runs the same loaders and the same per-account projection
     dispatch -- restricted to the accounts the debt summary reads (those
@@ -252,8 +253,9 @@ def compute_debt_principal_progress(user_id: int) -> Decimal | None:
 def compute_goal_progress(user_id: int) -> list[dict]:
     """Compute only the savings-goal progress for the budget dashboard card.
 
-    The narrow producer behind ``dashboard_service._get_savings_goals``,
-    mirroring :func:`compute_debt_summary`'s pattern.  Identical figures
+    The narrow producer behind the dashboard's savings tracks
+    (``dashboard_pulse_service.compute_tracks_section``), mirroring
+    :func:`compute_debt_summary`'s pattern.  Identical figures
     to ``compute_dashboard_data(user_id)["goal_data"]`` by construction:
     it runs the same loaders, the same per-account projection dispatch
     (restricted to the accounts that back an active goal -- per-account

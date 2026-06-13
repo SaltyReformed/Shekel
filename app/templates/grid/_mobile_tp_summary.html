@@ -52,12 +52,13 @@
      aria-atomic="true">
 
   {# --- Net Cash Flow Bar --- #}
+  {% from "_money_macros.html" import money %}
   {% set net = subtotals[period.id].net %}
   <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
     <span class="fw-bold small">Net Cash Flow</span>
     <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
       {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
-      ${{ "{:,.0f}".format(net) }}
+      {{ money(net, cents=false) }}
     </span>
   </div>
 
