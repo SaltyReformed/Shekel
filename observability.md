@@ -2,19 +2,28 @@
 
 ## Context
 
-You run five service stacks on an Arch (CachyOS) desktop — Jellyfin, Immich, Unifi, Calibre-Web-Automated, and your own Flask app **Shekel** — all under `/opt/docker/`. There is no centralized log aggregation today (each service writes Docker `json-file` logs in isolation) and no host/hardware metrics collection. Shekel was set up with structured (JSON) logging, but the upstream config has bugs that prevent the structure from being usable.
+You run five service stacks on an Arch (CachyOS) desktop — Jellyfin, Immich, Unifi,
+Calibre-Web-Automated, and your own Flask app **Shekel** — all under `/opt/docker/`. There is no
+centralized log aggregation today (each service writes Docker `json-file` logs in isolation) and no
+host/hardware metrics collection. Shekel was set up with structured (JSON) logging, but the upstream
+config has bugs that prevent the structure from being usable.
 
 The goal is to deploy a single, coherent observability stack that:
 
 1. Ingests **Docker container logs** from all five service stacks.
 2. Ingests **Arch system logs** from journald.
-3. Collects **host metrics** including CPU, RAM, disks, network, hwmon temperatures, NVMe + HDD SMART, and Intel Arc B580 GPU utilization.
+3. Collects **host metrics** including CPU, RAM, disks, network, hwmon temperatures, NVMe + HDD
+   SMART, and Intel Arc B580 GPU utilization.
 4. Collects **per-container metrics** (CPU/RAM/IO/network).
 5. Collects **application metrics** from cloudflared, jellyfin, immich, postgres (× 2), and nginx.
-6. Surfaces all of this in **Grafana**, served LAN-only via your existing nginx with the wildcard cert, mirroring how Jellyfin/Immich/Shekel are reverse-proxied today.
-7. Mirrors the security and operational conventions in `/opt/docker/AUDIT.md` (pinned image versions, `cap_drop: ALL`, `no-new-privileges:true`, healthchecks, resource limits, json-file rotation, `init: true` where appropriate, bind-mounts under `/opt/docker/<service>/`).
+6. Surfaces all of this in **Grafana**, served LAN-only via your existing nginx with the wildcard
+   cert, mirroring how Jellyfin/Immich/Shekel are reverse-proxied today.
+7. Mirrors the security and operational conventions in `/opt/docker/AUDIT.md` (pinned image
+   versions, `cap_drop: ALL`, `no-new-privileges:true`, healthchecks, resource limits, json-file
+   rotation, `init: true` where appropriate, bind-mounts under `/opt/docker/<service>/`).
 
-**User-confirmed decisions:** LAN-only Grafana via nginx + TLS · pre-flight prep baked into Phase 0 · Shekel logging fix done upstream · 30 days metrics / 30 days logs.
+**User-confirmed decisions:** LAN-only Grafana via nginx + TLS · pre-flight prep baked into Phase 0
+· Shekel logging fix done upstream · 30 days metrics / 30 days logs.
 
 ---
 
@@ -23,25 +32,39 @@ The goal is to deploy a single, coherent observability stack that:
 These were uncovered during exploration. They are flagged here, not silently worked around.
 
 ### Showstoppers — fixed in Phase 0 of this plan
-1. **NTP is INACTIVE.** `timedatectl status` reports the clock is unsynchronized. Prometheus is highly sensitive to clock drift and Loki ingestion will reject samples too far out of band.
-2. **`smartmontools` and `nvme-cli` are not installed.** Required on the host (the exporter container ships its own `smartctl`, but you'll want host-side parity and `smartd` warnings).
-3. **Btrfs root filesystem.** `/var/lib/docker` and `/opt/docker` live on btrfs. Prometheus TSDB and Loki chunks are random-write workloads that fragment btrfs catastrophically without `chattr +C`. Must be applied to empty data dirs **before** any data is written.
+
+1. **NTP is INACTIVE.** `timedatectl status` reports the clock is unsynchronized. Prometheus is
+   highly sensitive to clock drift and Loki ingestion will reject samples too far out of band.
+2. **`smartmontools` and `nvme-cli` are not installed.** Required on the host (the exporter
+   container ships its own `smartctl`, but you'll want host-side parity and `smartd` warnings).
+3. **Btrfs root filesystem.** `/var/lib/docker` and `/opt/docker` live on btrfs. Prometheus TSDB and
+   Loki chunks are random-write workloads that fragment btrfs catastrophically without `chattr +C`.
+   Must be applied to empty data dirs **before** any data is written.
 
 ### Bugs in your Shekel logging — fixed upstream as part of this plan
-4. **`python-json-logger==4.1.0` removed the `timestamp=True` kwarg.** Your `app/utils/logging_config.py` still passes it; the formatter silently ignores it. That is why no `timestamp` field appears in emitted logs. The `rename_fields` map is still supported in v4 but appears broken-by-association because the formatter as-configured probably never produced what you intended.
+
+4. **`python-json-logger==4.1.0` removed the `timestamp=True` kwarg.** Your
+   `app/utils/logging_config.py` still passes it; the formatter silently ignores it. That is why no
+   `timestamp` field appears in emitted logs. The `rename_fields` map is still supported in v4 but
+   appears broken-by-association because the formatter as-configured probably never produced what
+   you intended.
 5. The fix is a 7-line `RFC3339JsonFormatter` subclass that overrides `formatTime` — see §6.
 
 ### Non-blockers (mentioned for awareness; out of scope here)
-6. `cloudflared` container is currently `unhealthy`. The monitoring stack will surface this and you should fix it separately (likely tunnel credentials).
-7. `shekel-prod-app` is currently `unhealthy`. Worth investigating since you're about to ingest its logs, but does not block this plan.
-8. Most existing services use `:latest` image tags. AUDIT.md already documents this; out of scope here. **All new monitoring images in this plan are pinned by version.**
+
+6. `cloudflared` container is currently `unhealthy`. The monitoring stack will surface this and you
+   should fix it separately (likely tunnel credentials).
+7. `shekel-prod-app` is currently `unhealthy`. Worth investigating since you're about to ingest its
+   logs, but does not block this plan.
+8. Most existing services use `:latest` image tags. AUDIT.md already documents this; out of scope
+   here. **All new monitoring images in this plan are pinned by version.**
 9. Plaintext secrets in `/opt/docker/{immich,shekel}/.env` — same comment.
 
 ---
 
 ## Architecture summary
 
-```
+```text
 ┌───────────── Arch host (10.10.101.101) ────────────────────────────────┐
 │                                                                        │
 │  systemd-journald ──► /var/log/journal ──► (bind RO into Alloy)        │
@@ -74,10 +97,15 @@ These were uncovered during exploration. They are flagged here, not silently wor
             ▲ LAN clients (10.10.101.0/24) → https://grafana.saltyreformed.com (via nginx 443)
 ```
 
-- **Alloy joins both `monitoring` and `homelab`** so it can scrape `cloudflared:2000`, `jellyfin:8096`, `immich_server:808[12]`, and `nginx:8088/stub_status` while writing to `loki:3100` and `prometheus:9090` on `monitoring`.
-- **Grafana joins both `monitoring` and `homelab`** so nginx can `proxy_pass http://grafana:3000`. Mirrors the existing `immich-server` pattern.
-- **Postgres exporters** join `monitoring` plus the relevant existing internal network (`backend` for Shekel, `immich_default` for Immich) as `external: true`.
-- **No new published host ports.** Everything stays inside Docker; only nginx 80/443 (already published) faces the LAN.
+- **Alloy joins both `monitoring` and `homelab`** so it can scrape `cloudflared:2000`,
+  `jellyfin:8096`, `immich_server:808[12]`, and `nginx:8088/stub_status` while writing to
+  `loki:3100` and `prometheus:9090` on `monitoring`.
+- **Grafana joins both `monitoring` and `homelab`** so nginx can `proxy_pass http://grafana:3000`.
+  Mirrors the existing `immich-server` pattern.
+- **Postgres exporters** join `monitoring` plus the relevant existing internal network (`backend`
+  for Shekel, `immich_default` for Immich) as `external: true`.
+- **No new published host ports.** Everything stays inside Docker; only nginx 80/443 (already
+  published) faces the LAN.
 
 ---
 
@@ -96,15 +124,18 @@ These were uncovered during exploration. They are flagged here, not silently wor
 | Intel GPU exporter | `ghcr.io/onedr0p/intel-gpu-exporter` | `rolling` — pin by `@sha256:` digest after pull |
 
 **Important traps (not just preferences):**
-- `prom/prometheus:latest` still resolves to v2.x — pinning v3.11.3 is mandatory, not optional. v3 default config has different scrape behaviors.
-- The smartctl exporter image is on **quay.io** with an **underscore** in the repo path: `quay.io/prometheuscommunity/smartctl_exporter`. Easy to get wrong.
+
+- `prom/prometheus:latest` still resolves to v2.x — pinning v3.11.3 is mandatory, not optional. v3
+  default config has different scrape behaviors.
+- The smartctl exporter image is on **quay.io** with an **underscore** in the repo path:
+  `quay.io/prometheuscommunity/smartctl_exporter`. Easy to get wrong.
 - `cAdvisor v0.56` requires Docker ≥ 25.0 (CachyOS rolling has 27.x — fine).
 
 ---
 
 ## Directory layout (all new under `/opt/docker/monitoring/`)
 
-```
+```text
 /opt/docker/monitoring/
 ├── docker-compose.yml
 ├── .env                          # chmod 600
@@ -183,15 +214,19 @@ sudo systemctl restart docker
 docker network inspect monitoring | grep -E '"Name"|"Driver"|"Containers"'
 ```
 
-**Phase 0 gate:** NTP synchronized · `smartctl -a /dev/nvme0n1` returns SMART data · `lsattr` shows `+C` on all four data dirs · `getent group adm systemd-journal` returns both groups · `docker network inspect monitoring` returns an empty bridge.
+**Phase 0 gate:** NTP synchronized · `smartctl -a /dev/nvme0n1` returns SMART data · `lsattr` shows
+`+C` on all four data dirs · `getent group adm systemd-journal` returns both groups ·
+`docker network inspect monitoring` returns an empty bridge.
 
 ---
 
 ## Phase 1 — storage backends (Loki, Prometheus, Grafana)
 
-Deploy with collectors disabled. Verify all three start cleanly and are reachable on the `monitoring` network.
+Deploy with collectors disabled. Verify all three start cleanly and are reachable on the
+`monitoring` network.
 
 ### Files
+
 - `/opt/docker/monitoring/docker-compose.yml` (Loki/Prometheus/Grafana services only at this phase)
 - `/opt/docker/monitoring/loki/config/loki.yaml`
 - `/opt/docker/monitoring/prometheus/config/prometheus.yml`
@@ -201,6 +236,7 @@ Deploy with collectors disabled. Verify all three start cleanly and are reachabl
 ### Loki config (single-binary, TSDB v13, 30d retention)
 
 `loki/config/loki.yaml`:
+
 ```yaml
 auth_enabled: false
 server:
@@ -254,13 +290,17 @@ ruler:
 analytics:
   reporting_enabled: false
 ```
-Notes baked into this config: `schema: v13` (NOT v11/v12) · `table_manager` deliberately absent (deprecated for TSDB; retention is on the `compactor`) · `delete_request_store: filesystem` is required when retention deletes are enabled with filesystem object store.
+
+Notes baked into this config: `schema: v13` (NOT v11/v12) · `table_manager` deliberately absent
+(deprecated for TSDB; retention is on the `compactor`) · `delete_request_store: filesystem` is
+required when retention deletes are enabled with filesystem object store.
 
 Container command: `-config.file=/etc/loki/loki.yaml -target=all`.
 
 ### Prometheus config (Alloy `remote_write`s into it)
 
 `prometheus/config/prometheus.yml`:
+
 ```yaml
 global:
   scrape_interval: 30s
@@ -278,10 +318,16 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 ```
-Container args: `--web.enable-remote-write-receiver --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=80GB --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus`.
+
+Container args:
+
+```text
+--web.enable-remote-write-receiver --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=80GB --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus
+```
 
 ### Grafana env (in compose, Docker secrets for the password)
-```
+
+```text
 GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password
 GF_SERVER_ROOT_URL=https://grafana.saltyreformed.com
 GF_SERVER_DOMAIN=grafana.saltyreformed.com
@@ -292,6 +338,7 @@ GF_ANALYTICS_REPORTING_ENABLED=false
 ```
 
 ### Phase 1 verification
+
 ```bash
 docker compose -f /opt/docker/monitoring/docker-compose.yml up -d loki prometheus grafana
 docker exec grafana    wget -qO- localhost:3000/api/health    # {"database":"ok"}
@@ -304,15 +351,18 @@ du -sh /opt/docker/monitoring/{prometheus,loki,grafana}/data  # small but non-ze
 
 ## Phase 2 — collectors (Alloy, cAdvisor, exporters)
 
-Add: `alloy`, `cadvisor`, `smartctl-exporter`, `intel-gpu-exporter`, `nginx-exporter`, `shekel-postgres-exporter`, `immich-postgres-exporter`.
+Add: `alloy`, `cadvisor`, `smartctl-exporter`, `intel-gpu-exporter`, `nginx-exporter`,
+`shekel-postgres-exporter`, `immich-postgres-exporter`.
 
 ### Files
+
 - `/opt/docker/monitoring/alloy/config/config.alloy`
 - `/opt/docker/monitoring/secrets/{shekel,immich}_pg_exporter_password`
 
 ### Alloy River config
 
 `alloy/config/config.alloy`:
+
 ```alloy
 // Host metrics
 prometheus.exporter.unix "host" {
@@ -418,6 +468,7 @@ loki.write              "local" { endpoint { url = "http://loki:3100/loki/api/v1
 ```
 
 ### Alloy mounts (compose)
+
 - `/var/run/docker.sock:/var/run/docker.sock:ro`
 - `/var/log/journal:/var/log/journal:ro`
 - `/run/log/journal:/run/log/journal:ro`
@@ -428,9 +479,14 @@ loki.write              "local" { endpoint { url = "http://loki:3100/loki/api/v1
 - `./alloy/config/config.alloy:/etc/alloy/config.alloy:ro`
 - `./alloy/data:/var/lib/alloy/data`
 
-`group_add: ["adm", "systemd-journal"]` so the unprivileged Alloy user can read journald. Verify GIDs first: `getent group adm systemd-journal`.
+`group_add: ["adm", "systemd-journal"]` so the unprivileged Alloy user can read journald. Verify
+GIDs first: `getent group adm systemd-journal`.
 
-Command: `run /etc/alloy/config.alloy --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data --stability.level=generally-available`.
+Command:
+
+```text
+run /etc/alloy/config.alloy --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data --stability.level=generally-available
+```
 
 ### Per-service privileges and mounts
 
@@ -447,27 +503,41 @@ Command: `run /etc/alloy/config.alloy --server.http.listen-addr=0.0.0.0:12345 --
 | immich-postgres-exporter | unprivileged, `cap_drop: ALL` | none | monitoring, **immich_default (external)** |
 | nginx-exporter | unprivileged | none | monitoring, homelab |
 
-**Privileged conflict** with `no-new-privileges:true`: cAdvisor, smartctl-exporter, and intel-gpu-exporter **cannot** combine these. This is an intentional, documented deviation from the AUDIT.md convention. Each service gets a comment in compose explaining why.
+**Privileged conflict** with `no-new-privileges:true`: cAdvisor, smartctl-exporter, and
+intel-gpu-exporter **cannot** combine these. This is an intentional, documented deviation from the
+AUDIT.md convention. Each service gets a comment in compose explaining why.
 
-`smartctl-exporter` args: `--smartctl.device-include=/dev/nvme0,/dev/sda,/dev/sdb,/dev/sdc,/dev/sdd,/dev/sde --smartctl.interval=300s`.
+`smartctl-exporter` args:
+`--smartctl.device-include=/dev/nvme0,/dev/sda,/dev/sdb,/dev/sdc,/dev/sdd,/dev/sde --smartctl.interval=300s`.
 
 `nginx-exporter` args: `--nginx.scrape-uri=http://nginx:8088/stub_status`.
 
 ### Postgres exporter prerequisite SQL (run once per instance, by superuser)
+
 ```sql
 CREATE USER pg_exporter WITH PASSWORD '<from secrets file>';
 GRANT pg_monitor TO pg_exporter;          -- built-in read-only role since PG10
 ALTER USER pg_exporter SET search_path = pg_catalog, public;
 ```
-Apply to **shekel-prod-db** and **immich_postgres** separately. Connection strings via `DATA_SOURCE_NAME_FILE=/run/secrets/<name>_pg_exporter_password` (postgres_exporter ≥ v0.15 supports `_FILE`).
+
+Apply to **shekel-prod-db** and **immich_postgres** separately. Connection strings via
+`DATA_SOURCE_NAME_FILE=/run/secrets/<name>_pg_exporter_password` (postgres_exporter ≥ v0.15 supports
+`_FILE`).
 
 ### Native metrics endpoints — flips required
-- **Jellyfin:** Edit `/opt/docker/jellyfin/config/system.xml`, set `<EnableMetrics>true</EnableMetrics>`. Restart `jellyfin`.
-- **Immich:** Edit `/opt/docker/immich/.env`, add `IMMICH_TELEMETRY_INCLUDE=all`. Confirm metrics ports `8081` (API) and `8082` (microservices) are exposed on the `homelab` network — do NOT publish to host. Restart `immich-server`.
-- **Cloudflared:** Already exposes `:2000/metrics` (existing `--metrics 0.0.0.0:2000` in main compose). No change.
-- **Unifi, Calibre-Web:** No native metrics. Container-level metrics from cAdvisor + log aggregation are sufficient.
+
+- **Jellyfin:** Edit `/opt/docker/jellyfin/config/system.xml`, set
+  `<EnableMetrics>true</EnableMetrics>`. Restart `jellyfin`.
+- **Immich:** Edit `/opt/docker/immich/.env`, add `IMMICH_TELEMETRY_INCLUDE=all`. Confirm metrics
+  ports `8081` (API) and `8082` (microservices) are exposed on the `homelab` network — do NOT
+  publish to host. Restart `immich-server`.
+- **Cloudflared:** Already exposes `:2000/metrics` (existing `--metrics 0.0.0.0:2000` in main
+  compose). No change.
+- **Unifi, Calibre-Web:** No native metrics. Container-level metrics from cAdvisor + log aggregation
+  are sufficient.
 
 ### Phase 2 verification
+
 ```bash
 docker compose -f /opt/docker/monitoring/docker-compose.yml up -d
 docker exec prometheus wget -qO- 'http://localhost:9090/api/v1/targets' | grep -oE '"health":"[^"]+"' | sort -u
@@ -486,10 +556,13 @@ docker exec loki wget -qO- 'http://localhost:3100/loki/api/v1/query?query=%7Bcom
 ## Phase 3 — reverse proxy integration (nginx)
 
 ### Files
+
 - `/opt/docker/nginx/conf.d/grafana.conf` (new)
-- `/opt/docker/nginx/conf.d/00-stub-status.conf` (new — internal-only nginx metrics endpoint on port 8088)
+- `/opt/docker/nginx/conf.d/00-stub-status.conf` (new — internal-only nginx metrics endpoint on port
+  8088)
 
 ### `00-stub-status.conf`
+
 ```nginx
 server {
     listen 8088;
@@ -503,9 +576,12 @@ server {
     }
 }
 ```
-Internal port — not published to host. `nginx-exporter` reaches `nginx:8088/stub_status` over the `homelab` network.
+
+Internal port — not published to host. `nginx-exporter` reaches `nginx:8088/stub_status` over the
+`homelab` network.
 
 ### `grafana.conf` (mirrors your existing per-service blocks)
+
 ```nginx
 server {
     listen 80;
@@ -559,9 +635,11 @@ server {
 }
 ```
 
-DNS: add an OPNsense override for `grafana.saltyreformed.com → 10.10.101.101` (matching your existing pattern for `shekel.saltyreformed.com`).
+DNS: add an OPNsense override for `grafana.saltyreformed.com → 10.10.101.101` (matching your
+existing pattern for `shekel.saltyreformed.com`).
 
 ### Phase 3 verification
+
 ```bash
 docker exec nginx nginx -t                               # config OK
 docker exec nginx nginx -s reload
@@ -574,11 +652,13 @@ curl -k https://grafana.saltyreformed.com  -o /dev/null -w '%{http_code}\n'   # 
 ## Phase 4 — provisioned datasources + dashboards
 
 ### Files
+
 - `/opt/docker/monitoring/grafana/provisioning/datasources/datasources.yaml`
 - `/opt/docker/monitoring/grafana/provisioning/dashboards/dashboards.yaml`
 - `/opt/docker/monitoring/grafana/provisioning/dashboards/*.json` (8 dashboards listed below)
 
 ### `datasources.yaml`
+
 ```yaml
 apiVersion: 1
 datasources:
@@ -601,6 +681,7 @@ datasources:
 ```
 
 ### `dashboards.yaml`
+
 ```yaml
 apiVersion: 1
 providers:
@@ -617,6 +698,7 @@ providers:
 ```
 
 ### Pre-built dashboards to import (Grafana.com IDs)
+
 | ID | Title |
 |---|---|
 | 1860 | Node Exporter Full |
@@ -628,21 +710,28 @@ providers:
 | 22604 | Smartctl Exporter |
 | 23251 | Intel GPU Metrics |
 
-Plus a custom **Shekel Overview** dashboard with: request rate, p95 latency (Loki LogQL on `request_duration`), error rate (`status >= 500`), `slow_request` count, DB connection saturation from `postgres_exporter{instance="shekel"}`. Ship a JSON skeleton.
+Plus a custom **Shekel Overview** dashboard with: request rate, p95 latency (Loki LogQL on
+`request_duration`), error rate (`status >= 500`), `slow_request` count, DB connection saturation
+from `postgres_exporter{instance="shekel"}`. Ship a JSON skeleton.
 
 ### Phase 4 verification
-- Log into `https://grafana.saltyreformed.com` with the admin password from `secrets/grafana_admin_password`.
+
+- Log into `https://grafana.saltyreformed.com` with the admin password from
+  `secrets/grafana_admin_password`.
 - "Homelab" folder is populated with all dashboards.
 - Each dashboard renders with non-empty panels (initial data may take ~5 min to backfill).
-- In Explore, run `{compose_service="shekel-prod-app"}` against Loki — see Shekel logs (raw initially; structured once Phase 6 lands).
+- In Explore, run `{compose_service="shekel-prod-app"}` against Loki — see Shekel logs (raw
+  initially; structured once Phase 6 lands).
 
 ---
 
 ## Phase 5 — alerting (Grafana unified alerts)
 
-Files: `grafana/provisioning/alerting/*.yaml`. Defer Alertmanager unless unified alerting proves insufficient.
+Files: `grafana/provisioning/alerting/*.yaml`. Defer Alertmanager unless unified alerting proves
+insufficient.
 
 Suggested initial rules:
+
 - Disk space < 10% on any host filesystem
 - NVMe SMART critical warning (`smartctl_device_critical_warning > 0`)
 - Container OOM kill (`container_memory_failures_total{type="oom"} > 0`)
@@ -656,7 +745,8 @@ Suggested initial rules:
 
 Apply this PR to `https://github.com/saltyreformed/shekel`:
 
-In `app/utils/logging_config.py`, replace the `formatters.json` block. Recommended path is **Option B** (true RFC3339, microsecond precision):
+In `app/utils/logging_config.py`, replace the `formatters.json` block. Recommended path is
+**Option B** (true RFC3339, microsecond precision):
 
 ```python
 import datetime as _dt
@@ -683,15 +773,22 @@ class RFC3339JsonFormatter(JsonFormatter):
 },
 ```
 
-Why this is the proper fix: `python-json-logger==4.1.0` removed the `timestamp=True` kwarg but kept `rename_fields`. The `format` string is parsed for *which* attributes to include; `JsonFormatter` outputs JSON regardless. Overriding `formatTime` ensures sub-second precision (glibc `strftime` does not support `%f`).
+Why this is the proper fix: `python-json-logger==4.1.0` removed the `timestamp=True` kwarg but kept
+`rename_fields`. The `format` string is parsed for *which* attributes to include; `JsonFormatter`
+outputs JSON regardless. Overriding `formatTime` ensures sub-second precision (glibc `strftime` does
+not support `%f`).
 
 **Activation order:**
+
 1. PR + merge in saltyreformed/shekel
 2. Image rebuild and `docker compose pull && docker compose up -d shekel-prod-app`
 3. Verify: `docker logs --tail 5 shekel-prod-app | grep '"timestamp"'`
-4. The `loki.process.shekel` block in `config.alloy` already expects field name `timestamp` — once verified, it picks up structured fields automatically.
+4. The `loki.process.shekel` block in `config.alloy` already expects field name `timestamp` — once
+   verified, it picks up structured fields automatically.
 
-Until Phase 6 ships, Shekel logs flow as plain Docker container logs and arrive in Loki without label extraction — searchable by `compose_service="shekel-prod-app"`, just less queryable on structured fields.
+Until Phase 6 ships, Shekel logs flow as plain Docker container logs and arrive in Loki without
+label extraction — searchable by `compose_service="shekel-prod-app"`, just less queryable on
+structured fields.
 
 ---
 
@@ -718,7 +815,9 @@ Total: ~5.6G limit / ~1.5G reservation — well within your 60G headroom.
 ## Backups
 
 Add to your existing `/opt/docker/backup.sh`:
-- `/opt/docker/monitoring/grafana/data/grafana.db` (SQLite — only piece worth backing up; dashboards are provisioned from disk and self-restore)
+
+- `/opt/docker/monitoring/grafana/data/grafana.db` (SQLite — only piece worth backing up; dashboards
+  are provisioned from disk and self-restore)
 - `/opt/docker/monitoring/secrets/` (chmod 700)
 
 Prometheus and Loki data are time-bounded and re-creatable; skip them.
@@ -728,6 +827,7 @@ Prometheus and Loki data are time-bounded and re-creatable; skip them.
 ## Critical files index
 
 ### New
+
 - `/opt/docker/monitoring/docker-compose.yml`
 - `/opt/docker/monitoring/.env`
 - `/opt/docker/monitoring/secrets/{grafana_admin_password,shekel_pg_exporter_password,immich_pg_exporter_password}`
@@ -743,12 +843,15 @@ Prometheus and Loki data are time-bounded and re-creatable; skip them.
 - `/etc/docker/daemon.json` (root)
 
 ### Edited
+
 - `/opt/docker/jellyfin/config/system.xml` — `<EnableMetrics>true</EnableMetrics>`
 - `/opt/docker/immich/.env` — `IMMICH_TELEMETRY_INCLUDE=all`
 - Upstream `app/utils/logging_config.py` in saltyreformed/shekel (Phase 6)
 
 ### Existing patterns reused (no edits needed beyond what's listed above)
-- `/opt/docker/nginx/nginx.conf` (already has `resolver 127.0.0.11 valid=30s` and `set $upstream_x` pattern — `grafana.conf` mirrors `shekel.conf`/`immich.conf`)
+
+- `/opt/docker/nginx/nginx.conf` (already has `resolver 127.0.0.11 valid=30s` and `set $upstream_x`
+  pattern — `grafana.conf` mirrors `shekel.conf`/`immich.conf`)
 - `/opt/docker/nginx/certs/{fullchain.pem,privkey.pem}` (existing wildcard cert)
 - The empty `monitoring` Docker network (already declared)
 - `homelab` Docker network (joined by Grafana, Alloy, nginx-exporter)
@@ -762,12 +865,15 @@ Prometheus and Loki data are time-bounded and re-creatable; skip them.
 After all phases:
 
 1. **Logs**
-   - Loki has labels: `compose_project`, `compose_service`, `container`, `hostname`, `job=docker|systemd-journal`, `level`, `stream`, `unit`.
+   - Loki has labels: `compose_project`, `compose_service`, `container`, `hostname`,
+     `job=docker|systemd-journal`, `level`, `stream`, `unit`.
    - `{compose_service="jellyfin"}` returns container logs.
    - `{job="systemd-journal", unit="docker.service"}` returns Arch system logs.
-   - After Phase 6: `{compose_service="shekel-prod-app"} | json` extracts `timestamp`, `level`, `logger`, `request_id`, `event` as labels.
+   - After Phase 6: `{compose_service="shekel-prod-app"} | json` extracts `timestamp`, `level`,
+     `logger`, `request_id`, `event` as labels.
 2. **Metrics**
-   - `up` = 1 for: node, cadvisor, smartctl, intel_gpu, postgres{instance=shekel|immich}, nginx, cloudflared, jellyfin, immich, prometheus, loki, grafana, alloy.
+   - `up` = 1 for: node, cadvisor, smartctl, intel_gpu, postgres{instance=shekel|immich}, nginx,
+     cloudflared, jellyfin, immich, prometheus, loki, grafana, alloy.
    - `node_hwmon_temp_celsius` returns CPU + GPU + NVMe + DDR5 temps.
    - `smartctl_device_critical_warning` returns 0 across all 5 disks.
    - `container_memory_usage_bytes` returns per-compose_service rows.
@@ -778,7 +884,8 @@ After all phases:
    - Smartctl shows all 6 devices (1 NVMe + 5 spinning).
    - Intel GPU shows engine utilization during Jellyfin transcode.
 4. **Reverse proxy**
-   - LAN client → `https://grafana.saltyreformed.com` → Grafana login. Cert valid (existing wildcard).
+   - LAN client → `https://grafana.saltyreformed.com` → Grafana login. Cert valid (existing
+     wildcard).
    - Off-LAN client → blocked by `allow 10.10.101.0/24; deny all;`.
 5. **Self-monitoring**
    - Stack scrapes its own metrics; failures show up as `up == 0` and trigger Phase 5 alerts.
@@ -787,20 +894,26 @@ After all phases:
 
 ## Sources verified
 
-- Grafana Alloy v1.16.1 — https://github.com/grafana/alloy/releases
-- Loki v3.7.1 — https://github.com/grafana/loki/releases
-- Prometheus v3.11.3 — https://github.com/prometheus/prometheus/releases
-- Grafana v13.0.1 — https://github.com/grafana/grafana/releases
-- cAdvisor v0.56.2 — https://github.com/google/cadvisor/releases
-- smartctl_exporter v0.14.0 — https://github.com/prometheus-community/smartctl_exporter/releases
-- postgres_exporter v0.19.1 — https://github.com/prometheus-community/postgres_exporter/releases
-- nginx-prometheus-exporter 1.5.1 — https://github.com/nginx/nginx-prometheus-exporter/releases
-- Loki TSDB single-binary config — https://grafana.com/docs/loki/latest/configure/storage/
-- Alloy `prometheus.exporter.unix` — https://grafana.com/docs/alloy/latest/reference/components/prometheus/prometheus.exporter.unix/
-- Alloy `loki.source.docker` — https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/
-- Alloy `loki.source.journal` — https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.journal/
-- Immich monitoring — https://docs.immich.app/features/monitoring/
-- Jellyfin monitoring — https://jellyfin.org/docs/general/post-install/networking/advanced/monitoring/
-- python-json-logger v4.x quickstart — https://nhairs.github.io/python-json-logger/latest/quickstart/
-- Intel GPU exporter — https://github.com/onedr0p/intel-gpu-exporter
-- Shekel logging_config.py — https://github.com/saltyreformed/shekel/blob/main/app/utils/logging_config.py
+- Grafana Alloy v1.16.1 — <https://github.com/grafana/alloy/releases>
+- Loki v3.7.1 — <https://github.com/grafana/loki/releases>
+- Prometheus v3.11.3 — <https://github.com/prometheus/prometheus/releases>
+- Grafana v13.0.1 — <https://github.com/grafana/grafana/releases>
+- cAdvisor v0.56.2 — <https://github.com/google/cadvisor/releases>
+- smartctl_exporter v0.14.0 — <https://github.com/prometheus-community/smartctl_exporter/releases>
+- postgres_exporter v0.19.1 — <https://github.com/prometheus-community/postgres_exporter/releases>
+- nginx-prometheus-exporter 1.5.1 — <https://github.com/nginx/nginx-prometheus-exporter/releases>
+- Loki TSDB single-binary config — <https://grafana.com/docs/loki/latest/configure/storage/>
+- Alloy `prometheus.exporter.unix` —
+  <https://grafana.com/docs/alloy/latest/reference/components/prometheus/prometheus.exporter.unix/>
+- Alloy `loki.source.docker` —
+  <https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/>
+- Alloy `loki.source.journal` —
+  <https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.journal/>
+- Immich monitoring — <https://docs.immich.app/features/monitoring/>
+- Jellyfin monitoring —
+  <https://jellyfin.org/docs/general/post-install/networking/advanced/monitoring/>
+- Python-json-logger v4.x quickstart —
+  <https://nhairs.github.io/python-json-logger/latest/quickstart/>
+- Intel GPU exporter — <https://github.com/onedr0p/intel-gpu-exporter>
+- Shekel logging_config.py —
+  <https://github.com/saltyreformed/shekel/blob/main/app/utils/logging_config.py>

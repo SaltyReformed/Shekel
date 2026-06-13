@@ -267,7 +267,7 @@ return {
 
 Mason should install pylint automatically. If not:
 
-```
+```text
 :MasonInstall pylint
 ```
 
@@ -451,7 +451,7 @@ buttons. The NeoVim workflow is different -- you'll use tmux or nvim's built-in 
 
 tmux lets you have persistent terminal sessions with splits. Your layout:
 
-```
+```text
 ┌─────────────────────────────┬──────────────────────┐
 │                             │                      │
 │        NeoVim               │   Flask server       │
@@ -639,8 +639,8 @@ source .venv/bin/activate
 flask run --debug
 ```
 
-Open `http://localhost:5000` in a browser. You should see "Budget App -- It works." When you do, your
-development environment is confirmed working and you're ready to start building the real app.
+Open `http://localhost:5000` in a browser. You should see "Budget App -- It works." When you do,
+your development environment is confirmed working and you're ready to start building the real app.
 
 ---
 
@@ -657,8 +657,8 @@ equivalents for things you're used to:
 | F2 (rename)                   | `<Space>cr`                   |
 | F12 (go to definition)        | `gd`                          |
 | Ctrl+. (quick fix)            | `<Space>ca`                   |
-| Ctrl+` (terminal)             | `<Ctrl-/>`                    |
-| Ctrl+Shift+` (new terminal)   | `<Space>\|` then `:terminal`  |
+| Ctrl+` (terminal)             | `<Ctrl-/>` |  |
+| Ctrl+Shift+` (new terminal)   | `<Space>\|` then `:terminal` |  |
 | Ctrl+B (toggle sidebar)       | `<Space>e`                    |
 | Ctrl+/ (toggle comment)       | `gcc` (line) or `gc` (visual) |
 | Ctrl+S (save)                 | `:w` or just `:w` habit       |
@@ -666,7 +666,8 @@ equivalents for things you're used to:
 | Ctrl+Shift+Z (redo)           | `<Ctrl-r>`                    |
 
 **The learning curve is real.** For the first few days you'll be slower. That's expected. Resist the
-urge to go back to VS Code -- the speed comes after you internalize the keybindings. Two suggestions:
+urge to go back to VS Code -- the speed comes after you internalize the keybindings. Two
+suggestions:
 
 1. **Keep `vimtutor` accessible.** Run `:Tutor` inside nvim for LazyVim's built-in tutorial. The
    original `vimtutor` (run from the terminal) covers core vim motions.

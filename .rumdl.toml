@@ -40,6 +40,21 @@ exclude = [
     "docs/audits",
     "docs/historical",
     "docs/plans/historical",
+    # Write-once Step-3 dashboard-rebuild audit artifact (a point-in-time work
+    # product, unlike the living docs/design/css_architecture_audit.md reference).
+    # Its longest paragraph also defeats rumdl 0.2.14's reflow, so gating it would
+    # surface an unfixable finding; excluded on the same grounds as docs/audits.
+    "docs/design/dashboard_card_audit.md",
+    # Claude Code harness configuration (command / agent / skill / rule
+    # definitions): frontmatter-led files with their own format conventions,
+    # not project prose documentation, so rules like MD041 (first line must be
+    # an H1) do not apply. Excluding the tree also keeps new command/agent
+    # files from tripping the doc gate.
+    ".claude",
+    # Append-only test-addition changelog: the repeated "Added: N new tests"
+    # section headers are intentional, which MD024 (duplicate heading) would
+    # flag. Same category as the audit registers above.
+    "tests/TEST_PLAN.md",
 ]
 
 # ---------------------------------------------------------------------------
@@ -70,12 +85,14 @@ indent = 2
 # ---------------------------------------------------------------------------
 # MD009 - Trailing Spaces
 # ---------------------------------------------------------------------------
-# Disallow trailing whitespace on lines. Set br_spaces to 0 to prohibit
-# the two-trailing-spaces line break convention. Use a backslash or <br>
-# instead if you need a hard line break.
+# Disallow trailing whitespace on lines. br_spaces must be at least 2 per
+# the CommonMark spec (lower values cannot create a line break); strict = true
+# additionally rejects the two-trailing-spaces line-break convention, so no
+# trailing whitespace is permitted at all. Use a backslash or <br> for a hard
+# line break.
 
 [MD009]
-br_spaces = 0
+br_spaces = 2
 strict = true
 
 # ---------------------------------------------------------------------------
@@ -229,7 +246,7 @@ code_blocks = false
 # Use backtick fences (```) rather than tilde fences (~~~).
 
 [MD048]
-code-fence-style = "backtick"
+style = "backtick"
 
 # ---------------------------------------------------------------------------
 # MD049 - Emphasis Style

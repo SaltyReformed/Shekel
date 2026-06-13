@@ -1,7 +1,7 @@
 # Shekel Design Language
 
-The written design commitment for the Fable 5 UI/UX overhaul. Every screen rebuild reads this
-first and is checked against it afterward. The companion `shekel-design` skill
+The written design commitment for the Fable 5 UI/UX overhaul. Every screen rebuild reads this first
+and is checked against it afterward. The companion `shekel-design` skill
 (`.claude/skills/shekel-design/`) loads this document so the constraints reload in every design
 session and screen 1 stays coherent with screen 50.
 
@@ -9,11 +9,11 @@ Last evaluated: 2026-06-12.
 
 ## Purpose
 
-Shekel is a personal budget app organized around pay periods, not calendar months. Every
-transaction maps to a specific paycheck, with roughly two years of forward projection. The product
-exists so one person can answer, at a glance and with confidence: do I have enough money, what is
-due before my next paycheck, and where is my projection heading. The design language serves that
-question. Clarity about money beats decoration every time.
+Shekel is a personal budget app organized around pay periods, not calendar months. Every transaction
+maps to a specific paycheck, with roughly two years of forward projection. The product exists so one
+person can answer, at a glance and with confidence: do I have enough money, what is due before my
+next paycheck, and where is my projection heading. The design language serves that question. Clarity
+about money beats decoration every time.
 
 ## Audience and tone
 
@@ -23,8 +23,8 @@ question. Clarity about money beats decoration every time.
   consumer fintech dashboard competing for attention. No celebratory confetti, no growth-hacking
   nudges, no manufactured urgency. Urgency is reserved for real financial signals (a projected
   negative balance), and it is proportionate.
-- **Voice in copy:** plain, short, specific. "Projected balance goes negative on May 14" beats
-  "Uh oh, trouble ahead." Numbers are the headline; words are the caption.
+- **Voice in copy:** plain, short, specific. "Projected balance goes negative on May 14" beats "Uh
+  oh, trouble ahead." Numbers are the headline; words are the caption.
 
 ## Design principles
 
@@ -34,8 +34,8 @@ question. Clarity about money beats decoration every time.
    of" a date, the number must be the value on that date. (This principle exists because the current
    balance card violates it; see `dashboard_card_audit.md`.)
 3. **As simple as possible without losing functionality.** Consolidate redundant surfaces, remove
-   cards that are not helpful, and reduce clicks, but never drop a number the user relies on. Removal
-   is a product decision, made explicitly, not a side effect of a redesign.
+   cards that are not helpful, and reduce clicks, but never drop a number the user relies on.
+   Removal is a product decision, made explicitly, not a side effect of a redesign.
 4. **Every call to action goes somewhere useful.** A link or button resolves the thing it sits next
    to. No placeholder links to the home page.
 5. **Tabular money.** Monetary values use tabular numerals and right alignment so columns of figures
@@ -56,10 +56,10 @@ is out of bounds regardless of how it looks.
   SPA, unless the stack ROI gate explicitly decides otherwise.
 - **Content Security Policy** (`app/__init__.py`, `_CSP_DIRECTIVES`): `script-src 'self'`,
   `style-src 'self'`. No inline `<style>` and no inline `<script>`. All CSS lives under
-  `app/static/css/` in the file matching its concern (theme tokens / base / components /
-  per-screen / utilities; layout and load-order contract in `css_architecture_audit.md`); all JS
-  lives under `app/static/js/` and is loaded with `<script src>`. Pass data to JS via `data-*`
-  attributes read with `element.dataset`.
+  `app/static/css/` in the file matching its concern (theme tokens / base / components / per-screen
+  / utilities; layout and load-order contract in `css_architecture_audit.md`); all JS lives under
+  `app/static/js/` and is loaded with `<script src>`. Pass data to JS via `data-*` attributes read
+  with `element.dataset`.
 - **Templates display, never compute.** All money math happens in the service or route with
   `Decimal` and is passed in. `float()` appears only at a serialization boundary (Chart.js JSON),
   never in a calculation.
@@ -75,11 +75,10 @@ is out of bounds regardless of how it looks.
 
 ## Design tokens
 
-The token vocabulary lives in `app/static/css/theme-steel-ink.css` as CSS custom properties
-defined per `[data-bs-theme="dark"]` and `[data-bs-theme="light"]` block (one file per palette;
-Steel Ink is the app default and currently the only palette). New work references these
-variables; it does not introduce new raw hex. The Step 2a refactor consolidates the remaining
-inlined hex onto these names.
+The token vocabulary lives in `app/static/css/theme-steel-ink.css` as CSS custom properties defined
+per `[data-bs-theme="dark"]` and `[data-bs-theme="light"]` block (one file per palette; Steel Ink is
+the app default and currently the only palette). New work references these variables; it does not
+introduce new raw hex. The Step 2a refactor consolidates the remaining inlined hex onto these names.
 
 | Token | Role |
 | ----- | ---- |
@@ -109,11 +108,11 @@ keeps them consistent so a color means the same thing on every screen.
 ### Committed theme: Steel Ink (decided 2026-06-11)
 
 Chosen through the Loop A theme exploration on the rebuilt grid canvas (matrix T1-T4, wildcards
-U1-U3, merges M1-M2; the developer selected M1). Steel Ink pairs an achromatic carbon base with
-the Steel Blue signature accent: the accent is the only non-money chroma on screen, so the money
-state colors carry the contrast ("the number is the hero," applied to color). Dark mode is the
-first-class theme; light mode is an e-ink paper derivation. These values landed app-wide in Loop B
-phase 1 and now live in `app/static/css/theme-steel-ink.css`.
+U1-U3, merges M1-M2; the developer selected M1). Steel Ink pairs an achromatic carbon base with the
+Steel Blue signature accent: the accent is the only non-money chroma on screen, so the money state
+colors carry the contrast ("the number is the hero," applied to color). Dark mode is the first-class
+theme; light mode is an e-ink paper derivation. These values landed app-wide in Loop B phase 1 and
+now live in `app/static/css/theme-steel-ink.css`.
 
 | Token | Dark | Light |
 | ----- | ---- | ----- |
@@ -145,9 +144,9 @@ phase 1 and now live in `app/static/css/theme-steel-ink.css`.
 
 Notes: the accent now differs between modes (`#4A9ECC` dark, `#2878A8` light) for contrast on the
 paper background, so accent tints should use `color-mix` with `--shekel-accent` (or the per-theme
-`--shekel-accent-rgb`) rather than hardcoded rgba values. The state trio is the vivid set; the
-soft Tokyo Night trio (M2) was considered and rejected because the achromatic base exists
-precisely to let the state colors carry maximum contrast.
+`--shekel-accent-rgb`) rather than hardcoded rgba values. The state trio is the vivid set; the soft
+Tokyo Night trio (M2) was considered and rejected because the achromatic base exists precisely to
+let the state colors carry maximum contrast.
 
 ## Accessibility
 
@@ -161,23 +160,21 @@ precisely to let the state colors carry maximum contrast.
 
 ## Differentiation
 
-Shekel's distinguishing idea is the **pay-period ledger**: money is organized by paycheck,
-projected forward, and presented with precision. The "quiet, dense, trustworthy ledger" aesthetic
-is the GRID's identity -- that screen grew out of the developer's long-lived spreadsheet workflow
-and keeps its spreadsheet soul. It is not an app-wide prescription. (Amended 2026-06-12: the
-earlier app-wide wording described the app's then-current state, not the destination; the
-developer's intent is a total overhaul.) Other screens use whatever presentation serves their job
-best -- charts first where a trend IS the answer (the dashboard's projected end-balance chart is
-the canonical example) -- while staying calm and precise: no confetti, no manufactured urgency,
-no decoration that outranks a number. The Steel Blue palette, the design tokens, and tabular
-figures remain the signature everywhere, and the principles above (the number is the hero, a
-figure and its caption never disagree, tabular money, both themes) bind every screen regardless
-of form.
+Shekel's distinguishing idea is the **pay-period ledger**: money is organized by paycheck, projected
+forward, and presented with precision. The "quiet, dense, trustworthy ledger" aesthetic is the
+GRID's identity -- that screen grew out of the developer's long-lived spreadsheet workflow and keeps
+its spreadsheet soul. It is not an app-wide prescription. (Amended 2026-06-12: the earlier app-wide
+wording described the app's then-current state, not the destination; the developer's intent is a
+total overhaul.) Other screens use whatever presentation serves their job best -- charts first where
+a trend IS the answer (the dashboard's projected end-balance chart is the canonical example) --
+while staying calm and precise: no confetti, no manufactured urgency, no decoration that outranks a
+number. The Steel Blue palette, the design tokens, and tabular figures remain the signature
+everywhere, and the principles above (the number is the hero, a figure and its caption never
+disagree, tabular money, both themes) bind every screen regardless of form.
 
 ## How a screen uses this document
 
-1. Read this brief and the relevant per-screen audit (for the dashboard,
-   `dashboard_card_audit.md`).
+1. Read this brief and the relevant per-screen audit (for the dashboard, `dashboard_card_audit.md`).
 2. Confirm the screen's job and its one-question-per-card breakdown.
 3. Build with tokens, Bootstrap utilities, and the constraints above.
 4. Verify against the principles and constraints, in both themes, before calling the screen done.

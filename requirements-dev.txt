@@ -29,13 +29,15 @@ pylint-flask-sqlalchemy==0.2.0
 
 # Polyglot-cleanup Phase 5 linters (pip-installable). The binary tools
 # (shellcheck, shfmt, biome, actionlint, typos, gitleaks, hadolint) are
-# installed on the host and pinned by download in CI; these three ship
+# installed on the host and pinned by download in CI; these four ship
 # via pip, so they live here and CI installs them with this file.
 # Versions match the host toolchain; pinning guards against rule/dictionary
-# drift newly flagging unchanged files between releases.
+# drift newly flagging unchanged files between releases. rumdl is the
+# Markdown lint + format gate (living docs only; see .rumdl.toml excludes).
 yamllint==1.38.0
 zizmor==1.25.2
 djlint==1.39.2
+rumdl==0.2.14
 
 # Pre-commit framework: runs the local hooks in .pre-commit-config.yaml
 # (pylint app/ + the custom checkers) before each commit, mirroring the CI

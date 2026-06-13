@@ -1,12 +1,17 @@
 # Shekel -- Personal Budget App
 
-A paycheck-centric budget application that replaces a biweekly-paycheck-based spreadsheet. Organizes finances around **pay periods** rather than calendar months, mapping every expense to a specific paycheck and projecting balances forward over a ~2-year horizon.
+A paycheck-centric budget application that replaces a biweekly-paycheck-based spreadsheet. Organizes
+finances around **pay periods** rather than calendar months, mapping every expense to a specific
+paycheck and projecting balances forward over a ~2-year horizon.
 
 **Stack:** Flask - Jinja2 - HTMX - Bootstrap 5 - PostgreSQL
 
 **Two ways to run Shekel:**
-- **Docker (recommended):** Download two files, create a volume, run `docker compose up`. No Python or PostgreSQL install needed. See [Quick Start (Docker)](#quick-start-docker).
-- **From source:** Clone the repo, set up Python, use Docker for databases. See [Developer Setup (from source)](#developer-setup-from-source).
+
+- **Docker (recommended):** Download two files, create a volume, run `docker compose up`. No Python
+  or PostgreSQL install needed. See [Quick Start (Docker)](#quick-start-docker).
+- **From source:** Clone the repo, set up Python, use Docker for databases. See
+  [Developer Setup (from source)](#developer-setup-from-source).
 
 ---
 
@@ -14,7 +19,8 @@ A paycheck-centric budget application that replaces a biweekly-paycheck-based sp
 
 ### 1. Prerequisites
 
-Install [Docker Engine](https://docs.docker.com/engine/install/) (Linux) or Docker Desktop (macOS/Windows). Verify the installation:
+Install [Docker Engine](https://docs.docker.com/engine/install/) (Linux) or Docker Desktop
+(macOS/Windows). Verify the installation:
 
 ```bash
 docker compose version
@@ -64,17 +70,24 @@ Look for `=== Starting Application ===` to confirm the app is running.
 
 ### 5. Log In
 
-Open http://localhost and log in with the credentials from your `.env` file (or the defaults above).
+Open <http://localhost> and log in with the credentials from your `.env` file (or the defaults
+above).
 
 ### 6. First-Time Setup in the App
 
-After logging in you will see a **Welcome to Shekel!** banner with a setup checklist. Your account and budget categories are already created. Complete the remaining steps:
+After logging in you will see a **Welcome to Shekel!** banner with a setup checklist. Your account
+and budget categories are already created. Complete the remaining steps:
 
-1. **Generate Pay Periods** -- Navigate to Pay Periods and enter your next payday, then generate. This creates ~2 years of biweekly periods.
-2. **Set Up a Salary Profile** -- Go to Salary and create your income profile with deductions and tax info.
-3. **Create Recurring Transactions** -- Go to Templates and add your regular income and expenses with their recurrence patterns.
+1. **Generate Pay Periods** -- Navigate to Pay Periods and enter your next payday, then generate.
+   This creates ~2 years of biweekly periods.
+2. **Set Up a Salary Profile** -- Go to Salary and create your income profile with deductions and
+   tax info.
+3. **Create Recurring Transactions** -- Go to Templates and add your regular income and expenses
+   with their recurrence patterns.
 
-Once all three steps are done, the welcome banner dismisses and the budget grid populates with your projected transactions. You can then set your **anchor balance** (click the balance display on the grid) to calibrate projections against your real checking account balance.
+Once all three steps are done, the welcome banner dismisses and the budget grid populates with your
+projected transactions. You can then set your **anchor balance** (click the balance display on the
+grid) to calibrate projections against your real checking account balance.
 
 ### Updating
 
@@ -116,33 +129,31 @@ docker volume rm shekel-prod-pgdata
 
 ### Deployment Architecture
 
-Shekel supports two deployment modes. Both are version-controlled under
-`deploy/`. Pick the one that matches your host.
+Shekel supports two deployment modes. Both are version-controlled under `deploy/`. Pick the one that
+matches your host.
 
 | Mode | When to use | Reverse proxy | Active files |
 |------|-------------|---------------|--------------|
 | **Bundled** (default) | The host has no other reverse proxy. The Quick Start above runs in this mode. | `shekel-prod-nginx` (in this stack) | `deploy/nginx-bundled/nginx.conf` |
 | **Shared** | The host already runs a central Nginx (or Traefik/Caddy) in front of multiple services. | A separate Nginx managed outside this stack | `deploy/nginx-shared/nginx.conf`, `deploy/nginx-shared/conf.d/shekel.conf`, `deploy/docker-compose.prod.yml` |
 
-In bundled mode the repo's `docker-compose.yml` mounts
-`deploy/nginx-bundled/nginx.conf` into the bundled
-`shekel-prod-nginx` container. Nothing under `deploy/nginx-shared/` is
-read.
+In bundled mode the repo's `docker-compose.yml` mounts `deploy/nginx-bundled/nginx.conf` into the
+bundled `shekel-prod-nginx` container. Nothing under `deploy/nginx-shared/` is read.
 
-In shared mode the bundled `shekel-prod-nginx` is parked in the
-`disabled` profile by `deploy/docker-compose.prod.yml`, so only `db`,
-`redis`, and `app` start. The shared Nginx (defined and managed
-outside this stack) reaches the app over an external `homelab` Docker
-network.
+In shared mode the bundled `shekel-prod-nginx` is parked in the `disabled` profile by
+`deploy/docker-compose.prod.yml`, so only `db`, `redis`, and `app` start. The shared Nginx (defined
+and managed outside this stack) reaches the app over an external `homelab` Docker network.
 
-For full details and the file layout under `deploy/`, see
-[`deploy/README.md`](deploy/README.md).
+For full details and the file layout under `deploy/`, see [`deploy/README.md`](deploy/README.md).
 
 ### Deploying Behind an Existing Reverse Proxy (Shared Mode)
 
-If you already run a central Nginx (or Traefik/Caddy) on your Docker host, use shared mode. The compose override and shared Nginx files are checked into `deploy/` so disaster recovery is a `git clone` away.
+If you already run a central Nginx (or Traefik/Caddy) on your Docker host, use shared mode. The
+compose override and shared Nginx files are checked into `deploy/` so disaster recovery is a
+`git clone` away.
 
-**1. Use the version-controlled compose override.** Either invoke compose with both files explicitly:
+**1. Use the version-controlled compose override.** Either invoke compose with both files
+explicitly:
 
 ```bash
 docker compose \
@@ -151,16 +162,20 @@ docker compose \
   up -d
 ```
 
-Or symlink/copy `deploy/docker-compose.prod.yml` to `docker-compose.override.yml` in the same directory as `docker-compose.yml` and let compose auto-load it:
+Or symlink/copy `deploy/docker-compose.prod.yml` to `docker-compose.override.yml` in the same
+directory as `docker-compose.yml` and let compose auto-load it:
 
 ```bash
 cp deploy/docker-compose.prod.yml docker-compose.override.yml
 docker compose up -d
 ```
 
-The override joins the app container to an external `homelab` network and parks the bundled Nginx service in the `disabled` profile. Replace `homelab` in `deploy/docker-compose.prod.yml` if your shared network has a different name.
+The override joins the app container to an external `homelab` network and parks the bundled Nginx
+service in the `disabled` profile. Replace `homelab` in `deploy/docker-compose.prod.yml` if your
+shared network has a different name.
 
-**2. Add a server block to your central Nginx.** A reference vhost is in `deploy/nginx-shared/conf.d/shekel.conf`. The minimal version is:
+**2. Add a server block to your central Nginx.** A reference vhost is in
+`deploy/nginx-shared/conf.d/shekel.conf`. The minimal version is:
 
 ```nginx
 server {
@@ -217,7 +232,9 @@ docker compose exec app python -c \
 
 ## Backups
 
-Shekel stores all financial data in a PostgreSQL Docker volume. **If this volume is lost, corrupted, or the host fails, your data is gone.** Set up automated backups before entering real financial data.
+Shekel stores all financial data in a PostgreSQL Docker volume.
+**If this volume is lost, corrupted, or the host fails, your data is gone.** Set up automated
+backups before entering real financial data.
 
 See [docs/backup_runbook.md](docs/backup_runbook.md) for complete instructions covering:
 
@@ -245,7 +262,8 @@ See the runbook for retention policies, NAS configuration, and encryption setup.
 
 ### LAN-Only Deployment
 
-If Shekel is only accessible on your local network, the default configuration is sufficient. You should still:
+If Shekel is only accessible on your local network, the default configuration is sufficient. You
+should still:
 
 - Change the default seed password on first login (Settings > Security > Change Password).
 - Set up automated backups (see [Backups](#backups)).
@@ -254,17 +272,28 @@ If Shekel is only accessible on your local network, the default configuration is
 
 If you expose Shekel outside your local network, take these additional steps:
 
-1. **Verify public registration is disabled.** `REGISTRATION_ENABLED` defaults to `false` in production (set in `docker-compose.yml` and enforced by `ProdConfig`). Confirm with `docker exec shekel-prod-app env | grep REGISTRATION_ENABLED` -- the value should be `false`.
-2. **Enable MFA for all users.** Go to Settings > Security > Enable TOTP. This requires `TOTP_ENCRYPTION_KEY` to be set (see [MFA Setup](#mfa-setup) below).
-3. **Verify HTTPS.** Cloudflare Tunnel and Tailscale handle TLS automatically. If using a different method, ensure your reverse proxy terminates HTTPS.
+1. **Verify public registration is disabled.** `REGISTRATION_ENABLED` defaults to `false` in
+   production (set in `docker-compose.yml` and enforced by `ProdConfig`). Confirm with
+   `docker exec shekel-prod-app env | grep REGISTRATION_ENABLED` -- the value should be `false`.
+2. **Enable MFA for all users.** Go to Settings > Security > Enable TOTP. This requires
+   `TOTP_ENCRYPTION_KEY` to be set (see [MFA Setup](#mfa-setup) below).
+3. **Verify HTTPS.** Cloudflare Tunnel and Tailscale handle TLS automatically. If using a different
+   method, ensure your reverse proxy terminates HTTPS.
 4. **Change the default seed password immediately** if you used the default `ChangeMe!2026`.
-5. **Scrub seed credentials from `.env` after the first successful boot.** Remove the `SEED_USER_EMAIL` and `SEED_USER_PASSWORD` lines from `.env`, then run `docker compose up -d --force-recreate app` so Docker's stored `Container.Config.Env` no longer carries the password. The seed user already exists in the database; the env values are no longer needed. Verify with `docker exec shekel-prod-app env | grep -c SEED_USER_PASSWORD` -- the count should be `0`.
+5. **Scrub seed credentials from `.env` after the first successful boot.** Remove the
+   `SEED_USER_EMAIL` and `SEED_USER_PASSWORD` lines from `.env`, then run
+   `docker compose up -d --force-recreate app` so Docker's stored `Container.Config.Env` no longer
+   carries the password. The seed user already exists in the database; the env values are no longer
+   needed. Verify with `docker exec shekel-prod-app env | grep -c SEED_USER_PASSWORD` -- the count
+   should be `0`.
 
 ### General Recommendations
 
 - Back up your database before entering real financial data. See [Backups](#backups).
-- Keep your `.env` file secure. It contains your database password and encryption keys. Never commit it to version control.
-- The application sets security headers (CSP, HSTS-ready, X-Frame-Options) automatically in production mode.
+- Keep your `.env` file secure. It contains your database password and encryption keys. Never commit
+  it to version control.
+- The application sets security headers (CSP, HSTS-ready, X-Frame-Options) automatically in
+  production mode.
 
 ### MFA Setup
 
@@ -289,13 +318,15 @@ docker compose restart app
 
 You can then enable MFA in Settings > Security > Enable TOTP.
 
-**Do not use `openssl rand` as a substitute.** It produces an incompatible key format. Only the Fernet method above generates a valid key.
+**Do not use `openssl rand` as a substitute.** It produces an incompatible key format. Only the
+Fernet method above generates a valid key.
 
 ---
 
 ## Developer Setup (from source)
 
-For contributing to Shekel or running from source. Uses Docker for databases and the host for the Python application.
+For contributing to Shekel or running from source. Uses Docker for databases and the host for the
+Python application.
 
 ### 1. Prerequisites
 
@@ -330,11 +361,12 @@ cp .env.example .env
 
 Edit `.env` and set at minimum:
 
-```
+```text
 SECRET_KEY=<any random string for dev>
 ```
 
-The default `DATABASE_URL` and `TEST_DATABASE_URL` in `.env.example` point to `localhost:5432` and `localhost:5433`, which match the dev Docker databases started in the next step.
+The default `DATABASE_URL` and `TEST_DATABASE_URL` in `.env.example` point to `localhost:5432` and
+`localhost:5433`, which match the dev Docker databases started in the next step.
 
 ### 4. Start the Dev Databases
 
@@ -343,10 +375,13 @@ docker compose -f docker-compose.dev.yml up -d db test-db
 ```
 
 This starts two PostgreSQL containers:
+
 - `shekel-dev-db` on port 5432 (development database)
 - `shekel-dev-test-db` on port 5433 (test database)
 
-**Important:** These containers use project name `shekel-dev` and are fully isolated from production. Running `docker compose down -v` from the production directory cannot affect them, and vice versa.
+**Important:** These containers use project name `shekel-dev` and are fully isolated from
+production. Running `docker compose down -v` from the production directory cannot affect them, and
+vice versa.
 
 ### 5. Initialize the Database
 
@@ -368,13 +403,16 @@ flask run
 python run.py
 ```
 
-Open http://localhost:5000 (development server) and log in with the seed user credentials, or register a new account at http://localhost:5000/register.
+Open <http://localhost:5000> (development server) and log in with the seed user credentials, or
+register a new account at <http://localhost:5000/register>.
+
 - **Default Email:** `admin@shekel.local`
 - **Default Password:** `ChangeMe!2026`
 
 ### 7. First-Time Setup in the App
 
-See [Quick Start (Docker) > First-Time Setup in the App](#6-first-time-setup-in-the-app) for initial configuration steps.
+See [Quick Start (Docker) > First-Time Setup in the App](#6-first-time-setup-in-the-app) for initial
+configuration steps.
 
 ---
 
@@ -434,24 +472,23 @@ The core interaction loop the app supports:
 
 Last evaluated: 2026-03-23
 
-| Phase | Name                           | Status      | Notes                                            |
-| ----- | ------------------------------ | ----------- | ------------------------------------------------ |
-| 1     | Replace the Spreadsheet        | Complete    | Grid, templates, recurrence, balance, status     |
-| 2     | Paycheck Calculator            | Complete    | Salary, raises, deductions, federal/state/FICA   |
-| 3     | HYSA & Accounts Reorganization | Complete    | HYSA interest, category grouping, account dashboard |
-| 4     | Debt Accounts                  | Complete    | Mortgage (fixed+ARM), auto loan, escrow, payoff  |
-| 5     | Investments & Retirement       | Complete    | 401(k), IRA, pension, growth engine, gap analysis |
-| 6     | Visualization                  | Complete    | Charts dashboard, interactive sliders, theming   |
-| 7     | Scenarios                      | Deferred    | Model stub exists; clone/compare not built       |
-| 8A    | Security Hardening             | Complete    | MFA/TOTP, rate limiting, session mgmt, CSP       |
-| 8B    | Audit & Structured Logging     | Complete    | PG triggers on 22 tables, JSON logs, Promtail    |
-| 8C    | Backups & Disaster Recovery    | Complete    | pg_dump, retention, restore, integrity checks    |
-| 8D    | Production Deployment          | Complete    | Docker, Nginx, Cloudflare Tunnel, CI, deploy.sh  |
-| 8E    | Multi-User Groundwork          | Complete    | Registration, user_id audit, data isolation tests |
-| UI/UX | Remediation                    | Complete    | Nav restructure, settings consolidation, polish  |
-| --    | Production Readiness Audit     | Complete    | IDOR fixes, ownership guards, pool config, docs  |
-
-**Status key:** Complete | In Progress | Not Started | Deferred
+| Phase                    | Name                           | Status      | Notes                                               |
+| ------------------------ | ------------------------------ | ----------- | --------------------------------------------------- |
+| 1                        | Replace the Spreadsheet        | Complete    | Grid, templates, recurrence, balance, status        |
+| 2                        | Paycheck Calculator            | Complete    | Salary, raises, deductions, federal/state/FICA      |
+| 3                        | HYSA & Accounts Reorganization | Complete    | HYSA interest, category grouping, account dashboard |
+| 4                        | Debt Accounts                  | Complete    | Mortgage (fixed+ARM), auto loan, escrow, payoff     |
+| 5                        | Investments & Retirement       | Complete    | 401(k), IRA, pension, growth engine, gap analysis   |
+| 6                        | Visualization                  | Complete    | Charts dashboard, interactive sliders, theming      |
+| 7                        | Scenarios                      | Deferred    | Model stub exists; clone/compare not built          |
+| 8A                       | Security Hardening             | Complete    | MFA/TOTP, rate limiting, session mgmt, CSP          |
+| 8B                       | Audit & Structured Logging     | Complete    | PG triggers on 22 tables, JSON logs, Promtail       |
+| 8C                       | Backups & Disaster Recovery    | Complete    | pg_dump, retention, restore, integrity checks       |
+| 8D                       | Production Deployment          | Complete    | Docker, Nginx, Cloudflare Tunnel, CI, deploy.sh     |
+| 8E                       | Multi-User Groundwork          | Complete    | Registration, user_id audit, data isolation tests   |
+| UI/UX                    | Remediation                    | Complete    | Nav restructure, settings consolidation, polish     |
+| --                       | Production Readiness Audit     | Complete    | IDOR fixes, ownership guards, pool config, docs     |
+| **Status key:** Complete | In Progress                    | Not Started | Deferred                                            |
 
 See [docs/project_roadmap_v5.md](docs/project_roadmap_v5.md) for the project roadmap.
 
@@ -459,7 +496,7 @@ See [docs/project_roadmap_v5.md](docs/project_roadmap_v5.md) for the project roa
 
 ## Project Structure
 
-```
+```text
 shekel/
 ├── app/
 │   ├── __init__.py              # Application factory (create_app)

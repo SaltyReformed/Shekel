@@ -305,6 +305,9 @@ jobs:
       - name: jinja2 template parse check
         run: python scripts/check_template_syntax.py
 
+      - name: rumdl (Markdown lint + format check)
+        run: rumdl check
+
       - name: docker compose schema validation
         run: |
           for f in docker-compose.yml docker-compose.dev.yml docker-compose.build.yml; do

@@ -1,6 +1,9 @@
 # Shekel Operations Runbook
 
-This is the single operational reference for the Shekel budget application. It covers deployment, backup and restore, security operations, monitoring, Cloudflare management, and troubleshooting. For detailed backup procedures, see also `docs/backup_runbook.md`. For secret management details, see also `docs/runbook_secrets.md`.
+This is the single operational reference for the Shekel budget application. It covers deployment,
+backup and restore, security operations, monitoring, Cloudflare management, and troubleshooting. For
+detailed backup procedures, see also `docs/backup_runbook.md`. For secret management details, see
+also `docs/runbook_secrets.md`.
 
 ---
 
@@ -20,7 +23,7 @@ This is the single operational reference for the Shekel budget application. It c
 
 ### Service Architecture
 
-```
+```text
 [Client Browser]
        |
        v
@@ -144,6 +147,7 @@ cd /opt/shekel
 | `--health-interval N` | Seconds between health check retries (default: 5) |
 
 **Example: deploy from a specific branch without backup:**
+
 ```bash
 cd /opt/shekel
 git checkout feature-branch
@@ -176,7 +180,8 @@ curl -s http://localhost/health
 
 ### 2.3 Rolling Back
 
-**Automatic rollback:** The deploy script automatically rolls back if the health check fails after restart. No manual action is needed.
+**Automatic rollback:** The deploy script automatically rolls back if the health check fails after
+restart. No manual action is needed.
 
 **Manual rollback** (if the deploy script was not used or rollback failed):
 
@@ -200,6 +205,7 @@ docker compose up -d --no-deps --force-recreate app
 ```
 
 After rollback, verify health:
+
 ```bash
 curl -s http://localhost/health
 ```
@@ -245,15 +251,13 @@ crontab -e
 
 ### 2.5 Shared-mode Deployment and Config Sync
 
-The maintainer's homelab runs Shekel in **shared mode**: the bundled
-`shekel-prod-nginx` service is parked in the `disabled` profile and a
-separately-managed Nginx at `/opt/docker/nginx/` proxies traffic from
-the dedicated `shekel-frontend` Docker bridge to `shekel-prod-app:8000`.
-The Shekel app is NOT on the wider `homelab` network: that network
-hosts unrelated co-tenants (Jellyfin, Immich, UniFi) and would expose
-Gunicorn directly to any of their compromise paths (audit findings
-F-020/F-129 closed in Commit C-33). The version-controlled copies of
-the runtime configs live under `deploy/`:
+The maintainer's homelab runs Shekel in **shared mode**: the bundled `shekel-prod-nginx` service is
+parked in the `disabled` profile and a separately-managed Nginx at `/opt/docker/nginx/` proxies
+traffic from the dedicated `shekel-frontend` Docker bridge to `shekel-prod-app:8000`. The Shekel app
+is NOT on the wider `homelab` network: that network hosts unrelated co-tenants (Jellyfin, Immich,
+UniFi) and would expose Gunicorn directly to any of their compromise paths (audit findings
+F-020/F-129 closed in Commit C-33). The version-controlled copies of the runtime configs live under
+`deploy/`:
 
 | Repo path | Runtime path on the host |
 |-----------|--------------------------|
@@ -261,9 +265,8 @@ the runtime configs live under `deploy/`:
 | `deploy/nginx-shared/nginx.conf` | `/opt/docker/nginx/nginx.conf` |
 | `deploy/nginx-shared/conf.d/shekel.conf` | `/opt/docker/nginx/conf.d/shekel.conf` |
 
-The repo is the source of truth. The on-host copies must match
-byte-for-byte; drift between them is a deployment-integrity bug
-(security-2026-04-15 finding F-021).
+The repo is the source of truth. The on-host copies must match byte-for-byte; drift between them is
+a deployment-integrity bug (security-2026-04-15 finding F-021).
 
 #### Bringing up shared mode (first-time)
 
@@ -330,9 +333,9 @@ sudo docker exec nginx nginx -s reload
 curl -sSI https://shekel.saltyreformed.com | head
 ```
 
-If `nginx -t` reports an error in step 3, do not reload. Restore the
-previous file with `git restore` on the host or `git checkout HEAD~1 --
-deploy/nginx-shared/...`, copy it back into place, and rerun `nginx -t`.
+If `nginx -t` reports an error in step 3, do not reload. Restore the previous file with
+`git restore` on the host or `git checkout HEAD~1 -- deploy/nginx-shared/...`, copy it back into
+place, and rerun `nginx -t`.
 
 #### Editing the shared-mode compose override
 
@@ -358,9 +361,8 @@ docker compose up -d
 
 #### Verifying the host matches the repo
 
-A drift-check helper is reserved at `scripts/config_audit.py`
-(implemented in remediation commit C-49). Until that lands, verify
-manually:
+A drift-check helper is reserved at `scripts/config_audit.py` (implemented in remediation commit
+C-49). Until that lands, verify manually:
 
 ```bash
 diff -u /opt/shekel/deploy/nginx-shared/nginx.conf            /opt/docker/nginx/nginx.conf
@@ -368,18 +370,15 @@ diff -u /opt/shekel/deploy/nginx-shared/conf.d/shekel.conf    /opt/docker/nginx/
 diff -u /opt/shekel/deploy/docker-compose.prod.yml            /opt/docker/shekel/docker-compose.override.yml
 ```
 
-Any non-empty diff is an incident: investigate before re-syncing,
-because the host change may carry an undocumented production fix that
-must be brought into the repo first.
+Any non-empty diff is an incident: investigate before re-syncing, because the host change may carry
+an undocumented production fix that must be brought into the repo first.
 
 #### One-shot reconciliation script
 
-`scripts/reconcile_prod_to_canonical.sh` bundles the seven host-side
-steps that bring a drifted `/opt/docker/shekel/` runtime back to the
-repo's canonical state. Use this when the host has diverged
-substantially (multiple files, secrets directory missing, network
-attachment wrong) or to bootstrap a fresh shared-mode deployment
-from a host that previously ran bundled-mode.
+`scripts/reconcile_prod_to_canonical.sh` bundles the seven host-side steps that bring a drifted
+`/opt/docker/shekel/` runtime back to the repo's canonical state. Use this when the host has
+diverged substantially (multiple files, secrets directory missing, network attachment wrong) or to
+bootstrap a fresh shared-mode deployment from a host that previously ran bundled-mode.
 
 ```bash
 # On the host, from the repo root:
@@ -392,67 +391,51 @@ bash scripts/reconcile_prod_to_canonical.sh
 
 The script:
 
-1. Generates the Postgres TLS cert if not present
-   (`deploy/postgres/server.{crt,key}`)
+1. Generates the Postgres TLS cert if not present (`deploy/postgres/server.{crt,key}`)
 2. Creates `/opt/docker/shekel/{secrets,deploy/postgres}` directories
-3. Migrates the four high-sensitivity secrets from the current `.env`
-   into per-file entries under `secrets/` (mode 0600)
-4. Rewrites `/opt/docker/shekel/.env` with `replaced_by_docker_secret`
-   placeholders for the four secrets, plus `SHEKEL_IMAGE_DIGEST`,
-   `SHEKEL_REDIS_PASSWORD`, and `REGISTRATION_ENABLED=false`. Backs
-   up the old `.env` to `.env.bak.<timestamp>`.
-5. Creates the `shekel-frontend` bridge with the pinned subnet
-   (172.32.0.0/24) if missing
-6. Snapshots `/opt/docker/nginx/nginx.conf` and prints critical-
-   directive presence (limit_req_zone, set_real_ip_from, timeouts)
-   before overwriting from `deploy/nginx-shared/`. The pre-overwrite
+3. Migrates the four high-sensitivity secrets from the current `.env` into per-file entries under
+   `secrets/` (mode 0600)
+4. Rewrites `/opt/docker/shekel/.env` with `replaced_by_docker_secret` placeholders for the four
+   secrets, plus `SHEKEL_IMAGE_DIGEST`, `SHEKEL_REDIS_PASSWORD`, and `REGISTRATION_ENABLED=false`.
+   Backs up the old `.env` to `.env.bak.<timestamp>`.
+5. Creates the `shekel-frontend` bridge with the pinned subnet (172.32.0.0/24) if missing
+6. Snapshots `/opt/docker/nginx/nginx.conf` and prints critical- directive presence (limit_req_zone,
+   set_real_ip_from, timeouts) before overwriting from `deploy/nginx-shared/`. The pre-overwrite
    diff is saved to `/opt/docker/nginx/.reconcile-snapshot-<ts>/`.
-7. Copies the repo's `docker-compose.yml` and `deploy/docker-compose.prod.yml`
-   to `/opt/docker/shekel/`. Snapshots the old files for rollback.
+7. Copies the repo's `docker-compose.yml` and `deploy/docker-compose.prod.yml` to
+   `/opt/docker/shekel/`. Snapshots the old files for rollback.
 
-The script STOPS short of `docker compose down && up -d` so you can
-review the merged config before pulling the trigger. Its trailing
-output prints the exact post-script commands.
+The script STOPS short of `docker compose down && up -d` so you can review the merged config before
+pulling the trigger. Its trailing output prints the exact post-script commands.
 
 ##### Gotchas that triggered hotfixes in this session
 
-* **Docker secrets `uid`/`gid`/`mode` are ignored in non-Swarm
-  Compose v2.** The default secret mount inherits the host file's
-  ownership and mode. The `postgres_password` file must be readable
-  by uid 70 (postgres) inside the db container; since the host file
-  is josh:josh, the script writes it world-readable
-  (`chmod 0644 /opt/docker/shekel/secrets/postgres_password`) so the
-  postgres user can read via the "other" bits. Directory containment
-  (`/opt/docker/shekel/secrets/` is mode 0700 josh-only) keeps the
-  value protected from host-side enumeration. The other three
-  secrets (`secret_key`, `app_role_password`, `totp_encryption_key`)
-  are read by uid 1000 (shekel) inside the app container, which
-  matches the host file owner, so 0600 works for those.
+- **Docker secrets `uid`/`gid`/`mode` are ignored in non-Swarm Compose v2.** The default secret
+  mount inherits the host file's ownership and mode. The `postgres_password` file must be readable
+  by uid 70 (postgres) inside the db container; since the host file is josh:josh, the script writes
+  it world-readable (`chmod 0644 /opt/docker/shekel/secrets/postgres_password`) so the postgres user
+  can read via the "other" bits. Directory containment (`/opt/docker/shekel/secrets/` is mode 0700
+  josh-only) keeps the value protected from host-side enumeration. The other three secrets
+  (`secret_key`, `app_role_password`, `totp_encryption_key`) are read by uid 1000 (shekel) inside
+  the app container, which matches the host file owner, so 0600 works for those.
 
-* **Repo `deploy/nginx-shared/nginx.conf` drift.** The audit B7
-  hardening (`limit_req_zone`, `client_*_timeout`, `client_max_body_size`,
-  narrowed `set_real_ip_from`) was applied to the on-host file but
-  never back-ported. A blind repo->host sync clobbers them and
-  crashes nginx with `zero size shared memory zone "public"`. The
-  script's Step 6 snapshots the host file first and prints critical-
-  directive presence before overwriting. After running the script
-  the operator should diff the snapshot against the new file and
-  confirm no audit-fix directive was lost.
+- **Repo `deploy/nginx-shared/nginx.conf` drift.** The audit B7 hardening (`limit_req_zone`,
+  `client_*_timeout`, `client_max_body_size`, narrowed `set_real_ip_from`) was applied to the
+  on-host file but never back-ported. A blind repo->host sync clobbers them and crashes nginx with
+  `zero size shared memory zone "public"`. The script's Step 6 snapshots the host file first and
+  prints critical- directive presence before overwriting. After running the script the operator
+  should diff the snapshot against the new file and confirm no audit-fix directive was lost.
 
-* **Backend network subnet pin.** The repo file pins `backend` to
-  172.31.0.0/24. The on-host file under prior versions used the
-  auto-assigned 172.25.0.0/16. `docker compose up -d` after the
-  override copy tries to recreate the backend network and fails
-  with `Resource still in use` because `shekel-postgres-exporter`
-  in the monitoring stack is attached. Stop the exporter first:
-  `cd /opt/docker/monitoring && docker compose stop shekel-postgres-exporter`,
-  let the Shekel stack come up under the new subnet, then
-  `docker compose up -d --force-recreate shekel-postgres-exporter`
-  to rejoin.
+- **Backend network subnet pin.** The repo file pins `backend` to 172.31.0.0/24. The on-host file
+  under prior versions used the auto-assigned 172.25.0.0/16. `docker compose up -d` after the
+  override copy tries to recreate the backend network and fails with `Resource still in use` because
+  `shekel-postgres-exporter` in the monitoring stack is attached. Stop the exporter first:
+  `cd /opt/docker/monitoring && docker compose stop shekel-postgres-exporter`, let the Shekel stack
+  come up under the new subnet, then
+  `docker compose up -d --force-recreate shekel-postgres-exporter` to rejoin.
 
-* **Image entrypoint must support `_load_secret`.** The C-38 docker
-  secrets pre-date the entrypoint code that reads them. Before
-  flipping `.env` to placeholders, confirm the deployed image's
+- **Image entrypoint must support `_load_secret`.** The C-38 docker secrets pre-date the entrypoint
+  code that reads them. Before flipping `.env` to placeholders, confirm the deployed image's
   entrypoint contains the `_load_secret` function:
 
   ```bash
@@ -461,11 +444,9 @@ output prints the exact post-script commands.
   # Output must be >= 5 (one definition + four call sites).
   ```
 
-  An image without `_load_secret` reads the placeholders as the
-  literal SECRET_KEY value and fails the 32-char minimum check at
-  every boot. Rebuild via CI (push to `main`) and update
-  `SHEKEL_IMAGE_DIGEST` in `/opt/docker/shekel/.env` before the
-  flip.
+  An image without `_load_secret` reads the placeholders as the literal SECRET_KEY value and fails
+  the 32-char minimum check at every boot. Rebuild via CI (push to `main`) and update
+  `SHEKEL_IMAGE_DIGEST` in `/opt/docker/shekel/.env` before the flip.
 
 ##### Post-script verification
 
@@ -492,7 +473,9 @@ docker exec jellyfin bash -c 'getent hosts shekel-prod-app'   # → fails (isola
 
 ## 3. Backup & Restore
 
-This section summarizes the key procedures. For complete details including NAS mount setup, encryption configuration, retention policy mechanics, and verification internals, see `docs/backup_runbook.md`.
+This section summarizes the key procedures. For complete details including NAS mount setup,
+encryption configuration, retention policy mechanics, and verification internals, see
+`docs/backup_runbook.md`.
 
 ### 3.1 Creating a Backup
 
@@ -507,7 +490,9 @@ This section summarizes the key procedures. For complete details including NAS m
 ./scripts/backup.sh --local-dir /tmp/my_backup --no-nas
 ```
 
-Backups are written to `/var/backups/shekel/` as `shekel_backup_YYYYMMDD_HHMMSS.sql.gz`. If `BACKUP_ENCRYPTION_PASSPHRASE` is set in the environment, the file is encrypted with GPG (`.sql.gz.gpg`).
+Backups are written to `/var/backups/shekel/` as `shekel_backup_YYYYMMDD_HHMMSS.sql.gz`. If
+`BACKUP_ENCRYPTION_PASSPHRASE` is set in the environment, the file is encrypted with GPG
+(`.sql.gz.gpg`).
 
 ### 3.2 Restoring from a Backup
 
@@ -533,6 +518,7 @@ The restore script will:
 6. Run basic sanity checks
 
 **Post-restore verification:**
+
 ```bash
 curl -s http://localhost/health
 docker exec shekel-prod-app python scripts/integrity_check.py --verbose
@@ -555,7 +541,8 @@ rm /tmp/shekel_backup_20260315_020000.sql.gz
 ./scripts/verify_backup.sh $(ls -t /var/backups/shekel/shekel_backup_*.sql.gz* | head -1)
 ```
 
-This restores the backup to a temporary database (`shekel_verify`), runs sanity queries and integrity checks, then drops the temporary database. The production database is never touched.
+This restores the backup to a temporary database (`shekel_verify`), runs sanity queries and
+integrity checks, then drops the temporary database. The production database is never touched.
 
 ### 3.5 Retention Policy
 
@@ -597,7 +584,8 @@ docker exec shekel-prod-app python scripts/integrity_check.py --category referen
 
 ### 4.1 Secret Inventory
 
-The application requires three secrets for production operation. All are stored in `.env` on the Proxmox host.
+The application requires three secrets for production operation. All are stored in `.env` on the
+Proxmox host.
 
 | Secret | Purpose | Generation Command |
 |--------|---------|-------------------|
@@ -619,7 +607,8 @@ For complete secret rotation procedures, see `docs/runbook_secrets.md`.
 **WARNING: Changing this key makes ALL existing MFA enrollments unreadable.**
 
 1. Disable MFA for all users: `docker exec shekel-prod-app python scripts/reset_mfa.py --all`
-2. Generate a new key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+2. Generate a new key:
+   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
 3. Update `TOTP_ENCRYPTION_KEY` in `.env`
 4. Restart the app: `docker compose restart app`
 5. Users re-enroll MFA via Settings > Security
@@ -641,11 +630,13 @@ docker exec shekel-prod-app python scripts/reset_mfa.py admin@shekel.local
 
 Output: `MFA has been disabled for admin@shekel.local.`
 
-The user can now log in with email + password only. They should re-enable MFA via Settings > Security after logging in.
+The user can now log in with email + password only. They should re-enable MFA via Settings >
+Security after logging in.
 
 ### 4.6 Reviewing Audit Logs
 
 **Via database (psql):**
+
 ```bash
 # Recent changes to transactions.
 docker exec shekel-prod-db psql -U shekel_user -d shekel -c \
@@ -668,7 +659,8 @@ See [§5.3 Key LogQL Queries](#53-key-logql-queries).
 
 ### 4.7 Audit Log Retention
 
-Old audit log rows are cleaned up automatically by cron (daily at 3:00 AM). The default retention period is 365 days, configurable via the `AUDIT_RETENTION_DAYS` environment variable.
+Old audit log rows are cleaned up automatically by cron (daily at 3:00 AM). The default retention
+period is 365 days, configurable via the `AUDIT_RETENTION_DAYS` environment variable.
 
 ```bash
 # Preview what would be deleted.
@@ -687,50 +679,46 @@ The `.env` file contains all three production secrets. Include it in your backup
 cp /opt/shekel/.env /mnt/nas/backups/shekel/env_backup
 ```
 
-Alternatively, store the three secrets in a password manager (e.g., Bitwarden, 1Password) as a separate recovery path.
+Alternatively, store the three secrets in a password manager (e.g., Bitwarden, 1Password) as a
+separate recovery path.
 
 ### 4.9 HSTS Preload Decision
 
-The Flask after-request hook in `app/__init__.py:_register_security_headers`
-emits `Strict-Transport-Security: max-age=31536000; includeSubDomains` on every
-response.  The `preload` directive is intentionally OFF.
+The Flask after-request hook in `app/__init__.py:_register_security_headers` emits
+`Strict-Transport-Security: max-age=31536000; includeSubDomains` on every response. The `preload`
+directive is intentionally OFF.
 
-**Why this matters.** `preload` is an instruction to browsers to honor HSTS for
-the domain even on the very first visit -- before any HTTP response could carry
-the header.  It works by submitting the domain to a list maintained by the
-Chromium project (consumed by Chrome, Firefox, Safari, Edge).  Once a domain is
-on the list, **delisting takes 6-12 weeks AND requires removing the `preload`
-directive from the HSTS header for the duration**.  During that window, every
-subdomain MUST be HTTPS-only.
+**Why this matters.** `preload` is an instruction to browsers to honor HSTS for the domain even on
+the very first visit -- before any HTTP response could carry the header. It works by submitting the
+domain to a list maintained by the Chromium project (consumed by Chrome, Firefox, Safari, Edge).
+Once a domain is on the list, **delisting takes 6-12 weeks AND requires removing the `preload`
+directive from the HSTS header for the duration**. During that window, every subdomain MUST be
+HTTPS-only.
 
 **To enable preload (ONLY when you are certain you are committing for years).**
 
-1. Confirm every subdomain you operate is HTTPS-only.  Test with
-   `curl -I http://<subdomain>.<your-domain>/` and verify a 301 to https://.
-2. Edit `app/__init__.py` and add `; preload` to the
-   `Strict-Transport-Security` value.
-3. Deploy.  Run for at least one week to confirm no users hit
-   `https://<subdomain>` and get a TLS error.
-4. Submit the apex domain at <https://hstspreload.org/>.  Wait for the email
-   confirmation (typically 4-12 weeks for inclusion in browser releases).
+1. Confirm every subdomain you operate is HTTPS-only. Test with
+   `curl -I http://<subdomain>.<your-domain>/` and verify a 301 to <https://>.
+2. Edit `app/__init__.py` and add `; preload` to the `Strict-Transport-Security` value.
+3. Deploy. Run for at least one week to confirm no users hit `https://<subdomain>` and get a TLS
+   error.
+4. Submit the apex domain at <https://hstspreload.org/>. Wait for the email confirmation (typically
+   4-12 weeks for inclusion in browser releases).
 
 **To disable preload after submission.**
 
-Removing `preload` from the header is a precondition for delisting; it does not
-cause delisting on its own.  Submit a removal request at
-<https://hstspreload.org/removal/>.  Allow 6-12 weeks before any subdomain can
-go back to HTTP.
+Removing `preload` from the header is a precondition for delisting; it does not cause delisting on
+its own. Submit a removal request at <https://hstspreload.org/removal/>. Allow 6-12 weeks before any
+subdomain can go back to HTTP.
 
 ### 4.10 CDN Vendor Refresh Procedure
 
-The application serves Bootstrap, Bootstrap Icons, htmx, Chart.js, Inter, and
-JetBrains Mono from `app/static/vendor/` rather than a CDN (audit F-037).  The
-CSP forbids external script/style/font origins so a refresh requires both
-fetching the new file and updating the manifest.
+The application serves Bootstrap, Bootstrap Icons, htmx, Chart.js, Inter, and JetBrains Mono from
+`app/static/vendor/` rather than a CDN (audit F-037). The CSP forbids external script/style/font
+origins so a refresh requires both fetching the new file and updating the manifest.
 
-**Manifest.** `app/static/vendor/VERSIONS.txt` records each upstream URL and
-its SHA-384 hash.  The hash is the source of truth for which exact bytes are
-served.
+**Manifest.** `app/static/vendor/VERSIONS.txt` records each upstream URL and its SHA-384 hash. The
+hash is the source of truth for which exact bytes are served.
 
 **Refresh procedure.**
 
@@ -746,56 +734,50 @@ served.
 
    Update the matching line in `VERSIONS.txt` with the new URL and hash.
 
-2. **Inter / JetBrains Mono fonts.**  Run the helper script:
+2. **Inter / JetBrains Mono fonts.** Run the helper script:
 
    ```bash
    python scripts/vendor_google_fonts.py
    ```
 
-   The script fetches the upstream Google Fonts CSS, downloads the latin and
-   latin-ext woff2 files, rewrites URLs to local paths, and emits a fresh
-   `app/static/vendor/fonts/fonts.css`.  After running, recompute the SHA-384
-   hashes for `fonts.css` and each `*.woff2` and update `VERSIONS.txt`.
+   The script fetches the upstream Google Fonts CSS, downloads the latin and latin-ext woff2 files,
+   rewrites URLs to local paths, and emits a fresh `app/static/vendor/fonts/fonts.css`. After
+   running, recompute the SHA-384 hashes for `fonts.css` and each `*.woff2` and update
+   `VERSIONS.txt`.
 
-3. **Verify.**  Start the app and exercise every dashboard
-   (analytics, debt strategy, investment, loan, retirement) plus the budget
-   grid.  The browser DevTools Network tab should show every asset loading
-   from `/static/vendor/...` with no CSP violations in the Console.
+3. **Verify.** Start the app and exercise every dashboard (analytics, debt strategy, investment,
+   loan, retirement) plus the budget grid. The browser DevTools Network tab should show every asset
+   loading from `/static/vendor/...` with no CSP violations in the Console.
 
-4. **Test.**  Run the security-headers and cache-control test suites:
+4. **Test.** Run the security-headers and cache-control test suites:
 
    ```bash
    pytest tests/test_integration/test_security_headers.py \
           tests/test_adversarial/test_cache_control.py -v
    ```
 
-   The `test_static_asset_path_resolves` test ensures every vendored asset
-   referenced by templates exists at its expected path.
+   The `test_static_asset_path_resolves` test ensures every vendored asset referenced by templates
+   exists at its expected path.
 
-5. **Commit.**  One commit per refresh; commit message names the package and
-   version (e.g. `chore(vendor): bump Chart.js 4.4.7 -> 4.5.0`).
+5. **Commit.** One commit per refresh; commit message names the package and version (e.g.
+   `chore(vendor): bump Chart.js 4.4.7 -> 4.5.0`).
 
 ### 4.11 Docker Daemon Hardening Defaults (Commit C-35)
 
 The compose files in this repo apply per-container hardening
-(`security_opt: [no-new-privileges:true]`, `cap_drop: [ALL]`,
-`read_only: true`, resource caps, log rotation) to every Shekel
-service.  This section documents the matching daemon-level defaults
-the operator should apply on the host so co-tenant containers
-managed outside this repo (jellyfin, immich, unifi) inherit the
-same posture without per-stack edits.  Audit findings F-055
-(daemon-level no-new-privileges) and F-116 (default log rotation),
-docker-bench checks 2.5 and 2.14.
+(`security_opt: [no-new-privileges:true]`, `cap_drop: [ALL]`, `read_only: true`, resource caps, log
+rotation) to every Shekel service. This section documents the matching daemon-level defaults the
+operator should apply on the host so co-tenant containers managed outside this repo (jellyfin,
+immich, unifi) inherit the same posture without per-stack edits. Audit findings F-055 (daemon-level
+no-new-privileges) and F-116 (default log rotation), docker-bench checks 2.5 and 2.14.
 
-**File path.**  `/etc/docker/daemon.json` on the Proxmox host.
-This file is read by the Docker daemon at startup and applies its
-defaults to every container the daemon launches, including those
-managed by `/opt/docker/docker-compose.yml` outside this project.
-Changes to this file require a daemon reload (or restart) to take
-effect; existing containers continue with the settings they were
-created under and pick up the new defaults only on `up --force-recreate`.
+**File path.** `/etc/docker/daemon.json` on the Proxmox host. This file is read by the Docker daemon
+at startup and applies its defaults to every container the daemon launches, including those managed
+by `/opt/docker/docker-compose.yml` outside this project. Changes to this file require a daemon
+reload (or restart) to take effect; existing containers continue with the settings they were created
+under and pick up the new defaults only on `up --force-recreate`.
 
-**Recommended baseline.**  Create or merge into `daemon.json`:
+**Recommended baseline.** Create or merge into `daemon.json`:
 
 ```json
 {
@@ -857,10 +839,9 @@ Field-by-field rationale:
    sudo systemctl reload docker
    ```
 
-   `systemctl reload` re-reads `daemon.json` without killing
-   containers (the live-restore setting above is what allows this).
-   Use `systemctl restart docker` only if reload reports the option
-   is unsupported on the installed Docker version.
+   `systemctl reload` re-reads `daemon.json` without killing containers (the live-restore setting
+   above is what allows this). Use `systemctl restart docker` only if reload reports the option is
+   unsupported on the installed Docker version.
 
 5. Verify the daemon picked up the new defaults:
 
@@ -868,23 +849,20 @@ Field-by-field rationale:
    docker info | grep -E '(no-new-privileges|Live Restore|Logging Driver|Default Runtime)'
    ```
 
-6. Force-recreate the Shekel stack to pick up the daemon-level
-   logging defaults on existing containers:
+6. Force-recreate the Shekel stack to pick up the daemon-level logging defaults on existing
+   containers:
 
    ```bash
    cd /opt/docker/shekel
    sudo docker compose up -d --force-recreate
    ```
 
-   The `live-restore` change is daemon-only; it does not require
-   container recreation.  Per-container `security_opt` in
-   `docker-compose.yml` already sets `no-new-privileges` on each
-   Shekel service, so the daemon default is redundant for this
-   stack -- it is still set so that co-tenant containers and any
-   future stack on this host gets the same posture by default.
+   The `live-restore` change is daemon-only; it does not require container recreation. Per-container
+   `security_opt` in `docker-compose.yml` already sets `no-new-privileges` on each Shekel service,
+   so the daemon default is redundant for this stack -- it is still set so that co-tenant containers
+   and any future stack on this host gets the same posture by default.
 
-**Rollback.**  Restore the backup taken in step 1 and reload the
-daemon:
+**Rollback.** Restore the backup taken in step 1 and reload the daemon:
 
 ```bash
 sudo cp /etc/docker/daemon.json.bak.<DATE> /etc/docker/daemon.json
@@ -893,21 +871,18 @@ sudo systemctl reload docker
 
 ### 4.12 Postgres TLS for Shared Mode (Commit C-37)
 
-The shared-mode override at `deploy/docker-compose.prod.yml` enables
-`ssl=on` on the Postgres service so the Gunicorn -> Postgres hop is
-encrypted on the wire. The base `docker-compose.yml` keeps Postgres
-on plaintext TCP for the README Quick Start, where a fresh-host
-operator does not yet have a cert generated. Audit finding F-154.
+The shared-mode override at `deploy/docker-compose.prod.yml` enables `ssl=on` on the Postgres
+service so the Gunicorn -> Postgres hop is encrypted on the wire. The base `docker-compose.yml`
+keeps Postgres on plaintext TCP for the README Quick Start, where a fresh-host operator does not yet
+have a cert generated. Audit finding F-154.
 
-**Scope.** TLS applies only when the shared-mode override is active.
-Bundled-mode deployments (the README Quick Start) intentionally skip
-this section and continue running plaintext within the internal-only
-`backend` Docker bridge.
+**Scope.** TLS applies only when the shared-mode override is active. Bundled-mode deployments (the
+README Quick Start) intentionally skip this section and continue running plaintext within the
+internal-only `backend` Docker bridge.
 
-**File path.** `deploy/postgres/server.crt` and `deploy/postgres/server.key`
-on the operator's host. Both files are gitignored; the directory is
-committed empty (apart from a `README.md`) so the bind-mount source
-path resolves on a fresh clone.
+**File path.** `deploy/postgres/server.crt` and `deploy/postgres/server.key` on the operator's host.
+Both files are gitignored; the directory is committed empty (apart from a `README.md`) so the
+bind-mount source path resolves on a fresh clone.
 
 #### 4.12.1 Generating the certificate (one-time, before first up)
 
@@ -916,22 +891,20 @@ cd /opt/shekel
 sudo ./scripts/generate_pg_cert.sh
 ```
 
-Sudo is required because `server.key` must be chowned to uid 70 (the
-`postgres` user inside `postgres:16-alpine`) for Postgres to accept
-it under the mandatory 0600 mode. The script:
+Sudo is required because `server.key` must be chowned to uid 70 (the `postgres` user inside
+`postgres:16-alpine`) for Postgres to accept it under the mandatory 0600 mode. The script:
 
 1. Generates an RSA-2048 keypair via `openssl req -x509 -nodes`.
-2. Embeds a Subject Alternative Name list covering `shekel-prod-db`,
-   `db`, and `localhost` so a future upgrade to `sslmode=verify-full`
-   works without regeneration.
-3. Sets `server.crt` to mode 0644 (root-owned, world-readable) and
-   `server.key` to mode 0600 (uid 70, group 70).
-4. Re-reads both files and verifies the cert parses cleanly, the
-   key passes `openssl rsa -check`, and the public keys match.
+2. Embeds a Subject Alternative Name list covering `shekel-prod-db`, `db`, and `localhost` so a
+   future upgrade to `sslmode=verify-full` works without regeneration.
+3. Sets `server.crt` to mode 0644 (root-owned, world-readable) and `server.key` to mode 0600 (uid
+   70, group 70).
+4. Re-reads both files and verifies the cert parses cleanly, the key passes `openssl rsa -check`,
+   and the public keys match.
 5. Prints the not-after date so the operator can diary the rotation.
 
-Defaults: 825 days, CN `shekel-prod-db`. Pass `--days N`, `--cn HOSTNAME`,
-or `--output-dir DIR` to override; `--help` lists every flag.
+Defaults: 825 days, CN `shekel-prod-db`. Pass `--days N`, `--cn HOSTNAME`, or `--output-dir DIR` to
+override; `--help` lists every flag.
 
 #### 4.12.2 Bringing Postgres up with TLS
 
@@ -945,25 +918,23 @@ docker compose \
 
 The override:
 
-* Mounts the cert/key read-only into `/etc/postgresql/certs/` inside
-  the db container.
-* Adds `postgres -c ssl=on -c ssl_cert_file=... -c ssl_key_file=... -c
-  ssl_min_protocol_version=TLSv1.2 -c ssl_ciphers=...` to the db
-  service's `command` so the postgres process loads the cert at
-  startup.
-* Overrides `DATABASE_URL` on the app service with `?sslmode=require`
-  so the SQLAlchemy engine refuses any connection the server cannot
-  upgrade to TLS.
-* Sets `DB_SSLMODE=require` so `entrypoint.sh` constructs
-  `DATABASE_URL_APP` (the least-privilege `shekel_app` role's URL)
-  with the same `?sslmode=require` posture.
-* Sets `PGSSLMODE=require` so every `psql` call in `entrypoint.sh`
-  picks up the same setting via the standard libpq env var.
+- Mounts the cert/key read-only into `/etc/postgresql/certs/` inside the db container.
+- Adds this to the db service's `command` so the postgres process loads the cert at startup:
+
+  ```text
+  postgres -c ssl=on -c ssl_cert_file=... -c ssl_key_file=... -c ssl_min_protocol_version=TLSv1.2 -c ssl_ciphers=...
+  ```
+
+- Overrides `DATABASE_URL` on the app service with `?sslmode=require` so the SQLAlchemy engine
+  refuses any connection the server cannot upgrade to TLS.
+- Sets `DB_SSLMODE=require` so `entrypoint.sh` constructs `DATABASE_URL_APP` (the least-privilege
+  `shekel_app` role's URL) with the same `?sslmode=require` posture.
+- Sets `PGSSLMODE=require` so every `psql` call in `entrypoint.sh` picks up the same setting via the
+  standard libpq env var.
 
 #### 4.12.3 Verifying the TLS channel
 
-After the stack starts, confirm Postgres negotiated TLS for the app's
-connection pool:
+After the stack starts, confirm Postgres negotiated TLS for the app's connection pool:
 
 ```bash
 # View the server-side ssl setting -- must report "on".
@@ -982,17 +953,16 @@ docker exec shekel-prod-db psql -U shekel_user -d shekel \
 
 Expected output:
 
-* `SHOW ssl;` returns `on`.
-* `pg_stat_ssl` rows show `ssl = t`, a `version` of `TLSv1.2` or
-  `TLSv1.3`, and a non-empty `cipher`.
+- `SHOW ssl;` returns `on`.
+- `pg_stat_ssl` rows show `ssl = t`, a `version` of `TLSv1.2` or `TLSv1.3`, and a non-empty
+  `cipher`.
 
-If `ssl = off` after the override is applied, see Troubleshooting
-§7.4 below.
+If `ssl = off` after the override is applied, see Troubleshooting §7.4 below.
 
 #### 4.12.4 Rotating the certificate
 
-The script's not-after date is the rotation trigger. Rotate well
-before expiry to avoid an outage when libssl rejects an expired cert:
+The script's not-after date is the rotation trigger. Rotate well before expiry to avoid an outage
+when libssl rejects an expired cert:
 
 ```bash
 cd /opt/shekel
@@ -1003,22 +973,18 @@ docker compose \
     restart db
 ```
 
-A `restart db` is enough; the postgres process re-reads
-`ssl_cert_file` / `ssl_key_file` on every startup. The app does
-NOT need to be restarted -- psycopg2 transparently reconnects when
-the db comes back, and the brief 1-2s outage is well under the app's
-healthcheck `start_period`.
+A `restart db` is enough; the postgres process re-reads `ssl_cert_file` / `ssl_key_file` on every
+startup. The app does NOT need to be restarted -- psycopg2 transparently reconnects when the db
+comes back, and the brief 1-2s outage is well under the app's healthcheck `start_period`.
 
-**Rotation impact.** Active connections drop during the restart but
-the SQLAlchemy engine reconnects on the next request. Login
-sessions survive (sessions live in Flask's secure cookie, not the
-DB connection). No user-visible downtime beyond the restart window.
+**Rotation impact.** Active connections drop during the restart but the SQLAlchemy engine reconnects
+on the next request. Login sessions survive (sessions live in Flask's secure cookie, not the DB
+connection). No user-visible downtime beyond the restart window.
 
 #### 4.12.5 Cleartext fallback (emergency only)
 
-If the cert is corrupted or the operator needs to rule out TLS as a
-cause of an outage, fall back to cleartext by removing the override's
-TLS environment from a fresh shell:
+If the cert is corrupted or the operator needs to rule out TLS as a cause of an outage, fall back to
+cleartext by removing the override's TLS environment from a fresh shell:
 
 ```bash
 # Comment out (or delete) the db.command, db.volumes mount lines,
@@ -1031,8 +997,7 @@ docker compose \
     up -d --force-recreate db app
 ```
 
-Restore the override from the repo copy as soon as the underlying
-issue is resolved:
+Restore the override from the repo copy as soon as the underlying issue is resolved:
 
 ```bash
 cd /opt/shekel
@@ -1045,21 +1010,17 @@ docker compose \
 
 ### 4.13 Migration to Per-Service Hardening (Commit C-35)
 
-When bringing an existing Shekel deployment up under the C-35
-hardening (`user: postgres` on db, `user: nginx` on nginx, both
-under `cap_drop: ALL` and `read_only: true`), two pre-existing
-state items can trip the first start.  Address them before issuing
-`docker compose up -d --force-recreate` to recreate the
-containers.
+When bringing an existing Shekel deployment up under the C-35 hardening (`user: postgres` on db,
+`user: nginx` on nginx, both under `cap_drop: ALL` and `read_only: true`), two pre-existing state
+items can trip the first start. Address them before issuing `docker compose up -d --force-recreate`
+to recreate the containers.
 
 **1. Verify the `shekel-prod-pgdata` volume is owned by uid 70.**
 
-The pinned `user: postgres` directive on the db service is what
-lets the container start under `cap_drop: ALL` (without CAP_CHOWN
-the entrypoint cannot chown PGDATA on the way in -- see the
-in-line compose comment).  Production volumes initialised under
-the previous root-mode entrypoint should already be postgres-owned
-because that older entrypoint did chown them on first init, but
+The pinned `user: postgres` directive on the db service is what lets the container start under
+`cap_drop: ALL` (without CAP_CHOWN the entrypoint cannot chown PGDATA on the way in -- see the
+in-line compose comment). Production volumes initialised under the previous root-mode entrypoint
+should already be postgres-owned because that older entrypoint did chown them on first init, but
 verify before recreating:
 
 ```bash
@@ -1072,8 +1033,8 @@ sudo docker run --rm \
 #           70:70 /d/PG_VERSION
 ```
 
-If the output reports `0:0` (root-owned), chown the volume in a
-disposable container before recreating:
+If the output reports `0:0` (root-owned), chown the volume in a disposable container before
+recreating:
 
 ```bash
 sudo docker run --rm \
@@ -1085,11 +1046,9 @@ sudo docker run --rm \
 
 **2. Verify the `shekel-prod-app-state` volume is shekel-owned.**
 
-The app service runs as the `shekel` user (Dockerfile USER
-directive) and writes the seed-complete sentinel under
-`/home/shekel/app/state`.  The volume was created under Commit
-C-34 and inherits the in-image directory ownership, so this is
-mostly defensive.  Verify once:
+The app service runs as the `shekel` user (Dockerfile USER directive) and writes the seed-complete
+sentinel under `/home/shekel/app/state`. The volume was created under Commit C-34 and inherits the
+in-image directory ownership, so this is mostly defensive. Verify once:
 
 ```bash
 sudo docker run --rm \
@@ -1100,9 +1059,8 @@ sudo docker run --rm \
 # Expected: <shekel uid>:<shekel gid> /d
 ```
 
-If the volume came up root-owned, chown it the same way as the
-PGDATA volume above (substituting the correct uid/gid for
-`shekel`).
+If the volume came up root-owned, chown it the same way as the PGDATA volume above (substituting the
+correct uid/gid for `shekel`).
 
 **3. Bring up the stack and watch for healthy state.**
 
@@ -1112,13 +1070,10 @@ sudo docker compose up -d --force-recreate
 sudo docker compose ps
 ```
 
-Each service should report `healthy` within a minute or two.  If
-db restarts in a loop, run `sudo docker logs shekel-prod-db` --
-the first error line names the missing permission and points to
-the volume that needs chown.  If nginx restarts, run
-`sudo docker logs shekel-prod-nginx` -- the master logs the
-specific path it cannot write (most often a missed tmpfs entry
-in the compose file).
+Each service should report `healthy` within a minute or two. If db restarts in a loop, run
+`sudo docker logs shekel-prod-db` -- the first error line names the missing permission and points to
+the volume that needs chown. If nginx restarts, run `sudo docker logs shekel-prod-nginx` -- the
+master logs the specific path it cannot write (most often a missed tmpfs entry in the compose file).
 
 ---
 
@@ -1128,7 +1083,7 @@ in the compose file).
 
 Shekel logs flow through a four-stage pipeline:
 
-```
+```text
 [Flask app]
    |   structured JSON to stdout (one record per line)
    v
@@ -1149,24 +1104,18 @@ Shekel logs flow through a four-stage pipeline:
        (LAN-only via the existing nginx + wildcard cert)
 ```
 
-**Tamper-resistance property.** The Shekel app container shares no
-volume and no network with the Loki storage volume. An attacker who
-gains RCE in Gunicorn can spam new log records (which Alloy will
-faithfully ingest) but cannot delete or rewrite records already
-shipped to Loki. The local `json-file` driver buffer at
-`/var/lib/docker/containers/<id>/<id>-json.log` IS rewritable by a
-host-root attacker, but anything Alloy already scraped from it is
-immutable in Loki. This satisfies ASVS V7.3.3 / V7.3.4 to the level
-appropriate for a single-host deployment; the previous `applogs`
-Docker volume that lived in the same trust boundary as the app was
-removed in Commit C-15 (audit findings F-082, F-150). For an
-absolute tamper-evident trail (off-site, write-once), see the
-deferred S3-with-Object-Lock option in the C-15 architectural
-decision notes.
+**Tamper-resistance property.** The Shekel app container shares no volume and no network with the
+Loki storage volume. An attacker who gains RCE in Gunicorn can spam new log records (which Alloy
+will faithfully ingest) but cannot delete or rewrite records already shipped to Loki. The local
+`json-file` driver buffer at `/var/lib/docker/containers/<id>/<id>-json.log` IS rewritable by a
+host-root attacker, but anything Alloy already scraped from it is immutable in Loki. This satisfies
+ASVS V7.3.3 / V7.3.4 to the level appropriate for a single-host deployment; the previous `applogs`
+Docker volume that lived in the same trust boundary as the app was removed in Commit C-15 (audit
+findings F-082, F-150). For an absolute tamper-evident trail (off-site, write-once), see the
+deferred S3-with-Object-Lock option in the C-15 architectural decision notes.
 
-The full collector and dashboard configuration is documented in
-`observability.md`. This runbook section assumes Phase 0 -- 5 of
-that plan are complete.
+The full collector and dashboard configuration is documented in `observability.md`. This runbook
+section assumes Phase 0 -- 5 of that plan are complete.
 
 ### 5.1 Checking Application Logs
 
@@ -1190,38 +1139,40 @@ journalctl -u cloudflared --no-pager -n 20
 tail -50 /var/log/shekel_backup.log
 ```
 
-**Flask log format (JSON, RFC3339Nano timestamps):** Each line is a
-single JSON object with these stable keys; additional structured
-fields appear when the call site supplies them via `extra={...}`.
+**Flask log format (JSON, RFC3339Nano timestamps):** Each line is a single JSON object with these
+stable keys; additional structured fields appear when the call site supplies them via `extra={...}`.
 
-- `timestamp` -- RFC3339Nano UTC with microsecond precision and `Z` suffix, e.g. `2026-05-05T19:36:45.139287Z`.
+- `timestamp` -- RFC3339Nano UTC with microsecond precision and `Z` suffix, e.g.
+  `2026-05-05T19:36:45.139287Z`.
 - `level` -- `DEBUG`, `INFO`, `WARNING`, `ERROR`.
 - `logger` -- Python logger name (e.g. `app.routes.auth`).
 - `message` -- Human-readable description.
-- `request_id` -- UUID4 correlating every log line from a single HTTP request. Returned to the client in the `X-Request-Id` header so a user-reported issue can be looked up directly.
-- `event` -- Structured event name (e.g. `login_success`, `rate_limit_exceeded`, `slow_request`). The full registry lives in `app/utils/log_events.py:EVENT_REGISTRY`.
+- `request_id` -- UUID4 correlating every log line from a single HTTP request. Returned to the
+  client in the `X-Request-Id` header so a user-reported issue can be looked up directly.
+- `event` -- Structured event name (e.g. `login_success`, `rate_limit_exceeded`, `slow_request`).
+  The full registry lives in `app/utils/log_events.py:EVENT_REGISTRY`.
 - `category` -- One of `auth`, `business`, `access`, `audit`, `error`, `performance`.
 - `remote_addr` -- Client IP (forwarded by nginx via `X-Forwarded-For`).
 - `user_id` -- Authenticated user ID, omitted on anonymous requests.
 
-The Alloy `loki.process.shekel` stage promotes `level`, `logger`, and
-`event` to Loki labels so dashboards can filter on them without a
-`| json` parser stage in every query.
+The Alloy `loki.process.shekel` stage promotes `level`, `logger`, and `event` to Loki labels so
+dashboards can filter on them without a `| json` parser stage in every query.
 
 ### 5.2 Querying Logs in Grafana
 
 1. Open Grafana: `https://grafana.saltyreformed.com` (LAN-only).
-2. Log in with the admin account (password in `/opt/docker/monitoring/secrets/grafana_admin_password`).
+2. Log in with the admin account (password in
+   `/opt/docker/monitoring/secrets/grafana_admin_password`).
 3. Navigate to **Explore** (compass icon in the left sidebar).
-4. Select **Loki** as the data source. (Provisioned automatically per `observability.md` Phase 4 datasources.yaml.)
+4. Select **Loki** as the data source. (Provisioned automatically per `observability.md` Phase 4
+   datasources.yaml.)
 5. Enter a LogQL query (see below) and click **Run query**.
 
 ### 5.3 Key LogQL Queries
 
-The Alloy pipeline exposes both the raw Docker container labels
-(`compose_service`, `container`, `compose_project`) and the
-JSON-extracted labels (`level`, `logger`, `event`). Queries below
-prefer `compose_service` because it survives container renames.
+The Alloy pipeline exposes both the raw Docker container labels (`compose_service`, `container`,
+`compose_project`) and the JSON-extracted labels (`level`, `logger`, `event`). Queries below prefer
+`compose_service` because it survives container renames.
 
 | Purpose | Query |
 |---------|-------|
@@ -1241,18 +1192,15 @@ prefer `compose_service` because it survives container renames.
 | By user ID | `{compose_service="shekel-prod-app"} \| json \| user_id="1"` |
 | Trace a request | `{compose_service="shekel-prod-app"} \| json \| request_id="<uuid>"` |
 
-The `request_id` derived field declared in `datasources.yaml` makes
-a UUID in any log line clickable -- it copies the value into a
-prefilled trace-a-request query so a user-reported `X-Request-Id`
+The `request_id` derived field declared in `datasources.yaml` makes a UUID in any log line clickable
+-- it copies the value into a prefilled trace-a-request query so a user-reported `X-Request-Id`
 lookup is one click.
 
 ### 5.4 Monitoring Stack Management
 
-The Loki / Grafana / Alloy stack runs from
-`/opt/docker/monitoring/` per `observability.md`. The Shekel stack
-does NOT need to share a Docker network with it -- Alloy reads
-container logs via the docker socket, which works regardless of
-the source container's network membership.
+The Loki / Grafana / Alloy stack runs from `/opt/docker/monitoring/` per `observability.md`. The
+Shekel stack does NOT need to share a Docker network with it -- Alloy reads container logs via the
+docker socket, which works regardless of the source container's network membership.
 
 ```bash
 # Check monitoring stack status.
@@ -1277,32 +1225,28 @@ docker exec loki wget -qO- \
 docker logs alloy --tail 50
 ```
 
-If a deploy lands and Alloy's `loki.process.shekel` stage suddenly
-shows `failed to parse` errors, the most likely cause is a
-regression in `app/utils/logging_config.py` -- the formatter must
-emit the keys `timestamp`, `level`, `logger`, `message`, `event`,
-`request_id` for the parser to map fields cleanly. Re-run
-`pytest tests/test_utils/test_logging_config.py` to catch shape
-drifts before they reach production.
+If a deploy lands and Alloy's `loki.process.shekel` stage suddenly shows `failed to parse` errors,
+the most likely cause is a regression in `app/utils/logging_config.py` -- the formatter must emit
+the keys `timestamp`, `level`, `logger`, `message`, `event`, `request_id` for the parser to map
+fields cleanly. Re-run `pytest tests/test_utils/test_logging_config.py` to catch shape drifts before
+they reach production.
 
 ### 5.5 Alerting on Rate-Limit Pressure
 
-Rate-limit hits are emitted as `event="rate_limit_exceeded"` records
-under `category="access"` (audit Commit C-15 / finding F-146). The
-intended alert in Grafana (provision under
+Rate-limit hits are emitted as `event="rate_limit_exceeded"` records under `category="access"`
+(audit Commit C-15 / finding F-146). The intended alert in Grafana (provision under
 `/opt/docker/monitoring/grafana/provisioning/alerting/`) is:
 
 - **Datasource:** Loki
-- **Query:** `count_over_time({compose_service="shekel-prod-app", event="rate_limit_exceeded"} [5m])`
+- **Query:**
+  `count_over_time({compose_service="shekel-prod-app", event="rate_limit_exceeded"} [5m])`
 - **Condition:** is above 10 (tune after a week of baseline data)
 - **Evaluation:** every 1 minute, for at least 5 minutes
 
-A burst of 10+ rate-limit hits in 5 minutes is well above the
-single-user steady-state (effectively zero outside test windows)
-and is the earliest queryable signal of a credential-stuffing
-campaign that the per-route 5-per-15min ceiling is otherwise
-silently absorbing. Pair the rule with Grafana contact-point
-delivery (email or webhook) per the operator's preference.
+A burst of 10+ rate-limit hits in 5 minutes is well above the single-user steady-state (effectively
+zero outside test windows) and is the earliest queryable signal of a credential-stuffing campaign
+that the per-route 5-per-15min ceiling is otherwise silently absorbing. Pair the rule with Grafana
+contact-point delivery (email or webhook) per the operator's preference.
 
 ### 5.5 Health Checks
 
@@ -1350,11 +1294,13 @@ sudo systemctl restart cloudflared
 ```
 
 **When to restart:**
+
 - After editing `/etc/cloudflared/config.yml`
 - After a cloudflared package update
 - If the tunnel shows connection errors in `journalctl`
 
-**Note:** Restarting cloudflared causes a brief (<5 second) interruption in external access. Internal (LAN) access via `http://localhost` is not affected.
+**Note:** Restarting cloudflared causes a brief (<5 second) interruption in external access.
+Internal (LAN) access via `http://localhost` is not affected.
 
 ### 6.3 Tunnel Configuration Changes
 
@@ -1375,7 +1321,8 @@ curl -s https://<domain>/health
 
 ### 6.4 Adding a New Authorized User (Cloudflare Access)
 
-Cloudflare Access controls who can reach the application. Only email addresses in the Access policy can pass through.
+Cloudflare Access controls who can reach the application. Only email addresses in the Access policy
+can pass through.
 
 1. Log in to the Cloudflare dashboard: `https://dash.cloudflare.com`
 2. Navigate to **Zero Trust** (or `https://one.dash.cloudflare.com`)
@@ -1385,19 +1332,19 @@ Cloudflare Access controls who can reach the application. Only email addresses i
 6. Under **Include** > **Emails**, add the new email address
 7. Click **Save**
 
-The new user can now authenticate via Cloudflare Access (email OTP or configured identity provider) and reach the Shekel login page.
+The new user can now authenticate via Cloudflare Access (email OTP or configured identity provider)
+and reach the Shekel login page.
 
-**Note:** This only grants access through the Cloudflare layer. The user still needs a Shekel account (via seed script or future registration) to log into the application.
+**Note:** This only grants access through the Cloudflare layer. The user still needs a Shekel
+account (via seed script or future registration) to log into the application.
 
 ### 6.4a Attaching an Access Policy at the cloudflared Level (Commit C-37)
 
-Sections 6.4 and 6.5 cover the dashboard side of Access management.
-This subsection covers the matching `cloudflared/config.yml`
-ingress block that is required for the audit fix to take effect.
+Sections 6.4 and 6.5 cover the dashboard side of Access management. This subsection covers the
+matching `cloudflared/config.yml` ingress block that is required for the audit fix to take effect.
 Audit finding F-061.
 
-The committed `cloudflared/config.yml` carries an `originRequest.access`
-block:
+The committed `cloudflared/config.yml` carries an `originRequest.access` block:
 
 ```yaml
 originRequest:
@@ -1409,19 +1356,18 @@ originRequest:
       - <AUD_TAG>
 ```
 
-Before the first `cloudflared` start (or after rotating the Access
-application), replace the placeholders:
+Before the first `cloudflared` start (or after rotating the Access application), replace the
+placeholders:
 
-1. **`<TEAM_NAME>`** -- the subdomain of `cloudflareaccess.com` for
-   your Zero Trust team. Find it under **Zero Trust** > **Settings**
-   > **Custom Pages** (top of the page) or in the URL of any Access
-   application page (`https://<TEAM>.cloudflareaccess.com/...`).
+1. **`<TEAM_NAME>`** -- the subdomain of `cloudflareaccess.com` for your Zero Trust team. Find it
+   under **Zero Trust** > **Settings** > **Custom Pages** (top of the page) or in the URL of any
+   Access application page (`https://<TEAM>.cloudflareaccess.com/...`).
 
-2. **`<AUD_TAG>`** -- the Application Audience tag. Each Access
-   application has its own AUD. Find it under:
-   * **Zero Trust** > **Access** > **Applications** > **Shekel Budget App**
-   * Click into the application; the **Overview** tab lists
-     **Application Audience (AUD) Tag** as a 64-character hex string.
+2. **`<AUD_TAG>`** -- the Application Audience tag. Each Access application has its own AUD. Find it
+   under:
+   - **Zero Trust** > **Access** > **Applications** > **Shekel Budget App**
+   - Click into the application; the **Overview** tab lists **Application Audience (AUD) Tag** as a
+     64-character hex string.
 
 3. Apply the placeholders on the host:
 
@@ -1436,28 +1382,23 @@ application), replace the placeholders:
    sudo systemctl restart cloudflared
    ```
 
-4. Verify the policy is enforced. From a browser without an active
-   Access session:
+4. Verify the policy is enforced. From a browser without an active Access session:
 
    ```text
    https://<DOMAIN>/health
    ```
 
-   The expected response is the Cloudflare Access login page. A
-   direct `200 OK` with the JSON health payload would mean the
-   policy is NOT applied; recheck the AUD tag and the
-   ``required: true`` flag.
+   The expected response is the Cloudflare Access login page. A direct `200 OK` with the JSON health
+   payload would mean the policy is NOT applied; recheck the AUD tag and the ``required: true``
+   flag.
 
-**What `required: true` does.** cloudflared validates the
-`Cf-Access-Jwt-Assertion` header on every request. Without a valid
-JWT for the AUD above, cloudflared returns 403 at the edge -- the
-request never reaches Nginx. This closes the credential-stuffing
-surface on `/login`: even an attacker with a leaked Shekel password
-cannot reach the login form without a valid Access JWT first.
+**What `required: true` does.** cloudflared validates the `Cf-Access-Jwt-Assertion` header on every
+request. Without a valid JWT for the AUD above, cloudflared returns 403 at the edge -- the request
+never reaches Nginx. This closes the credential-stuffing surface on `/login`: even an attacker with
+a leaked Shekel password cannot reach the login form without a valid Access JWT first.
 
-**Operator emergency bypass.** If the Cloudflare Access dashboard is
-unreachable (rare; depends on Cloudflare's own auth chain) and you
-need to log into Shekel, use the LAN bypass:
+**Operator emergency bypass.** If the Cloudflare Access dashboard is unreachable (rare; depends on
+Cloudflare's own auth chain) and you need to log into Shekel, use the LAN bypass:
 
 ```bash
 # From a machine on the LAN, reach Nginx directly without going
@@ -1465,33 +1406,30 @@ need to log into Shekel, use the LAN bypass:
 curl -sI http://<LAN_HOST>/health
 ```
 
-Then connect to `http://<LAN_HOST>` in a browser; you are now past
-cloudflared and only Shekel's own login + MFA stand between you and
-the app. Restore the Access posture as soon as the dashboard is
+Then connect to `http://<LAN_HOST>` in a browser; you are now past cloudflared and only Shekel's own
+login + MFA stand between you and the app. Restore the Access posture as soon as the dashboard is
 reachable again.
 
 ### 6.4b Cloudflared Metrics Endpoint Binding (Commit C-37)
 
-The committed `cloudflared/config.yml` pins the metrics endpoint to
-loopback only. Audit finding F-128.
+The committed `cloudflared/config.yml` pins the metrics endpoint to loopback only. Audit finding
+F-128.
 
 ```yaml
 metrics: 127.0.0.1:2000
 ```
 
-**Why this matters.** The default `cloudflared` behaviour binds the
-Prometheus metrics endpoint on `0.0.0.0:2000` inside the container,
-making it reachable from every other peer on whatever Docker bridge
-cloudflared is attached to. An attacker landing in any sibling
-container could poll `/metrics` for tunnel health, request counts,
-and connection state -- operational data that should not leak
-laterally even within the trusted homelab subnet.
+**Why this matters.** The default `cloudflared` behaviour binds the Prometheus metrics endpoint on
+`0.0.0.0:2000` inside the container, making it reachable from every other peer on whatever Docker
+bridge cloudflared is attached to. An attacker landing in any sibling container could poll
+`/metrics` for tunnel health, request counts, and connection state -- operational data that should
+not leak laterally even within the trusted homelab subnet.
 
-Pinning to `127.0.0.1` keeps the endpoint reachable only from inside
-the cloudflared container itself.
+Pinning to `127.0.0.1` keeps the endpoint reachable only from inside the cloudflared container
+itself.
 
-**Verifying the bind.** From inside the cloudflared container, the
-endpoint must answer; from any sibling container, it must not.
+**Verifying the bind.** From inside the cloudflared container, the endpoint must answer; from any
+sibling container, it must not.
 
 ```bash
 # Inside cloudflared -- expect a 200 with metrics output.
@@ -1505,10 +1443,9 @@ docker exec shekel-prod-app sh -c \
     || echo "OK: metrics endpoint not reachable from app"
 ```
 
-The second probe should print `OK:`. If it prints `FAIL:`, the
-metrics directive in `cloudflared/config.yml` is missing or has been
-overridden somewhere in the Cloudflare dashboard or the systemd
-unit file -- check those before opening an incident.
+The second probe should print `OK:`. If it prints `FAIL:`, the metrics directive in
+`cloudflared/config.yml` is missing or has been overridden somewhere in the Cloudflare dashboard or
+the systemd unit file -- check those before opening an incident.
 
 ### 6.5 Removing an Authorized User
 
@@ -1517,7 +1454,8 @@ unit file -- check those before opening an incident.
 3. Remove the email address from the **Include** > **Emails** list
 4. Click **Save**
 
-The user's existing Cloudflare Access session will expire (default: 24 hours). To revoke access immediately:
+The user's existing Cloudflare Access session will expire (default: 24 hours). To revoke access
+immediately:
 
 1. Navigate to **Zero Trust** > **Access** > **Applications** > **Shekel Budget App**
 2. Click the **Overview** tab
@@ -1525,7 +1463,8 @@ The user's existing Cloudflare Access session will expire (default: 24 hours). T
 
 ### 6.6 Updating WAF Rate Limit Rules
 
-The Cloudflare WAF rate limits protect `/login` and `/auth/mfa/verify` against brute-force attacks at the network edge (before traffic reaches the origin).
+The Cloudflare WAF rate limits protect `/login` and `/auth/mfa/verify` against brute-force attacks
+at the network edge (before traffic reaches the origin).
 
 Current configuration:
 
@@ -1651,6 +1590,7 @@ docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 ```
 
 If local backups are corrupted, restore from NAS:
+
 ```bash
 cp /mnt/nas/backups/shekel/shekel_backup_20260315_020000.sql.gz /tmp/
 ./scripts/restore.sh /tmp/shekel_backup_20260315_020000.sql.gz
@@ -1670,7 +1610,8 @@ docker exec shekel-prod-app python scripts/reset_mfa.py your-email@example.com
 
 #### Locked out of Cloudflare Access
 
-1. Log into the Cloudflare dashboard directly at `https://dash.cloudflare.com` (this is independent of the tunnel and Access policy)
+1. Log into the Cloudflare dashboard directly at `https://dash.cloudflare.com` (this is independent
+   of the tunnel and Access policy)
 2. Navigate to **Zero Trust** > **Access** > **Applications**
 3. Either:
    - Add your current email to the **Allowed Users** policy, or
@@ -1684,7 +1625,8 @@ docker exec shekel-prod-app python scripts/reset_mfa.py your-email@example.com
 2. Clone the repository: `git clone <repo-url> /opt/shekel`
 3. Reconstruct `.env` from `.env.example`:
    - `SECRET_KEY`: generate new (users must re-login)
-   - `TOTP_ENCRYPTION_KEY`: use the backed-up key from password manager, or generate new (users must re-enroll MFA)
+   - `TOTP_ENCRYPTION_KEY`: use the backed-up key from password manager, or generate new (users must
+     re-enroll MFA)
    - `POSTGRES_PASSWORD`: use the password from the backup, or set new
 4. Create the monitoring network: `docker network create monitoring`
 5. Start the stack: `docker compose up -d`
