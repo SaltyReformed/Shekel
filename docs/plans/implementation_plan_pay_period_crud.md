@@ -38,6 +38,32 @@ These supersede the original draft wherever they conflict; the body below has be
    non-reset path), but the reset surgery (deferred-FK swap + re-anchor + history rewrite) is built
    only after the CRUD core is proven. Lowest MVP risk.
 
+## Phase 1 build decisions (2026-06-13, locked via developer Q&A)
+
+Refinements decided during the Phase 1 build, after re-validating the plan against the current code.
+They supersede the draft where they conflict.
+
+1. **Discard gate broadened to deliberate-status rows.** The block-and-confirm discard gate flags a
+   non-deleted to-delete row when `template_id IS NULL` **OR** `is_override=True` **OR**
+   `status_id != PROJECTED`. Rationale: `mutations.py:311` sets `is_override` only on an
+   amount/period edit, so a future template row a user marked **Credit** or **Cancelled**
+   (status-only change) would otherwise be silently discarded and regenerated as Projected. Settled
+   rows stay HARD-locked above this gate (overridable confirm never applies to them); the new
+   `status_id != PROJECTED` clause adds only Credit/Cancelled, exactly the deliberate-intent rows.
+2. **SETTLED_TXN classifier reuses `balance_predicates.settled_status_ids()`** (a cached
+   `frozenset{Paid, Received, Settled}`) instead of hand-rolling the `templates.py:696-701`
+   subquery. Verified against `ref_seeds.py:99-104` that this set is exactly the `is_settled=True`
+   statuses, so it is the canonical, DRY counterpart of the plan's `Status.is_settled.is_(True)`.
+3. **`pay_schedule_service.set_rolling` deferred to Phase 2.** The `pay_schedule` table ships with
+   the rolling columns now (default off / 52), but the setter that mutates them lands with its
+   consumer (the rolling settings UI + `top_up_rolling_window`) in Phase 2. Phase 1 service surface
+   is `get_schedule` / `upsert_schedule` / `resolve_cadence`.
+
+**Phase 1 slice (a) COMPLETE on `dev`:** migration `af8254074bef` (creates `budget.pay_schedule`,
+attaches the audit trigger, backfills cadence; both directions verified); `PaySchedule` model with
+registry and audit registration; `pay_schedule_service`; tests `test_pay_schedule_service.py` (6)
+plus `test_pay_schedule.py` (10). `pylint app/` 10.00/10, full suite 6118 passed.
+
 ## Context
 
 Shekel can **generate** pay periods but cannot edit or delete them (`app/routes/pay_periods.py`

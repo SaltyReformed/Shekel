@@ -28,6 +28,7 @@ from app.models.user import MfaConfig, User, UserSettings
 
 # Budget domain
 from app.models.pay_period import PayPeriod
+from app.models.pay_schedule import PaySchedule
 from app.models.account import Account, AccountAnchorHistory
 from app.models.category import Category
 from app.models.recurrence_rule import RecurrenceRule
@@ -83,6 +84,7 @@ __all__ = [
     "UserSettings",
     # Budget domain
     "PayPeriod",
+    "PaySchedule",
     "Account",
     "AccountAnchorHistory",
     "Category",
