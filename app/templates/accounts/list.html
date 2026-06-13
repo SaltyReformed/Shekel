@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
-{% block title %}Accounts -- Shekel{% endblock %}
+{% block title %}Accounts -- Shekel{% endblock title %}
 
 {# Account action button (polyglot audit TPLA/TPL-09): one POST form +
    CSRF + icon submit button, previously repeated eight times across the
@@ -29,7 +29,7 @@
     <li class="breadcrumb-item active" aria-current="page">Accounts</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -209,4 +209,4 @@
   </div>
 </div>
 {% endif %}
-{% endblock %}
+{% endblock content %}

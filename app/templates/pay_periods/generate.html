@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Generate Pay Periods -- Shekel{% endblock %}
+{% block title %}Generate Pay Periods -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -8,7 +8,7 @@
     <li class="breadcrumb-item active" aria-current="page">Pay Periods</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -17,4 +17,4 @@
     {% include "settings/_pay_periods_form.html" %}
   </div>
 </div>
-{% endblock %}
+{% endblock content %}

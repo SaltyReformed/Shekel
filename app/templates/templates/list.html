@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
 {% from "_recurrence_macros.html" import recurrence_cell with context %}
-{% block title %}Recurring Transactions -- Shekel{% endblock %}
+{% block title %}Recurring Transactions -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -10,7 +10,7 @@
     <li class="breadcrumb-item active" aria-current="page">Recurring Transactions</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -300,4 +300,4 @@
   </div>
 </div>
 {% endif %}
-{% endblock %}
+{% endblock content %}

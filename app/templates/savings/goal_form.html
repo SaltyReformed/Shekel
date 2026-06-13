@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if goal else 'New' }} Savings Goal -- Shekel{% endblock %}
+{% block title %}{{ 'Edit' if goal else 'New' }} Savings Goal -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -8,7 +8,7 @@
     <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Goal' if goal else 'New Goal' }}</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -137,8 +137,8 @@
     </form>
   </div>
 </div>
-{% endblock %}
+{% endblock content %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/goal_mode_toggle.js') }}"></script>
-{% endblock %}
+{% endblock scripts %}

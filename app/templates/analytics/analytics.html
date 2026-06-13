@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Analytics -- Shekel{% endblock %}
+{% block title %}Analytics -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -8,7 +8,7 @@
     <li class="breadcrumb-item active" aria-current="page">Analytics</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <h4 class="mb-3"><i class="bi bi-bar-chart-line"></i> Analytics</h4>
@@ -73,7 +73,7 @@
     </div>
   </div>
 </div>
-{% endblock %}
+{% endblock content %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/calendar.js') }}"></script>
@@ -81,4 +81,4 @@
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_year_end.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_variance.js') }}"></script>
-{% endblock %}
+{% endblock scripts %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Settings -- Shekel{% endblock %}
+{% block title %}Settings -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -8,7 +8,7 @@
     <li class="breadcrumb-item active" aria-current="page">Settings</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <h4 class="mb-3"><i class="bi bi-gear"></i> Settings</h4>
@@ -135,7 +135,7 @@
     {% endif %}
   </div>
 </div>
-{% endblock %}
+{% endblock content %}
 
 {% block scripts %}
 {% if active_section == 'account-types' %}
@@ -150,4 +150,4 @@
 <script src="{{ url_for('static', filename='js/password_strength.js') }}"></script>
 <script src="{{ url_for('static', filename='js/password_toggle.js') }}"></script>
 {% endif %}
-{% endblock %}
+{% endblock scripts %}

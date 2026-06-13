@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if template else 'New' }} Transfer -- Shekel{% endblock %}
+{% block title %}{{ 'Edit' if template else 'New' }} Transfer -- Shekel{% endblock title %}
 
 {% set prefill_from = prefill_from | default(None) %}
 {% set prefill_to = prefill_to | default(None) %}
@@ -11,7 +11,7 @@
     <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Recurring Transfer' if template else 'New Recurring Transfer' }}</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -187,8 +187,8 @@
     </form>
   </div>
 </div>
-{% endblock %}
+{% endblock content %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/recurrence_form.js') }}"></script>
-{% endblock %}
+{% endblock scripts %}

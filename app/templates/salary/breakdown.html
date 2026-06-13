@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
-{% block title %}Paycheck Breakdown -- {{ profile.name }} -- Shekel{% endblock %}
+{% block title %}Paycheck Breakdown -- {{ profile.name }} -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -10,7 +10,7 @@
     <li class="breadcrumb-item active" aria-current="page">Breakdown</li>
   </ol>
 </nav>
-{% endblock %}
+{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -163,4 +163,4 @@
     </div>
   </div>
 </div>
-{% endblock %}
+{% endblock content %}
