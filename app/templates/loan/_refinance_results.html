@@ -52,9 +52,8 @@
         <td>{{ comparison.current_remaining_months }} months</td>
         <td>{{ comparison.refi_term }} months</td>
         <td>
-          {% set term_diff = comparison.refi_term - comparison.current_remaining_months %}
-          {% if term_diff > 0 %}+{{ term_diff }} months
-          {% elif term_diff < 0 %}{{ term_diff }} months
+          {% if comparison.term_diff > 0 %}+{{ comparison.term_diff }} months
+          {% elif comparison.term_diff < 0 %}{{ comparison.term_diff }} months
           {% else %}No change{% endif %}
         </td>
       </tr>

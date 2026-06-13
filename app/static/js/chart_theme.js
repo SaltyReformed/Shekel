@@ -213,27 +213,25 @@ var ShekelChart = (function () {
   }
 
   /**
-   * Destroy all tracked chart instances.
-   * Call before full page unload or HTMX full page swap.
-   */
-  function destroyAll() {
-    for (var i = 0; i < trackedCharts.length; i++) {
-      trackedCharts[i].instance.destroy();
-    }
-    trackedCharts = [];
-  }
-
-  /**
    * Re-render all tracked charts with updated theme colors.
-   * Called automatically on theme toggle.
+   * Called automatically on theme toggle.  Also evicts charts whose
+   * canvas has left the DOM (e.g. an HTMX tab swap replaced #tab-content):
+   * the orphaned instance is destroyed and dropped, so trackedCharts
+   * cannot grow unbounded across repeated toggles (JS-08).
    */
   function rerenderAll() {
     applyGlobalDefaults();
 
+    var live = [];
     for (var i = 0; i < trackedCharts.length; i++) {
       var entry = trackedCharts[i];
       var canvas = document.getElementById(entry.id);
-      if (!canvas) continue;
+      if (!canvas) {
+        // Canvas removed from the DOM: destroy the orphaned instance
+        // (frees its data arrays + detached canvas) and drop the entry.
+        entry.instance.destroy();
+        continue;
+      }
 
       // Rebuild the config from the factory so theme-dependent
       // colors (getColor, getThemeColors) re-resolve against the
@@ -243,57 +241,15 @@ var ShekelChart = (function () {
       // Destroy old instance and create new one.
       entry.instance.destroy();
       entry.instance = new Chart(canvas, merged);
+      live.push(entry);
     }
+    trackedCharts = live;
   }
 
   // Listen for theme change events.
   document.addEventListener('shekel:theme-changed', function () {
     rerenderAll();
   });
-
-  /**
-   * Build a Chart.js x-axis ticks callback for year-boundary awareness.
-   *
-   * When labels span multiple years (detected by the "'YY" suffix that
-   * the Python chart_data_service adds), the callback shows the year
-   * suffix only on the first tick and at each January boundary.  This
-   * avoids cluttering every tick with the year while still providing
-   * orientation.  When labels do not span years, returns null so the
-   * caller can skip applying a custom callback.
-   *
-   * @param {string[]} labels - Array of label strings from the chart data.
-   * @returns {function|null} A ticks.callback function, or null if not needed.
-   */
-  function yearBoundaryCallback(labels) {
-    if (!labels || labels.length === 0) return null;
-
-    // Detect whether any label has the 'YY suffix (e.g. "Jan 02 '26").
-    var hasYearSuffix = false;
-    for (var i = 0; i < labels.length; i++) {
-      if (/'\d{2}$/.test(labels[i])) {
-        hasYearSuffix = true;
-        break;
-      }
-    }
-    if (!hasYearSuffix) return null;
-
-    return function (value, index) {
-      var label = labels[index] || '';
-      var yearMatch = label.match(/'(\d{2})$/);
-      if (!yearMatch) return label;
-
-      var base = label.replace(/\s*'\d{2}$/, '');
-
-      // Always show year on the first tick.
-      if (index === 0) return label;
-
-      // Show year at January boundaries.
-      if (/^Jan\b/.test(label)) return label;
-
-      // Otherwise strip the year suffix to reduce clutter.
-      return base;
-    };
-  }
 
   /**
    * Format a number as a US-dollar display string for axis ticks and
@@ -318,14 +274,11 @@ var ShekelChart = (function () {
 
   // Public API.
   return {
-    palette: palette,
     getColor: getColor,
     getThemeColors: getThemeColors,
     create: create,
     destroyById: destroyById,
-    destroyAll: destroyAll,
     rerenderAll: rerenderAll,
-    yearBoundaryCallback: yearBoundaryCallback,
     formatMoney: formatMoney
   };
 })();

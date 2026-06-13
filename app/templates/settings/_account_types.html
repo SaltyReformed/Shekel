@@ -22,7 +22,7 @@
 
           {# Display mode: name + badge summary #}
           <div class="account-type-display">
-            <span class="fw-semibold px-1">{{ at.name|format_account_type }}</span>
+            <span class="fw-semibold px-1">{{ at.name }}</span>
             <small class="text-muted ms-1">
               {% if at.category %}{{ at.category.name }}{% endif %}
               {% if at.has_parameters %}<span class="badge bg-info ms-1">params</span>{% endif %}
@@ -61,7 +61,7 @@
                 <select name="icon_class" class="form-select form-select-sm">
                   {% for icon in icon_choices %}
                   <option value="{{ icon }}" {% if at.icon_class == icon %}selected{% endif %}>
-                    <i class="{{ icon }}"></i> {{ icon }}
+                    {{ icon }}
                   </option>
                   {% endfor %}
                 </select>

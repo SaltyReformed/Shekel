@@ -45,27 +45,27 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="row g-2 align-items-end mw-px-700">
         <div class="col">
-          <label class="form-label">Year</label>
-          <input type="number" name="tax_year" class="form-control form-control-sm"
+          <label class="form-label" for="state_tax_year">Year</label>
+          <input type="number" id="state_tax_year" name="tax_year" class="form-control form-control-sm"
                  required value="{{ state_configs[0].tax_year if state_configs else '' }}">
         </div>
         <div class="col">
-          <label class="form-label">State</label>
-          <input type="text" name="state_code" class="form-control form-control-sm text-uppercase"
+          <label class="form-label" for="state_code">State</label>
+          <input type="text" id="state_code" name="state_code" class="form-control form-control-sm text-uppercase"
                  maxlength="2" required
                  value="{{ state_configs[0].state_code if state_configs else '' }}"
                  placeholder="NC">
         </div>
         <div class="col">
-          <label class="form-label">Flat Rate %</label>
-          <input type="number" step="0.01" name="flat_rate"
+          <label class="form-label" for="state_flat_rate">Flat Rate %</label>
+          <input type="number" step="0.01" id="state_flat_rate" name="flat_rate"
                  class="form-control form-control-sm" required
                  value="{{ "%.2f"|format((state_configs[0].flat_rate|to_percent)) if state_configs and state_configs[0].flat_rate is not none else '' }}"
                  placeholder="e.g. 3.99">
         </div>
         <div class="col">
-          <label class="form-label">Std. Deduction</label>
-          <input type="number" step="0.01" name="standard_deduction"
+          <label class="form-label" for="state_standard_deduction">Std. Deduction</label>
+          <input type="number" step="0.01" id="state_standard_deduction" name="standard_deduction"
                  class="form-control form-control-sm"
                  value="{{ state_configs[0].standard_deduction if state_configs and state_configs[0].standard_deduction is not none else '' }}"
                  placeholder="e.g. 12750">
@@ -116,33 +116,33 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="row g-2 align-items-end mw-px-700">
         <div class="col">
-          <label class="form-label">Year</label>
-          <input type="number" name="tax_year" class="form-control form-control-sm"
+          <label class="form-label" for="fica_tax_year">Year</label>
+          <input type="number" id="fica_tax_year" name="tax_year" class="form-control form-control-sm"
                  required value="{{ fica_configs[0].tax_year if fica_configs else 2025 }}">
         </div>
         <div class="col">
-          <label class="form-label">SS Rate %</label>
-          <input type="number" step="0.01" name="ss_rate" class="form-control form-control-sm"
+          <label class="form-label" for="fica_ss_rate">SS Rate %</label>
+          <input type="number" step="0.01" id="fica_ss_rate" name="ss_rate" class="form-control form-control-sm"
                  required value="{{ "%.2f"|format((fica_configs[0].ss_rate|to_percent)) if fica_configs else '6.20' }}">
         </div>
         <div class="col">
-          <label class="form-label">SS Wage Base</label>
-          <input type="number" step="0.01" name="ss_wage_base" class="form-control form-control-sm"
+          <label class="form-label" for="fica_ss_wage_base">SS Wage Base</label>
+          <input type="number" step="0.01" id="fica_ss_wage_base" name="ss_wage_base" class="form-control form-control-sm"
                  required value="{{ fica_configs[0].ss_wage_base if fica_configs else '184500' }}">
         </div>
         <div class="col">
-          <label class="form-label">Medicare %</label>
-          <input type="number" step="0.01" name="medicare_rate" class="form-control form-control-sm"
+          <label class="form-label" for="fica_medicare_rate">Medicare %</label>
+          <input type="number" step="0.01" id="fica_medicare_rate" name="medicare_rate" class="form-control form-control-sm"
                  required value="{{ "%.2f"|format((fica_configs[0].medicare_rate|to_percent)) if fica_configs else '1.45' }}">
         </div>
         <div class="col">
-          <label class="form-label">Surtax %</label>
-          <input type="number" step="0.01" name="medicare_surtax_rate" class="form-control form-control-sm"
+          <label class="form-label" for="fica_medicare_surtax_rate">Surtax %</label>
+          <input type="number" step="0.01" id="fica_medicare_surtax_rate" name="medicare_surtax_rate" class="form-control form-control-sm"
                  required value="{{ "%.2f"|format((fica_configs[0].medicare_surtax_rate|to_percent)) if fica_configs else '0.90' }}">
         </div>
         <div class="col">
-          <label class="form-label">Threshold</label>
-          <input type="number" step="0.01" name="medicare_surtax_threshold" class="form-control form-control-sm"
+          <label class="form-label" for="fica_medicare_surtax_threshold">Threshold</label>
+          <input type="number" step="0.01" id="fica_medicare_surtax_threshold" name="medicare_surtax_threshold" class="form-control form-control-sm"
                  required value="{{ fica_configs[0].medicare_surtax_threshold if fica_configs else '200000' }}">
         </div>
         <div class="col">

@@ -10,14 +10,13 @@ import importlib
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 
 from flask import Flask, render_template, request, session as flask_session
 
 from app.config import CONFIG_MAP
 from app.extensions import csrf, db, limiter, login_manager, migrate
+from app.jinja_filters import register_template_filters
 from app.routes.static_pass import static_file_version
-from app.utils.dates import to_display_tz
 from app.utils.log_events import ACCESS, EVT_RATE_LIMIT_EXCEEDED, log_event
 from app.utils.logging_config import setup_logging
 from app.utils.session_helpers import (
@@ -117,67 +116,9 @@ def create_app(config_name=None):
         return user
 
     # --- Template Filters --------------------------------------------------
-    @app.template_filter("format_account_type")
-    def format_account_type(value):
-        """Convert an account type name to a user-friendly display string.
-
-        After the Commit #2 migration, database names are already
-        stored as properly formatted display strings (e.g. 'HYSA',
-        '401(k)').  This filter now acts as a pass-through for all
-        seeded types but retains the signature so existing templates
-        continue to work without modification.
-        """
-        if value is None:
-            return ""
-        return value
-
-    @app.template_filter("to_percent")
-    def to_percent(value):
-        """Convert a storage-domain decimal-fraction rate into its percent.
-
-        Presentation transformation only (E-16 / MED-04): the rate is
-        stored as ``Decimal("0.07")`` for 7 %, the user-facing display
-        is ``7.00 %``.  Multiplying by ``100`` in :class:`Decimal`
-        preserves the stored precision; the older Jinja pattern
-        ``value|float * 100`` introduced a binary-float cast on the
-        Decimal before the multiply (the JN-/TA-rate sites in
-        ``01_inventory.md``) and is no longer used anywhere.
-
-        Args:
-            value: Decimal storage-domain rate, or ``None``.
-
-        Returns:
-            ``value * 100`` as a Decimal, or ``None`` when ``value`` is
-            ``None``.  Numeric formatting (``"%.2f"|format(...)``) is
-            applied by the caller; this filter never quantises so the
-            caller's chosen precision wins.
-        """
-        if value is None:
-            return None
-        return Decimal(str(value)) * Decimal("100")
-
-    @app.template_filter("local_datetime")
-    def local_datetime(value, fmt="%b %-d, %Y"):
-        """Render a stored UTC instant in the user's display timezone.
-
-        Presentation-only conversion: every ``timestamptz`` in this app is
-        stored UTC; this expresses one in :data:`app.utils.dates.DISPLAY_TIMEZONE`
-        (Eastern) before formatting, so a late-evening Eastern event does
-        not display on the next UTC day.  ``fmt`` is a ``strftime`` format
-        (default: ``"Jun 11, 2026"``).  Returns ``""`` for ``None`` so a
-        template can pipe an absent timestamp through without guarding.
-
-        Args:
-            value: A stored UTC datetime, or ``None``.
-            fmt: A ``strftime`` format string.
-
-        Returns:
-            The display-timezone formatted string, or ``""`` when ``value``
-            is ``None``.
-        """
-        if value is None:
-            return ""
-        return to_display_tz(value).strftime(fmt)
+    # Presentation-only filters live in app.jinja_filters; registering them
+    # here keeps the factory under its statement/line ceiling.
+    register_template_filters(app)
 
     # --- Context Processors -----------------------------------------------
     _register_context_processors(app)

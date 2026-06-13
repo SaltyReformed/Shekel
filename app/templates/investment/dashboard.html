@@ -16,7 +16,7 @@
   <h4>
     <i class="bi bi-graph-up"></i> {{ account.name }}
     <small class="text-muted">
-      {% if account.account_type %}{{ account.account_type.name|format_account_type }}{% endif %}
+      {% if account.account_type %}{{ account.account_type.name }}{% endif %}
     </small>
   </h4>
   <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">

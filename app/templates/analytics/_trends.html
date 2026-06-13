@@ -158,7 +158,7 @@
         {% set gidx = loop.index %}
         <tr class="variance-group-row"
             data-bs-toggle="collapse" data-bs-target=".tg-{{ gidx }}"
-            role="button" aria-expanded="false">
+            role="button" tabindex="0" data-keyboard-activate aria-expanded="false">
           <td class="fw-semibold">
             <i class="bi bi-chevron-right variance-chevron me-1 small"></i>
             {{ group.group_name }}

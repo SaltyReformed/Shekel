@@ -72,6 +72,15 @@
 /* Pixel-fixed min-widths. */
 .min-w-px-60 { min-width: 60px; }
 
+/* 44 px minimum touch target (WCAG 2.5.5 / Apple HIG).  Any button that
+   must clear the floor adds ``btn-touch-44`` -- a stand-alone utility, not
+   scoped to a parent selector (polyglot audit CSS-12; it was previously
+   defined inside grid.css's mobile media query, which contradicted its own
+   "reusable app-wide utility" docstring). */
+.btn-touch-44 {
+  min-height: 44px;
+}
+
 /* Quick-edit input row: take all available flex space without forcing
    a content-derived minimum width that would push neighbours
    off-row. */

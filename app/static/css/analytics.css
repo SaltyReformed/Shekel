@@ -12,30 +12,33 @@
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 1px;
-  background-color: var(--shekel-border-subtle, var(--bs-border-color));
-  border: 1px solid var(--shekel-border-subtle, var(--bs-border-color));
+  background-color: var(--shekel-border-subtle);
+  border: 1px solid var(--shekel-border-subtle);
   border-radius: 0.375rem;
   overflow: hidden;
 }
 
 .calendar-header {
-  background-color: var(--shekel-surface-raised, var(--bs-tertiary-bg));
+  background-color: var(--shekel-surface-raised);
 }
 
 .calendar-day {
-  background-color: var(--shekel-surface, var(--bs-body-bg));
+  background-color: var(--shekel-surface);
   min-height: 70px;
   padding: 4px 6px;
   position: relative;
 }
 
 .calendar-day--empty {
-  background-color: var(--shekel-surface, var(--bs-body-bg));
+  background-color: var(--shekel-surface);
   opacity: 0.4;
   min-height: 70px;
 }
 
-.calendar-day--today {
+/* "Today" and the user-selected day share the accent outline highlight
+   (polyglot audit CSS-06). */
+.calendar-day--today,
+.calendar-day--selected {
   outline: 2px solid var(--shekel-accent);
   outline-offset: -2px;
   z-index: 1;
@@ -47,7 +50,7 @@
 
 .calendar-day-number {
   font-size: 0.8rem;
-  color: var(--shekel-text-secondary, var(--bs-body-color));
+  color: var(--shekel-text-secondary);
 }
 
 .calendar-day-totals {
@@ -70,13 +73,7 @@
 }
 
 .calendar-day[data-day]:hover {
-  background-color: var(--shekel-surface-raised, var(--bs-tertiary-bg));
-}
-
-.calendar-day--selected {
-  outline: 2px solid var(--shekel-accent);
-  outline-offset: -2px;
-  z-index: 1;
+  background-color: var(--shekel-surface-raised);
 }
 
 #calendar-day-detail:empty {

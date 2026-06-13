@@ -153,7 +153,6 @@ def get_quick_create():
         account_id=acct.id,
         scenario_id=scenario.id,
         transaction_type_id=transaction_type_id,
-        txn_type_id=transaction_type_id,
     )
 
 

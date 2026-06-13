@@ -153,11 +153,12 @@
     // pay period; picking a non-current option fires `change`, which
     // submits the parent form as a full GET to
     // `/grid?periods=1&offset=N`.  An inline `onchange="this.form.submit()"`
-    // handler would work and CSP allows inline event handlers under
-    // the current policy, but the delegated listener is the documented
-    // project convention per CLAUDE.md "No inline scripts" -- one
-    // handler hosted in this module file, registered once at module
-    // scope so it survives HTMX swaps that re-render the partial.
+    // handler is BLOCKED by the CSP (script-src 'self', no 'unsafe-inline'
+    // / 'unsafe-hashes'; see app/__init__.py), so the delegated listener
+    // below is both required and the documented project convention per
+    // CLAUDE.md "No inline scripts" -- one handler hosted in this module
+    // file, registered once at module scope so it survives HTMX swaps that
+    // re-render the partial.
     //
     // The `#mobile-this-period` scope is the load-bearing guard:
     // without it any future `select[name="offset"]` elsewhere on the

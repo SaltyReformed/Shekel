@@ -58,6 +58,18 @@ document.body.addEventListener("gridRefresh", function() {
   window.location.reload();
 });
 
+// Mark a transaction credit via HTMX, swapping just its cell.  Shared by
+// the grid 'c' keyboard shortcut (below) and the command palette's Credit
+// action (command_palette.js), so the route path is defined in one place
+// (JS-19).  Defined at module scope so command_palette.js -- loaded after
+// app.js -- can call it.
+function markTxnCredit(txnId) {
+  htmx.ajax('POST', '/transactions/' + txnId + '/mark-credit', {
+    target: '#txn-cell-' + txnId,
+    swap: 'innerHTML',
+  });
+}
+
 // Reset the Add Transaction form whenever its modal opens.
 var addModal = document.getElementById("addTransactionModal");
 
@@ -312,9 +324,12 @@ function _populateRaiseForm(editBtn) {
     }
 }
 
-// Reset the raise form to add mode (clear fields, restore action).
-function _resetRaiseForm() {
-    var form = document.getElementById('raise-form');
+// Reset a collapsible add/edit form back to add mode: restore the add
+// action + hx-post, clear the fields and the optimistic-lock version pin,
+// and reset the submit button label.  Shared by the raise and deduction
+// forms, which differ only in their element ids and button markup (JS-10).
+function _resetForm(formId, buttonId, buttonHtml) {
+    var form = document.getElementById(formId);
     if (!form) return;
 
     var addUrl = form.dataset.addAction;
@@ -331,8 +346,13 @@ function _resetRaiseForm() {
     var versionInput = form.querySelector('[name=version_id]');
     if (versionInput) versionInput.value = '';
 
-    var btn = document.getElementById('raise-submit-btn');
-    if (btn) btn.innerHTML = '<i class="bi bi-plus"></i>';
+    var btn = document.getElementById(buttonId);
+    if (btn) btn.innerHTML = buttonHtml;
+}
+
+// Reset the raise form to add mode (clear fields, restore action).
+function _resetRaiseForm() {
+    _resetForm('raise-form', 'raise-submit-btn', '<i class="bi bi-plus"></i>');
 }
 
 // Populate the deduction form fields from the edit button's data attributes
@@ -401,25 +421,7 @@ function _populateDeductionForm(editBtn) {
 
 // Reset the deduction form to add mode.
 function _resetDeductionForm() {
-    var form = document.getElementById('deduction-form');
-    if (!form) return;
-
-    var addUrl = form.dataset.addAction;
-    if (addUrl) {
-        form.action = addUrl;
-        form.setAttribute('hx-post', addUrl);
-        if (window.htmx) htmx.process(form);
-    }
-
-    form.reset();
-
-    // Clear the optimistic-lock pin so a subsequent add submission
-    // does not carry a stale version from a prior edit cycle.
-    var versionInput = form.querySelector('[name=version_id]');
-    if (versionInput) versionInput.value = '';
-
-    var btn = document.getElementById('ded-submit-btn');
-    if (btn) btn.innerHTML = '<i class="bi bi-plus"></i> Add';
+    _resetForm('deduction-form', 'ded-submit-btn', '<i class="bi bi-plus"></i> Add');
 }
 
 // Update deduction form labels when calc method changes.
@@ -774,12 +776,7 @@ document.addEventListener('keydown', function(e) {
           e.preventDefault();
           // Same reveal-before-mutate rule as Space above.
           setFocus(focusedRow, focusedCol);
-          htmx.ajax('POST',
-            '/transactions/' + creditable.dataset.txnId + '/mark-credit',
-            {
-              target: '#txn-cell-' + creditable.dataset.txnId,
-              swap: 'innerHTML',
-            });
+          markTxnCredit(creditable.dataset.txnId);
         }
         break;
       case 'Home':

@@ -62,7 +62,7 @@
                      placeholder="{{ account_type.max_term_months or 360 }}">
               <div class="form-text">
                 {% if account_type.max_term_months %}
-                  Max {{ account_type.max_term_months }} months ({{ (account_type.max_term_months / 12)|round(0)|int }} years)
+                  Max {{ account_type.max_term_months }} months ({{ account_type.max_term_months|months_to_years(0) }} years)
                 {% else %}
                   e.g. 360 for 30 years
                 {% endif %}

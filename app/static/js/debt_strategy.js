@@ -85,6 +85,10 @@ function renderStrategyChart(canvasId) {
     try {
         chartData = JSON.parse(raw);
     } catch (e) {
+        // Malformed data-chart-data is a server-side template bug, not a
+        // user error -- fail loud in the console rather than silently
+        // rendering nothing (JS-20; mirrors dashboard_pulse.js).
+        console.error("Shekel: malformed data-chart-data in debt strategy chart", e);
         return;
     }
 

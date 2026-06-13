@@ -219,6 +219,16 @@ td.htmx-loading::after {
   to { transform: rotate(360deg); }
 }
 
+/* Honour the OS "reduce motion" setting: the loading spinner is an
+   infinite animation -- exactly the WCAG 2.2.2 / 2.3.3 category that must
+   be suppressible (polyglot audit CSS-10).  The static ring still reads as
+   a loading indicator without the rotation. */
+@media (prefers-reduced-motion: reduce) {
+  td.htmx-loading::after {
+    animation: none;
+  }
+}
+
 /* HTMX request indicators (e.g. the analytics tab spinner, the
    debt-strategy refresh spinner).  These rules normally ship inside
    HTMX as an inline <style> block injected at startup, but the app's

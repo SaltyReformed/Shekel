@@ -46,6 +46,7 @@
           <td class="text-end">
             <form hx-post="{{ url_for('loan.delete_escrow', account_id=account.id, component_id=comp.id) }}"
                   hx-target="#escrow-list" hx-swap="innerHTML"
+                  hx-confirm="Remove this escrow component?"
                   class="d-inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">

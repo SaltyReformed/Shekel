@@ -84,6 +84,7 @@
                   hx-post="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
                   hx-target="#deductions-section"
                   hx-swap="outerHTML"
+                  hx-confirm="Delete this deduction?"
                   hx-disabled-elt="find button[type=submit]">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">

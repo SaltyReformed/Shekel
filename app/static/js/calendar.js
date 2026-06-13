@@ -20,6 +20,13 @@
     var activeDay = null;
 
     tabContent.querySelectorAll('.calendar-day[data-day]').forEach(function(cell) {
+      // Bind each day cell once: this handler runs on every htmx:afterSettle,
+      // and although analytics swaps replace #tab-content wholesale today (so
+      // these cells are new each pass), a future swap that kept them would
+      // otherwise stack a duplicate click listener -- each with its own
+      // activeDay closure -- on every settle (JS-16).
+      if (cell.dataset.calendarBound) return;
+      cell.dataset.calendarBound = 'true';
       cell.addEventListener('click', function() {
         var day = cell.getAttribute('data-day');
         var template = tabContent.querySelector(

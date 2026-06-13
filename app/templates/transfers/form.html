@@ -5,12 +5,6 @@
 {% set prefill_from = prefill_from | default(None) %}
 {% set prefill_to = prefill_to | default(None) %}
 
-{% set month_names = {
-  1: 'January', 2: 'February', 3: 'March', 4: 'April',
-  5: 'May', 6: 'June', 7: 'July', 8: 'August',
-  9: 'September', 10: 'October', 11: 'November', 12: 'December',
-} %}
-
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
@@ -63,7 +57,7 @@
             {% for acct in accounts %}
             <option value="{{ acct.id }}"
               {{ 'selected' if (template and template.from_account_id == acct.id) or (not template and prefill_from == acct.id) else '' }}>
-              {{ acct.name }} ({{ acct.account_type.name|format_account_type if acct.account_type else '' }})
+              {{ acct.name }} ({{ acct.account_type.name if acct.account_type else '' }})
             </option>
             {% endfor %}
           </select>
@@ -77,7 +71,7 @@
             {% for acct in accounts %}
             <option value="{{ acct.id }}"
               {{ 'selected' if (template and template.to_account_id == acct.id) or (not template and prefill_to == acct.id) else '' }}>
-              {{ acct.name }} ({{ acct.account_type.name|format_account_type if acct.account_type else '' }})
+              {{ acct.name }} ({{ acct.account_type.name if acct.account_type else '' }})
             </option>
             {% endfor %}
           </select>
@@ -137,10 +131,10 @@
             <label for="month_of_year" class="form-label">Month</label>
             <select id="month_of_year" name="month_of_year" class="form-select">
               <option value="">--</option>
-              {% for num, name in month_names.items() %}
+              {% for num in range(1, 13) %}
               <option value="{{ num }}"
                 {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.month_of_year == num else '' }}>
-                {{ name }}
+                {{ num|month_name }}
               </option>
               {% endfor %}
             </select>

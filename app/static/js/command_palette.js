@@ -75,6 +75,11 @@
             if (!name) return;
 
             var gotoCell = row.querySelector('td.cell.cur') || cells[0];
+            // Capture the goto cell's txn id (when it has one) so the runner
+            // can re-resolve the cell at run time after a pre-Enter swap.
+            var gotoOpen = gotoCell
+                ? gotoCell.querySelector('.txn-open[data-txn-id]') : null;
+            var gotoTxnId = gotoOpen ? gotoOpen.dataset.txnId : null;
             // Every row action carries the bare row name as `subject` so
             // filter() can score the query against the name alone.  The
             // verb-first labels greedily eat the leading letters of names
@@ -86,7 +91,7 @@
                 subject: name,
                 label: 'Go to row -- ' + name,
                 meta: 'grid',
-                run: makeGotoRunner(gotoCell),
+                run: makeGotoRunner(gotoCell, gotoTxnId),
             });
 
             var envelopeOpen = null;
@@ -175,8 +180,15 @@
         Center alignment also lands the cell clear of the sticky
         header/footer/label-column chrome that overlays the scrollport
         edges. */
-    function revealCell(td) {
-        td.scrollIntoView({ block: 'center', inline: 'center' });
+    function revealCell(txnId, fallbackTd) {
+        // Re-resolve the cell wrapper at run time (JS-14): the node captured
+        // when the palette opened detaches if a swap (mark-paid, OOB entries
+        // re-render) lands before Enter, so scrolling the stale node reveals
+        // nothing.  #txn-cell-<id> survives every swap shape; empty/anchor
+        // cells have no txnId and keep the captured fallback node.
+        var target = (txnId && document.getElementById('txn-cell-' + txnId))
+            || fallbackTd;
+        if (target) target.scrollIntoView({ block: 'center', inline: 'center' });
     }
 
     /** Re-resolve a cell control at RUN time from the cell's stable
@@ -193,18 +205,25 @@
         return wrap ? wrap.querySelector(selector) : null;
     }
 
-    function makeGotoRunner(td) {
+    function makeGotoRunner(td, txnId) {
         return function () {
-            revealCell(td);
+            // Re-resolve the target cell when it carries a txn (JS-14): the
+            // node captured at palette-open detaches on a pre-Enter swap.
+            // An empty goto cell has no stable id, but a mutation swap never
+            // detaches an empty cell, so the captured node stays valid there.
+            var wrap = txnId
+                ? document.getElementById('txn-cell-' + txnId) : null;
+            var cell = wrap ? wrap.closest('td') : td;
+            revealCell(txnId, cell);
             // A bubbled click on the td (not on .txn-open) sets the
             // app.js cell cursor without opening the card.
-            td.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            cell.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         };
     }
 
     function makePayRunner(td, txnId) {
         return function () {
-            revealCell(td);
+            revealCell(txnId, td);
             var btn = freshControl(txnId, '.paybtn');
             if (btn) btn.click();
         };
@@ -212,7 +231,7 @@
 
     function makeOpenRunner(td, txnId) {
         return function () {
-            revealCell(td);
+            revealCell(txnId, td);
             var openEl = freshControl(txnId, '.txn-open[data-txn-id]');
             if (openEl) openEl.click();
         };
@@ -220,11 +239,10 @@
 
     function makeCreditRunner(td, txnId) {
         return function () {
-            revealCell(td);
-            htmx.ajax('POST', '/transactions/' + txnId + '/mark-credit', {
-                target: '#txn-cell-' + txnId,
-                swap: 'innerHTML',
-            });
+            revealCell(txnId, td);
+            // Shared mark-credit helper (app.js) so the route path lives in
+            // one place (JS-19).
+            markTxnCredit(txnId);
         };
     }
 
@@ -233,7 +251,7 @@
         form is the last amount input in the popover). */
     function makeAddPurchaseRunner(td, txnId) {
         return function () {
-            revealCell(td);
+            revealCell(txnId, td);
             var openEl = freshControl(txnId, '.txn-open[data-txn-id]');
             if (!openEl) return;
             openEl.click();

@@ -285,33 +285,33 @@
           <input type="hidden" name="account_id" value="{{ account.id }}">
 
           <div class="mb-3">
-            <label class="form-label">Name</label>
-            <input type="text" name="name" class="form-control" required autofocus>
+            <label class="form-label" for="add_txn_name">Name</label>
+            <input type="text" id="add_txn_name" name="name" class="form-control" required autofocus>
           </div>
           <div class="mb-3">
-            <label class="form-label">Amount</label>
-            <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
+            <label class="form-label" for="add_txn_amount">Amount</label>
+            <input type="number" step="0.01" inputmode="decimal" id="add_txn_amount" name="estimated_amount"
                    class="form-control" required>
           </div>
           <div class="mb-3">
-            <label class="form-label">Type</label>
-            <select name="transaction_type_id" class="form-select" required>
+            <label class="form-label" for="add_txn_type">Type</label>
+            <select id="add_txn_type" name="transaction_type_id" class="form-select" required>
               {% for tt in transaction_types %}
               <option value="{{ tt.id }}" {{ 'selected' if tt.id == TXN_TYPE_EXPENSE else '' }}>{{ tt.name }}</option>
               {% endfor %}
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">Category</label>
-            <select name="category_id" class="form-select" required>
+            <label class="form-label" for="add_txn_category">Category</label>
+            <select id="add_txn_category" name="category_id" class="form-select" required>
               {% for cat in categories %}
               <option value="{{ cat.id }}">{{ cat.display_name }}</option>
               {% endfor %}
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">Pay Period</label>
-            <select name="pay_period_id" class="form-select" required>
+            <label class="form-label" for="add_txn_period">Pay Period</label>
+            <select id="add_txn_period" name="pay_period_id" class="form-select" required>
               {% for p in all_periods %}
               <option value="{{ p.id }}"
                 {{ 'selected' if p.id == current_period.id else '' }}>

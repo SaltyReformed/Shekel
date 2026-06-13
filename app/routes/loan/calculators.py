@@ -388,6 +388,10 @@ def _build_refinance_comparison(state, data, params):
         "refi_total_interest": refi_total_interest,
         "refi_payoff": refi_payoff,
         "refi_term": refi_term,
+        # Term delta (new term minus current remaining), pre-computed
+        # server-side so the template renders without inline arithmetic
+        # (MED-04 / E-16, same rationale as principal_diff above).
+        "term_diff": refi_term - len(state.schedule),
         "refi_principal": refi_principal,
         "monthly_savings": monthly_savings,
         "interest_savings": state.total_interest - refi_total_interest,

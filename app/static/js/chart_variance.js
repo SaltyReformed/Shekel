@@ -105,10 +105,15 @@ document.addEventListener('htmx:afterSwap', function() {
   }
 });
 
-// "Show only variances" toggle -- hides rows with zero variance.
+// "Show only variances" toggle -- hides rows with zero variance.  This fires
+// on EVERY htmx:afterSwap, so bind the change listener once per toggle
+// element: the toggle is replaced wholesale on each analytics swap today (old
+// listeners GC with the old node), but a future refactor that kept it across
+// swaps would otherwise stack a duplicate change listener every swap (JS-15).
 document.addEventListener('htmx:afterSwap', function() {
   var toggle = document.getElementById('variance-filter-toggle');
-  if (!toggle) return;
+  if (!toggle || toggle.dataset.varianceFilterBound) return;
+  toggle.dataset.varianceFilterBound = 'true';
 
   toggle.addEventListener('change', function() {
     var rows = document.querySelectorAll(

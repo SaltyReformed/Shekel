@@ -126,9 +126,9 @@
             </h6>
             <small class="text-muted">
               {% if ad.account.account_type and ad.account.account_type.has_interest %}
-                {{ ad.account.account_type.name|format_account_type }}
+                {{ ad.account.account_type.name }}
               {% elif ad.account.account_type %}
-                {{ ad.account.account_type.name|format_account_type }}
+                {{ ad.account.account_type.name }}
               {% endif %}
               {% if ad.interest_params is defined and ad.interest_params %}
                 -- APY: {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%
@@ -258,7 +258,7 @@
                   {% endif %}
                 </h6>
                 <small>
-                  {{ ad.account.account_type.name|format_account_type if ad.account.account_type else '--' }}
+                  {{ ad.account.account_type.name if ad.account.account_type else '--' }}
                 </small>
               </div>
               <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=ad.account.id) }}"

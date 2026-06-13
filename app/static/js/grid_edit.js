@@ -263,9 +263,23 @@ function applyMobileBottomSheetBehavior(popover) {
 }
 
 /**
- * Show the popover with loaded HTML content and set up click-outside.
+ * Inject loaded HTML into the popover and wire its full lifecycle:
+ * mobile bottom-sheet behaviour, an optional hx-target override (set
+ * BEFORE htmx.process so HTMX binds the right target), reposition +
+ * resize observers, initial focus, and the click-outside / grid-scroll
+ * close listeners.  Shared by showPopover (edit paths) and openFullCreate
+ * (create path) so this ~25-line sequence lives in exactly one place.
+ *
+ * @param {HTMLElement} popover - The #txn-popover element.
+ * @param {string} html - The fetched partial markup.
+ * @param {{hxTarget?: string, focusSelector?: string}} [options]
+ *   hxTarget: form hx-target to set before htmx.process (create path,
+ *   whose form lives outside the td so its own "closest td" would miss).
+ *   focusSelector: selector for the input to focus (defaults to the
+ *   first number / text / select).
  */
-function showPopover(popover, html) {
+function renderPopoverContent(popover, html, options) {
+    options = options || {};
     popover.innerHTML = html;
     popover.classList.remove('d-none');
     activePopover = popover;
@@ -278,6 +292,12 @@ function showPopover(popover, html) {
         applyMobileBottomSheetBehavior(popover);
     }
 
+    // Override the form's hx-target before HTMX processes it (create path).
+    if (options.hxTarget) {
+        const form = popover.querySelector('form');
+        if (form) form.setAttribute('hx-target', options.hxTarget);
+    }
+
     // Process any HTMX attributes in the loaded content.
     htmx.process(popover);
 
@@ -286,8 +306,10 @@ function showPopover(popover, html) {
     // individual-purchases list is lazy-loaded and grows the popover).
     attachPopoverResizeHandling();
 
-    // Focus the first visible input.
-    const firstInput = popover.querySelector('input[type="number"], input[type="text"], select');
+    // Focus the first relevant input.
+    const firstInput = popover.querySelector(
+        options.focusSelector || 'input[type="number"], input[type="text"], select'
+    );
     if (firstInput) firstInput.focus();
 
     // Add click-outside listener after a tick to avoid catching the trigger click.
@@ -301,6 +323,13 @@ function showPopover(popover, html) {
     if (wrapper) {
         wrapper.addEventListener('scroll', closeFullEdit);
     }
+}
+
+/**
+ * Show the popover with loaded HTML content (edit paths).
+ */
+function showPopover(popover, html) {
+    renderPopoverContent(popover, html);
 }
 
 /**
@@ -334,6 +363,7 @@ function openFullEdit(txnId, triggerEl) {
     .catch(function(err) {
         // A newer open / close aborted this fetch -- intentional, not an error.
         if (err.name === 'AbortError') return;
+        console.error('Shekel: full-edit action card failed to load', err);
         closeFullEdit();
     });
 }
@@ -362,6 +392,7 @@ function openTransferFullEdit(xferId, triggerEl) {
     })
     .catch(function(err) {
         if (err.name === 'AbortError') return;
+        console.error('Shekel: transfer full-edit action card failed to load', err);
         closeFullEdit();
     });
 }
@@ -396,51 +427,16 @@ function openFullCreate(categoryId, periodId, txnTypeId, accountId, triggerEl) {
         return r.text();
     })
     .then(function(html) {
-        popover.innerHTML = html;
-        popover.classList.remove('d-none');
-        activePopover = popover;
-
-        if (window.innerWidth < 768) {
-            document.body.style.overflow = 'hidden';
-            // Same mobile bottom-sheet wiring as showPopover.  openFullCreate
-            // inlines its innerHTML assignment instead of calling showPopover
-            // because it needs to override hx-target before htmx.process;
-            // the helper call sits in the same place relative to innerHTML.
-            applyMobileBottomSheetBehavior(popover);
-        }
-
-        // Override the form's hx-target before HTMX processes it.
-        // The popover is outside the td, so "closest td" won't work.
-        const form = popover.querySelector('form');
-        if (form) {
-            form.setAttribute('hx-target', '#' + cell.id);
-        }
-
-        // Now process HTMX attributes with the correct target.
-        htmx.process(popover);
-
-        // Reposition with real dimensions + install resize handlers so the
-        // popover follows content growth and viewport resizes.  Matches
-        // showPopover() for the edit paths.
-        attachPopoverResizeHandling();
-
-        // Focus the first number input.
-        const firstInput = popover.querySelector('input[type="number"]');
-        if (firstInput) firstInput.focus();
-
-        // Add click-outside listener after a tick.
-        setTimeout(function() {
-            document.addEventListener('click', handleClickOutside);
-        }, 0);
-
-        // Close on grid scroll (position:fixed detaches from cell).
-        var wrapper = document.querySelector('.grid-scroll-wrapper');
-        if (wrapper) {
-            wrapper.addEventListener('scroll', closeFullEdit);
-        }
+        // The create form lives outside the td, so override its hx-target to
+        // the cell and focus the amount input.  Shared lifecycle otherwise.
+        renderPopoverContent(popover, html, {
+            hxTarget: '#' + cell.id,
+            focusSelector: 'input[type="number"]'
+        });
     })
     .catch(function(err) {
         if (err.name === 'AbortError') return;
+        console.error('Shekel: full-create action card failed to load', err);
         closeFullEdit();
     });
 }
@@ -555,7 +551,7 @@ function revertQuickEditForm(quickForm) {
             htmx.ajax('GET',
                 '/transactions/empty-cell?category_id=' + expandBtn.dataset.categoryId +
                 '&period_id=' + expandBtn.dataset.periodId +
-                '&transaction_type_id=' + encodeURIComponent(expandBtn.dataset.txnTypeId) +
+                '&transaction_type_id=' + encodeURIComponent(expandBtn.dataset.transactionTypeId) +
                 '&account_id=' + expandBtn.dataset.accountId,
                 { target: td, swap: 'innerHTML' }
             );
@@ -607,7 +603,7 @@ document.addEventListener('keydown', function(e) {
                 openFullCreate(
                     parseInt(expandBtn.dataset.categoryId),
                     parseInt(expandBtn.dataset.periodId),
-                    parseInt(expandBtn.dataset.txnTypeId),
+                    parseInt(expandBtn.dataset.transactionTypeId),
                     parseInt(expandBtn.dataset.accountId),
                     quickInput
                 );
@@ -669,7 +665,7 @@ document.addEventListener('click', function(e) {
         openFullCreate(
             parseInt(createBtn.dataset.categoryId),
             parseInt(createBtn.dataset.periodId),
-            parseInt(createBtn.dataset.txnTypeId),
+            parseInt(createBtn.dataset.transactionTypeId),
             parseInt(createBtn.dataset.accountId),
             createBtn
         );

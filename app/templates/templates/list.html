@@ -1,13 +1,7 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
+{% from "_recurrence_macros.html" import recurrence_cell with context %}
 {% block title %}Recurring Transactions -- Shekel{% endblock %}
-
-
-{% set month_names = {
-  1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr',
-  5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Aug',
-  9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec',
-} %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -17,41 +11,6 @@
   </ol>
 </nav>
 {% endblock %}
-
-{# Macro for the recurrence description column to avoid duplication between active/archived tables.
-   Compares against integer pattern IDs (REC_* globals from app.jinja_globals) rather than against
-   the string ``pattern.name`` column, per CLAUDE.md "Reference Tables -- IDs for logic, strings
-   for display only".  The else branch is a defensive fallback for a future pattern row added to
-   the database without a matching REC_* constant; it reads ``rr.pattern.name`` for display only. #}
-{% macro recurrence_cell(t) %}
-{% if t.recurrence_rule %}
-  {% set rr = t.recurrence_rule %}
-  {% if rr.pattern_id == REC_EVERY_PERIOD %}
-    Every paycheck
-  {% elif rr.pattern_id == REC_EVERY_N_PERIODS %}
-    Every {{ rr.interval_n }} paychecks
-  {% elif rr.pattern_id == REC_MONTHLY and rr.day_of_month %}
-    Monthly (day {{ rr.day_of_month }})
-  {% elif rr.pattern_id == REC_MONTHLY_FIRST %}
-    Monthly (first paycheck)
-  {% elif rr.pattern_id == REC_QUARTERLY %}
-    Quarterly{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-  {% elif rr.pattern_id == REC_SEMI_ANNUAL %}
-    Every 6 months{% if rr.month_of_year %} (starting {{ month_names[rr.month_of_year] }}){% endif %}
-  {% elif rr.pattern_id == REC_ANNUAL %}
-    Yearly{% if rr.month_of_year %} ({{ month_names[rr.month_of_year] }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
-  {% elif rr.pattern_id == REC_ONCE %}
-    One-time
-  {% else %}
-    {{ recurrence_pattern_labels.get(rr.pattern.name, rr.pattern.name|replace('_', ' ')|title) }}
-  {% endif %}
-  {% if rr.end_date %}
-    <br><small class="text-muted">until {{ rr.end_date.strftime('%b %d, %Y') }}</small>
-  {% endif %}
-{% else %}
-  <span class="text-muted">One-time</span>
-{% endif %}
-{% endmacro %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -206,7 +165,7 @@
 </div>
 {% endif %}
 
-{# ── Archived Templates ─────────────────────────────────────���─────── #}
+{# ── Archived Templates ─────────────────────────────────────────── #}
 {% if archived_templates %}
 <div class="mt-4">
   <h6>
