@@ -4,3 +4,8 @@
 <h5 class="mb-3"><i class="bi bi-calendar-range"></i> Generate Pay Periods</h5>
 
 {% include "settings/_pay_periods_form.html" %}
+
+{% if pp_periods %}
+<hr class="my-4">
+{% include "settings/_pay_periods_manage.html" %}
+{% endif %}

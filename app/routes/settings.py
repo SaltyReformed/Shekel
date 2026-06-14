@@ -25,7 +25,12 @@ from app.models.category import Category
 from app.models.ref import AccountType, AccountTypeCategory, FilingStatus, TaxType
 from app.models.tax_config import TaxBracketSet, FicaConfig, StateTaxConfig
 from app.models.user import MfaConfig, User, UserSettings
-from app.services import account_service
+from app.services import (
+    account_service,
+    pay_period_admin,
+    pay_period_service,
+    pay_schedule_service,
+)
 from app.services.auth_service import hash_password
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,23 @@ _ACCOUNT_TYPE_ICON_CHOICES = (
     "bi-briefcase", "bi-coin", "bi-currency-exchange",
 )
 
+# Pay-period lock-reason -> (badge label, Bootstrap badge CSS) for the
+# manage UI.  This display-only mapping lives in the route layer so the
+# template renders a precomputed badge instead of branching on the enum.
+_PP_LOCK_BADGES = {
+    pay_period_admin.PeriodLockReason.HISTORICAL: ("Past", "bg-secondary"),
+    pay_period_admin.PeriodLockReason.SETTLED_TXN: (
+        "Settled", "bg-warning text-dark",
+    ),
+    pay_period_admin.PeriodLockReason.ACCOUNT_ANCHOR: (
+        "Anchor", "bg-info text-dark",
+    ),
+    pay_period_admin.PeriodLockReason.RECURRENCE_ANCHOR: (
+        "Rule start", "bg-info text-dark",
+    ),
+}
+_PP_MUTABLE_BADGE = ("Editable", "bg-success-subtle text-success-emphasis")
+
 
 @settings_bp.route("/settings", methods=["GET"])
 @login_required
@@ -74,41 +96,98 @@ def show():
     section = request.args.get("section", "general")
     if section not in _VALID_SECTIONS:
         section = "general"
+    return render_settings_dashboard(section)
 
-    # Always load settings (needed for general + retirement sections).
+
+def _section_context(section):
+    """Per-section template data for the settings dashboard.
+
+    Returns only the active section's slice; the caller overlays it on
+    the full default context so the template's "all keys always supplied"
+    contract holds.  "retirement" needs no extra data (it renders from the
+    loaded ``settings``), so it -- like any unknown section -- falls
+    through to an empty dict.
+    """
+    loaders = {
+        "general": lambda: {
+            "accounts": account_service.list_active_accounts(current_user.id),
+        },
+        "categories": _load_categories_context,
+        "tax": _load_tax_context,
+        "account-types": _load_account_types_context,
+        "companions": lambda: _load_companions_context(request.args.get("edit")),
+        "security": _load_security_context,
+        "pay-periods": lambda: _load_pay_periods_context(current_user.id),
+    }
+    loader = loaders.get(section)
+    return loader() if loader is not None else {}
+
+
+def render_settings_dashboard(section, extra=None, status=200):
+    """Render the settings dashboard for one section.
+
+    The single render path shared by :func:`show` and the pay-period
+    management routes (``app/routes/pay_periods.py``), so the full
+    template context (every section's keys plus the active section's data)
+    is assembled in one place.  ``extra`` overlays error / confirm
+    context; ``status`` lets a route re-render with a 422 (e.g. the
+    discard-confirm panel) instead of redirecting.
+
+    Args:
+        section: The active settings section.
+        extra: Optional dict overlaid on the context after the section
+            data (errors, a discard-confirm payload, etc.).
+        status: HTTP status for the rendered response.
+
+    Returns:
+        A Flask ``(body, status)`` response tuple.
+    """
     settings = current_user.settings
     if settings is None:
         settings = UserSettings(user_id=current_user.id)
         db.session.add(settings)
         db.session.commit()
 
-    # Start from the full default context (every template key the dashboard
-    # expects, at its empty placeholder) and let the active section override
-    # only its own slice.  This preserves the template's "all keys always
-    # supplied" contract while collapsing what used to be a wall of per-section
-    # parallel locals.
     context = _empty_section_context()
-    if section == "general":
-        context["accounts"] = account_service.list_active_accounts(current_user.id)
-    elif section == "categories":
-        context.update(_load_categories_context())
-    elif section == "tax":
-        context.update(_load_tax_context())
-    elif section == "account-types":
-        context.update(_load_account_types_context())
-    elif section == "companions":
-        context.update(_load_companions_context(request.args.get("edit")))
-    elif section == "security":
-        context.update(_load_security_context())
-    # "pay-periods" and "retirement" need no section-specific data: the former
-    # renders from the default errors={}, the latter from the loaded settings.
+    context.update(_section_context(section))
+    if extra:
+        context.update(extra)
 
     return render_template(
         "settings/dashboard.html",
         active_section=section,
         settings=settings,
         **context,
-    )
+    ), status
+
+
+def _load_pay_periods_context(user_id):
+    """Load the pay-periods section: the period list with lock badges.
+
+    Each row carries a :class:`~app.models.pay_period.PayPeriod`, whether
+    it is ``locked`` (immutable), and the display badge text/CSS the
+    manage UI renders -- the lock-reason-to-badge mapping is resolved here
+    so the template only displays, never computes.  ``pp_schedule`` is the
+    persisted schedule (cadence) when one exists.
+    """
+    periods = pay_period_service.get_all_periods(user_id)
+    locks = pay_period_admin.classify_periods_bulk(periods)
+    period_rows = []
+    for period in periods:
+        reason = locks.get(period.id)
+        badge_label, badge_class = _PP_LOCK_BADGES.get(
+            reason, _PP_MUTABLE_BADGE,
+        )
+        period_rows.append({
+            "period": period,
+            "locked": reason is not None,
+            "badge_label": badge_label,
+            "badge_class": badge_class,
+        })
+    return {
+        "pp_periods": period_rows,
+        "pp_schedule": pay_schedule_service.get_schedule(user_id),
+    }
 
 
 @settings_bp.route("/settings", methods=["POST"])
@@ -182,6 +261,9 @@ def _empty_section_context():
         "inactive_companions": [],
         "edit_companion_id": None,
         "form_values": {},
+        "pp_periods": [],
+        "pp_schedule": None,
+        "pp_confirm": None,
     }
 
 

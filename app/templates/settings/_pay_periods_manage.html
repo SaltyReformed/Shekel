@@ -1,0 +1,142 @@
+{% from "_form_macros.html" import render_field %}
+{# Manage an existing pay-period schedule: a read-only period list with
+   lock badges, plus the extend / truncate / regenerate actions.  Included
+   by settings/_pay_periods.html only when the user already has periods.
+   pp_periods (rows of {period, locked, badge_label, badge_class}) and the
+   optional pp_confirm ({op, count, params}) come from the route context. #}
+
+<h5 class="mt-4 mb-3"><i class="bi bi-sliders"></i> Manage Schedule</h5>
+
+{% if pp_confirm %}
+<div class="alert alert-warning" role="alert">
+  <h6 class="alert-heading">
+    <i class="bi bi-exclamation-triangle"></i>
+    This will permanently discard {{ pp_confirm.count }} item(s)
+  </h6>
+  <p class="mb-2">
+    The affected periods hold hand-entered or changed rows that cannot be
+    regenerated from your templates. Confirm to proceed, or cancel to keep
+    them.
+  </p>
+  <form method="POST" action="{{ url_for('pay_periods.' ~ pp_confirm.op) }}"
+        class="d-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% for key, value in pp_confirm.params.items() %}
+    <input type="hidden" name="{{ key }}" value="{{ value }}">
+    {% endfor %}
+    <input type="hidden" name="confirm_discard" value="true">
+    <button type="submit" class="btn btn-danger btn-sm">
+      <i class="bi bi-trash"></i> Confirm &amp; discard
+    </button>
+  </form>
+  <a href="{{ url_for('settings.show', section='pay-periods') }}"
+     class="btn btn-secondary btn-sm">Cancel</a>
+</div>
+{% endif %}
+
+<div class="card mb-3">
+  <div class="card-header py-2">
+    Your pay periods <span class="text-muted">({{ pp_periods|length }})</span>
+  </div>
+  <div class="table-responsive list-scroll-sm">
+    <table class="table table-sm table-hover mb-0">
+      <thead class="table-light">
+        <tr><th scope="col">#</th><th scope="col">Period</th>
+          <th scope="col">Status</th></tr>
+      </thead>
+      <tbody>
+        {% for row in pp_periods %}
+        <tr>
+          <td>{{ row.period.period_index }}</td>
+          <td>{{ row.period.label }}</td>
+          <td>
+            <span class="badge {{ row.badge_class }}">{{ row.badge_label }}</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="row g-3">
+  {# --- Extend --- #}
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="card-title">Extend forward</h6>
+        <p class="card-text text-muted small">
+          Add more pay periods to the end of your schedule.
+        </p>
+        <form method="POST" action="{{ url_for('pay_periods.extend') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {{ render_field("num_periods", "Periods to add", type="number",
+                          value="13", required=true,
+                          input_attrs='min="1" max="260"') }}
+          <button type="submit" class="btn btn-primary btn-sm w-100">
+            <i class="bi bi-plus-circle"></i> Extend
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# --- Truncate --- #}
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="card-title">Remove the tail</h6>
+        <p class="card-text text-muted small">
+          Delete every period after the one you keep through. Locked
+          periods are never removed.
+        </p>
+        <form method="POST" action="{{ url_for('pay_periods.truncate') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label for="keep_through_index" class="form-label">
+              Keep through period
+            </label>
+            <select id="keep_through_index" name="keep_through_index"
+                    class="form-select" required>
+              {% for row in pp_periods %}
+              <option value="{{ row.period.period_index }}">
+                #{{ row.period.period_index }} ({{ row.period.label }})
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          <button type="submit" class="btn btn-outline-danger btn-sm w-100">
+            <i class="bi bi-scissors"></i> Remove later periods
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# --- Regenerate --- #}
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="card-title">Regenerate the tail</h6>
+        <p class="card-text text-muted small">
+          Rebuild the not-yet-started periods from a corrected payday and
+          cadence. Started and locked periods stay.
+        </p>
+        <form method="POST" action="{{ url_for('pay_periods.regenerate') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {{ render_field("new_start_date", "Corrected first payday",
+                          type="date", required=true) }}
+          {{ render_field("num_periods", "Number of periods", type="number",
+                          value="52", required=true,
+                          input_attrs='min="1" max="260"', classes="rg") }}
+          {{ render_field("cadence_days", "Days between paydays",
+                          type="number", value="14", required=true,
+                          input_attrs='min="1" max="365"') }}
+          <button type="submit" class="btn btn-outline-warning btn-sm w-100">
+            <i class="bi bi-arrow-repeat"></i> Regenerate
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
