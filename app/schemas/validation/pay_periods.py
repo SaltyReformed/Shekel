@@ -69,6 +69,27 @@ class PayPeriodRegenerateSchema(BaseSchema):
     confirm_discard = fields.Boolean(load_default=False)
 
 
+class PayPeriodResetSchema(BaseSchema):
+    """Validates POST data for a full schedule reset (first-time setup).
+
+    Mirrors the generate fields plus a required ``confirm`` acknowledgement.
+    Unlike regenerate there is no ``confirm_discard``: reset wipes the
+    WHOLE schedule -- including past and anchor periods -- by design, so
+    its safety is the service's zero-settled refusal plus this explicit
+    confirmation (an unchecked box submits nothing, hence
+    ``load_default=False``; the route refuses an unconfirmed reset).
+    """
+
+    new_start_date = fields.Date(required=True)
+    num_periods = fields.Integer(
+        required=True, validate=validate.Range(min=1, max=260)
+    )
+    cadence_days = fields.Integer(
+        required=True, validate=validate.Range(min=1, max=365)
+    )
+    confirm = fields.Boolean(load_default=False)
+
+
 class PayScheduleSchema(BaseSchema):
     """Validates POST data for the continuous-rolling-window settings.
 

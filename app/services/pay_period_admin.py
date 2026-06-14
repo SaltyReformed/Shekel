@@ -370,6 +370,27 @@ def regenerate_pay_periods(
     return new_periods
 
 
+def can_reset_pay_periods(user_id: int) -> bool:
+    """Return whether a full reset is currently offered to the user.
+
+    The read-only UI predicate: reset is offered only when the user has no
+    settled transactions, the same bound :func:`reset_pay_periods`
+    enforces.  The settings page calls this to show or hide the reset
+    control; the service's own gate (which raises
+    :class:`~app.exceptions.PayPeriodResetBlocked`) remains the
+    authoritative defense, so a stale page that posts anyway is still
+    refused.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        ``True`` when the user has zero settled (non-deleted)
+        transactions, else ``False``.
+    """
+    return _settled_transaction_count(user_id) == 0
+
+
 def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     """Wipe and rebuild the user's WHOLE schedule, re-anchoring accounts.
 

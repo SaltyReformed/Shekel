@@ -168,7 +168,10 @@ def _load_pay_periods_context(user_id):
     it is ``locked`` (immutable), and the display badge text/CSS the
     manage UI renders -- the lock-reason-to-badge mapping is resolved here
     so the template only displays, never computes.  ``pp_schedule`` is the
-    persisted schedule (cadence) when one exists.
+    persisted schedule (cadence) when one exists.  ``pp_can_reset`` gates
+    the full-reset control to users with no settled transactions (the same
+    bound the service enforces), so the destructive action is only offered
+    when it would be accepted.
     """
     periods = pay_period_service.get_all_periods(user_id)
     locks = pay_period_admin.classify_periods_bulk(periods)
@@ -187,6 +190,7 @@ def _load_pay_periods_context(user_id):
     return {
         "pp_periods": period_rows,
         "pp_schedule": pay_schedule_service.get_schedule(user_id),
+        "pp_can_reset": pay_period_admin.can_reset_pay_periods(user_id),
     }
 
 
@@ -264,6 +268,7 @@ def _empty_section_context():
         "pp_periods": [],
         "pp_schedule": None,
         "pp_confirm": None,
+        "pp_can_reset": False,
     }
 
 

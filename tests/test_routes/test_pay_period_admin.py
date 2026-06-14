@@ -11,10 +11,12 @@ future-period setup is deterministic.  See
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
 from app.enums import StatusEnum
+from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.services import pay_period_service, pay_schedule_service
 from tests._test_helpers import add_txn, freeze_today
@@ -287,6 +289,119 @@ class TestScheduleRoute:
             assert resp.status_code == 404
 
 
+class TestResetRoute:
+    """POST /pay-periods/reset (bounded full-schedule reset)."""
+
+    def test_reset_rebuilds_and_reanchors(self, app, db, auth_client, seed_user):
+        """A confirmed reset wipes everything and rebuilds from index 0.
+
+        The account's old anchor period (the bootstrap) is deleted and the
+        account re-anchored to a live new period -- the deferred-FK commit
+        path, end to end through HTTP.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account_id = seed_user["account"].id
+            old_anchor = seed_user["account"].current_anchor_period_id
+            _future_periods(db.session, seed_user, count=4)
+            resp = auth_client.post(
+                "/pay-periods/reset",
+                data={
+                    "new_start_date": "2026-06-05",
+                    "num_periods": "4",
+                    "cadence_days": "14",
+                    "confirm": "true",
+                },
+            )
+            assert resp.status_code == 302
+            assert "pay-periods" in resp.headers["Location"]
+            db.session.expire_all()
+            periods = pay_period_service.get_all_periods(user_id)
+            assert {p.period_index for p in periods} == {0, 1, 2, 3}
+            live_ids = {p.id for p in periods}
+            assert old_anchor not in live_ids
+            account = db.session.get(Account, account_id)
+            assert account.current_anchor_period_id in live_ids
+            assert account.current_anchor_balance == Decimal("1000.00")
+
+    def test_unconfirmed_reset_refused(self, app, db, auth_client, seed_user):
+        """Without the confirm box, reset changes nothing."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _future_periods(db.session, seed_user, count=4)
+            before = _indices(user_id)
+            resp = auth_client.post(
+                "/pay-periods/reset",
+                data={
+                    "new_start_date": "2026-06-05",
+                    "num_periods": "4",
+                    "cadence_days": "14",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Confirm the reset" in resp.data
+            assert _indices(user_id) == before
+
+    def test_settled_blocks_reset(self, app, db, auth_client, seed_user):
+        """A settled transaction makes the service refuse; nothing changes."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = _future_periods(db.session, seed_user, count=4)
+            add_txn(
+                db.session, seed_user, periods[1], "Paycheck", "2000.00",
+                status_enum=StatusEnum.RECEIVED, is_income=True,
+            )
+            db.session.commit()
+            before = _indices(user_id)
+            resp = auth_client.post(
+                "/pay-periods/reset",
+                data={
+                    "new_start_date": "2026-06-05",
+                    "num_periods": "4",
+                    "cadence_days": "14",
+                    "confirm": "true",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"settled transaction" in resp.data
+            assert _indices(user_id) == before
+
+    def test_schema_rejection_changes_nothing(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A missing required field fails validation; nothing changes."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _future_periods(db.session, seed_user, count=4)
+            before = _indices(user_id)
+            resp = auth_client.post(
+                "/pay-periods/reset",
+                data={
+                    "num_periods": "4", "cadence_days": "14", "confirm": "true",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"correct the form" in resp.data
+            assert _indices(user_id) == before
+
+    def test_companion_cannot_reset(self, app, companion_client):
+        """A companion is not the owner -- the reset route 404s (IDOR)."""
+        with app.app_context():
+            resp = companion_client.post(
+                "/pay-periods/reset",
+                data={
+                    "new_start_date": "2026-06-05",
+                    "num_periods": "4",
+                    "cadence_days": "14",
+                    "confirm": "true",
+                },
+            )
+            assert resp.status_code == 404
+
+
 class TestRollingTriggerHooks:
     """The grid + dashboard entry points top up the rolling window."""
 
@@ -385,3 +500,31 @@ class TestOwnerOnlyAndUi:
             # Switch reflects enabled state; target input reflects 40.
             assert b"checked" in resp.data
             assert b'value="40"' in resp.data
+
+    def test_reset_form_shown_when_no_settled(
+        self, app, db, auth_client, seed_user,
+    ):
+        """With no settled txns, the full-reset form (with confirm) is offered."""
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            assert b"Reset entire schedule" in resp.data
+            assert b'name="confirm"' in resp.data
+            assert b"/pay-periods/reset" in resp.data
+
+    def test_reset_form_hidden_when_settled(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A settled txn hides the reset form and shows the Regenerate note."""
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=3)
+            add_txn(
+                db.session, seed_user, periods[1], "Paycheck", "2000.00",
+                status_enum=StatusEnum.RECEIVED, is_income=True,
+            )
+            db.session.commit()
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            assert b"Reset is unavailable" in resp.data
+            assert b'name="confirm"' not in resp.data

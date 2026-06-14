@@ -109,6 +109,7 @@ from app.schemas.validation.pay_periods import (
     PayPeriodExtendSchema,
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
+    PayPeriodResetSchema,
     PayPeriodTruncateSchema,
     PayScheduleSchema,
 )
@@ -191,6 +192,7 @@ __all__ = [
     "PayPeriodExtendSchema",
     "PayPeriodGenerateSchema",
     "PayPeriodRegenerateSchema",
+    "PayPeriodResetSchema",
     "PayPeriodTruncateSchema",
     "PayScheduleSchema",
     "PayoffCalculatorSchema",

@@ -183,3 +183,64 @@
     </form>
   </div>
 </div>
+
+{# --- Full reset (first-time-setup correction) ---
+   Offered only to users with no settled transactions (pp_can_reset).
+   Once a paycheck has settled, the whole-schedule rewrite is unsafe and
+   the service refuses it; the form is hidden and an explanatory note
+   points to Regenerate instead. #}
+<div class="card mt-3 border-danger-subtle">
+  <div class="card-body">
+    <h6 class="card-title text-danger">
+      <i class="bi bi-exclamation-octagon"></i> Reset entire schedule
+    </h6>
+    {% if pp_can_reset %}
+    <p class="card-text text-muted small">
+      Delete your ENTIRE schedule, including past and anchor periods, and
+      rebuild it from a corrected first payday. Your accounts and their
+      balances are kept and re-anchored to the new schedule. This is for
+      fixing a first-time setup mistake before any paychecks have settled
+      and cannot be undone.
+    </p>
+    <form method="POST" action="{{ url_for('pay_periods.reset') }}"
+          class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-sm-4">
+        {{ render_field("new_start_date", "Corrected first payday",
+                        type="date", required=true, classes="rs") }}
+      </div>
+      <div class="col-sm-3">
+        {{ render_field("num_periods", "Number of periods", type="number",
+                        value="52", required=true,
+                        input_attrs='min="1" max="260"', classes="rs") }}
+      </div>
+      <div class="col-sm-3">
+        {{ render_field("cadence_days", "Days between paydays",
+                        type="number", value="14", required=true,
+                        input_attrs='min="1" max="365"', classes="rs") }}
+      </div>
+      <div class="col-12">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" value="true"
+                 id="reset_confirm" name="confirm" required>
+          <label class="form-check-label small" for="reset_confirm">
+            I understand this deletes my entire schedule and rebuilds it.
+          </label>
+        </div>
+      </div>
+      <div class="col-12">
+        <button type="submit" class="btn btn-danger btn-sm">
+          <i class="bi bi-arrow-counterclockwise"></i> Reset schedule
+        </button>
+      </div>
+    </form>
+    {% else %}
+    <p class="card-text text-muted small mb-0">
+      Reset is unavailable because you have settled transactions. Rewriting
+      the schedule under settled paychecks is unsafe; use
+      <strong>Regenerate the tail</strong> above to rebuild your
+      not-yet-started periods instead.
+    </p>
+    {% endif %}
+  </div>
+</div>

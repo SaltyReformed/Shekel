@@ -19,6 +19,7 @@ from app.extensions import db
 from app.exceptions import (
     PayPeriodDiscardRequired,
     PayPeriodLocked,
+    PayPeriodResetBlocked,
     ValidationError,
 )
 from app.routes.settings import render_settings_dashboard
@@ -26,6 +27,7 @@ from app.schemas.validation import (
     PayPeriodExtendSchema,
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
+    PayPeriodResetSchema,
     PayPeriodTruncateSchema,
     PayScheduleSchema,
 )
@@ -39,6 +41,7 @@ _generate_schema = PayPeriodGenerateSchema()
 _extend_schema = PayPeriodExtendSchema()
 _truncate_schema = PayPeriodTruncateSchema()
 _regenerate_schema = PayPeriodRegenerateSchema()
+_reset_schema = PayPeriodResetSchema()
 _schedule_schema = PayScheduleSchema()
 
 
@@ -186,6 +189,44 @@ def regenerate():
 
     db.session.commit()
     flash(f"Rebuilt the schedule: {len(new_periods)} new period(s).", "success")
+    return _pay_periods_redirect()
+
+
+@pay_periods_bp.route("/pay-periods/reset", methods=["POST"])
+@login_required
+@require_owner
+def reset():
+    """Wipe and rebuild the entire schedule (first-time-setup correction).
+
+    Refuses unless the user explicitly confirmed and -- enforced by the
+    service -- has no settled transactions.  The whole rebuild runs in one
+    transaction this route commits; a service-side failure (the settled
+    refusal, or an invalid start/cadence after the wipe) rolls back so
+    nothing partial ships.
+    """
+    errors = _reset_schema.validate(request.form)
+    if errors:
+        flash(_summarize_errors(errors), "danger")
+        return _pay_periods_redirect()
+
+    data = _reset_schema.load(request.form)
+    if not data["confirm"]:
+        flash(
+            "Confirm the reset to rebuild your entire schedule.", "danger",
+        )
+        return _pay_periods_redirect()
+
+    try:
+        new_periods = pay_period_admin.reset_pay_periods(
+            current_user.id, data["new_start_date"], data["num_periods"],
+            data["cadence_days"],
+        )
+    except (PayPeriodResetBlocked, ValidationError) as exc:
+        flash(str(exc), "danger")
+        return _pay_periods_redirect()
+
+    db.session.commit()
+    flash(f"Reset your schedule: {len(new_periods)} new period(s).", "success")
     return _pay_periods_redirect()
 
 
