@@ -67,3 +67,20 @@ class PayPeriodRegenerateSchema(BaseSchema):
         required=True, validate=validate.Range(min=1, max=365)
     )
     confirm_discard = fields.Boolean(load_default=False)
+
+
+class PayScheduleSchema(BaseSchema):
+    """Validates POST data for the continuous-rolling-window settings.
+
+    ``rolling_enabled`` toggles continuous top-up (an unchecked checkbox
+    submits nothing, hence ``load_default=False``).  ``rolling_target_periods``
+    is how many current-and-future periods to keep generated ahead -- the
+    count INCLUDES the current period.  Its range mirrors the generate /
+    extend ``num_periods`` cap (1..260) and the column's ``> 0`` CHECK.
+    Cadence is NOT set here: it is owned by generate / regenerate.
+    """
+
+    rolling_enabled = fields.Boolean(load_default=False)
+    rolling_target_periods = fields.Integer(
+        required=True, validate=validate.Range(min=1, max=260)
+    )

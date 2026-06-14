@@ -27,6 +27,7 @@ from app.schemas.validation import (
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
     PayPeriodTruncateSchema,
+    PayScheduleSchema,
 )
 from app.services import pay_period_admin, pay_period_service, pay_schedule_service
 
@@ -38,6 +39,7 @@ _generate_schema = PayPeriodGenerateSchema()
 _extend_schema = PayPeriodExtendSchema()
 _truncate_schema = PayPeriodTruncateSchema()
 _regenerate_schema = PayPeriodRegenerateSchema()
+_schedule_schema = PayScheduleSchema()
 
 
 def _pay_periods_redirect():
@@ -184,4 +186,30 @@ def regenerate():
 
     db.session.commit()
     flash(f"Rebuilt the schedule: {len(new_periods)} new period(s).", "success")
+    return _pay_periods_redirect()
+
+
+@pay_periods_bp.route("/pay-periods/schedule", methods=["POST"])
+@login_required
+@require_owner
+def schedule():
+    """Save the continuous-rolling-window configuration."""
+    errors = _schedule_schema.validate(request.form)
+    if errors:
+        flash(_summarize_errors(errors), "danger")
+        return _pay_periods_redirect()
+
+    data = _schedule_schema.load(request.form)
+    try:
+        pay_schedule_service.set_rolling(
+            current_user.id,
+            enabled=data["rolling_enabled"],
+            target_periods=data["rolling_target_periods"],
+        )
+    except ValidationError as exc:
+        flash(str(exc), "danger")
+        return _pay_periods_redirect()
+
+    db.session.commit()
+    flash("Rolling-window settings saved.", "success")
     return _pay_periods_redirect()

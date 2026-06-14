@@ -17,6 +17,9 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
+from app.exceptions import ValidationError
 from app.services import pay_period_service, pay_schedule_service
 
 
@@ -77,6 +80,73 @@ class TestUpsertSchedule:
             assert updated.rolling_target_periods == 30
             # Exactly one row for the user -- upsert did not insert a second.
             assert pay_schedule_service.get_schedule(user_id).id == schedule.id
+
+
+class TestSetRolling:
+    """``set_rolling`` writes rolling config onto an existing schedule row."""
+
+    def test_updates_rolling_config_cadence_untouched(self, app, bare_user):
+        """Enabling rolling stores the flag and target; cadence is unchanged.
+
+        ``set_rolling`` does not own cadence (generate / regenerate do),
+        so a 14-day cadence stays 14 after the rolling write.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+            updated = pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=30,
+            )
+            assert updated.rolling_enabled is True
+            assert updated.rolling_target_periods == 30
+            assert updated.cadence_days == 14
+
+    def test_disable_rolling_keeps_target(self, app, bare_user):
+        """Disabling flips the flag off while leaving the stored target."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=26,
+            )
+            updated = pay_schedule_service.set_rolling(
+                user_id, enabled=False, target_periods=26,
+            )
+            assert updated.rolling_enabled is False
+            assert updated.rolling_target_periods == 26
+
+    def test_raises_without_schedule_row(self, app, bare_user):
+        """A user who never generated a schedule cannot configure rolling.
+
+        Rolling grows the schedule and needs a stored cadence to extend
+        at, so set_rolling refuses when no row exists.
+        """
+        with app.app_context():
+            with pytest.raises(ValidationError):
+                pay_schedule_service.set_rolling(
+                    bare_user["user"].id, enabled=True, target_periods=10,
+                )
+
+    def test_upsert_after_set_rolling_preserves_config(self, app, bare_user):
+        """A later cadence upsert never resets the user's rolling settings.
+
+        set_rolling turns rolling on; a subsequent ``upsert_schedule``
+        (e.g. regenerate persisting a new cadence) updates only
+        ``cadence_days`` via its ON CONFLICT set, leaving rolling exactly
+        as the user configured it.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=40,
+            )
+            updated = pay_schedule_service.upsert_schedule(
+                user_id, cadence_days=7,
+            )
+            assert updated.cadence_days == 7
+            assert updated.rolling_enabled is True
+            assert updated.rolling_target_periods == 40
 
 
 class TestResolveCadence:

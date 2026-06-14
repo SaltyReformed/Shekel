@@ -193,6 +193,88 @@ class TestGenerateRoute:
             assert schedule.cadence_days == 10
 
 
+class TestScheduleRoute:
+    """POST /pay-periods/schedule (continuous-rolling-window config)."""
+
+    def test_saves_rolling_config_and_redirects(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A valid post enables rolling and stores the target on the row."""
+        with app.app_context():
+            # A schedule row must exist first (generation captures cadence).
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            db.session.commit()
+            resp = auth_client.post(
+                "/pay-periods/schedule",
+                data={
+                    "rolling_enabled": "true",
+                    "rolling_target_periods": "30",
+                },
+            )
+            assert resp.status_code == 302
+            assert "pay-periods" in resp.headers["Location"]
+            schedule = pay_schedule_service.get_schedule(seed_user["user"].id)
+            assert schedule.rolling_enabled is True
+            assert schedule.rolling_target_periods == 30
+
+    def test_rejects_out_of_range_target(
+        self, app, db, auth_client, seed_user,
+    ):
+        """target_periods = 0 fails validation; the row stays unchanged."""
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            db.session.commit()
+            resp = auth_client.post(
+                "/pay-periods/schedule",
+                data={
+                    "rolling_enabled": "true",
+                    "rolling_target_periods": "0",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"correct the form" in resp.data
+            schedule = pay_schedule_service.get_schedule(seed_user["user"].id)
+            assert schedule.rolling_enabled is False
+
+    def test_no_schedule_row_flashes_error(self, app, auth_client, seed_user):
+        """Configuring rolling before generating a schedule is refused.
+
+        seed_user has a bootstrap period but no pay_schedule row, so the
+        service guard raises ValidationError and the route flashes it;
+        nothing is created.
+        """
+        with app.app_context():
+            assert pay_schedule_service.get_schedule(
+                seed_user["user"].id,
+            ) is None
+            resp = auth_client.post(
+                "/pay-periods/schedule",
+                data={
+                    "rolling_enabled": "true",
+                    "rolling_target_periods": "10",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Generate a pay-period schedule" in resp.data
+            assert pay_schedule_service.get_schedule(
+                seed_user["user"].id,
+            ) is None
+
+    def test_companion_cannot_set_schedule(self, app, companion_client):
+        """A companion is not the owner -- the schedule route 404s (IDOR)."""
+        with app.app_context():
+            resp = companion_client.post(
+                "/pay-periods/schedule",
+                data={
+                    "rolling_enabled": "true",
+                    "rolling_target_periods": "10",
+                },
+            )
+            assert resp.status_code == 404
+
+
 class TestOwnerOnlyAndUi:
     """Owner-only access and the manage-UI render."""
 
