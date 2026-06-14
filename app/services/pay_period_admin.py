@@ -101,11 +101,11 @@ def _resolve_lock(
 def classify_period_lock(period, as_of: date | None = None) -> PeriodLockReason | None:
     """Return the first reason ``period`` is locked, or ``None`` if mutable.
 
-    The single-period source of truth, used by the settings UI to badge
-    one period.  Runs three scalar ``EXISTS`` checks plus an in-memory
-    date comparison; the bulk path (:func:`classify_periods_bulk`) is
-    the N-period optimization and shares the precedence logic via
-    :func:`_resolve_lock`.
+    The single-period public API, used by the settings UI to badge one
+    period.  Delegates to :func:`classify_periods_bulk` over a one-element
+    list so the lock rules have exactly ONE encoding -- the set queries
+    plus the :func:`_resolve_lock` precedence -- and the single-period and
+    bulk paths can never drift apart on this spine-critical classifier.
 
     Args:
         period: The :class:`~app.models.pay_period.PayPeriod` to classify.
@@ -117,14 +117,7 @@ def classify_period_lock(period, as_of: date | None = None) -> PeriodLockReason 
     Returns:
         The first applicable :class:`PeriodLockReason`, or ``None``.
     """
-    if as_of is None:
-        as_of = date.today()
-    return _resolve_lock(
-        is_historical=period.end_date < as_of,
-        has_settled=_holds_settled_transaction(period.id),
-        is_account_anchor=_is_account_anchor(period.id),
-        is_recurrence_anchor=_is_recurrence_anchor(period.id),
-    )
+    return classify_periods_bulk([period], as_of=as_of)[period.id]
 
 
 def classify_periods_bulk(
@@ -412,36 +405,6 @@ def _count_discardable_items(period_ids):
         ),
     ).count()
     return txn_count + transfer_count
-
-
-def _holds_settled_transaction(period_id: int) -> bool:
-    """True if the period holds a non-deleted settled (real-money) txn.
-
-    Uses the canonical settled-status set (Paid / Received / Settled via
-    ``balance_predicates.settled_status_ids``).  A soft-deleted settled
-    row does NOT lock -- the user removed it -- and Credit / Cancelled
-    are not settled, so they do not lock here either (they are handled by
-    the separate overridable discard gate).
-    """
-    return db.session.query(Transaction.id).filter(
-        Transaction.pay_period_id == period_id,
-        Transaction.status_id.in_(settled_status_ids()),
-        Transaction.is_deleted.is_(False),
-    ).first() is not None
-
-
-def _is_account_anchor(period_id: int) -> bool:
-    """True if any account's balance anchor points at this period."""
-    return db.session.query(Account.id).filter(
-        Account.current_anchor_period_id == period_id,
-    ).first() is not None
-
-
-def _is_recurrence_anchor(period_id: int) -> bool:
-    """True if any recurrence rule's start period is this period."""
-    return db.session.query(RecurrenceRule.id).filter(
-        RecurrenceRule.start_period_id == period_id,
-    ).first() is not None
 
 
 def _period_ids_with_settled_transaction(period_ids: list[int]) -> set[int]:
