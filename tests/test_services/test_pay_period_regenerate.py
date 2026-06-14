@@ -92,6 +92,38 @@ def _index_set(user_id):
 class TestRegenerateHappyPath:
     """Regenerate keeps the locked/current prefix and rebuilds the tail."""
 
+    def test_period_starting_today_is_kept(self, app, db, seed_user):
+        """A period starting exactly on today (payday) is the in-progress
+        period and must NOT be rebuilt.
+
+        Regression for the boundary off-by-one: ``get_current_period``
+        matches ``start_date <= today <= end_date``, so the period that
+        starts on today is current; regenerate must keep it, not pull it
+        into the rebuildable tail.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            # Index 1 starts ON the frozen today -- the current period.
+            periods = pay_period_service.generate_pay_periods(
+                user_id, FROZEN_TODAY, num_periods=4, cadence_days=14,
+            )
+            db.session.commit()
+            today_index = periods[0].period_index
+            today_start = periods[0].start_date
+            new_start = periods[0].end_date + timedelta(days=1)
+
+            pay_period_admin.regenerate_pay_periods(
+                user_id, new_start_date=new_start, num_periods=2,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            kept = db.session.query(PayPeriod).filter_by(
+                user_id=user_id, period_index=today_index,
+            ).one()
+            assert kept.start_date == today_start  # the payday period survived
+            assert_pay_period_invariants(db.session, user_id)
+
     def test_rebuilds_tail_keeps_current_and_historical(
         self, app, db, seed_user,
     ):

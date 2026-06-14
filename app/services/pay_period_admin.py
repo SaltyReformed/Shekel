@@ -341,12 +341,16 @@ def _regenerate_keep_through_index(user_id):
     """Return the ``keep_through_index`` regenerate truncates to.
 
     Everything up to and including the last period that has already
-    started or is locked is kept; the first not-yet-started AND unlocked
+    started or is locked is kept; the first NOT-YET-STARTED AND unlocked
     period is where the rebuildable tail begins, so this returns that
-    period's index minus one.  When there is no rebuildable future tail
-    (every period has started or is locked), it returns the last index --
-    the truncate is then a no-op and regenerate degrades to an append
-    from ``new_start_date``.  With no periods at all, it returns -1.
+    period's index minus one.  "Not yet started" is ``start_date >
+    today`` STRICTLY: a period whose ``start_date == today`` is the
+    current in-progress period (``get_current_period`` matches
+    ``start_date <= today <= end_date``), so on a payday it is kept, not
+    rebuilt.  When there is no rebuildable future tail (every period has
+    started or is locked), it returns the last index -- the truncate is
+    then a no-op and regenerate degrades to an append from
+    ``new_start_date``.  With no periods at all, it returns -1.
 
     Args:
         user_id: The owning user's id.
@@ -360,7 +364,7 @@ def _regenerate_keep_through_index(user_id):
     today = date.today()
     locks = classify_periods_bulk(periods)
     for period in periods:
-        if period.start_date >= today and locks[period.id] is None:
+        if period.start_date > today and locks[period.id] is None:
             return period.period_index - 1
     return periods[-1].period_index
 

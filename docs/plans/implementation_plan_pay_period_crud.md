@@ -67,12 +67,54 @@ They supersede the draft where they conflict.
    `extend_pay_periods` (MVP repopulates the baseline scenario only; the param returns with its
    first real multi-scenario caller -- no gold-plating).
 
-**Phase 1 slices (a)-(c) COMPLETE on `dev`:** (a) migration `af8254074bef` (`budget.pay_schedule` +
+**Phase 1 COMPLETE on `dev` (slices a-f):** (a) migration `af8254074bef` (`budget.pay_schedule` +
 audit trigger + cadence backfill, both directions verified), `PaySchedule` model, registry + audit
-registration, `pay_schedule_service`. (b) `pay_period_admin` lock classifier (`classify_period_lock`
-/ `classify_periods_bulk` + `PeriodLockReason`) and the reusable `assert_pay_period_invariants` (in
-`tests/_test_helpers.py`). (c) `period_population` + `extend_pay_periods`. Commits `2087a2b` /
-`61a589a` / `a903969`. `pylint app/` 10.00/10, full suite 6149 passed.
+registration, `pay_schedule_service` (`2087a2b`). (b) `pay_period_admin` lock classifier +
+`assert_pay_period_invariants` (`61a589a`). (c) `period_population` + `extend_pay_periods`
+(`a903969`). (d) `truncate_pay_periods` (bulk-DELETE + lock + discard gates) + the two new
+exceptions (`2e05cd5`). (e) `regenerate_pay_periods` (`0cf78c6`). (f) routes + schemas + manage UI
+(`90bd2a3`). `pylint app/` 10.00/10, full suite 6183 passed.
+
+## Code review findings (2026-06-13)
+
+A final high-effort multi-agent review of the Phase 1 diff (`b21aab6..HEAD`). One correctness bug
+fixed inline; the rest recorded here to address in a new session.
+
+**FIXED inline:**
+
+- **Regenerate payday off-by-one.** `_regenerate_keep_through_index` used `start_date >= today`, but
+  `get_current_period` matches `start_date <= today <= end_date`, so on a payday (start == today)
+  the current in-progress period was pulled into the rebuildable tail and wiped. Changed to strict
+  `start_date > today`; regression test `test_period_starting_today_is_kept` added.
+
+**OPEN follow-ups (new session):**
+
+- **`upsert_schedule` insert race.** A concurrent first-generation double-submit has both requests
+  see "no row" and race `uq_pay_schedule_user`; the loser raises `IntegrityError` (uncaught -> 500).
+  The unique constraint prevents bad data (no double rows) -- this is only an ugly 500 on a rare
+  double-click. Make idempotent (Postgres `ON CONFLICT`, or catch `IntegrityError` and re-fetch), or
+  fold into the Phase 2 advisory-lock concurrency work.
+- **DRY: dead single-period classifier.** `classify_period_lock` and its three scalar `EXISTS`
+  helpers (`_holds_settled_transaction` / `_is_account_anchor` / `_is_recurrence_anchor`) have NO
+  production caller -- every live path uses `classify_periods_bulk`. The two query strategies encode
+  the same three lock rules (drift risk on the spine-critical classifier). Consolidate: keep
+  `classify_period_lock` as the public single-period API but delegate it to
+  `classify_periods_bulk([period])[period.id]`, and delete the three scalar helpers.
+- **Truncate can delete the current in-progress period.** Only historical/settled/anchor are
+  hard-locked, so a `keep_through_index` below the current period deletes it (the user picks the
+  boundary, so this is deliberate today, but `get_current_period` then returns `None` until the next
+  generate). Consider a soft confirm if undesired.
+- **Concurrency TOCTOU.** The classify-then-bulk-DELETE window: a period that becomes settled or an
+  anchor between `classify_periods_bulk` and the `DELETE` could cascade a newly-settled row or 500
+  on the anchor FK. Negligible for the solo operator; fold into the Phase 2 advisory-lock work.
+
+**VERIFIED NOT BUGS (no action):** the lock/discard scan is intentionally scenario-unfiltered (the
+cascade deletes all scenarios' rows, so gating on any is correct); credit-payback orphan is gated
+(paybacks are `template_id IS NULL`, and a payback is always `source_period + 1` so a tail cut keeps
+both on the same side); anchor-history audit rows live at past/current positions, never the deleted
+future tail; `resolve_cadence` cannot mis-infer because periods are only ever created by generation
+(consistent cadence); `extend` deliberately does not persist cadence (it is a one-off append, not a
+cadence-defining op).
 
 ## Context
 
