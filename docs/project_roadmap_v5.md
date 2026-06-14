@@ -1,12 +1,40 @@
 # Budget App -- Project Roadmap v5
 
-**Version:** 5.0 **Date:** May 6, 2026 **Parent Documents:** project_requirements_v2.md,
+**Version:** 5.1 **Date:** June 14, 2026 **Parent Documents:** project_requirements_v2.md,
 project_requirements_v3_addendum.md **Supersedes:** project_roadmap_v4-6.md (preserved for
 historical reference)
 
 ---
 
 ## Overview
+
+### What changed in v5.1 (this revision, June 14, 2026)
+
+This revision realigns the roadmap with the code that has actually shipped since v5.0. No
+future-work specs were deleted; the changes are status corrections and additions to the
+completed-work appendix.
+
+1. **Section 1 (Security Remediation) re-scored.** v5.0 reported "16 of 56 commits merged (~29%)."
+   The true state: Phases 1-7 are complete, Phase 8 (low/info cleanup) findings were consolidated
+   into earlier commits (C-40, C-44, C-45, C-46) and largely shipped, two Phase 8 items remain
+   (Argon2id password-hash migration and a config-drift check script), Phase 9 (C-53..C-55) and C-39
+   are deliberately not being pursued, and Phase 10 is operator-tracked. The status was verified
+   against merged git history, not the plan document.
+2. **Section 2 (Financial Calculation Consistency): Stage A marked COMPLETE.** The May-June 2026
+   financial-calculation audit (25 findings) was remediated; canonical balance/loan producers and a
+   cross-page regression lock shipped. Stages B and C are deferred with explicit revisit criteria.
+3. **Appendix A extended (A.11 through A.20)** with everything completed since v5.0: carry-forward
+   aftermath and envelope view, test performance and per-worker databases, mobile v3, the
+   amortization engine split, the homelab security audit, the code quality audit and remediation
+   (pylint 10.00/10 plus quality-pass plus deep-quality-hunt), the polyglot standards cleanup,
+   dev/prod container parity, the Fable 5 UI/UX overhaul, and pay-period CRUD with a rolling window.
+4. **Folded in the unmerged "v5.1" draft.** A prior v5.1 status update was written on branch
+   `claude/busy-thompson-rEhgG` (May 21, 2026) but never merged. Its still-valid decisions (the
+   security descope rationale and the Stage B/C deferral criteria) are carried into this revision;
+   the draft is otherwise superseded.
+
+Future Sections 3-6 (Smart Features, Notifications, Data Export, Multi-User) are unchanged from
+v5.0.
 
 ### What changed in v5
 
@@ -60,8 +88,8 @@ See **Appendix B** for the full deferred-items reference.
 
 | Section | Title                                | Status              | Summary                                                                                                  |
 | ------- | ------------------------------------ | ------------------- | -------------------------------------------------------------------------------------------------------- |
-| 1       | Security Remediation                 | In progress         | Close 164 verified findings across 56 commits in 10 phases; Phases 1 and 2 complete (16 of 56 merged).   |
-| 2       | Financial Calculation Consistency    | Stage A pending     | Unify multiple paths that compute monetary amounts; optionally migrate to double-entry and envelopes.   |
+| 1       | Security Remediation                 | Mostly complete     | Phases 1-7 done; Phase 8 low/info findings consolidated and largely shipped; Argon2id migration + config-drift script remain; Phase 9 and C-39 not pursued; Phase 10 operator-tracked. |
+| 2       | Financial Calculation Consistency    | Stage A complete    | Stage A (single source of truth for balances) shipped; 25-finding audit remediated. Stages B and C deferred with revisit criteria. |
 | 3       | Smart Features                       | Planned             | Seasonal forecasting, smart estimates, inflation, third paycheck guidance, anomaly detection, etc.       |
 | 4       | Notifications                        | Planned             | 15 notification types in 6 groups; bell + dropdown + `/notifications` page; email deferred.              |
 | 5       | Data Export                          | Planned             | CSV, PDF reports, full data backup with restore.                                                         |
@@ -71,17 +99,24 @@ See **Appendix B** for the full deferred-items reference.
 
 ## 1. Security Remediation
 
-**Status:** In progress (16 of 56 commits merged, ~29% complete). **Audit date:** April 15, 2026.
-**Canonical plan:** `docs/audits/security-2026-04-15/remediation-plan.md` (7042 lines).
+**Status:** Mostly complete. Phases 1-7 shipped; Phase 8 (low/info cleanup) findings were
+consolidated into earlier commits and largely shipped; two Phase 8 items remain (the Argon2id
+password-hash migration and a config-drift check script); Phase 9 is not being pursued; Phase 10 is
+operator-tracked. Verified against merged git history. **Audit date:** April 15, 2026.
+**Canonical plan:** `docs/audits/security-2026-04-15/remediation-plan.md`.
 **Supporting files in `docs/audits/security-2026-04-15/`:** `findings.md`, `c-09-followups.md`,
 `reports/`, `sbom/`, `scans/`.
 
 ### 1.1 Context
 
 The April 2026 security audit identified 164 verified findings (1 Critical, 29 High, 52 Medium, 79
-Low, 3 Info). The remediation plan prescribes 56 commits across 10 sequential phases and is the
-canonical execution document; this roadmap entry is a status pointer only. Detail (per-commit scope,
-files, migrations, tests, code snippets) lives in the plan file and is not duplicated here.
+Low, 3 Info). The remediation plan prescribed 56 commits across 10 sequential phases and remains the
+canonical execution document; this roadmap entry is a status pointer only. As the work landed,
+several Phase 8 low/info commits were folded into earlier commits (for example, C-43 absorbed the FK
+ondelete sweep, C-45 absorbed the retirement-Decimal and grid-None-check findings, C-46 absorbed the
+except-narrowing sweep), so the original 56-commit count no longer maps one-to-one onto what
+shipped. The phase summary below is the accurate status. Detail (per-commit scope, files,
+migrations, tests, code snippets) lives in the plan file and is not duplicated here.
 
 ### 1.2 Phase Summary
 
@@ -89,58 +124,72 @@ files, migrations, tests, code snippets) lives in the plan file and is not dupli
 | ----- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
 | 1     | C-01..C-12   | Crypto and history: SECRET_KEY history excise, session invalidation, MFA hardening (backup codes, TOTP replay, secret storage), rate-limiting, cookies | COMPLETE |
 | 2     | C-13..C-16   | Audit log: DB-tier audit triggers rebuild, systematic `log_event()` rollout, off-host shipping, PII redaction                                          | COMPLETE |
-| 3     | C-17..C-23   | Financial invariants: anchor balance optimistic locking, stale-form prevention, TOCTOU duplicate prevention, transfer state-machine guards            | NEXT     |
-| 4     | C-24..C-28   | Input validation and schema sync: Marshmallow Range sweep, boolean NOT NULL, boundary inclusivity, auth schemas, multi-tenant account_type guard       | Pending  |
-| 5     | C-29..C-31   | Access-control consistency: cross-user FK re-parenting fix, analytics ownership checks, 404-everywhere unification                                     | Pending  |
-| 6     | C-32..C-39   | Config and hardening: production configs, network topology, Docker hardening bundle, Postgres TLS, Docker secrets, field-level PII encryption          | Pending  |
-| 7     | C-40..C-43   | Schema cleanup: migration backfill conventions, duplicate CHECK cleanup, salary + HYSA index/FK repair                                                 | Pending  |
-| 8     | C-44..C-52   | Low/Info cleanup: verify_password hardening, grid robustness, retirement Decimal, narrow except blocks, Argon2id migration, config drift check         | Pending  |
-| 9     | C-53..C-55   | Bigger features: server-side sessions + WebAuthn, GDPR export and delete, process-memory key documentation                                             | Pending  |
-| 10    | C-56         | Host runbook: out-of-repo host hardening (chmod, sysctl, auditd, sshd, GRUB, core dumps, AIDE, NTP, PAM)                                               | Pending  |
+| 3     | C-17..C-23   | Financial invariants: anchor balance optimistic locking, stale-form prevention, TOCTOU duplicate prevention, transfer state-machine guards            | COMPLETE |
+| 4     | C-24..C-28   | Input validation and schema sync: Marshmallow Range sweep, boolean NOT NULL, boundary inclusivity, auth schemas, multi-tenant account_type guard       | COMPLETE |
+| 5     | C-29..C-31   | Access-control consistency: cross-user FK re-parenting fix, analytics ownership checks, 404-everywhere unification                                     | COMPLETE |
+| 6     | C-32..C-39   | Config and hardening: production configs, network topology, Docker hardening bundle, Postgres TLS, Docker secrets, field-level PII encryption          | C-32..C-38 done; C-39 not pursued |
+| 7     | C-40..C-43   | Schema cleanup: migration backfill conventions, duplicate CHECK cleanup, salary + HYSA index/FK repair                                                 | COMPLETE |
+| 8     | C-44..C-52   | Low/Info cleanup: verify_password hardening, grid robustness, retirement Decimal, narrow except blocks, Argon2id migration, config drift check         | Mostly done; findings folded into C-40/C-44/C-45/C-46; Argon2id + config-drift remain |
+| 9     | C-53..C-55   | Bigger features: server-side sessions + WebAuthn, GDPR export and delete, process-memory key documentation                                             | NOT PURSUING |
+| 10    | C-56         | Host runbook: out-of-repo host hardening (chmod, sysctl, auditd, sshd, GRUB, core dumps, AIDE, NTP, PAM)                                               | Operator-tracked |
 
-### 1.3 Pending architectural decisions
+### 1.3 Descoped commits
 
-Seven decisions are documented in the plan and gate specific commits. They require developer input
-before the affected commits can land:
+These were deliberately not pursued. The rationale is recorded here so a future revisit can pick up
+the trail.
 
-- **C-06:** Flask-Limiter backend (Redis vs. single-worker Gunicorn).
-- **C-15:** Off-host log destination (S3 Object Lock vs. Loki vs. rsyslog).
-- **C-02:** HSTS preload submission (now vs. 90-day defer).
-- **C-39:** Field-level encryption scope (email + name + balance vs. expand).
-- **C-11:** HIBP API source (hosted vs. self-hosted vs. zxcvbn-only).
-- **C-48:** Argon2id migration (opportunistic on-login vs. batch).
-- **C-53:** Server-side sessions (single commit vs. split into C-53a/C-53b).
+- **C-39 (field-level PII encryption):** The effort-to-benefit ratio is not favourable for a
+  solo-operator, single-tenant deployment that already has disk-level encryption. Revisit if a
+  multi-user or hosted-tier deployment becomes a goal.
+- **C-53 (server-side sessions + WebAuthn):** Client-side signed cookies remain adequate for the
+  current threat model and single user. Revisit if a session-revocation gap is observed in practice
+  or WebAuthn becomes a daily-use requirement.
+- **C-54 (GDPR export and delete):** Section 5 (Data Export) covers the user-initiated export side.
+  A formal GDPR delete-request workflow is not warranted for a single-user deployment. Revisit if
+  multi-user lands.
+- **C-55 (process-memory key documentation):** Documentation-only commit; the operator already holds
+  the key-handling mental model.
 
-### 1.4 Critical path
+### 1.4 Remaining work
 
-Phase 3 (Financial Invariants) is the next gate: it must complete before Section 2 (Financial
-Calculation Consistency) can begin work that touches transaction or balance code, to avoid merge
-conflicts on the same routes and services.
+The earlier decision list (Redis vs. single-worker limiter, off-host log destination, HSTS preload,
+HIBP source, and the rest) collapsed as Phases 1-7 landed. What is left:
+
+- **Argon2id password-hash migration (Phase 8, F-088 + F-141):** bcrypt is still in use; an
+  opportunistic on-login rehash to Argon2id is planned but not yet shipped.
+- **Config-drift check script (Phase 8):** not yet shipped.
+- **Phase 10 host hardening (C-56):** out-of-repo operator work (chmod, sysctl, auditd, sshd, GRUB,
+  core dumps, AIDE, NTP, PAM), tracked by the operator directly.
+
+The original Phase 3 -> Section 2 sequencing gate is satisfied: both have shipped.
 
 ---
 
 ## 2. Financial Calculation Consistency
 
-**Status:** Stage A is committed but not yet started. Stages B and C are decision-pending and
-require a separate design document plus developer approval before work begins. A detailed
-implementation plan will be written for each stage before implementation starts.
+**Status:** Stage A is COMPLETE and shipped. The May-June 2026 financial-calculation audit (25
+findings: 5 Critical, 8 High, 7 Medium, 5 Low) was remediated through the main and follow-up commit
+chains; the audit artefacts live in `docs/audits/financial_calculations/`. Stages B and C are
+DEFERRED with explicit revisit criteria, because Stage A closed enough of the gap that neither is
+currently warranted.
 
 **Goal:** The app produces identical monetary values regardless of which view, route, or service
 computes or displays them. Structural rules prevent new parallel computation paths from being
 introduced.
 
-This section has three sequenced stages: Stage A removes immediate inconsistency between existing
-computation paths; Stages B and C are architectural changes that build on Stage A and are recorded
-for visibility, not yet approved.
+This section has three sequenced stages: Stage A removed immediate inconsistency between existing
+computation paths; Stages B and C are architectural changes that build on Stage A and are deferred
+unless their revisit criteria fire.
 
-### 2.1 Stage A -- Single source of truth for balances
+### 2.1 Stage A -- Single source of truth for balances (COMPLETE)
 
-**Problem:** Some views and services compute the same logical balance through different code paths.
-The paths can drift, producing visible inconsistencies. Documented symptoms have included cells that
-did not match the subtotal containing them and the historic salary-profile vs. grid net biweekly
-mismatch (Appendix A.1, task 3.3).
+**Problem:** Some views and services computed the same logical balance through different code paths.
+The paths drifted, producing visible inconsistencies. Documented symptoms included the
+$160 grid vs. $114.29 `/savings` mismatch, the ARM monthly payment creep inside the fixed-rate
+window, cells that did not match the subtotal containing them, and the historic salary-profile vs.
+grid net biweekly mismatch (Appendix A.1, task 3.3).
 
-**Outcome after Stage A:**
+**Outcome (delivered):**
 
 - A single canonical computation produces every balance, subtotal, and aggregate the app shows in
   the grid, dashboards, calendar views, year-end summary, and account detail pages.
@@ -151,7 +200,20 @@ mismatch (Appendix A.1, task 3.3).
   same result for the same inputs. A new code path that diverges fails the suite.
 - The coding standards record the rule so future contributors do not introduce a parallel path.
 
-### 2.2 Stage B -- Double-entry ledger (decision pending)
+**Evidence (May-June 2026):** A read-only audit produced 25 findings
+(`docs/audits/financial_calculations/08_findings.md`, with the phase-by-phase artefacts `00`-`09`).
+Remediation established canonical producers for the load-bearing concepts: E-18 (event-derived loan
+resolver, backed by an append-only `loan_anchor_events` table), E-19 (date-anchored anchor resolver,
+NULL state unreachable), E-25 (canonical entries-aware balance and subtotal producer, routed across
+the grid, `/savings`, `/accounts`, the calendar, year-end, net-worth, investment, and retirement),
+E-26 (centralised `round_money`, retiring the bare `.quantize()` sites that silently used banker's
+rounding), and E-27 (balance-as-of-date). The HIGH-01 cross-page balance-equality regression test is
+the structural lock that fails any future code path that bypasses the canonical producer; a static
+guard test also forbids grid and accounts from re-deriving balances. The developer-reported symptoms
+are resolved. Supporting docs: `remediation_plan.md` and `remediation_follow_up.md` in the same
+directory.
+
+### 2.2 Stage B -- Double-entry ledger (DEFERRED)
 
 **Problem:** Even after Stage A, balances are derived from transaction records rather than recorded
 directly. Future architectural changes to transactions or transfers risk re-introducing the
@@ -178,11 +240,11 @@ budget.journal_entries
 - standard audit columns
 ```
 
-**Decision criterion:** Revisit after Stage A lands and the residual divergence is measurable. If
-Stage A closes enough of the gap, Stage B may not be necessary. If divergence persists or future
-architectural work risks re-introducing it, Stage B becomes the structural fix.
+**Decision criterion:** Stage A has landed (Section 2.1) and the cross-page regression test
+currently holds, so Stage B is not warranted today. It becomes the structural fix only if divergence
+reappears or if future architectural work on transactions or transfers risks re-introducing it.
 
-### 2.3 Stage C -- Envelope budgeting (decision pending, requires Stage B)
+### 2.3 Stage C -- Envelope budgeting (DEFERRED, requires Stage B)
 
 **Problem:** Budget categories do not have first-class per-period spending allocations. Per-template
 entry tracking from the Spending Tracker (Appendix A.10) addresses the most common variable-amount
@@ -1147,6 +1209,125 @@ debit/credit scenarios. Parent transactions with `track_individual_purchases` ca
 Credit status (entry-level credit replaces it). Supporting document:
 `phase_scope_spending_tracker.md`. See v4-6 Section 9 for full detail.
 
+### A.11 Carry-Forward Aftermath and Envelope View -- COMPLETE May 2026
+
+Reworked what happens to a budget row's leftover when a pay period closes. Carry-forward now
+branches by template kind (Option F): envelope templates settle the source row at real spend and
+roll the leftover into the target period's canonical row, while discrete templates keep the
+move-whole behaviour. Introduced the `is_envelope` column (renamed from
+`track_individual_purchases`), a shared `settle_from_entries` helper, a pre-flight confirmation
+modal, and Marshmallow validation that rejects `is_envelope=True` on income templates. The grid
+display ("one row per envelope per period") shipped alongside the mobile v3 work (A.13). The earlier
+`carried_from_period_id` FK proposal in `implementation_plan_envelope_view.md` was superseded by the
+settle-and-roll model. Supporting docs: `docs/historical/carry-forward-aftermath-design.md`,
+`docs/historical/carry-forward-aftermath-implementation-plan.md`,
+`docs/historical/implementation_plan_envelope_view.md`.
+
+### A.12 Test Performance and Per-Worker Databases -- COMPLETE May 2026
+
+A multi-phase effort to make the ~5,500-test suite fast and reliable under `pytest-xdist`. Each
+xdist worker now gets its own database cloned from a prebuilt template (`build_test_template.py`)
+instead of sharing one database with per-test TRUNCATE; PostgreSQL was upgraded 16 -> 18 across the
+test, CI, dev, and prod clusters; and two pre-existing test-isolation bugs (rate-limit cleanup and
+malformed index teardown) were fixed, collapsing a 50-70% intermittent failure rate to deterministic
+green. Result: the full suite runs in roughly 65 s at `-n 12`. Supporting docs:
+`docs/audits/test_improvements/per-worker-database-plan.md`,
+`docs/audits/test_improvements/test-performance-implementation-plan.md`,
+`docs/audits/test_improvements/phase1-flake-investigation.md`.
+
+### A.13 Mobile Experience v3 -- COMPLETE May 2026
+
+A follow-up to the April 2026 mobile work (A.8) that rebuilt the mobile grid around daily workflows:
+a "This Period" default tab with period navigation and a "Plan" multi-period accordion, per-card
+inline action bars (Mark Paid / Edit Amount / Open Full), drag-to-dismiss bottom sheets with iOS
+keyboard avoidance, a swipe-to-mark-paid gesture with a non-gesture equivalent,
+`inputmode="decimal"` on monetary inputs, card layouts for the list pages, a navbar offcanvas
+drawer, and a static-only service worker plus a PWA manifest with maskable icons. Desktop and mobile
+transaction rendering were de-duplicated into shared macros. Supporting docs:
+`docs/historical/implementation_plan_mobile_v3.md`, `docs/historical/mobile_follow_up.md`.
+
+### A.14 Amortization Engine Split -- COMPLETE May-June 2026
+
+Split `amortization_engine` from one fused function into two primitives (replay confirmed history,
+project forward) plus a composer, which made a real bug syntactically impossible: the old code
+applied `extra_monthly` to months with no confirmed payment, fabricating accelerated history. The
+payoff-calculator chart (Original / Committed / Accelerated), the dashboard loan chart, and all
+downstream consumers now read through the `loan_resolver` chokepoint. This refactor is the substrate
+for Section 2.1's E-18 event-derived loan resolver and also resolved the C0302 (too-many-lines) root
+by moving the engine into a package. Supporting docs:
+`docs/plans/historical/2026-05-21-amortization-engine-split-implementation.md`,
+`docs/plans/historical/2026-05-21-amortization-engine-split-replay-projection.md`.
+
+### A.15 Homelab Security Audit -- COMPLETE May 2026
+
+A companion infrastructure audit (distinct from the app-level Section 1) of the operator's homelab
+Docker stack: Cloudflare Tunnel ingress, the shared Nginx vhost, real-IP pinning, security headers,
+per-container hardening (`cap_drop`, `no-new-privileges`, `read_only`), and image digest pinning.
+Six of ten findings were closed in a same-day remediation pass; the remainder (tier segmentation, a
+UniFi upgrade, a Cloudflare Access scope) were deferred. It shares the C-33 network-isolation work
+with Section 1. Supporting doc: `docs/audits/homelab-security-2026-05-09/findings.md`.
+
+### A.16 Code Quality Audit and Remediation -- COMPLETE June 2026
+
+A three-part internal quality program over `app/` and `scripts/`. (1) Both trees were driven to a
+hard pylint 10.00/10 floor, CI-locked, with custom Shekel checkers (decimal-from-float,
+refname-compare, bare-money-quantize, disable-rationale) and several package splits (validation,
+auth, loan, amortization, transactions, transfers) to fix too-many-args and duplicate-code at the
+root. (2) A design-quality second pass reviewed every file the cleanup touched against a right-
+abstraction / DRY / SOLID / Pythonic / test-quality rubric, confirming no over-reach or
+gold-plating. (3) A deep adversarial hunt surfaced 88 verified findings (6 High, 34 Medium, 48 Low),
+now exhausted, including correctness fixes (a delete-source payback-cleanup orphan and a
+transfer-specific transition map). Supporting docs: `docs/audits/pylint-cleanup/plan.md`,
+`docs/audits/pylint-cleanup/quality-pass.md`, `docs/audits/pylint-cleanup/deep-quality-hunt.md`.
+
+### A.17 Polyglot Standards Cleanup -- COMPLETE June 2026
+
+A standards audit of every non-Python surface (shell, JavaScript, CSS, Jinja templates, SQL, Docker,
+CI workflows, Markdown): 124 findings, of which 113 were judgment-only with no mechanical linter to
+catch them. Notable fixes included a restore script that dropped the database before validating its
+input, a Ctrl+C path that could leave transactions half-mutated, and a fail-open hook cluster. All
+five phases shipped, and a stack of non-Python linter floors (Biome, shellcheck/shfmt, djlint,
+actionlint/zizmor, hadolint, yamllint, gitleaks, typos, rumdl) was wired into pre-commit and CI.
+Shipped across PRs #33-#36. Supporting docs: `docs/audits/polyglot-cleanup/findings.md`,
+`docs/audits/polyglot-cleanup/tooling.md`.
+
+### A.18 Dev/Prod Container Parity -- COMPLETE June 2026
+
+An audit comparing the production container stack against the development setup, closing the gaps
+that mattered after stabilization: a dev app healthcheck, scoped Flask debug binds, a dev Redis with
+rate limiting, owner-role parity by making the containerized dev app the primary workflow, Postgres
+digest pinning, an external pgdata volume, and host hygiene. The biggest correctness item was
+pinning `TZ=America/New_York` on the app services so date-boundary logic matches production (see
+`project_timezone_display_policy`). One operator action (a systemd audit-cleanup timer) is the only
+follow-up requiring host sudo. Supporting doc: `docs/audits/dev-prod-parity/findings.md`.
+
+### A.19 Fable 5 UI/UX Overhaul -- Core shipped June 2026 (per-screen rollout ongoing)
+
+A full UI/UX overhaul (not a reskin) under a new design language. Shipped pieces: the grid rebuild
+(month-spine layout, an anchored action card replacing the three-tier edit system, a Ctrl+K command
+palette, keyboard cursor actions, and targeted HTMX swaps replacing full-page reloads); the Steel
+Ink token/theme system app-wide; the `app.css` split into seven concern-scoped stylesheets plus a
+per-render chart factory and content-hash static-asset versioning; the dashboard "Terminal Road"
+rebuild (a chart-led health check driven by pulse/tracks producers); and app-wide standardization of
+currency formatting (the money macro and `ShekelChart.formatMoney`, fixing `$-270` -> `-$270`) and
+timezone display (UTC in the database, America/New_York at presentation). Grid, theme, and the CSS
+split shipped via PRs #31-#32; the dashboard rebuild followed on `dev`. Still ongoing: the per-user
+theme-selector UI (Scope B) and the per-screen rollout to the remaining pages. Supporting docs in
+`docs/design/`: `fable5-design-language.md`, `grid_audit.md`, `css_architecture_audit.md`,
+`dashboard_card_audit.md`, `overhaul_plan.md`, `visual_loop.md`.
+
+### A.20 Pay-Period CRUD and Rolling Window -- COMPLETE June 2026
+
+New feature (not previously on the roadmap): full lifecycle management of the pay-period schedule.
+Phase 0 hardened the schema (deferrable anchor FK, uniqueness constraint). Phase 1 added a
+`budget.pay_schedule` table, a lock classifier, and the extend / truncate / regenerate operations
+with block-and-confirm gates on destructive actions. Phase 2 added a continuous rolling window that
+keeps N periods ahead of today via a Postgres advisory lock and an idempotent upsert, with grid and
+dashboard trigger hooks and a settings UI. Phase 3 added a bounded full reset behind a zero-settled
+gate that wipes the schedule (including the anchor period) and re-anchors via a schema-qualified
+`SET CONSTRAINTS ... DEFERRED`, re-phasing the recurrence offset. Shipped via PR #37. Supporting
+doc: `docs/plans/historical/implementation_plan_pay_period_crud.md`.
+
 ---
 
 ## Appendix B -- Deferred Items Reference
@@ -1187,3 +1368,4 @@ Credit status (entry-level credit replaces it). Supporting document:
 | 4.5     | 2026-04-07 | Section 7 fully rescoped: notification types expanded from 7 to 15 across 6 named groups; data model expanded with explicit columns for all configurable parameters; new infrastructure subsections (snooze, auto-resolve, persist dashboard alerts); in-app delivery split into bell/dropdown and full page; settings UI Option B grouped expandable sections; email delivery expanded with delivery window and batching. |
 | 4.6     | 2026-04-09 | New Section 9 added (Spending Tracker and Companion View): sub-transaction entry tracking, entry-level credit card workflow, companion user role, balance calculator extended with entry-aware effective amount. Multi-user (Section 10) bumped from Priority 8 to Priority 9. Sections 10-12 renumbered. |
 | 5.0     | 2026-05-06 | Major reorganisation. Numbering: collapsed the dual Priority/Section system into a single sequential top-level track in execution order. Subsection numbers renumbered to follow their new parent: former 6.x became 3.x (Smart Features), former 7.x became 4.x (Notifications), former 8A.x became 5.x (Data Export). Internal cross-references updated to match. Completions: marked Visualization and Reporting Overhaul (was Priority 4 / Section 8, now Appendix A.9) and Spending Tracker and Companion View (was Priority 8 / Section 9, now Appendix A.10) complete (May 2026). Completed work relocated to Appendix A with original v4-6 section labels preserved on the appendix headings for cross-reference with prior commits and design docs. New Section 1 (Security Remediation) added, linking to `docs/audits/security-2026-04-15/remediation-plan.md` (in progress, 16 of 56 commits merged). New Section 2 (Financial Calculation Consistency) added with three sequenced stages (Stage A committed; Stages B and C decision-pending). Execution order for remaining work: Security, Financial Consistency, Smart Features, Notifications, Data Export, Multi-User. Phase 10 (was Section 7) became Section 4. Section 8A (Data Export) became Section 5. Section 10 (Multi-User) became Section 6. Section 11 (Deferred Items Reference) became Appendix B. Supersedes `project_roadmap_v4-6.md` (preserved as historical archive). |
+| 5.1     | 2026-06-14 | Realigned with shipped code. Section 1 (Security) re-scored against merged git history: Phases 1-7 complete, Phase 8 low/info findings consolidated into C-40/C-44/C-45/C-46 and largely shipped, Argon2id migration + config-drift script remain, Phase 9 (C-53..C-55) and C-39 not pursued (rationale recorded in 1.3), Phase 10 operator-tracked. Section 2 (Financial Calculation Consistency): Stage A marked COMPLETE (25-finding audit remediated; canonical producers E-18/E-19/E-25/E-26/E-27; HIGH-01 cross-page regression lock), Stages B and C deferred with revisit criteria. Appendix A extended with A.11-A.20 for work completed since v5.0: carry-forward aftermath and envelope view, test performance and per-worker databases, mobile v3, amortization engine split, homelab security audit, code quality audit and remediation (pylint 10.00/10 + quality-pass + deep-quality-hunt), polyglot standards cleanup, dev/prod container parity, the Fable 5 UI/UX overhaul, and pay-period CRUD with a rolling window. Folded in the still-valid decisions from the unmerged v5.1 draft on branch `claude/busy-thompson-rEhgG`. Future Sections 3-6 (Smart Features, Notifications, Data Export, Multi-User) unchanged. |
