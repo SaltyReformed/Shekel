@@ -22,7 +22,12 @@ import json
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app.services import dashboard_pulse_service, dashboard_service
+from app.extensions import db
+from app.services import (
+    dashboard_pulse_service,
+    dashboard_service,
+    pay_period_admin,
+)
 from app.services.account_resolver import resolve_grid_account
 from app.utils.auth_helpers import require_owner
 
@@ -138,6 +143,12 @@ def page():
     here: the pulse chart series to a JSON string and the debt track's
     principal-paid fraction to a percent.
     """
+    # Continuous rolling window: top up on dashboard entry (a future-
+    # period consumer).  A no-op (one count, no lock) when rolling is
+    # disabled; commits only when periods were actually created.
+    if pay_period_admin.top_up_rolling_window(current_user.id):
+        db.session.commit()
+
     has_account = resolve_grid_account(
         current_user.id, current_user.settings,
     ) is not None

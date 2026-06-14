@@ -26,6 +26,7 @@ from app.models.ref import Status, TransactionType
 from app.services import (
     balance_resolver,
     grid_view_service,
+    pay_period_admin,
     pay_period_service,
 )
 from app.services.account_resolver import resolve_grid_account
@@ -496,6 +497,13 @@ def index():
     then dispatches to ``grid/grid.html``.
     """
     user_id = current_user.id
+
+    # Continuous rolling window: top up before resolving the grid so any
+    # newly generated periods are visible this request.  A no-op (one
+    # count, no lock) when rolling is disabled; commits only when periods
+    # were actually created.
+    if pay_period_admin.top_up_rolling_window(user_id):
+        db.session.commit()
 
     ctx = _resolve_grid_context(
         user_id, request.args, current_user.settings,

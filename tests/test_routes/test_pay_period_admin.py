@@ -51,6 +51,18 @@ def _indices(user_id):
     return {p.period_index for p in pay_period_service.get_all_periods(user_id)}
 
 
+def _future_count(db_session, user_id):
+    """Current-and-future periods (``end_date >= FROZEN_TODAY``)."""
+    return (
+        db_session.query(PayPeriod)
+        .filter(
+            PayPeriod.user_id == user_id,
+            PayPeriod.end_date >= FROZEN_TODAY,
+        )
+        .count()
+    )
+
+
 class TestExtendRoute:
     """POST /pay-periods/extend."""
 
@@ -273,6 +285,61 @@ class TestScheduleRoute:
                 },
             )
             assert resp.status_code == 404
+
+
+class TestRollingTriggerHooks:
+    """The grid + dashboard entry points top up the rolling window."""
+
+    def _setup_rolling_with_deficit(self, db_session, seed_user, target):
+        """Current + one future period, rolling on at ``target`` (a deficit).
+
+        idx 1 spans the frozen today (06-08..06-21) so a current period
+        exists; idx 2 is the next future period.  ``end_date >= today``
+        counts both, so the window starts at 2 and is short of ``target``.
+        """
+        pay_period_service.generate_pay_periods(
+            user_id=seed_user["user"].id, start_date=date(2026, 6, 8),
+            num_periods=2, cadence_days=14,
+        )
+        pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+        pay_schedule_service.set_rolling(
+            seed_user["user"].id, enabled=True, target_periods=target,
+        )
+        db_session.commit()
+
+    def test_grid_load_tops_up_window(self, app, db, auth_client, seed_user):
+        """GET /grid with rolling on + a deficit fills the window to target."""
+        with app.app_context():
+            self._setup_rolling_with_deficit(db.session, seed_user, target=5)
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+            assert _future_count(db.session, seed_user["user"].id) == 5
+
+    def test_dashboard_load_tops_up_window(
+        self, app, db, auth_client, seed_user,
+    ):
+        """GET /dashboard with rolling on + a deficit fills the window."""
+        with app.app_context():
+            self._setup_rolling_with_deficit(db.session, seed_user, target=5)
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            assert _future_count(db.session, seed_user["user"].id) == 5
+
+    def test_grid_load_disabled_creates_nothing(
+        self, app, db, auth_client, seed_user,
+    ):
+        """GET /grid with rolling disabled leaves the schedule unchanged."""
+        with app.app_context():
+            pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id, start_date=date(2026, 6, 8),
+                num_periods=2, cadence_days=14,
+            )
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            db.session.commit()
+            before = _period_count(db.session, seed_user["user"].id)
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+            assert _period_count(db.session, seed_user["user"].id) == before
 
 
 class TestOwnerOnlyAndUi:
