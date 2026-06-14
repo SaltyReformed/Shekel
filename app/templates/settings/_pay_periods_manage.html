@@ -140,3 +140,46 @@
     </div>
   </div>
 </div>
+
+{# --- Continuous rolling window --- #}
+<div class="card mt-3">
+  <div class="card-body">
+    <h6 class="card-title">
+      <i class="bi bi-arrow-repeat"></i> Continuous rolling window
+    </h6>
+    <p class="card-text text-muted small">
+      Keep a fixed number of pay periods generated ahead automatically.
+      When on, opening the grid or dashboard tops the schedule up so the
+      target number of periods, counting the current one, always stays
+      ahead, so you never run out of forward periods.
+    </p>
+    <form method="POST" action="{{ url_for('pay_periods.schedule') }}"
+          class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-sm-6">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" role="switch"
+                 id="rolling_enabled" name="rolling_enabled" value="true"
+                 {% if pp_schedule and pp_schedule.rolling_enabled %}checked{% endif %}>
+          <label class="form-check-label" for="rolling_enabled">
+            Enable continuous rolling window
+          </label>
+        </div>
+      </div>
+      <div class="col-sm-4">
+        <label for="rolling_target_periods" class="form-label">
+          Periods to keep ahead
+        </label>
+        <input type="number" class="form-control form-control-sm"
+               id="rolling_target_periods" name="rolling_target_periods"
+               min="1" max="260" required
+               value="{{ pp_schedule.rolling_target_periods if pp_schedule else 52 }}">
+      </div>
+      <div class="col-sm-2">
+        <button type="submit" class="btn btn-primary btn-sm w-100">
+          <i class="bi bi-save"></i> Save
+        </button>
+      </div>
+    </form>
+  </div>
+</div>

@@ -365,3 +365,23 @@ class TestOwnerOnlyAndUi:
             assert b"Extend forward" in resp.data
             assert b"Remove the tail" in resp.data
             assert b"Regenerate the tail" in resp.data
+            # The rolling-window controls render too.
+            assert b"Continuous rolling window" in resp.data
+            assert b'name="rolling_target_periods"' in resp.data
+
+    def test_rolling_controls_prefilled_from_schedule(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The rolling controls reflect the saved schedule (checked + target)."""
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.set_rolling(
+                seed_user["user"].id, enabled=True, target_periods=40,
+            )
+            db.session.commit()
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            # Switch reflects enabled state; target input reflects 40.
+            assert b"checked" in resp.data
+            assert b'value="40"' in resp.data
