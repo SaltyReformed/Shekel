@@ -30,7 +30,8 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
-from app.services import account_service
+from app.services import account_service, pay_period_admin, pay_schedule_service
+from tests._test_helpers import assert_pay_period_invariants
 
 
 # ---------------------------------------------------------------------------
@@ -487,3 +488,105 @@ class TestConcurrentAnchorUpdate:
         # Anchor period must be set (whichever thread won set it
         # to the current period).
         assert final.current_anchor_period_id is not None
+
+
+# ---------------------------------------------------------------------------
+# Test Scenario 4: Concurrent rolling-window top-ups
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentRollingTopUp:
+    """Verify concurrent rolling top-ups never land a duplicate period_index.
+
+    The continuous rolling window is refilled on every grid / dashboard
+    load, so two requests can hit ``top_up_rolling_window`` for the same
+    user at the same instant.  ``UNIQUE(user_id, period_index)`` is the
+    hard guard against a duplicate index; the per-user advisory lock is
+    the UX layer that turns the racing loser's would-be IntegrityError
+    into a clean re-read-and-no-op.  These tests assert the combined
+    contract: no 500, no duplicate index, the window filled exactly to
+    target, and the structure invariants intact.
+    """
+
+    @staticmethod
+    def _enable_rolling(db_session, user_id, target):
+        """Give the user a schedule row with rolling on at ``target``."""
+        pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+        pay_schedule_service.set_rolling(
+            user_id, enabled=True, target_periods=target,
+        )
+        db_session.commit()
+
+    def test_concurrent_topups_one_fills_one_noops(self, app, db):
+        """Two simultaneous top-ups: one fills the deficit, the other no-ops.
+
+        With one current period and a target of 5 (deficit 4), exactly
+        one thread creates the 4 periods and the other -- serialised
+        behind the advisory lock -- re-reads a full window and creates 0.
+        No IntegrityError, no duplicate index, exactly 5 current-and-
+        future periods afterward.
+        """
+        data = _create_user_with_data(db.session)
+        user_id = data["user"].id
+        self._enable_rolling(db.session, user_id, target=5)
+
+        def _topup():
+            created = pay_period_admin.top_up_rolling_window(user_id)
+            db.session.commit()
+            return created
+
+        created_a, created_b = _run_concurrent(app, _topup, _topup)
+
+        # Exactly one thread filled the 4-period deficit; the other 0.
+        assert sorted([created_a, created_b]) == [0, 4], (
+            f"expected one thread to create 4 and one 0, "
+            f"got {created_a} and {created_b}"
+        )
+
+        db.session.expire_all()
+        periods = db.session.query(PayPeriod).filter_by(user_id=user_id).all()
+        indices = [p.period_index for p in periods]
+        assert len(indices) == len(set(indices)), (
+            f"duplicate period_index landed: {sorted(indices)}"
+        )
+        future = [p for p in periods if p.end_date >= date.today()]
+        assert len(future) == 5, (
+            f"window should hold exactly the target of 5, found {len(future)}"
+        )
+        assert_pay_period_invariants(db.session, user_id)
+
+    def test_topup_racing_manual_extend_no_duplicate(self, app, db):
+        """A top-up racing a manual extend never lands a duplicate index.
+
+        The rolling top-up and the manual extend are both append paths;
+        they serialise on the per-user advisory lock, so neither hits the
+        unique constraint as a 500.  Regardless of which ran first, every
+        index is unique, the window is at least the rolling target, and
+        the structure invariants hold.
+        """
+        data = _create_user_with_data(db.session)
+        user_id = data["user"].id
+        self._enable_rolling(db.session, user_id, target=5)
+
+        def _topup():
+            pay_period_admin.top_up_rolling_window(user_id)
+            db.session.commit()
+
+        def _extend():
+            pay_period_admin.extend_pay_periods(user_id, 3, cadence_days=14)
+            db.session.commit()
+
+        _run_concurrent(app, _topup, _extend)
+
+        db.session.expire_all()
+        periods = db.session.query(PayPeriod).filter_by(user_id=user_id).all()
+        indices = [p.period_index for p in periods]
+        assert len(indices) == len(set(indices)), (
+            f"duplicate period_index landed: {sorted(indices)}"
+        )
+        future = [p for p in periods if p.end_date >= date.today()]
+        assert len(future) >= 5, (
+            f"window should be filled to at least the target of 5, "
+            f"found {len(future)}"
+        )
+        assert_pay_period_invariants(db.session, user_id)

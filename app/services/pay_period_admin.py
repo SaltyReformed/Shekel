@@ -187,6 +187,12 @@ def extend_pay_periods(user_id, num_periods, cadence_days=None):
             ``generate_pay_periods`` rejects the batch via its
             forward-only overlap guard.
     """
+    # Serialize against concurrent structural mutations for this user so
+    # ``last`` is read under the lock and the append cannot race another
+    # extend / top-up into a duplicate index.  The unique constraint is the
+    # hard guard; the lock keeps the racing loser from hitting it as a 500.
+    pay_schedule_service.lock_schedule(user_id)
+
     existing = pay_period_service.get_all_periods(user_id)
     if not existing:
         raise ValidationError(
@@ -248,6 +254,12 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
         PayPeriodDiscardRequired: A to-delete period holds unrecoverable
             rows and ``confirm_discard`` is False.
     """
+    # Serialize against concurrent structural mutations so the classify
+    # and the bulk DELETE see one consistent set -- closes the
+    # classify-then-DELETE TOCTOU against another extend / top-up /
+    # truncate for this user.
+    pay_schedule_service.lock_schedule(user_id)
+
     to_delete = [
         p for p in pay_period_service.get_all_periods(user_id)
         if p.period_index > keep_through_index
@@ -320,6 +332,11 @@ def regenerate_pay_periods(
         ValidationError: ``new_start_date`` overlaps or predates the
             retained schedule (``generate_pay_periods``' forward-only guard).
     """
+    # Serialize the whole rebuild -- boundary computation through the
+    # truncate + regenerate -- for this user; re-entrant with the lock
+    # ``truncate_pay_periods`` itself takes.
+    pay_schedule_service.lock_schedule(user_id)
+
     keep_through = _regenerate_keep_through_index(user_id)
     truncate_pay_periods(user_id, keep_through, confirm_discard=confirm_discard)
     new_periods = pay_period_service.generate_pay_periods(
@@ -328,6 +345,89 @@ def regenerate_pay_periods(
     populate_periods_from_active_templates(user_id, new_periods)
     pay_schedule_service.upsert_schedule(user_id, cadence_days)
     return new_periods
+
+
+def top_up_rolling_window(user_id, as_of=None):
+    """Generate periods to keep the rolling window N ahead of today.
+
+    The on-request continuous-mode top-up, called from the grid and
+    dashboard entry points (the only routes that consume future
+    periods).  No scheduler exists, so the window is refilled lazily on
+    page load.
+
+    Cheap and idempotent.  When rolling is disabled (or the user has no
+    schedule row) it does ZERO write work and takes NO lock -- one tiny
+    schedule read.  Otherwise it counts the current-and-future periods
+    (``end_date >= as_of``, which INCLUDES the period containing
+    ``as_of``, so "keep N ahead" counts the current period as one of the
+    N) and, only if short of the target, takes the per-user advisory
+    lock, RE-COUNTS under it (another request may have just filled the
+    window), and appends exactly the deficit via
+    :func:`extend_pay_periods` (which repopulates the new periods).
+
+    Correctness against a duplicate ``period_index`` comes from
+    ``UNIQUE(user_id, period_index)``; the lock + re-count is the UX
+    layer that lets a racing loser cleanly create nothing instead of
+    hitting that constraint as a 500.
+
+    Args:
+        user_id: The owning user's id.
+        as_of: Reference date for "current and future" (defaults to
+            today).
+
+    Returns:
+        The number of pay periods created (0 when rolling is disabled,
+        the window is already full, or a concurrent top-up filled it
+        first).
+    """
+    if as_of is None:
+        as_of = date.today()
+
+    schedule = pay_schedule_service.get_schedule(user_id)
+    if schedule is None or not schedule.rolling_enabled:
+        return 0
+
+    target = schedule.rolling_target_periods
+    if _future_period_count(user_id, as_of) >= target:
+        return 0
+
+    # A deficit exists: serialize concurrent top-ups, then re-count under
+    # the lock so a request that lost the race re-reads a now-full window
+    # and creates nothing.
+    pay_schedule_service.lock_schedule(user_id)
+    deficit = target - _future_period_count(user_id, as_of)
+    if deficit <= 0:
+        return 0
+
+    new_periods = extend_pay_periods(
+        user_id, deficit, cadence_days=schedule.cadence_days,
+    )
+    return len(new_periods)
+
+
+def _future_period_count(user_id, as_of):
+    """Count the user's current-and-future periods (``end_date >= as_of``).
+
+    Includes the period containing ``as_of`` (the current period), so
+    this is the count the rolling target is compared against: "keep N
+    ahead" counts the current period as one of the N.
+
+    Args:
+        user_id: The owning user's id.
+        as_of: The reference date.
+
+    Returns:
+        The number of periods whose ``end_date`` is on or after
+        ``as_of``.
+    """
+    return (
+        db.session.query(PayPeriod.id)
+        .filter(
+            PayPeriod.user_id == user_id,
+            PayPeriod.end_date >= as_of,
+        )
+        .count()
+    )
 
 
 def _regenerate_keep_through_index(user_id):

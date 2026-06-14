@@ -4,7 +4,8 @@ Shekel Budget App -- Pay Schedule Service
 Reads and writes the per-user ``budget.pay_schedule`` row: the
 persisted pay-period cadence that the extend / regenerate paths
 continue an existing schedule from, plus the rolling-window
-configuration the continuous top-up consumes.
+configuration the continuous top-up consumes.  Also owns the per-user
+advisory lock that serializes the structural pay-period mutations.
 
 Flask-isolated -- takes and returns plain data, never imports
 ``request`` / ``session``.  Flushes so callers see assigned ids, but
@@ -13,6 +14,7 @@ never commits: the route layer owns the transaction.
 
 import logging
 
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.exceptions import ValidationError
@@ -21,6 +23,15 @@ from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
 
 logger = logging.getLogger(__name__)
+
+# Advisory-lock namespace for per-user pay-schedule serialization.  The
+# two-argument ``pg_advisory_xact_lock(namespace, user_id)`` form keys
+# every structural pay-period mutation (top-up / extend / truncate) on
+# ``(this constant, user_id)``, so the feature can never collide with
+# some other advisory lock that happens to use the same ``user_id`` as a
+# single key.  The value is arbitrary but FIXED -- "SHKL" in ASCII --
+# and fits a signed int4 (< 2**31 - 1).
+_PAY_SCHEDULE_LOCK_NAMESPACE = 0x53484B4C  # 1397705036
 
 
 def get_schedule(user_id: int) -> PaySchedule | None:
@@ -43,6 +54,31 @@ def get_schedule(user_id: int) -> PaySchedule | None:
         db.session.query(PaySchedule)
         .filter_by(user_id=user_id)
         .first()
+    )
+
+
+def lock_schedule(user_id: int) -> None:
+    """Take the per-user pay-schedule advisory lock for this transaction.
+
+    Serializes the structural pay-period mutations (top-up / extend /
+    truncate, and so regenerate, which truncates then extends) for one
+    user within the current transaction, so two concurrent requests
+    cannot interleave their count-then-append or classify-then-delete
+    windows.  Transaction-scoped: PostgreSQL releases it automatically
+    at COMMIT or ROLLBACK.  Re-entrant within a transaction, so a nested
+    caller (top-up calling extend) takes it harmlessly more than once.
+
+    The lock is the UX layer, not the correctness guard: the
+    ``UNIQUE(user_id, period_index)`` constraint is what actually
+    forbids a duplicate index on any append path.  The lock turns a
+    would-be ``IntegrityError`` 500 (the racing loser) into a clean
+    serialize-and-proceed (the loser re-reads a full window and no-ops).
+
+    Args:
+        user_id: The owning user's id, used as the lock's second key.
+    """
+    db.session.execute(
+        select(func.pg_advisory_xact_lock(_PAY_SCHEDULE_LOCK_NAMESPACE, user_id))
     )
 
 
