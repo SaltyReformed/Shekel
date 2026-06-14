@@ -45,8 +45,8 @@ from app.services import pay_period_service
 logger = logging.getLogger(__name__)
 
 
-def _resolve_anchor_period_id(user_id: int) -> int:
-    """Return the pay_period_id to anchor a new account against.
+def resolve_anchor_period_id(user_id: int) -> int:
+    """Return the pay_period_id to anchor an account against.
 
     Resolution order mirrors the migration cfb15e782f86 backfill rule:
 
@@ -56,6 +56,12 @@ def _resolve_anchor_period_id(user_id: int) -> int:
       2. The user's earliest pay period (lowest ``period_index``).
          Used when no period contains today (e.g. the user generated
          only historical periods).
+
+    Two callers share this resolution so an account's anchor period is
+    chosen the same way wherever it is set: :func:`create_account` (a new
+    account) and ``pay_period_admin.reset_pay_periods`` (re-anchoring
+    every account onto a freshly rebuilt schedule).  Public for that
+    second cross-module caller.
 
     Args:
         user_id: ``auth.users.id`` of the account owner.
@@ -117,7 +123,7 @@ class AccountSpec:
             is preserved rather than treated as "missing".
         anchor_period_id: Optional ``budget.pay_periods.id`` to anchor
             against.  When omitted, the service resolves it from the
-            user's pay periods via :func:`_resolve_anchor_period_id`.
+            user's pay periods via :func:`resolve_anchor_period_id`.
         notes: Free-text label written into the origination
             ``AccountAnchorHistory`` row's ``notes`` column so the
             audit trail names the originating path.  Defaults to
@@ -159,7 +165,7 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     Raises:
         ValidationError: When ``anchor_period_id`` is omitted and the
             user has no pay periods.  Re-raised from
-            :func:`_resolve_anchor_period_id`.
+            :func:`resolve_anchor_period_id`.
         TypeError: When ``anchor_balance`` is not a ``Decimal``.  The
             project rejects ``float`` in monetary code; passing
             ``int`` or ``str`` is also a caller bug.
@@ -185,7 +191,7 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
 
     anchor_period_id = spec.anchor_period_id
     if anchor_period_id is None:
-        anchor_period_id = _resolve_anchor_period_id(spec.user_id)
+        anchor_period_id = resolve_anchor_period_id(spec.user_id)
 
     account = Account(
         user_id=spec.user_id,

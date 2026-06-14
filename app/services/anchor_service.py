@@ -163,6 +163,58 @@ class AnchorTrueUpOutcome(enum.Enum):
     DUPLICATE_SAME_DAY = "duplicate_same_day"
 
 
+def stage_anchor_true_up(
+    *,
+    account: Account,
+    new_balance: Decimal,
+    anchor_period: PayPeriod,
+    notes: str | None = None,
+) -> None:
+    """Stage an anchor re-point + history row without committing.
+
+    The flush-only in-memory core of :func:`apply_anchor_true_up`: it
+    re-points the account's anchor period, writes the new anchor balance,
+    and appends the audit-trail :class:`AccountAnchorHistory` row.  It
+    does NOT clear past-dated entries, does NOT commit, and does NOT
+    translate the StaleData / F-103 outcomes -- the caller owns the
+    transaction and its conflict handling.
+
+    Extracted so the two paths that set an existing account's anchor share
+    ONE definition of "re-point the period + write the balance + append
+    the history row", and can never drift:
+
+      * :func:`apply_anchor_true_up` wraps this with the checking-account
+        entry reconcile, the ``commit()``, and the C-17 / F-103 outcome
+        translation its HTMX route callers depend on.
+      * ``app.services.pay_period_admin.reset_pay_periods`` re-anchors
+        every account onto a freshly rebuilt schedule inside ONE
+        transaction (the deferred anchor FK is validated only at the final
+        commit), so a per-account commit would fire that check while other
+        accounts still dangle.  It calls this flush-only core directly and
+        lets its route commit once.
+
+    Args:
+        account: An attached :class:`Account` row.  Caller owns the
+            ownership check.
+        new_balance: The validated :class:`Decimal` anchor balance to
+            write.
+        anchor_period: The :class:`PayPeriod` to anchor against.
+        notes: Optional free-text note for the history row's ``notes``
+            column (e.g. ``"origination (pay-period reset)"`` so the audit
+            trail names the originating path).  ``None`` leaves it NULL,
+            matching the true-up route path.
+    """
+    account.current_anchor_balance = new_balance
+    account.current_anchor_period_id = anchor_period.id
+
+    db.session.add(AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=anchor_period.id,
+        anchor_balance=new_balance,
+        notes=notes,
+    ))
+
+
 def apply_anchor_true_up(
     *,
     account: Account,
@@ -172,9 +224,9 @@ def apply_anchor_true_up(
 ) -> AnchorTrueUpOutcome:
     """Apply an anchor balance true-up to ``account`` and commit.
 
-    Performs the in-memory mutation, appends the audit-trail history
-    row, reconciles past-dated entries when the account is checking,
-    and commits the transaction.  Returns an
+    Stages the in-memory mutation and audit-trail history row via
+    :func:`stage_anchor_true_up`, reconciles past-dated entries when the
+    account is checking, and commits the transaction.  Returns an
     :class:`AnchorTrueUpOutcome` discriminant the caller translates
     into its rendered response.
 
@@ -220,14 +272,11 @@ def apply_anchor_true_up(
             propagates (Flask will surface as 500, which is the
             correct disposition for an unexpected DB-level failure).
     """
-    account.current_anchor_balance = new_balance
-    account.current_anchor_period_id = anchor_period.id
-
-    db.session.add(AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=anchor_period.id,
-        anchor_balance=new_balance,
-    ))
+    stage_anchor_true_up(
+        account=account,
+        new_balance=new_balance,
+        anchor_period=anchor_period,
+    )
 
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     try:

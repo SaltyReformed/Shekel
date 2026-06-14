@@ -86,3 +86,29 @@ class PayPeriodDiscardRequired(ShekelError):
             f"This will permanently discard {count} hand-entered or changed "
             f"item(s) that cannot be regenerated. Confirm to proceed."
         )
+
+
+class PayPeriodResetBlocked(ShekelError):
+    """A full pay-period reset was refused: the user has settled history.
+
+    Raised by ``pay_period_admin.reset_pay_periods`` when the user has at
+    least one settled (Paid / Received / Settled), non-deleted
+    transaction.  Reset rebuilds the WHOLE schedule -- including the
+    account anchor period -- and is a first-time-setup correction only; a
+    user whose paychecks have begun settling must use Regenerate (which
+    rebuilds only the unlocked future tail) so settled money is never
+    rewritten under a new schedule.  The operation changes nothing.
+
+    Attributes:
+        settled_count: The number of settled transactions blocking the
+            reset.
+    """
+
+    def __init__(self, settled_count):
+        self.settled_count = settled_count
+        super().__init__(
+            f"Cannot reset the schedule: you have {settled_count} settled "
+            f"transaction(s).  Reset rebuilds your entire schedule and is "
+            f"only for first-time setup before any paychecks have settled.  "
+            f"Use Regenerate to rebuild your future schedule instead."
+        )
