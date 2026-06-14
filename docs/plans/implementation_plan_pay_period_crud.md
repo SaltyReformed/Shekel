@@ -1,14 +1,18 @@
 # Implementation Plan: Pay Period CRUD + Continuous Rolling Window
 
-Status: IN BUILD. Design review 2026-06-13 locked four corrections to the original draft (see Review
-corrections below). **Phase 0 COMPLETE on `dev` (2026-06-13):** migrations `d410f6b9caa3` (anchor FK
--> `NO ACTION DEFERRABLE INITIALLY IMMEDIATE`) + `f75485db6757` (`UNIQUE(user_id, period_index)`
-with a duplicate pre-flight guard); model edits in `account.py` / `pay_period.py`; new tests
-`test_anchor_fk_deferrable.py` + `test_pay_period_index_unique.py` (9 tests); ~20 latent dup-index
-bugs in existing test scaffolding fixed at the root. Both migration directions verified,
-`flask db check` clean, `pylint app/` 10.00/10, full suite green. **NEXT: Phase 1 (CRUD)** -- and it
-must land with Test plan Disciplines 1-4 (invariant checker, balance-after-every-op,
-integrity-checker integration, adversarial tests), not just the per-operation bullets.
+Status: Phases 0, 1, and 2 COMPLETE + GREEN on `dev` (2026-06-13, not yet PR'd; full suite 6206).
+Phase 3 (full reset) is the only remaining work; its design is retained below (operation 5 +
+Migration notes). The Phase 2 build and its resolved/residual code-review follow-ups are recorded in
+the "Code review findings" section. Design review 2026-06-13 locked four corrections to the original
+draft (see Review corrections below). **Phase 0 COMPLETE on `dev` (2026-06-13):** migrations
+`d410f6b9caa3` (anchor FK -> `NO ACTION DEFERRABLE INITIALLY IMMEDIATE`) + `f75485db6757`
+(`UNIQUE(user_id, period_index)` with a duplicate pre-flight guard); model edits in `account.py` /
+`pay_period.py`; new tests `test_anchor_fk_deferrable.py` + `test_pay_period_index_unique.py` (9
+tests); ~20 latent dup-index bugs in existing test scaffolding fixed at the root. Both migration
+directions verified, `flask db check` clean, `pylint app/` 10.00/10, full suite green.
+**NEXT: Phase 1 (CRUD)** -- and it must land with Test plan Disciplines 1-4 (invariant checker,
+balance-after-every-op, integrity-checker integration, adversarial tests), not just the
+per-operation bullets.
 
 ## Review corrections (2026-06-13, locked via developer Q&A)
 
@@ -87,26 +91,30 @@ fixed inline; the rest recorded here to address in a new session.
   the current in-progress period was pulled into the rebuildable tail and wiped. Changed to strict
   `start_date > today`; regression test `test_period_starting_today_is_kept` added.
 
-**OPEN follow-ups (new session):**
+**RESOLVED in Phase 2 (2026-06-13):**
 
-- **`upsert_schedule` insert race.** A concurrent first-generation double-submit has both requests
-  see "no row" and race `uq_pay_schedule_user`; the loser raises `IntegrityError` (uncaught -> 500).
-  The unique constraint prevents bad data (no double rows) -- this is only an ugly 500 on a rare
-  double-click. Make idempotent (Postgres `ON CONFLICT`, or catch `IntegrityError` and re-fetch), or
-  fold into the Phase 2 advisory-lock concurrency work.
-- **DRY: dead single-period classifier.** `classify_period_lock` and its three scalar `EXISTS`
-  helpers (`_holds_settled_transaction` / `_is_account_anchor` / `_is_recurrence_anchor`) have NO
-  production caller -- every live path uses `classify_periods_bulk`. The two query strategies encode
-  the same three lock rules (drift risk on the spine-critical classifier). Consolidate: keep
-  `classify_period_lock` as the public single-period API but delegate it to
-  `classify_periods_bulk([period])[period.id]`, and delete the three scalar helpers.
+- **`upsert_schedule` insert race.** FIXED in slice 2a (`335fe21`): `upsert_schedule` now uses
+  `pg_insert(...).on_conflict_do_update(constraint="uq_pay_schedule_user", set_={cadence_days})` + a
+  `populate_existing` reload, so a concurrent first-generation double-submit cleanly updates instead
+  of raising `IntegrityError`. Self-contained (no dependency on the slice-2b lock).
+- **DRY: dead single-period classifier.** DONE in slice 0 (`0c7bb2a`): `classify_period_lock`
+  delegates to `classify_periods_bulk([period])[period.id]`; the three scalar `EXISTS` helpers were
+  deleted. The lock rules now have one encoding.
+- **Concurrency TOCTOU (partial).** ADDRESSED in slice 2b (`313d12c`): `truncate` (and `extend` /
+  `regenerate` / `top_up`) take the per-user advisory lock `lock_schedule`, serializing the
+  classify-then-DELETE window against all other STRUCTURAL pay-period ops. RESIDUAL (deliberately
+  NOT closed): the lock does NOT serialize truncate vs a concurrent `mark-done` (settle) or anchor
+  true-up, since those hot paths do not take it -- so the settled-row classify-then-DELETE window
+  stays theoretically open. Negligible for the solo operator (Phase 1 assessment) and closing it
+  would mean instrumenting the settlement path (rule-13 gold-plating). The anchor variant fails
+  SAFE: the NO ACTION anchor FK turns it into a loud `IntegrityError`, never silent corruption.
+
+**OPEN follow-ups (later):**
+
 - **Truncate can delete the current in-progress period.** Only historical/settled/anchor are
   hard-locked, so a `keep_through_index` below the current period deletes it (the user picks the
   boundary, so this is deliberate today, but `get_current_period` then returns `None` until the next
-  generate). Consider a soft confirm if undesired.
-- **Concurrency TOCTOU.** The classify-then-bulk-DELETE window: a period that becomes settled or an
-  anchor between `classify_periods_bulk` and the `DELETE` could cascade a newly-settled row or 500
-  on the anchor FK. Negligible for the solo operator; fold into the Phase 2 advisory-lock work.
+  generate). Consider a soft confirm if undesired. (Not concurrency; out of Phase 2 scope.)
 
 **VERIFIED NOT BUGS (no action):** the lock/discard scan is intentionally scenario-unfiltered (the
 cascade deletes all scenarios' rows, so gating on any is correct); credit-payback orphan is gated
