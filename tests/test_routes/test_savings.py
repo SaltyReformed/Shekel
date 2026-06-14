@@ -77,7 +77,7 @@ def _create_savings_account(
             propagates to ``/savings``.
         anchor_period_id: Pay period to anchor the new account
             against.  ``None`` falls back to
-            ``account_service._resolve_anchor_period_id`` (the
+            ``account_service.resolve_anchor_period_id`` (the
             user's earliest pay period at create time).
 
     Returns:

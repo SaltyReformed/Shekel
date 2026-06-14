@@ -735,3 +735,218 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
     db_session.add(entry)
     db_session.flush()
     return entry
+
+
+def _pp_assert_structure(periods, user_id):
+    """Assert the index/calendar invariants over an ordered period list.
+
+    Invariants 1-3 of :func:`assert_pay_period_invariants`, factored out
+    because they are pure in-memory checks over the already-loaded,
+    index-ordered ``periods`` and need no database access.
+
+    Args:
+        periods: The user's :class:`PayPeriod` rows ordered by
+            ``period_index`` ascending.
+        user_id: The owning user's id, used only in diagnostics.
+    """
+    # 1. Index uniqueness (the schema enforces this; re-checking catches
+    #    any path that bypasses the ORM).
+    indices = [p.period_index for p in periods]
+    assert len(indices) == len(set(indices)), (
+        f"user {user_id}: duplicate period_index among {indices}"
+    )
+
+    for prev, cur in zip(periods, periods[1:]):
+        # 2. Index order == calendar order (strictly ascending dates).
+        assert cur.start_date > prev.start_date, (
+            f"user {user_id}: period_index {cur.period_index} starts "
+            f"{cur.start_date}, not after index {prev.period_index} "
+            f"({prev.start_date}) -- index order != calendar order"
+        )
+        assert cur.end_date > prev.end_date, (
+            f"user {user_id}: period_index {cur.period_index} ends "
+            f"{cur.end_date}, not after index {prev.period_index} "
+            f"({prev.end_date}) -- index order != calendar order"
+        )
+        # 3a. No index gaps (contiguous sequence).
+        assert cur.period_index - prev.period_index == 1, (
+            f"user {user_id}: period_index gap between {prev.period_index} "
+            f"and {cur.period_index}"
+        )
+        # 3b. No date overlap (each period starts after the prior ends).
+        assert cur.start_date > prev.end_date, (
+            f"user {user_id}: period {cur.period_index} ({cur.start_date}) "
+            f"overlaps period {prev.period_index} (ends {prev.end_date})"
+        )
+
+
+def assert_pay_period_invariants(db_session, user_id):
+    """Assert a user's pay-period structure is not corrupt (Discipline 1).
+
+    The single source of truth for "this user's period structure is
+    sound," called after EVERY pay-period mutation test (extend /
+    truncate / regenerate / top-up / reset).  A pay period is the spine
+    of every financial number in Shekel, and period corruption produces
+    a silently wrong balance rather than an error, so this helper exists
+    to make that corruption impossible to ship undetected.  See
+    ``docs/plans/implementation_plan_pay_period_crud.md`` (Test plan,
+    Discipline 1).
+
+    Raises ``AssertionError`` (with a diagnostic) on the first violated
+    invariant:
+
+      1. ``period_index`` is unique per user.
+      2. ``period_index`` order == calendar order (strictly ascending
+         ``start_date`` AND ``end_date``) -- the exact property the
+         balance resolver walks and trusts.
+      3. No ``period_index`` gaps and no date overlaps (the BA-03 /
+         BA-04 anomalies the production integrity checker flags).
+      4. Every account's anchor points at a live period owned by the user.
+      5. Every transfer has exactly two shadow transactions, both in the
+         transfer's (still-existing) period.
+      6. No transaction references a pay period that no longer exists.
+
+    Args:
+        db_session: The test ``db.session``.
+        user_id: The user whose pay-period structure to validate.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention); load
+    # the models lazily, the same way every helper above does.
+    # pylint: disable=import-outside-toplevel
+    from app.models.account import Account
+    from app.models.pay_period import PayPeriod
+    from app.models.transaction import Transaction
+    from app.models.transfer import Transfer
+
+    periods = (
+        db_session.query(PayPeriod)
+        .filter_by(user_id=user_id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
+    _pp_assert_structure(periods, user_id)
+
+    period_ids = {p.id for p in periods}
+
+    # 4. Anchor integrity: every account anchors to one of the user's
+    #    live periods.
+    for account in db_session.query(Account).filter_by(user_id=user_id):
+        assert account.current_anchor_period_id in period_ids, (
+            f"user {user_id}: account {account.id} anchor points at period "
+            f"{account.current_anchor_period_id}, not among the user's periods"
+        )
+
+    # 5. Transfer invariant: exactly two shadows, both in the transfer's
+    #    own (surviving) period.
+    for transfer in db_session.query(Transfer).filter_by(user_id=user_id):
+        shadows = transfer.shadow_transactions
+        assert len(shadows) == 2, (
+            f"user {user_id}: transfer {transfer.id} has {len(shadows)} "
+            f"shadow transactions, expected exactly 2"
+        )
+        assert transfer.pay_period_id in period_ids, (
+            f"user {user_id}: transfer {transfer.id} is in period "
+            f"{transfer.pay_period_id}, not among the user's periods"
+        )
+        for shadow in shadows:
+            assert shadow.pay_period_id == transfer.pay_period_id, (
+                f"user {user_id}: shadow {shadow.id} of transfer "
+                f"{transfer.id} is in period {shadow.pay_period_id}, not the "
+                f"transfer's period {transfer.pay_period_id}"
+            )
+
+    # 6. No transaction (scoped via its account) references a period that
+    #    no longer exists -- the CASCADE FK enforces this; re-checking
+    #    catches an ORM bypass after a bulk delete.
+    orphans = (
+        db_session.query(Transaction.id)
+        .join(Account, Transaction.account_id == Account.id)
+        .outerjoin(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+        .filter(Account.user_id == user_id, PayPeriod.id.is_(None))
+        .count()
+    )
+    assert orphans == 0, (
+        f"user {user_id}: {orphans} transaction(s) reference a deleted "
+        f"pay period"
+    )
+
+
+def make_every_period_rule(db_session, user_id):
+    """Create and flush an ``Every Period`` recurrence rule for the user.
+
+    The shared rule builder for the pay-period CRUD test suites (extend /
+    truncate / regenerate), so the template builders below and their
+    callers do not each re-derive it.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.models.recurrence_rule import RecurrenceRule
+    from app.models.ref import RecurrencePattern
+
+    pattern = (
+        db_session.query(RecurrencePattern).filter_by(name="Every Period").one()
+    )
+    rule = RecurrenceRule(user_id=user_id, pattern_id=pattern.id)
+    db_session.add(rule)
+    db_session.flush()
+    return rule
+
+
+def make_expense_template(db_session, seed_user, amount="1200.00", is_active=True):
+    """Create and flush an every-period expense template on the seed account.
+
+    Shared by the pay-period CRUD test suites so the
+    ``RecurrenceRule`` + ``TransactionTemplate`` construction block is
+    defined once.  The caller commits.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.models.ref import TransactionType
+    from app.models.transaction_template import TransactionTemplate
+
+    rule = make_every_period_rule(db_session, seed_user["user"].id)
+    expense_type = (
+        db_session.query(TransactionType).filter_by(name="Expense").one()
+    )
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"]["Rent"].id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=expense_type.id,
+        name="Rent",
+        default_amount=Decimal(amount),
+        is_active=is_active,
+    )
+    db_session.add(template)
+    db_session.flush()
+    return template
+
+
+def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
+    """Create and flush an every-period transfer template (checking -> to).
+
+    Shared by the pay-period CRUD test suites so the
+    ``RecurrenceRule`` + ``TransferTemplate`` construction block is
+    defined once.  The caller commits.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.models.transfer_template import TransferTemplate
+
+    rule = make_every_period_rule(db_session, seed_user["user"].id)
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=to_account.id,
+        recurrence_rule_id=rule.id,
+        name="To Savings",
+        default_amount=Decimal(amount),
+    )
+    db_session.add(template)
+    db_session.flush()
+    return template

@@ -292,7 +292,10 @@ class TestPayPeriodLabel:
                 user_id=seed_user["user"].id,
                 start_date=date(2026, 1, 25),
                 end_date=date(2026, 2, 7),
-                period_index=0,
+                # Index 1: clear seed_user's bootstrap period (index 0) so
+                # the uq_pay_periods_user_index constraint holds.  label is
+                # date-derived, so the index does not affect the assertion.
+                period_index=1,
             )
             db.session.add(period)
             db.session.flush()
@@ -310,7 +313,9 @@ class TestPayPeriodLabel:
                 user_id=seed_user["user"].id,
                 start_date=date(2026, 12, 26),
                 end_date=date(2027, 1, 8),
-                period_index=0,
+                # Index 1: clear seed_user's bootstrap period (index 0); the
+                # label is date-derived, so the index is invisible here.
+                period_index=1,
             )
             db.session.add(period)
             db.session.flush()
@@ -326,7 +331,9 @@ class TestPayPeriodLabel:
                 user_id=seed_user["user"].id,
                 start_date=date(2026, 3, 1),
                 end_date=date(2026, 3, 14),
-                period_index=0,
+                # Index 1: clear seed_user's bootstrap period (index 0); the
+                # label is date-derived, so the index is invisible here.
+                period_index=1,
             )
             db.session.add(period)
             db.session.flush()

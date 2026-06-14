@@ -70,18 +70,26 @@ class Account(
     # (blank/projection/omit) become unreachable.  See migration
     # cfb15e782f86 for the backfill rule and the rationale.
     #
-    # FK action note: ``ondelete="SET NULL"`` on
-    # ``current_anchor_period_id`` is preserved from the legacy schema
-    # for atomicity of this commit -- changing it to CASCADE/RESTRICT
-    # is a separate destructive migration.  No application code path
-    # deletes pay periods today (routes/pay_periods.py only generates),
-    # so the latent ``SET NULL`` action vs ``NOT NULL`` column conflict
-    # is unreachable in practice; if a future user-delete or period-
-    # delete path is added, the FK action must be tightened in a
-    # follow-up migration.
+    # FK action note: ``current_anchor_period_id`` is ``ON DELETE NO
+    # ACTION DEFERRABLE INITIALLY IMMEDIATE`` (migration d410f6b9caa3,
+    # pay-period CRUD Phase 0).  The column is ``NOT NULL``, so deleting
+    # the referenced pay period is refused immediately -- the database
+    # backstop behind the application-level anchor lock in
+    # ``pay_period_admin``.  ``NO ACTION`` (not ``RESTRICT``) is chosen
+    # because only ``NO ACTION`` can be deferred: the full-reset path
+    # (``reset_pay_periods``, Phase 3) deletes the old anchor period and
+    # re-points each account to a fresh one inside one transaction via
+    # ``SET CONSTRAINTS ... DEFERRED``, so the FK validates at commit.
+    # Every other path keeps the fail-fast immediate check.
     current_anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
     current_anchor_period_id = db.Column(
-        db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
+        db.Integer,
+        db.ForeignKey(
+            "budget.pay_periods.id",
+            ondelete="NO ACTION",
+            deferrable=True,
+            initially="IMMEDIATE",
+        ),
         nullable=False,
     )
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.

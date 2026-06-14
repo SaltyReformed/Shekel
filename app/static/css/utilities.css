@@ -49,6 +49,12 @@
 .canvas-max-h-350 { max-height: 350px; }
 .canvas-max-h-400 { max-height: 400px; }
 
+/* Scrollable list container for long settings lists (e.g. the
+   pay-period manage list): cap the height; the body scrolls within.
+   A class rather than an inline style so the CSP style-src 'self'
+   stays intact. */
+.list-scroll-sm { max-height: 18rem; overflow-y: auto; }
+
 /* Pixel-fixed max-widths for text-truncate columns and small
    modal-style containers. */
 .mw-px-80   { max-width: 80px; }

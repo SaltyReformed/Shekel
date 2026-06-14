@@ -468,13 +468,16 @@ class TestMarkDoneCompanionAccess:
         db.session.add(category)
         db.session.flush()
 
-        # Create a period for the second owner.
+        # Create a period for the second owner at index 1 -- offset past
+        # the bootstrap period (index 0) so the uq_pay_periods_user_index
+        # constraint holds.  The transaction below lives in this period;
+        # its index is irrelevant to the companion-access assertion.
         from datetime import date  # pylint: disable=import-outside-toplevel
         period = PayPeriod(
             user_id=second_user.id,
             start_date=date(2026, 1, 2),
             end_date=date(2026, 1, 15),
-            period_index=0,
+            period_index=1,
         )
         db.session.add(period)
         db.session.flush()

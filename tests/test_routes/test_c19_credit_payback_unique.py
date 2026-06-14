@@ -181,6 +181,9 @@ def _create_concurrent_user(db_session):
     db_session.flush()
 
     # Three biweekly periods so mark_as_credit always has a "next period".
+    # Indices 1, 2, 3 -- offset past the bootstrap period (index 0) so the
+    # uq_pay_periods_user_index constraint holds; the account re-anchors to
+    # periods[0] (index 1) below, leaving the bootstrap unreferenced.
     today = date.today()
     base = today - timedelta(days=today.weekday())  # Monday this week
     periods = []
@@ -189,7 +192,7 @@ def _create_concurrent_user(db_session):
             user_id=user.id,
             start_date=base + timedelta(days=i * 14),
             end_date=base + timedelta(days=i * 14 + 13),
-            period_index=i,
+            period_index=i + 1,
         )
         db_session.add(period)
         periods.append(period)

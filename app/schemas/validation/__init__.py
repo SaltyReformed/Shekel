@@ -105,7 +105,14 @@ from app.schemas.validation.loans import (
     RateChangeSchema,
     RefinanceSchema,
 )
-from app.schemas.validation.pay_periods import PayPeriodGenerateSchema
+from app.schemas.validation.pay_periods import (
+    PayPeriodExtendSchema,
+    PayPeriodGenerateSchema,
+    PayPeriodRegenerateSchema,
+    PayPeriodResetSchema,
+    PayPeriodTruncateSchema,
+    PayScheduleSchema,
+)
 from app.schemas.validation.retirement import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
@@ -182,7 +189,12 @@ __all__ = [
     "MfaConfirmSchema",
     "MfaDisableSchema",
     "MfaVerifySchema",
+    "PayPeriodExtendSchema",
     "PayPeriodGenerateSchema",
+    "PayPeriodRegenerateSchema",
+    "PayPeriodResetSchema",
+    "PayPeriodTruncateSchema",
+    "PayScheduleSchema",
     "PayoffCalculatorSchema",
     "PensionProfileCreateSchema",
     "PensionProfileUpdateSchema",
