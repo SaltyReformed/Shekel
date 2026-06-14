@@ -1,18 +1,19 @@
 # Implementation Plan: Pay Period CRUD + Continuous Rolling Window
 
-Status: Phases 0, 1, and 2 COMPLETE + GREEN on `dev` (2026-06-13, not yet PR'd; full suite 6206).
-Phase 3 (full reset) is the only remaining work; its design is retained below (operation 5 +
-Migration notes). The Phase 2 build and its resolved/residual code-review follow-ups are recorded in
-the "Code review findings" section. Design review 2026-06-13 locked four corrections to the original
-draft (see Review corrections below). **Phase 0 COMPLETE on `dev` (2026-06-13):** migrations
-`d410f6b9caa3` (anchor FK -> `NO ACTION DEFERRABLE INITIALLY IMMEDIATE`) + `f75485db6757`
-(`UNIQUE(user_id, period_index)` with a duplicate pre-flight guard); model edits in `account.py` /
-`pay_period.py`; new tests `test_anchor_fk_deferrable.py` + `test_pay_period_index_unique.py` (9
-tests); ~20 latent dup-index bugs in existing test scaffolding fixed at the root. Both migration
-directions verified, `flask db check` clean, `pylint app/` 10.00/10, full suite green.
-**NEXT: Phase 1 (CRUD)** -- and it must land with Test plan Disciplines 1-4 (invariant checker,
-balance-after-every-op, integrity-checker integration, adversarial tests), not just the
-per-operation bullets.
+Status: Phases 0, 1, 2, and 3 COMPLETE + GREEN on `dev` (Phase 3 built 2026-06-14; full suite 6225;
+not yet PR'd -- the dev -> main PR will cover all of Phase 0-3). The whole feature is now built; the
+operation-5 reset design below is realized in `reset_pay_periods`. The Phase 2 build and its
+resolved/residual code-review follow-ups are recorded in the "Code review findings" section; the
+Phase 3 build is recorded in the "Phase 3 build" section. Design review 2026-06-13 locked four
+corrections to the original draft (see Review corrections below).
+**Phase 0 COMPLETE on `dev` (2026-06-13):** migrations `d410f6b9caa3` (anchor FK ->
+`NO ACTION DEFERRABLE INITIALLY IMMEDIATE`) + `f75485db6757` (`UNIQUE(user_id, period_index)` with a
+duplicate pre-flight guard); model edits in `account.py` / `pay_period.py`; new tests
+`test_anchor_fk_deferrable.py` + `test_pay_period_index_unique.py` (9 tests); ~20 latent dup-index
+bugs in existing test scaffolding fixed at the root. Both migration directions verified,
+`flask db check` clean, `pylint app/` 10.00/10, full suite green. **NEXT: Phase 1 (CRUD)** -- and it
+must land with Test plan Disciplines 1-4 (invariant checker, balance-after-every-op,
+integrity-checker integration, adversarial tests), not just the per-operation bullets.
 
 ## Review corrections (2026-06-13, locked via developer Q&A)
 
@@ -123,6 +124,69 @@ both on the same side); anchor-history audit rows live at past/current positions
 future tail; `resolve_cadence` cannot mis-infer because periods are only ever created by generation
 (consistent cadence); `extend` deliberately does not persist cadence (it is a one-off append, not a
 cadence-defining op).
+
+## Phase 3 build (2026-06-14)
+
+The bounded full reset (operation 5). Validated the operation-5 spec against the current code first
+(its cited signatures had drifted past Phases 1-2) and resolved two design forks with the developer
+before building. Built in two committed slices; `pylint app/` 10.00/10 and the full suite green at
+each. **No migration:** Phase 0's `NO ACTION DEFERRABLE INITIALLY IMMEDIATE` anchor FK was confirmed
+live in dev (`confdeltype='a'`, `condeferrable=true`, `condeferred=false`) and is the ONLY
+deferrable constraint in the database, so reset reuses it as designed.
+
+**Design forks (developer-decided):**
+
+1. **Re-anchor through `anchor_service` without its internal commit (Fork A -> A1).**
+   `apply_anchor_true_up` commits per call, which would fire the deferred FK mid-reset while other
+   accounts still dangle. Extracted a flush-only kernel `anchor_service.stage_anchor_true_up` (set
+   the two anchor columns + append the history row; no entry-clear, no commit, no outcome
+   translation). `apply_anchor_true_up` now wraps it -- route behavior byte-identical (verified by
+   the 282-test anchor/account/grid/savings run). Reset calls the kernel per account and its route
+   commits once. `account_service._resolve_anchor_period_id` promoted to public
+   `resolve_anchor_period_id` (reset is a second cross-module caller).
+
+2. **`SET CONSTRAINTS` under the ORM-only rule (Fork B -> B1).** There is no SQLAlchemy construct
+   for `SET CONSTRAINTS` (transaction-control, not a query), so it is issued via `sa.text` with a
+   module-level constant -- the same way `lock_schedule` reaches for `pg_advisory_xact_lock`.
+   Empirically verified: the **schema-qualified** name
+   `SET CONSTRAINTS budget.accounts_current_anchor_period_id_fkey DEFERRED` works; the unqualified
+   name fails (the connection search_path is `"$user", public`, no `budget`);
+   `SET CONSTRAINTS ALL DEFERRED` works but was rejected in favor of naming the one FK (future-proof
+   against another deferrable constraint being added).
+
+**`reset_pay_periods(user_id, new_start_date, num_periods, cadence_days)`** (one transaction the
+route commits): (1) zero-settled gate -- refuse with `PayPeriodResetBlocked` if any settled,
+non-deleted txn exists (scoped via `PayPeriod` since `Transaction` has no `user_id`; reuses
+`balance_predicates.settled_status_ids`, matching the lock classifier's notion of "settled"; settled
+transfers are caught via their settled shadows); (2) per-user advisory `lock_schedule`; (3) defer
+the anchor FK; (4) capture each account's anchor balance + the rule ids carrying an explicit
+`start_period_id` (the cascade NULLs them, and a legitimately-NULL rule is indistinguishable after
+the wipe); (5) bulk-DELETE all the user's periods (same pattern as truncate: cascade clears
+txns/transfers/shadows/anchor history, SET NULL on rule start periods) + `expire_all`; (6) generate
+from `new_start_date` (index 0); (7) re-anchor each account via `stage_anchor_true_up` (balance
+preserved, fresh `origination (pay-period reset)` history row) + re-point the captured rules to the
+new first period + repopulate templates; (8) upsert the new cadence. The route's commit validates
+the deferred FK. A user with no accounts (a brand-new not-yet-anchored user) resets cleanly
+(re-anchor is a no-op). `recurrence_rules.start_period_id` re-pointing is NOT needed for correct
+repopulation (`populate_periods_from_active_templates` always passes `effective_from`, so generation
+ignores `start_period_id`); it is done for semantic fidelity and so the new first period classifies
+as a RECURRENCE_ANCHOR.
+
+**Slice a (`6866e78`):** `stage_anchor_true_up` extraction + `resolve_anchor_period_id` promotion +
+`PayPeriodResetBlocked` exception + `reset_pay_periods` + the four private helpers
+(`_settled_transaction_count`, `_rule_ids_with_start_period`, `_reanchor_accounts`,
+`_repoint_recurrence_rules`) + the `_DEFER_ANCHOR_FK_SQL` constant. Tests `test_pay_period_reset.py`
+(12, all four disciplines): wipe-incl-anchor + deferred-FK commit, balance preserved + recomputed
+(`balance_as_of_date`), txn + transfer repopulation (2-shadow invariant), recurrence re-point,
+multi-account re-anchor, not-yet-anchored user, persists-cadence, settled-blocks-unchanged,
+soft-deleted-settled-allowed, invalid-cadence-rolls-back. Full suite 6218.
+
+**Slice b (`37d9431`):** `POST /pay-periods/reset` route + `PayPeriodResetSchema` (new_start_date /
+num_periods / cadence_days + required `confirm`) + `can_reset_pay_periods` public predicate +
+`pp_can_reset` settings context + the danger-zone reset card in `_pay_periods_manage.html` (shown
+only to zero-settled users, else a Regenerate-instead note). Tests (+7): rebuild + re-anchor via
+HTTP, unconfirmed-refused, settled-blocks, schema-rejection, companion-404 (IDOR), reset-form
+shown/hidden gating. Full suite 6225.
 
 ## Context
 
