@@ -28,12 +28,14 @@ from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
 from app.exceptions import PayPeriodResetBlocked, ValidationError
-from app.enums import StatusEnum
+from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.services import (
     balance_resolver,
@@ -87,6 +89,40 @@ def _seed_old_schedule(db_session, seed_user, count=5):
 def _all_indices(user_id):
     """The set of period_index values the user currently has."""
     return {p.period_index for p in pay_period_service.get_all_periods(user_id)}
+
+
+def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
+    """Build an EVERY_N_PERIODS expense template phased to ``start_period``.
+
+    Mirrors the production form helper's offset derivation
+    (``offset_periods = start_period.period_index % interval_n``) so the
+    rule fires every ``interval_n`` periods aligned to ``start_period`` --
+    the exact phased state a reset must re-base onto the new schedule.
+    Returns the created template (flushed; the caller commits).
+    """
+    rule = RecurrenceRule(
+        user_id=seed_user["user"].id,
+        pattern_id=ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.EVERY_N_PERIODS,
+        ),
+        interval_n=interval_n,
+        offset_periods=start_period.period_index % interval_n,
+        start_period_id=start_period.id,
+    )
+    db_session.add(rule)
+    db_session.flush()
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"]["Rent"].id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        name="Every-other Bill",
+        default_amount=Decimal("300.00"),
+    )
+    db_session.add(template)
+    db_session.flush()
+    return template
 
 
 class TestResetHappyPath:
@@ -254,15 +290,49 @@ class TestResetHappyPath:
 
             rule = db.session.get(RecurrenceRule, rule.id)
             assert rule.start_period_id == new_periods[0].id
-            # The re-pointed rule now anchors to a real, live period, so
-            # that period is protected from a later truncate/regenerate.
-            # Here index 0 is ALSO the account anchor, and ACCOUNT_ANCHOR
-            # outranks RECURRENCE_ANCHOR in the precedence order, so the
-            # classifier reports the higher-precedence reason -- what
-            # matters for this test is that the period is no longer mutable.
-            assert pay_period_admin.classify_period_lock(
-                new_periods[0], as_of=date(2026, 6, 5),
-            ) is not None
+            # Re-pointing also re-phases the offset to the new start (0).
+            assert rule.offset_periods == 0
+
+    def test_every_n_rule_rephased_onto_new_schedule(self, app, db, seed_user):
+        """An EVERY_N_PERIODS rule re-phases to the new first period.
+
+        The regression for the offset half of the re-point: a rule phased
+        to an OLD odd-index start (offset = 1, n = 2) must, after reset,
+        generate every other period STARTING at the new first period
+        (indices 0, 2, 4) -- not on the stale odd phase (1, 3, 5) the old
+        offset would produce.  Repopulation runs after the re-point, so the
+        rebuilt rows must already carry the corrected phase.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _seed_old_schedule(db.session, seed_user)
+            old_periods = pay_period_service.get_all_periods(user_id)
+            # Phase the rule to an OLD odd index (3) -> offset 1 under n=2.
+            template = _make_every_n_template(
+                db.session, seed_user, old_periods[3], interval_n=2,
+            )
+            assert template.recurrence_rule.offset_periods == 1
+            db.session.commit()
+
+            new_periods = pay_period_admin.reset_pay_periods(
+                user_id, new_start_date=_NEW_START, num_periods=6,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            rule = db.session.get(RecurrenceRule, template.recurrence_rule_id)
+            assert rule.start_period_id == new_periods[0].id
+            assert rule.offset_periods == 0
+            # Generated rows land on indices 0, 2, 4 -- phased to the new
+            # first period, not the stale 1, 3, 5.
+            counts = {
+                p.period_index: db.session.query(Transaction).filter_by(
+                    pay_period_id=p.id, template_id=template.id,
+                ).count()
+                for p in new_periods
+            }
+            assert counts == {0: 1, 1: 0, 2: 1, 3: 0, 4: 1, 5: 0}
+            assert_pay_period_invariants(db.session, user_id)
 
     def test_rule_without_start_period_stays_unanchored(self, app, db, seed_user):
         """A rule that had no explicit start period is not blanket-repointed.

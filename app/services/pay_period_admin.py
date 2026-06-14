@@ -733,12 +733,26 @@ def _reanchor_accounts(user_id: int, preserved_balances: dict[int, object]) -> N
 
 
 def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
-    """Re-point the captured rules' start period to the new first period.
+    """Re-point the captured rules to the new first period, re-phased.
 
     The rules whose ``start_period_id`` the wipe cascade nulled (captured
     by :func:`_rule_ids_with_start_period`) are re-anchored to the rebuilt
     schedule's first period, so a rule that had an explicit start keeps one
     and the new first period correctly classifies as a RECURRENCE_ANCHOR.
+
+    ``offset_periods`` is reset to 0 in the SAME update, and this is
+    load-bearing for the EVERY_N_PERIODS pattern: ``match_periods`` fires
+    where ``(period_index - offset_periods) % interval_n == 0``, and the
+    offset was derived at rule creation as ``start_period.period_index %
+    interval_n`` (``app/routes/_recurrence_form_helpers.py``).  Re-pointing
+    the start to the new first period (index 0) WITHOUT re-phasing would
+    leave a stale offset that fires the rule on the wrong periods -- so the
+    offset is recomputed for the new start, which is
+    ``0 % interval_n == 0`` for every rule regardless of ``interval_n``.
+    The other patterns ignore ``offset_periods`` entirely, so setting it to
+    0 is inert for them (and 0 is the column's default).  The bulk update
+    runs before the repopulation pass, so the regenerated rows use the
+    corrected phase.
 
     Args:
         rule_ids: The recurrence-rule ids to re-point (empty -> no-op).
@@ -750,7 +764,10 @@ def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
     db.session.query(RecurrenceRule).filter(
         RecurrenceRule.id.in_(rule_ids),
     ).update(
-        {RecurrenceRule.start_period_id: first_period.id},
+        {
+            RecurrenceRule.start_period_id: first_period.id,
+            RecurrenceRule.offset_periods: 0,
+        },
         synchronize_session=False,
     )
     db.session.flush()
