@@ -1707,16 +1707,20 @@ class TestCarryForwardEnvelopeMissingTarget:
             assert target.estimated_amount == Decimal("170.00")
             assert target.is_override is True
 
-    def test_template_inactive_in_target_raises(
+    def test_template_inactive_in_target_creates_override_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """Template without a recurrence rule + missing target = refuse.
+        """Template without a recurrence rule + empty target: create a row.
 
-        With ``with_rule=False`` the engine immediately returns []
-        because ``template.recurrence_rule is None``.  The branch must
-        catch the empty return and raise ValidationError so the user
-        can resolve manually rather than silently dropping the
-        leftover.
+        With ``with_rule=False`` the engine returns [] (no recurrence
+        rule), so there is no canonical to bump.  Instead of refusing,
+        the branch settles the source and creates a fresh ``is_override``
+        row in the target carrying the leftover -- the Father's Day case
+        (a yearly envelope rolling into an off-anniversary period).
+
+        Source: $100 envelope, $30 spent -> settles Paid at $30,
+        leftover $70.  Target had no row -> one new Projected override
+        row at $70 appears.
         """
         with app.app_context():
             template = _create_envelope_template(
@@ -1729,33 +1733,54 @@ class TestCarryForwardEnvelopeMissingTarget:
             db.session.commit()
             source_id = source.id
 
-            with pytest.raises(ValidationError) as exc_info:
-                carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
-                )
-            db.session.rollback()
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
 
-            # Error message names the source and target so the user
-            # can identify the row that blocked the batch.
-            assert str(source_id) in str(exc_info.value)
-            assert str(seed_periods[1].id) in str(exc_info.value)
+            assert count == 1
+
+            # Source settled Paid at its actual spend ($30).
+            source_after = db.session.get(Transaction, source_id)
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            assert source_after.status_id == done_id
+            assert source_after.actual_amount == Decimal("30.00")
+
+            # A single fresh override row carries the $70 leftover.
+            target_rows = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).all()
+            )
+            assert len(target_rows) == 1
+            target = target_rows[0]
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            # 0 (fresh row) + 70 (leftover) = 70.
+            assert target.estimated_amount == Decimal("70.00")
+            assert target.is_override is True
+            assert target.status_id == projected_id
 
 
 class TestCarryForwardEnvelopeSettledTarget:
-    """Target canonical is finalised -- batch refuses, full rollback."""
+    """Target canonical is finalised -- leftover rolls into a separate row."""
 
-    def test_settled_target_raises_and_rolls_back_atomically(
+    def test_settled_target_keeps_paid_row_and_creates_leftover_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """Target Paid: ValidationError, source NOT settled, no commit.
+        """Target Paid: Paid row untouched, leftover lands in a new row.
 
-        Atomicity check: the envelope branch raises BEFORE settling
-        source, so a rollback by the route leaves the source unchanged
-        (still Projected) and the target untouched (still Paid).
+        The user already marked the target's canonical Paid.  Bumping it
+        would overwrite that decision, so the branch leaves the Paid row
+        alone and creates a separate Projected override row carrying the
+        leftover -- the user's chosen "add as separate row" rule.
 
-        Setup: $100 envelope, source in period 0 with $40 entries,
-        target canonical in period 1 already in Paid status.
+        Setup: $100 envelope, source in period 0 with $40 entries
+        (leftover $60), target canonical in period 1 already Paid.
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
@@ -1773,34 +1798,43 @@ class TestCarryForwardEnvelopeSettledTarget:
             source_id = source.id
             target_id = target.id
 
-            with pytest.raises(ValidationError) as exc_info:
-                carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
-                )
-            db.session.rollback()
-            db.session.expire_all()
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
 
-            # Source must be unchanged: still Projected, no
-            # actual_amount, no paid_at.
+            assert count == 1
+
+            # Source settled Paid at its $40 actual spend.
             source_after = db.session.get(Transaction, source_id)
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            assert source_after.status_id == projected_id
-            assert source_after.actual_amount is None
-            assert source_after.paid_at is None
-            assert source_after.estimated_amount == Decimal("100.00")
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            assert source_after.status_id == done_id
+            assert source_after.actual_amount == Decimal("40.00")
 
-            # Target must be unchanged: still Paid at 100.
+            # The pre-existing Paid row is untouched.
             target_after = db.session.get(Transaction, target_id)
-            paid_id = ref_cache.status_id(StatusEnum.DONE)
-            assert target_after.status_id == paid_id
+            assert target_after.status_id == done_id
             assert target_after.estimated_amount == Decimal("100.00")
             assert target_after.actual_amount == Decimal("100.00")
             assert target_after.is_override is False
 
-            # Error message names the failing row + status for the user.
-            assert str(source_id) in str(exc_info.value)
-            assert "finalised" in str(exc_info.value).lower()
+            # A separate Projected override row carries the $60 leftover.
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            new_rows = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                    is_override=True,
+                ).all()
+            )
+            assert len(new_rows) == 1
+            # 0 (fresh row) + 60 (leftover) = 60.
+            assert new_rows[0].estimated_amount == Decimal("60.00")
+            assert new_rows[0].status_id == projected_id
 
 
 class TestCarryForwardEnvelopeMultiHop:
@@ -2018,6 +2052,169 @@ class TestCarryForwardEnvelopeCorruptDoubledRow:
             assert str(seed_periods[1].id) in str(exc_info.value)
 
 
+class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
+    """No mutable canonical to bump -> create a fresh override row.
+
+    Covers the cases that used to refuse: an inactive (e.g. yearly)
+    template, and a destination whose only row is finalised or
+    soft-deleted.  The leftover is never dropped; it lands in a new
+    Projected is_override row that subsequent carry-forwards top up
+    rather than duplicate.
+    """
+
+    def test_zero_spend_inactive_template_creates_full_leftover_row(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Father's Day: yearly envelope, $0 spent -> $100 rolls to a new row.
+
+        A once-yearly envelope (no per-period rule) budgeted $100 with
+        no purchases.  Source settles Paid at $0; the full $100 leftover
+        lands in a fresh Projected override row in the target period.
+        """
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, name="Father's Day", with_rule=False,
+            )
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            db.session.commit()
+            source_id = source.id
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            assert count == 1
+
+            # Source settled Paid at $0 (no purchases).
+            source_after = db.session.get(Transaction, source_id)
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            assert source_after.status_id == done_id
+            assert source_after.actual_amount == Decimal("0.00")
+
+            # The full $100 lands in one fresh override row.
+            target_rows = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).all()
+            )
+            assert len(target_rows) == 1
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            assert target_rows[0].estimated_amount == Decimal("100.00")
+            assert target_rows[0].is_override is True
+            assert target_rows[0].status_id == projected_id
+
+    def test_repeated_carry_forward_tops_up_created_row_no_duplicate(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Second carry-forward bumps the created row, never duplicates it.
+
+        Target period already has a Paid canonical.  A first carry-
+        forward creates a separate $100 override row beside it; a second
+        carry-forward from another source finds that one mutable row and
+        bumps it to $200 -- the destination keeps exactly two rows (the
+        Paid canonical + one override), proving idempotency.
+        """
+        with app.app_context():
+            template = _create_envelope_template(seed_user)
+            _create_envelope_txn(seed_user, seed_periods[0], template)
+            _create_envelope_txn(seed_user, seed_periods[1], template)
+            # Target (period 2) canonical already Paid -> not bumpable.
+            paid = _create_envelope_txn(
+                seed_user, seed_periods[2], template,
+                status_name="Paid",
+            )
+            paid.actual_amount = Decimal("100.00")
+            db.session.commit()
+            paid_id_pk = paid.id
+
+            # Hop 1: period 0 -> target.  Creates a $100 override row.
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[2].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            # Hop 2: period 1 -> target.  Tops up the same override row.
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[1].id, seed_periods[2].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            rows = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[2].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).all()
+            )
+            # Exactly two: the untouched Paid canonical + one override.
+            assert len(rows) == 2
+            overrides = [r for r in rows if r.is_override]
+            assert len(overrides) == 1
+            # 0 + 100 (hop 1) + 100 (hop 2) = 200.
+            assert overrides[0].estimated_amount == Decimal("200.00")
+            # The Paid canonical was never touched.
+            paid_after = db.session.get(Transaction, paid_id_pk)
+            assert paid_after.is_override is False
+            assert paid_after.estimated_amount == Decimal("100.00")
+
+    def test_only_soft_deleted_target_creates_override_row(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Soft-deleted-only target: create a fresh override row beside it.
+
+        The engine refuses to regenerate over a soft-deleted row.  The
+        branch creates an is_override row (excluded from the partial
+        unique index) carrying the leftover, leaving the soft-deleted
+        row untouched.
+
+        Source: $100 envelope, $30 spent -> leftover $70.
+        """
+        with app.app_context():
+            template = _create_envelope_template(seed_user)
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            deleted_target = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+            )
+            deleted_target.is_deleted = True
+            _add_entry(source, seed_user, "30.00")
+            db.session.commit()
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            assert count == 1
+            live_rows = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).all()
+            )
+            assert len(live_rows) == 1
+            # 0 (fresh row) + 70 (leftover) = 70.
+            assert live_rows[0].estimated_amount == Decimal("70.00")
+            assert live_rows[0].is_override is True
+
+
 class TestCarryForwardEnvelopeMixedBatch:
     """Heterogeneous source period: each row takes the correct branch."""
 
@@ -2125,13 +2322,14 @@ class TestCarryForwardEnvelopeMixedBatch:
     def test_envelope_failure_rolls_back_other_branches(
         self, app, db, seed_user, seed_periods,
     ):
-        """Settled envelope target -- atomic rollback affects every branch.
+        """Ambiguous envelope target -- atomic rollback affects every branch.
 
-        Setup: same period 0 mix as the prior test, but envelope
-        target in period 1 is in Paid status.  When the envelope
-        branch refuses, the discrete moves and the transfer move
-        (which would have happened mid-batch in the no_autoflush block
-        / shadow loop respectively) must NOT persist.
+        Setup: same period 0 mix as the prior test, but the envelope
+        target in period 1 has TWO mutable rows for the template (the
+        corrupt doubled-row state).  When the envelope branch refuses
+        with AMBIGUOUS, the discrete moves and the transfer move (which
+        would have happened mid-batch in the no_autoflush block / shadow
+        loop respectively) must NOT persist.
 
         The route's rollback restores every prior pending mutation;
         this test verifies the atomicity contract end-to-end.
@@ -2144,11 +2342,15 @@ class TestCarryForwardEnvelopeMixedBatch:
             envelope_source = _create_envelope_txn(
                 seed_user, seed_periods[0], envelope_template,
             )
-            envelope_target = _create_envelope_txn(
+            # Corrupt doubled-row target: two mutable rows -> AMBIGUOUS.
+            _create_envelope_txn(
                 seed_user, seed_periods[1], envelope_template,
-                status_name="Paid",
+                is_override=False,
             )
-            envelope_target.actual_amount = Decimal("100.00")
+            _create_envelope_txn(
+                seed_user, seed_periods[1], envelope_template,
+                is_override=True,
+            )
             _add_entry(envelope_source, seed_user, "40.00")
 
             discrete_template = _create_template(
@@ -2708,17 +2910,22 @@ class TestPreviewCarryForwardEnvelopePlans:
             assert target_count_after == 0
 
 
-class TestPreviewCarryForwardEnvelopeBlocked:
-    """Each ValidationError raised by carry_forward_unpaid surfaces as a blocked plan."""
+class TestPreviewCarryForwardEnvelopeTargetResolution:
+    """Preview mirrors the destination decision the mutating path takes.
 
-    def test_settled_target_marked_blocked_with_finalised_code(
+    The cases that used to block (finalised, inactive, soft-deleted
+    target) are now actionable -- the preview predicts a freshly created
+    row.  Only the AMBIGUOUS doubled-row state still blocks.
+    """
+
+    def test_settled_target_is_actionable_creates_separate_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """Target Paid -> plan.blocked, code BLOCK_TARGET_FINALISED.
+        """Target Paid -> actionable plan predicting a separate new row.
 
         Mirrors TestCarryForwardEnvelopeSettledTarget but read-only.
-        The block_reason names the source row and target period so
-        the modal can render an actionable message.
+        The Paid row cannot be bumped, so the preview predicts a fresh
+        row carrying the $60 leftover (from $0).
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
@@ -2738,23 +2945,22 @@ class TestPreviewCarryForwardEnvelopeBlocked:
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
-            assert preview.any_blocked is True
-            assert preview.blocked_count == 1
-            assert preview.envelope_count == 0  # blocked excluded
+            assert preview.any_blocked is False
+            assert preview.blocked_count == 0
+            assert preview.envelope_count == 1
 
             plan = preview.plans[0]
-            assert plan.blocked is True
-            assert plan.block_reason_code == (
-                carry_forward_service.BLOCK_TARGET_FINALISED
-            )
-            # block_reason mentions "Paid" so the user knows which
-            # status to revert.
-            assert "paid" in plan.block_reason.lower()
+            assert plan.blocked is False
+            assert plan.target_will_be_generated is True
+            assert plan.target_estimated_before == Decimal("0.00")
+            # Leftover: 100 estimated - 40 entries = 60.
+            assert plan.leftover == Decimal("60.00")
+            assert plan.target_estimated_after == Decimal("60.00")
 
-    def test_template_inactive_marked_blocked(
+    def test_template_inactive_is_actionable_creates_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """No target + no rule: BLOCK_TEMPLATE_INACTIVE."""
+        """No target + no rule: actionable, predicts a fresh row (Father's Day)."""
         with app.app_context():
             template = _create_envelope_template(
                 seed_user, with_rule=False,
@@ -2771,15 +2977,17 @@ class TestPreviewCarryForwardEnvelopeBlocked:
             )
 
             plan = preview.plans[0]
-            assert plan.blocked is True
-            assert plan.block_reason_code == (
-                carry_forward_service.BLOCK_TEMPLATE_INACTIVE
-            )
+            assert plan.blocked is False
+            assert plan.target_will_be_generated is True
+            assert plan.target_estimated_before == Decimal("0.00")
+            # Leftover: 100 estimated - 30 entries = 70.
+            assert plan.leftover == Decimal("70.00")
+            assert plan.target_estimated_after == Decimal("70.00")
 
-    def test_duplicate_targets_marked_blocked(
+    def test_two_mutable_targets_marked_blocked_ambiguous(
         self, app, db, seed_user, seed_periods,
     ):
-        """Two non-deleted target rows -> BLOCK_DUPLICATE_TARGETS."""
+        """Two mutable target rows -> blocked, BLOCK_AMBIGUOUS_TARGETS."""
         with app.app_context():
             template = _create_envelope_template(seed_user)
             source = _create_envelope_txn(
@@ -2804,20 +3012,19 @@ class TestPreviewCarryForwardEnvelopeBlocked:
             plan = preview.plans[0]
             assert plan.blocked is True
             assert plan.block_reason_code == (
-                carry_forward_service.BLOCK_DUPLICATE_TARGETS
+                carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
             )
-            assert "2" in plan.block_reason  # the row count is named
+            assert "open row" in plan.block_reason.lower()
 
-    def test_only_soft_deleted_target_marked_blocked(
+    def test_only_soft_deleted_target_is_actionable_creates_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """Only soft-deleted rows in target -> BLOCK_TARGET_SOFT_DELETED.
+        """Only soft-deleted rows in target -> actionable, predicts a fresh row.
 
-        The mutating path raises BLOCK_TEMPLATE_INACTIVE for this case
-        (because generate_for_template returns [] when the engine
-        sees soft-deleted rows).  The preview distinguishes the two
-        cases for the user's benefit -- the soft-deleted message
-        gives a more actionable hint ("restore or hard-delete first").
+        The engine refuses to regenerate over a soft-deleted row, so
+        there is no canonical to bump.  The preview predicts a freshly
+        created override row carrying the leftover (the created row is
+        is_override=True, so it never collides with the soft-deleted one).
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
@@ -2837,10 +3044,11 @@ class TestPreviewCarryForwardEnvelopeBlocked:
             )
 
             plan = preview.plans[0]
-            assert plan.blocked is True
-            assert plan.block_reason_code == (
-                carry_forward_service.BLOCK_TARGET_SOFT_DELETED
-            )
+            assert plan.blocked is False
+            assert plan.target_will_be_generated is True
+            assert plan.target_estimated_before == Decimal("0.00")
+            # Leftover: 100 estimated - 30 entries = 70.
+            assert plan.target_estimated_after == Decimal("70.00")
 
     def test_blocked_plans_excluded_from_actionable_count(
         self, app, db, seed_user, seed_periods,
@@ -2849,10 +3057,11 @@ class TestPreviewCarryForwardEnvelopeBlocked:
 
         envelope_count names ACTIONABLE plans for the modal's summary
         line -- the user wants to know "how many will run if I
-        confirm."  Blocked plans go in blocked_count instead.
+        confirm."  Blocked plans go in blocked_count instead.  Only the
+        AMBIGUOUS doubled-row state still blocks.
         """
         with app.app_context():
-            # One actionable + one blocked (settled target).
+            # One actionable + one blocked (ambiguous doubled-row target).
             template_a = _create_envelope_template(
                 seed_user, name="Envelope A",
                 category_key="Groceries",
@@ -2870,11 +3079,14 @@ class TestPreviewCarryForwardEnvelopeBlocked:
             source_b = _create_envelope_txn(
                 seed_user, seed_periods[0], template_b,
             )
-            blocked_target = _create_envelope_txn(
+            _create_envelope_txn(
                 seed_user, seed_periods[1], template_b,
-                status_name="Paid",
+                is_override=False,
             )
-            blocked_target.actual_amount = Decimal("100.00")
+            _create_envelope_txn(
+                seed_user, seed_periods[1], template_b,
+                is_override=True,
+            )
             _add_entry(source_b, seed_user, "50.00")
 
             db.session.commit()
@@ -3057,21 +3269,25 @@ class TestPreviewCarryForwardParityWithMutating:
     def test_blocked_preview_matches_validation_error_on_execution(
         self, app, db, seed_user, seed_periods,
     ):
-        """Preview blocked -> mutating call raises ValidationError.
+        """Preview blocked (AMBIGUOUS) -> mutating call raises ValidationError.
 
-        For each block reason, the mutating call must refuse with the
-        same condition the preview surfaced.
+        The only remaining block is the doubled-row state; the preview
+        and the mutating call must agree the batch refuses.
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
             source = _create_envelope_txn(
                 seed_user, seed_periods[0], template,
             )
-            target = _create_envelope_txn(
+            # Two mutable target rows -> AMBIGUOUS.
+            _create_envelope_txn(
                 seed_user, seed_periods[1], template,
-                status_name="Paid",
+                is_override=False,
             )
-            target.actual_amount = Decimal("100.00")
+            _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                is_override=True,
+            )
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
 
@@ -3081,7 +3297,7 @@ class TestPreviewCarryForwardParityWithMutating:
             )
             assert preview.any_blocked is True
             assert preview.plans[0].block_reason_code == (
-                carry_forward_service.BLOCK_TARGET_FINALISED
+                carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
             )
 
             with pytest.raises(ValidationError):

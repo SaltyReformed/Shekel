@@ -10,6 +10,8 @@ envelope branch must roll the whole batch back.
 import logging
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -20,9 +22,8 @@ from app.utils.log_events import BUSINESS, EVT_CARRY_FORWARD, log_event
 
 from ._context import (
     _build_carry_forward_context,
-    _is_finalised,
-    _target_canonical_rows,
-    _target_status_label,
+    _classify_leftover_target,
+    _TargetKind,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,12 +66,14 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     Raises:
         NotFoundError: If either period does not exist or does not
             belong to *user_id*.
-        ValidationError: If the envelope branch encounters a state
-            that prevents a clean rollover (settled target canonical,
-            template inactive in target period, or a corrupt
-            multi-row target state).  The whole batch fails and the
-            caller must rollback the session before issuing any
-            follow-up writes.
+        ValidationError: Only on the envelope branch's ``AMBIGUOUS``
+            guard -- a destination period with more than one mutable
+            row for the same (template, scenario), a corrupt
+            pre-existing state.  The whole batch fails and the caller
+            must rollback the session before issuing any follow-up
+            writes.  All other former block conditions (inactive
+            template, finalised or soft-deleted destination) now create
+            a fresh override row instead.
     """
     ctx = _build_carry_forward_context(
         source_period_id, target_period_id, user_id, scenario_id,
@@ -177,10 +180,12 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
                 )
 
         # Envelope branch.  Each iteration settles the source row and
-        # bumps the target's canonical row by the unspent leftover.
-        # The helper raises ValidationError if the target row is
-        # finalised, missing, or corrupt; the route catches that and
-        # rolls back the session for batch atomicity.
+        # rolls the unspent leftover into the destination -- bumping an
+        # existing mutable row, generating the canonical, or creating a
+        # fresh override row when none exists.  The helper raises
+        # ValidationError only on the AMBIGUOUS guard (>1 mutable
+        # destination row); the route catches that and rolls back the
+        # session for batch atomicity.
         for txn in ctx.envelope_txns:
             _settle_source_and_roll_leftover(
                 txn, ctx.target_period, scenario_id,
@@ -231,35 +236,23 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
          - entries_sum)``.  Overspend (``entries_sum > estimated``)
          clamps to zero -- the actual overspend is recorded on the
          settled source row's ``actual_amount`` and on its entries.
-      3. If ``leftover > 0``:
-         a. Locate the target period's row for ``(template_id,
-            target_period.id, scenario_id, is_deleted = False)``.  The
-            query intentionally does not filter on ``is_override``: a
-            prior carry-forward into the same target promotes the
-            canonical to ``is_override = True``, and envelope semantics
-            require that subsequent carry-forwards re-bump the same
-            row rather than create a sibling.  At most one row may
-            match; multiple rows is a corrupt envelope state and
-            raises ``ValidationError``.
-         b. If no row matches, ask
-            ``recurrence_engine.generate_for_template`` to create the
-            canonical.  The engine returns an empty list when the
-            template's recurrence rule does not apply to the target
-            period (no rule, ``Once`` pattern, ``effective_from`` past
-            target, ``end_date`` past target, or any pre-existing row
-            in the period -- the last covers a soft-deleted target
-            row that the engine refuses to overwrite).  An empty
-            return raises ``ValidationError`` so the user can resolve
-            manually.
-         c. If the located row is in an immutable status (Paid,
-            Received, Settled, Credit, Cancelled), raise
-            ``ValidationError``.  Bumping a finalised row would
-            silently override the user's prior status decision.
-         d. Bump ``estimated_amount += leftover`` and flip
-            ``is_override = True``.  The flip blocks future
-            recurrence-engine passes from regenerating the row
-            (verified by the ``is_override`` skip clause in
-            ``app/services/recurrence_engine.py``).
+      3. If ``leftover > 0``, resolve the destination row via
+         ``_resolve_or_create_target_row``, which (a) bumps the single
+         mutable (Projected) row for ``(template_id, target_period.id,
+         scenario_id)`` when one exists, (b) lets
+         ``recurrence_engine.generate_for_template`` create the canonical
+         when the destination is empty and the template is active there,
+         or (c) creates a fresh ``is_override`` row carrying the leftover
+         when neither applies (an inactive template, or a destination
+         whose only row is finalised or soft-deleted).
+         Then bump the resolved row: ``estimated_amount += leftover`` and
+         flip ``is_override = True``.  The flip blocks future
+         recurrence-engine passes from regenerating the row (verified by
+         the ``is_override`` skip clause in
+         ``app/services/recurrence_engine.py``).  A freshly created row
+         starts at ``Decimal("0")`` so the bump lands it on exactly the
+         leftover.  The only refusal is the ``AMBIGUOUS`` guard -- more
+         than one mutable destination row, a corrupt pre-existing state.
       4. Settle the source row via
          ``transaction_service.settle_from_entries``.  The helper
          enforces its own preconditions (envelope template,
@@ -270,9 +263,10 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
     Mutations land on ``source_txn`` and the target row in place; the
     caller owns the session/commit lifecycle.  No flush happens here
     except as a side effect of ``recurrence_engine.generate_for_template``
-    when it has to create a canonical (which is acceptable inside the
-    surrounding ``no_autoflush`` block because every prior loop
-    iteration's mutations are already index-safe at that point).
+    when it has to create a canonical (the ``CREATE`` branch only
+    ``db.session.add``s, which is acceptable inside the surrounding
+    ``no_autoflush`` block because an ``is_override`` row is index-safe
+    in every intermediate state).
 
     Args:
         source_txn: A Projected, non-deleted, envelope-tracked
@@ -286,13 +280,10 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
             cross-scenario data is never touched.
 
     Raises:
-        ValidationError: If the target row state prevents a clean
-            rollover -- multiple non-deleted rows for the
-            (template, period, scenario), an immutable target row,
-            or a missing target that the recurrence engine declines
-            to create.  The error message names the source row,
-            target period, and (where relevant) the failing condition
-            so the user can act on it.
+        ValidationError: Only on the ``AMBIGUOUS`` guard -- more than one
+            mutable destination row for ``(template, period, scenario)``,
+            a corrupt pre-existing state the user must resolve manually.
+            The error names the source row and target period.
     """
     # Pylint: ``import-outside-toplevel`` -- defer the recurrence-engine
     # import to avoid a circular dependency at module load time:
@@ -322,7 +313,7 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
     # would fail surprises like a fully-paid target period that the
     # user does not need to mutate.
     if leftover > 0:
-        target_row = _find_or_generate_target_canonical(
+        target_row = _resolve_or_create_target_row(
             source_txn, target_period, scenario_id, recurrence_engine,
         )
         target_row.estimated_amount = (
@@ -333,110 +324,129 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
     transaction_service.settle_from_entries(source_txn)
 
 
-def _find_or_generate_target_canonical(source_txn, target_period,
-                                       scenario_id, recurrence_engine):
-    """Return the target period's bumpable row for *source_txn*'s template.
+def _resolve_or_create_target_row(source_txn, target_period,
+                                  scenario_id, recurrence_engine):
+    """Return the destination row that receives *source_txn*'s leftover.
 
-    Looks up any non-deleted row matching ``(template_id,
-    target_period.id, scenario_id)``.  The lookup deliberately omits
-    the ``is_override`` filter -- see ``_settle_source_and_roll_leftover``
-    docstring for why.
+    Thin switch over ``_classify_leftover_target`` (the single source of
+    truth shared with the preview):
 
-    Behavior by row count:
+      * ``TOP_UP`` -- exactly one mutable row already exists; return it
+        for the caller to bump.
+      * ``GENERATE`` -- the destination is empty and the template is
+        active there; ask the recurrence engine to create the canonical
+        and return it.  A race that leaves nothing falls through to
+        ``CREATE`` rather than failing the batch.
+      * ``CREATE`` -- no usable row and the engine will not generate one
+        (inactive template, or a destination whose only row is finalised
+        or soft-deleted); create a fresh override row.
+      * ``AMBIGUOUS`` -- more than one mutable row for the same
+        ``(template, period, scenario)``.  This is corrupt pre-existing
+        state (the partial unique index prevents two non-override
+        canonicals), so refuse rather than guess which open row to
+        credit.  The route catches the ``ValidationError`` and rolls the
+        whole batch back.
 
-      * **Zero rows**: ask ``recurrence_engine.generate_for_template``
-        to create the canonical.  An empty return from the engine
-        raises ``ValidationError`` -- the target period is not in the
-        template's active range or has a pre-existing row the engine
-        refuses to overwrite.  Typed as a "manual move required"
-        condition.
-      * **One row**: validate that its status is mutable (Projected).
-        Any immutable status -- Paid, Received, Settled, Credit,
-        Cancelled -- raises ``ValidationError`` to prevent silently
-        overriding a prior user decision.
-      * **More than one row**: raises ``ValidationError``.  Multiple
-        non-deleted rows for the same envelope (template, period)
-        is a corrupt state that the user must resolve manually
-        (typically a legacy doubled-row pair from pre-fix 33cd21e
-        behavior; cleanup is documented in the implementation plan
-        as a manual step).
+    The returned row is the caller's to bump
+    (``estimated_amount += leftover``); a freshly created row starts at
+    ``Decimal("0")`` so the bump lands it on exactly the leftover.
 
     Args:
-        source_txn: The source transaction; its ``template_id`` and
-            ``template`` are read.
-        target_period: The PayPeriod the canonical lives in.
-        scenario_id: Scenario filter for the lookup and engine call.
-        recurrence_engine: The recurrence-engine module (passed
-            in to avoid a circular import at module top).
+        source_txn: The envelope source row being carried forward.
+        target_period: The destination PayPeriod.
+        scenario_id: Scenario the rollover stays within.
+        recurrence_engine: The recurrence-engine module (passed in to
+            avoid a circular import at module top), used for the
+            ``GENERATE`` branch's ``generate_for_template`` call.
 
     Returns:
         The Transaction row to bump.
 
     Raises:
-        ValidationError: As described above.
+        ValidationError: On the ``AMBIGUOUS`` corrupt-state guard.
     """
-    existing = _target_canonical_rows(
-        source_txn, target_period, scenario_id, include_deleted=False,
+    resolution = _classify_leftover_target(
+        source_txn, target_period, scenario_id,
     )
 
-    if len(existing) > 1:
+    if resolution.kind is _TargetKind.AMBIGUOUS:
         raise ValidationError(
             f"Carry forward refused for source transaction "
             f"{source_txn.id} ('{source_txn.name}'): target period "
-            f"{target_period.id} has {len(existing)} non-deleted rows "
-            f"for template {source_txn.template_id}.  Resolve the "
-            f"duplicate rows manually before retrying."
+            f"{target_period.id} has more than one open row for "
+            f"template {source_txn.template_id}.  Resolve the duplicate "
+            f"rows manually before retrying."
         )
 
-    if len(existing) == 1:
-        target_row = existing[0]
-        # Only Projected is mutable; every other status (Paid,
-        # Received, Settled, Credit, Cancelled) carries
-        # is_immutable=True per the seed data in conftest.py and the
-        # production seed.  Bumping an immutable row would silently
-        # erase the user's prior status decision and corrupt
-        # historical records that downstream services (analytics,
-        # year-end summary) rely on.
-        if _is_finalised(target_row):
-            status_label = _target_status_label(target_row)
-            raise ValidationError(
-                f"Carry forward refused for source transaction "
-                f"{source_txn.id} ('{source_txn.name}'): target row "
-                f"in period {target_period.id} is finalised "
-                f"({status_label}).  Revert the target's status to "
-                f"Projected or move the source manually."
-            )
-        return target_row
+    if resolution.kind is _TargetKind.TOP_UP:
+        return resolution.row
 
-    # No row exists -- ask the engine to create the canonical.  The
-    # engine's per-template generation respects the rule's pattern,
-    # effective_from, and end_date, and skips any period that already
-    # has an existing row (including soft-deleted ones).  Either
-    # condition produces an empty return.
-    if source_txn.template is None:
-        # template_id is set (we partitioned on template.is_envelope),
-        # so a missing relationship means the template was hard-deleted
-        # mid-flight.  Refuse rather than silently fail.
-        raise ValidationError(
-            f"Carry forward refused for source transaction "
-            f"{source_txn.id}: its template is unloaded or deleted."
+    if resolution.kind is _TargetKind.GENERATE:
+        created = recurrence_engine.generate_for_template(
+            source_txn.template, [target_period], scenario_id,
         )
+        generated = next(
+            (t for t in created if t.pay_period_id == target_period.id),
+            None,
+        )
+        if generated is not None:
+            return generated
 
-    created = recurrence_engine.generate_for_template(
-        source_txn.template, [target_period], scenario_id,
+    # CREATE (or a GENERATE race that produced nothing): build a fresh
+    # override row carrying the leftover.
+    return _create_target_override_row(
+        source_txn, target_period, scenario_id,
     )
-    new_canonical = next(
-        (t for t in created if t.pay_period_id == target_period.id),
-        None,
+
+
+def _create_target_override_row(source_txn, target_period, scenario_id):
+    """Create a fresh override row in *target_period* for the leftover.
+
+    Used when no mutable destination row exists to top up and the
+    recurrence engine will not generate one -- e.g. a yearly Father's Day
+    envelope rolling into an off-anniversary period, or a destination
+    whose only row is finalised or soft-deleted.  The row is created at
+    ``Decimal("0")``; the caller folds the leftover on top via the same
+    bump every branch uses, so the row ends at exactly the leftover
+    amount.
+
+    The row copies its identity (account, template, name, category, type)
+    from *source_txn* and is flagged ``is_override = True`` so (a) it is
+    excluded from the partial unique index
+    ``idx_transactions_template_period_scenario`` and never collides with
+    a canonical or soft-deleted sibling, and (b) the recurrence engine
+    skips it on later passes (``should_skip_period``).  ``due_date`` is
+    left ``None``: the leftover is a manually-carried amount with no
+    scheduled date, and -- unlike the GENERATE path -- there is no
+    recurrence rule to derive one from, so copying the source's
+    past-period date would render the new row as overdue.  ``template_id``
+    is copied verbatim.
+
+    No flush: the caller runs inside ``carry_forward_unpaid``'s
+    ``no_autoflush`` block and an ``is_override`` row is index-safe in
+    every intermediate state.
+
+    Args:
+        source_txn: The envelope source row whose identity is copied.
+        target_period: The destination PayPeriod.
+        scenario_id: Scenario the new row belongs to.
+
+    Returns:
+        The newly added (unflushed) Transaction.
+    """
+    row = Transaction(
+        account_id=source_txn.account_id,
+        template_id=source_txn.template_id,
+        pay_period_id=target_period.id,
+        scenario_id=scenario_id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name=source_txn.name,
+        category_id=source_txn.category_id,
+        transaction_type_id=source_txn.transaction_type_id,
+        estimated_amount=Decimal("0"),
+        due_date=None,
+        is_override=True,
+        is_deleted=False,
     )
-    if new_canonical is None:
-        raise ValidationError(
-            f"Carry forward refused for source transaction "
-            f"{source_txn.id} ('{source_txn.name}'): template "
-            f"'{source_txn.template.name}' is not active in target "
-            f"period {target_period.id}, or the period has a "
-            f"soft-deleted row that blocks regeneration.  Move the "
-            f"source manually or restore/hard-delete the blocking "
-            f"row first."
-        )
-    return new_canonical
+    db.session.add(row)
+    return row

@@ -15,9 +15,8 @@ from app.services.entry_service import compute_actual_from_entries
 
 from ._context import (
     _build_carry_forward_context,
-    _is_finalised,
-    _target_canonical_rows,
-    _target_status_label,
+    _classify_leftover_target,
+    _TargetKind,
 )
 
 
@@ -31,15 +30,12 @@ PLAN_KIND_ENVELOPE = "envelope"
 PLAN_KIND_DISCRETE = "discrete"
 PLAN_KIND_TRANSFER = "transfer"
 
-# String constants for ``CarryForwardPlan.block_reason_code``.  Each
-# code maps to a human-readable message rendered by the modal; using
-# codes (not raw strings) lets tests assert the failure type without
-# coupling to wording.
-BLOCK_DUPLICATE_TARGETS = "duplicate_targets"
-BLOCK_TARGET_FINALISED = "target_finalised"
-BLOCK_TARGET_SOFT_DELETED = "target_soft_deleted"
-BLOCK_TEMPLATE_INACTIVE = "template_inactive"
-BLOCK_TEMPLATE_MISSING = "template_missing"
+# String constant for ``CarryForwardPlan.block_reason_code``.  The
+# single remaining block is the AMBIGUOUS guard -- a destination period
+# with more than one mutable row for the same (template, scenario), a
+# corrupt pre-existing state.  Using a code (not a raw string) lets
+# tests assert the failure type without coupling to wording.
+BLOCK_AMBIGUOUS_TARGETS = "ambiguous_targets"
 
 
 # ── Plan dataclasses ─────────────────────────────────────────────────
@@ -79,10 +75,12 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
         target_estimated_after: Envelope-only.  The target row's
             estimated amount AFTER the bump.  ``None`` when blocked
             or when no rollover is needed.
-        target_will_be_generated: Envelope-only.  True when the target
-            canonical does not yet exist and the recurrence engine
-            would create it as part of the carry-forward.  ``False``
-            otherwise.
+        target_will_be_generated: Envelope-only.  True when a new
+            destination row will appear -- either the recurrence engine
+            generates the canonical (empty, active-template period) or a
+            fresh override row is created to carry the leftover (inactive
+            template, finalised-only or soft-deleted-only destination).
+            ``False`` when an existing mutable row is bumped in place.
 
     Pylint: ``too-many-instance-attributes`` (10/7) -- this is a cohesive
     value record -- one source row's planned carry-forward action -- read
@@ -248,21 +246,19 @@ def preview_carry_forward(
 def _build_envelope_plan(source_txn, target_period, scenario_id):
     """Compute the envelope-rollover plan for *source_txn*.
 
-    Mirrors ``_settle_source_and_roll_leftover`` and
-    ``_find_or_generate_target_canonical`` exactly: every condition
-    that would raise ``ValidationError`` in the mutating path
-    surfaces here as ``blocked=True`` with a stable
-    ``block_reason_code``, and every passing condition produces an
-    actionable plan with the matching ``target_estimated_after`` the
-    bump would land on.
+    Shares the destination decision with the mutating path through
+    ``_classify_leftover_target``: the single ``AMBIGUOUS`` outcome
+    surfaces here as ``blocked=True`` with a stable ``block_reason_code``,
+    and every other outcome produces an actionable plan with the matching
+    ``target_estimated_after`` the bump would land on.
 
-    Read-only -- queries the database for target rows but never
-    mutates and never invokes ``recurrence_engine.generate_for_template``
-    (which would create rows).  The
-    ``recurrence_engine.can_generate_in_period`` helper is used
-    instead to predict the engine's create-or-skip decision.
+    Read-only -- the shared classifier queries the database for target
+    rows but never mutates and never invokes
+    ``recurrence_engine.generate_for_template`` (which would create rows);
+    it uses ``recurrence_engine.can_generate_in_period`` instead to
+    predict the engine's create-or-skip decision.
 
-    The decision tree's per-branch outcome lives in
+    The destination decision lives in
     ``_resolve_envelope_target_fields`` so this function has a
     single return point and the dataclass is constructed exactly
     once -- making it harder for a future edit to forget a field
@@ -295,24 +291,22 @@ def _resolve_envelope_target_fields(source_txn, target_period,
     caller (``_build_envelope_plan``) supplies the remaining fields
     (``transaction``, ``kind``, ``entries_sum``, ``leftover``).
 
-    The eight outcomes are encoded as eight branches of one
-    if/elif/else chain so a future reviewer can read the decision
-    tree top-to-bottom.  Each branch sets ``result`` exactly once
-    and the function returns it at the bottom -- guarding against
-    accidentally returning early on a partially-populated dict.
+    A thin switch over ``_classify_leftover_target`` -- the same
+    read-only decision the mutating path acts on -- so the preview can
+    never predict an outcome execution would not take:
 
-    Branches (in order):
-
-      1. ``leftover == 0`` -> empty dict (mutating path skips target).
-      2. >1 non-deleted target rows -> ``BLOCK_DUPLICATE_TARGETS``.
-      3. exactly one immutable target -> ``BLOCK_TARGET_FINALISED``.
-      4. exactly one mutable target -> actionable bump with concrete
-         before/after numbers.
-      5. only soft-deleted rows -> ``BLOCK_TARGET_SOFT_DELETED``.
-      6. no rows + no template -> ``BLOCK_TEMPLATE_MISSING``.
-      7. no rows + template inactive -> ``BLOCK_TEMPLATE_INACTIVE``.
-      8. no rows + template active -> actionable, engine generates
-         canonical at template default and bump applies on top.
+      * ``leftover == 0`` -> empty dict (the mutating path settles the
+        source and never touches the destination).
+      * ``AMBIGUOUS`` -> blocked; more than one mutable destination row
+        is a corrupt state the user resolves manually.
+      * ``TOP_UP`` / ``GENERATE`` / ``CREATE`` -> actionable.  The
+        destination starts at ``resolution.base`` (the existing row's
+        estimate, the template default the engine would generate, or
+        ``Decimal("0")`` for a freshly created row) and the rollover
+        bumps it to ``base + leftover``.  ``target_will_be_generated``
+        flags the two cases where a new row appears (engine-generated
+        canonical or fresh override row) so the modal can word it as a
+        creation rather than a bump.
     """
     if leftover == Decimal("0"):
         # Overspend / exact-spend: the mutating path settles source
@@ -320,114 +314,28 @@ def _resolve_envelope_target_fields(source_txn, target_period,
         # needed; fall through with all target_* fields at default.
         return {}
 
-    # Pull every row in the target period for this template+scenario,
-    # including soft-deleted ones, so we can distinguish the "no row
-    # at all" case from the "only soft-deleted rows" case (the latter
-    # is a known engine-skip condition that prevents auto-generation).
-    all_target_rows = _target_canonical_rows(
-        source_txn, target_period, scenario_id, include_deleted=True,
+    resolution = _classify_leftover_target(
+        source_txn, target_period, scenario_id,
     )
-    non_deleted = [t for t in all_target_rows if not t.is_deleted]
 
-    if len(non_deleted) > 1:
-        result = {
+    if resolution.kind is _TargetKind.AMBIGUOUS:
+        return {
             "blocked": True,
-            "block_reason_code": BLOCK_DUPLICATE_TARGETS,
+            "block_reason_code": BLOCK_AMBIGUOUS_TARGETS,
             "block_reason": (
-                f"Target period has {len(non_deleted)} non-deleted "
-                f"rows for this template.  Resolve the duplicate "
+                f"Target period {target_period.label} has more than one "
+                f"open row for this template.  Resolve the duplicate "
                 f"rows manually before retrying."
             ),
         }
-    elif len(non_deleted) == 1:
-        target_row = non_deleted[0]
-        if _is_finalised(target_row):
-            status_label = _target_status_label(target_row)
-            result = {
-                "blocked": True,
-                "block_reason_code": BLOCK_TARGET_FINALISED,
-                "block_reason": (
-                    f"Target row in {target_period.label} is "
-                    f"finalised ({status_label}).  Revert the "
-                    f"target's status to Projected or move the "
-                    f"source manually."
-                ),
-            }
-        else:
-            # Mutable target -- bump in place.
-            result = {
-                "target_estimated_before": target_row.estimated_amount,
-                "target_estimated_after": (
-                    target_row.estimated_amount + leftover
-                ),
-                "target_will_be_generated": False,
-            }
-    elif all_target_rows:
-        # Only soft-deleted rows -> engine refuses to regenerate.
-        result = {
-            "blocked": True,
-            "block_reason_code": BLOCK_TARGET_SOFT_DELETED,
-            "block_reason": (
-                f"Target period {target_period.label} has only "
-                f"soft-deleted rows for this template.  The "
-                f"recurrence engine refuses to overwrite them, so "
-                f"carry forward cannot create a canonical to "
-                f"receive the rollover.  Restore or hard-delete "
-                f"the existing rows first."
-            ),
-        }
-    elif source_txn.template is None:
-        # Defensive: template_id is set (envelope partition) but the
-        # relationship is unloaded or the row was hard-deleted mid-
-        # flight.  Refuse rather than silently fail.
-        result = {
-            "blocked": True,
-            "block_reason_code": BLOCK_TEMPLATE_MISSING,
-            "block_reason": (
-                "The source row's template is unloaded or deleted, "
-                "so carry forward cannot determine the target row."
-            ),
-        }
-    else:
-        # Fully empty period -- ask whether the engine would create
-        # the canonical on its own.
-        # Pylint: ``import-outside-toplevel`` -- deferred import:
-        # recurrence_engine and carry_forward_service are at the same
-        # layer; the deferred form documents that the dependency is
-        # one-way (carry-forward depends on recurrence-engine but not
-        # vice versa).
-        from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
 
-        if not recurrence_engine.can_generate_in_period(
-            source_txn.template, target_period, scenario_id,
-        ):
-            result = {
-                "blocked": True,
-                "block_reason_code": BLOCK_TEMPLATE_INACTIVE,
-                "block_reason": (
-                    f"Template '{source_txn.template.name}' is not "
-                    f"active in {target_period.label} (no recurrence "
-                    f"rule, the rule does not match this period, or "
-                    f"its effective window has ended).  Move the "
-                    f"source manually."
-                ),
-            }
-        else:
-            # Engine would create the canonical at default_amount.
-            # Salary-linked envelope templates would technically
-            # receive the paycheck-calculator amount instead, but
-            # envelope semantics are restricted to expense templates
-            # by the Phase 2 schema check, and salary profiles
-            # attach to income templates -- so in practice
-            # default_amount is the engine's output here.
-            canonical_default = source_txn.template.default_amount
-            result = {
-                "target_estimated_before": canonical_default,
-                "target_estimated_after": canonical_default + leftover,
-                "target_will_be_generated": True,
-            }
-
-    return result
+    return {
+        "target_estimated_before": resolution.base,
+        "target_estimated_after": resolution.base + leftover,
+        "target_will_be_generated": resolution.kind in (
+            _TargetKind.GENERATE, _TargetKind.CREATE,
+        ),
+    }
 
 
 def _build_discrete_plan(source_txn):

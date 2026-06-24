@@ -14,8 +14,9 @@ These tests exercise the route layer:
   * Returns 200 + rendered modal HTML for the user's own period.
   * Lists every source row with a kind label (envelope / discrete /
     transfer).
-  * Disables the Confirm button when any envelope target is
-    blocked (settled, missing+inactive, duplicates, soft-deleted).
+  * Disables the Confirm button when an envelope target is blocked --
+    now only the corrupt doubled-row (ambiguous) state; the formerly
+    blocking cases (finalised, inactive, soft-deleted) are actionable.
   * Returns 404 for unknown periods and other-user periods
     (security response rule).
   * Returns 400 when the user has no current period or no baseline
@@ -90,7 +91,7 @@ def _make_envelope_template(
 
 def _make_envelope_txn(
     seed_user, period, template, *,
-    estimated_amount=None, status_name="Projected",
+    estimated_amount=None, status_name="Projected", is_override=False,
 ):
     """Create one envelope transaction in *period*."""
     status = db.session.query(Status).filter_by(name=status_name).one()
@@ -107,6 +108,7 @@ def _make_envelope_txn(
             estimated_amount if estimated_amount is not None
             else str(template.default_amount)
         ),
+        is_override=is_override,
     )
     db.session.add(txn)
     db.session.flush()
@@ -378,22 +380,22 @@ class TestCarryForwardPreviewConfirmGating:
                 "Actionable preview must NOT mark Confirm as disabled."
             )
 
-    def test_confirm_disabled_when_any_envelope_blocked(
+    def test_confirm_disabled_when_envelope_target_ambiguous(
         self, app, auth_client, db, seed_user, seed_periods_today,
     ):
-        """Settled envelope target -> Confirm is disabled.
+        """Ambiguous doubled-row target -> Confirm is disabled.
 
-        The plan calls this out explicitly: blocked rows propagate
-        to the Confirm button so the user must resolve them
-        manually before retrying.  The disabled attribute prevents
-        HTMX from posting the mutation that would just refuse
-        anyway.
+        The only remaining block is the corrupt doubled-row state (two
+        mutable rows for one template+period).  Blocked rows propagate
+        to the Confirm button so the user must resolve them manually
+        before retrying; the disabled attribute prevents HTMX from
+        posting the mutation that would just refuse anyway.
 
-        The target row must live in the period the route resolves
-        as ``current_period`` (via ``pay_period_service.get_current_period``)
-        -- placing it in any other period leaves the actual target
-        period empty and the engine auto-generates a canonical there,
-        producing an actionable plan that misses the assertion.
+        The target rows must live in the period the route resolves as
+        ``current_period`` (via ``pay_period_service.get_current_period``)
+        -- placing them in any other period leaves the actual target
+        period empty and the branch creates a row, producing an
+        actionable plan that misses the assertion.
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
@@ -404,11 +406,15 @@ class TestCarryForwardPreviewConfirmGating:
                 seed_user["user"].id,
             )
             assert current_period is not None
-            target = _make_envelope_txn(
+            # Two mutable rows in the target -> AMBIGUOUS.
+            _make_envelope_txn(
                 seed_user, current_period, template,
-                status_name="Paid",
+                is_override=False,
             )
-            target.actual_amount = Decimal("100.00")
+            _make_envelope_txn(
+                seed_user, current_period, template,
+                is_override=True,
+            )
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
 

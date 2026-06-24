@@ -104,15 +104,23 @@
                       {% if plan.kind == "envelope" %}
                         {% if plan.leftover and plan.leftover > 0 %}
                           {% if plan.target_will_be_generated %}
+                            {% if plan.target_estimated_before and plan.target_estimated_before > 0 %}
                             Settle source at
                             <strong>{{ money(plan.entries_sum) }}</strong>;
-                            generate canonical at
+                            create a row in {{ current_period.label }} at
                             <strong>{{ money(plan.target_estimated_before) }}</strong>
-                            in {{ current_period.label }} and bump to
-                            <strong>{{ money(plan.target_estimated_after) }}</strong>
-                            (rolling
+                            carrying
                             <strong>{{ money(plan.leftover) }}</strong>
-                            forward).
+                            forward (total
+                            <strong>{{ money(plan.target_estimated_after) }}</strong>).
+                            {% else %}
+                            Settle source at
+                            <strong>{{ money(plan.entries_sum) }}</strong>;
+                            create a row in {{ current_period.label }}
+                            carrying
+                            <strong>{{ money(plan.leftover) }}</strong>
+                            forward.
+                            {% endif %}
                           {% elif plan.target_estimated_before is not none %}
                             Settle source at
                             <strong>{{ money(plan.entries_sum) }}</strong>;
