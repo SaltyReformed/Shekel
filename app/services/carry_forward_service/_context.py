@@ -9,8 +9,10 @@ preview (which predicts) and the execution (which acts) reason about the
 target canonical row from a single source of truth.
 """
 
+import enum
 from dataclasses import dataclass
-from typing import List
+from decimal import Decimal
+from typing import List, Optional
 
 from app.exceptions import NotFoundError
 from app.extensions import db
@@ -171,10 +173,105 @@ def _is_finalised(target_row):
     return target_row.status is None or target_row.status.is_immutable
 
 
-def _target_status_label(target_row):
-    """The target row's status name, or ``"<unset>"`` when status is None."""
-    return (
-        target_row.status.name
-        if target_row.status is not None
-        else "<unset>"
+class _TargetKind(enum.Enum):
+    """Where an envelope rollover's unspent leftover lands in the target.
+
+    Computed once by :func:`_classify_leftover_target` (read-only) and
+    consumed by both the preview (to describe) and the execution (to
+    act), so the destination decision lives in exactly one place and the
+    two paths can never drift.
+    """
+
+    TOP_UP = "top_up"        # exactly one mutable row exists -> bump it
+    GENERATE = "generate"    # empty + active template -> engine creates canonical
+    CREATE = "create"        # no usable row -> create a fresh override row
+    AMBIGUOUS = "ambiguous"  # >1 mutable row -> refuse (corrupt state)
+
+
+@dataclass(frozen=True)
+class _TargetResolution:
+    """The destination decision for one envelope leftover rollover.
+
+    Read-only output of :func:`_classify_leftover_target`.
+
+    Attributes:
+        kind: One of the :class:`_TargetKind` outcomes.
+        row: The row to bump -- set only for ``TOP_UP``; ``None``
+            otherwise.
+        base: The destination row's pre-bump estimated amount --
+            ``row.estimated_amount`` for ``TOP_UP``, the template's
+            ``default_amount`` for ``GENERATE``, and ``Decimal("0")``
+            for ``CREATE`` (a fresh row starts empty and the caller's
+            bump folds the leftover on top).  ``None`` for ``AMBIGUOUS``.
+    """
+
+    kind: _TargetKind
+    row: Optional[Transaction] = None
+    base: Optional[Decimal] = None
+
+
+def _classify_leftover_target(source_txn, target_period, scenario_id):
+    """Decide where an envelope leftover lands in the destination period.
+
+    Pure read-only classification shared by ``carry_forward_unpaid``
+    (which acts on the result) and ``preview_carry_forward`` (which
+    describes it), so the destination decision lives in one place and the
+    two paths can never diverge.
+
+    The rule -- find a *mutable* (still-Projected) destination row to top
+    up; if none exists, create one:
+
+      * ``AMBIGUOUS`` -- more than one mutable row matches ``(template,
+        period, scenario)``.  The partial unique index already prevents
+        two non-override canonicals, so this is a corrupt pre-existing
+        state; the caller refuses rather than guess which open row to
+        credit.
+      * ``TOP_UP`` -- exactly one mutable row exists; bump it.
+      * ``GENERATE`` -- no rows at all and the template is active in the
+        destination; the recurrence engine would create the canonical,
+        which the caller then bumps.
+      * ``CREATE`` -- otherwise (inactive template, only finalised rows,
+        or only soft-deleted rows); the caller creates a fresh override
+        row carrying the leftover.
+
+    Uses ``recurrence_engine.can_generate_in_period`` (a read-only
+    predictor) rather than ``generate_for_template`` (which would create
+    rows), so calling this never has a side effect.
+
+    Args:
+        source_txn: The envelope source row being carried forward; its
+            ``template`` / ``template_id`` drive the lookup.
+        target_period: The destination PayPeriod.
+        scenario_id: Scenario filter for the lookup and the
+            recurrence-engine prediction.
+
+    Returns:
+        _TargetResolution describing the destination decision.
+    """
+    # Pylint: ``import-outside-toplevel`` -- deferred import:
+    # recurrence_engine and carry_forward_service sit at the same service
+    # layer; the deferred form documents the one-way dependency
+    # (carry-forward depends on recurrence-engine, never the reverse).
+    from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
+
+    all_rows = _target_canonical_rows(
+        source_txn, target_period, scenario_id, include_deleted=True,
     )
+    non_deleted = [r for r in all_rows if not r.is_deleted]
+    mutable = [r for r in non_deleted if not _is_finalised(r)]
+
+    if len(mutable) > 1:
+        return _TargetResolution(_TargetKind.AMBIGUOUS)
+    if len(mutable) == 1:
+        return _TargetResolution(
+            _TargetKind.TOP_UP, row=mutable[0], base=mutable[0].estimated_amount,
+        )
+    if (not non_deleted
+            and source_txn.template is not None
+            and recurrence_engine.can_generate_in_period(
+                source_txn.template, target_period, scenario_id,
+            )):
+        return _TargetResolution(
+            _TargetKind.GENERATE, base=source_txn.template.default_amount,
+        )
+    return _TargetResolution(_TargetKind.CREATE, base=Decimal("0"))

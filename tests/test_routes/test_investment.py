@@ -1408,12 +1408,19 @@ class TestWhatIfContributionCalculator:
     ):
         """Annual contribution limit caps what-if contributions.
 
-        Setup: $0 balance, $7000/year limit, 0% return.
-        What-if: $500/period (~$13K/year uncapped).
+        The annual limit is per CALENDAR year and resets each January
+        (the year-boundary reset in ``growth_engine``).  A 1-year rolling
+        horizon cannot demonstrate the cap: it straddles two calendar
+        years and each side stays at or under the limit, so nothing is
+        trimmed and the result varies with today's date.  A 2-year
+        horizon always contains at least one FULL calendar year, where
+        26 periods x $500 = $13,000 exceeds the $7,000 cap and is provably
+        trimmed -- making the assertion date-independent.
 
-        With 0% return, end balance = total capped contributions.
-        Must be less than uncapped total (26+ periods * $500),
-        proving the limit is enforced on the what-if path.
+        Setup: $0 balance, $7,000/year limit, 0% return, $500/period.
+        With 0% return and a $0 start, the final balance is the sum of
+        capped contributions; the uncapped total is $500 per period, so a
+        bound cap makes the final balance strictly smaller.
         """
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
@@ -1427,18 +1434,23 @@ class TestWhatIfContributionCalculator:
         )
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
-            "?horizon_years=1&what_if_contribution=500",
+            "?horizon_years=2&what_if_contribution=500",
             headers={"HX-Request": "true"},
         )
         assert resp.status_code == 200
         whatif_balances = _extract_data_attr(resp.data, "whatif-balances")
         assert whatif_balances is not None
-        # With 0% return, balance = sum of capped contributions.
-        # Uncapped: 26+ periods * $500 = $13000+.
-        # Capped at $7000/year (with possible year-boundary reset).
+        # One end-balance per period; with 0% return and a $0 start, the
+        # final balance is the sum of capped contributions.  $500 per
+        # period is exactly the uncapped total -- equal to the final
+        # balance only if the cap never bound.  A full interior calendar
+        # year is trimmed from $13,000 to $7,000, so the cap binds and the
+        # capped total is strictly less, on every date.
         last_balance = Decimal(whatif_balances[-1])
-        assert last_balance < Decimal("13500"), (
-            f"Expected capped balance < $13500, got ${last_balance}"
+        uncapped_total = Decimal("500") * len(whatif_balances)
+        assert last_balance < uncapped_total, (
+            f"Cap must trim a full year: got ${last_balance}, "
+            f"uncapped ${uncapped_total}"
         )
         assert last_balance >= Decimal("7000"), (
             f"Expected at least one year's limit ($7000), got ${last_balance}"
