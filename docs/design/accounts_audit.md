@@ -11,12 +11,12 @@ Last evaluated: 2026-06-24.
 
 ## Method and scope
 
-- Read in full or in cited part: the `/savings` route and service package
-  (`app/routes/savings.py`, `app/services/savings_dashboard_service/`), the `/accounts` route
-  package and templates (`app/routes/accounts/`, `app/templates/accounts/`), the account and
-  reference models (`app/models/account.py`, `app/models/ref.py`, `app/enums.py`,
-  `app/ref_seeds.py`), the shared net-worth engine (`app/services/year_end_summary_service/`), and
-  the reusable template / JS / CSS kit.
+- Read in full or in cited part: the `/savings` route and service package (`app/routes/savings.py`,
+  `app/services/savings_dashboard_service/`), the `/accounts` route package and templates
+  (`app/routes/accounts/`, `app/templates/accounts/`), the account and reference models
+  (`app/models/account.py`, `app/models/ref.py`, `app/enums.py`, `app/ref_seeds.py`), the shared
+  net-worth engine (`app/services/year_end_summary_service/`), and the reusable template / JS / CSS
+  kit.
 - This is a STATIC audit: findings follow directly from the code at the cited lines. Live
   confirmation (the local Playwright loop) and the developer's per-decision rulings happen in the
   rebuild loops, not here.
@@ -31,8 +31,8 @@ shows all account types, not just savings, and `/accounts` is a separate managem
 - `/savings` (`savings.dashboard` -> `savings_dashboard_service.compute_dashboard_data` ->
   `savings/dashboard.html`, `app/routes/savings.py:109-115`): titled "Accounts Dashboard", groups
   accounts into Asset / Liability / Retirement / Investment / Other
-  (`savings_dashboard_service/_display.py:14-44`), and also renders Savings Goals, an Emergency
-  Fund card, and a Debt Summary.
+  (`savings_dashboard_service/_display.py:14-44`), and also renders Savings Goals, an Emergency Fund
+  card, and a Debt Summary.
 - `/accounts` (`accounts.list_accounts` -> `accounts/list.html`,
   `app/routes/accounts/crud.py:84-114`): a management table (Name / Type / Balance / Actions) with
   inline HTMX balance editing (`accounts/_anchor_cell.html`, `app/routes/accounts/anchor.py`) and
@@ -64,18 +64,17 @@ shows all account types, not just savings, and `/accounts` is a separate managem
 
 ## Surface 2: Account card
 
-- **Should show:** one account's standing and its actions, with the most important figure easiest
-  to read.
+- **Should show:** one account's standing and its actions, with the most important figure easiest to
+  read.
 - **Actually does:** an icon plus name plus optional badges ("Setup Required", "Paid Off"), the
-  account type and APY / rate, then a Current Balance hero
-  (`fs-4 fw-bold font-mono text-accent`), then type-specific rows (loan monthly payment and payoff
-  date; a list of projected balances) (`savings/dashboard.html:100-230`). The card's actions are
-  three icon-only `btn-sm` buttons in the order Transfer, Details (type-specific), Archive
-  (`savings/dashboard.html:146-179`).
+  account type and APY / rate, then a Current Balance hero (`fs-4 fw-bold font-mono text-accent`),
+  then type-specific rows (loan monthly payment and payoff date; a list of projected balances)
+  (`savings/dashboard.html:100-230`). The card's actions are three icon-only `btn-sm` buttons in the
+  order Transfer, Details (type-specific), Archive (`savings/dashboard.html:146-179`).
 - **Divergence (confirmed):** Details, the most-used action, is sandwiched between Transfer and
-  Archive, so it is easy to mis-click an adjacent button; Archive should not sit on the card face
-  at all. The Current Balance reads well, but the rest of the data is rendered as small muted rows
-  that do not read at a glance, and the card anatomy varies by account type, which hurts scanning.
+  Archive, so it is easy to mis-click an adjacent button; Archive should not sit on the card face at
+  all. The Current Balance reads well, but the rest of the data is rendered as small muted rows that
+  do not read at a glance, and the card anatomy varies by account type, which hurts scanning.
 - **Verdict: fix.** One obvious primary action (the card resolves to the type-specific Details
   page), management actions (Transfer / Edit / Archive / Delete) move into a quiet overflow (kebab)
   menu, and the secondary data gets a glanceable treatment (a per-account sparkline plus a single
@@ -94,10 +93,10 @@ shows all account types, not just savings, and `/accounts` is a separate managem
   injected into the Liability section BEFORE that section's card grid, outside the grid entirely
   (`savings/dashboard.html:45-96`).
 - **Divergence (confirmed):** two mechanisms leave "holes". First, each category is its own row, so
-  any category whose card count is not a multiple of three leaves trailing empty columns (Asset
-  with two cards shows one empty slot; only a three-card category such as Retirement looks full).
-  Second, the full-width Debt Summary card breaks the grid rhythm in the Liability section. The
-  `col-lg-4` cap also fixes the maximum at three cards across regardless of screen width.
+  any category whose card count is not a multiple of three leaves trailing empty columns (Asset with
+  two cards shows one empty slot; only a three-card category such as Retirement looks full). Second,
+  the full-width Debt Summary card breaks the grid rhythm in the Liability section. The `col-lg-4`
+  cap also fixes the maximum at three cards across regardless of screen width.
 - **Verdict: fix.** This is the core layout bug. Replace the per-category rows with a single
   responsive auto-fit grid, `repeat(auto-fit, minmax(min(280px, 100%), 1fr))`, so cards fill each
   row and more cards flow in as the viewport widens, with grouping expressed by inline headers or
@@ -105,13 +104,12 @@ shows all account types, not just savings, and `/accounts` is a separate managem
 
 ## Surface 4: Debt Summary
 
-- **Should show:** total debt, monthly payments, weighted rate, DTI, and a projected debt-free
-  date.
-- **Actually does:** a full-width card rendered only in the Liability section when `debt_summary`
-  is present, with a DTI badge whose class mapping duplicates the shared `dti_badge` macro
+- **Should show:** total debt, monthly payments, weighted rate, DTI, and a projected debt-free date.
+- **Actually does:** a full-width card rendered only in the Liability section when `debt_summary` is
+  present, with a DTI badge whose class mapping duplicates the shared `dti_badge` macro
   (`savings/dashboard.html:45-96`; macro at `_money_macros.html`).
-- **Verdict: keep + reorganize.** Keep the figures; tie the card to the liabilities group in the
-  new layout and render the DTI badge through the shared `dti_badge` macro.
+- **Verdict: keep + reorganize.** Keep the figures; tie the card to the liabilities group in the new
+  layout and render the DTI badge through the shared `dti_badge` macro.
 
 ## Surface 5: Emergency Fund
 
@@ -129,15 +127,15 @@ shows all account types, not just savings, and `/accounts` is a separate managem
   recommended contribution, projected completion date, and a pace badge
   (`savings/dashboard.html:327-467`). The pace verdict comes from
   `savings_goal_service.calculate_trajectory` (pace ahead / on_track / behind).
-- **Verdict: keep + reorganize.** Keep the figures; render pace through the shared `pace_pill`
-  macro and present the goals using the dashboard `_tracks.html` mini-trajectory vocabulary for
+- **Verdict: keep + reorganize.** Keep the figures; render pace through the shared `pace_pill` macro
+  and present the goals using the dashboard `_tracks.html` mini-trajectory vocabulary for
   cross-screen consistency.
 
 ## Surface 7: Archived accounts
 
 - **Should show:** a way to restore or permanently remove archived accounts.
-- **Actually does:** a collapsible accordion listing archived accounts with their last known
-  balance (`savings/dashboard.html:235-284`).
+- **Actually does:** a collapsible accordion listing archived accounts with their last known balance
+  (`savings/dashboard.html:235-284`).
 - **Verdict: keep**, folded into the unified page.
 
 ## Surface 8: the `/accounts` management table
@@ -206,8 +204,8 @@ mortgage balance) is emergent, not a special calculation.
 - `InterestParams` (`app/models/interest_params.py:12-103`) is the one-to-one params pattern to
   mirror for appreciation.
 - CSS split (load order is load-bearing; `utilities.css` stays last): a new `accounts.css` slots
-  between `dashboard.css` and `utilities.css` (`app/templates/base.html:70-72`); Bootstrap
-  utilities first, no `!important` in new rules.
+  between `dashboard.css` and `utilities.css` (`app/templates/base.html:70-72`); Bootstrap utilities
+  first, no `!important` in new rules.
 
 ## UI/UX best practices applied
 
@@ -235,13 +233,13 @@ without a new developer ruling.
    archive / delete move into a quiet per-card overflow (kebab) menu; the balance is click-to-edit
    inline (reuse the existing HTMX anchor editor). The separate `/accounts` table is retired via
    redirect. Hard-delete stays confirm plus fresh-login gated, inside the menu.
-2. **Keep and reorganize** Savings Goals, Emergency Fund, and Debt Summary into the new layout
-   (debt tied to liabilities; emergency-fund plus goals as a savings section).
+2. **Keep and reorganize** Savings Goals, Emergency Fund, and Debt Summary into the new layout (debt
+   tied to liabilities; emergency-fund plus goals as a savings section).
 3. **Net worth is the headline figure**, with a forward trend chart, made trustworthy by the
    home-equity fix (decision 5). Assets / liabilities / retirement roll up to it.
-4. **Visual direction: "Net Worth Cockpit"** (chart-forward, consistent with the rebuilt
-   dashboard). The per-account DETAIL pages (`checking`, `interest`, `loan`, `investment`) are a
-   separate, later overhaul; their visual direction is decided when that work begins.
+4. **Visual direction: "Net Worth Cockpit"** (chart-forward, consistent with the rebuilt dashboard).
+   The per-account DETAIL pages (`checking`, `interest`, `loan`, `investment`) are a separate, later
+   overhaul; their visual direction is decided when that work begins.
 5. **Home and physical-asset model: a new "Property" (Real Estate) account type** in the Asset
    category, illiquid, whose balance is the market value the user sets and trues-up, with an
    optional annual appreciation rate. Equity nets against the mortgage automatically. This is a
@@ -254,23 +252,24 @@ producers, gives it a create / edit UI, and verifies the new headline and the an
 Shippable independently of the visual rebuild, and it fixes the analytics chart on its own.
 
 - **New account type:** a "Property" (Real Estate) `AccountType` in the Asset category, flags
-  `has_amortization=False`, `has_interest=False`, `is_pretax=False`, `is_liquid=False` (illiquid,
-  so it is excluded from emergency-fund and savings math automatically), `has_parameters=True`.
-  Add to `app/enums.py` and `app/ref_seeds.py`; the type is generic so vehicles and valuables can
-  be seeded later.
-- **Appreciation params:** a new one-to-one `AssetAppreciationParams(account_id,
-  annual_appreciation_rate)` mirroring `InterestParams`; project the value forward with the
-  existing per-period rate-compounding math (no contributions, no transactions). Build-time
-  sub-decision (rule 8): a dedicated params table plus a new APPRECIATING projection branch (clean
-  semantics, recommended) versus repurposing the interest engine (less code, muddier labels).
+  `has_amortization=False`, `has_interest=False`, `is_pretax=False`, `is_liquid=False` (illiquid, so
+  it is excluded from emergency-fund and savings math automatically), `has_parameters=True`. Add to
+  `app/enums.py` and `app/ref_seeds.py`; the type is generic so vehicles and valuables can be seeded
+  later.
+- **Appreciation params:** a new one-to-one
+  `AssetAppreciationParams(account_id, annual_appreciation_rate)` mirroring `InterestParams`;
+  project the value forward with the existing per-period rate-compounding math (no contributions, no
+  transactions). Build-time sub-decision (rule 8): a dedicated params table plus a new APPRECIATING
+  projection branch (clean semantics, recommended) versus repurposing the interest engine (less
+  code, muddier labels).
 - **Projection wiring (SSOT-critical):** add an APPRECIATING branch so the home value projects
   identically on every surface. Touch `classify_account` / `AccountProjectionKind`
   (`app/services/account_projection.py`), `_dispatch_account_balance_map`
   (`app/services/year_end_summary_service/_balances.py:209-274`), and `_project_one_account`
   (`app/services/savings_dashboard_service/_projections.py:341-410`).
 - **Net-worth flow:** emergent; the Property account is summed `+bal`, the mortgage `-abs(bal)`.
-- **UI:** the account create / edit form (`app/templates/accounts/form.html`) gains the
-  appreciation rate field for the Property type; value set and trued-up via the normal anchor flow.
+- **UI:** the account create / edit form (`app/templates/accounts/form.html`) gains the appreciation
+  rate field for the Property type; value set and trued-up via the normal anchor flow.
 - **Analytics fix:** the Year-End chart self-corrects once the asset projects; verify it is no
   longer disproportionately negative.
 - **Migration and tests:** new table plus seeded type, test upgrade and downgrade, rebuild the test
@@ -322,8 +321,8 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
 1. **Gate A confirm** (this audit's rebuild decisions).
 2. **Loop A** scratch mockups for the Net Worth Cockpit in /tmp (never committed), screenshot rounds
    via `tests/manual/shoot.py`, iterate, lock the visual here.
-3. **Loop B** (gated, full suite per phase; Opus for services / routes / tests, Fable for
-   templates / CSS / JS): net-worth headline plus forward-series producer; the unified template plus
+3. **Loop B** (gated, full suite per phase; Opus for services / routes / tests, Fable for templates
+   / CSS / JS): net-worth headline plus forward-series producer; the unified template plus
    `accounts.css` plus kebab and inline edit plus charts; `balanceChanged` wiring, the `/accounts`
    redirect, retire `list.html`, repoint links; then live verification.
 
