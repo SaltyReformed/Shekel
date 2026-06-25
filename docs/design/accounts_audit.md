@@ -421,18 +421,24 @@ Carried from the best-practices research and the round-1 mockups, to apply in Lo
 
 Follows `docs/design/overhaul_plan.md`, "Process per screen":
 
-0. **Mini-sprint** (ships first or in parallel): Property type plus `AssetAppreciationParams` plus
-   migration plus the appreciation projection plus the form field plus the analytics chart verified,
-   with tests and the full suite.
+0. **Mini-sprint** -- DONE 2026-06-25 (commit `95714e0`, PR #42, live on prod): the Property type,
+   `AssetAppreciationParams`, the migration, the `APPRECIATING` projection, the Property detail
+   page, the home<->mortgage link, and the analytics-chart fix; 32 tests, full suite green. See the
+   "Implemented" subsection above for the as-built design (the form field became a setup page; the
+   collateral link and equity card are net-new beyond Decision 5).
 1. **Gate A confirm** (this audit's rebuild decisions).
 2. **Loop A** scratch mockups for the Net Worth Cockpit in /tmp (never committed), screenshot rounds
    via `tests/manual/shoot.py`, iterate, lock the visual here. DONE 2026-06-24: round 1 produced
    three hero-band directions (A single-canvas, B chart-forward, C compact); the developer chose
    **B**. Rulings recorded above (Rebuild decisions 6-10; Loop A build refinements).
 3. **Loop B** (gated, full suite per phase; Opus for services / routes / tests, Fable for templates
-   / CSS / JS): net-worth headline plus forward-series producer; the unified template plus
-   `accounts.css` plus kebab and inline edit plus charts; `balanceChanged` wiring, the `/accounts`
-   redirect, retire `list.html`, repoint links; then live verification.
+   / CSS / JS): **P1 net-worth headline + forward-series producer DONE** (`e5ecd26`, shared
+   `net_worth_kernel`). REMAINING -- P2 the unified `savings/dashboard.html` + new `accounts.css` +
+   kebab and inline edit (the Property equity card lands here, reusing `home_equity_service`); P3
+   charts (trend + Net/assets toggle + horizon + diverging bar + sparklines); P4 `balanceChanged`
+   wiring + the `/accounts` -> `savings.dashboard` redirect + retire `list.html` + repoint links +
+   relocate hard-delete to the detail page; P5 live verification.
+   **This is where a fresh session resumes.**
 
 ## Verification (for the build)
 
