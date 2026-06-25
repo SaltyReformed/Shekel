@@ -1,12 +1,33 @@
 # Budget App -- Project Roadmap v5
 
-**Version:** 5.1 **Date:** June 14, 2026 **Parent Documents:** project_requirements_v2.md,
+**Version:** 5.2 **Date:** June 25, 2026 **Parent Documents:** project_requirements_v2.md,
 project_requirements_v3_addendum.md **Supersedes:** project_roadmap_v4-6.md (preserved for
 historical reference)
 
 ---
 
 ## Overview
+
+### What changed in v5.2 (this revision, June 25, 2026)
+
+This revision re-prioritises post-overhaul work after a fresh ROI review grounded in the current
+code, and surfaces the in-progress UI/UX overhaul in the execution order. No future-work specs were
+deleted; the changes are status and priority corrections.
+
+1. **UI/UX overhaul surfaced as in-progress.** The Fable 5 per-screen rebuild is now shown as active
+   work in the execution order and in a dedicated in-progress section, not only in the completed-work
+   appendix (A.19). Grid and Dashboard are complete; Accounts is in progress; the remaining screens
+   are planned.
+2. **Stage B (double-entry ledger) deferred indefinitely.** An ROI review found it the
+   highest-effort, highest-risk item for no user-facing gain, while Stage A already holds balances
+   correct under the HIGH-01 lock. The revisit valve is retained (Section 2.2).
+3. **Stage C (envelope budgeting) dependency corrected, then deferred.** The long-standing claim
+   that envelopes require Stage B is wrong: the entry-aware math already runs on `budget.transactions`
+   via E-25 and Stage C is a single additive table, so envelopes are standalone-capable. Deferred
+   pending confirmed need for category-level allocation (Section 2.3).
+4. **Execution order after the overhaul:** Section 3 (Smart Features) next, then Section 4
+   (Notifications, sequenced so alerts can build on Smart Features), then Section 5 (Data Export, low
+   priority), then Section 6 (Multi-User, on the table but deferred until the app is ready to share).
 
 ### What changed in v5.1 (this revision, June 14, 2026)
 
@@ -89,11 +110,12 @@ See **Appendix B** for the full deferred-items reference.
 | Section | Title                                | Status              | Summary                                                                                                  |
 | ------- | ------------------------------------ | ------------------- | -------------------------------------------------------------------------------------------------------- |
 | 1       | Security Remediation                 | Mostly complete     | Phases 1-7 done; Phase 8 low/info findings consolidated and largely shipped; Argon2id migration + config-drift script remain; Phase 9 and C-39 not pursued; Phase 10 operator-tracked. |
-| 2       | Financial Calculation Consistency    | Stage A complete    | Stage A (single source of truth for balances) shipped; 25-finding audit remediated. Stages B and C deferred with revisit criteria. |
-| 3       | Smart Features                       | Planned             | Seasonal forecasting, smart estimates, inflation, third paycheck guidance, anomaly detection, etc.       |
-| 4       | Notifications                        | Planned             | 15 notification types in 6 groups; bell + dropdown + `/notifications` page; email deferred.              |
-| 5       | Data Export                          | Planned             | CSV, PDF reports, full data backup with restore.                                                         |
-| 6       | Multi-User / Kid Accounts            | Far future          | Schema ready; companion role from Appendix A.10 is a precursor.                                          |
+| 2       | Financial Calculation Consistency    | Stage A complete    | Stage A (single source of truth for balances) shipped; 25-finding audit remediated. Stage B (double-entry) deferred indefinitely with a revisit valve; Stage C (envelopes) deferred, and does not require Stage B. |
+| UI/UX   | Fable 5 UI/UX Overhaul               | In progress         | Per-screen rebuild under the Steel Ink design language. Grid and Dashboard complete; Accounts in progress; remaining screens planned. Foundation shipped (Appendix A.19); live status in `docs/design/overhaul_plan.md`. |
+| 3       | Smart Features                       | Next (after UI/UX)  | Seasonal forecasting, smart estimates, inflation, third paycheck guidance, anomaly detection, etc.       |
+| 4       | Notifications                        | After Smart Features | 15 notification types in 6 groups; bell + dropdown + `/notifications` page; email deferred. Several alerts build on Smart Features outputs. |
+| 5       | Data Export                          | Planned -- low priority | CSV, PDF reports, full data backup with restore. CSV (5.1) first.                                    |
+| 6       | Multi-User / Kid Accounts            | On the table -- deferred | Schema ready; companion role from Appendix A.10 is a precursor. Deferred until the app is ready to share. |
 
 ---
 
@@ -169,17 +191,18 @@ The original Phase 3 -> Section 2 sequencing gate is satisfied: both have shippe
 
 **Status:** Stage A is COMPLETE and shipped. The May-June 2026 financial-calculation audit (25
 findings: 5 Critical, 8 High, 7 Medium, 5 Low) was remediated through the main and follow-up commit
-chains; the audit artefacts live in `docs/audits/financial_calculations/`. Stages B and C are
-DEFERRED with explicit revisit criteria, because Stage A closed enough of the gap that neither is
+chains; the audit artefacts live in `docs/audits/financial_calculations/`. Stage B (double-entry) is
+DEFERRED INDEFINITELY with a revisit valve, and Stage C (envelope budgeting) is DEFERRED pending
+confirmed need; Stage C does not depend on Stage B. Stage A closed enough of the gap that neither is
 currently warranted.
 
 **Goal:** The app produces identical monetary values regardless of which view, route, or service
 computes or displays them. Structural rules prevent new parallel computation paths from being
 introduced.
 
-This section has three sequenced stages: Stage A removed immediate inconsistency between existing
-computation paths; Stages B and C are architectural changes that build on Stage A and are deferred
-unless their revisit criteria fire.
+This section has three stages: Stage A removed immediate inconsistency between existing computation
+paths; Stage B is an architectural change deferred indefinitely (revisit valve in 2.2); Stage C is an
+independent feature deferred pending confirmed need, and it does not depend on Stage B.
 
 ### 2.1 Stage A -- Single source of truth for balances (COMPLETE)
 
@@ -213,7 +236,7 @@ guard test also forbids grid and accounts from re-deriving balances. The develop
 are resolved. Supporting docs: `remediation_plan.md` and `remediation_follow_up.md` in the same
 directory.
 
-### 2.2 Stage B -- Double-entry ledger (DEFERRED)
+### 2.2 Stage B -- Double-entry ledger (DEFERRED INDEFINITELY)
 
 **Problem:** Even after Stage A, balances are derived from transaction records rather than recorded
 directly. Future architectural changes to transactions or transfers risk re-introducing the
@@ -240,11 +263,16 @@ budget.journal_entries
 - standard audit columns
 ```
 
-**Decision criterion:** Stage A has landed (Section 2.1) and the cross-page regression test
-currently holds, so Stage B is not warranted today. It becomes the structural fix only if divergence
-reappears or if future architectural work on transactions or transfers risks re-introducing it.
+**Decision:** Deferred indefinitely; not on the active roadmap. A June 2026 ROI review, grounded in
+the current code, found this migration the highest-effort, highest-risk item on the roadmap: it
+re-points the canonical balance producer (E-25) and every consumer, reworks the ~242-test financial
+suite, and reintroduces a second source of truth during the migration window, all for no user-facing
+gain, while Stage A already holds balances consistent and correct under the HIGH-01 regression lock.
+**Revisit valve (unchanged):** revisit only if balance divergence reappears, if future architectural
+work on transactions or transfers risks re-introducing it, or if a feature lands that genuinely needs
+per-account journal semantics (for example multi-currency or formal double-entry accounting reports).
 
-### 2.3 Stage C -- Envelope budgeting (DEFERRED, requires Stage B)
+### 2.3 Stage C -- Envelope budgeting (DEFERRED; does not require Stage B)
 
 **Problem:** Budget categories do not have first-class per-period spending allocations. Per-template
 entry tracking from the Spending Tracker (Appendix A.10) addresses the most common variable-amount
@@ -254,8 +282,8 @@ category-level limits that aggregate across multiple templates.
 **Outcome after Stage C:**
 
 - Each budget category has a per-period allocation amount (the envelope).
-- Per-envelope remaining balance is visible at a glance, computed from authoritative journal
-  entries.
+- Per-envelope remaining balance is visible at a glance, computed from `budget.transactions` via the
+  canonical balance producer (E-25); no journal table required.
 - Optional hard-cap mode prevents spending past the allocation; soft-warning mode flags envelopes at
   risk.
 - Existing per-template entry tracking continues to work; envelopes aggregate spending across
@@ -269,14 +297,45 @@ budget.category_budget_allocations
 - user_id, audit columns
 ```
 
-**Decision criterion:** Confirm the user need before committing. Per-template entry tracking already
-addresses the most common envelope use cases; Stage C generalises to category-level allocation. The
-case for is mental-model alignment for users who plan in envelopes; the case against is added setup
-complexity.
+**Dependency correction:** Earlier revisions listed Stage C as requiring Stage B. A June 2026 code
+review found this is not true. The entry-aware reservation math already runs against
+`budget.transactions` (`_entry_aware_amount` / `entry_checking_impact` in `balance_calculator.py`,
+routed through E-25), transactions already carry `category_id`, and Stage C's data model is a single
+additive table. Stage C can therefore be built standalone, at medium-low effort and low risk, without
+the double-entry migration.
+
+**Decision:** Deferred pending confirmed need. Per-template entry tracking (Appendix A.10) already
+covers common single-template envelopes; the open question is whether category-level allocation
+aggregating across multiple templates is needed. The case for is mental-model alignment; the case
+against is added setup complexity. Revisit when cross-template category budgeting becomes a felt
+need. It does not gate on, and need not be sequenced after, Stage B.
+
+---
+
+## UI/UX Overhaul (Fable 5) -- In Progress
+
+**Status:** In progress, and the current active work ahead of Section 3. A full UI/UX rebuild under
+the Steel Ink design language (not a reskin). The foundation and core shipped (Appendix A.19); the
+per-screen rebuild rollout is ongoing. This is a cross-cutting workstream, so it sits outside the 1-6
+feature numbering. Live status and per-screen audits are tracked in `docs/design/overhaul_plan.md`.
+
+**Per-screen rollout:**
+
+- Grid: COMPLETE
+- Dashboard: COMPLETE
+- Accounts: IN PROGRESS (includes a home-equity / net-worth data-model mini-sprint; see
+  `docs/design/accounts_audit.md`)
+- Remaining (savings, salary, analytics, retirement, investment, loan, settings): planned
 
 ---
 
 ## 3. Smart Features
+
+**Status:** Next major feature work, beginning after the in-progress UI/UX overhaul completes. The
+June 2026 ROI review prioritised this first among the remaining sections: it improves projection
+accuracy (the app's core value) and reduces manual estimate upkeep, at low risk to the balance
+invariants. Recommended starting set: 3.1 (seasonal), 3.2 (rolling average), 3.9 (confidence
+indicator), 3.12 (anomaly-at-entry).
 
 **Goal:** Make the app smarter about projecting future expenses based on historical patterns and
 detecting anomalies. The core additions are seasonal expense forecasting, rolling average estimates
@@ -686,6 +745,10 @@ configurable percentage threshold.
 
 ## 4. Notifications
 
+**Status:** Planned, sequenced after Section 3 (Smart Features). Intentional ordering: several
+notifications (estimate-confidence and anomaly alerts, smarter cash-flow warnings) build on Smart
+Features outputs, and the absence of notifications is not a current pain point.
+
 **Goal:** Alert the user to important financial events without requiring them to manually scan the
 grid or dashboard. Provide 15 notification types across 6 logical groups, delivered in-app via a
 bell icon dropdown and a full `/notifications` page. Email delivery is added as a deferred sub-phase
@@ -1038,6 +1101,9 @@ Mapping:
 
 ## 5. Data Export
 
+**Status:** Planned, low priority. CSV export (5.1) is the cheapest and most broadly useful slice;
+PDF (5.2) and full backup (5.3) follow only if needed.
+
 **Goal:** Provide data export capabilities for use in external tools, tax preparation, and personal
 record-keeping. This section is a data management concern independent of the visualization and
 reporting overhaul (which built CSV export for analytics views as part of Appendix A.9).
@@ -1077,7 +1143,8 @@ rebuild their data from a backup file.
 
 ## 6. Multi-User / Kid Accounts
 
-**Status:** Far future, not actively planned.
+**Status:** On the table, but deferred until the app is complete enough to share with other users.
+Not actively being built yet.
 
 The database schema already includes `user_id` on all relevant tables. The companion role introduced
 in Appendix A.10 (`owner`/`companion` with `linked_owner_id`) is a deliberate precursor. The full
@@ -1337,7 +1404,7 @@ doc: `docs/plans/historical/implementation_plan_pay_period_crud.md`.
 | Scenarios (named, clone, compare)     | v3 Phase 7                | Indefinitely deferred; effort not worth reward                         |
 | Paycheck calibration                  | fixes_improvements.md     | Completed as Appendix A.1 task 3.10                                    |
 | Fluctuating/seasonal bills            | fixes_improvements.md     | Addressed by Section 3 task 3.1 (seasonal forecasting, planned)        |
-| Multi-user / kid accounts             | v2 Phase 6                | Section 6; far future; schema ready                                    |
+| Multi-user / kid accounts             | v2 Phase 6                | Section 6; on the table, deferred until ready to share; schema ready   |
 | Checking account APY/interest         | fixes_improvements.md     | User confirmed checking APY is negligible; not implementing            |
 | Recurrence pattern audit              | Roadmap v4, task 5.2      | Removed; section 3.2 confirmed all patterns are correct                |
 | Actual paycheck value entry           | Roadmap v4, task 5.3      | Removed; superseded by paycheck calibration (Appendix A.1 task 3.10)   |
@@ -1352,6 +1419,8 @@ doc: `docs/plans/historical/implementation_plan_pay_period_crud.md`.
 | Charts: x-axis date format            | fixes_improvements.md     | Completed as Appendix A.9 task 8.0a                                    |
 | Charts: inaccurate values             | fixes_improvements.md     | Investigated as Appendix A.9 task 8.0b; no bug found in code audit; excluded |
 | Charts: total overhaul                | fixes_improvements.md     | Completed as Appendix A.9 (full visualization and reporting overhaul)  |
+| Double-entry ledger (Stage B)         | Roadmap v5 Section 2.2     | Deferred indefinitely; highest effort/risk for no user-facing gain; revisit valve in 2.2 |
+| Envelope budgeting (Stage C)          | Roadmap v5 Section 2.3     | Deferred pending confirmed need; standalone-capable, does not require Stage B            |
 
 ---
 
@@ -1369,3 +1438,4 @@ doc: `docs/plans/historical/implementation_plan_pay_period_crud.md`.
 | 4.6     | 2026-04-09 | New Section 9 added (Spending Tracker and Companion View): sub-transaction entry tracking, entry-level credit card workflow, companion user role, balance calculator extended with entry-aware effective amount. Multi-user (Section 10) bumped from Priority 8 to Priority 9. Sections 10-12 renumbered. |
 | 5.0     | 2026-05-06 | Major reorganisation. Numbering: collapsed the dual Priority/Section system into a single sequential top-level track in execution order. Subsection numbers renumbered to follow their new parent: former 6.x became 3.x (Smart Features), former 7.x became 4.x (Notifications), former 8A.x became 5.x (Data Export). Internal cross-references updated to match. Completions: marked Visualization and Reporting Overhaul (was Priority 4 / Section 8, now Appendix A.9) and Spending Tracker and Companion View (was Priority 8 / Section 9, now Appendix A.10) complete (May 2026). Completed work relocated to Appendix A with original v4-6 section labels preserved on the appendix headings for cross-reference with prior commits and design docs. New Section 1 (Security Remediation) added, linking to `docs/audits/security-2026-04-15/remediation-plan.md` (in progress, 16 of 56 commits merged). New Section 2 (Financial Calculation Consistency) added with three sequenced stages (Stage A committed; Stages B and C decision-pending). Execution order for remaining work: Security, Financial Consistency, Smart Features, Notifications, Data Export, Multi-User. Phase 10 (was Section 7) became Section 4. Section 8A (Data Export) became Section 5. Section 10 (Multi-User) became Section 6. Section 11 (Deferred Items Reference) became Appendix B. Supersedes `project_roadmap_v4-6.md` (preserved as historical archive). |
 | 5.1     | 2026-06-14 | Realigned with shipped code. Section 1 (Security) re-scored against merged git history: Phases 1-7 complete, Phase 8 low/info findings consolidated into C-40/C-44/C-45/C-46 and largely shipped, Argon2id migration + config-drift script remain, Phase 9 (C-53..C-55) and C-39 not pursued (rationale recorded in 1.3), Phase 10 operator-tracked. Section 2 (Financial Calculation Consistency): Stage A marked COMPLETE (25-finding audit remediated; canonical producers E-18/E-19/E-25/E-26/E-27; HIGH-01 cross-page regression lock), Stages B and C deferred with revisit criteria. Appendix A extended with A.11-A.20 for work completed since v5.0: carry-forward aftermath and envelope view, test performance and per-worker databases, mobile v3, amortization engine split, homelab security audit, code quality audit and remediation (pylint 10.00/10 + quality-pass + deep-quality-hunt), polyglot standards cleanup, dev/prod container parity, the Fable 5 UI/UX overhaul, and pay-period CRUD with a rolling window. Folded in the still-valid decisions from the unmerged v5.1 draft on branch `claude/busy-thompson-rEhgG`. Future Sections 3-6 (Smart Features, Notifications, Data Export, Multi-User) unchanged. |
+| 5.2     | 2026-06-25 | Re-prioritised post-overhaul work after a fresh ROI review grounded in the current code, and surfaced the in-progress UI/UX overhaul. UI/UX: the Fable 5 per-screen rebuild was added to the execution order and a new in-progress section (Grid and Dashboard complete, Accounts in progress, remaining screens planned); Appendix A.19 retained for the shipped core. Section 2: Stage B (double-entry) deferred indefinitely with the revisit valve retained, as the highest-effort, highest-risk item for no user-facing gain while Stage A's canonical producers and HIGH-01 lock already hold balances correct; Stage C (envelopes) dependency on Stage B corrected (the entry-aware math already runs on budget.transactions via E-25 and Stage C is a single additive table, so it is standalone-capable) and deferred pending confirmed need. Execution order after the overhaul: Section 3 Smart Features next, then Section 4 Notifications (so alerts can build on Smart Features), then Section 5 Data Export (low priority, CSV first), then Section 6 Multi-User (on the table, deferred until ready to share). No future-work specs deleted; status and priority changes only. |
