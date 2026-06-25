@@ -15,19 +15,20 @@ code, and surfaces the in-progress UI/UX overhaul in the execution order. No fut
 deleted; the changes are status and priority corrections.
 
 1. **UI/UX overhaul surfaced as in-progress.** The Fable 5 per-screen rebuild is now shown as active
-   work in the execution order and in a dedicated in-progress section, not only in the completed-work
-   appendix (A.19). Grid and Dashboard are complete; Accounts is in progress; the remaining screens
-   are planned.
+   work in the execution order and in a dedicated in-progress section, not only in the
+   completed-work appendix (A.19). Grid and Dashboard are complete; Accounts is in progress; the
+   remaining screens are planned.
 2. **Stage B (double-entry ledger) deferred indefinitely.** An ROI review found it the
    highest-effort, highest-risk item for no user-facing gain, while Stage A already holds balances
    correct under the HIGH-01 lock. The revisit valve is retained (Section 2.2).
 3. **Stage C (envelope budgeting) dependency corrected, then deferred.** The long-standing claim
-   that envelopes require Stage B is wrong: the entry-aware math already runs on `budget.transactions`
-   via E-25 and Stage C is a single additive table, so envelopes are standalone-capable. Deferred
-   pending confirmed need for category-level allocation (Section 2.3).
+   that envelopes require Stage B is wrong: the entry-aware math already runs on
+   `budget.transactions` via E-25 and Stage C is a single additive table, so envelopes are
+   standalone-capable. Deferred pending confirmed need for category-level allocation (Section 2.3).
 4. **Execution order after the overhaul:** Section 3 (Smart Features) next, then Section 4
-   (Notifications, sequenced so alerts can build on Smart Features), then Section 5 (Data Export, low
-   priority), then Section 6 (Multi-User, on the table but deferred until the app is ready to share).
+   (Notifications, sequenced so alerts can build on Smart Features), then Section 5 (Data Export,
+   low priority), then Section 6 (Multi-User, on the table but deferred until the app is ready to
+   share).
 
 ### What changed in v5.1 (this revision, June 14, 2026)
 
@@ -201,8 +202,8 @@ computes or displays them. Structural rules prevent new parallel computation pat
 introduced.
 
 This section has three stages: Stage A removed immediate inconsistency between existing computation
-paths; Stage B is an architectural change deferred indefinitely (revisit valve in 2.2); Stage C is an
-independent feature deferred pending confirmed need, and it does not depend on Stage B.
+paths; Stage B is an architectural change deferred indefinitely (revisit valve in 2.2); Stage C is
+an independent feature deferred pending confirmed need, and it does not depend on Stage B.
 
 ### 2.1 Stage A -- Single source of truth for balances (COMPLETE)
 
@@ -269,8 +270,9 @@ re-points the canonical balance producer (E-25) and every consumer, reworks the 
 suite, and reintroduces a second source of truth during the migration window, all for no user-facing
 gain, while Stage A already holds balances consistent and correct under the HIGH-01 regression lock.
 **Revisit valve (unchanged):** revisit only if balance divergence reappears, if future architectural
-work on transactions or transfers risks re-introducing it, or if a feature lands that genuinely needs
-per-account journal semantics (for example multi-currency or formal double-entry accounting reports).
+work on transactions or transfers risks re-introducing it, or if a feature lands that genuinely
+needs per-account journal semantics (for example multi-currency or formal double-entry accounting
+reports).
 
 ### 2.3 Stage C -- Envelope budgeting (DEFERRED; does not require Stage B)
 
@@ -301,8 +303,8 @@ budget.category_budget_allocations
 review found this is not true. The entry-aware reservation math already runs against
 `budget.transactions` (`_entry_aware_amount` / `entry_checking_impact` in `balance_calculator.py`,
 routed through E-25), transactions already carry `category_id`, and Stage C's data model is a single
-additive table. Stage C can therefore be built standalone, at medium-low effort and low risk, without
-the double-entry migration.
+additive table. Stage C can therefore be built standalone, at medium-low effort and low risk,
+without the double-entry migration.
 
 **Decision:** Deferred pending confirmed need. Per-template entry tracking (Appendix A.10) already
 covers common single-template envelopes; the open question is whether category-level allocation
@@ -316,8 +318,9 @@ need. It does not gate on, and need not be sequenced after, Stage B.
 
 **Status:** In progress, and the current active work ahead of Section 3. A full UI/UX rebuild under
 the Steel Ink design language (not a reskin). The foundation and core shipped (Appendix A.19); the
-per-screen rebuild rollout is ongoing. This is a cross-cutting workstream, so it sits outside the 1-6
-feature numbering. Live status and per-screen audits are tracked in `docs/design/overhaul_plan.md`.
+per-screen rebuild rollout is ongoing. This is a cross-cutting workstream, so it sits outside the
+1-6 feature numbering. Live status and per-screen audits are tracked in
+`docs/design/overhaul_plan.md`.
 
 **Per-screen rollout:**
 
