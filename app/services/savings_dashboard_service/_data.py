@@ -22,6 +22,7 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services import income_service, pay_period_service
+from app.services.account_projection import AccountProjectionKind, classify_account
 from app.services.projection_inputs import load_active_deductions_for_accounts
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.savings_dashboard_service._types import (
@@ -156,15 +157,14 @@ def _load_account_params(
         ).all():
             interest_params_map[hp.account_id] = hp
 
-    # Investment/retirement: parameterized types that are not interest-bearing
-    # and not amortizing -- by elimination, these use InvestmentParams.
+    # Investment/retirement accounts use the growth engine.  The canonical
+    # classifier owns the taxonomy, so a parameterised physical asset
+    # (Property -> APPRECIATING) is correctly excluded from the
+    # InvestmentParams load here rather than re-deriving "by elimination".
     investment_params_map = {}
     inv_account_ids = [
         a.id for a in accounts
-        if a.account_type
-        and a.account_type.has_parameters
-        and not a.account_type.has_interest
-        and not a.account_type.has_amortization
+        if classify_account(a) is AccountProjectionKind.INVESTMENT
     ]
     if inv_account_ids:
         for ip in db.session.query(InvestmentParams).filter(

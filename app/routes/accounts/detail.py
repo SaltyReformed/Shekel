@@ -22,6 +22,7 @@ the F-6 guard's file-path reference was updated to point here.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -33,13 +34,22 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, CompoundingFrequencyEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.interest_params import InterestParams
 from app.models.ref import CompoundingFrequency
 from app.models.transaction import Transaction
 from app.routes.accounts._bp import accounts_bp
-from app.services import balance_calculator, balance_resolver, pay_period_service
+from app.services import (
+    balance_calculator,
+    balance_resolver,
+    home_equity_service,
+    pay_period_service,
+)
 from app.services.scenario_resolver import get_baseline_scenario
-from app.utils.account_validation import _interest_params_schema
+from app.utils.account_validation import (
+    _appreciation_params_schema,
+    _interest_params_schema,
+)
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.period_projections import project_balance_horizons
 
@@ -300,6 +310,101 @@ def update_interest_params(account_id):
     logger.info("Updated interest params for account %d", account.id)
     flash("Interest parameters updated.", "success")
     return redirect(url_for("accounts.interest_detail", account_id=account_id))
+
+
+# ── Property (physical-asset) Detail & Params ─────────────────────
+
+
+@accounts_bp.route("/accounts/<int:account_id>/property")
+@login_required
+@require_owner
+def property_detail(account_id):
+    """Property detail page: market value, appreciation rate, equity, LTV.
+
+    The durable home for the home-equity display this sprint (the savings
+    cockpit equity card lands in the Net Worth Cockpit rebuild, reusing the
+    same :mod:`app.services.home_equity_service` producer).  Equity nets the
+    Property's user-set market value against the resolver-derived balances
+    of the loans it secures, so the mortgage figure here equals the debt
+    card and the net-worth liability.
+    """
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
+
+    # Verify this is an appreciating physical-asset account type.
+    if not account.account_type or not account.account_type.has_appreciation:
+        flash("This account type does not track appreciation.", "warning")
+        return redirect(url_for("accounts.list_accounts"))
+
+    params = (
+        db.session.query(AssetAppreciationParams)
+        .filter_by(account_id=account.id)
+        .first()
+    )
+    if params is None:
+        # Defensive auto-create with a zero-rate sentinel (E-12), mirroring
+        # ``interest_detail``: the create flow already seeds this row, so
+        # this branch only fires if it was lost (manual delete / data loss).
+        params = AssetAppreciationParams(
+            account_id=account.id, annual_appreciation_rate=Decimal("0"),
+        )
+        db.session.add(params)
+        db.session.commit()
+
+    scenario = get_baseline_scenario(current_user.id)
+    scenario_id = scenario.id if scenario else None
+    equity = home_equity_service.resolve_home_equity(
+        account, scenario_id, date.today(),
+    )
+
+    return render_template(
+        "accounts/property_detail.html",
+        account=account,
+        params=params,
+        equity=equity,
+        secured_loans=account.secured_loans,
+    )
+
+
+@accounts_bp.route("/accounts/<int:account_id>/property/params", methods=["POST"])
+@login_required
+@require_owner
+def update_appreciation_params(account_id):
+    """Update a Property's annual appreciation rate."""
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
+
+    if not account.account_type or not account.account_type.has_appreciation:
+        flash("This account type does not track appreciation.", "warning")
+        return redirect(url_for("accounts.list_accounts"))
+
+    errors = _appreciation_params_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("accounts.property_detail", account_id=account_id))
+
+    data = _appreciation_params_schema.load(request.form)
+
+    params = (
+        db.session.query(AssetAppreciationParams)
+        .filter_by(account_id=account.id)
+        .first()
+    )
+    if params is None:
+        params = AssetAppreciationParams(
+            account_id=account.id,
+            annual_appreciation_rate=data["appreciation_rate"],
+        )
+        db.session.add(params)
+    else:
+        params.annual_appreciation_rate = data["appreciation_rate"]
+
+    db.session.commit()
+    logger.info("Updated appreciation params for account %d", account.id)
+    flash("Appreciation rate updated.", "success")
+    return redirect(url_for("accounts.property_detail", account_id=account_id))
 
 
 # ── Checking Detail ──────────────────────────────────────────────

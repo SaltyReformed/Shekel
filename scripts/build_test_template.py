@@ -93,10 +93,12 @@ _DEFAULT_ADMIN_URL: str = "postgresql:///postgres"
 _DEFAULT_SECRET_KEY: str = "build-test-template-key-32-characters-long-not-prod"
 _REQUIRED_SCHEMAS: tuple[str, ...] = ("ref", "auth", "budget", "salary", "system")
 # Sourced from ``app.ref_seeds.ACCT_TYPE_SEEDS`` -- the seed currently
-# defines 18 account types.  The verification step asserts the count
-# round-trips through the seed call so an accidental edit to the
-# seed list (e.g. a deleted row) surfaces here, not in test failures.
-_EXPECTED_ACCOUNT_TYPE_COUNT: int = 18
+# defines 19 account types (the 18 financial types plus the Property
+# physical-asset type added by the home-equity mini-sprint).  The
+# verification step asserts the count round-trips through the seed call
+# so an accidental edit to the seed list (e.g. a deleted row) surfaces
+# here, not in test failures.
+_EXPECTED_ACCOUNT_TYPE_COUNT: int = 19
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +278,7 @@ def _verify_template_state() -> None:
                     f"Template ref.account_types count is "
                     f"{account_type_count}, expected "
                     f"{_EXPECTED_ACCOUNT_TYPE_COUNT}.  Check that "
-                    "app.ref_seeds.ACCT_TYPE_SEEDS still has 18 entries "
+                    "app.ref_seeds.ACCT_TYPE_SEEDS still has 19 entries "
                     "and that seed_reference_data committed cleanly."
                 )
 

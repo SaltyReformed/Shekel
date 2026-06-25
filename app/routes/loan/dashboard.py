@@ -558,6 +558,34 @@ def _build_schedule_tab(planned_schedule, monthly_escrow, current_rate, params):
     }
 
 
+def _load_collateral_candidates(user_id):
+    """Return the user's active Property accounts for the secured-by picker.
+
+    The loan dashboard's "Secured by" picker offers the physical assets a
+    loan can be secured by (``has_appreciation`` types, i.e. Property), so a
+    mortgage / HELOC can be grouped with the home it is secured by and
+    equity rendered.  Empty when the user has none -- the template then
+    shows a "create a property first" prompt instead of an empty dropdown.
+
+    Args:
+        user_id: ``auth.users.id`` of the current owner.
+
+    Returns:
+        list[Account]: active Property accounts, ordered for display.
+    """
+    return (
+        db.session.query(Account)
+        .join(AccountType)
+        .filter(
+            Account.user_id == user_id,
+            Account.is_active.is_(True),
+            AccountType.has_appreciation.is_(True),
+        )
+        .order_by(Account.sort_order, Account.name)
+        .all()
+    )
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan")
 @login_required
 @require_owner
@@ -623,6 +651,10 @@ def dashboard(account_id):
         # (not via a Jinja global) so a test that freezes ``date.today()``
         # sees the frozen value on the page.
         "today_iso": date.today().isoformat(),
+        # Home-equity link: the Property accounts this loan can be secured
+        # by drive the "Secured by" picker; the current selection is read
+        # off ``account.collateral_account_id`` in the template.
+        "collateral_candidates": _load_collateral_candidates(current_user.id),
     }
     context.update(_build_payment_summary(
         ctx.state, summary, planned_schedule, ctx.loan.escrow_components,

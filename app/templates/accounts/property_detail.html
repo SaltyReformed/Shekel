@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% from "_money_macros.html" import money %}
+{% block title %}{{ account.name }} -- Property Detail -- Shekel{% endblock title %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ account.name }}</li>
+  </ol>
+</nav>
+{% endblock breadcrumbs %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4><i class="bi bi-houses"></i> {{ account.name }}</h4>
+  <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left"></i> Back to Accounts
+  </a>
+</div>
+
+{% if request.args.get('setup') == '1' %}
+<div class="alert alert-info alert-dismissible fade show mb-3" role="alert">
+  <i class="bi bi-gear"></i> Property created. Set its market value (via the
+  account's balance) and an optional appreciation rate below, then link its
+  mortgage from the loan's page to track equity.
+  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  {# --- Property Summary --- #}
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-info-circle"></i> Property Summary</h6>
+      </div>
+      <div class="card-body">
+        <div class="d-flex justify-content-between mb-2">
+          <span class="text-muted">Type</span>
+          <span>{{ account.account_type.name if account.account_type else "Property" }}</span>
+        </div>
+        <div class="d-flex justify-content-between mb-2">
+          <span class="text-muted">Appreciation Rate</span>
+          <span class="fw-bold text-accent">{{ "%.3f"|format(params.annual_appreciation_rate|to_percent) }}% / yr</span>
+        </div>
+        <div class="d-flex justify-content-between">
+          <span class="text-muted">Market Value</span>
+          <span class="fs-5 fw-bold font-mono text-accent">{{ money(equity.market_value) }}</span>
+        </div>
+        <div class="form-text mt-1">
+          Market value is this account's current balance. Update it from the
+          accounts list to true up the home's value.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# --- Edit Appreciation Rate --- #}
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-gear"></i> Appreciation</h6>
+      </div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('accounts.update_appreciation_params', account_id=account.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label for="appreciation_rate" class="form-label">Annual Appreciation Rate</label>
+            <div class="input-group">
+              <input type="number" class="form-control" id="appreciation_rate" name="appreciation_rate"
+                     value="{{ "%.3f"|format(params.annual_appreciation_rate|to_percent) }}"
+                     step="0.001" min="-99" max="100">
+              <span class="input-group-text">%</span>
+            </div>
+            <div class="form-text">
+              Enter as a percentage (e.g. 3.5 for 3.5% per year). The market
+              value compounds forward at this rate on projections.
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-check-lg"></i> Update Rate
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# --- Home Equity --- #}
+<div class="card">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-house-heart"></i> Home Equity</h6>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-6 col-md-3">
+        <div class="text-muted small">Market Value</div>
+        <div class="fs-5 font-mono">{{ money(equity.market_value) }}</div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="text-muted small">Secured Debt</div>
+        <div class="fs-5 font-mono">{{ money(equity.total_debt) }}</div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="text-muted small">Equity</div>
+        <div class="fs-5 fw-bold font-mono {% if equity.equity < 0 %}text-danger{% else %}text-success{% endif %}">
+          {{ money(equity.equity) }}
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="text-muted small">Loan-to-Value</div>
+        <div class="fs-5 font-mono">
+          {% if equity.ltv is not none %}
+            {{ "%.1f"|format(equity.ltv|to_percent) }}%
+          {% else %}
+            --
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <hr>
+
+    <div class="text-muted small mb-2">Secured by</div>
+    {% if secured_loans %}
+    <ul class="list-group list-group-flush">
+      {% for loan in secured_loans %}
+      <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+        <span>
+          <i class="bi {{ loan.account_type.icon_class if loan.account_type and loan.account_type.icon_class else 'bi-cash-coin' }}"></i>
+          <a href="{{ url_for('loan.dashboard', account_id=loan.id) }}">{{ loan.name }}</a>
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="text-muted">
+      No loans are secured by this property yet. Open a mortgage or HELOC's
+      loan page and set <strong>Secured by</strong> to this property to track
+      its equity here.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock content %}

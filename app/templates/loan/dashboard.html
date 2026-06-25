@@ -268,6 +268,46 @@
       </div>
     </div>
 
+    {# --- Secured By (home-equity link) --- #}
+    <div class="card mb-4" id="secured-by">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-house-heart"></i> Secured By</h6>
+      </div>
+      <div class="card-body">
+        {% if collateral_candidates %}
+        <p class="text-muted small mb-3">
+          Link this loan to the property it is secured by so its equity
+          (the home's value minus this balance) is tracked on the property's
+          page.
+        </p>
+        <form method="POST" action="{{ url_for('loan.update_collateral', account_id=account.id) }}"
+              class="row g-2 align-items-end">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="col-md-8">
+            <label for="collateral_account_id" class="form-label">Securing property</label>
+            <select class="form-select form-select-sm" id="collateral_account_id" name="collateral_account_id">
+              <option value="">None</option>
+              {% for prop in collateral_candidates %}
+              <option value="{{ prop.id }}" {% if account.collateral_account_id == prop.id %}selected{% endif %}>{{ prop.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4">
+            <button type="submit" class="btn btn-primary btn-sm">
+              <i class="bi bi-check-lg"></i> Save Link
+            </button>
+          </div>
+        </form>
+        {% else %}
+        <p class="text-muted mb-0">
+          <i class="bi bi-info-circle"></i>
+          Create a <strong>Property</strong> account first, then return here
+          to link this loan to it and track home equity.
+        </p>
+        {% endif %}
+      </div>
+    </div>
+
     {# --- Payment Allocation Breakdown --- #}
     {% include "loan/_payment_breakdown.html" %}
 

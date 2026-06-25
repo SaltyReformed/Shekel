@@ -343,6 +343,14 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
             deductions, salary_gross_biweekly,
         )
 
+    # Appreciating physical assets (Property): the user-set market value
+    # compounds forward at its annual rate.  The rate rides on the
+    # account's eager ``asset_appreciation_params`` backref, so no new
+    # dispatch kwarg is needed; the helper flat-carries when the params
+    # row is absent.
+    if kind is AccountProjectionKind.APPRECIATING:
+        return _build_appreciation_balance_map(account, scenario, periods)
+
     # Interest-bearing and plain accounts share the base path.
     return base_account_balance_map(account, scenario, periods)
 
@@ -443,6 +451,80 @@ def _build_investment_balance_map(  # pylint: disable=too-many-arguments,too-man
     return _merge_balance_sources(
         periods, proj_by_pid, base_balances, rev_by_pid,
     )
+
+
+def _build_appreciation_balance_map(
+    account: Account,
+    scenario: Scenario,
+    periods: list,
+) -> "OrderedDict[int, Decimal]":
+    """Build period_id -> balance for an appreciating physical asset.
+
+    The user-set market value (the canonical entries-aware resolver's flat
+    anchor carry) is the base; post-anchor periods compound forward at the
+    annual appreciation rate via the growth engine with no contributions.
+
+    Pre-anchor periods are NOT back-cast: a manually-asserted point-in-time
+    market value has no historical basis to compound backward from (unlike
+    an investment's contribution history), so they keep the flat base
+    value.  This is the deliberate asymmetry with
+    :func:`_build_investment_balance_map`, which reverse-projects.
+
+    Degrades to the flat base map when the account has no
+    :class:`~app.models.asset_appreciation_params.AssetAppreciationParams`
+    row yet (Property created, rate not set) or has no post-anchor periods.
+
+    Args:
+        account: The Property account; its ``asset_appreciation_params``
+            backref carries the annual rate.
+        scenario: The baseline scenario.
+        periods: All user pay periods.
+
+    Returns:
+        OrderedDict mapping period_id to Decimal balance.
+    """
+    base_balances = balance_resolver.balances_for(
+        account, scenario.id, periods,
+    ).balances
+
+    anchor_idx = get_anchor_period_index(account, periods)
+    if anchor_idx is None:
+        return base_balances
+
+    anchor_balance = base_balances.get(account.current_anchor_period_id, ZERO)
+
+    # Compound the market value forward at the annual rate (no
+    # contributions) when a rate is configured.  An absent params row
+    # leaves ``proj_by_pid`` empty so the value simply flat-carries forward
+    # via the resolver's base map instead.
+    proj_by_pid: dict = {}
+    params = account.asset_appreciation_params
+    if params is not None:
+        post_anchor = [p for p in periods if p.period_index > anchor_idx]
+        if post_anchor:
+            projection = growth_engine.project_balance(
+                current_balance=anchor_balance,
+                assumed_annual_return=params.annual_appreciation_rate,
+                periods=post_anchor,
+            )
+            proj_by_pid = {pb.period_id: pb.end_balance for pb in projection}
+
+    # Per period: the compounded value (post-anchor), else the resolver's
+    # flat carry (the anchor and forward), else the anchor value
+    # (pre-anchor).  The resolver does not produce pre-anchor balances, so
+    # a manually-set market value is held FLAT backward (back-filled at the
+    # anchor value) rather than reverse-compounded -- there is no
+    # historical valuation to compound backward from -- yet the home still
+    # contributes to net worth at every period.
+    result: "OrderedDict[int, Decimal]" = OrderedDict()
+    for period in periods:
+        if period.id in proj_by_pid:
+            result[period.id] = proj_by_pid[period.id]
+        elif period.id in base_balances:
+            result[period.id] = base_balances[period.id]
+        else:
+            result[period.id] = anchor_balance
+    return result
 
 
 def _forward_project_periods(

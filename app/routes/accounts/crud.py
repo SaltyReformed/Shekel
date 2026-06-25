@@ -36,11 +36,11 @@ from app.enums import (
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
-from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -59,6 +59,7 @@ from app.services import (
     pay_period_service,
     transfer_service,
 )
+from app.services.account_projection import AccountProjectionKind, classify_account
 from app.utils import archive_helpers
 from app.utils.account_validation import (
     _create_schema,
@@ -128,6 +129,84 @@ def new_account():
         account=None,
         account_types=_visible_account_types(current_user.id),
     )
+
+
+def _auto_create_type_params(account, kind):
+    """Auto-create the type-specific params row for a new parameterized account.
+
+    Dispatches on the account's :class:`AccountProjectionKind`: interest
+    accounts get an ``apy=0`` :class:`InterestParams`, investment/retirement
+    accounts a default :class:`InvestmentParams`, and Property
+    (appreciating) accounts an ``annual_appreciation_rate=0``
+    :class:`AssetAppreciationParams`.  Each row carries an explicit zero
+    sentinel (E-12: zero is a value, not missing) so no projection runs on a
+    silent server-default before the user configures the real value on the
+    type-specific setup page.  Does not commit; the caller owns the
+    transaction boundary.
+
+    Args:
+        account: The freshly-created :class:`~app.models.account.Account`.
+        kind: The account's :class:`AccountProjectionKind`.
+    """
+    if kind is AccountProjectionKind.INTEREST:
+        if not db.session.query(InterestParams).filter_by(account_id=account.id).first():
+            # #38: compounding frequency is a ref FK, so the auto-create
+            # supplies the DAILY id explicitly (an FK id is not a static
+            # literal).  HIGH-06: explicit ``apy=0`` (no server_default) so
+            # no ghost 4.5% interest is ever projected.
+            db.session.add(InterestParams(
+                account_id=account.id, apy=Decimal("0"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+    elif kind is AccountProjectionKind.INVESTMENT:
+        if not db.session.query(InvestmentParams).filter_by(account_id=account.id).first():
+            # #38: employer-contribution type is a ref FK, so the
+            # auto-create supplies the NONE id explicitly.
+            db.session.add(InvestmentParams(
+                account_id=account.id,
+                employer_contribution_type_id=(
+                    ref_cache.employer_contribution_type_id(
+                        EmployerContributionTypeEnum.NONE,
+                    )
+                ),
+            ))
+    elif kind is AccountProjectionKind.APPRECIATING:
+        # Property: the user sets the real rate on the property detail page.
+        if not db.session.query(AssetAppreciationParams).filter_by(
+            account_id=account.id,
+        ).first():
+            db.session.add(AssetAppreciationParams(
+                account_id=account.id,
+                annual_appreciation_rate=Decimal("0"),
+            ))
+
+
+def _setup_redirect_url(account, kind):
+    """Return the post-create redirect URL for a new account.
+
+    Parameterized accounts go to their type-specific setup page (the
+    established setup-page pattern); everything else returns to the accounts
+    list.  Resolving the URL here keeps :func:`create_account` within
+    Pylint's branch and return-count limits.
+
+    Args:
+        account: The freshly-created :class:`~app.models.account.Account`.
+        kind: The account's :class:`AccountProjectionKind`.
+
+    Returns:
+        str: The ``url_for`` target to redirect to.
+    """
+    if kind is AccountProjectionKind.INTEREST:
+        return url_for("accounts.interest_detail", account_id=account.id, setup=1)
+    if kind is AccountProjectionKind.AMORTIZING:
+        return url_for("loan.dashboard", account_id=account.id, setup=1)
+    if kind is AccountProjectionKind.INVESTMENT:
+        return url_for("investment.dashboard", account_id=account.id, setup=1)
+    if kind is AccountProjectionKind.APPRECIATING:
+        return url_for("accounts.property_detail", account_id=account.id, setup=1)
+    return url_for("accounts.list_accounts")
 
 
 @accounts_bp.route("/accounts", methods=["POST"])
@@ -207,79 +286,19 @@ def create_account():
         )
         return redirect(url_for("pay_periods.generate_form"))
 
-    # Auto-create type-specific params based on metadata flags.
-    account_type = db.session.get(AccountType, account.account_type_id)
-
-    # Interest-bearing types: auto-create InterestParams with an
-    # explicit ``apy=0`` sentinel (E-12: zero is a value, not
-    # missing; HIGH-06 / Commit 24 removed the dangerous
-    # ``server_default="0.04500"`` that previously materialised a
-    # silent 4.5% rate on any row whose ``apy`` was not explicitly
-    # written).  The user is redirected to the interest-detail setup
-    # page below and must enter a real APY there; until they do,
-    # ``calculate_interest`` short-circuits on ``apy <= 0`` and no
-    # ghost interest is projected.
-    if account_type and account_type.has_interest:
-        if not db.session.query(InterestParams).filter_by(account_id=account.id).first():
-            # #38: compounding frequency is a ref FK now, so the
-            # auto-create supplies the DAILY id explicitly (the prior
-            # ``server_default="daily"`` is gone -- an FK id is not a
-            # static literal).
-            db.session.add(InterestParams(
-                account_id=account.id, apy=Decimal("0"),
-                compounding_frequency_id=ref_cache.compounding_frequency_id(
-                    CompoundingFrequencyEnum.DAILY,
-                ),
-            ))
-
-    # Investment/retirement: auto-create InvestmentParams with sensible defaults.
-    # Predicate: parameterized types that are not interest-bearing and not
-    # amortizing -- by elimination, these are investment/retirement types.
-    if (account_type
-            and account_type.has_parameters
-            and not account_type.has_interest
-            and not account_type.has_amortization):
-        if not db.session.query(InvestmentParams).filter_by(account_id=account.id).first():
-            # #38: employer-contribution type is a ref FK now, so the
-            # auto-create supplies the NONE id explicitly (the prior
-            # ``server_default="'none'"`` is gone).
-            db.session.add(InvestmentParams(
-                account_id=account.id,
-                employer_contribution_type_id=(
-                    ref_cache.employer_contribution_type_id(
-                        EmployerContributionTypeEnum.NONE,
-                    )
-                ),
-            ))
-
+    # Auto-create the type-specific params row and resolve the setup-page
+    # redirect by projection kind.  The canonical classifier owns the
+    # taxonomy, so a parameterised physical asset (Property -> APPRECIATING)
+    # is never mistaken for an investment -- the bug a bare ``has_parameters
+    # and not has_interest and not has_amortization`` predicate introduces.
+    kind = classify_account(account)
+    _auto_create_type_params(account, kind)
     db.session.commit()
 
     logger.info("Created account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' created.", "success")
 
-    # Redirect parameterized accounts to their configuration page.
-    # Resolve the next URL through a single ladder so the function
-    # has one terminal return (keeps Pylint's R0911 limit happy as
-    # the validation path grew from C-28's multi-tenant guard).
-    if account_type and account_type.has_interest:
-        next_url = url_for(
-            "accounts.interest_detail", account_id=account.id, setup=1,
-        )
-    elif account_type and account_type.has_amortization:
-        next_url = url_for(
-            "loan.dashboard", account_id=account.id, setup=1,
-        )
-    elif (account_type
-            and account_type.has_parameters
-            and not account_type.has_interest
-            and not account_type.has_amortization):
-        next_url = url_for(
-            "investment.dashboard", account_id=account.id, setup=1,
-        )
-    else:
-        next_url = url_for("accounts.list_accounts")
-
-    return redirect(next_url)
+    return redirect(_setup_redirect_url(account, kind))
 
 
 @accounts_bp.route("/accounts/<int:account_id>/edit", methods=["GET"])
@@ -617,6 +636,9 @@ def hard_delete_account(account_id):
     db.session.query(LoanParams).filter_by(account_id=account_id).delete()
     db.session.query(InterestParams).filter_by(account_id=account_id).delete()
     db.session.query(InvestmentParams).filter_by(account_id=account_id).delete()
+    db.session.query(AssetAppreciationParams).filter_by(
+        account_id=account_id,
+    ).delete()
     db.session.query(EscrowComponent).filter_by(account_id=account_id).delete()
     db.session.query(RateHistory).filter_by(account_id=account_id).delete()
     db.session.query(SavingsGoal).filter_by(account_id=account_id).delete()

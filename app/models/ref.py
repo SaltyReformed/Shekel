@@ -52,6 +52,16 @@ class AccountType(db.Model):
                              savings goal eligibility.  Applies to
                              Asset-category types like Checking,
                              Savings, HYSA, Money Market.
+        has_appreciation  -- This type's balance is a market value the
+                             user sets that appreciates (or depreciates)
+                             over time at a configured annual rate
+                             (AssetAppreciationParams), projected by the
+                             growth engine with contributions zeroed.
+                             Checked before has_parameters in
+                             ``classify_account`` so a parameterised
+                             physical asset (Property) is not mistaken
+                             for an investment.  Applies to Asset-category
+                             physical assets like Property.
 
     Display / validation metadata:
 
@@ -148,6 +158,10 @@ class AccountType(db.Model):
         server_default=db.text("false"),
     )
     is_liquid = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    has_appreciation = db.Column(
         db.Boolean, nullable=False, default=False,
         server_default=db.text("false"),
     )

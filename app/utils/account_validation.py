@@ -36,6 +36,8 @@ exists to keep route bodies thin.  No Flask request globals are
 touched -- callers pass the current user id in explicitly.
 """
 
+from app import ref_cache
+from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
@@ -45,6 +47,7 @@ from app.schemas.validation import (
     AccountTypeUpdateSchema,
     AccountUpdateSchema,
     AnchorUpdateSchema,
+    AppreciationParamsUpdateSchema,
     InterestParamsUpdateSchema,
 )
 
@@ -54,6 +57,7 @@ from app.schemas.validation import (
 # split behaviour ("one schema instance shared across every endpoint
 # that consumes it") is preserved.
 _anchor_schema = AnchorUpdateSchema()
+_appreciation_params_schema = AppreciationParamsUpdateSchema()
 _create_schema = AccountCreateSchema()
 _update_schema = AccountUpdateSchema()
 _type_create_schema = AccountTypeCreateSchema()
@@ -141,6 +145,59 @@ def _account_type_is_visible(type_id, user_id):
     if account_type is None:
         return False
     return account_type.user_id is None or account_type.user_id == user_id
+
+
+def _validate_collateral_link(collateral_account_id, source_account, user_id):
+    """Validate a submitted ``collateral_account_id`` for a secured loan.
+
+    The collateral link points a secured liability (the *source_account*,
+    a loan) at the Asset account it is secured by, so a Property and its
+    mortgage / HELOC can be grouped and equity rendered.  ``None`` clears
+    the link and always validates.
+
+    Checks, each a flash-ready rejection:
+
+      * No self-link -- an account cannot secure itself.
+      * The target exists and belongs to *user_id*.  Not-found and
+        not-yours collapse into one "Invalid linked account." response so
+        the field cannot probe for another owner's account ids (the
+        project's "404 for both not-found and not-yours" rule).
+      * The target is in the Asset category (a home, not another loan).
+      * The source is an amortizing liability (defensive -- the loan
+        routes only call this for loan accounts; an asset/liability
+        partition makes multi-node cycles impossible, so the self-link
+        check is the only cycle guard needed).
+
+    Args:
+        collateral_account_id: Submitted target account id, or ``None`` to
+            clear the link.
+        source_account: The loan :class:`~app.models.account.Account` the
+            link is being set on.
+        user_id: ``auth.users.id`` of the current owner.
+
+    Returns:
+        ``None`` when the link is valid (or cleared); otherwise a
+        ``(message, category)`` tuple ready for :func:`flask.flash`.
+    """
+    if collateral_account_id is None:
+        return None
+    if collateral_account_id == source_account.id:
+        return "An account cannot secure itself.", "danger"
+    target = db.session.get(Account, collateral_account_id)
+    if target is None or target.user_id != user_id:
+        return "Invalid linked account.", "danger"
+    asset_category_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+    if (
+        target.account_type is None
+        or target.account_type.category_id != asset_category_id
+    ):
+        return "The securing account must be an asset.", "danger"
+    if (
+        source_account.account_type is None
+        or not source_account.account_type.has_amortization
+    ):
+        return "Only a loan can be secured by an asset.", "danger"
+    return None
 
 
 def _validate_update_account(account, form, user_id):

@@ -67,6 +67,7 @@ from app.schemas.validation.accounts import (
     AccountTypeUpdateSchema,
     AccountUpdateSchema,
     AnchorUpdateSchema,
+    AppreciationParamsUpdateSchema,
     InterestParamsCreateSchema,
     InterestParamsUpdateSchema,
 )
@@ -160,6 +161,7 @@ __all__ = [
     "AccountTypeUpdateSchema",
     "AccountUpdateSchema",
     "AnchorUpdateSchema",
+    "AppreciationParamsUpdateSchema",
     "CalibrationConfirmSchema",
     "CalibrationSchema",
     "CategoryCreateSchema",

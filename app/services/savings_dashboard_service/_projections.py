@@ -268,6 +268,8 @@ def _compute_needs_setup(
         return acct_loan_params is None
     if kind is AccountProjectionKind.INVESTMENT:
         return acct_investment_params is None
+    if kind is AccountProjectionKind.APPRECIATING:
+        return acct.asset_appreciation_params is None
     return False
 
 
@@ -338,6 +340,49 @@ def _project_investment(acct, investment_params, current_bal, ctx):
     )
 
 
+def _project_appreciation(acct, current_bal, balances, ctx):
+    """Compute the 3 / 6 / 12-month horizons for an appreciating asset.
+
+    The Property's market value (*current_bal*, the entries-aware
+    end-of-current-period balance) compounds forward at its annual
+    appreciation rate via the growth engine with no contributions, and the
+    standard horizon picker maps the projection to the 3 / 6 / 12-month
+    labels.  Unlike :func:`_project_investment` there is no contribution to
+    remove from the seed -- a home is valued, not funded.
+
+    Degrades to the flat horizons over *balances* when the appreciation
+    params row is absent (Property created, rate not set) or there are no
+    future periods.
+
+    Args:
+        acct: The Property Account (its ``asset_appreciation_params``
+            backref carries the annual rate).
+        current_bal: The entries-aware end-of-current-period balance.
+        balances: The flat base balance map (the degrade fallback).
+        ctx: The shared :class:`_ProjectionContext`.
+
+    Returns:
+        Dict mapping a horizon label to the projected end balance.
+    """
+    params = acct.asset_appreciation_params
+    future_periods = [
+        p for p in ctx.all_periods
+        if p.period_index >= ctx.current_period.period_index
+    ]
+    if params is None or not future_periods:
+        return project_balance_horizons(
+            ctx.current_period, ctx.all_periods, balances,
+        )
+    projection = growth_engine.project_balance(
+        current_balance=current_bal,
+        assumed_annual_return=params.annual_appreciation_rate,
+        periods=future_periods,
+    )
+    return _investment_horizons(
+        projection, ctx.all_periods, ctx.current_period,
+    )
+
+
 def _project_one_account(acct, ctx):
     """Compute the projection dict for a single account.
 
@@ -377,6 +422,8 @@ def _project_one_account(acct, ctx):
         projected = _project_investment(
             acct, acct_investment_params, current_bal, ctx,
         )
+    elif kind is AccountProjectionKind.APPRECIATING and ctx.current_period:
+        projected = _project_appreciation(acct, current_bal, balances, ctx)
     else:
         projected = project_balance_horizons(
             ctx.current_period, ctx.all_periods, balances,

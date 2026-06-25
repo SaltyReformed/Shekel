@@ -318,6 +318,46 @@ Shippable independently of the visual rebuild, and it fixes the analytics chart 
   template; appreciation projection and net-worth math hand-confirmed (rule 5); full suite plus
   pylint 10.00/10.
 
+### Implemented (2026-06-25, on dev) -- with adversarial-review refinements
+
+Built and green on dev: migration `b483e2b8a6d2` (up/down tested), the test template rebuilt (19
+types, 33 audit triggers), 32 new tests, the full suite at 6286 passed, and `pylint app/` 10.00/10.
+An adversarial review of the plan changed five things from the spec above:
+
+- **`has_appreciation` flag (new).** A boolean on `AccountType` is required to distinguish a
+  parameterised Property from an investment. `classify_account` checks it BEFORE the
+  `has_parameters` investment branch, so Property -> `APPRECIATING`. The five inline
+  "investment-by-elimination" predicates (`crud.py` x2, `year_end_summary_service/_data.py` x2,
+  `savings_dashboard_service/_data.py`) were routed through `classify_account` -- the DRY/SOLID
+  root-cause fix -- rather than copying a flag to each.
+- **Flat-carry BACKWARD, compound forward.** A manually-set market value is not reverse-compounded
+  (that would fabricate past valuations the user never entered). `_build_appreciation_balance_map`
+  compounds post-anchor via `growth_engine.project_balance` (contributions zeroed) and back-fills
+  pre-anchor periods flat at the anchor value, so the home still contributes to net worth at every
+  period.
+- **Setup-page pattern, not a shared-form field.** Property create auto-creates the params (zero
+  sentinel) and redirects to a new `accounts.property_detail` page (mirroring `interest_detail`)
+  where the rate is set -- no JS toggle on the shared account form. `AssetAppreciationParams` uses
+  `AccountScopedUniqueMixin` (the `LoanParams`/`InvestmentParams` 1:1 shape), not the
+  `InterestParams` inline-FK shape (which would duplicate-code).
+- **Explicit home<->mortgage link (net-new, beyond Decision 5's emergent-only).** A nullable
+  self-referential `accounts.collateral_account_id` FK (`ON DELETE SET NULL`, `secured_loans`
+  backref) lets a loan point at the Property it secures. The "Secured by" picker lives on the loan
+  dashboard with a "create a property first" empty-state. Net-worth math is untouched; the link is
+  presentation only. Validated by `account_validation._validate_collateral_link`.
+- **Equity producer + LTV now; cockpit card deferred.** `home_equity_service` (pure
+  `compute_home_equity` + `resolve_home_equity`, reusing the loan resolver so the mortgage figure
+  equals the debt card) computes equity and loan-to-value. It renders on the Property detail page
+  this sprint; the polished `/savings` equity card lands in the Net Worth Cockpit rebuild, reusing
+  the same producer (the current `savings/dashboard.html` is being replaced, so no throwaway card
+  was built into it).
+
+The analytics Year-End chart self-corrects for free: `_dispatch_account_balance_map` is a pure
+pass-through to the kernel, so the new `APPRECIATING` branch is inherited with no edit there.
+Deferred (flagged, not built): custom user-created appreciating types (seeded Property only);
+vehicle/auto-loan collateral; an `is_secured` flag and a multi-asset-lien join table. Noticed but
+out of scope: the `investment.dashboard` route has no account-type guard (pre-existing).
+
 ## Chosen direction: "Net Worth Cockpit"
 
 A chart-forward accounts dashboard consistent with the rebuilt "Terminal Road" dashboard, direction

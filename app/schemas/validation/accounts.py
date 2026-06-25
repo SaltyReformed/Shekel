@@ -327,3 +327,34 @@ class InterestParamsUpdateSchema(BaseSchema):
                 "Invalid compounding frequency.",
                 field_name="compounding_frequency_id",
             )
+
+
+# ── Appreciation (physical-asset) Schemas ─────────────────────────
+
+
+class AppreciationParamsUpdateSchema(BaseSchema):
+    """Validates POST data for a Property's annual appreciation rate.
+
+    ``appreciation_rate`` is stored as a decimal fraction (e.g. ``0.03500``
+    for 3.5%/yr) matching the DB CHECK ``annual_appreciation_rate > -1 AND
+    <= 1``.  The ``@pre_load`` divides the form's user-facing percent by
+    100 so the ``Range`` validator and the CHECK accept the same set of
+    values.  A negative rate (depreciation) is permitted -- the lower bound
+    is exclusive of -1 so the per-period compounding stays invertible --
+    so a future Vehicle/valuables type reuses this schema unchanged.
+    """
+
+    _PERCENT_FIELDS = ("appreciation_rate",)
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Normalize empty inputs, then convert percent fields to fractions."""
+        data = _normalize_empty_inputs(self, data)
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
+
+    appreciation_rate = fields.Decimal(
+        required=True, places=5, as_string=True,
+        validate=validate.Range(
+            min=Decimal("-1"), min_inclusive=False, max=Decimal("1"),
+        ),
+    )
