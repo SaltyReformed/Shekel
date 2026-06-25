@@ -287,6 +287,29 @@ Refined from the Loop A round-1 mockups (2026-06-24; scratch, never committed). 
     diverging bar beside it, then a large full-width forward trend chart, then the account grid,
     then the savings and debt sections.
 
+Decided 2026-06-25 while building the P3 trend (slice 3a), after tracing the data model. Locked.
+
+11. **Trend window, history honesty, and the change chip.** The trend horizon picker (6 / 13 / 26 /
+    All) controls the FORWARD reach; a short honest history tail (cap 6 periods) leads it. Honest
+    history is gated to periods where EVERY account has a real balance, because two kinds carry
+    fallbacks in the past: cash (PLAIN / INTEREST) has no balance before its anchor
+    (`balance_resolver.balances_for` omits pre-anchor periods, so the account would contribute
+    zero), and amortizing loans have a TODAY-forward resolver schedule so pre-schedule periods
+    report the loan's ORIGINAL PRINCIPAL (`account_projection.compute_loan_period_balance_map`),
+    which would make the loan leap down at "today". So the tail reaches back only to the latest cash
+    anchor and the latest loan schedule-start. **Structural consequence (developer-accepted):**
+    because loan schedules are today-forward, any user with an amortizing loan has an EMPTY tail --
+    the trend is forward-only for them, and the solid-history / Today marker shows only for
+    loan-free users whose cash was trued up in the past (e.g. renters). There is no honest
+    per-period historical net worth at pay-period granularity without a larger feature
+    (reconstructing from the dated `AccountAnchorHistory` true-ups); deferred. The
+    **"Change this period" chip** shares this one honest boundary: it compared the current period to
+    the immediately-prior one, but for a loan-holder the prior period is pre-schedule, so it counted
+    the loan's whole origination-to-now paydown as one period (a fake +$16,994 live). It now reads
+    "--" (returns `None`) whenever the prior period is not honest. The same engine backs the
+    analytics Year-End net-worth chart, so its pre-today points likely carry the original-principal
+    artifact too -- flagged, separate follow-up.
+
 ## Home-equity / physical-asset mini-sprint (prerequisite; Opus data-model work)
 
 Adds the Property asset type with optional appreciation, wires its projection into the shared
@@ -511,12 +534,27 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    used today is a 200 no-op (`DUPLICATE_SAME_DAY`), which is correct, not a bug. The dev account's
    balance and same-day history were restored after testing.
 
-   **P3, charts:** the diverging assets-vs-liabilities bar, per-account sparklines, the Net vs
-   assets-and-liabilities toggle, and the 6 / 13 / 26 / All horizon picker. The diverging-bar,
-   sparkline, and wider-window serialization is the Opus backend slice that lands first (its shape now
-   follows the real template). The trend's solid-history vs dashed-projection split and the Today
-   marker also land here; they need the series widened to include past periods (the forward-only series
-   is all projection today).
+   **P3, charts.** Re-sliced by feature (each full-stack, gated) rather than backend-first: 3a the
+   net-worth trend, 3b the diverging allocation bar, 3c the conditional sparklines.
+
+   **P3 slice 3a, net-worth trend: DONE 2026-06-25 on dev (`7cae046`).** The solid-history vs
+   dashed-projection split, the Today marker, the Net vs Assets-and-Liabilities toggle, and the
+   `6 / 13 / 26 / All` horizon picker (default 13). Built to the developer's rulings this session
+   (rebuild decision 11 below). The trend series was widened from forward-only to an honest history
+   tail plus the full forward projection, carrying a `current_index` boundary (the solid/dashed split,
+   the Today marker, and the client's forward-slice anchor); the client slices the horizon and toggles
+   the series in JS (no money math -- only slice, restyle, format), so the producer serializes once.
+   The change-this-period chip was fixed (decision 11). Full suite 6318, `pylint app/` 10.00/10, biome
+   - djlint clean, code-reviewer no Critical/High/Medium, live-verified both themes.
+
+   **P3 slice 3b, allocation bar (NEXT):** a category-stacked diverging assets-vs-liabilities bar
+   (decision 8) in the hero band -- the asset-side category subtotals stacked right, the liability
+   total left, each block labeled name + value, from the existing `group_subtotals` + `net_worth`
+   (widths as float pct at the serialization boundary).
+
+   **P3 slice 3c, conditional sparklines:** a per-account sparkline only where informative (>= ~4
+   points AND min-max spread above a small relative threshold); otherwise the figure + its period
+   delta.
 
    **P4, retire `/accounts`:** redirect `list_accounts` -> `savings.dashboard`, repoint the redirect
    call sites, retire `list.html`, relocate hard-delete to the detail pages, and drop the temporary
