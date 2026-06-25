@@ -15,11 +15,17 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from app.services import savings_goal_service
+from app.services import net_worth_kernel, savings_goal_service
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
     _load_dashboard_core_data,
+)
+from app.services.savings_dashboard_service._net_worth import (
+    build_account_net_worth_maps,
+    compute_net_worth_change,
+    compute_net_worth_series,
+    compute_net_worth_today,
 )
 from app.services.savings_dashboard_service._display import (
     _group_accounts_by_category,
@@ -311,6 +317,80 @@ def compute_goal_progress(user_id: int) -> list[dict]:
     )
 
 
+def _compute_net_worth_section(
+    core: _DashboardCoreData,
+    params: _AccountParams,
+    account_data: list[dict],
+) -> dict:
+    """Assemble the cockpit's net-worth region (Loop B Phase 1).
+
+    Combines the today figures (from the already-projected
+    ``account_data``), the change-this-period delta, and the forward
+    net-worth trend series into the single ``net_worth`` context key.
+
+    The forward trend and the change delta both read ONE set of dense
+    per-account balance maps -- built once here over ALL periods (so the
+    entries-aware resolver always has its anchor seed) via
+    :func:`build_account_net_worth_maps`, fed by the shared
+    :mod:`app.services.net_worth_kernel` (the same math the year-end
+    net-worth trend uses, including the investment growth sub-chain).
+    The amortization schedules for the user's loan accounts are generated
+    once here and threaded into the dense-map build.
+
+    Degrades gracefully with no current period: the today figures still
+    come from ``account_data``, the series is empty, and the change is
+    ``None`` (a missing comparison, not a zero).
+
+    Args:
+        core: The loaded :class:`_DashboardCoreData` (accounts,
+            scenario, all periods, current period).
+        params: The batch-loaded :class:`_AccountParams` (loan params
+            map, investment params map, deductions, engine gross-biweekly).
+        account_data: The per-account projection dicts already computed
+            for the page (the source of the today figures).
+
+    Returns:
+        dict with ``net_worth``, ``total_assets``, ``total_liabilities``,
+        ``liquid``, ``change_this_period`` (``Decimal`` or ``None``), and
+        ``series`` (the forward trend dict, with empty lists when there is
+        no current period).
+    """
+    today = compute_net_worth_today(account_data)
+
+    # Loan accounts (those carrying a LoanParams row) drive the
+    # amortization-schedule path of the dense-map build; generate their
+    # schedules once.
+    loan_accounts = [
+        acct for acct in core.accounts if acct.id in params.loan_params_map
+    ]
+    scenario_id = core.scenario.id if core.scenario else None
+    debt_schedules = (
+        net_worth_kernel.generate_debt_schedules(loan_accounts, scenario_id)
+        if scenario_id is not None else {}
+    )
+
+    account_maps = build_account_net_worth_maps(
+        core.accounts, core.scenario, core.all_periods, params,
+        debt_schedules,
+    )
+
+    forward_periods = [
+        p for p in core.all_periods
+        if core.current_period is not None
+        and p.period_index >= core.current_period.period_index
+    ]
+    series = compute_net_worth_series(account_maps, forward_periods)
+    change_this_period = compute_net_worth_change(
+        account_maps, core.current_period, core.all_periods,
+    )
+
+    return {
+        **today,
+        "change_this_period": change_this_period,
+        "series": series,
+    }
+
+
 def compute_dashboard_data(user_id):
     """Compute all data needed by the savings dashboard template.
 
@@ -383,6 +463,9 @@ def compute_dashboard_data(user_id):
         account_data, params.escrow_map, current_breakdown,
     )
 
+    # ── Net-worth cockpit region (Loop B Phase 1) ──────────────
+    net_worth = _compute_net_worth_section(core, params, account_data)
+
     return {
         "account_data": account_data,
         "grouped_accounts": _group_accounts_by_category(account_data),
@@ -393,4 +476,5 @@ def compute_dashboard_data(user_id):
         "savings_accounts": savings_accounts,
         "archived_accounts": _load_archived_accounts(user_id),
         "debt_summary": debt_summary,
+        "net_worth": net_worth,
     }

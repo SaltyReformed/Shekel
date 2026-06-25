@@ -34,6 +34,8 @@ class TestComputeDashboardData:
                 "emergency_metrics", "total_savings",
                 "avg_monthly_expenses", "savings_accounts",
                 "archived_accounts", "debt_summary",
+                # Loop B Phase 1: the net-worth cockpit region.
+                "net_worth",
             }
             assert set(result.keys()) == expected_keys
 
@@ -3044,3 +3046,458 @@ class TestInvestmentHorizons:
             "3 months": Decimal("1100.00"),
             "6 months": Decimal("1250.00"),
         }
+
+
+# ── Net-Worth Cockpit Producer Tests (Loop B Phase 1) ───────────────
+
+
+def _add_savings_account(seed_user, anchor_period_id, balance):
+    """Create a liquid Savings account anchored to a period.
+
+    Returns:
+        The new savings Account.
+    """
+    savings_type = (
+        db.session.query(AccountType).filter_by(name="Savings").one()
+    )
+    acct = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="Savings",
+            anchor_balance=balance,
+            anchor_period_id=anchor_period_id,
+        ),
+    )
+    db.session.add(acct)
+    db.session.commit()
+    return acct
+
+
+def _add_mortgage_account(seed_user, anchor_period_id, balance):
+    """Create a Mortgage (liability) account with a loan schedule.
+
+    Mortgage originated 2025-01-01 at 6.5%, 30-year, so the resolver's
+    as-of-today current balance equals the origination principal and the
+    amortization schedule drives the forward liability series.
+
+    Returns:
+        The new mortgage Account.
+    """
+    # pylint: disable=import-outside-toplevel
+    from datetime import date as _date
+    from app.models.loan_params import LoanParams
+    from tests._test_helpers import (
+        insert_origination_event,
+        insert_origination_rate,
+    )
+
+    mortgage_type = (
+        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    )
+    acct = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=mortgage_type.id,
+            name="Home Mortgage",
+            anchor_balance=balance,
+            anchor_period_id=anchor_period_id,
+        ),
+    )
+    db.session.add(acct)
+    db.session.flush()
+    params = LoanParams(
+        account_id=acct.id,
+        original_principal=balance,
+        current_principal=balance,
+        term_months=360,
+        origination_date=_date(2025, 1, 1),
+        payment_day=1,
+    )
+    db.session.add(params)
+    db.session.flush()
+    insert_origination_event(params)
+    insert_origination_rate(params, Decimal("0.06500"))
+    db.session.commit()
+    return acct
+
+
+class TestNetWorthHero:
+    """Tests for the cockpit's today net-worth figures.
+
+    ``compute_net_worth_today`` reduces over each account's resolver
+    ``current_balance``: assets add their balance, liabilities accumulate
+    their positive magnitude, net worth is assets minus liabilities, and
+    liquid is the liquid-account balance sum.
+    """
+
+    def test_assets_minus_liabilities(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Net worth is total assets minus the positive liability magnitude.
+
+        Checking ($1,000) + Savings ($4,000) are assets; a $240,000
+        mortgage is a liability.  With no transactions every
+        ``current_balance`` equals its flat anchor, so:
+          total_assets       = 1000.00 + 4000.00 = 5000.00
+          total_liabilities  = 240000.00 (positive magnitude)
+          net_worth          = 5000.00 - 240000.00 = -235000.00
+        """
+        with app.app_context():
+            _add_savings_account(
+                seed_user, seed_periods[0].id, Decimal("4000.00"),
+            )
+            _add_mortgage_account(
+                seed_user, seed_periods[0].id, Decimal("240000.00"),
+            )
+
+            nw = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]
+
+            # 1000.00 + 4000.00 = 5000.00
+            assert nw["total_assets"] == Decimal("5000.00")
+            # Mortgage resolver current balance = origination principal.
+            assert nw["total_liabilities"] == Decimal("240000.00")
+            # 5000.00 - 240000.00 = -235000.00
+            assert nw["net_worth"] == Decimal("-235000.00")
+
+    def test_total_liabilities_is_positive_magnitude(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A liability contributes a POSITIVE total_liabilities, not negative."""
+        with app.app_context():
+            _add_mortgage_account(
+                seed_user, seed_periods[0].id, Decimal("240000.00"),
+            )
+
+            nw = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]
+
+            assert nw["total_liabilities"] == Decimal("240000.00")
+            assert nw["total_liabilities"] > Decimal("0.00")
+
+    def test_liquid_excludes_non_liquid(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Liquid sums only is_liquid accounts; a mortgage is excluded.
+
+        Checking ($1,000, liquid) + Savings ($4,000, liquid) count; the
+        $240,000 mortgage (non-liquid liability) does not:
+          liquid = 1000.00 + 4000.00 = 5000.00
+        while total_assets (also 5000.00 here) and net worth carry the
+        mortgage.  Liquid != assets in general; this fixture keeps them
+        equal only because the sole non-liquid account is the liability.
+        """
+        with app.app_context():
+            _add_savings_account(
+                seed_user, seed_periods[0].id, Decimal("4000.00"),
+            )
+            _add_mortgage_account(
+                seed_user, seed_periods[0].id, Decimal("240000.00"),
+            )
+
+            nw = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]
+
+            # 1000.00 + 4000.00 = 5000.00 (mortgage excluded from liquid).
+            assert nw["liquid"] == Decimal("5000.00")
+
+
+class TestNetWorthSeries:
+    """Tests for the cockpit's forward net-worth trend series."""
+
+    def test_default_series_length_is_forward_window(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Series length equals the forward window (current period onward).
+
+        ``seed_periods_today`` places today in period index 4 of a
+        10-period window, so the forward window (``period_index >= 4``) is
+        indices 4-9 inclusive = 6 periods.  The seed Checking account alone
+        yields a dense balance map over all periods; the series is the
+        current-period-onward slice of it.  The expected length is the
+        fixture-derived literal 6, NOT a value re-derived from the
+        production forward-window logic, so an off-by-one in that logic
+        surfaces here.  (``seed_periods``, a fixed 2026-01-02 window now
+        entirely in the past, has no current period -- it would make this
+        a vacuous ``0 == 0``.)
+        """
+        with app.app_context():
+            series = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]["series"]
+
+            # today in period 4 of 10 -> forward indices 4..9 inclusive = 6
+            assert len(series["periods"]) == 6
+            assert len(series["net"]) == 6
+            assert len(series["assets"]) == 6
+            assert len(series["liabilities"]) == 6
+
+    def test_net_equals_assets_minus_liabilities_each_point(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """series net[i] == assets[i] - liabilities[i] for every point.
+
+        Holds even with a mortgage whose amortization drives the
+        liability series down period by period: the asset-plus /
+        liability-minus split shares one sum with the net reduction.
+        """
+        with app.app_context():
+            _add_savings_account(
+                seed_user, seed_periods[0].id, Decimal("4000.00"),
+            )
+            _add_mortgage_account(
+                seed_user, seed_periods[0].id, Decimal("240000.00"),
+            )
+
+            series = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]["series"]
+
+            assert len(series["net"]) > 0
+            for i in range(len(series["net"])):
+                assert series["net"][i] == (
+                    series["assets"][i] - series["liabilities"][i]
+                )
+
+    def test_period_zero_net_equals_hero_for_liquid_only(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """For a CHECKING/SAVINGS-only fixture, series[0].net == hero net worth.
+
+        With no transactions, every balance is flat, so the current
+        period's net worth (series point 0) equals the today hero:
+          Checking 1000.00 + Savings 4000.00 = 5000.00.
+        """
+        with app.app_context():
+            _add_savings_account(
+                seed_user, seed_periods[0].id, Decimal("4000.00"),
+            )
+
+            nw = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]
+
+            # 1000.00 + 4000.00 = 5000.00, identical hero and series[0].
+            assert nw["net_worth"] == Decimal("5000.00")
+            assert nw["series"]["net"][0] == Decimal("5000.00")
+            assert nw["series"]["net"][0] == nw["net_worth"]
+
+    def test_period_zero_diverges_from_hero_for_amortizing_loan(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """For a loan, series point 0 differs from the as-of-today hero.
+
+        The two figures deliberately read DIFFERENT sources, and this test
+        guards that they keep doing so (the documented caveat to the
+        liquid-only ``series[0] == hero`` case above):
+
+        - The hero (``compute_net_worth_today``) reduces over each
+          account's as-of-today ``current_balance``.  The mortgage has no
+          confirmed payments, so the loan resolver replays nothing forward
+          and reports its $240,000 origination principal.
+        - The series reads the dense amortization-schedule map, whose
+          current-period (period-end) value has already paid principal
+          DOWN below $240,000 by today.
+
+        Checking $1,000 and a $240,000 mortgage (originated 2025-01-01):
+          hero net      = 1000.00 - 240000.00 = -239000.00 (anchor)
+          series[0] net = 1000.00 - (amortized < 240000.00) > -239000.00
+        """
+        with app.app_context():
+            _add_mortgage_account(
+                seed_user, seed_periods_today[0].id, Decimal("240000.00"),
+            )
+
+            nw = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]
+
+            # Hero uses the as-of-today anchor (no confirmed payments):
+            # 1000.00 (checking) - 240000.00 (mortgage) = -239000.00
+            assert nw["net_worth"] == Decimal("-239000.00")
+            # Series point 0 uses the schedule (period-end), amortized
+            # below 240000, so net is HIGHER (less liability) and strictly
+            # differs from the hero -- the two-source split is intact.
+            assert nw["series"]["net"][0] > nw["net_worth"]
+            assert nw["series"]["net"][0] != nw["net_worth"]
+
+
+class TestNetWorthChange:
+    """Tests for the cockpit's change-this-period delta."""
+
+    @staticmethod
+    def _period(period_id, period_index):
+        """Synthetic PayPeriod stand-in (id + period_index reads only)."""
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        return SimpleNamespace(id=period_id, period_index=period_index)
+
+    def test_delta_is_current_minus_prior(self):
+        """Change == NW(current) - NW(prior period at index - 1).
+
+        Two periods (ids 10 / 11, indices 0 / 1).  One asset account holds
+        300.00 at the prior period and 500.00 at the current period; one
+        liability holds 100.00 at prior and 80.00 at current:
+          NW(prior)   = 300.00 - 100.00 = 200.00
+          NW(current) = 500.00 - 80.00  = 420.00
+          change      = 420.00 - 200.00 = 220.00
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_change,
+        )
+        prior = self._period(10, 0)
+        current = self._period(11, 1)
+        account_maps = [
+            {
+                "balances": {10: Decimal("300.00"), 11: Decimal("500.00")},
+                "is_liability": False,
+            },
+            {
+                "balances": {10: Decimal("100.00"), 11: Decimal("80.00")},
+                "is_liability": True,
+            },
+        ]
+        # (500.00 - 80.00) - (300.00 - 100.00) = 420.00 - 200.00 = 220.00
+        assert compute_net_worth_change(
+            account_maps, current, [prior, current],
+        ) == Decimal("220.00")
+
+    def test_none_at_period_index_zero(self):
+        """No immediately-prior period (index 0) yields None, not zero.
+
+        The current period is index 0, so ``period_index - 1 == -1`` has no
+        match; the producer returns ``None`` (a missing comparison), which
+        the caller must not coerce to a zero delta.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_change,
+        )
+        current = self._period(10, 0)
+        account_maps = [
+            {"balances": {10: Decimal("500.00")}, "is_liability": False},
+        ]
+        assert compute_net_worth_change(
+            account_maps, current, [current],
+        ) is None
+
+    def test_none_when_no_current_period(self):
+        """No current period yields None."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_change,
+        )
+        assert compute_net_worth_change([], None, []) is None
+
+
+class TestNetWorthProducerEdgeCases:
+    """Edge-case coverage for the cockpit net-worth producers."""
+
+    def test_no_accounts_today_is_all_zero(self):
+        """With no accounts the today figures are all zero."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_today,
+        )
+        today = compute_net_worth_today([])
+        assert today["net_worth"] == Decimal("0.00")
+        assert today["total_assets"] == Decimal("0.00")
+        assert today["total_liabilities"] == Decimal("0.00")
+        assert today["liquid"] == Decimal("0.00")
+
+    def test_no_account_maps_series_is_empty_window(self):
+        """With no account maps and no forward periods the series is empty."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_series,
+        )
+        series = compute_net_worth_series([], [])
+        assert series["periods"] == []
+        assert series["net"] == []
+        assert series["assets"] == []
+        assert series["liabilities"] == []
+
+    def test_liabilities_only_today_is_negative(self):
+        """An accounts-set of only liabilities yields negative net worth.
+
+        One liability account with a 500.00 current balance and no assets:
+          total_assets      = 0.00
+          total_liabilities = 500.00
+          net_worth         = 0.00 - 500.00 = -500.00
+        Classification is by the account type's category_id, so this test
+        builds a stand-in account whose type's category is the LIABILITY
+        ref id (IDs for logic, never a name string).
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        from app.enums import AcctCategoryEnum
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_today,
+        )
+        liability_cat_id = ref_cache.acct_category_id(
+            AcctCategoryEnum.LIABILITY,
+        )
+        acct_type = SimpleNamespace(
+            category_id=liability_cat_id, is_liquid=False,
+        )
+        account = SimpleNamespace(account_type=acct_type)
+        today = compute_net_worth_today([
+            {"account": account, "current_balance": Decimal("500.00")},
+        ])
+        assert today["total_assets"] == Decimal("0.00")
+        assert today["total_liabilities"] == Decimal("500.00")
+        # 0.00 - 500.00 = -500.00
+        assert today["net_worth"] == Decimal("-500.00")
+        assert today["liquid"] == Decimal("0.00")
+
+    def test_single_asset_account(self):
+        """A single non-liability liquid account: net worth equals its balance.
+
+        One asset account with a 750.00 current balance:
+          net_worth = total_assets = liquid = 750.00, liabilities 0.00.
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_today,
+        )
+        acct_type = SimpleNamespace(category_id=-999, is_liquid=True)
+        account = SimpleNamespace(account_type=acct_type)
+        today = compute_net_worth_today([
+            {"account": account, "current_balance": Decimal("750.00")},
+        ])
+        assert today["net_worth"] == Decimal("750.00")
+        assert today["total_assets"] == Decimal("750.00")
+        assert today["total_liabilities"] == Decimal("0.00")
+        assert today["liquid"] == Decimal("750.00")
+
+    def test_zero_balance_account_contributes_zero_not_absent(self):
+        """A zero-balance asset contributes 0.00, it is not skipped.
+
+        Two asset accounts, one 600.00 and one 0.00 (a real zero, not a
+        missing balance).  The zero account still participates:
+          total_assets = 600.00 + 0.00 = 600.00, net worth 600.00.
+        Asserting 600.00 (not, say, an absent-account artifact) pins that
+        a zero balance is summed rather than dropped.
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_today,
+        )
+        acct_type = SimpleNamespace(category_id=-999, is_liquid=True)
+        funded = SimpleNamespace(account_type=acct_type)
+        empty = SimpleNamespace(account_type=acct_type)
+        today = compute_net_worth_today([
+            {"account": funded, "current_balance": Decimal("600.00")},
+            {"account": empty, "current_balance": Decimal("0.00")},
+        ])
+        # 600.00 + 0.00 = 600.00 (the zero account is summed, not absent).
+        assert today["net_worth"] == Decimal("600.00")
+        assert today["total_assets"] == Decimal("600.00")
+        assert today["liquid"] == Decimal("600.00")

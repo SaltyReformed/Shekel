@@ -399,6 +399,40 @@ def balance_contributing_clause():
     )
 
 
+def account_period_scope_clause(
+    account_id: int, scenario_id: int, period_ids: list[int],
+):
+    """Return a clause scoping rows to one account's live periods.
+
+    The shared SQL form of the "this account's non-deleted rows for this
+    scenario over these periods" filter prefix: ``account_id`` ==,
+    ``scenario_id`` ==, ``pay_period_id IN period_ids``, and
+    ``is_deleted IS FALSE``.  Unlike :func:`balance_contributing_clause`
+    it does NOT drop Credit / Cancelled rows -- callers that need the
+    full row set (the net-worth kernel's interest-balance and settled-net
+    queries, whose downstream consumers apply their own status logic)
+    compose this prefix and add only the scope they share, instead of
+    repeating the four-line filter literal at each query site.
+
+    Args:
+        account_id: The account the rows belong to.
+        scenario_id: The scenario the rows belong to.
+        period_ids: The pay period ids to scope to.
+
+    Returns:
+        A SQLAlchemy ``and_`` clause equivalent to ``account_id = :a AND
+        scenario_id = :s AND pay_period_id IN :p AND is_deleted IS FALSE``,
+        suitable for ``query.filter(...)`` on a select rooted at
+        ``Transaction``.
+    """
+    return and_(
+        Transaction.account_id == account_id,
+        Transaction.scenario_id == scenario_id,
+        Transaction.pay_period_id.in_(period_ids),
+        Transaction.is_deleted.is_(False),
+    )
+
+
 def monthly_attribution_clause(first_day: date, last_day: date, period_ids: list[int]):
     """Return a SQLAlchemy clause attributing a transaction to a date range.
 

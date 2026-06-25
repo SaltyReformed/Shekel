@@ -16,6 +16,11 @@ from app.services.investment_projection import (
     build_contribution_timeline,
 )
 from app.services.projection_inputs import build_investment_projection_inputs
+# ``get_anchor_period_index`` moved to the shared kernel (Loop B Phase 1);
+# the private alias keeps this module's call site unchanged.
+from app.services.net_worth_kernel import (
+    get_anchor_period_index as _get_anchor_period_index,
+)
 from app.services.year_end_summary_service._balances import (
     _base_account_balance_map,
     _compute_interest_for_year,
@@ -24,7 +29,6 @@ from app.services.year_end_summary_service._balances import (
     _sum_shadow_income,
 )
 from app.services.year_end_summary_service._periods import (
-    _get_anchor_period_index,
     _lookup_balance_with_anchor_fallback,
     _lookup_period_balance,
 )

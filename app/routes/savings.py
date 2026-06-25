@@ -6,7 +6,9 @@ and emergency fund metrics.  Goal CRUD endpoints for creating, editing,
 and deleting savings goals.
 """
 
+import json
 import logging
+from datetime import date
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -35,8 +37,56 @@ logger = logging.getLogger(__name__)
 
 savings_bp = Blueprint("savings", __name__)
 
+# Chart.js x-axis label format for the net-worth trend: month abbreviation
+# plus un-padded day (e.g. "Jun 5"), matching the dashboard pulse chart.
+_NET_WORTH_LABEL_FORMAT = "%b %-d"
+
 _create_schema = SavingsGoalCreateSchema()
 _update_schema = SavingsGoalUpdateSchema()
+
+
+def _serialize_net_worth_chart(net_worth_series: dict) -> str:
+    """Serialize the net-worth trend series to a Chart.js JSON string.
+
+    The single Chart.js serialization boundary for the cockpit's
+    net-worth region (coding-standards: ``float`` lives only here, never
+    in a calculation).  Maps the producer's parallel ``Decimal`` lists
+    (``net`` / ``assets`` / ``liabilities``, computed money-precise in
+    :mod:`app.services.savings_dashboard_service._net_worth`) to ``float``
+    arrays and the period descriptors' ``end_date`` to ``%b %-d`` labels.
+
+    ``actual_count`` is the number of leading points whose period has
+    already ended (``end_date <= today``): the template uses it to render
+    those points as realized history and the remainder as projection,
+    the same actual-vs-projected split the dashboard pulse chart draws.
+
+    Args:
+        net_worth_series: The ``net_worth["series"]`` dict, with keys
+            ``periods`` (list of ``{end_date, period_index}``), ``net``,
+            ``assets``, and ``liabilities``.
+
+    Returns:
+        A JSON string ``{"labels": [str], "net": [float], "assets":
+        [float], "liabilities": [float], "actual_count": int}`` for the
+        ``data-chart`` attribute.
+    """
+    today = date.today()
+    periods = net_worth_series["periods"]
+    actual_count = sum(
+        1 for point in periods if point["end_date"] <= today
+    )
+    return json.dumps({
+        "labels": [
+            point["end_date"].strftime(_NET_WORTH_LABEL_FORMAT)
+            for point in periods
+        ],
+        "net": [float(value) for value in net_worth_series["net"]],
+        "assets": [float(value) for value in net_worth_series["assets"]],
+        "liabilities": [
+            float(value) for value in net_worth_series["liabilities"]
+        ],
+        "actual_count": actual_count,
+    })
 
 # Fields allowed in goal updates.  Income-relative fields are included
 # so mode changes propagate correctly.
@@ -110,9 +160,24 @@ def _clean_goal_form_data(form_data):
 @login_required
 @require_owner
 def dashboard():
-    """Savings dashboard: account balances, goals, and emergency fund metrics."""
+    """Savings dashboard: account balances, goals, and emergency fund metrics.
+
+    Net-worth cockpit region (Loop B Phase 1): the producer hands back the
+    money-precise ``net_worth`` figures (today totals + change-this-period
+    + the forward trend series); the trend series is serialized to a
+    Chart.js JSON string here at the route boundary (the only place
+    ``float`` is applied) and exposed as ``net_worth_chart_json``, while
+    the ``Decimal`` figures pass through to the template unchanged.  The
+    template rebuild that renders this data is a later phase; the data is
+    made available now without changing the existing rendered output.
+    """
     ctx = savings_dashboard_service.compute_dashboard_data(current_user.id)
-    return render_template("savings/dashboard.html", **ctx)
+    net_worth_chart_json = _serialize_net_worth_chart(ctx["net_worth"]["series"])
+    return render_template(
+        "savings/dashboard.html",
+        net_worth_chart_json=net_worth_chart_json,
+        **ctx,
+    )
 
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])
